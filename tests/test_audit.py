@@ -762,3 +762,37 @@ async def test_pipe_output_is_attributed_and_aggregated(store: LocalEventStore) 
     assert (outs[500]["ts_kernel"], outs[500]["cpu_seq"]) == (50, 3)
     assert outs[700]["stream"] == "fifo"
     assert outs[700]["prefix"] == "fifo!"
+
+
+async def test_output_over_cap_spills_before_the_exec_finishes(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(audit_module.CAPS, "output", 1)
+    fds = (Fd(0, "char"), Fd(500, "pipe"), Fd(501, "pipe"))
+    r = with_context(root(100), cwd="/work", env=(), fds=fds)
+    writes = [Output(100, ino, 4, PIPEFS, b"data", at=AT) for ino in (500, 501, 700)]
+    sb = FakeSandbox()
+    sb.steps.append(step(r, *writes, Exit(100, 0, None, at=AT)))
+    run_id, audited = await start(store, sb)
+    result = await audited.exec("x", timeout_s=5)
+    await audited.close()
+
+    evs = await events(store, run_id)
+    assert kinds(evs)[3:] == [
+        "proc.exec",
+        "proc.output",
+        "proc.exit",
+        "audit.spill",
+        "exec.finished",
+        "sandbox.stopped",
+    ]
+    assert evs[4].data["stream"] == "stdout"
+    assert (result.finished.spilled, result.finished.dropped) == (2, 0)
+    spill = evs[6].payload()
+    assert isinstance(spill, AuditSpill)
+    assert spill.kinds == {"output": 2}
+    records = spilled(await store.get_blob(run_id, spill.records.sha256))
+    assert [(t, d["stream"]) for t, d in records] == [
+        ("proc.output", "stderr"),
+        ("proc.output", "pipe"),
+    ]
