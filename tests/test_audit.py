@@ -31,9 +31,13 @@ from aims.sandbox.base import (
     Record,
     SandboxInfo,
     SandboxSpec,
+    Stamp,
 )
 
 pytestmark = pytest.mark.anyio
+
+AT = Stamp(42, 1, 7)
+STAMP = {"ts_kernel": 42, "cpu": 1, "cpu_seq": 7}
 
 Step = Callable[["FakeSandbox", Capture, Callable[[int], None] | None], Awaitable[Outcome]]
 
@@ -116,11 +120,11 @@ class FakeBackend:
 
 
 def root(pid: int, uid: int = AGENT_UID) -> Exec:
-    return Exec(pid, 1, pid, uid, "wrap", ("wrap", "sh"), 7, True)
+    return Exec(pid, 1, pid, uid, "wrap", ("wrap", "sh"), 7, True, at=AT)
 
 
 def child(pid: int, ppid: int, *argv: str) -> Exec:
-    return Exec(pid, ppid, pid, AGENT_UID, argv[0], argv, 9, False)
+    return Exec(pid, ppid, pid, AGENT_UID, argv[0], argv, 9, False, at=AT)
 
 
 def step(
@@ -180,16 +184,16 @@ async def test_exec_writes_ahead_and_attributes_kernel_records(store: LocalEvent
     sb.steps.append(
         step(
             root(100),
-            Fork(100, 101),
+            Fork(100, 101, at=AT),
             child(101, 100, "python3", "x.py"),
-            File(101, "write", "/work/x"),
-            File(101, "write", "/work/x"),
-            File(101, "read", "/work/scorer.py"),
-            Net(101, "connect", "inet", "169.254.169.254", 80),
-            Denied(101, "unshare", 1),
-            Oom(101),
-            Exit(101, None, 9),
-            Exit(100, 0, None),
+            File(101, "write", "/work/x", at=AT),
+            File(101, "write", "/work/x", at=AT),
+            File(101, "read", "/work/scorer.py", at=AT),
+            Net(101, "connect", "inet", "169.254.169.254", 80, at=AT),
+            Denied(101, "unshare", 1, at=AT),
+            Oom(101, at=AT),
+            Exit(101, None, 9, at=AT),
+            Exit(100, 0, None, at=AT),
             out=b"done\n",
         )
     )
@@ -226,7 +230,9 @@ async def test_exec_writes_ahead_and_attributes_kernel_records(store: LocalEvent
         "exit_code": None,
         "signal": 9,
         "oom": True,
+        **STAMP,
     }
+    assert all(e.data["ts_kernel"] == 42 for e in evs[3:11])
     assert finished["procs"] == 2
     assert finished["stdout"] == "done\n"
     assert finished["call_id"] == "c1"
@@ -238,7 +244,9 @@ async def test_exec_writes_ahead_and_attributes_kernel_records(store: LocalEvent
 async def test_orphaned_child_keeps_its_exec(store: LocalEventStore) -> None:
     sb = FakeSandbox()
     sb.after = [Proc(pid=101, ppid=1, uid=AGENT_UID, command="sleep 30")]
-    sb.steps.append(step(root(100), Fork(100, 101), Exit(100, 0, None), child(101, 1, "sleep")))
+    sb.steps.append(
+        step(root(100), Fork(100, 101, at=AT), Exit(100, 0, None, at=AT), child(101, 1, "sleep"))
+    )
     run_id, audited = await start(store, sb)
     result = await audited.exec("setsid sleep 30 &", timeout_s=5)
     await audited.close()
@@ -263,7 +271,7 @@ async def test_runner_and_foreign_roots_are_not_recorded(store: LocalEventStore)
 
 async def test_root_seen_before_its_pid_is_known(store: LocalEventStore) -> None:
     sb = FakeSandbox()
-    sb.steps.append(step(root(100), child(101, 100, "ls"), Exit(100, 0, None), pid=None))
+    sb.steps.append(step(root(100), child(101, 100, "ls"), Exit(100, 0, None, at=AT), pid=None))
     run_id, audited = await start(store, sb)
     result = await audited.exec("ls", timeout_s=5)
     await audited.close()
@@ -275,12 +283,12 @@ async def test_root_seen_before_its_pid_is_known(store: LocalEventStore) -> None
 async def test_caps_count_what_they_drop(
     store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(audit_module, "PROCS", 3)
-    monkeypatch.setattr(audit_module, "FILES", 2)
+    monkeypatch.setitem(audit_module.CAPS, "procs", 3)
+    monkeypatch.setitem(audit_module.CAPS, "files", 2)
     sb = FakeSandbox()
     kids = [child(101 + i, 100, "c") for i in range(4)]
-    files = [File(101, "write", f"/work/{i}") for i in range(4)]
-    sb.steps.append(step(root(100), *kids, *files, Exit(100, 0, None)))
+    files = [File(101, "write", f"/work/{i}", at=AT) for i in range(4)]
+    sb.steps.append(step(root(100), *kids, *files, Exit(100, 0, None, at=AT)))
     run_id, audited = await start(store, sb)
     result = await audited.exec("make", timeout_s=5)
     await audited.close()
@@ -304,10 +312,47 @@ async def test_losses_are_reported_once_per_flush(store: LocalEventStore) -> Non
     await audited.close()
 
     lost = [e.data for e in await events(store, run_id) if e.type == "audit.lost"]
+    none = {"cpus": [], "ts_from": None, "ts_to": None}
     assert lost == [
-        {"count": 5, "reason": "kernel buffer overflow"},
-        {"count": None, "reason": "tracer stopped"},
+        {"count": 5, "reason": "kernel buffer overflow", **none},
+        {"count": None, "reason": "tracer stopped", **none},
     ]
+
+
+async def test_gaps_keep_their_window(store: LocalEventStore) -> None:
+    sb = FakeSandbox()
+    sb.steps.append(
+        step(
+            root(100),
+            Lost(3, "kernel record gap", (2,), 500, 900),
+            Lost(1, "kernel record gap", (0,), 100, 300),
+            Lost(4, "audit queue full", (), 50, 60),
+        )
+    )
+    run_id, audited = await start(store, sb)
+    await audited.exec("x", timeout_s=5)
+    await audited.close()
+
+    lost = [e.data for e in await events(store, run_id) if e.type == "audit.lost"]
+    assert lost == [
+        {"count": 4, "reason": "kernel record gap", "cpus": [0, 2], "ts_from": 100, "ts_to": 900},
+        {"count": 4, "reason": "audit queue full", "cpus": [], "ts_from": 50, "ts_to": 60},
+    ]
+
+
+async def test_close_records_what_is_still_queued(store: LocalEventStore) -> None:
+    sb = FakeSandbox()
+    run_id, audited = await start(store, sb)
+    assert audited._consumer is not None
+    audited._consumer.cancel()
+    sb.queue.put_nowait(File(100, "write", "/work/late", at=AT))
+    sb.queue.put_nowait(Lost(2, "kernel record gap", (1,), 1, 2))
+    await audited.close()
+
+    evs = await events(store, run_id)
+    assert [e.data["path"] for e in evs if e.type == "file.access"] == ["/work/late"]
+    assert [e.data["count"] for e in evs if e.type == "audit.lost"] == [2]
+    assert kinds(evs)[-1] == "sandbox.stopped"
 
 
 async def test_snapshot_audit_has_no_kernel_counts(store: LocalEventStore) -> None:

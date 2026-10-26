@@ -137,13 +137,25 @@ class ExecFinished(Payload):
     error: str | None = None
 
 
-class ProcExec(Payload):
+class KernelPayload(Payload):
+    """Fields of every event the kernel tracer reports.
+
+    `ts_kernel` is the kernel boot clock in µs, comparable across cpus. `cpu_seq` is the record's
+    place in `cpu`'s stream, so kernel order is (`ts_kernel`, `cpu`, `cpu_seq`).
+    """
+
+    exec_id: str | None
+    pid: int
+    ts_kernel: int
+    cpu: int
+    cpu_seq: int
+
+
+class ProcExec(KernelPayload):
     """A program the kernel started in the sandbox. `root` marks one the runtime spawned."""
 
     type = "proc.exec"
 
-    exec_id: str | None
-    pid: int
     ppid: int
     ns_pid: int
     uid: int
@@ -153,23 +165,19 @@ class ProcExec(Payload):
     root: bool
 
 
-class ProcExit(Payload):
+class ProcExit(KernelPayload):
     type = "proc.exit"
 
-    exec_id: str | None
-    pid: int
     exit_code: int | None
     signal: int | None
     oom: bool = False
 
 
-class FileAccess(Payload):
+class FileAccess(KernelPayload):
     """A file opened, deleted, renamed, or refused. `partial` paths lack their leading part."""
 
     type = "file.access"
 
-    exec_id: str | None
-    pid: int
     op: FileOp
     path: str
     target: str | None = None
@@ -177,37 +185,40 @@ class FileAccess(Payload):
     partial: bool = False
 
 
-class NetConnect(Payload):
+class NetConnect(KernelPayload):
     """An attempt to reach an address. The sandbox has no network, so these fail."""
 
     type = "net.connect"
 
-    exec_id: str | None
-    pid: int
     kind: Literal["connect", "sendto"]
     family: Literal["inet", "inet6", "unix"]
     address: str
     port: int | None
 
 
-class SysDenied(Payload):
+class SysDenied(KernelPayload):
     """A privileged syscall the kernel refused."""
 
     type = "sys.denied"
 
-    exec_id: str | None
-    pid: int
     syscall: str
     errno: int
 
 
 class AuditLost(Payload):
-    """The kernel audit missed events. `count` is None when the number is unknown."""
+    """The kernel audit missed events. `count` is None when the number is unknown.
+
+    `ts_from` and `ts_to` bound the loss on the kernel boot clock, and `cpus` names the cpus whose
+    streams had holes, when known.
+    """
 
     type = "audit.lost"
 
     count: int | None
     reason: str
+    cpus: list[int] = Field(default_factory=list)
+    ts_from: int | None = None
+    ts_to: int | None = None
 
 
 class MonitorFlag(Payload):

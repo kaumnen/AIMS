@@ -1,16 +1,19 @@
-config = { max_strlen = 512; perf_rb_pages = 1024 }
+config = { max_strlen = 512 }
 
 BEGIN {
   @base = curtask->thread_pid->level;
-  printf("R %d\n", @base);
+  $s = @seq[cpu] + 1; @seq[cpu] = $s;
+  printf("R %llu %llu %llu %d %llu\n", nsecs(boot), cpu, $s, @base, nsecs(tai));
 }
 
 tracepoint:task:task_newtask /curtask->thread_pid->level > @base && !(args.clone_flags & 0x10000)/ {
-  printf("F %d %d\n", curtask->tgid, args.pid);
+  $s = @seq[cpu] + 1; @seq[cpu] = $s;
+  printf("F %llu %llu %llu %d %d\n", nsecs(boot), cpu, $s, curtask->tgid, args.pid);
 }
 
 fentry:vmlinux:security_bprm_check /curtask->thread_pid->level > @base/ {
-  printf("B %d %s\n", curtask->tgid, str(args.bprm->filename));
+  $s = @seq[cpu] + 1; @seq[cpu] = $s;
+  printf("B %llu %llu %llu %d %s\n", nsecs(boot), cpu, $s, curtask->tgid, str(args.bprm->filename));
 }
 
 tracepoint:sched:sched_process_exec /curtask->thread_pid->level > @base/ {
@@ -20,86 +23,102 @@ tracepoint:sched:sched_process_exec /curtask->thread_pid->level > @base/ {
   if ($tp->level == 2) { $ns = $tp->numbers[2].nr; $inum = $tp->numbers[2].ns->ns.inum; }
   if ($tp->level == 3) { $ns = $tp->numbers[3].nr; $inum = $tp->numbers[3].ns->ns.inum; }
   $len = curtask->mm->arg_end - curtask->mm->arg_start;
-  printf("E %d %d %d %d %u %d %d %rx\n", curtask->tgid, curtask->real_parent->tgid,
+  $s = @seq[cpu] + 1; @seq[cpu] = $s;
+  printf("E %llu %llu %llu %d %d %d %d %u %d %d %rx\n", nsecs(boot), cpu, $s, curtask->tgid, curtask->real_parent->tgid,
     curtask->real_parent->thread_pid->level <= @base, curtask->cred->uid.val, $inum, $ns, $len,
     buf(uptr(curtask->mm->arg_start), $len));
 }
 
 tracepoint:sched:sched_process_exit /curtask->thread_pid->level > @base && curtask->pid == curtask->tgid/ {
-  printf("X %d %d %d\n", curtask->tgid, (curtask->exit_code >> 8) & 0xff, curtask->exit_code & 0x7f);
+  $s = @seq[cpu] + 1; @seq[cpu] = $s;
+  printf("X %llu %llu %llu %d %d %d\n", nsecs(boot), cpu, $s, curtask->tgid, (curtask->exit_code >> 8) & 0xff, curtask->exit_code & 0x7f);
 }
 
 tracepoint:oom:mark_victim {
-  printf("O %d\n", args.pid);
+  $s = @seq[cpu] + 1; @seq[cpu] = $s;
+  printf("O %llu %llu %llu %d\n", nsecs(boot), cpu, $s, args.pid);
 }
 
 fentry:vmlinux:security_file_open /curtask->thread_pid->level > @base && strncmp(comm, "runc:", 5) != 0 && (args.file->f_inode->i_mode & 0xF000) == 0x8000/ {
   $p = path(args.file->f_path);
   if (args.file->f_mode & 2) {
-    printf("W %d %s\n", curtask->tgid, $p);
+    $s = @seq[cpu] + 1; @seq[cpu] = $s;
+    printf("W %llu %llu %llu %d %s\n", nsecs(boot), cpu, $s, curtask->tgid, $p);
   } else if (strncmp($p, "/usr/", 5) != 0 && strncmp($p, "/lib", 4) != 0 && strncmp($p, "/proc/", 6) != 0
       && strncmp($p, "/sys/", 5) != 0 && strncmp($p, "/dev/", 5) != 0 && strncmp($p, "/etc/ld.so.cache", 16) != 0) {
-    printf("A %d %s\n", curtask->tgid, $p);
+    $s = @seq[cpu] + 1; @seq[cpu] = $s;
+    printf("A %llu %llu %llu %d %s\n", nsecs(boot), cpu, $s, curtask->tgid, $p);
   }
 }
 
 fentry:vmlinux:security_inode_unlink, fentry:vmlinux:security_inode_rmdir /curtask->thread_pid->level > @base && strncmp(comm, "runc:", 5) != 0/ {
   $d = args.dentry;
-  printf("U %d %u %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx\n", curtask->tgid, $d->d_sb->s_dev,
-    buf($d->d_name.name, $d->d_name.len),
-    buf($d->d_parent->d_name.name, $d->d_parent->d_name.len),
-    buf($d->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_name.len),
-    buf($d->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_name.len),
-    buf($d->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_name.len),
-    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len));
+  $x = $d; $k = 0;
+  unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } }
+  $s = @seq[cpu] + 1; @seq[cpu] = $s;
+  printf("U %llu %llu %llu %d %u %d %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, curtask->tgid, $d->d_sb->s_dev, $k,
+    str($d->d_name.name),
+    str($d->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
 }
 
 fentry:vmlinux:security_inode_rename /curtask->thread_pid->level > @base && strncmp(comm, "runc:", 5) != 0/ {
   $o = args.old_dentry;
   $n = args.new_dentry;
-  printf("N %d %u %u %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx\n", curtask->tgid, $o->d_sb->s_dev, $n->d_sb->s_dev,
-    buf($o->d_name.name, $o->d_name.len),
-    buf($o->d_parent->d_name.name, $o->d_parent->d_name.len),
-    buf($o->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_name.len),
-    buf($o->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_name.len),
-    buf($o->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_name.len),
-    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-    buf($n->d_name.name, $n->d_name.len),
-    buf($n->d_parent->d_name.name, $n->d_parent->d_name.len),
-    buf($n->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_name.len),
-    buf($n->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_name.len),
-    buf($n->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_name.len),
-    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len));
+  $x = $o; $ko = 0;
+  unroll(12) { if ($x != $x->d_parent) { $ko++; $x = $x->d_parent; } }
+  $x = $n; $kn = 0;
+  unroll(12) { if ($x != $x->d_parent) { $kn++; $x = $x->d_parent; } }
+  $s = @seq[cpu] + 1; @seq[cpu] = $s;
+  printf("N %llu %llu %llu %d %u %u %d %d %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, curtask->tgid, $o->d_sb->s_dev, $n->d_sb->s_dev, $ko, $kn,
+    str($o->d_name.name),
+    str($o->d_parent->d_name.name),
+    str($o->d_parent->d_parent->d_name.name),
+    str($o->d_parent->d_parent->d_parent->d_name.name),
+    str($o->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($n->d_name.name),
+    str($n->d_parent->d_name.name),
+    str($n->d_parent->d_parent->d_name.name),
+    str($n->d_parent->d_parent->d_parent->d_name.name),
+    str($n->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
 }
 
 fentry:vmlinux:security_socket_connect /curtask->thread_pid->level > @base && strncmp(comm, "runc:", 5) != 0/ {
   $a = args.address;
   if ($a->sa_family == 2) {
     $in = (struct sockaddr_in *)$a;
-    printf("C %d c 4 %s %d\n", curtask->tgid, ntop(2, $in->sin_addr.s_addr), bswap($in->sin_port));
+    $s = @seq[cpu] + 1; @seq[cpu] = $s;
+    printf("C %llu %llu %llu %d c 4 %s %d\n", nsecs(boot), cpu, $s, curtask->tgid, ntop(2, $in->sin_addr.s_addr), bswap($in->sin_port));
   } else if ($a->sa_family == 10) {
     $in6 = (struct sockaddr_in6 *)$a;
-    printf("C %d c 6 %s %d\n", curtask->tgid, ntop(10, $in6->sin6_addr.in6_u.u6_addr8), bswap($in6->sin6_port));
+    $s = @seq[cpu] + 1; @seq[cpu] = $s;
+    printf("C %llu %llu %llu %d c 6 %s %d\n", nsecs(boot), cpu, $s, curtask->tgid, ntop(10, $in6->sin6_addr.in6_u.u6_addr8), bswap($in6->sin6_port));
   } else if ($a->sa_family == 1) {
-    printf("C %d c 1 %rx 0\n", curtask->tgid, buf(((struct sockaddr_un *)$a)->sun_path, 108));
+    $s = @seq[cpu] + 1; @seq[cpu] = $s;
+    printf("C %llu %llu %llu %d c 1 %rx 0\n", nsecs(boot), cpu, $s, curtask->tgid, buf(((struct sockaddr_un *)$a)->sun_path, 108));
   }
 }
 
@@ -107,10 +126,12 @@ fentry:vmlinux:security_socket_sendmsg /curtask->thread_pid->level > @base && st
   $a = (struct sockaddr *)args.msg->msg_name;
   if ($a->sa_family == 2) {
     $in = (struct sockaddr_in *)$a;
-    printf("C %d s 4 %s %d\n", curtask->tgid, ntop(2, $in->sin_addr.s_addr), bswap($in->sin_port));
+    $s = @seq[cpu] + 1; @seq[cpu] = $s;
+    printf("C %llu %llu %llu %d s 4 %s %d\n", nsecs(boot), cpu, $s, curtask->tgid, ntop(2, $in->sin_addr.s_addr), bswap($in->sin_port));
   } else if ($a->sa_family == 10) {
     $in6 = (struct sockaddr_in6 *)$a;
-    printf("C %d s 6 %s %d\n", curtask->tgid, ntop(10, $in6->sin6_addr.in6_u.u6_addr8), bswap($in6->sin6_port));
+    $s = @seq[cpu] + 1; @seq[cpu] = $s;
+    printf("C %llu %llu %llu %d s 6 %s %d\n", nsecs(boot), cpu, $s, curtask->tgid, ntop(10, $in6->sin6_addr.in6_u.u6_addr8), bswap($in6->sin6_port));
   }
 }
 
@@ -120,11 +141,13 @@ tracepoint:syscalls:sys_enter_openat /curtask->thread_pid->level > @base && strn
 
 tracepoint:syscalls:sys_exit_openat /@openat[tid]/ {
   if (args.ret == -1 || args.ret == -13) {
-    printf("P %d %d %s\n", curtask->tgid, -args.ret, str(uptr(@openat[tid])));
+    $s = @seq[cpu] + 1; @seq[cpu] = $s;
+    printf("P %llu %llu %llu %d %d %s\n", nsecs(boot), cpu, $s, curtask->tgid, -args.ret, str(uptr(@openat[tid])));
   }
   delete(@openat[tid]);
 }
 
 tracepoint:raw_syscalls:sys_exit /curtask->thread_pid->level > @base && strncmp(comm, "runc:", 5) != 0 && args.ret == -1/ {
-  printf("D %d %d %d\n", curtask->tgid, args.id, -args.ret);
+  $s = @seq[cpu] + 1; @seq[cpu] = $s;
+  printf("D %llu %llu %llu %d %d %d\n", nsecs(boot), cpu, $s, curtask->tgid, args.id, -args.ret);
 }

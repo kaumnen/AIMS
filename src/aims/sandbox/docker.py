@@ -68,7 +68,13 @@ class DockerBackend:
         self._toolbox_image, self._toolbox_volume = toolbox
 
     @classmethod
-    async def open(cls, *, audit: AuditMode = "auto", url: str | None = None) -> DockerBackend:
+    async def open(
+        cls, *, audit: AuditMode = "auto", url: str | None = None, ring_pages: int | None = None
+    ) -> DockerBackend:
+        """Connect to Docker and start the kernel tracer unless `audit` is snapshot.
+
+        `ring_pages` sizes the tracer's kernel ring in 4 KiB pages, a power of two.
+        """
         docker = aiodocker.Docker(url=url)
         try:
             info = await docker.system.info()
@@ -82,7 +88,8 @@ class DockerBackend:
             toolbox = await _toolbox(docker)
             tracer = None
             if audit != "snapshot":
-                tracer = Tracer(docker, labels, f"aims-tracer-{uuid.uuid4().hex[:12]}")
+                name = f"aims-tracer-{uuid.uuid4().hex[:12]}"
+                tracer = Tracer(docker, labels, name, ring_pages=ring_pages)
                 try:
                     await tracer.start()
                 except (TracerError, aiodocker.DockerError, TimeoutError) as e:
@@ -268,6 +275,9 @@ class DockerSandbox:
                 log.warning("tracer did not see sandbox %s start; using snapshot audit", pidns)
                 tracer.unregister(route)
                 route = None
+            elif tracer.clock is not None:
+                boot_us, tai_us = tracer.clock
+                holder._info.config["kernel_clock"] = {"boot_us": boot_us, "tai_us": tai_us}
         holder._shell = shell
         holder._route = route
         return holder

@@ -11,6 +11,7 @@ import pytest
 from aims.events import (
     Event,
     FileAccess,
+    KernelPayload,
     LocalEventStore,
     NetConnect,
     ProcExec,
@@ -265,6 +266,23 @@ async def test_kernel_audit_sees_what_ran(backend: DockerBackend, store: LocalEv
     assert all(e.seq < finished.seq for e in mine if e.type != "exec.finished")
     assert (await store.verify(run_id)).ok
 
+    kernel = [p for p in payloads if isinstance(p, KernelPayload)]
+    by_cpu: dict[int, list[KernelPayload]] = {}
+    for p in kernel:
+        by_cpu.setdefault(p.cpu, []).append(p)
+    for stream in by_cpu.values():
+        assert [p.cpu_seq for p in stream] == sorted({p.cpu_seq for p in stream})
+        assert [p.ts_kernel for p in stream] == sorted(p.ts_kernel for p in stream)
+    started_at = {p.pid: p.ts_kernel for p in procs}
+    assert all(started_at[p.ppid] < p.ts_kernel for p in procs if p.ppid in started_at)
+    exited_at = {p.pid: p.ts_kernel for p in payloads if isinstance(p, ProcExit)}
+    assert all(started_at[pid] < ts for pid, ts in exited_at.items() if pid in started_at)
+    clock = (await events(store, run_id, "sandbox.started"))[0].data["config"]
+    assert isinstance(clock, dict)
+    kernel_clock = clock["kernel_clock"]
+    assert isinstance(kernel_clock, dict)
+    assert 0 < int(str(kernel_clock["boot_us"])) < int(str(kernel_clock["tai_us"]))
+
 
 @pytest.mark.tracer
 @pytest.mark.usefixtures("traced")
@@ -286,3 +304,71 @@ async def test_long_commands_keep_their_exec(
     assert root.argv_bytes > 5000
     assert sum(len(a) + 1 for a in root.argv) < root.argv_bytes
     assert any(p.argv == ["ls", "/work"] for p in procs)
+
+
+FLOOD = (
+    "mkdir -p /work/f && cd /work/f && i=0; while [ $i -lt 1500 ]; do : > f$i; i=$((i+1)); done; "
+    "cd /work && rm -rf /work/f"
+)
+EVERY_CPU = "for c in $(seq 0 $(($(nproc) - 1))); do taskset -c $c true; done"
+
+
+async def flood(backend: DockerBackend, store: LocalEventStore, count: int) -> None:
+    boxes = [(await sandbox(backend, store, f"a{i}"))[1] for i in range(count)]
+    try:
+        await asyncio.gather(*(sb.exec(FLOOD, timeout_s=120) for sb in boxes))
+        await asyncio.sleep(1.5)
+        await asyncio.gather(*(sb.exec(EVERY_CPU, timeout_s=60) for sb in boxes))
+        await asyncio.sleep(1.5)
+    finally:
+        for sb in boxes:
+            await sb.close()
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_parallel_floods_lose_nothing(backend: DockerBackend, store: LocalEventStore) -> None:
+    tracer = backend.tracer
+    assert tracer is not None
+    before = (tracer.kernel_lost, tracer.located)
+    await flood(backend, store, 3)
+    tracer.settle()
+
+    assert (tracer.kernel_lost, tracer.located) == before
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_sequence_locates_every_lost_record(store: LocalEventStore) -> None:
+    async with await DockerBackend.open(audit="kernel", ring_pages=8) as small:
+        tracer = small.tracer
+        assert tracer is not None
+        await flood(small, store, 3)
+        tracer.settle()
+
+    assert tracer.kernel_lost > 0
+    assert tracer.located == tracer.kernel_lost
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_odd_file_names_keep_their_bytes(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    command = (
+        "python3 -c \"import os\np = b'/work/a b\\xff'\nopen(p, 'w').close()\n"
+        "os.rename(p, b'/work/c\\nd')\nos.unlink(b'/work/c\\nd')\""
+    )
+    run_id, sb = await sandbox(backend, store)
+    try:
+        await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+
+    files = [e.payload() for e in await events(store, run_id, "file.access")]
+    seen = {(p.op, p.path, p.target) for p in files if isinstance(p, FileAccess)}
+    assert {
+        ("write", "/work/a b\\xff", None),
+        ("rename", "/work/a b\\xff", "/work/c\nd"),
+        ("delete", "/work/c\nd", None),
+    } <= seen

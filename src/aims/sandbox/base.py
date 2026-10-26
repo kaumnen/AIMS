@@ -101,14 +101,29 @@ class SandboxInfo:
 
 
 @dataclass(frozen=True, slots=True)
-class Fork:
-    parent: int
+class Stamp:
+    """Where a record sits in the kernel stream: boot clock in µs, cpu, and that cpu's sequence."""
+
+    ts: int
+    cpu: int
+    seq: int
+
+
+@dataclass(frozen=True, slots=True)
+class Kernel:
+    """A kernel record about process `pid`, routed to the sandbox that owns it."""
+
+    pid: int
+    at: Stamp = field(kw_only=True)
+
+
+@dataclass(frozen=True, slots=True)
+class Fork(Kernel):
     child: int
 
 
 @dataclass(frozen=True, slots=True)
-class Exec:
-    pid: int
+class Exec(Kernel):
     ppid: int
     ns_pid: int
     uid: int
@@ -119,20 +134,18 @@ class Exec:
 
 
 @dataclass(frozen=True, slots=True)
-class Exit:
-    pid: int
+class Exit(Kernel):
     exit_code: int | None
     signal: int | None
 
 
 @dataclass(frozen=True, slots=True)
-class Oom:
-    pid: int
+class Oom(Kernel):
+    pass
 
 
 @dataclass(frozen=True, slots=True)
-class File:
-    pid: int
+class File(Kernel):
     op: FileOp
     path: str
     target: str | None = None
@@ -141,8 +154,7 @@ class File:
 
 
 @dataclass(frozen=True, slots=True)
-class Net:
-    pid: int
+class Net(Kernel):
     kind: Literal["connect", "sendto"]
     family: Literal["inet", "inet6", "unix"]
     address: str
@@ -150,19 +162,26 @@ class Net:
 
 
 @dataclass(frozen=True, slots=True)
-class Denied:
-    pid: int
+class Denied(Kernel):
     syscall: str
     errno: int
 
 
 @dataclass(frozen=True, slots=True)
 class Lost:
+    """Records that never reached the audit. `count` is None when the number is unknown.
+
+    `ts_from` and `ts_to` bound the loss on the kernel boot clock when it is known.
+    """
+
     count: int | None
     reason: str
+    cpus: tuple[int, ...] = ()
+    ts_from: int | None = None
+    ts_to: int | None = None
 
 
-Record = Fork | Exec | Exit | Oom | File | Net | Denied | Lost
+Record = Kernel | Lost
 
 
 class Sandbox(Protocol):

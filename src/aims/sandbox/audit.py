@@ -17,6 +17,7 @@ from aims.events import (
     ExecFinished,
     ExecStarted,
     FileAccess,
+    KernelPayload,
     NetConnect,
     Payload,
     Proc,
@@ -37,6 +38,7 @@ from aims.sandbox.base import (
     Exit,
     File,
     Fork,
+    Kernel,
     Lost,
     Net,
     Oom,
@@ -49,9 +51,7 @@ from aims.sandbox.base import (
 
 log = logging.getLogger("aims.sandbox")
 
-PROCS = 1000
-FILES = 2000
-OTHER = 500
+CAPS = {"procs": 1000, "files": 2000, "other": 500}
 FLUSH_S = 0.1
 FLUSH_N = 500
 BARRIER_S = 2.0
@@ -74,11 +74,27 @@ class ExecResult:
 
 @dataclass(slots=True)
 class _Scope:
-    procs: int = 0
-    files: int = 0
-    other: int = 0
+    """Records of one exec, counted per cap kind."""
+
+    counts: dict[str, int] = field(default_factory=dict)
     dropped: int = 0
     seen: set[tuple[str, str, str | None]] = field(default_factory=set)
+
+
+@dataclass(slots=True)
+class _Loss:
+    count: int = 0
+    cpus: set[int] = field(default_factory=set)
+    ts_from: int | None = None
+    ts_to: int | None = None
+
+    def add(self, lost: Lost) -> None:
+        self.count += lost.count or 0
+        self.cpus.update(lost.cpus)
+        if lost.ts_from is not None:
+            self.ts_from = lost.ts_from if self.ts_from is None else min(self.ts_from, lost.ts_from)
+        if lost.ts_to is not None:
+            self.ts_to = lost.ts_to if self.ts_to is None else max(self.ts_to, lost.ts_to)
 
 
 @dataclass(slots=True)
@@ -118,8 +134,8 @@ class AuditedSandbox:
         self._shown: set[int] = set()
         self._oom: set[int] = set()
         self._scopes: OrderedDict[str | None, _Scope] = OrderedDict()
-        self._lost = 0
-        self._lost_reasons: list[str] = []
+        self._losses: dict[str, _Loss] = {}
+        self._queue: asyncio.Queue[Record] | None = None
         self._active: _Active | None = None
         self._consumer: asyncio.Task[None] | None = None
         self._stopped = False
@@ -153,9 +169,9 @@ class AuditedSandbox:
         except BaseException:
             await sandbox.close()
             raise
-        queue = sandbox.records()
-        if queue is not None:
-            audited._consumer = asyncio.create_task(audited._consume(queue))
+        audited._queue = sandbox.records()
+        if audited._queue is not None:
+            audited._consumer = asyncio.create_task(audited._consume(audited._queue))
         return audited
 
     async def exec(
@@ -229,6 +245,7 @@ class AuditedSandbox:
                 with contextlib.suppress(asyncio.CancelledError):
                     await self._consumer
                 self._consumer = None
+            self._drain()
             if not self._stopped:
                 self._stopped = True
                 sandbox_id = self.sandbox.info.sandbox_id
@@ -277,7 +294,9 @@ class AuditedSandbox:
             truncated=capture.truncated,
             leftover=leftover,
             leftover_killed=killed,
-            procs=(scope.procs if scope else 0) if active.audit == "kernel" else None,
+            procs=(scope.counts.get("procs", 0) if scope else 0)
+            if active.audit == "kernel"
+            else None,
             dropped=scope.dropped if scope else 0,
             error=outcome.error,
         )
@@ -338,116 +357,145 @@ class AuditedSandbox:
 
     def _take(self) -> list[Draft]:
         drafts, self._buffer = self._buffer, []
-        if self._lost:
-            reasons = "; ".join(dict.fromkeys(self._lost_reasons))
-            lost = AuditLost(count=self._lost, reason=reasons)
+        for reason, loss in self._losses.items():
+            lost = AuditLost(
+                count=loss.count,
+                reason=reason,
+                cpus=sorted(loss.cpus),
+                ts_from=loss.ts_from,
+                ts_to=loss.ts_to,
+            )
             drafts.append(Draft(lost, agent_id=self._agent_id))
-            self._lost, self._lost_reasons = 0, []
+        self._losses = {}
         return drafts
 
     async def _consume(self, queue: asyncio.Queue[Record]) -> None:
         while True:
             try:
-                async with asyncio.timeout(FLUSH_S if self._buffer or self._lost else None):
+                async with asyncio.timeout(FLUSH_S if self._buffer or self._losses else None):
                     record = await queue.get()
             except TimeoutError:
                 await self._flush()
                 continue
-            try:
-                self._handle(record)
-            except Exception:
-                log.exception("could not record %r", record)
+            self._handle(record)
             if len(self._buffer) >= FLUSH_N:
                 await self._flush()
 
+    def _drain(self) -> None:
+        """Record what is still queued when the sandbox closes."""
+        while self._queue is not None and not self._queue.empty():
+            self._handle(self._queue.get_nowait())
+
     def _handle(self, record: Record) -> None:
-        match record:
-            case Fork(parent, child):
-                owner = self._owner.get(parent, _UNKNOWN)
-                if owner != _UNKNOWN:
-                    self._owner[child] = owner
-            case Exec():
-                owner = self._attribute(record)
-                self._owner[record.pid] = owner
-                if owner != INTERNAL and self._allow(owner, "procs"):
-                    self._shown.add(record.pid)
-                    self._emit_payload(
-                        ProcExec(
-                            exec_id=owner,
-                            pid=record.pid,
-                            ppid=record.ppid,
-                            ns_pid=record.ns_pid,
-                            uid=record.uid,
-                            path=record.path,
-                            argv=list(record.argv),
-                            argv_bytes=record.argv_bytes,
-                            root=record.root,
-                        )
-                    )
-            case Exit(pid, code, signal):
-                owner = self._owner.pop(pid, None)
-                active = self._active
-                if active is not None and pid == active.root:
-                    active.exited.set()
-                if pid in self._shown:
-                    self._shown.discard(pid)
-                    self._emit_payload(
-                        ProcExit(
-                            exec_id=owner,
-                            pid=pid,
-                            exit_code=code,
-                            signal=signal,
-                            oom=pid in self._oom,
-                        )
-                    )
-                self._oom.discard(pid)
-            case Oom(pid):
-                self._oom.add(pid)
-            case File(pid, op, path, target, errno, partial):
-                owner = self._owner.get(pid)
-                if owner == INTERNAL:
-                    return
-                scope = self._scope(owner)
-                key = (op, path, target)
-                if key in scope.seen or not self._allow(owner, "files"):
-                    return
-                scope.seen.add(key)
-                self._emit_payload(
-                    FileAccess(
-                        exec_id=owner,
-                        pid=pid,
-                        op=op,
-                        path=path,
-                        target=target,
-                        errno=errno,
-                        partial=partial,
-                    )
+        try:
+            match record:
+                case Fork():
+                    self._on_fork(record)
+                case Exec():
+                    self._on_exec(record)
+                case Exit():
+                    self._on_exit(record)
+                case Oom(pid):
+                    self._oom.add(pid)
+                case File():
+                    self._on_file(record)
+                case Net():
+                    self._on_net(record)
+                case Denied():
+                    self._on_denied(record)
+                case Lost():
+                    self._on_lost(record)
+                case _:
+                    log.warning("no audit handler for %r", record)
+        except Exception:
+            log.exception("could not record %r", record)
+
+    def _on_fork(self, record: Fork) -> None:
+        owner = self._owner.get(record.pid, _UNKNOWN)
+        if owner != _UNKNOWN:
+            self._owner[record.child] = owner
+
+    def _on_exec(self, record: Exec) -> None:
+        owner = self._attribute(record)
+        self._owner[record.pid] = owner
+        payload = self._kernel(
+            ProcExec,
+            record,
+            owner,
+            ppid=record.ppid,
+            ns_pid=record.ns_pid,
+            uid=record.uid,
+            path=record.path,
+            argv=list(record.argv),
+            argv_bytes=record.argv_bytes,
+            root=record.root,
+        )
+        if self._admit(owner, "procs", payload):
+            self._shown.add(record.pid)
+
+    def _on_exit(self, record: Exit) -> None:
+        owner = self._owner.pop(record.pid, None)
+        active = self._active
+        if active is not None and record.pid == active.root:
+            active.exited.set()
+        if record.pid in self._shown:
+            self._shown.discard(record.pid)
+            self._emit_payload(
+                self._kernel(
+                    ProcExit,
+                    record,
+                    owner,
+                    exit_code=record.exit_code,
+                    signal=record.signal,
+                    oom=record.pid in self._oom,
                 )
-            case Net(pid, kind, family, address, port):
-                owner = self._owner.get(pid)
-                if owner != INTERNAL and self._allow(owner, "other"):
-                    self._emit_payload(
-                        NetConnect(
-                            exec_id=owner,
-                            pid=pid,
-                            kind=kind,
-                            family=family,
-                            address=address,
-                            port=port,
-                        )
-                    )
-            case Denied(pid, syscall, errno):
-                owner = self._owner.get(pid)
-                if owner != INTERNAL and self._allow(owner, "other"):
-                    self._emit_payload(
-                        SysDenied(exec_id=owner, pid=pid, syscall=syscall, errno=errno)
-                    )
-            case Lost(count, reason):
-                if count is None:
-                    self._emit_payload(AuditLost(count=None, reason=reason))
-                else:
-                    self._lost += count
-                    self._lost_reasons.append(reason)
+            )
+        self._oom.discard(record.pid)
+
+    def _on_file(self, record: File) -> None:
+        owner = self._owner.get(record.pid)
+        if owner == INTERNAL:
+            return
+        key = (record.op, record.path, record.target)
+        scope = self._scope(owner)
+        if key in scope.seen:
+            return
+        payload = self._kernel(
+            FileAccess,
+            record,
+            owner,
+            op=record.op,
+            path=record.path,
+            target=record.target,
+            errno=record.errno,
+            partial=record.partial,
+        )
+        if self._admit(owner, "files", payload):
+            scope.seen.add(key)
+
+    def _on_net(self, record: Net) -> None:
+        owner = self._owner.get(record.pid)
+        payload = self._kernel(
+            NetConnect,
+            record,
+            owner,
+            kind=record.kind,
+            family=record.family,
+            address=record.address,
+            port=record.port,
+        )
+        self._admit(owner, "other", payload)
+
+    def _on_denied(self, record: Denied) -> None:
+        owner = self._owner.get(record.pid)
+        payload = self._kernel(SysDenied, record, owner, syscall=record.syscall, errno=record.errno)
+        self._admit(owner, "other", payload)
+
+    def _on_lost(self, record: Lost) -> None:
+        if record.count is None:
+            self._emit_payload(AuditLost(count=None, reason=record.reason))
+        else:
+            self._losses.setdefault(record.reason, _Loss()).add(record)
 
     def _attribute(self, record: Exec) -> str | None:
         if not record.root:
@@ -471,15 +519,37 @@ class AuditedSandbox:
                 self._scopes.popitem(last=False)
         return scope
 
-    def _allow(self, owner: str | None, kind: str) -> bool:
-        scope = self._scope(owner)
-        limit = {"procs": PROCS, "files": FILES, "other": OTHER}[kind]
-        count = getattr(scope, kind)
-        if count >= limit:
-            scope.dropped += 1
+    @staticmethod
+    def _kernel[P: KernelPayload](
+        cls: type[P], record: Kernel, owner: str | None, **fields: object
+    ) -> P:
+        at = record.at
+        return cls.model_validate(
+            {
+                "exec_id": owner,
+                "pid": record.pid,
+                "ts_kernel": at.ts,
+                "cpu": at.cpu,
+                "cpu_seq": at.seq,
+                **fields,
+            }
+        )
+
+    def _admit(self, owner: str | None, kind: str, payload: Payload) -> bool:
+        """Record `payload` unless its exec is internal or has used up its cap of `kind`."""
+        if owner == INTERNAL:
             return False
-        setattr(scope, kind, count + 1)
+        scope = self._scope(owner)
+        count = scope.counts.get(kind, 0)
+        if count >= CAPS[kind]:
+            self._over_cap(scope, kind, payload)
+            return False
+        scope.counts[kind] = count + 1
+        self._emit_payload(payload)
         return True
+
+    def _over_cap(self, scope: _Scope, kind: str, payload: Payload) -> None:
+        scope.dropped += 1
 
     def _emit_payload(self, payload: Payload) -> None:
         self._buffer.append(Draft(payload, agent_id=self._agent_id))
