@@ -209,7 +209,7 @@ class DockerBackend:
                 [(volume, target) for volume, target, _ in volumes],
                 labels,
             )
-        except (aiodocker.DockerError, OSError) as e:
+        except Exception as e:
             log.error("file reader for %s did not start: %s", name, e)
             return f"the file reader did not start: {e}"
 
