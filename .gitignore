@@ -1,0 +1,16 @@
+.DS_Store
+.env
+.env.*
+
+__pycache__/
+*.py[cod]
+.venv/
+/dist/
+/build/
+.ruff_cache/
+.pytest_cache/
+
+node_modules/
+src/aims/ui/dist/
+
+/runs/
