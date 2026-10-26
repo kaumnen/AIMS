@@ -1,0 +1,6 @@
+[fmt]
+printWidth = 100
+ignorePatterns = ["**/*.gen.ts"]
+sortImports = true
+sortTailwindcss = true
+sortPackageJson = true
