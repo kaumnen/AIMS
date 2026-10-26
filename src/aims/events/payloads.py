@@ -1,11 +1,14 @@
 from typing import Literal
 
-from pydantic import Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from aims.events.schema import BlobRef, Content, Payload
 
 Oversight = Literal["observe", "autonomous", "human"]
 RunStatus = Literal["completed", "failed", "killed", "cancelled"]
+AuditLevel = Literal["kernel", "snapshot"]
+ExecEnd = Literal["exited", "timeout", "cancelled", "failed"]
+FileOp = Literal["read", "write", "delete", "rename", "denied"]
 Category = Literal[
     "covert_communication",
     "scorer_tampering",
@@ -66,18 +69,145 @@ class ToolResult(Payload):
     error: bool = False
 
 
+class Proc(BaseModel):
+    """A process as the Docker host lists it."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    pid: int
+    ppid: int
+    uid: int
+    command: str
+
+
+class SandboxStarted(Payload):
+    type = "sandbox.started"
+
+    sandbox_id: str
+    backend: str
+    image: str
+    image_id: str
+    audit: AuditLevel
+    config: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class SandboxStopped(Payload):
+    type = "sandbox.stopped"
+
+    sandbox_id: str
+    reason: Literal["closed", "killed", "exec_failed"]
+    detail: str | None = None
+
+
+class ExecStarted(Payload):
+    """Written before the command reaches the sandbox. The argv sent is `wrapper + [command]`."""
+
+    type = "exec.started"
+
+    exec_id: str
+    call_id: str | None
+    command: Content
+    wrapper: list[str]
+    user: str
+    cwd: str
+    timeout_ms: int
+    audit: AuditLevel
+
+
 class ExecFinished(Payload):
-    """What the runner executed in the sandbox, recorded from the host side."""
+    """How an exec ended, measured from the host side. `end` never trusts the exit code."""
 
     type = "exec.finished"
 
+    exec_id: str
     call_id: str | None
-    command: str
+    end: ExecEnd
     exit_code: int | None
+    pid: int | None
     duration_ms: int
-    timed_out: bool
     stdout: Content
     stderr: Content
+    stdout_bytes: int
+    stderr_bytes: int
+    truncated: bool
+    leftover: list[Proc] = Field(default_factory=list)
+    leftover_killed: bool = False
+    procs: int | None = None
+    dropped: int = 0
+    error: str | None = None
+
+
+class ProcExec(Payload):
+    """A program the kernel started in the sandbox. `root` marks one the runtime spawned."""
+
+    type = "proc.exec"
+
+    exec_id: str | None
+    pid: int
+    ppid: int
+    ns_pid: int
+    uid: int
+    path: str
+    argv: list[str]
+    argv_bytes: int
+    root: bool
+
+
+class ProcExit(Payload):
+    type = "proc.exit"
+
+    exec_id: str | None
+    pid: int
+    exit_code: int | None
+    signal: int | None
+    oom: bool = False
+
+
+class FileAccess(Payload):
+    """A file opened, deleted, renamed, or refused. `partial` paths lack their leading part."""
+
+    type = "file.access"
+
+    exec_id: str | None
+    pid: int
+    op: FileOp
+    path: str
+    target: str | None = None
+    errno: int | None = None
+    partial: bool = False
+
+
+class NetConnect(Payload):
+    """An attempt to reach an address. The sandbox has no network, so these fail."""
+
+    type = "net.connect"
+
+    exec_id: str | None
+    pid: int
+    kind: Literal["connect", "sendto"]
+    family: Literal["inet", "inet6", "unix"]
+    address: str
+    port: int | None
+
+
+class SysDenied(Payload):
+    """A privileged syscall the kernel refused."""
+
+    type = "sys.denied"
+
+    exec_id: str | None
+    pid: int
+    syscall: str
+    errno: int
+
+
+class AuditLost(Payload):
+    """The kernel audit missed events. `count` is None when the number is unknown."""
+
+    type = "audit.lost"
+
+    count: int | None
+    reason: str
 
 
 class MonitorFlag(Payload):

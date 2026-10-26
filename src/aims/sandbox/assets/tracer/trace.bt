@@ -1,0 +1,130 @@
+config = { max_strlen = 512; perf_rb_pages = 1024 }
+
+BEGIN {
+  @base = curtask->thread_pid->level;
+  printf("R %d\n", @base);
+}
+
+tracepoint:task:task_newtask /curtask->thread_pid->level > @base && !(args.clone_flags & 0x10000)/ {
+  printf("F %d %d\n", curtask->tgid, args.pid);
+}
+
+fentry:vmlinux:security_bprm_check /curtask->thread_pid->level > @base/ {
+  printf("B %d %s\n", curtask->tgid, str(args.bprm->filename));
+}
+
+tracepoint:sched:sched_process_exec /curtask->thread_pid->level > @base/ {
+  $tp = curtask->thread_pid;
+  $ns = $tp->numbers[1].nr;
+  $inum = $tp->numbers[1].ns->ns.inum;
+  if ($tp->level == 2) { $ns = $tp->numbers[2].nr; $inum = $tp->numbers[2].ns->ns.inum; }
+  if ($tp->level == 3) { $ns = $tp->numbers[3].nr; $inum = $tp->numbers[3].ns->ns.inum; }
+  $len = curtask->mm->arg_end - curtask->mm->arg_start;
+  printf("E %d %d %d %d %u %d %d %rx\n", curtask->tgid, curtask->real_parent->tgid,
+    curtask->real_parent->thread_pid->level <= @base, curtask->cred->uid.val, $inum, $ns, $len,
+    buf(uptr(curtask->mm->arg_start), $len));
+}
+
+tracepoint:sched:sched_process_exit /curtask->thread_pid->level > @base && curtask->pid == curtask->tgid/ {
+  printf("X %d %d %d\n", curtask->tgid, (curtask->exit_code >> 8) & 0xff, curtask->exit_code & 0x7f);
+}
+
+tracepoint:oom:mark_victim {
+  printf("O %d\n", args.pid);
+}
+
+fentry:vmlinux:security_file_open /curtask->thread_pid->level > @base && strncmp(comm, "runc:", 5) != 0 && (args.file->f_inode->i_mode & 0xF000) == 0x8000/ {
+  $p = path(args.file->f_path);
+  if (args.file->f_mode & 2) {
+    printf("W %d %s\n", curtask->tgid, $p);
+  } else if (strncmp($p, "/usr/", 5) != 0 && strncmp($p, "/lib", 4) != 0 && strncmp($p, "/proc/", 6) != 0
+      && strncmp($p, "/sys/", 5) != 0 && strncmp($p, "/dev/", 5) != 0 && strncmp($p, "/etc/ld.so.cache", 16) != 0) {
+    printf("A %d %s\n", curtask->tgid, $p);
+  }
+}
+
+fentry:vmlinux:security_inode_unlink, fentry:vmlinux:security_inode_rmdir /curtask->thread_pid->level > @base && strncmp(comm, "runc:", 5) != 0/ {
+  $d = args.dentry;
+  printf("U %d %u %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx\n", curtask->tgid, $d->d_sb->s_dev,
+    buf($d->d_name.name, $d->d_name.len),
+    buf($d->d_parent->d_name.name, $d->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len));
+}
+
+fentry:vmlinux:security_inode_rename /curtask->thread_pid->level > @base && strncmp(comm, "runc:", 5) != 0/ {
+  $o = args.old_dentry;
+  $n = args.new_dentry;
+  printf("N %d %u %u %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx %rx\n", curtask->tgid, $o->d_sb->s_dev, $n->d_sb->s_dev,
+    buf($o->d_name.name, $o->d_name.len),
+    buf($o->d_parent->d_name.name, $o->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_name.name, $n->d_name.len),
+    buf($n->d_parent->d_name.name, $n->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len));
+}
+
+fentry:vmlinux:security_socket_connect /curtask->thread_pid->level > @base && strncmp(comm, "runc:", 5) != 0/ {
+  $a = args.address;
+  if ($a->sa_family == 2) {
+    $in = (struct sockaddr_in *)$a;
+    printf("C %d c 4 %s %d\n", curtask->tgid, ntop(2, $in->sin_addr.s_addr), bswap($in->sin_port));
+  } else if ($a->sa_family == 10) {
+    $in6 = (struct sockaddr_in6 *)$a;
+    printf("C %d c 6 %s %d\n", curtask->tgid, ntop(10, $in6->sin6_addr.in6_u.u6_addr8), bswap($in6->sin6_port));
+  } else if ($a->sa_family == 1) {
+    printf("C %d c 1 %rx 0\n", curtask->tgid, buf(((struct sockaddr_un *)$a)->sun_path, 108));
+  }
+}
+
+fentry:vmlinux:security_socket_sendmsg /curtask->thread_pid->level > @base && strncmp(comm, "runc:", 5) != 0 && args.msg->msg_name != 0/ {
+  $a = (struct sockaddr *)args.msg->msg_name;
+  if ($a->sa_family == 2) {
+    $in = (struct sockaddr_in *)$a;
+    printf("C %d s 4 %s %d\n", curtask->tgid, ntop(2, $in->sin_addr.s_addr), bswap($in->sin_port));
+  } else if ($a->sa_family == 10) {
+    $in6 = (struct sockaddr_in6 *)$a;
+    printf("C %d s 6 %s %d\n", curtask->tgid, ntop(10, $in6->sin6_addr.in6_u.u6_addr8), bswap($in6->sin6_port));
+  }
+}
+
+tracepoint:syscalls:sys_enter_openat /curtask->thread_pid->level > @base && strncmp(comm, "runc:", 5) != 0/ {
+  @openat[tid] = args.filename;
+}
+
+tracepoint:syscalls:sys_exit_openat /@openat[tid]/ {
+  if (args.ret == -1 || args.ret == -13) {
+    printf("P %d %d %s\n", curtask->tgid, -args.ret, str(uptr(@openat[tid])));
+  }
+  delete(@openat[tid]);
+}
+
+tracepoint:raw_syscalls:sys_exit /curtask->thread_pid->level > @base && strncmp(comm, "runc:", 5) != 0 && args.ret == -1/ {
+  printf("D %d %d %d\n", curtask->tgid, args.id, -args.ret);
+}

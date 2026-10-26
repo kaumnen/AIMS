@@ -8,6 +8,7 @@ license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "kaumnen" }]
 requires-python = ">=3.15"
 dependencies = [
+    "aiodocker>=0.27.0",
     "aiosqlite>=0.22.1",
     "pydantic>=2.14.1",
     "rfc8785>=0.1.4",
@@ -47,3 +48,7 @@ ban-relative-imports = "all"
 [tool.pytest]
 testpaths = ["tests"]
 strict = true
+markers = [
+    "docker: needs a Docker daemon",
+    "tracer: needs the privileged kernel tracer",
+]
