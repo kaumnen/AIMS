@@ -77,11 +77,29 @@ def test_summary_takes_last_counters_and_peak_gauges() -> None:
 
 def test_window_lengths_must_agree() -> None:
     columns: dict[str, Any] = {name: [0] for name in ResourceSample.COLUMNS}
-    ResourceSample(sandbox_id="sb", hz=10, ts=[1], **columns)
+    ResourceSample(sandbox_id="sb", hz=10, ts=[1, 2], **columns)
     with pytest.raises(ValidationError):
-        ResourceSample(sandbox_id="sb", hz=10, ts=[1, 2], **columns)
+        ResourceSample(sandbox_id="sb", hz=10, ts=[1], **{**columns, "pids": [1, 0]})
     with pytest.raises(ValidationError):
-        ResourceSample(sandbox_id="sb", hz=10, ts=[], **{n: [] for n in ResourceSample.COLUMNS})
+        ResourceSample(sandbox_id="sb", hz=10, ts=[1], **{**columns, "pids": []})
+    with pytest.raises(ValidationError):
+        ResourceSample(sandbox_id="sb", hz=10, ts=[], **columns)
+
+
+def test_columns_that_hold_still_are_one_value() -> None:
+    windows = Windows("sb", 10)
+    for ts, cpu in ((0, 5), (100_000, 9), (200_000, 9), (300_000, 9)):
+        windows.add(reading(ts, cpu))
+    window = windows.flush()
+    assert window is not None
+    assert (window.cpu_usec, window.pids, window.ts) == (
+        [5, 4],
+        [3],
+        [0, 100_000, 100_000, 100_000],
+    )
+    assert window.values("cpu_usec") == [5, 9, 9, 9]
+    assert window.values("pids") == [3, 3, 3, 3]
+    assert window.summary()["cpu_usec"] == 9
 
 
 def test_windows_drop_readings_that_go_back_in_time() -> None:
@@ -238,3 +256,71 @@ async def test_sandbox_records_hardware_counters(
     assert "software" in devices
     assert isinstance(events, dict)
     assert set(events) == {"cpu-cycles", "instructions", "cache-misses"}
+
+
+@pytest.mark.docker
+@pytest.mark.anyio
+async def test_sampler_death_is_recorded(store: LocalEventStore) -> None:
+    async with await DockerBackend.open(audit="snapshot") as snapshot:
+        sampler = snapshot.sampler
+        assert sampler is not None
+        assert sampler._container is not None
+        run_id = await store.create_run(RunStarted(scenario="t", oversight="observe"))
+        sb = await AuditedSandbox.start(
+            snapshot, SandboxSpec(image=IMAGE), store, run_id=run_id, agent_id="a1"
+        )
+        try:
+            assert sb.sandbox.audit == "snapshot"
+            await asyncio.sleep(1.5)
+            await sampler._container.kill()
+            await asyncio.sleep(0.5)
+            later = await AuditedSandbox.start(
+                snapshot, SandboxSpec(image=IMAGE), store, run_id=run_id, agent_id="a2"
+            )
+            await later.close()
+        finally:
+            await sb.close()
+            await snapshot.remove_run(run_id)
+
+    evs = await store.events(run_id, limit=1000)
+    mine = [e for e in evs if e.agent_id == "a1"]
+    assert any(e.type == "resource.sample" for e in mine)
+    lost = [e.data["reason"] for e in mine if e.type == "audit.lost"]
+    assert len(lost) == 1
+    assert str(lost[0]).startswith("resource sampler stopped")
+    started = [e for e in evs if e.type == "sandbox.started" and e.agent_id == "a2"]
+    config = started[0].data["config"]
+    assert isinstance(config, dict)
+    assert config["resources"] is None
+
+
+@pytest.mark.docker
+@pytest.mark.tracer
+@pytest.mark.anyio
+async def test_samples_share_the_kernel_clock(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    if backend.tracer is None:
+        if os.environ.get("AIMS_REQUIRE_TRACER"):
+            pytest.fail("the kernel tracer did not start")
+        pytest.skip("the kernel tracer is not available here")
+    run_id = await store.create_run(RunStarted(scenario="t", oversight="observe"))
+    spec = SandboxSpec(image=IMAGE, sample_hz=200)
+    sb = await AuditedSandbox.start(backend, spec, store, run_id=run_id, agent_id="a1")
+    try:
+        await asyncio.sleep(1)
+        await sb.exec("sleep 0.5; timeout 1 sh -c 'while :; do :; done'", timeout_s=20)
+    finally:
+        await sb.close()
+        await backend.remove_run(run_id)
+
+    procs = await store.events(run_id, types=["proc.exec"])
+    loop = next(e.data for e in procs if e.data["argv"] == ["sh", "-c", "while :; do :; done"])
+    started = int(str(loop["ts_kernel"]))
+    points: list[tuple[int, int]] = []
+    for e in await store.events(run_id, limit=1000, types=["resource.sample"]):
+        w = ResourceSample.model_validate(e.data)
+        points += zip(w.values("ts") or [], w.values("cpu_usec") or [], strict=True)
+    flags = [(t1, c2 - c1 > 0.5 * (t2 - t1)) for (t1, c1), (t2, c2) in itertools.pairwise(points)]
+    hot = next(t for i, (t, _) in enumerate(flags) if all(f for _, f in flags[i : i + 10]))
+    assert started - 20_000 <= hot <= started + 50_000, hot - started

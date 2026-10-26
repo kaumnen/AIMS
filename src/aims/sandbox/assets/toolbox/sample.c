@@ -5,8 +5,9 @@
  * sample: the boot clock in us, cpu usage, user and system us, throttled
  * periods and us, io read and write bytes and ops, the some and full stall
  * totals of cpu, io and memory pressure in us, memory bytes and pids. A file
- * that cannot be opened reads as -1. A tick that falls behind is skipped, not
- * bunched. Exits 0 once the cgroup is gone or the reader has left.
+ * that cannot be opened reads as -1. Lines go out in batches every 100 ms. A
+ * tick that falls behind is skipped, not bunched. Exits 0 once the cgroup is
+ * gone or the reader has left.
  */
 #define _GNU_SOURCE
 #include <errno.h>
@@ -25,6 +26,7 @@ static const char *names[FILES] = {
 };
 
 enum { COLUMNS = 17 };
+static const long long BATCH_NS = 100000000LL;
 static int fds[FILES];
 static char buf[16384];
 
@@ -106,17 +108,28 @@ int main(int argc, char **argv) {
     }
     struct timespec next, now, boot;
     clock_gettime(CLOCK_MONOTONIC, &next);
-    char line[512];
+    long long flushed = ns(next);
+    char out[8192];
+    int used = 0;
     long long v[COLUMNS];
     for (;;) {
         clock_gettime(CLOCK_BOOTTIME, &boot);
-        if (sample(v) < 0) return 0;
-        int n = snprintf(line, sizeof line, "%lld", ns(boot) / 1000);
-        for (int i = 0; i < COLUMNS; i++) n += snprintf(line + n, sizeof line - n, " %lld", v[i]);
-        line[n++] = '\n';
-        if (write(1, line, n) != n) return 0;
-        long long t = ns(next) + period;
+        int gone = sample(v) < 0;
+        if (!gone) {
+            used += snprintf(out + used, sizeof out - used, "%lld", ns(boot) / 1000);
+            for (int i = 0; i < COLUMNS; i++) {
+                used += snprintf(out + used, sizeof out - used, " %lld", v[i]);
+            }
+            out[used++] = '\n';
+        }
         clock_gettime(CLOCK_MONOTONIC, &now);
+        if (gone || used > (int)sizeof out - 512 || ns(now) - flushed >= BATCH_NS) {
+            if (used && write(1, out, used) != used) return 0;
+            used = 0;
+            flushed = ns(now);
+        }
+        if (gone) return 0;
+        long long t = ns(next) + period;
         while (t <= ns(now)) t += period;
         next.tv_sec = t / 1000000000LL;
         next.tv_nsec = t % 1000000000LL;

@@ -226,8 +226,9 @@ class ResourceSample(Payload):
     """One second of cgroup readings of a sandbox, at `hz` readings a second.
 
     `ts` is the kernel boot clock in µs, like `ts_kernel`. Each list holds its first value and
-    then the change at every later reading, so a running sum restores the values. -1 marks a
-    reading whose file could not be read, and a column that was never readable is None.
+    then the change at every later reading, so a running sum restores the values. Trailing zero
+    changes are left out, so a column that held still is one value. -1 marks a reading whose
+    file could not be read, and a column that was never readable is None.
     Counters run from the sandbox's start; `memory_bytes` and `pids` are gauges. Stall times are
     the cgroup's PSI totals.
     """
@@ -282,7 +283,7 @@ class ResourceSample(Payload):
             raise ValueError("a window holds at least one reading")
         for name in self.COLUMNS:
             column = getattr(self, name)
-            if column is not None and len(column) != len(self.ts):
+            if column is not None and not 1 <= len(column) <= len(self.ts):
                 raise ValueError(f"{name} has {len(column)} values for {len(self.ts)} readings")
         return self
 
@@ -292,7 +293,10 @@ class ResourceSample(Payload):
     def values(self, name: str) -> list[int] | None:
         """The decoded readings of column `name`, or of `ts`."""
         column = self.ts if name == "ts" else getattr(self, name)
-        return None if column is None else list(itertools.accumulate(column))
+        if column is None:
+            return None
+        values = list(itertools.accumulate(column))
+        return values + [values[-1]] * (len(self.ts) - len(values))
 
     def summary(self) -> dict[str, int | None]:
         """The last reading of each counter and the peak of each gauge, ignoring unread files."""

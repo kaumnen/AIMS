@@ -68,13 +68,16 @@ class Windows:
         return ResourceSample(
             sandbox_id=self.sandbox_id,
             hz=self.hz,
-            ts=_deltas([r.ts for r in readings]),
+            ts=_deltas([r.ts for r in readings], trim=False),
             **columns,
         )
 
 
-def _deltas(values: list[int]) -> list[int]:
-    return [values[0], *(b - a for a, b in itertools.pairwise(values))]
+def _deltas(values: list[int], *, trim: bool = True) -> list[int]:
+    out = [values[0], *(b - a for a, b in itertools.pairwise(values))]
+    while trim and len(out) > 1 and out[-1] == 0:
+        out.pop()
+    return out
 
 
 class Watch:
