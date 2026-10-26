@@ -4,8 +4,8 @@ from aims.events.schema import _registry
 from aims.sandbox.images import ASSETS
 from aims.sandbox.trace import PARSERS
 
-CORE_TAGS = set("RFBEXOWAUNCPD")
-CORE_TYPES = {
+TAGS = set("RFBEXOWAUNCPD") | set("VGT") | set("Z")
+TYPES = {
     "run.started",
     "run.finished",
     "log.truncated",
@@ -17,30 +17,25 @@ CORE_TYPES = {
     "exec.finished",
     "proc.exec",
     "proc.exit",
+    "proc.output",
     "file.access",
+    "file.write",
+    "fs.snapshot",
     "net.connect",
     "sys.denied",
     "audit.lost",
+    "audit.spill",
+    "resource.sample",
     "monitor.flag",
 }
-RESERVED_TAGS = {
-    "exec context and output": set("VGT"),
-    "ipc, ptrace, signals, fileless, setattr, namespaces": set("IKSMHJL"),
-    "file content": set("ZY"),
-    "resources": set("Q"),
-}
+RESERVED_TAGS = set("IKSMHJL")
 RESERVED_TYPES = {
-    "exec context and output": {"proc.output"},
-    "ipc, ptrace, signals, fileless, setattr, namespaces": {
-        "ipc.event",
-        "ptrace.event",
-        "proc.signal",
-        "mem.exec",
-        "file.setattr",
-        "ns.event",
-    },
-    "file content": {"file.write", "fs.snapshot", "audit.spill"},
-    "resources": {"resource.sample"},
+    "ipc.event",
+    "ptrace.event",
+    "proc.signal",
+    "mem.exec",
+    "file.setattr",
+    "ns.event",
 }
 
 SEQ = "$s = @seq[cpu] + 1; @seq[cpu] = $s;"
@@ -57,20 +52,18 @@ def _printfs() -> list[tuple[str, str, str, str]]:
 
 
 def test_reservations_do_not_overlap() -> None:
-    tags = [CORE_TAGS, *RESERVED_TAGS.values()]
-    assert sum(len(t) for t in tags) == len(set().union(*tags))
-    types = [CORE_TYPES, *RESERVED_TYPES.values()]
-    assert sum(len(t) for t in types) == len(set().union(*types))
+    assert not TAGS & RESERVED_TAGS
+    assert not TYPES & RESERVED_TYPES
 
 
-def test_tags_and_types_are_reserved() -> None:
-    assert set(PARSERS) <= CORE_TAGS.union(*RESERVED_TAGS.values())
-    assert set(_registry) <= CORE_TYPES.union(*RESERVED_TYPES.values())
+def test_built_tags_and_types_match() -> None:
+    assert set(PARSERS) == TAGS
+    assert set(_registry) == TYPES
 
 
 def test_every_tracer_line_has_a_parser_and_a_header() -> None:
     printfs = _printfs()
-    assert {tag for tag, *_ in printfs} == set(PARSERS)
+    assert {tag for tag, *_ in printfs} == TAGS
     for tag, fmt, args, before in printfs:
         assert fmt.startswith("%llu %llu %llu "), tag
         assert args.startswith("nsecs(boot), cpu, $s,"), tag
