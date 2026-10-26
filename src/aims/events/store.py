@@ -10,7 +10,7 @@ from typing import Any, Protocol, Self
 
 from aims.events.blobs import BlobStore
 from aims.events.chain import ChainError, Head, seal
-from aims.events.index import MAX_PAGE, Index, RunInfo
+from aims.events.index import MAX_PAGE, Index, RunInfo, SampleWindow
 from aims.events.log import LogFile, checkpoint_ok, read_events, tail_only
 from aims.events.payloads import LogTruncated, RunStarted
 from aims.events.schema import BlobRef, Content, Draft, Event, blob_refs, now
@@ -71,6 +71,16 @@ class EventStore(Protocol):
         agent_id: str | None = None,
         query: str | None = None,
     ) -> list[Event]: ...
+
+    async def samples(
+        self,
+        run_id: str,
+        *,
+        agent_id: str | None = None,
+        ts_from: int | None = None,
+        ts_to: int | None = None,
+        limit: int = MAX_PAGE,
+    ) -> list[SampleWindow]: ...
 
     async def verify(self, run_id: str) -> Verification: ...
 
@@ -234,6 +244,20 @@ class LocalEventStore:
             types=types,
             agent_id=agent_id,
             query=query,
+        )
+
+    async def samples(
+        self,
+        run_id: str,
+        *,
+        agent_id: str | None = None,
+        ts_from: int | None = None,
+        ts_to: int | None = None,
+        limit: int = MAX_PAGE,
+    ) -> list[SampleWindow]:
+        """The resource timeline of a run, one row per sandbox second."""
+        return await self._index.samples(
+            run_id, agent_id=agent_id, ts_from=ts_from, ts_to=ts_to, limit=limit
         )
 
     async def verify(self, run_id: str) -> Verification:

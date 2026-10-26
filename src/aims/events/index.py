@@ -6,12 +6,13 @@ from pathlib import Path
 from typing import Any
 
 import aiosqlite
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from aims.events.chain import Head
+from aims.events.payloads import ResourceSample
 from aims.events.schema import SCHEMA_VERSION, Event, Timestamp, format_ts
 
-VERSION = 1
+VERSION = 2
 MAX_TEXT = 32 * 1024
 MAX_PAGE = 1000
 
@@ -48,12 +49,44 @@ create virtual table events_fts using fts5 (
     text, content = 'events', content_rowid = 'id', tokenize = 'trigram'
 );
 
-create trigger events_fts_insert after insert on events begin
+create trigger events_fts_insert after insert on events when new.text != '' begin
     insert into events_fts (rowid, text) values (new.id, new.text);
 end;
+
+create table samples (
+    run_id text not null references runs (run_id),
+    seq integer not null,
+    agent_id text,
+    sandbox_id text not null,
+    ts_from integer not null,
+    ts_to integer not null,
+    count integer not null,
+    hz integer not null,
+    cpu_usec integer,
+    cpu_user_usec integer,
+    cpu_system_usec integer,
+    cpu_throttled integer,
+    cpu_throttled_usec integer,
+    io_rbytes integer,
+    io_wbytes integer,
+    io_rios integer,
+    io_wios integer,
+    cpu_some_usec integer,
+    cpu_full_usec integer,
+    io_some_usec integer,
+    io_full_usec integer,
+    memory_some_usec integer,
+    memory_full_usec integer,
+    memory_bytes integer,
+    pids integer,
+    primary key (run_id, seq)
+) strict;
+
+create index samples_by_time on samples (run_id, agent_id, ts_from);
 """
 
 DROP = """
+drop table if exists samples;
 drop trigger if exists events_fts_insert;
 drop table if exists events_fts;
 drop table if exists events;
@@ -69,6 +102,40 @@ class RunInfo(BaseModel):
     ended_at: Timestamp | None
     events: int
     head: str
+
+
+class SampleWindow(BaseModel):
+    """A `resource.sample` window as the index keeps it: the last reading of each counter and the
+    peak of each gauge. Usage in a window is the change from the window before it."""
+
+    run_id: str
+    seq: int
+    agent_id: str | None
+    sandbox_id: str
+    ts_from: int
+    ts_to: int
+    count: int
+    hz: int
+    cpu_usec: int | None
+    cpu_user_usec: int | None
+    cpu_system_usec: int | None
+    cpu_throttled: int | None
+    cpu_throttled_usec: int | None
+    io_rbytes: int | None
+    io_wbytes: int | None
+    io_rios: int | None
+    io_wios: int | None
+    cpu_some_usec: int | None
+    cpu_full_usec: int | None
+    io_some_usec: int | None
+    io_full_usec: int | None
+    memory_some_usec: int | None
+    memory_full_usec: int | None
+    memory_bytes: int | None
+    pids: int | None
+
+
+SAMPLE_FIELDS = tuple(SampleWindow.model_fields)
 
 
 class Index:
@@ -145,6 +212,7 @@ class Index:
             )
             for e in events
         ]
+        windows = [w for e in events if e.type == ResourceSample.type if (w := _window(e))]
         finished = next((e for e in events if e.type == "run.finished"), None)
         async with self._lock:
             await self._db.execute("begin immediate")
@@ -161,6 +229,12 @@ class Index:
                     " text) values (?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict do nothing",
                     rows,
                 )
+                if windows:
+                    await self._db.executemany(
+                        f"insert into samples ({', '.join(SAMPLE_FIELDS)}) values"
+                        f" ({', '.join('?' * len(SAMPLE_FIELDS))}) on conflict do nothing",
+                        [tuple(w[f] for f in SAMPLE_FIELDS) for w in windows],
+                    )
                 await self._db.execute(
                     "update runs set last_seq = ?, last_hash = ?, log_offset = ?,"
                     " status = coalesce(?, status), ended_at = coalesce(?, ended_at)"
@@ -260,6 +334,55 @@ class Index:
             )
             for r in rows
         ]
+
+    async def samples(
+        self,
+        run_id: str,
+        *,
+        agent_id: str | None = None,
+        ts_from: int | None = None,
+        ts_to: int | None = None,
+        limit: int = MAX_PAGE,
+    ) -> list[SampleWindow]:
+        """Windows of a run that overlap [`ts_from`, `ts_to`] on the boot clock, oldest first."""
+        where = ["run_id = ?"]
+        args: list[Any] = [run_id]
+        if agent_id is not None:
+            where.append("agent_id = ?")
+            args.append(agent_id)
+        if ts_from is not None:
+            where.append("ts_to >= ?")
+            args.append(ts_from)
+        if ts_to is not None:
+            where.append("ts_from <= ?")
+            args.append(ts_to)
+        args.append(_cap(limit))
+        async with self._db.execute(
+            f"select {', '.join(SAMPLE_FIELDS)} from samples where {' and '.join(where)}"
+            " order by ts_from, seq limit ?",
+            args,
+        ) as cur:
+            rows = await cur.fetchall()
+        return [SampleWindow.model_validate(dict(zip(SAMPLE_FIELDS, r, strict=True))) for r in rows]
+
+
+def _window(event: Event) -> dict[str, Any] | None:
+    try:
+        sample = ResourceSample.model_validate(event.data)
+    except ValidationError:
+        return None
+    ts = sample.values("ts") or []
+    return {
+        "run_id": event.run_id,
+        "seq": event.seq,
+        "agent_id": event.agent_id,
+        "sandbox_id": sample.sandbox_id,
+        "ts_from": ts[0],
+        "ts_to": ts[-1],
+        "count": len(ts),
+        "hz": sample.hz,
+        **sample.summary(),
+    }
 
 
 def _cap(limit: int) -> int:

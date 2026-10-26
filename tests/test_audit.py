@@ -10,6 +10,7 @@ from aims.events import (
     Event,
     LocalEventStore,
     Proc,
+    ResourceSample,
     RunStarted,
 )
 from aims.events.store import INLINE_LIMIT
@@ -29,6 +30,7 @@ from aims.sandbox.base import (
     Oom,
     Outcome,
     Record,
+    Sample,
     SandboxInfo,
     SandboxSpec,
     Stamp,
@@ -45,6 +47,7 @@ Step = Callable[["FakeSandbox", Capture, Callable[[int], None] | None], Awaitabl
 class FakeSandbox:
     def __init__(self, *, kernel: bool = True) -> None:
         self.queue: asyncio.Queue[Record] = asyncio.Queue()
+        self.sample_queue: asyncio.Queue[Sample | Lost] | None = None
         self.kernel = kernel
         self.steps: list[Step] = []
         self.runs: list[list[str]] = []
@@ -86,6 +89,9 @@ class FakeSandbox:
 
     def records(self) -> asyncio.Queue[Record] | None:
         return self.queue if self.kernel else None
+
+    def samples(self) -> asyncio.Queue[Sample | Lost] | None:
+        return self.sample_queue
 
     async def pause(self) -> None:
         pass
@@ -462,3 +468,71 @@ async def test_unexpected_error_still_finishes_the_exec(store: LocalEventStore) 
     assert finished["end"] == "failed"
     assert finished["error"] == "ConnectionResetError: stream reset"
     assert kinds(evs).count("sandbox.stopped") == 1
+
+
+def reading(ts: int, cpu: int) -> Sample:
+    values = [cpu, *range(1, len(ResourceSample.COLUMNS) - 2), 100, 3]
+    return Sample(ts, tuple(values))
+
+
+async def window_events(store: LocalEventStore, run_id: str) -> list[ResourceSample]:
+    events = await store.events(run_id, limit=1000, types=["resource.sample"])
+    return [ResourceSample.model_validate(e.data) for e in events]
+
+
+async def test_audit_records_windows_without_a_tracer(store: LocalEventStore) -> None:
+    sb = FakeSandbox(kernel=False)
+    sb.sample_queue = asyncio.Queue()
+    run_id, audited = await start(store, sb, sample_hz=10)
+    for ts in (1_000_000, 1_500_000, 2_000_000, 2_100_000):
+        sb.sample_queue.put_nowait(reading(ts, ts // 1000))
+    sb.sample_queue.put_nowait(Lost(None, "resource sampler stopped: exit 137"))
+    sb.sample_queue.put_nowait(reading(3_000_000, 9))
+    await asyncio.sleep(0.1)
+    sb.sample_queue.put_nowait(reading(3_100_000, 10))
+    await audited.close()
+
+    evs = await store.events(run_id, limit=1000)
+    kinds = [e.type for e in evs]
+    assert kinds[-1] == "sandbox.stopped"
+    windows = await window_events(store, run_id)
+    assert [w.values("ts") for w in windows] == [
+        [1_000_000, 1_500_000],
+        [2_000_000, 2_100_000],
+        [3_000_000, 3_100_000],
+    ]
+    assert all(w.hz == 10 and w.sandbox_id == "sb1" for w in windows)
+    lost = [e.data for e in evs if e.type == "audit.lost"]
+    assert [x["reason"] for x in lost] == ["resource sampler stopped: exit 137"]
+    assert kinds.index("audit.lost") > kinds.index("resource.sample")
+
+    rows = await store.samples(run_id)
+    assert [(r.ts_from, r.ts_to, r.count, r.agent_id) for r in rows] == [
+        (1_000_000, 1_500_000, 2, "a1"),
+        (2_000_000, 2_100_000, 2, "a1"),
+        (3_000_000, 3_100_000, 2, "a1"),
+    ]
+    assert rows[1].cpu_usec == 2_100
+    assert [r.ts_from for r in await store.samples(run_id, ts_from=2_050_000)] == [
+        2_000_000,
+        3_000_000,
+    ]
+    assert await store.samples(run_id, agent_id="nobody") == []
+    assert not [e for e in await store.events(run_id, query="sb1") if e.type == "resource.sample"]
+
+    await store.rebuild()
+    assert await store.samples(run_id) == rows
+
+
+async def test_stop_records_the_open_window_first(store: LocalEventStore) -> None:
+    sb = FakeSandbox(kernel=False)
+    sb.sample_queue = asyncio.Queue()
+    run_id, audited = await start(store, sb)
+    sb.sample_queue.put_nowait(reading(5_000_000, 1))
+    await asyncio.sleep(0.05)
+    await audited.stop()
+    await audited.close()
+
+    kinds = [e.type for e in await store.events(run_id, limit=1000)]
+    assert kinds[-2:] == ["resource.sample", "sandbox.stopped"]
+    assert kinds.count("sandbox.stopped") == 1

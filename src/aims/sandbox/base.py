@@ -57,6 +57,7 @@ class SandboxSpec(BaseModel):
     mounts: list[Mount] = Field(default_factory=list)
     kill_leftovers: bool = False
     output_limit: int = Field(default=4 * 1024 * 1024, ge=0)
+    sample_hz: int = Field(default=50, ge=10, le=200)
 
 
 @dataclass(slots=True)
@@ -184,6 +185,17 @@ class Lost:
 Record = Kernel | Lost
 
 
+@dataclass(frozen=True, slots=True)
+class Sample:
+    """One reading of a sandbox's cgroup files at `ts`, the kernel boot clock in µs.
+
+    `values` follow `ResourceSample.COLUMNS`; -1 marks a file that could not be read.
+    """
+
+    ts: int
+    values: tuple[int, ...]
+
+
 class Sandbox(Protocol):
     """One isolated environment for one agent. Backends report facts, `AuditedSandbox` records."""
 
@@ -209,6 +221,8 @@ class Sandbox(Protocol):
     async def processes(self) -> list[Proc]: ...
 
     def records(self) -> asyncio.Queue[Record] | None: ...
+
+    def samples(self) -> asyncio.Queue[Sample | Lost] | None: ...
 
     async def pause(self) -> None: ...
 

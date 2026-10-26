@@ -23,13 +23,16 @@ from aims.sandbox.base import (
     TOOLBOX,
     AuditMode,
     Capture,
+    Lost,
     Outcome,
     Record,
+    Sample,
     SandboxInfo,
     SandboxSpec,
     check_name,
 )
 from aims.sandbox.images import ensure_image, ensure_pulled
+from aims.sandbox.resources import Sampler, SamplerError, Watch
 from aims.sandbox.trace import ARCHES, SYSCALLS, Mounts
 from aims.sandbox.tracer import Route, Tracer, TracerError
 
@@ -60,10 +63,12 @@ class DockerBackend:
         labels: dict[str, str],
         toolbox: tuple[str, str],
         tracer: Tracer | None,
+        sampler: Sampler | None = None,
     ) -> None:
         self.docker = docker
         self.arch = arch
         self.tracer = tracer
+        self.sampler = sampler
         self._labels = labels
         self._toolbox_image, self._toolbox_volume = toolbox
 
@@ -76,6 +81,7 @@ class DockerBackend:
         `ring_pages` sizes the tracer's kernel ring in 4 KiB pages, a power of two.
         """
         docker = aiodocker.Docker(url=url)
+        sampler: Sampler | None = None
         try:
             info = await docker.system.info()
             arch = ARCHES.get(info["Architecture"], info["Architecture"])
@@ -86,6 +92,7 @@ class DockerBackend:
             }
             await _sweep(docker, labels["aims.host"])
             toolbox = await _toolbox(docker)
+            sampler = await _sampler(docker, labels, toolbox[0])
             tracer = None
             if audit != "snapshot":
                 name = f"aims-tracer-{uuid.uuid4().hex[:12]}"
@@ -97,8 +104,12 @@ class DockerBackend:
                         raise SandboxError(f"kernel audit unavailable: {e}") from e
                     log.warning("kernel audit unavailable, using snapshot audit: %s", e)
                     tracer = None
-            return cls(docker, arch=arch, labels=labels, toolbox=toolbox, tracer=tracer)
+            return cls(
+                docker, arch=arch, labels=labels, toolbox=toolbox, tracer=tracer, sampler=sampler
+            )
         except BaseException:
+            if sampler is not None:
+                await sampler.stop()
             await docker.close()
             raise
 
@@ -111,6 +122,8 @@ class DockerBackend:
     async def close(self) -> None:
         if self.tracer is not None:
             await self.tracer.stop()
+        if self.sampler is not None:
+            await self.sampler.stop()
         await self.docker.close()
 
     async def create(self, spec: SandboxSpec, *, run_id: str, agent_id: str) -> DockerSandbox:
@@ -237,6 +250,7 @@ class DockerSandbox:
         self._work = work
         self._shell = shell
         self._route = route
+        self._watch: Watch | None = None
 
     @classmethod
     async def attach(
@@ -278,9 +292,23 @@ class DockerSandbox:
             elif tracer.clock is not None:
                 boot_us, tai_us = tracer.clock
                 holder._info.config["kernel_clock"] = {"boot_us": boot_us, "tai_us": tai_us}
+        if tracer is not None and tracer.pmu is not None:
+            holder._info.config["pmu"] = tracer.pmu
+        await holder._sample(backend.sampler)
         holder._shell = shell
         holder._route = route
         return holder
+
+    async def _sample(self, sampler: Sampler | None) -> None:
+        """Start the resource timeline of this sandbox, recording where it comes from."""
+        resources: JsonValue = None
+        if sampler is not None and sampler.alive:
+            try:
+                self._watch = await sampler.watch(self._container.id, self._spec.sample_hz)
+                resources = {"hz": self._watch.hz, "cgroup": self._watch.cgroup}
+            except (SamplerError, aiodocker.DockerError) as e:
+                log.warning("no resource timeline for %s: %s", self._container.id[:12], e)
+        self._info.config["resources"] = resources
 
     @property
     def info(self) -> SandboxInfo:
@@ -362,6 +390,9 @@ class DockerSandbox:
     def records(self) -> asyncio.Queue[Record] | None:
         return None if self._route is None else self._route.queue
 
+    def samples(self) -> asyncio.Queue[Sample | Lost] | None:
+        return None if self._watch is None else self._watch.queue
+
     async def pause(self) -> None:
         await self._container.pause()
 
@@ -382,6 +413,9 @@ class DockerSandbox:
             await self._container.kill(signal="SIGKILL")
 
     async def close(self, *, keep_volumes: bool = False) -> None:
+        if self._watch is not None:
+            await self._watch.close()
+            self._watch = None
         tracer = self._backend.tracer
         if self._route is not None and tracer is not None:
             tracer.unregister(self._route)
@@ -423,6 +457,16 @@ async def _toolbox(docker: aiodocker.Docker) -> tuple[str, str]:
         caps=["CHOWN", "FOWNER", "DAC_OVERRIDE"],
     )
     return image, volume
+
+
+async def _sampler(docker: aiodocker.Docker, labels: dict[str, str], image: str) -> Sampler | None:
+    sampler = Sampler(docker, labels, f"aims-sampler-{uuid.uuid4().hex[:12]}", image)
+    try:
+        await sampler.start()
+    except aiodocker.DockerError as e:
+        log.warning("resource sampling unavailable: %s", e)
+        return None
+    return sampler
 
 
 async def _helper(

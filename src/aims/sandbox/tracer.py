@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 import aiodocker
 from aiodocker.containers import DockerContainer
 from aiodocker.execs import Exec as DockerExec
+from pydantic import JsonValue
 
 from aims.sandbox.base import Denied, Exec, Exit, File, Fork, Kernel, Lost, Record
 from aims.sandbox.images import ensure_image
@@ -37,6 +38,14 @@ SETTLE_S = 2.0
 TRACE = (
     "mountpoint -q /sys/kernel/tracing || mount -t tracefs nodev /sys/kernel/tracing; "
     "exec bpftrace -B line -f json /aims/trace.bt"
+)
+PMU_EVENTS = ("cpu-cycles", "instructions", "cache-misses")
+PMU = (
+    "echo devices $(ls /sys/bus/event_source/devices); for e in "
+    + " ".join(PMU_EVENTS)
+    + '; do if out=$(bpftrace -e "hardware:$e:1000000 { exit(); } interval:ms:50 { exit(); }"'
+    ' 2>&1 >/dev/null); then echo "$e ok"; else echo "$e $(echo "$out" | grep -v Attaching'
+    ' | head -n 1)"; fi; done'
 )
 
 
@@ -112,6 +121,7 @@ class Tracer:
         self.kernel_lost = 0
         self.located = 0
         self.unlocated = 0
+        self.pmu: dict[str, JsonValue] | None = None
 
     async def start(self) -> None:
         image = await ensure_image(self._docker, "tracer")
@@ -148,6 +158,23 @@ class Tracer:
             await self.stop()
             raise TracerError("the tracer is not in the host pid namespace")
         self.alive = True
+        try:
+            self.pmu = await self._probe_pmu()
+        except aiodocker.DockerError as e:
+            log.warning("hardware counter probe failed: %s", e)
+
+    async def _probe_pmu(self) -> dict[str, JsonValue]:
+        """Which hardware counters the host offers: event source devices and an attach attempt."""
+        assert self._container is not None
+        probe = await self._container.exec(["sh", "-c", PMU], stdout=True, stderr=True)
+        out = b""
+        stream = await probe.start(detach=False).__aenter__()
+        try:
+            while (message := await stream.read_out()) is not None:
+                out += message.data
+        finally:
+            await stream.close()
+        return parse_pmu(out.decode(errors="replace"))
 
     async def stop(self) -> None:
         self.alive = False
@@ -323,3 +350,16 @@ class Tracer:
             at=raw.at,
         )
         route.put(dataclasses.replace(record, **parts))
+
+
+def parse_pmu(text: str) -> dict[str, JsonValue]:
+    devices: list[JsonValue] = []
+    events: dict[str, JsonValue] = {}
+    for line in text.splitlines():
+        name, _, rest = line.partition(" ")
+        if name == "devices":
+            devices = list(rest.split())
+        elif name in PMU_EVENTS:
+            events[name] = rest.strip() or "unknown"
+    available = any(v == "ok" for v in events.values())
+    return {"available": available, "devices": devices, "events": events}

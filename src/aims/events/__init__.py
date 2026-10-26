@@ -1,6 +1,6 @@
 from aims.events.blobs import BlobError, BlobStore
 from aims.events.chain import ChainError, Head
-from aims.events.index import RunInfo
+from aims.events.index import RunInfo, SampleWindow
 from aims.events.log import RunLocked
 from aims.events.payloads import (
     AuditLevel,
@@ -19,6 +19,7 @@ from aims.events.payloads import (
     Proc,
     ProcExec,
     ProcExit,
+    ResourceSample,
     RunFinished,
     RunStarted,
     RunStatus,
@@ -59,12 +60,14 @@ __all__ = [
     "Proc",
     "ProcExec",
     "ProcExit",
+    "ResourceSample",
     "RunCorrupt",
     "RunFinished",
     "RunInfo",
     "RunLocked",
     "RunStarted",
     "RunStatus",
+    "SampleWindow",
     "SandboxStarted",
     "SandboxStopped",
     "SysDenied",

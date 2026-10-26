@@ -44,10 +44,12 @@ from aims.sandbox.base import (
     Oom,
     Outcome,
     Record,
+    Sample,
     Sandbox,
     SandboxBackend,
     SandboxSpec,
 )
+from aims.sandbox.resources import Windows
 
 log = logging.getLogger("aims.sandbox")
 
@@ -136,6 +138,10 @@ class AuditedSandbox:
         self._scopes: OrderedDict[str | None, _Scope] = OrderedDict()
         self._losses: dict[str, _Loss] = {}
         self._queue: asyncio.Queue[Record] | None = None
+        self._samples: asyncio.Queue[Sample | Lost] | None = None
+        self._windows = Windows(sandbox.info.sandbox_id, spec.sample_hz)
+        self._sampling: asyncio.Task[None] | None = None
+        self._sample_append: asyncio.Task[None] | None = None
         self._active: _Active | None = None
         self._consumer: asyncio.Task[None] | None = None
         self._stopped = False
@@ -172,6 +178,9 @@ class AuditedSandbox:
         audited._queue = sandbox.records()
         if audited._queue is not None:
             audited._consumer = asyncio.create_task(audited._consume(audited._queue))
+        audited._samples = sandbox.samples()
+        if audited._samples is not None:
+            audited._sampling = asyncio.create_task(audited._sample(audited._samples))
         return audited
 
     async def exec(
@@ -234,9 +243,10 @@ class AuditedSandbox:
             return
         self._stopped = True
         await self.sandbox.kill()
-        await self._append(
-            [SandboxStopped(sandbox_id=self.sandbox.info.sandbox_id, reason=reason, detail=detail)]
+        stopped = SandboxStopped(
+            sandbox_id=self.sandbox.info.sandbox_id, reason=reason, detail=detail
         )
+        await self._append([*await self._end_sampling(), stopped])
 
     async def close(self, *, keep_volumes: bool = False) -> None:
         try:
@@ -246,12 +256,13 @@ class AuditedSandbox:
                     await self._consumer
                 self._consumer = None
             self._drain()
+            last = await self._end_sampling()
             if not self._stopped:
                 self._stopped = True
                 sandbox_id = self.sandbox.info.sandbox_id
-                await self._append([SandboxStopped(sandbox_id=sandbox_id, reason="closed")])
+                await self._append([*last, SandboxStopped(sandbox_id=sandbox_id, reason="closed")])
             else:
-                await self._flush()
+                await self._append(last)
         finally:
             await self.sandbox.close(keep_volumes=keep_volumes)
 
@@ -380,6 +391,43 @@ class AuditedSandbox:
             self._handle(record)
             if len(self._buffer) >= FLUSH_N:
                 await self._flush()
+
+    async def _sample(self, queue: asyncio.Queue[Sample | Lost]) -> None:
+        while True:
+            payloads = self._on_sample(await queue.get())
+            if payloads:
+                self._sample_append = asyncio.ensure_future(self._append(payloads))
+                try:
+                    await asyncio.shield(self._sample_append)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    log.exception("could not record resource samples")
+
+    def _on_sample(self, item: Sample | Lost) -> list[Payload]:
+        if isinstance(item, Sample):
+            window = self._windows.add(item)
+            return [] if window is None else [window]
+        window = self._windows.flush() if item.count is None else None
+        lost = AuditLost(count=item.count, reason=item.reason)
+        return [lost] if window is None else [window, lost]
+
+    async def _end_sampling(self) -> list[Payload]:
+        """Stop reading samples and return the windows still open, with any queued readings."""
+        if self._sampling is not None:
+            self._sampling.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._sampling
+            self._sampling = None
+        if self._sample_append is not None:
+            with contextlib.suppress(Exception):
+                await self._sample_append
+            self._sample_append = None
+        payloads: list[Payload] = []
+        while self._samples is not None and not self._samples.empty():
+            payloads += self._on_sample(self._samples.get_nowait())
+        window = self._windows.flush()
+        return payloads if window is None else [*payloads, window]
 
     def _drain(self) -> None:
         """Record what is still queued when the sandbox closes."""
