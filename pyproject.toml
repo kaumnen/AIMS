@@ -1,0 +1,46 @@
+[project]
+name = "aims-bench"
+version = "0.1.0"
+description = "Experiment bench for agent alignment with an autonomous behaviour monitor"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "kaumnen" }]
+requires-python = ">=3.15"
+dependencies = [
+    "typer>=0.27.3",
+]
+
+[project.scripts]
+aims = "aims.cli:app"
+
+[project.urls]
+Repository = "https://github.com/kaumnen/AIMS"
+
+[dependency-groups]
+dev = [
+    "anyio>=4.15.1",
+    "pytest>=9.1.1",
+    "ruff>=0.17.2",
+    "ty>=0.0.92",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.5,<0.14"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "aims"
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RUF", "ASYNC", "PT", "PIE", "RET", "TID"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.pytest]
+testpaths = ["tests"]
+strict = true
