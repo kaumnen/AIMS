@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from pathlib import Path
@@ -28,12 +29,14 @@ from aims.sandbox.base import (
     Denied,
     Exec,
     Exit,
+    Fd,
     File,
     Fork,
     Lost,
     Net,
     Oom,
     Outcome,
+    Output,
     Record,
     Sample,
     SandboxInfo,
@@ -41,6 +44,8 @@ from aims.sandbox.base import (
     Stamp,
     Tree,
 )
+
+PIPEFS = 0x50495045
 
 pytestmark = pytest.mark.anyio
 
@@ -146,6 +151,10 @@ def root(pid: int, uid: int = AGENT_UID) -> Exec:
 
 def child(pid: int, ppid: int, *argv: str) -> Exec:
     return Exec(pid, ppid, pid, AGENT_UID, argv[0], argv, 9, False, at=AT)
+
+
+def with_context(e: Exec, *, cwd: str, env: tuple[str, ...], fds: tuple[Fd, Fd, Fd]) -> Exec:
+    return dataclasses.replace(e, cwd=cwd, env=env, env_bytes=sum(len(x) + 1 for x in env), fds=fds)
 
 
 def step(
@@ -691,3 +700,65 @@ async def test_tree_overflow_and_failures(
     lost = [e.data["reason"] for e in evs if e.type == "audit.lost"]
     assert lost == ["file snapshot failed: reader gone"]
     assert kinds(evs).count("fs.snapshot") == 2
+
+
+async def test_exec_context_is_recorded_and_env_deduped(store: LocalEventStore) -> None:
+    fds = (Fd(0, "char"), Fd(500, "pipe"), Fd(501, "pipe"))
+    env = ("A=1", "LD_PRELOAD=/x")
+    r = with_context(root(100), cwd="/work", env=env, fds=fds)
+    kid = with_context(child(101, 100, "python3"), cwd="/work/sub", env=env, fds=fds)
+    changed = with_context(child(102, 100, "sh"), cwd="/work", env=("A=2",), fds=fds)
+    sb = FakeSandbox()
+    sb.steps.append(
+        step(
+            r,
+            Fork(100, 101, at=AT),
+            kid,
+            Fork(100, 102, at=AT),
+            changed,
+            Exit(100, 0, None, at=AT),
+        )
+    )
+    run_id, audited = await start(store, sb)
+    await audited.exec("x", timeout_s=5)
+    await audited.close()
+
+    procs = {e.data["pid"]: e.data for e in await events(store, run_id) if e.type == "proc.exec"}
+    assert procs[100]["cwd"] == "/work"
+    assert procs[100]["env"] == ["A=1", "LD_PRELOAD=/x"]
+    assert procs[100]["fds"] == [
+        {"ino": 0, "kind": "char"},
+        {"ino": 500, "kind": "pipe"},
+        {"ino": 501, "kind": "pipe"},
+    ]
+    assert procs[101]["env"] == []
+    assert procs[101]["env_inherited"] is True
+    assert procs[102]["env"] == ["A=2"]
+    assert procs[102]["env_inherited"] is False
+
+
+async def test_pipe_output_is_attributed_and_aggregated(store: LocalEventStore) -> None:
+    fds = (Fd(0, "char"), Fd(500, "pipe"), Fd(501, "pipe"))
+    r = with_context(root(100), cwd="/work", env=(), fds=fds)
+    sb = FakeSandbox()
+    sb.steps.append(
+        step(
+            r,
+            Output(100, 500, 20, PIPEFS, b"hello", at=Stamp(50, 0, 3)),
+            Output(100, 500, 8, PIPEFS, None, at=Stamp(60, 0, 4)),
+            Output(100, 700, 5, 0xEF53, b"fifo!", at=Stamp(70, 0, 5)),
+            Exit(100, 0, None, at=AT),
+        )
+    )
+    run_id, audited = await start(store, sb)
+    await audited.exec("x", timeout_s=5)
+    await audited.close()
+
+    outs = {e.data["inode"]: e.data for e in await events(store, run_id) if e.type == "proc.output"}
+    assert outs[500]["stream"] == "stdout"
+    assert (outs[500]["bytes"], outs[500]["writes"]) == (28, 2)
+    assert outs[500]["prefix"] == "hello"
+    assert outs[500]["truncated"] is True
+    assert (outs[500]["ts_kernel"], outs[500]["cpu_seq"]) == (50, 3)
+    assert outs[700]["stream"] == "fifo"
+    assert outs[700]["prefix"] == "fifo!"

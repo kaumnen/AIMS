@@ -123,6 +123,17 @@ class Fork(Kernel):
     child: int
 
 
+FdKind = Literal["pipe", "fifo", "file", "char", "sock", "dir", "other"]
+
+
+@dataclass(frozen=True, slots=True)
+class Fd:
+    """A file descriptor at exec: its inode and what kind of object it points at."""
+
+    ino: int
+    kind: FdKind
+
+
 @dataclass(frozen=True, slots=True)
 class Exec(Kernel):
     ppid: int
@@ -132,6 +143,11 @@ class Exec(Kernel):
     argv: tuple[str, ...]
     argv_bytes: int
     root: bool
+    cwd: str = ""
+    cwd_partial: bool = False
+    env: tuple[str, ...] = ()
+    env_bytes: int = 0
+    fds: tuple[Fd, Fd, Fd] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +190,16 @@ class Net(Kernel):
 class Denied(Kernel):
     syscall: str
     errno: int
+
+
+@dataclass(frozen=True, slots=True)
+class Output(Kernel):
+    """A write to a pipe or FIFO by `pid`. `prefix` is set on the first write to an inode."""
+
+    inode: int
+    nbytes: int
+    magic: int | None = None
+    prefix: bytes | None = None
 
 
 @dataclass(frozen=True, slots=True)

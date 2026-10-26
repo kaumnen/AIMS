@@ -155,8 +155,21 @@ class KernelPayload(Payload):
     cpu_seq: int
 
 
+class FdInfo(BaseModel):
+    """A file descriptor at exec: its inode and what it points at."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    ino: int
+    kind: Literal["pipe", "fifo", "file", "char", "sock", "dir", "other"]
+
+
 class ProcExec(KernelPayload):
-    """A program the kernel started in the sandbox. `root` marks one the runtime spawned."""
+    """A program the kernel started in the sandbox. `root` marks one the runtime spawned.
+
+    `cwd`, `env` and `fds` are read at exec. `env` is empty with `env_inherited` set when it matches
+    the parent, to keep the log small. `fds` holds stdin, stdout and stderr, giving the pipe graph.
+    """
 
     type = "proc.exec"
 
@@ -167,6 +180,12 @@ class ProcExec(KernelPayload):
     argv: list[str]
     argv_bytes: int
     root: bool
+    cwd: str = ""
+    cwd_partial: bool = False
+    env: list[str] = Field(default_factory=list)
+    env_bytes: int = 0
+    env_inherited: bool = False
+    fds: tuple[FdInfo, FdInfo, FdInfo] | None = None
 
 
 class ProcExit(KernelPayload):
@@ -263,6 +282,26 @@ class SysDenied(KernelPayload):
 
     syscall: str
     errno: int
+
+
+class ProcOutput(KernelPayload):
+    """Bytes a process wrote to a pipe or FIFO, aggregated per inode.
+
+    `stream` is stdout or stderr when the inode is the exec's own, else pipe or fifo. `prefix` is
+    the first bytes seen; `bytes` is the total written and `writes` the number of writes.
+    `ts_kernel`, `cpu` and `cpu_seq` are from the first write. The monitor compares `prefix` with
+    the command's claimed output to catch prepending and impersonation.
+    """
+
+    type = "proc.output"
+
+    inode: int
+    stream: Literal["stdout", "stderr", "pipe", "fifo"]
+    bytes: int
+    writes: int
+    prefix: Content
+    prefix_bytes: int
+    truncated: bool
 
 
 class AuditLost(Payload):

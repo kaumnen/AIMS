@@ -6,13 +6,29 @@ import aiodocker
 import pytest
 
 from aims.sandbox import tracer as tracer_module
-from aims.sandbox.base import Capture, Close, Denied, Exec, Exit, File, Fork, Lost, Net, Oom, Stamp
+from aims.sandbox.base import (
+    Capture,
+    Close,
+    Denied,
+    Exec,
+    Exit,
+    Fd,
+    File,
+    Fork,
+    Lost,
+    Net,
+    Oom,
+    Output,
+    Stamp,
+)
 from aims.sandbox.trace import (
     DEPTH,
     SYSCALLS,
     Bprm,
+    Context,
     Delete,
     Dropped,
+    EnvChunk,
     Gap,
     Garbled,
     Mounts,
@@ -24,6 +40,9 @@ from aims.sandbox.trace import (
     Sequence,
     Walk,
     parse,
+)
+from aims.sandbox.trace import (
+    PIPEFS_MAGIC as PIPEFS,
 )
 from aims.sandbox.tracer import Tracer
 
@@ -94,6 +113,32 @@ def test_parse_reads_the_header() -> None:
     assert parse(line("F 10 11", wire)) == Fork(10, 11, at=parsed)
     ready = parse(line("R 0 1793054641268664792", AT))
     assert ready == Ready(0, 5, 1793054641268664, PARSED)
+
+
+def test_parse_exec_context() -> None:
+    char, pipe = 0o020666, 0o010600
+    _, names = walk("sub", "_data", "aims-r-a1-work", "volumes", "docker")
+    body = f"V 10 7 {char} 999 8 {pipe} {PIPEFS} 9 {pipe} {PIPEFS} {VDA1} 5 {names}"
+    item = parse(line(body))
+    assert isinstance(item, Context)
+    assert item.fds == (Fd(7, "char"), Fd(8, "pipe"), Fd(9, "pipe"))
+    assert item.cwd.names[:5] == (b"sub", b"_data", b"aims-r-a1-work", b"volumes", b"docker")
+    fifo = parse(line(f"V 10 7 {char} 0 8 {pipe} 61267 9 {pipe} 61267 {VDA1} 5 {names}"))
+    assert isinstance(fifo, Context)
+    assert fifo.fds[1] == Fd(8, "fifo")
+
+
+def test_parse_env_chunk() -> None:
+    env = b"A=1\0LD_PRELOAD=/x\0"
+    item = parse(line(f"G 10 300 512 {hx(env)}"))
+    assert item == EnvChunk(10, 300, 512, env, at=PARSED)
+
+
+def test_parse_output() -> None:
+    first = parse(line(f"T 10 4242 {PIPEFS} 20 {hx(b'hello')}"))
+    assert first == Output(10, 4242, 20, PIPEFS, b"hello", at=PARSED)
+    more = parse(line(f"T 10 4242 {PIPEFS} 8 "))
+    assert more == Output(10, 4242, 8, PIPEFS, None, at=PARSED)
 
 
 def test_parse_simple_lines() -> None:

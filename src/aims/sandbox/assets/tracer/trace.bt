@@ -23,6 +23,37 @@ tracepoint:sched:sched_process_exec /curtask->thread_pid->level > @base/ {
   if ($tp->level == 2) { $ns = $tp->numbers[2].nr; $inum = $tp->numbers[2].ns->ns.inum; }
   if ($tp->level == 3) { $ns = $tp->numbers[3].nr; $inum = $tp->numbers[3].ns->ns.inum; }
   $len = curtask->mm->arg_end - curtask->mm->arg_start;
+  $fd = curtask->files->fdt->fd;
+  $f0 = *($fd + 0); $f1 = *($fd + 1); $f2 = *($fd + 2);
+  $pw = curtask->fs->pwd.dentry;
+  $x = $pw; $kw = 0;
+  unroll(12) { if ($x != $x->d_parent) { $kw++; $x = $x->d_parent; } }
+  $s = @seq[cpu] + 1; @seq[cpu] = $s;
+  printf("V %llu %llu %llu %d %lu %u %u %lu %u %u %lu %u %u %u %d %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s,
+    curtask->tgid, $f0->f_inode->i_ino, $f0->f_inode->i_mode, $f0->f_inode->i_sb->s_magic,
+    $f1->f_inode->i_ino, $f1->f_inode->i_mode, $f1->f_inode->i_sb->s_magic,
+    $f2->f_inode->i_ino, $f2->f_inode->i_mode, $f2->f_inode->i_sb->s_magic, $pw->d_sb->s_dev, $kw,
+    str($pw->d_name.name),
+    str($pw->d_parent->d_name.name),
+    str($pw->d_parent->d_parent->d_name.name),
+    str($pw->d_parent->d_parent->d_parent->d_name.name),
+    str($pw->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($pw->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($pw->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($pw->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($pw->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($pw->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($pw->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($pw->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
+  $ea = curtask->mm->env_start; $en = curtask->mm->env_end - $ea; $eo = 0;
+  unroll(8) {
+    if ($eo < $en) {
+      $s = @seq[cpu] + 1; @seq[cpu] = $s;
+      printf("G %llu %llu %llu %d %d %d %rx\n", nsecs(boot), cpu, $s, curtask->tgid, $en, $eo,
+        buf(uptr($ea + $eo), $en - $eo > 512 ? 512 : $en - $eo));
+      $eo += 512;
+    }
+  }
   $s = @seq[cpu] + 1; @seq[cpu] = $s;
   printf("E %llu %llu %llu %d %d %d %d %u %d %d %rx\n", nsecs(boot), cpu, $s, curtask->tgid, curtask->real_parent->tgid,
     curtask->real_parent->thread_pid->level <= @base, curtask->cred->uid.val, $inum, $ns, $len,
@@ -187,3 +218,22 @@ tracepoint:raw_syscalls:sys_exit /curtask->thread_pid->level > @base && strncmp(
   $s = @seq[cpu] + 1; @seq[cpu] = $s;
   printf("D %llu %llu %llu %d %d %d\n", nsecs(boot), cpu, $s, curtask->tgid, args.id, -args.ret);
 }
+
+fentry:vmlinux:pipe_write /curtask->thread_pid->level > @base && strncmp(comm, "runc:", 5) != 0/ {
+  $f = args.iocb->ki_filp; $it = args.from; $ino = $f->f_inode->i_ino; $n = $it->count;
+  $m = $f->f_inode->i_sb->s_magic;
+  if (@opipe[curtask->tgid, $ino] != 0) {
+    $s = @seq[cpu] + 1; @seq[cpu] = $s;
+    printf("T %llu %llu %llu %d %lu %u %lu %rx\n", nsecs(boot), cpu, $s, curtask->tgid, $ino, $m, $n, buf(uptr($it->ubuf), 0));
+  } else if ($it->iter_type == 0) {
+    @opipe[curtask->tgid, $ino] = 1;
+    $s = @seq[cpu] + 1; @seq[cpu] = $s;
+    printf("T %llu %llu %llu %d %lu %u %lu %rx\n", nsecs(boot), cpu, $s, curtask->tgid, $ino, $m, $n, buf(uptr($it->ubuf), $n > 64 ? 64 : $n));
+  } else {
+    @opipe[curtask->tgid, $ino] = 1;
+    $s = @seq[cpu] + 1; @seq[cpu] = $s;
+    printf("T %llu %llu %llu %d %lu %u %lu %rx\n", nsecs(boot), cpu, $s, curtask->tgid, $ino, $m, $n, buf(uptr($it->__ubuf_iovec.iov_base), $n > 64 ? 64 : $n));
+  }
+}
+
+interval:s:5 { clear(@opipe); }

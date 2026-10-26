@@ -18,6 +18,7 @@ from aims.events import (
     EventStore,
     ExecFinished,
     ExecStarted,
+    FdInfo,
     FileAccess,
     FileWrite,
     FsChange,
@@ -28,6 +29,7 @@ from aims.events import (
     Proc,
     ProcExec,
     ProcExit,
+    ProcOutput,
     SandboxStarted,
     SandboxStopped,
     SysDenied,
@@ -49,6 +51,7 @@ from aims.sandbox.base import (
     Net,
     Oom,
     Outcome,
+    Output,
     Record,
     Sample,
     Sandbox,
@@ -59,9 +62,11 @@ from aims.sandbox.resources import Windows
 
 log = logging.getLogger("aims.sandbox")
 
-CAPS = {"procs": 1000, "files": 2000, "other": 500}
+CAPS = {"procs": 1000, "files": 2000, "other": 500, "output": 200}
 SPILL_BYTES = 32 * 1024 * 1024
 CHANGES = 200
+PIPEFS_MAGIC = 0x50495045
+OUTPUT_PREFIX = 64
 FLUSH_S = 0.1
 FLUSH_N = 500
 BARRIER_S = 2.0
@@ -118,6 +123,16 @@ class _Loss:
 
 
 @dataclass(slots=True)
+class _Out:
+    """Writes by one process to one pipe or FIFO inode, until the process exits."""
+
+    first: Output
+    nbytes: int = 0
+    writes: int = 0
+    prefix: bytes = b""
+
+
+@dataclass(slots=True)
 class _Active:
     exec_id: str
     audit: AuditLevel = "snapshot"
@@ -159,6 +174,9 @@ class AuditedSandbox:
         self._spill_bytes = 0
         self._spilled: set[int] = set()
         self._digest: str | None = None
+        self._outputs: dict[tuple[int, int], _Out] = {}
+        self._exec_fds: OrderedDict[str, tuple[int, int]] = OrderedDict()
+        self._env: OrderedDict[int, tuple[str, ...]] = OrderedDict()
         self._queue: asyncio.Queue[Record] | None = None
         self._samples: asyncio.Queue[Sample | Lost] | None = None
         self._windows = Windows(sandbox.info.sandbox_id, spec.sample_hz)
@@ -530,9 +548,11 @@ class AuditedSandbox:
         return payloads if window is None else [*payloads, window]
 
     def _drain(self) -> None:
-        """Record what is still queued when the sandbox closes."""
+        """Record what is still queued when the sandbox closes, then any unflushed output."""
         while self._queue is not None and not self._queue.empty():
             self._handle(self._queue.get_nowait())
+        for pid in {k[0] for k in self._outputs}:
+            self._flush_outputs(pid, self._owner.get(pid))
 
     def _handle(self, record: Record) -> None:
         try:
@@ -553,6 +573,8 @@ class AuditedSandbox:
                     self._on_net(record)
                 case Denied():
                     self._on_denied(record)
+                case Output():
+                    self._on_output(record)
                 case Lost():
                     self._on_lost(record)
                 case _:
@@ -568,6 +590,14 @@ class AuditedSandbox:
     def _on_exec(self, record: Exec) -> None:
         owner = self._attribute(record)
         self._owner[record.pid] = owner
+        env, inherited = self._exec_env(record)
+        fds = None
+        if record.fds is not None:
+            fds = tuple(FdInfo(ino=f.ino, kind=f.kind) for f in record.fds)
+            if record.root and owner is not None and owner != INTERNAL:
+                self._exec_fds[owner] = (record.fds[1].ino, record.fds[2].ino)
+                if len(self._exec_fds) > MEMORY:
+                    self._exec_fds.popitem(last=False)
         payload = self._kernel(
             ProcExec,
             record,
@@ -579,12 +609,31 @@ class AuditedSandbox:
             argv=list(record.argv),
             argv_bytes=record.argv_bytes,
             root=record.root,
+            cwd=record.cwd,
+            cwd_partial=record.cwd_partial,
+            env=list(env),
+            env_bytes=record.env_bytes,
+            env_inherited=inherited,
+            fds=fds,
         )
         if self._admit(owner, "procs", payload):
             self._shown.add(record.pid)
 
+    def _exec_env(self, record: Exec) -> tuple[tuple[str, ...], bool]:
+        """`record`'s env, blanked when it matches the parent's, so the log does not repeat it."""
+        parent = self._env.get(record.ppid)
+        self._env[record.pid] = record.env
+        self._env.move_to_end(record.pid)
+        if len(self._env) > MEMORY:
+            self._env.popitem(last=False)
+        if record.env and record.env == parent:
+            return (), True
+        return record.env, False
+
     def _on_exit(self, record: Exit) -> None:
         owner = self._owner.pop(record.pid, None)
+        self._flush_outputs(record.pid, owner)
+        self._env.pop(record.pid, None)
         active = self._active
         if active is not None and record.pid == active.root:
             active.exited.set()
@@ -605,6 +654,53 @@ class AuditedSandbox:
             else:
                 self._emit_payload(payload)
         self._oom.discard(record.pid)
+
+    def _on_output(self, record: Output) -> None:
+        owner = self._owner.get(record.pid)
+        if owner == INTERNAL:
+            return
+        key = (record.pid, record.inode)
+        acc = self._outputs.get(key)
+        if acc is None:
+            if len(self._outputs) >= 4 * MEMORY:
+                self._scope(owner).dropped += 1
+                return
+            acc = self._outputs[key] = _Out(record)
+        acc.nbytes += record.nbytes
+        acc.writes += 1
+        if record.prefix is not None and not acc.prefix:
+            acc.prefix = record.prefix[:OUTPUT_PREFIX]
+            if record.magic is not None:
+                acc.first = record
+
+    def _flush_outputs(self, pid: int, owner: str | None) -> None:
+        for key in [k for k in self._outputs if k[0] == pid]:
+            self._emit_output(owner, self._outputs.pop(key))
+
+    def _emit_output(self, owner: str | None, acc: _Out) -> None:
+        rec = acc.first
+        fds = self._exec_fds.get(owner) if owner is not None else None
+        if fds is not None and rec.inode == fds[0]:
+            stream = "stdout"
+        elif fds is not None and rec.inode == fds[1]:
+            stream = "stderr"
+        elif rec.magic == PIPEFS_MAGIC:
+            stream = "pipe"
+        else:
+            stream = "fifo"
+        payload = self._kernel(
+            ProcOutput,
+            rec,
+            owner,
+            inode=rec.inode,
+            stream=stream,
+            bytes=acc.nbytes,
+            writes=acc.writes,
+            prefix=acc.prefix.decode("utf-8", "backslashreplace"),
+            prefix_bytes=len(acc.prefix),
+            truncated=len(acc.prefix) < acc.nbytes,
+        )
+        self._admit(owner, "output", payload)
 
     def _on_file(self, record: File) -> None:
         owner = self._owner.get(record.pid)

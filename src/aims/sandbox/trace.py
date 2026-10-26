@@ -12,7 +12,24 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
-from aims.sandbox.base import Close, Exit, File, Fork, Kernel, Net, Oom, Stamp
+from aims.sandbox.base import Close, Exit, Fd, FdKind, File, Fork, Kernel, Net, Oom, Output, Stamp
+
+PIPEFS_MAGIC = 0x50495045
+_FD_KINDS: dict[int, FdKind] = {
+    0o010000: "fifo",
+    0o100000: "file",
+    0o020000: "char",
+    0o140000: "sock",
+    0o040000: "dir",
+}
+
+
+def _fd(ino: int, mode: int, magic: int) -> Fd:
+    kind = _FD_KINDS.get(mode & 0o170000, "other")
+    if kind == "fifo" and magic == PIPEFS_MAGIC:
+        kind = "pipe"
+    return Fd(ino, kind)
+
 
 DEPTH = 12
 MAX_INT = 2**53 - 1
@@ -179,6 +196,26 @@ class Bprm(ExecPart):
 
 
 @dataclass(frozen=True, slots=True)
+class Context(ExecPart):
+    """The cwd walk and fd0/1/2 of the next exec. The cwd is resolved once the route is known."""
+
+    fds: tuple[Fd, Fd, Fd]
+    cwd: Walk
+
+    def fields(self) -> dict[str, object]:
+        return {"fds": self.fds, "cwd": self.cwd}
+
+
+@dataclass(frozen=True, slots=True)
+class EnvChunk(Raw):
+    """A slice of the next exec's environment at `offset`; `env_bytes` is the full size."""
+
+    env_bytes: int
+    offset: int
+    data: bytes
+
+
+@dataclass(frozen=True, slots=True)
 class RawExec(Raw):
     ppid: int
     root: bool
@@ -306,6 +343,28 @@ def _exec(body: str, at: Stamp) -> RawExec:
         argv.pop()
     args = tuple(_text(a) for a in argv)
     return RawExec(pid, ppid, root == 1, uid, pidns, ns_pid, size, args, at=at)
+
+
+@record("V")
+def _context(body: str, at: Stamp) -> Context:
+    f = body.split(" ", 12)
+    n = [int(x) for x in f[:12]]
+    fds = (_fd(n[1], n[2], n[3]), _fd(n[4], n[5], n[6]), _fd(n[7], n[8], n[9]))
+    cwd = _walk(n[10], n[11], f[12].split("/"))
+    return Context(n[0], fds, cwd, at=at)
+
+
+@record("G")
+def _env(body: str, at: Stamp) -> EnvChunk:
+    pid, total, offset, data = body.split(" ", 3)
+    return EnvChunk(int(pid), int(total), int(offset), _hex(data), at=at)
+
+
+@record("T")
+def _output(body: str, at: Stamp) -> Output:
+    pid, ino, magic, nbytes, prefix = body.split(" ", 4)
+    data = _hex(prefix)
+    return Output(int(pid), int(ino), int(nbytes), int(magic), data or None, at=at)
 
 
 @record("X")

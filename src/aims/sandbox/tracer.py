@@ -15,6 +15,7 @@ from aims.sandbox.images import ensure_image
 from aims.sandbox.trace import (
     Delete,
     Dropped,
+    EnvChunk,
     ExecPart,
     Gap,
     Garbled,
@@ -25,6 +26,7 @@ from aims.sandbox.trace import (
     Ready,
     Rename,
     Sequence,
+    Walk,
     parse,
 )
 
@@ -111,6 +113,8 @@ class Tracer:
         self._routes: dict[int, Route] = {}
         self._pids: dict[int, Route] = {}
         self._parts: OrderedDict[int, dict[str, object]] = OrderedDict()
+        self._env: OrderedDict[int, bytearray] = OrderedDict()
+        self._env_bytes: dict[int, int] = {}
         self._roots: OrderedDict[int, int] = OrderedDict()
         self._waiters: dict[int, asyncio.Future[int]] = {}
         self._sequence = Sequence()
@@ -289,10 +293,22 @@ class Tracer:
                 self._parts.move_to_end(pid)
                 if len(self._parts) > MEMORY:
                     self._parts.popitem(last=False)
+            case EnvChunk(pid):
+                env = self._env.setdefault(pid, bytearray())
+                self._env.move_to_end(pid)
+                if len(self._env) > MEMORY:
+                    self._env.popitem(last=False)
+                end = item.offset + len(item.data)
+                if len(env) < end:
+                    env.extend(bytes(end - len(env)))
+                env[item.offset : end] = item.data
+                self._env_bytes[pid] = item.env_bytes
             case RawExec():
                 self._exec(item)
             case Exit(pid):
                 self._parts.pop(pid, None)
+                self._env.pop(pid, None)
+                self._env_bytes.pop(pid, None)
                 route = self._pids.pop(pid, None)
                 if route is not None:
                     route.put(item)
@@ -338,6 +354,16 @@ class Tracer:
         self._pids[raw.pid] = route
         parts = self._parts.pop(raw.pid, {})
         parts.setdefault("path", raw.argv[0] if raw.argv else "")
+        walk = parts.pop("cwd", None)
+        if isinstance(walk, Walk):
+            parts["cwd"], parts["cwd_partial"] = route.mounts.resolve(walk)
+        env = self._env.pop(raw.pid, None)
+        if env is not None:
+            entries = bytes(env).split(b"\0")
+            if entries and entries[-1] == b"":
+                entries.pop()
+            parts["env"] = tuple(e.decode("utf-8", "backslashreplace") for e in entries)
+            parts["env_bytes"] = self._env_bytes.pop(raw.pid, len(env))
         record = Exec(
             raw.pid,
             raw.ppid,

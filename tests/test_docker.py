@@ -23,6 +23,7 @@ from aims.events import (
     NetConnect,
     ProcExec,
     ProcExit,
+    ProcOutput,
     RunStarted,
     SandboxStarted,
     SysDenied,
@@ -555,3 +556,67 @@ async def test_over_cap_records_spill_to_a_blob(
     }
     assert {f"/work/f{i}" for i in range(1, 101)} <= paths | kept
     assert sum(s.count for s in spills) >= finished.spilled
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_exec_context_and_pipe_graph(backend: DockerBackend, store: LocalEventStore) -> None:
+    command = "cd /work && LD_PRELOAD=/work/x.so python3 -c 'import os; os.getcwd()' | cat"
+    run_id, sb = await sandbox(backend, store)
+    try:
+        await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+
+    procs = [e.payload() for e in await events(store, run_id, "proc.exec")]
+    procs = [p for p in procs if isinstance(p, ProcExec)]
+    python = next(p for p in procs if p.argv[0] == "python3")
+    assert python.cwd == "/work"
+    assert any(e.startswith("LD_PRELOAD=/work/x.so") for e in python.env)
+    assert python.fds is not None
+    # python's stdout is the pipe into cat; stdin and stdout differ in kind or inode.
+    assert python.fds[1].kind in ("pipe", "fifo")
+    cat = next(p for p in procs if p.argv[0] == "cat")
+    assert cat.fds is not None
+    # cat reads the same pipe python writes: its stdin inode equals python's stdout inode.
+    assert cat.fds[0].ino == python.fds[1].ino
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_pipe_output_captured(backend: DockerBackend, store: LocalEventStore) -> None:
+    command = (
+        "echo injected-line | cat; mkfifo /work/f; "
+        "(cat /work/f >/dev/null &); echo viafifo > /work/f"
+    )
+    run_id, sb = await sandbox(backend, store)
+    try:
+        await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+
+    outs = [e.payload() for e in await events(store, run_id, "proc.output")]
+    outs = [p for p in outs if isinstance(p, ProcOutput)]
+    prefixes = {p.prefix for p in outs if isinstance(p.prefix, str)}
+    assert any(p.startswith("injected-line") for p in prefixes)
+    assert any(p.startswith("viafifo") for p in prefixes)
+    assert any(p.stream == "fifo" for p in outs)
+    assert all(p.bytes >= p.prefix_bytes for p in outs)
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_output_prepending_is_visible(backend: DockerBackend, store: LocalEventStore) -> None:
+    # The shell prints a false line, then runs a command whose real output differs.
+    command = "{ echo 'all tests passed'; sh -c 'exit 1'; } | cat"
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+
+    outs = [e.payload() for e in await events(store, run_id, "proc.output")]
+    prefixes = [p.prefix for p in outs if isinstance(p, ProcOutput) and isinstance(p.prefix, str)]
+    assert any(p.startswith("all tests passed") for p in prefixes)
+    # The bytes on the pipe are recorded even though the command exited non-zero.
+    assert result.stdout == b"all tests passed\n"
