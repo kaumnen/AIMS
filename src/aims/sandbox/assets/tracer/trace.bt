@@ -44,11 +44,47 @@ fentry:vmlinux:security_file_open /curtask->thread_pid->level > @base && strncmp
   if (args.file->f_mode & 2) {
     $s = @seq[cpu] + 1; @seq[cpu] = $s;
     printf("W %llu %llu %llu %d %s\n", nsecs(boot), cpu, $s, curtask->tgid, $p);
-  } else if (strncmp($p, "/usr/", 5) != 0 && strncmp($p, "/lib", 4) != 0 && strncmp($p, "/proc/", 6) != 0
-      && strncmp($p, "/sys/", 5) != 0 && strncmp($p, "/dev/", 5) != 0 && strncmp($p, "/etc/ld.so.cache", 16) != 0) {
-    $s = @seq[cpu] + 1; @seq[cpu] = $s;
-    printf("A %llu %llu %llu %d %s\n", nsecs(boot), cpu, $s, curtask->tgid, $p);
+  } else {
+    $keep = 0;
+    if (strncmp($p, "/proc/", 6) == 0) {
+      if (strncmp($p, "/proc/1/", 8) == 0 || strncmp($p, "/proc/sys/kernel/", 17) == 0
+          || strncmp($p, "/proc/kallsyms", 15) == 0 || strncmp($p, "/proc/modules", 14) == 0
+          || strncmp($p, "/proc/version", 14) == 0 || strncmp($p, "/proc/kcore", 12) == 0) {
+        $keep = 1;
+      } else {
+        $n = str(args.file->f_path.dentry->d_name.name);
+        if (strncmp($n, "environ", 8) == 0 || strncmp($n, "maps", 5) == 0 || strncmp($n, "smaps", 6) == 0
+            || strncmp($n, "mem", 4) == 0 || strncmp($n, "pagemap", 8) == 0 || strncmp($n, "auxv", 5) == 0
+            || strncmp($n, "mounts", 7) == 0 || strncmp($n, "mountinfo", 10) == 0
+            || strncmp($n, "cgroup", 7) == 0 || strncmp($n, "syscall", 8) == 0 || strncmp($n, "stack", 6) == 0) {
+          $keep = 1;
+        } else if (strncmp($n, "status", 7) == 0) {
+          $pi = (struct proc_inode *)((uint64)args.file->f_inode - offsetof(struct proc_inode, vfs_inode));
+          if ($pi->pid == curtask->thread_pid) { $keep = 1; }
+        }
+      }
+    } else if (strncmp($p, "/sys/", 5) == 0) {
+      if (strncmp($p, "/sys/fs/cgroup/", 15) == 0 || strncmp($p, "/sys/fs/bpf/", 12) == 0
+          || strncmp($p, "/sys/kernel/tracing/", 20) == 0 || strncmp($p, "/sys/kernel/debug/", 18) == 0
+          || strncmp($p, "/sys/kernel/security/", 21) == 0 || strncmp($p, "/sys/kernel/btf/", 16) == 0) {
+        $keep = 1;
+      }
+    } else {
+      if (strncmp($p, "/usr/", 5) != 0 && strncmp($p, "/lib", 4) != 0 && strncmp($p, "/dev/", 5) != 0
+          && strncmp($p, "/etc/ld.so.cache", 16) != 0) {
+        $keep = 1;
+      }
+    }
+    if ($keep) {
+      $s = @seq[cpu] + 1; @seq[cpu] = $s;
+      printf("A %llu %llu %llu %d %s\n", nsecs(boot), cpu, $s, curtask->tgid, $p);
+    }
   }
+}
+
+fentry:vmlinux:filp_close /curtask->thread_pid->level > @base && strncmp(comm, "runc:", 5) != 0 && (args.filp->f_mode & 2) && (args.filp->f_inode->i_mode & 0xF000) == 0x8000/ {
+  $s = @seq[cpu] + 1; @seq[cpu] = $s;
+  printf("Z %llu %llu %llu %d %lld %s\n", nsecs(boot), cpu, $s, curtask->tgid, args.filp->f_inode->i_size, path(args.filp->f_path));
 }
 
 fentry:vmlinux:security_inode_unlink, fentry:vmlinux:security_inode_rmdir /curtask->thread_pid->level > @base && strncmp(comm, "runc:", 5) != 0/ {

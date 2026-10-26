@@ -6,7 +6,7 @@ from typing import Annotated, Literal, Protocol
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, JsonValue
 
-from aims.events import AuditLevel, ExecEnd, FileOp, Proc
+from aims.events import AuditLevel, ExecEnd, FileOp, FsChangeType, FsKind, Proc
 
 AGENT_UID = 1000
 RUNNER_UID = 1001
@@ -155,6 +155,14 @@ class File(Kernel):
 
 
 @dataclass(frozen=True, slots=True)
+class Close(Kernel):
+    """A file opened for writing was closed, with its size then."""
+
+    size: int
+    path: str
+
+
+@dataclass(frozen=True, slots=True)
 class Net(Kernel):
     kind: Literal["connect", "sendto"]
     family: Literal["inet", "inet6", "unix"]
@@ -196,6 +204,37 @@ class Sample:
     values: tuple[int, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class Change:
+    path: str
+    change: FsChangeType
+    kind: FsKind
+    size: int
+    mode: int
+    mtime_us: int
+    sha256: str | None
+    data: bytes | None = None
+    target: str | None = None
+    timestomp: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class Tree:
+    """The sandbox's volumes now, with what changed since the previous `Tree`."""
+
+    roots: tuple[str, ...]
+    digest: str
+    entries: int
+    files: int
+    bytes: int
+    hashed_bytes: int
+    unhashed: int
+    content_skipped: int
+    truncated: bool
+    duration_ms: int
+    changes: tuple[Change, ...]
+
+
 class Sandbox(Protocol):
     """One isolated environment for one agent. Backends report facts, `AuditedSandbox` records."""
 
@@ -223,6 +262,10 @@ class Sandbox(Protocol):
     def records(self) -> asyncio.Queue[Record] | None: ...
 
     def samples(self) -> asyncio.Queue[Sample | Lost] | None: ...
+
+    async def tree(self) -> Tree | None:
+        """Diff the sandbox's volumes against the previous call. None when it cannot read them."""
+        ...
 
     async def pause(self) -> None: ...
 

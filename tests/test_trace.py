@@ -6,7 +6,7 @@ import aiodocker
 import pytest
 
 from aims.sandbox import tracer as tracer_module
-from aims.sandbox.base import Capture, Denied, Exec, Exit, File, Fork, Lost, Net, Oom, Stamp
+from aims.sandbox.base import Capture, Close, Denied, Exec, Exit, File, Fork, Lost, Net, Oom, Stamp
 from aims.sandbox.trace import (
     DEPTH,
     SYSCALLS,
@@ -109,6 +109,10 @@ def test_parse_simple_lines() -> None:
     )
     assert parse(line("P 10 1 rel")) == File(10, "denied", "rel", errno=1, partial=True, at=PARSED)
     assert parse(line("D 10 97 1")) == RawDenied(10, 97, 1, at=PARSED)
+    assert parse(line("Z 10 42 /work/a b")) == Close(10, 42, "/work/a b", at=PARSED)
+    assert parse(line(f"Z 10 {2**62} /work/sparse")) == Close(
+        10, 2**53 - 1, "/work/sparse", at=PARSED
+    )
     assert parse(line("C 10 c 4 169.254.169.254 80")) == Net(
         10, "connect", "inet", "169.254.169.254", 80, at=PARSED
     )

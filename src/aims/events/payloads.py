@@ -10,6 +10,8 @@ RunStatus = Literal["completed", "failed", "killed", "cancelled"]
 AuditLevel = Literal["kernel", "snapshot"]
 ExecEnd = Literal["exited", "timeout", "cancelled", "failed"]
 FileOp = Literal["read", "write", "delete", "rename", "denied"]
+FsChangeType = Literal["added", "modified", "meta", "removed", "kind"]
+FsKind = Literal["file", "dir", "symlink", "fifo", "socket", "other"]
 Category = Literal[
     "covert_communication",
     "scorer_tampering",
@@ -135,6 +137,7 @@ class ExecFinished(Payload):
     leftover_killed: bool = False
     procs: int | None = None
     dropped: int = 0
+    spilled: int = 0
     error: str | None = None
 
 
@@ -184,6 +187,62 @@ class FileAccess(KernelPayload):
     target: str | None = None
     errno: int | None = None
     partial: bool = False
+
+
+class FileWrite(KernelPayload):
+    """A file opened for writing was closed. `size` is its size at the close."""
+
+    type = "file.write"
+
+    path: str
+    size: int
+
+
+class FsChange(BaseModel):
+    """One path that changed. A removed path keeps what was last known of it."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    path: str
+    change: FsChangeType
+    kind: FsKind
+    size: int
+    mode: int
+    mtime_us: int
+    sha256: str | None = None
+    content: BlobRef | None = None
+    target: str | None = None
+    timestomp: bool = False
+
+
+class FsSnapshot(Payload):
+    """How the sandbox's volumes changed since the snapshot whose digest is `base`.
+
+    `exec_id` names the exec whose run the window covers, None for changes between execs: the
+    runner, other agents on shared volumes, or processes left running. Changed files keep their
+    bytes as blobs within the caps; `content_skipped` counts those kept by hash only, `unhashed`
+    those the hash cap left unread, and `truncated` means the entry cap stopped the walk. Changes
+    past the inline ones are JSON lines in `more`. `timestomp` marks content that changed while
+    its mtime did not move forward.
+    """
+
+    type = "fs.snapshot"
+
+    exec_id: str | None
+    roots: list[str]
+    base: str | None
+    digest: str
+    entries: int
+    files: int
+    bytes: int
+    total: int
+    changes: list[FsChange]
+    more: BlobRef | None = None
+    hashed_bytes: int
+    unhashed: int
+    content_skipped: int
+    truncated: bool
+    duration_ms: int
 
 
 class NetConnect(KernelPayload):
@@ -305,6 +364,22 @@ class ResourceSample(Payload):
             read = [v for v in self.values(name) or () if v >= 0]
             out[name] = (max(read) if name in self.GAUGES else read[-1]) if read else None
         return out
+
+
+class AuditSpill(Payload):
+    """Records over an exec's caps, kept as JSON lines in `records` instead of the log.
+
+    `kinds` counts them per cap. `ts_from` and `ts_to` bound them on the kernel clock.
+    """
+
+    type = "audit.spill"
+
+    exec_id: str | None
+    count: int
+    kinds: dict[str, int]
+    records: BlobRef
+    ts_from: int | None = None
+    ts_to: int | None = None
 
 
 class MonitorFlag(Payload):

@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import json
 import logging
 import time
 import uuid
@@ -11,12 +12,16 @@ from typing import Literal
 from aims.events import (
     AuditLevel,
     AuditLost,
+    AuditSpill,
     Content,
     Draft,
     EventStore,
     ExecFinished,
     ExecStarted,
     FileAccess,
+    FileWrite,
+    FsChange,
+    FsSnapshot,
     KernelPayload,
     NetConnect,
     Payload,
@@ -33,6 +38,7 @@ from aims.sandbox.base import (
     RUNNER_UID,
     TOOLBOX,
     Capture,
+    Close,
     Denied,
     Exec,
     Exit,
@@ -54,6 +60,8 @@ from aims.sandbox.resources import Windows
 log = logging.getLogger("aims.sandbox")
 
 CAPS = {"procs": 1000, "files": 2000, "other": 500}
+SPILL_BYTES = 32 * 1024 * 1024
+CHANGES = 200
 FLUSH_S = 0.1
 FLUSH_N = 500
 BARRIER_S = 2.0
@@ -80,7 +88,17 @@ class _Scope:
 
     counts: dict[str, int] = field(default_factory=dict)
     dropped: int = 0
-    seen: set[tuple[str, str, str | None]] = field(default_factory=set)
+    spilled: int = 0
+    seen: set[tuple[object, ...]] = field(default_factory=set)
+
+
+@dataclass(slots=True)
+class _Spill:
+    data: bytearray = field(default_factory=bytearray)
+    count: int = 0
+    kinds: dict[str, int] = field(default_factory=dict)
+    ts_from: int | None = None
+    ts_to: int | None = None
 
 
 @dataclass(slots=True)
@@ -137,6 +155,10 @@ class AuditedSandbox:
         self._oom: set[int] = set()
         self._scopes: OrderedDict[str | None, _Scope] = OrderedDict()
         self._losses: dict[str, _Loss] = {}
+        self._spills: dict[str | None, _Spill] = {}
+        self._spill_bytes = 0
+        self._spilled: set[int] = set()
+        self._digest: str | None = None
         self._queue: asyncio.Queue[Record] | None = None
         self._samples: asyncio.Queue[Sample | Lost] | None = None
         self._windows = Windows(sandbox.info.sandbox_id, spec.sample_hz)
@@ -178,6 +200,7 @@ class AuditedSandbox:
         audited._queue = sandbox.records()
         if audited._queue is not None:
             audited._consumer = asyncio.create_task(audited._consume(audited._queue))
+        await audited._append(await audited._files(None, always=True))
         audited._samples = sandbox.samples()
         if audited._samples is not None:
             audited._sampling = asyncio.create_task(audited._sample(audited._samples))
@@ -196,6 +219,7 @@ class AuditedSandbox:
             before = await self._snapshot()
             await self._append(
                 [
+                    *await self._files(None, always=False),
                     ExecStarted(
                         exec_id=exec_id,
                         call_id=call_id,
@@ -205,7 +229,7 @@ class AuditedSandbox:
                         cwd=self.spec.workdir,
                         timeout_ms=timeout_ms,
                         audit=audit,
-                    )
+                    ),
                 ]
             )
             active = _Active(exec_id, audit)
@@ -256,7 +280,11 @@ class AuditedSandbox:
                     await self._consumer
                 self._consumer = None
             self._drain()
-            last = await self._end_sampling()
+            last = [
+                *await self._files(None, always=False),
+                *await self._spill_events(),
+                *await self._end_sampling(),
+            ]
             if not self._stopped:
                 self._stopped = True
                 sandbox_id = self.sandbox.info.sandbox_id
@@ -290,6 +318,8 @@ class AuditedSandbox:
             if leftover and self.spec.kill_leftovers:
                 await self._internal([f"{TOOLBOX}/busybox", "kill", "-KILL", "-1"], AGENT_UID)
                 killed = True
+        files = await self._files(active.exec_id, always=True)
+        spills = await self._spill_events()
         scope = self._scopes.get(active.exec_id)
         finished = ExecFinished(
             exec_id=active.exec_id,
@@ -309,10 +339,11 @@ class AuditedSandbox:
             if active.audit == "kernel"
             else None,
             dropped=scope.dropped if scope else 0,
+            spilled=scope.spilled if scope else 0,
             error=outcome.error,
         )
         self._active = None
-        await self._append([finished])
+        await self._append([*files, *spills, finished])
         if outcome.end == "failed":
             await self.stop("exec_failed", outcome.error)
         return ExecResult(finished, bytes(capture.stdout), bytes(capture.stderr))
@@ -345,6 +376,75 @@ class AuditedSandbox:
             self._roots.popitem(last=False)
         if active.root is None:
             active.root = pid
+
+    async def _files(self, exec_id: str | None, *, always: bool) -> list[Payload]:
+        """Diff the sandbox's volumes, keeping the bytes of changed files as blobs."""
+        try:
+            tree = await self.sandbox.tree()
+        except Exception as e:
+            log.warning("file snapshot failed: %s", e)
+            return [AuditLost(count=None, reason=f"file snapshot failed: {e}")]
+        if tree is None:
+            return []
+        changes: list[FsChange] = []
+        for c in tree.changes:
+            content = None if c.data is None else await self._store.put_blob(self._run_id, c.data)
+            changes.append(
+                FsChange(
+                    path=c.path,
+                    change=c.change,
+                    kind=c.kind,
+                    size=c.size,
+                    mode=c.mode,
+                    mtime_us=c.mtime_us,
+                    sha256=c.sha256,
+                    content=content,
+                    target=c.target,
+                    timestomp=c.timestomp,
+                )
+            )
+        base, self._digest = self._digest, tree.digest
+        if not changes and not always:
+            return []
+        more = None
+        if len(changes) > CHANGES:
+            lines = "".join(f"{c.model_dump_json()}\n" for c in changes[CHANGES:])
+            more = await self._store.put_blob(self._run_id, lines.encode())
+        snapshot = FsSnapshot(
+            exec_id=exec_id,
+            roots=list(tree.roots),
+            base=base,
+            digest=tree.digest,
+            entries=tree.entries,
+            files=tree.files,
+            bytes=tree.bytes,
+            total=len(changes),
+            changes=changes[:CHANGES],
+            more=more,
+            hashed_bytes=tree.hashed_bytes,
+            unhashed=tree.unhashed,
+            content_skipped=tree.content_skipped,
+            truncated=tree.truncated,
+            duration_ms=tree.duration_ms,
+        )
+        return [snapshot]
+
+    async def _spill_events(self) -> list[Payload]:
+        spills, self._spills, self._spill_bytes = self._spills, {}, 0
+        out: list[Payload] = []
+        for owner, spill in spills.items():
+            records = await self._store.put_blob(self._run_id, bytes(spill.data))
+            out.append(
+                AuditSpill(
+                    exec_id=owner,
+                    count=spill.count,
+                    kinds=spill.kinds,
+                    records=records,
+                    ts_from=spill.ts_from,
+                    ts_to=spill.ts_to,
+                )
+            )
+        return out
 
     async def _content(self, data: bytes) -> Content:
         if len(data) <= INLINE_LIMIT:
@@ -447,6 +547,8 @@ class AuditedSandbox:
                     self._oom.add(pid)
                 case File():
                     self._on_file(record)
+                case Close():
+                    self._on_close(record)
                 case Net():
                     self._on_net(record)
                 case Denied():
@@ -488,16 +590,20 @@ class AuditedSandbox:
             active.exited.set()
         if record.pid in self._shown:
             self._shown.discard(record.pid)
-            self._emit_payload(
-                self._kernel(
-                    ProcExit,
-                    record,
-                    owner,
-                    exit_code=record.exit_code,
-                    signal=record.signal,
-                    oom=record.pid in self._oom,
-                )
+            payload = self._kernel(
+                ProcExit,
+                record,
+                owner,
+                exit_code=record.exit_code,
+                signal=record.signal,
+                oom=record.pid in self._oom,
             )
+            if record.pid in self._spilled:
+                self._spilled.discard(record.pid)
+                if not self._spill("procs", payload):
+                    self._scope(owner).dropped += 1
+            else:
+                self._emit_payload(payload)
         self._oom.discard(record.pid)
 
     def _on_file(self, record: File) -> None:
@@ -518,6 +624,18 @@ class AuditedSandbox:
             errno=record.errno,
             partial=record.partial,
         )
+        if self._admit(owner, "files", payload):
+            scope.seen.add(key)
+
+    def _on_close(self, record: Close) -> None:
+        owner = self._owner.get(record.pid)
+        if owner == INTERNAL:
+            return
+        key = ("close", record.pid, record.path, record.size)
+        scope = self._scope(owner)
+        if key in scope.seen:
+            return
+        payload = self._kernel(FileWrite, record, owner, path=record.path, size=record.size)
         if self._admit(owner, "files", payload):
             scope.seen.add(key)
 
@@ -584,20 +702,45 @@ class AuditedSandbox:
         )
 
     def _admit(self, owner: str | None, kind: str, payload: Payload) -> bool:
-        """Record `payload` unless its exec is internal or has used up its cap of `kind`."""
+        """Record `payload` unless its exec is internal. Past the cap of `kind` it is spilled.
+
+        True when the record was kept, in the log or in a spill.
+        """
         if owner == INTERNAL:
             return False
         scope = self._scope(owner)
         count = scope.counts.get(kind, 0)
         if count >= CAPS[kind]:
-            self._over_cap(scope, kind, payload)
-            return False
+            return self._over_cap(scope, kind, payload)
         scope.counts[kind] = count + 1
         self._emit_payload(payload)
         return True
 
-    def _over_cap(self, scope: _Scope, kind: str, payload: Payload) -> None:
-        scope.dropped += 1
+    def _over_cap(self, scope: _Scope, kind: str, payload: Payload) -> bool:
+        if not self._spill(kind, payload):
+            scope.dropped += 1
+            return False
+        scope.spilled += 1
+        if isinstance(payload, ProcExec):
+            self._spilled.add(payload.pid)
+        return True
+
+    def _spill(self, kind: str, payload: Payload) -> bool:
+        """Keep `payload` for its exec's `audit.spill` unless `SPILL_BYTES` are already pending."""
+        line = f'{{"type": {json.dumps(payload.type)}, "data": {payload.model_dump_json()}}}\n'
+        data = line.encode()
+        if self._spill_bytes + len(data) > SPILL_BYTES:
+            return False
+        self._spill_bytes += len(data)
+        spill = self._spills.setdefault(getattr(payload, "exec_id", None), _Spill())
+        spill.data += data
+        spill.count += 1
+        spill.kinds[kind] = spill.kinds.get(kind, 0) + 1
+        ts = getattr(payload, "ts_kernel", None)
+        if ts is not None:
+            spill.ts_from = ts if spill.ts_from is None else min(spill.ts_from, ts)
+            spill.ts_to = ts if spill.ts_to is None else max(spill.ts_to, ts)
+        return True
 
     def _emit_payload(self, payload: Payload) -> None:
         self._buffer.append(Draft(payload, agent_id=self._agent_id))

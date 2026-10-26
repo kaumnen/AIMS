@@ -29,9 +29,11 @@ from aims.sandbox.base import (
     Sample,
     SandboxInfo,
     SandboxSpec,
+    Tree,
     check_name,
 )
 from aims.sandbox.images import ensure_image, ensure_pulled
+from aims.sandbox.reader import Reader
 from aims.sandbox.resources import Sampler, SamplerError, Watch
 from aims.sandbox.trace import ARCHES, SYSCALLS, Mounts
 from aims.sandbox.tracer import Route, Tracer, TracerError
@@ -180,17 +182,36 @@ class DockerBackend:
                 "LogConfig": {"Type": "none"},
             },
         }
-        container = await self.docker.containers.create(
-            config=config, name=f"aims-{run_id}-{agent_id}"
-        )
+        name = f"aims-{run_id}-{agent_id}"
+        container = await self.docker.containers.create(config=config, name=name)
+        reader: Reader | str | None = None
         try:
             await container.start()
-            sandbox = await DockerSandbox.attach(self, container, spec, image, work)
+            reader = await self._reader(name, labels, volumes)
+            sandbox = await DockerSandbox.attach(self, container, spec, image, work, reader)
         except BaseException:
+            if isinstance(reader, Reader):
+                await reader.close()
             with contextlib.suppress(aiodocker.DockerError):
                 await container.delete(force=True)
             raise
         return sandbox
+
+    async def _reader(
+        self, name: str, labels: dict[str, str], volumes: list[tuple[str, str, bool]]
+    ) -> Reader | str:
+        """The sandbox's file reader, or why it could not start."""
+        try:
+            return await Reader.start(
+                self.docker,
+                self._toolbox_image,
+                f"{name}-reader",
+                [(volume, target) for volume, target, _ in volumes],
+                labels,
+            )
+        except (aiodocker.DockerError, OSError) as e:
+            log.error("file reader for %s did not start: %s", name, e)
+            return f"the file reader did not start: {e}"
 
     async def remove_run(self, run_id: str) -> None:
         """Delete the containers and volumes of one run."""
@@ -242,6 +263,7 @@ class DockerSandbox:
         work: str,
         shell: list[str],
         route: Route | None,
+        reader: Reader | str | None = None,
     ) -> None:
         self._backend = backend
         self._container = container
@@ -251,6 +273,7 @@ class DockerSandbox:
         self._shell = shell
         self._route = route
         self._watch: Watch | None = None
+        self._reader = reader
 
     @classmethod
     async def attach(
@@ -260,6 +283,7 @@ class DockerSandbox:
         spec: SandboxSpec,
         image: dict[str, Any],
         work: str,
+        reader: Reader | str | None = None,
     ) -> DockerSandbox:
         """Learn the sandbox's pid namespace and mounts, and hand them to the tracer."""
         probe = (
@@ -267,7 +291,8 @@ class DockerSandbox:
             "cat /proc/self/mountinfo"
         )
         capture = Capture(limit=MIB)
-        holder = cls(backend, container, spec, _info(container, spec, image), work, [], None)
+        info = _info(container, spec, image)
+        holder = cls(backend, container, spec, info, work, [], None, reader)
         outcome = await holder.run(
             [f"{TOOLBOX}/busybox", "sh", "-c", probe],
             uid=RUNNER_UID,
@@ -393,6 +418,13 @@ class DockerSandbox:
     def samples(self) -> asyncio.Queue[Sample | Lost] | None:
         return None if self._watch is None else self._watch.queue
 
+    async def tree(self) -> Tree | None:
+        if self._reader is None:
+            return None
+        if isinstance(self._reader, str):
+            raise SandboxError(self._reader)
+        return await self._reader.tree()
+
     async def pause(self) -> None:
         await self._container.pause()
 
@@ -420,6 +452,8 @@ class DockerSandbox:
         if self._route is not None and tracer is not None:
             tracer.unregister(self._route)
             self._route = None
+        if isinstance(self._reader, Reader):
+            await self._reader.close()
         with contextlib.suppress(aiodocker.DockerError):
             await self._container.delete(force=True)
         if not keep_volumes:

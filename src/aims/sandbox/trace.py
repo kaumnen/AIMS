@@ -12,9 +12,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
-from aims.sandbox.base import Exit, File, Fork, Kernel, Net, Oom, Stamp
+from aims.sandbox.base import Close, Exit, File, Fork, Kernel, Net, Oom, Stamp
 
 DEPTH = 12
+MAX_INT = 2**53 - 1
 
 _HEX = re.compile(r"^(?:\\x[0-9a-f]{2})*$")
 
@@ -366,6 +367,12 @@ def _refused(body: str, at: Stamp) -> File:
     pid, errno, path = body.split(" ", 2)
     relative = not path.startswith("/")
     return File(int(pid), "denied", path, errno=int(errno), partial=relative, at=at)
+
+
+@record("Z")
+def _close(body: str, at: Stamp) -> Close:
+    pid, size, path = body.split(" ", 2)
+    return Close(int(pid), min(int(size), MAX_INT), path, at=at)
 
 
 @record("D")

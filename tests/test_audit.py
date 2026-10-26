@@ -1,4 +1,5 @@
 import asyncio
+import json
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -6,8 +7,10 @@ from typing import Any
 import pytest
 
 from aims.events import (
+    AuditSpill,
     BlobRef,
     Event,
+    FsSnapshot,
     LocalEventStore,
     Proc,
     ResourceSample,
@@ -20,6 +23,8 @@ from aims.sandbox.base import (
     AGENT_UID,
     RUNNER_UID,
     Capture,
+    Change,
+    Close,
     Denied,
     Exec,
     Exit,
@@ -34,6 +39,7 @@ from aims.sandbox.base import (
     SandboxInfo,
     SandboxSpec,
     Stamp,
+    Tree,
 )
 
 pytestmark = pytest.mark.anyio
@@ -53,6 +59,7 @@ class FakeSandbox:
         self.runs: list[list[str]] = []
         self.procs: list[Proc] = []
         self.after: list[Proc] | None = None
+        self.trees: list[Tree | Exception] | None = None
         self.killed = False
         self.closed = False
 
@@ -92,6 +99,14 @@ class FakeSandbox:
 
     def samples(self) -> asyncio.Queue[Sample | Lost] | None:
         return self.sample_queue
+
+    async def tree(self) -> Tree | None:
+        if self.trees is None:
+            return None
+        tree = self.trees.pop(0)
+        if isinstance(tree, Exception):
+            raise tree
+        return tree
 
     async def pause(self) -> None:
         pass
@@ -177,8 +192,8 @@ async def start(
     return run_id, audited
 
 
-async def events(store: LocalEventStore, run_id: str) -> list[Event]:
-    return await store.events(run_id, limit=1000)
+async def events(store: LocalEventStore, run_id: str, *types: str) -> list[Event]:
+    return await store.events(run_id, limit=1000, types=types)
 
 
 def kinds(evs: list[Event]) -> list[str]:
@@ -286,7 +301,12 @@ async def test_root_seen_before_its_pid_is_known(store: LocalEventStore) -> None
     assert [e.data["exec_id"] for e in procs] == [result.finished.exec_id] * 2
 
 
-async def test_caps_count_what_they_drop(
+def spilled(data: bytes) -> list[tuple[str, dict]]:
+    lines = [json.loads(line) for line in data.decode().splitlines()]
+    return [(line["type"], line["data"]) for line in lines]
+
+
+async def test_caps_spill_what_they_do_not_log(
     store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setitem(audit_module.CAPS, "procs", 3)
@@ -294,7 +314,8 @@ async def test_caps_count_what_they_drop(
     sb = FakeSandbox()
     kids = [child(101 + i, 100, "c") for i in range(4)]
     files = [File(101, "write", f"/work/{i}", at=AT) for i in range(4)]
-    sb.steps.append(step(root(100), *kids, *files, Exit(100, 0, None, at=AT)))
+    exits = [Exit(104, 0, None, at=AT), Exit(100, 0, None, at=AT)]
+    sb.steps.append(step(root(100), *kids, *files, File(101, "write", "/work/3", at=AT), *exits))
     run_id, audited = await start(store, sb)
     result = await audited.exec("make", timeout_s=5)
     await audited.close()
@@ -302,8 +323,48 @@ async def test_caps_count_what_they_drop(
     evs = await events(store, run_id)
     assert kinds(evs).count("proc.exec") == 3
     assert kinds(evs).count("file.access") == 2
-    assert result.finished.procs == 3
-    assert result.finished.dropped == 4
+    assert kinds(evs)[-3:] == ["audit.spill", "exec.finished", "sandbox.stopped"]
+    assert (result.finished.procs, result.finished.spilled, result.finished.dropped) == (3, 4, 0)
+    spill = evs[-3].payload()
+    assert isinstance(spill, AuditSpill)
+    assert spill.exec_id == result.finished.exec_id
+    assert (spill.count, spill.kinds, spill.ts_from, spill.ts_to) == (
+        5,
+        {"procs": 3, "files": 2},
+        42,
+        42,
+    )
+    records = spilled(await store.get_blob(run_id, spill.records.sha256))
+    assert [(t, d.get("pid"), d.get("path")) for t, d in records] == [
+        ("proc.exec", 103, "c"),
+        ("proc.exec", 104, "c"),
+        ("file.access", 101, "/work/2"),
+        ("file.access", 101, "/work/3"),
+        ("proc.exit", 104, None),
+    ]
+    assert all(d["exec_id"] == result.finished.exec_id for _, d in records)
+
+
+async def test_spill_is_bounded_and_late_records_still_spill(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(audit_module.CAPS, "files", 1)
+    monkeypatch.setattr(audit_module, "SPILL_BYTES", 600)
+    sb = FakeSandbox()
+    files = [File(100, "write", f"/work/{i}", at=AT) for i in range(6)]
+    sb.steps.append(step(root(100), *files))
+    run_id, audited = await start(store, sb)
+    result = await audited.exec("x", timeout_s=5)
+    sb.queue.put_nowait(File(100, "write", "/work/late", at=AT))
+    await asyncio.sleep(0.2)
+    await audited.close()
+
+    finished = result.finished
+    assert finished.spilled + finished.dropped == 5
+    assert finished.dropped > 0
+    spills = [e.payload() for e in await events(store, run_id, "audit.spill")]
+    assert [s.count for s in spills if isinstance(s, AuditSpill)] == [finished.spilled, 1]
+    assert all(isinstance(s, AuditSpill) and s.exec_id == finished.exec_id for s in spills)
 
 
 async def test_losses_are_reported_once_per_flush(store: LocalEventStore) -> None:
@@ -536,3 +597,97 @@ async def test_stop_records_the_open_window_first(store: LocalEventStore) -> Non
     kinds = [e.type for e in await store.events(run_id, limit=1000)]
     assert kinds[-2:] == ["resource.sample", "sandbox.stopped"]
     assert kinds.count("sandbox.stopped") == 1
+
+
+def tree(digest: str, *changes: Change, **counts: Any) -> Tree:
+    fields: dict[str, Any] = {
+        "entries": 3,
+        "files": 2,
+        "bytes": 10,
+        "hashed_bytes": 0,
+        "unhashed": 0,
+        "content_skipped": 0,
+        "truncated": False,
+        "duration_ms": 1,
+    } | counts
+    return Tree(roots=("/work",), digest=digest, changes=changes, **fields)
+
+
+def change(path: str, kind: Any = "modified", data: bytes | None = None) -> Change:
+    return Change(path, kind, "file", len(data or b""), 0o644, 1, "ab" * 32, data)
+
+
+async def test_file_writes_are_recorded_once_per_size(store: LocalEventStore) -> None:
+    sb = FakeSandbox()
+    closes = [Close(101, size, "/work/log", at=AT) for size in (3, 3, 9)]
+    sb.steps.append(step(root(100), Fork(100, 101, at=AT), *closes, Exit(100, 0, None, at=AT)))
+    run_id, audited = await start(store, sb)
+    result = await audited.exec("x", timeout_s=5)
+    await audited.close()
+
+    writes = [e.data for e in await events(store, run_id, "file.write")]
+    assert writes == [
+        {"exec_id": result.finished.exec_id, "pid": 101, "path": "/work/log", "size": s, **STAMP}
+        for s in (3, 9)
+    ]
+
+
+async def test_trees_record_each_window(store: LocalEventStore) -> None:
+    sb = FakeSandbox(kernel=False)
+    sb.trees = [
+        tree("d0", change("/work/task.py", "added", b"task")),
+        tree("d0"),
+        tree("d1", change("/work/scorer.py", data=b"rigged"), change("/work/x", "removed")),
+        tree("d2", change("/work/late", "added", b"bg")),
+    ]
+    sb.steps.append(step())
+    run_id, audited = await start(store, sb)
+    result = await audited.exec("x", timeout_s=5)
+    await audited.close()
+
+    evs = await events(store, run_id)
+    assert kinds(evs) == [
+        "run.started",
+        "sandbox.started",
+        "fs.snapshot",
+        "exec.started",
+        "fs.snapshot",
+        "exec.finished",
+        "fs.snapshot",
+        "sandbox.stopped",
+    ]
+    snaps = [e.payload() for e in evs if e.type == "fs.snapshot"]
+    assert all(isinstance(s, FsSnapshot) for s in snaps)
+    first, during, after = (s for s in snaps if isinstance(s, FsSnapshot))
+    assert (first.exec_id, first.base, first.digest) == (None, None, "d0")
+    assert (during.exec_id, during.base, during.digest) == (result.finished.exec_id, "d0", "d1")
+    assert (after.exec_id, after.base) == (None, "d1")
+    scorer, removed = during.changes
+    assert scorer.content is not None
+    assert await store.get_blob(run_id, scorer.content.sha256) == b"rigged"
+    assert (removed.change, removed.content) == ("removed", None)
+    assert (await store.verify(run_id)).ok
+
+
+async def test_tree_overflow_and_failures(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(audit_module, "CHANGES", 2)
+    sb = FakeSandbox(kernel=False)
+    many = [change(f"/work/{i}", "added") for i in range(5)]
+    sb.trees = [tree("d0", *many), RuntimeError("reader gone"), tree("d1"), tree("d1")]
+    sb.steps.append(step())
+    run_id, audited = await start(store, sb)
+    await audited.exec("x", timeout_s=5)
+    await audited.close()
+
+    evs = await events(store, run_id)
+    first = evs[2].payload()
+    assert isinstance(first, FsSnapshot)
+    assert (first.total, len(first.changes)) == (5, 2)
+    assert first.more is not None
+    rest = (await store.get_blob(run_id, first.more.sha256)).decode().splitlines()
+    assert [json.loads(r)["path"] for r in rest] == ["/work/2", "/work/3", "/work/4"]
+    lost = [e.data["reason"] for e in evs if e.type == "audit.lost"]
+    assert lost == ["file snapshot failed: reader gone"]
+    assert kinds(evs).count("fs.snapshot") == 2

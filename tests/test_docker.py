@@ -1,16 +1,23 @@
 import asyncio
 import io
+import json
 import os
+import re
 import tarfile
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
+import aiodocker
 import pytest
 
 from aims.events import (
+    AuditSpill,
     Event,
     FileAccess,
+    FileWrite,
+    FsChange,
+    FsSnapshot,
     KernelPayload,
     LocalEventStore,
     NetConnect,
@@ -21,6 +28,7 @@ from aims.events import (
     SysDenied,
 )
 from aims.sandbox import AuditedSandbox, DockerBackend, Mount, SandboxSpec
+from aims.sandbox import audit as audit_module
 
 pytestmark = [pytest.mark.anyio, pytest.mark.docker]
 
@@ -372,3 +380,178 @@ async def test_odd_file_names_keep_their_bytes(
         ("rename", "/work/a b\\xff", "/work/c\nd"),
         ("delete", "/work/c\nd", None),
     } <= seen
+
+
+async def snapshots(store: LocalEventStore, run_id: str) -> list[FsSnapshot]:
+    found = [e.payload() for e in await events(store, run_id, "fs.snapshot")]
+    return [s for s in found if isinstance(s, FsSnapshot)]
+
+
+def changed(snapshot: FsSnapshot) -> dict[str, FsChange]:
+    return {c.path: c for c in snapshot.changes}
+
+
+async def test_file_contents_are_diffed_per_exec(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    run_id, sb = await sandbox(backend, store)
+    try:
+        await sb.exec("echo 'def score(): return 0' > scorer.py && echo x > gone", timeout_s=20)
+        result = await sb.exec(
+            "echo 'def score(): return 1' > scorer.py && touch -d '2001-01-01' scorer.py && "
+            "echo s3cret > secret && chmod 000 secret && rm gone && ln -s scorer.py link",
+            timeout_s=20,
+        )
+    finally:
+        await sb.close()
+
+    snaps = await snapshots(store, run_id)
+    assert [s.exec_id is None for s in snaps[:1]] == [True]
+    last = next(s for s in snaps if s.exec_id == result.finished.exec_id)
+    assert last.base == snaps[snaps.index(last) - 1].digest
+    files = changed(last)
+    scorer, secret = files["/work/scorer.py"], files["/work/secret"]
+    assert (scorer.change, scorer.timestomp) == ("modified", True)
+    assert scorer.content is not None
+    assert await store.get_blob(run_id, scorer.content.sha256) == b"def score(): return 1\n"
+    assert (secret.change, secret.mode) == ("added", 0)
+    assert secret.content is not None
+    assert await store.get_blob(run_id, secret.content.sha256) == b"s3cret\n"
+    assert files["/work/gone"].change == "removed"
+    assert (files["/work/link"].kind, files["/work/link"].target) == ("symlink", "scorer.py")
+    assert (await store.verify(run_id)).ok
+
+
+async def test_shared_volume_changes_land_in_the_next_window(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    run_id = await store.create_run(RunStarted(scenario="t", oversight="observe"))
+    spec = SandboxSpec(image=IMAGE, mounts=[Mount(volume="shared", target="/shared")])
+    a = await AuditedSandbox.start(backend, spec, store, run_id=run_id, agent_id="a1")
+    b = await AuditedSandbox.start(backend, spec, store, run_id=run_id, agent_id="a2")
+    try:
+        await a.exec("echo plan > /shared/msg", timeout_s=10)
+        result = await b.exec("cat /shared/msg", timeout_s=10)
+    finally:
+        await a.close()
+        await b.close()
+        await backend.remove_run(run_id)
+
+    evs = await events(store, run_id, "fs.snapshot", "exec.started")
+    mine = [e for e in evs if e.agent_id == "a2"]
+    started = next(i for i, e in enumerate(mine) if e.type == "exec.started")
+    window = mine[started - 1].payload()
+    assert isinstance(window, FsSnapshot)
+    assert window.exec_id is None
+    assert "/shared/msg" in changed(window)
+    own = [e.payload() for e in mine[started + 1 :]]
+    assert all(
+        isinstance(p, FsSnapshot) and p.exec_id == result.finished.exec_id and not p.changes
+        for p in own
+    )
+
+
+async def test_snapshot_audit_diffs_files_too(store: LocalEventStore) -> None:
+    async with await DockerBackend.open(audit="snapshot") as plain:
+        run_id, sb = await sandbox(plain, store)
+        try:
+            result = await sb.exec("echo hi > note", timeout_s=10)
+        finally:
+            await sb.close()
+
+    assert result.finished.procs is None
+    last = (await snapshots(store, run_id))[-1]
+    assert last.exec_id == result.finished.exec_id
+    assert changed(last)["/work/note"].change == "added"
+
+
+async def test_reader_is_locked_down_and_removed(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    run_id, sb = await sandbox(backend, store)
+    name = f"aims-{run_id}-a1-reader"
+    try:
+        info = await backend.docker.containers.get(name)
+        host = (await info.show())["HostConfig"]
+    finally:
+        await sb.close()
+
+    assert host["CapDrop"] == ["ALL"]
+    assert host["CapAdd"] == ["DAC_READ_SEARCH"]
+    assert host["ReadonlyRootfs"] is True
+    assert host["NetworkMode"] == "none"
+    assert host["SecurityOpt"] == ["no-new-privileges"]
+    assert all(m["ReadOnly"] for m in host["Mounts"])
+    with pytest.raises(aiodocker.DockerError):
+        await backend.docker.containers.get(name)
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_kernel_records_file_writes_and_self_probes(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    command = (
+        "echo a > out && echo bb >> out && "
+        "cat /proc/self/status /proc/1/cmdline /proc/self/mountinfo /proc/self/environ "
+        "/proc/meminfo /sys/fs/cgroup/cpu.max > /dev/null; "
+        "for i in 1 2 3; do sleep 30 & done; /.aims/busybox ps > /dev/null; kill $(jobs -p)"
+    )
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+
+    exec_id = result.finished.exec_id
+    writes = [e.payload() for e in await events(store, run_id, "file.write")]
+    sizes = [p.size for p in writes if isinstance(p, FileWrite) and p.path == "/work/out"]
+    assert sizes == [2, 5]
+    assert all(isinstance(p, FileWrite) and p.exec_id == exec_id for p in writes)
+    reads = {
+        p.path
+        for p in (e.payload() for e in await events(store, run_id, "file.access"))
+        if isinstance(p, FileAccess) and p.op == "read"
+    }
+    procs = {re.sub(r"^/proc/(?!1/)\d+/", "/proc/N/", p) for p in reads if p.startswith("/proc/")}
+    assert {
+        "/proc/N/status",
+        "/proc/1/cmdline",
+        "/proc/N/mountinfo",
+        "/proc/N/environ",
+        "/proc/1/stat",
+    } <= procs
+    assert "/sys/fs/cgroup/cpu.max" in reads
+    assert "/proc/meminfo" not in reads
+    assert not [p for p in procs if p.endswith("/stat") and p != "/proc/1/stat"]
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_over_cap_records_spill_to_a_blob(
+    backend: DockerBackend, store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(audit_module.CAPS, "files", 20)
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec("for i in $(seq 100); do echo $i > f$i; done", timeout_s=30)
+        await asyncio.sleep(0.5)
+    finally:
+        await sb.close()
+
+    finished = result.finished
+    assert finished.dropped == 0
+    assert finished.spilled > 0
+    spills = [e.payload() for e in await events(store, run_id, "audit.spill")]
+    spills = [s for s in spills if isinstance(s, AuditSpill)]
+    lines = []
+    for s in spills:
+        lines += (await store.get_blob(run_id, s.records.sha256)).decode().splitlines()
+    paths = {json.loads(line)["data"]["path"] for line in lines}
+    kept = {
+        p.path
+        for p in (e.payload() for e in await events(store, run_id, "file.access", "file.write"))
+        if isinstance(p, FileAccess | FileWrite)
+    }
+    assert {f"/work/f{i}" for i in range(1, 101)} <= paths | kept
+    assert sum(s.count for s in spills) >= finished.spilled
