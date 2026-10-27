@@ -92,9 +92,15 @@ tracepoint:sched:sched_process_exec /@sandbox[cgroup]/ {
     buf(uptr(curtask->mm->arg_start), $len));
 }
 
-tracepoint:sched:sched_process_exit /@sandbox[cgroup] && curtask->pid == curtask->tgid/ {
+// Once per process, when its last thread exits: an exec from a thread kills the old leader but
+// not the process. Two threads exiting together can both see 0; the tracer drops the repeat.
+// The status is the one wait() reports. live is read by offset: naming its anonymous atomic_t
+// struct here makes bpftrace lose struct filename's anonymous head on 7.0 BTF.
+tracepoint:sched:sched_process_exit /@sandbox[cgroup] && *(int32 *)((uint64)curtask->signal + offsetof(struct signal_struct, live)) == 0/ {
+  $sg = curtask->signal;
+  $c = ($sg->flags & 4) ? $sg->group_exit_code : curtask->group_leader->exit_code;
   $s = @seq[cpu] + 1; @seq[cpu] = $s;
-  printf("X %llu %llu %llu %d %d %d\n", nsecs(boot), cpu, $s, curtask->tgid, (curtask->exit_code >> 8) & 0xff, curtask->exit_code & 0x7f);
+  printf("X %llu %llu %llu %d %d %d\n", nsecs(boot), cpu, $s, curtask->tgid, ($c >> 8) & 0xff, $c & 0x7f);
 }
 
 tracepoint:oom:mark_victim {

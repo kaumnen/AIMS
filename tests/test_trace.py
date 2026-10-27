@@ -696,6 +696,42 @@ async def test_exited_pids_route_until_reused() -> None:
 
 
 @pytest.mark.anyio
+async def test_a_process_exits_once_when_its_last_thread_does() -> None:
+    """Two threads exiting together can both see the group die; the second exit is dropped."""
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    route = tracer.register(99, Mounts.parse(MOUNTINFO), SYSCALLS["aarch64"])
+    feed = Feed(tracer)
+    feed("R 0 999")
+    feed(f"E 10 1 1 1000 99 5 3 {hx(b'sh\0')}")
+    drain(route)
+    s = feed("X 10 3 0")
+    feed("X 10 3 0")
+    t = feed(release(10, 4, TMP, "out"))
+
+    assert drain(route) == [Exit(10, 3, None, at=s), Close(10, 4, "/tmp/out", at=t)]
+    assert (tracer.unrouted, tracer.foreign) == (0, 0)
+    await tracer.stop()
+
+
+@pytest.mark.anyio
+async def test_exited_pids_stop_routing_after_a_while() -> None:
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    route = tracer.register(99, Mounts.parse(MOUNTINFO), SYSCALLS["aarch64"])
+    feed = Feed(tracer)
+    feed("R 0 999")
+    feed(f"E 10 1 1 1000 99 5 3 {hx(b'sh\0')}")
+    feed("X 10 0 0")
+    drain(route)
+    tick(tracer, tracer_module.GONE_US + 1_000, 7, 1)
+    feed("W 10 /work/late")
+    tick(tracer, tracer_module.GONE_US + 2_000_000, 7, 2)
+
+    assert drain(route) == []
+    assert tracer.unrouted == 1
+    await tracer.stop()
+
+
+@pytest.mark.anyio
 async def test_tracer_resolves_new_records() -> None:
     tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
     route = tracer.register(99, Mounts.parse(MOUNTINFO), SYSCALLS["aarch64"])

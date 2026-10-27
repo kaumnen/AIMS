@@ -3,6 +3,7 @@ import io
 import json
 import os
 import re
+import shlex
 import tarfile
 from collections import Counter
 from collections.abc import AsyncIterator
@@ -546,6 +547,101 @@ async def test_exec_hash_of_every_captured_root(
     changes = changed(last)
     for path, digest in expected.items():
         assert changes[path].sha256 == digest, path
+
+
+THREAD_EXEC = (
+    'cp /bin/ls /tmp/evil && python3 -c "import os, threading; t = threading.Thread('
+    "target=lambda: os.execv('/tmp/evil', ['/usr/bin/ls', '-d', '/work'])); t.start(); t.join()\"; "
+    "sha256sum /tmp/evil"
+)
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_an_exec_from_a_thread_logs_the_file_it_runs(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    """The old leader dies in the exec, but the process lives on: no exit before the exec."""
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(THREAD_EXEC, timeout_s=20)
+    finally:
+        await sb.close()
+        await backend.remove_run(run_id)
+
+    digest = result.stdout.split()[-2].decode()
+    evs = await events(store, run_id, "proc.exec", "proc.exit")
+    payloads = [e.payload() for e in evs]
+    ls = next(p for p in payloads if isinstance(p, ProcExec) and p.argv[0] == "/usr/bin/ls")
+    assert (ls.path, ls.sha256) == ("/tmp/evil", digest)
+    assert ls.inode is not None
+    mine = [p for p in payloads if isinstance(p, KernelPayload) and p.pid == ls.pid]
+    assert [type(p) for p in mine] == [ProcExec, ProcExec, ProcExit]
+    assert isinstance(mine[-1], ProcExit)
+    assert mine[-1].exit_code == 0
+
+
+THREAD_EXITS = {
+    # exit_group from a thread
+    "group": (
+        "import os, threading; threading.Thread(target=lambda: os._exit(3)).start(); "
+        "threading.Event().wait()"
+    ),
+    # the leader exits first, then the last thread calls exit_group
+    "leader": (
+        "import ctypes, os, threading, time; threading.Thread(target=lambda: (time.sleep(0.3), "
+        "open('/work/after', 'w').write('x'), os._exit(7))).start(); "
+        "ctypes.CDLL(None).pthread_exit(None)"
+    ),
+    # the leader exits first, then the last thread ends with a plain exit
+    "thread": (
+        "import ctypes, os, threading, time; libc = ctypes.CDLL(None); "
+        "nr = {'x86_64': 60, 'aarch64': 93}[os.uname().machine]; "
+        "threading.Thread(target=lambda: (time.sleep(0.3), libc.syscall(nr, 5))).start(); "
+        "libc.pthread_exit(None)"
+    ),
+    # a thread kills the process
+    "killed": (
+        "import os, threading; threading.Thread(target=lambda: os.kill(os.getpid(), 9)).start(); "
+        "threading.Event().wait()"
+    ),
+}
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_threaded_exits_report_what_wait_sees(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    command = "; ".join(
+        f"python3 -c {shlex.quote(code)} {name}; echo {name} $?"
+        for name, code in THREAD_EXITS.items()
+    )
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(command, timeout_s=30)
+    finally:
+        await sb.close()
+        await backend.remove_run(run_id)
+
+    waited = dict(line.split() for line in result.stdout.decode().splitlines())
+    assert waited == {"group": "3", "leader": "7", "thread": "5", "killed": "137"}
+    payloads = [e.payload() for e in await events(store, run_id)]
+    pids = {
+        p.argv[-1]: p.pid for p in payloads if isinstance(p, ProcExec) and p.argv[:1] == ["python3"]
+    }
+    exits = {p.pid: (p.exit_code, p.signal) for p in payloads if isinstance(p, ProcExit)}
+    got = {name: exits.get(pid) for name, pid in pids.items()}
+    assert got == {
+        "group": (3, None),
+        "leader": (7, None),
+        "thread": (5, None),
+        "killed": (None, 9),
+    }
+    writes = [p for p in payloads if isinstance(p, FileAccess) and p.path == "/work/after"]
+    assert [(p.pid, p.exec_id) for p in writes] == [(pids["leader"], result.finished.exec_id)]
+    leader = [p for p in payloads if isinstance(p, KernelPayload) and p.pid == pids["leader"]]
+    assert sum(isinstance(p, ProcExit) for p in leader) == 1
 
 
 async def test_file_contents_are_diffed_per_exec(

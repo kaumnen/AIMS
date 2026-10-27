@@ -69,6 +69,8 @@ PMU_S = 60
 # more than a second after that: every cpu ticks in phase, a little under a second apart, so
 # that can take two ticks.
 RIPE_US = 4_500_000
+# An exited pid stays routable this long for the records its exit leaves, such as closes.
+GONE_US = 10_000_000
 # Kernels from 6.15 split pipe_write into anon_pipe_write and fifo_pipe_write, 7.0 renamed
 # do_filp_open to do_file_open, and FMODE_BACKING is bit 24 from 6.14 and bit 25 before.
 TRACE = (
@@ -167,7 +169,8 @@ class Tracer:
         self._ready: asyncio.Future[int] = asyncio.get_running_loop().create_future()
         self._routes: dict[int, Route] = {}
         self._pids: dict[int, Route] = {}
-        self._gone: OrderedDict[int, Route] = OrderedDict()
+        # Exited pids, with the stream time of their exit.
+        self._gone: OrderedDict[int, tuple[Route, int]] = OrderedDict()
         self._foreign: OrderedDict[int, None] = OrderedDict()
         self._held: OrderedDict[int, _Held] = OrderedDict()
         self._ts = 0
@@ -266,7 +269,7 @@ class Tracer:
         for pid in [p for p, r in self._pids.items() if r is route]:
             del self._pids[pid]
             self._disown(pid)
-        for pid in [p for p, r in self._gone.items() if r is route]:
+        for pid in [p for p, (r, _) in self._gone.items() if r is route]:
             del self._gone[pid]
             self._disown(pid)
 
@@ -420,6 +423,8 @@ class Tracer:
             case RawExec():
                 self._exec(item)
             case Exit(pid):
+                if pid in self._gone and pid not in self._pids:
+                    return
                 self._parts.pop(pid, None)
                 self._env.pop(pid, None)
                 self._env_bytes.pop(pid, None)
@@ -431,7 +436,7 @@ class Tracer:
                         self._count(held)
                 else:
                     route.put(item)
-                    self._gone[pid] = route
+                    self._gone[pid] = (route, self._ts)
                     self._gone.move_to_end(pid)
                     if len(self._gone) > MEMORY:
                         self._gone.popitem(last=False)
@@ -554,13 +559,18 @@ class Tracer:
     def _lookup(self, pid: int) -> Route | None:
         """The route of `pid`, also for a while after it exits: its files close after its exit."""
         route = self._pids.get(pid)
-        return self._gone.get(pid) if route is None else route
+        if route is None and pid in self._gone:
+            route = self._gone[pid][0]
+        return route
 
     def _expire(self) -> None:
         cutoff = self._sequence.latest - 1_000_000
         self._gaps(self._sequence.expire(cutoff))
         while self._held and next(iter(self._held.values())).ts < cutoff:
             self._count(self._held.popitem(last=False)[1])
+        gone = self._sequence.latest - GONE_US
+        while self._gone and next(iter(self._gone.values()))[1] < gone:
+            self._gone.popitem(last=False)
 
     def _gaps(self, gaps: list[Gap]) -> None:
         for gap in gaps:
