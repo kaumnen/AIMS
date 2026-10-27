@@ -52,6 +52,7 @@ tracepoint:sched:sched_process_exec /@sandbox[cgroup]/ {
   $tp = curtask->thread_pid;
   $ns = $tp->numbers[1].nr;
   $inum = $tp->numbers[1].ns->ns.inum;
+  if ($tp->level == 0) { $ns = $tp->numbers[0].nr; $inum = $tp->numbers[0].ns->ns.inum; }
   if ($tp->level == 2) { $ns = $tp->numbers[2].nr; $inum = $tp->numbers[2].ns->ns.inum; }
   if ($tp->level == 3) { $ns = $tp->numbers[3].nr; $inum = $tp->numbers[3].ns->ns.inum; }
   $len = curtask->mm->arg_end - curtask->mm->arg_start;
