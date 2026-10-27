@@ -106,6 +106,9 @@ def namespaces(flags: int) -> tuple[str, ...]:
 
 
 _HEX = re.compile(r"^(?:\\x[0-9a-f]{2})*$")
+# bpftrace's JSON escape assumes an unsigned char, so on x86_64 a byte from 0x80 up arrives as
+# U+FFFF followed by `ff` and the byte in hex.
+_SIGNED = re.compile("\uffffff([89a-f][0-9a-f])")
 
 SYSCALLS: dict[str, dict[int, str]] = {
     "aarch64": {
@@ -450,6 +453,7 @@ def parse(line: str) -> Item | Dropped | Garbled | Note | None:
         return Dropped(int(data.get("events", 0)))
     if kind != "printf" or not isinstance(data, str):
         return None
+    data = _SIGNED.sub(lambda m: chr(0xDC00 + int(m.group(1), 16)), data)
     text = (
         data.removesuffix("\n").encode("utf-8", "surrogateescape").decode(errors="backslashreplace")
     )

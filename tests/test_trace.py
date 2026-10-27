@@ -225,6 +225,11 @@ def test_paths_at_the_string_cap_are_partial() -> None:
         )
 
 
+def test_bytes_bpftrace_escapes_on_x86_are_restored() -> None:
+    raw = r'{"type": "printf", "data": "W 5000 0 1 10 /a b\uffffffff caf\uffffffc3\uffffffa9\n"}'
+    assert parse(raw) == File(10, "write", "/a b\\xff café", at=PARSED)
+
+
 def test_odd_bytes_never_hide_a_cut_path() -> None:
     odd = "/work/" + "\\xff" * (STRLEN // 4)
     item = parse(line(f"W 10 {odd}"))
