@@ -3,7 +3,7 @@ import contextlib
 import dataclasses
 import logging
 import posixpath
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -164,6 +164,8 @@ class Tracer:
         self.alive = False
         self.garbled = 0
         self.unrouted = 0
+        self.unrouted_lines: deque[str] = deque(maxlen=32)
+        self._line = ""
         self.clock: tuple[int, int] | None = None
         self.kernel_lost = 0
         self.located = 0
@@ -296,6 +298,7 @@ class Tracer:
             self.unlocated = excess
 
     def _handle(self, line: str) -> None:
+        self._line = line
         item = parse(line)
         at = getattr(item, "at", None)
         if at is not None:
@@ -386,7 +389,7 @@ class Tracer:
                 self._env_bytes.pop(pid, None)
                 route = self._pids.pop(pid, None)
                 if route is None:
-                    self.unrouted += 1
+                    self._unrouted()
                 else:
                     route.put(item)
                     self._gone[pid] = route
@@ -477,8 +480,13 @@ class Tracer:
     def _route(self, pid: int) -> Route | None:
         route = self._lookup(pid)
         if route is None:
-            self.unrouted += 1
+            self._unrouted()
         return route
+
+    def _unrouted(self) -> None:
+        """Count a record no sandbox claimed, keeping the latest lines to show what they were."""
+        self.unrouted += 1
+        self.unrouted_lines.append(self._line)
 
     def _lookup(self, pid: int) -> Route | None:
         """The route of `pid`, also for a while after it exits: its files close after its exit."""
@@ -506,7 +514,7 @@ class Tracer:
                 waiter.set_result(raw.pidns)
         route = self._routes.get(raw.pidns)
         if route is None:
-            self.unrouted += 1
+            self._unrouted()
             return
         self._pids[raw.pid] = route
         parts = self._parts.pop(raw.pid, {})

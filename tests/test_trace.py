@@ -574,6 +574,7 @@ async def test_tracer_routes_by_pid_namespace(monkeypatch: pytest.MonkeyPatch) -
     ]
     assert tracer.clock == (10, 0)
     assert tracer.garbled == 1
+    assert [json.loads(x)["data"][0] for x in tracer.unrouted_lines] == ["E", "W"]
     assert tracer.kernel_lost == 2
     assert await tracer.confirm(10, 99)
     assert await tracer.confirm(50, 77)
