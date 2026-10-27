@@ -65,13 +65,17 @@ READY_S = 120.0
 CONFIRM_S = 5.0
 PMU_S = 60
 SETTLE_S = 2.0
-# Kernels from 6.15 split pipe_write into anon_pipe_write and fifo_pipe_write.
+# Kernels from 6.15 split pipe_write into anon_pipe_write and fifo_pipe_write. FMODE_BACKING is
+# bit 24 from 6.14 and bit 25 before.
 TRACE = (
     "mountpoint -q /sys/kernel/tracing || mount -t tracefs nodev /sys/kernel/tracing; "
-    "f=/aims/trace.bt; "
+    "f=/tmp/trace.bt; cp /aims/trace.bt $f; "
     "if grep -qx anon_pipe_write /sys/kernel/tracing/available_filter_functions; then "
-    "sed 's/^fentry:vmlinux:pipe_write /fentry:vmlinux:anon_pipe_write, "
-    "fentry:vmlinux:fifo_pipe_write /' $f > /tmp/trace.bt && f=/tmp/trace.bt; fi; "
+    "sed -i 's/^fentry:vmlinux:pipe_write /fentry:vmlinux:anon_pipe_write, "
+    "fentry:vmlinux:fifo_pipe_write /' $f; fi; "
+    "v=$(uname -r); m=${v%%.*}; n=${v#*.}; n=${n%%.*}; "
+    'if [ "$m" -lt 6 ] || { [ "$m" -eq 6 ] && [ "$n" -lt 14 ]; }; then '
+    r"sed -i 's/f_mode & 0x1000000)/f_mode \& 0x2000000)/' $f; fi; "
     "exec bpftrace -B line -f json $f"
 )
 PMU_EVENTS = ("cpu-cycles", "instructions", "cache-misses")

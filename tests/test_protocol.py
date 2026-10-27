@@ -4,6 +4,7 @@ from aims.events.schema import _registry
 from aims.sandbox.base import TOOLBOX
 from aims.sandbox.images import ASSETS
 from aims.sandbox.trace import ENV_CAP, PARSERS, STRLEN
+from aims.sandbox.tracer import TRACE
 
 TAGS = set("RFBEXOWAUNCPD") | set("VGT") | set("Z") | set("Q") | set("IKSMHJL") | set("Y")
 TYPES = {
@@ -95,3 +96,16 @@ def test_string_cap_matches_the_script() -> None:
     script = (ASSETS / "tracer" / "trace.bt").read_text()
     assert f"max_strlen = {STRLEN}" in script
     assert f"while ($n < {STRLEN})" in script
+
+
+def test_overlay_filters_match_the_script() -> None:
+    script = (ASSETS / "tracer" / "trace.bt").read_text()
+    assert "!(args.file->f_mode & 0x1000000)" in script
+    assert "s/f_mode & 0x1000000)/" in TRACE
+    hooks = [
+        line
+        for line in script.splitlines()
+        if line.startswith(("fentry:vmlinux:security_inode_", "fentry:vmlinux:security_file_open"))
+    ]
+    assert len(hooks) == 8
+    assert all("curtask->cred == curtask->real_cred" in line for line in hooks)

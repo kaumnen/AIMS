@@ -102,7 +102,9 @@ tracepoint:oom:mark_victim {
   printf("O %llu %llu %llu %d\n", nsecs(boot), cpu, $s, args.pid);
 }
 
-fentry:vmlinux:security_file_open /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && (args.file->f_inode->i_mode & 0xF000) == 0x8000/ {
+// Overlayfs makes its upper-layer calls with overridden creds; cred == real_cred keeps only the
+// sandbox's own calls, not overlay's copy of them or its copy-up work.
+fentry:vmlinux:security_file_open /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && curtask->cred == curtask->real_cred && (args.file->f_inode->i_mode & 0xF000) == 0x8000/ {
   $p = path(args.file->f_path);
   if (args.file->f_mode & 2) {
     $s = @seq[cpu] + 1; @seq[cpu] = $s;
@@ -146,8 +148,9 @@ fentry:vmlinux:security_file_open /@sandbox[cgroup] && strncmp(comm, "runc:", 5)
 }
 
 // The last reference to a file, on every path: close(2) on 6.8+ never reaches filp_close, and an
-// exiting task releases its files after its X line.
-fentry:vmlinux:security_file_release /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && (args.file->f_mode & 2) && (args.file->f_inode->i_mode & 0xF000) == 0x8000/ {
+// exiting task releases its files after its X line. Overlay's backing files are skipped by
+// FMODE_BACKING, bit 24 from 6.14; the tracer swaps in bit 25 on older kernels.
+fentry:vmlinux:security_file_release /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && (args.file->f_mode & 2) && !(args.file->f_mode & 0x1000000) && (args.file->f_inode->i_mode & 0xF000) == 0x8000/ {
   $d = args.file->f_path.dentry;
   $x = $d; $k = 0;
   unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } }
@@ -167,7 +170,7 @@ fentry:vmlinux:security_file_release /@sandbox[cgroup] && strncmp(comm, "runc:",
     str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
 }
 
-fentry:vmlinux:security_inode_unlink, fentry:vmlinux:security_inode_rmdir /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0/ {
+fentry:vmlinux:security_inode_unlink, fentry:vmlinux:security_inode_rmdir /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && curtask->cred == curtask->real_cred/ {
   $d = args.dentry;
   $x = $d; $k = 0;
   unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } }
@@ -187,7 +190,7 @@ fentry:vmlinux:security_inode_unlink, fentry:vmlinux:security_inode_rmdir /@sand
     str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
 }
 
-fentry:vmlinux:security_inode_rename /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0/ {
+fentry:vmlinux:security_inode_rename /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && curtask->cred == curtask->real_cred/ {
   $o = args.old_dentry;
   $n = args.new_dentry;
   $x = $o; $ko = 0;
@@ -222,7 +225,7 @@ fentry:vmlinux:security_inode_rename /@sandbox[cgroup] && strncmp(comm, "runc:",
     str($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
 }
 
-fentry:vmlinux:security_inode_mkdir /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0/ {
+fentry:vmlinux:security_inode_mkdir /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && curtask->cred == curtask->real_cred/ {
   $d = args.dentry;
   $x = $d; $k = 0;
   unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } }
@@ -244,7 +247,7 @@ fentry:vmlinux:security_inode_mkdir /@sandbox[cgroup] && strncmp(comm, "runc:", 
 
 // The target is read up to its NUL, so bytes left in the buffer after it are never printed.
 // Its length is printed too: buf() keeps at most max_strlen - 4 bytes.
-fentry:vmlinux:security_inode_symlink /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0/ {
+fentry:vmlinux:security_inode_symlink /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && curtask->cred == curtask->real_cred/ {
   $d = args.dentry;
   $n = (uint64)0;
   while ($n < 384) { if (*(args.old_name + $n) == 0) { break; } $n++; }
@@ -267,7 +270,7 @@ fentry:vmlinux:security_inode_symlink /@sandbox[cgroup] && strncmp(comm, "runc:"
     str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
 }
 
-fentry:vmlinux:security_inode_link /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0/ {
+fentry:vmlinux:security_inode_link /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && curtask->cred == curtask->real_cred/ {
   $o = args.old_dentry;
   $n = args.new_dentry;
   $x = $o; $ko = 0;
@@ -351,7 +354,7 @@ fentry:vmlinux:security_socket_bind /@sandbox[cgroup] && strncmp(comm, "runc:", 
   }
 }
 
-fentry:vmlinux:security_inode_mknod /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && (args.mode & 0xF000) == 0x1000/ {
+fentry:vmlinux:security_inode_mknod /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && curtask->cred == curtask->real_cred && (args.mode & 0xF000) == 0x1000/ {
   $md = args.dentry;
   $mx = $md; $mk = 0;
   unroll(12) { if ($mx != $mx->d_parent) { $mk++; $mx = $mx->d_parent; } }
@@ -436,7 +439,7 @@ fentry:vmlinux:security_mmap_file /@sandbox[cgroup] && strncmp(comm, "runc:", 5)
     str($fd->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
 }
 
-fentry:vmlinux:security_inode_setattr /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0/ {
+fentry:vmlinux:security_inode_setattr /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && curtask->cred == curtask->real_cred/ {
   $sd = args.dentry;
   $sa = args.attr;
   $sx = $sd; $sk = 0;

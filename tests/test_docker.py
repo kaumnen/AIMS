@@ -4,6 +4,7 @@ import json
 import os
 import re
 import tarfile
+from collections import Counter
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -744,6 +745,44 @@ async def test_file_writes_are_recorded_on_every_close(
     exits = {p.pid: p.ts_kernel for p in kernel if isinstance(p, ProcExit)}
     assert exits[fork.pid] < writes[1].ts_kernel
     assert exits[python.pid] < writes[2].ts_kernel
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_writable_root_records_each_change_once(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    command = (
+        "mkdir /var/tmp/d && echo hi > /var/tmp/d/f && mv /var/tmp/d/f /var/tmp/d/g && "
+        "ln -s /var/tmp/d/g /var/tmp/d/s && ln /var/tmp/d/g /var/tmp/d/h && "
+        "chmod 600 /var/tmp/d/g && mkfifo /var/tmp/d/p && rm -r /var/tmp/d"
+    )
+    run_id, sb = await sandbox(backend, store, writable_root=True)
+    try:
+        result = await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+
+    assert result.finished.exit_code == 0
+    kernel = by_kernel_order(await events(store, run_id))
+    assert not [p for p in kernel if getattr(p, "partial", False)]
+    d = "/var/tmp/d"
+    seen = Counter(
+        (p.type, getattr(p, "op", None) or getattr(p, "kind", None), path)
+        for p in kernel
+        if isinstance(path := getattr(p, "path", None), str) and path.startswith(d)
+    )
+    assert seen == {
+        ("file.access", "mkdir", d): 1,
+        ("file.access", "write", f"{d}/f"): 1,
+        ("file.write", None, f"{d}/f"): 1,
+        ("file.access", "rename", f"{d}/f"): 1,
+        ("file.access", "symlink", f"{d}/s"): 1,
+        ("file.access", "link", f"{d}/h"): 1,
+        ("file.setattr", None, f"{d}/g"): 1,
+        ("ipc.event", "fifo", f"{d}/p"): 1,
+        **{("file.access", "delete", f"{d}{n}"): 1 for n in ("/s", "/h", "/p", "/g", "")},
+    }
 
 
 @pytest.mark.tracer
