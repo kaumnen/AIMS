@@ -5,6 +5,7 @@ from typing import Any, cast
 import aiodocker
 import pytest
 
+from aims.events import MAX_INT
 from aims.sandbox import execs as execs_module
 from aims.sandbox import tracer as tracer_module
 from aims.sandbox.base import (
@@ -51,6 +52,7 @@ from aims.sandbox.trace import (
     Rename,
     Sequence,
     Walk,
+    namespaces,
     parse,
 )
 from aims.sandbox.trace import (
@@ -288,6 +290,58 @@ def test_parse_exec_identity() -> None:
     )
 
 
+def test_large_numbers_are_clamped_to_the_canonical_range() -> None:
+    huge = 2**63 + 7
+    depth, text = walk("f", "_data", "aims-r-a1-work", "volumes", "docker")
+    walk_names = (b"f", b"_data", b"aims-r-a1-work", b"volumes", b"docker", b"/")
+    assert parse(line(f"I 10 g 2 {huge} {huge} {huge}")) == Ipc(
+        10, "shmget", "sysv", key=MAX_INT, size=MAX_INT, flags=MAX_INT, at=PARSED
+    )
+    assert parse(line(f"I 10 a 2 {huge} {huge}")) == Ipc(
+        10, "shmat", "sysv", id=MAX_INT, flags=MAX_INT, at=PARSED
+    )
+    assert parse(line(f"K 10 {huge} 16 -{huge}")) == Ptrace(
+        10, MAX_INT, "attach", True, MAX_INT, at=PARSED
+    )
+    assert parse(line(f"S 10 {huge} {huge}")) == Signal(10, MAX_INT, MAX_INT, at=PARSED)
+    assert parse(line(f"M 10 x {huge} {huge} /memfd:x")) == Mem(
+        10, "exec", "/memfd:x", MAX_INT, MAX_INT, at=PARSED
+    )
+    assert parse(line(f"M 10 m {huge} {huge} {VDA1} {huge} {depth} {text}")) == RawMmap(
+        10, Walk(VDA1, walk_names), MAX_INT, MAX_INT, MAX_INT, at=PARSED
+    )
+    assert parse(
+        line(f"H 10 {VDA1} {depth} {huge} {huge} {huge} {huge} {huge} {huge} {huge} {huge} {text}")
+    ) == RawSetattr(
+        10,
+        Walk(VDA1, walk_names),
+        MAX_INT,
+        MAX_INT,
+        MAX_INT,
+        MAX_INT,
+        MAX_INT,
+        MAX_INT,
+        MAX_INT,
+        MAX_INT,
+        at=PARSED,
+    )
+    assert parse(line(f"J 10 u {huge}")) == Ns(
+        10, "unshare", MAX_INT, namespaces(MAX_INT), at=PARSED
+    )
+    assert parse(line(f"L 10 {huge} {huge} {huge} {huge} {huge} {huge} {huge} {huge}")) == Identity(
+        10,
+        MAX_INT,
+        MAX_INT,
+        MAX_INT,
+        MAX_INT,
+        MAX_INT,
+        MAX_INT,
+        MAX_INT,
+        MAX_INT,
+        at=PARSED,
+    )
+
+
 def test_parse_walks() -> None:
     item = parse(line(unlink(10, VDA1, "c d.txt", "b", "_data")))
     assert item == Delete(10, Walk(VDA1, (b"c d.txt", b"b", b"_data", b"/")), at=PARSED)
@@ -318,13 +372,37 @@ def test_parse_keeps_bytes_that_are_not_utf8() -> None:
         "X 10 zero 0",
         "unknown 10",
         f"N 10 1 2 1 1 {walk('a')[1]}",
+        "Q 10 1 2",
+        "I 10",
         "I 10 z 0",
         f"I 10 b 2 {hx(b'/x')}",
+        "I 10 b 1 ",
+        "I 10 g 2 7 4096",
+        "I 10 a 2 9",
+        "I 10 g 1 7 4096 384",
+        "I 10 a 3 9 0",
+        "I 10 f 0 1 1 bad",
         "K 10 1",
+        "K 10 11 16",
+        "K 10 x 16 -1",
+        "S 10 11",
+        "S 10 x 15",
+        "S 10 11 x",
+        "M 10 x 42 0",
+        "M 10 x x 0 /x",
+        "M 10 q 1",
         "M 10 m 1 2 3 4 5",
+        "M 10 m 42 1 1 5 2 a/b//",
         "H 10 1 2 3",
+        "H 10 1 2 3 4 5 6 7 8 9 10",
+        "H 10 1 2 x 4 5 6 7 8 9 10 " + walk("a")[1],
+        f"H 10 {VDA1} 99 65 33152 0 0 1 0 0 0 {walk('a')[1]}",
         "J 10 x 0",
+        "J 10 u",
+        "J 10 u x",
+        "J 10 u 0 0",
         "L 10 1 2 3",
+        "L 10 1 2 3 4 5 6 x y",
     ],
 )
 def test_parse_rejects_misshapen_lines(text: str) -> None:

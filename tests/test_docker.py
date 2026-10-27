@@ -332,6 +332,7 @@ FLOOD = (
     "cd /work && rm -rf /work/f"
 )
 EVERY_CPU = "for c in $(seq 0 $(($(nproc) - 1))); do taskset -c $c true; done"
+SIGNAL_FLOOD = 4000
 
 
 async def flood(backend: DockerBackend, store: LocalEventStore, count: int) -> None:
@@ -446,9 +447,16 @@ async def test_exec_hash_matches_the_snapshot(
         await sb.close()
 
     expected = result.stdout.split()[0].decode()
-    procs = [e.payload() for e in await events(store, run_id, "proc.exec")]
-    proc = next(p for p in procs if isinstance(p, ProcExec) and p.path == "./true")
+    evs = await events(store, run_id, "proc.exec")
+    assert evs
+    assert all(e.agent_id == "a1" for e in evs)
+    procs = [p for p in (e.payload() for e in evs) if isinstance(p, ProcExec)]
+    assert all(p.exec_id == result.finished.exec_id for p in procs)
+    proc = next(p for p in procs if p.path == "./true")
     assert proc.sha256 == expected
+    assert re.fullmatch(r"[0-9a-f]{64}", expected)
+    root = next(p for p in procs if p.root)
+    assert root.sha256 is None
     last = next(s for s in await snapshots(store, run_id) if s.exec_id == result.finished.exec_id)
     assert changed(last)["/work/true"].sha256 == expected
 
@@ -472,10 +480,16 @@ async def test_exec_hash_of_every_captured_root(
         await backend.remove_run(run_id)
 
     expected = {line.split()[1]: line.split()[0] for line in result.stdout.decode().splitlines()}
-    procs = [e.payload() for e in await events(store, run_id, "proc.exec")]
+    evs = await events(store, run_id, "proc.exec")
+    assert evs
+    assert all(e.agent_id == "a1" for e in evs)
+    procs = [p for p in (e.payload() for e in evs) if isinstance(p, ProcExec)]
+    assert all(p.exec_id == result.finished.exec_id for p in procs)
     for path, digest in expected.items():
-        proc = next(p for p in procs if isinstance(p, ProcExec) and p.path == path)
-        assert proc.sha256 == digest, path
+        proc = next(p for p in procs if p.path == path)
+        assert (proc.sha256, proc.path_partial) == (digest, False), path
+    root = next(p for p in procs if p.root)
+    assert root.sha256 is None
     last = next(s for s in await snapshots(store, run_id) if s.exec_id == result.finished.exec_id)
     changes = changed(last)
     for path, digest in expected.items():
@@ -727,6 +741,67 @@ async def test_over_cap_records_spill_to_a_blob(
 
 @pytest.mark.tracer
 @pytest.mark.usefixtures("traced")
+async def test_signal_flood_spills_without_losing_records(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    tracer = backend.tracer
+    assert tracer is not None
+    before = (tracer.garbled, tracer.kernel_lost, tracer.located)
+    command = (
+        "sleep 60 & p=$!; i=0; "
+        f"while [ $i -lt {SIGNAL_FLOOD} ]; do kill -CONT $p; i=$((i+1)); done; "
+        "echo $i; kill -KILL $p; wait $p 2>/dev/null; true"
+    )
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(command, timeout_s=60)
+        await asyncio.sleep(0.5)
+    finally:
+        await sb.close()
+
+    assert result.stdout == f"{SIGNAL_FLOOD}\n".encode()
+    finished = result.finished
+    assert (finished.end, finished.exit_code, finished.dropped) == ("exited", 0, 0)
+    cap = audit_module.CAPS["other"]
+    # Every loop iteration sends SIGCONT; the final SIGKILL ends the target.
+    expected_spilled = SIGNAL_FLOOD + 1 - cap
+    assert finished.spilled == expected_spilled
+
+    evs = await events(store, run_id)
+    assert not [e for e in evs if e.type == "audit.lost"]
+    signals = [e for e in evs if e.type == "proc.signal"]
+    assert len(signals) == cap
+    assert all(e.agent_id == "a1" and e.data["exec_id"] == finished.exec_id for e in signals)
+    assert [e.data["signal"] for e in signals] == [18] * cap
+
+    spills = [e.payload() for e in evs if e.type == "audit.spill"]
+    spills = [s for s in spills if isinstance(s, AuditSpill)]
+    assert spills
+    assert all(s.exec_id == finished.exec_id for s in spills)
+    assert sum(s.count for s in spills) == expected_spilled
+    assert sum(s.kinds.get("other", 0) for s in spills) == expected_spilled
+
+    lines = []
+    for spill in spills:
+        records = (await store.get_blob(run_id, spill.records.sha256)).decode().splitlines()
+        assert all(record.startswith("{") and record.endswith("}") for record in records)
+        lines += [json.loads(record) for record in records]
+    assert len(lines) == expected_spilled
+    assert {line["type"] for line in lines} == {"proc.signal"}
+    assert all(
+        line["data"]["exec_id"] == finished.exec_id
+        and line["data"]["pid"] > 0
+        and line["data"]["target"] != line["data"]["pid"]
+        for line in lines
+    )
+    assert sorted({line["data"]["signal"] for line in lines}) == [9, 18]
+    assert tracer.garbled == before[0]
+    assert (tracer.kernel_lost, tracer.located) == before[1:]
+    assert (await store.verify(run_id)).ok
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
 async def test_exec_context_and_pipe_graph(backend: DockerBackend, store: LocalEventStore) -> None:
     command = "cd /work && LD_PRELOAD=/work/x.so python3 -c 'import os; os.getcwd()' | cat"
     run_id, sb = await sandbox(backend, store)
@@ -830,7 +905,8 @@ async def test_ipc_events(backend: DockerBackend, store: LocalEventStore) -> Non
         "libc.shmat.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int]\n"
         "libc.shmat.restype = ctypes.c_void_p\n"
         "i = libc.shmget(1234, 4096, 0o1600)\n"
-        "libc.shmat(i, None, 0)\n"
+        "print('shm', i, flush=True)\n"
+        "print('mapped', bool(libc.shmat(i, None, 0)), flush=True)\n"
         "EOF"
     )
     run_id, sb = await sandbox(backend, store)
@@ -839,17 +915,32 @@ async def test_ipc_events(backend: DockerBackend, store: LocalEventStore) -> Non
     finally:
         await sb.close()
 
-    ipc = [e.payload() for e in await events(store, run_id, "ipc.event")]
-    ipc = [p for p in ipc if isinstance(p, IpcEvent)]
+    lines = result.stdout.decode().splitlines()
+    assert lines[0].startswith("shm ")
+    assert lines[1] == "mapped True"
+    shmid = int(lines[0].split()[1])
+    evs = await events(store, run_id, "ipc.event")
+    assert evs
+    assert all(e.agent_id == "a1" for e in evs)
+    ipc = [p for p in (e.payload() for e in evs) if isinstance(p, IpcEvent)]
     assert all(p.exec_id == result.finished.exec_id for p in ipc)
-    seen = {(p.kind, p.path) for p in ipc}
+    seen = {(p.kind, p.family, p.path, p.partial) for p in ipc}
     assert {
-        ("bind", "/work/s.sock"),
-        ("connect", "/work/s.sock"),
-        ("fifo", "/work/f"),
+        ("bind", "unix", "/work/s.sock", False),
+        ("connect", "unix", "/work/s.sock", False),
+        ("fifo", None, "/work/f", False),
     } <= seen
-    assert any(p.kind == "shmget" and p.key == 1234 and p.size == 4096 for p in ipc)
-    assert any(p.kind == "shmat" and p.flags == 0 for p in ipc)
+    assert any(
+        p.kind == "shmget"
+        and p.family == "sysv"
+        and p.key == 1234
+        and p.size == 4096
+        and p.flags == 0o1600
+        for p in ipc
+    )
+    assert any(
+        p.kind == "shmat" and p.family == "sysv" and p.id == shmid and p.flags == 0 for p in ipc
+    )
 
 
 @pytest.mark.tracer
@@ -861,7 +952,9 @@ async def test_ptrace_event(backend: DockerBackend, store: LocalEventStore) -> N
         "libc = ctypes.CDLL(None, use_errno=True)\n"
         "libc.ptrace.argtypes = [ctypes.c_long, ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p]\n"
         "libc.ptrace.restype = ctypes.c_long\n"
-        "libc.ptrace(16, 1, None, None)\n"
+        "import os\n"
+        "print(os.getpid(), flush=True)\n"
+        "print(libc.ptrace(16, 1, None, None), ctypes.get_errno(), flush=True)\n"
         "EOF"
     )
     run_id, sb = await sandbox(backend, store)
@@ -870,13 +963,27 @@ async def test_ptrace_event(backend: DockerBackend, store: LocalEventStore) -> N
     finally:
         await sb.close()
 
-    events_ = [e.payload() for e in await events(store, run_id, "ptrace.event")]
-    events_ = [p for p in events_ if isinstance(p, PtraceEvent)]
+    sender, ret, errno = (int(x) for x in result.stdout.split())
+    assert (ret, errno) == (-1, 1)
+    procs = [
+        p
+        for p in (e.payload() for e in await events(store, run_id, "proc.exec"))
+        if isinstance(p, ProcExec) and p.ns_pid == sender
+    ]
+    assert len(procs) == 1
+    assert procs[0].exec_id == result.finished.exec_id
+    host_pid = procs[0].pid
+    evs = await events(store, run_id, "ptrace.event")
+    assert evs
+    assert all(e.agent_id == "a1" for e in evs)
+    events_ = [p for p in (e.payload() for e in evs) if isinstance(p, PtraceEvent)]
     assert any(
         p.exec_id == result.finished.exec_id
+        and p.pid == host_pid
         and p.target == 1
         and p.request == "attach"
         and p.refused
+        and p.errno == 1
         for p in events_
     )
 
@@ -884,17 +991,31 @@ async def test_ptrace_event(backend: DockerBackend, store: LocalEventStore) -> N
 @pytest.mark.tracer
 @pytest.mark.usefixtures("traced")
 async def test_signal_event(backend: DockerBackend, store: LocalEventStore) -> None:
-    command = "sleep 30 & p=$!; kill -TERM $p; wait $p 2>/dev/null; true"
+    command = "sleep 30 & p=$!; sleep 0.2; echo $p; kill -TERM $p; wait $p 2>/dev/null; true"
     run_id, sb = await sandbox(backend, store)
     try:
         result = await sb.exec(command, timeout_s=20)
     finally:
         await sb.close()
 
-    signals = [e.payload() for e in await events(store, run_id, "proc.signal")]
-    signals = [p for p in signals if isinstance(p, ProcSignal)]
+    target_ns = int(result.stdout)
+    procs = [
+        p
+        for p in (e.payload() for e in await events(store, run_id, "proc.exec"))
+        if isinstance(p, ProcExec) and p.ns_pid == target_ns and p.argv[:1] == ["sleep"]
+    ]
+    assert len(procs) == 1
+    assert procs[0].exec_id == result.finished.exec_id
+    target = procs[0].pid
+    evs = await events(store, run_id, "proc.signal")
+    assert evs
+    assert all(e.agent_id == "a1" for e in evs)
+    signals = [p for p in (e.payload() for e in evs) if isinstance(p, ProcSignal)]
     assert any(
-        p.exec_id == result.finished.exec_id and p.signal == 15 and p.target != p.pid
+        p.exec_id == result.finished.exec_id
+        and p.target == target
+        and p.signal == 15
+        and p.pid != p.target
         for p in signals
     )
 
@@ -906,6 +1027,7 @@ async def test_mem_exec(backend: DockerBackend, store: LocalEventStore) -> None:
         "python3 - <<'EOF'\n"
         "import mmap, os\n"
         "open('/work/code', 'wb').write(b'\\x90' * 16)\n"
+        "print('code', os.stat('/work/code').st_ino, flush=True)\n"
         "fd = os.open('/work/code', os.O_RDONLY)\n"
         "mmap.mmap(fd, 16, prot=mmap.PROT_READ | mmap.PROT_EXEC)\n"
         "os.close(fd)\n"
@@ -914,6 +1036,7 @@ async def test_mem_exec(backend: DockerBackend, store: LocalEventStore) -> None:
         "import os, shutil\n"
         "shutil.copy('/bin/true', '/work/x')\n"
         "fd = os.open('/work/x', os.O_RDONLY)\n"
+        "print('exec', fd, os.stat('/work/x').st_ino, flush=True)\n"
         "os.unlink('/work/x')\n"
         "os.set_inheritable(fd, True)\n"
         "os.execve(f'/proc/self/fd/{fd}', ['x'], {})\n"
@@ -925,24 +1048,41 @@ async def test_mem_exec(backend: DockerBackend, store: LocalEventStore) -> None:
     finally:
         await sb.close()
 
-    mem = [e.payload() for e in await events(store, run_id, "mem.exec")]
-    mem = [p for p in mem if isinstance(p, MemExec)]
+    code_line, exec_line = result.stdout.decode().splitlines()
+    code_inode = int(code_line.split()[1])
+    fd, exec_inode = (int(x) for x in exec_line.split()[1:])
+    evs = await events(store, run_id, "mem.exec")
+    assert evs
+    assert all(e.agent_id == "a1" for e in evs)
+    mem = [p for p in (e.payload() for e in evs) if isinstance(p, MemExec)]
     assert any(
         p.exec_id == result.finished.exec_id
         and p.kind == "exec"
+        and p.path == f"/proc/self/fd/{fd}"
+        and p.inode == exec_inode
         and p.nlink == 0
-        and p.path.startswith("/proc/self/fd/")
+        and not p.partial
         for p in mem
     )
     assert any(
         p.exec_id == result.finished.exec_id
         and p.kind == "mmap"
         and p.path == "/work/code"
+        and p.inode == code_inode
+        and p.nlink == 1
         and p.prot == 5
+        and not p.partial
         for p in mem
     )
     procs = [e.payload() for e in await events(store, run_id, "proc.exec")]
-    assert any(p.nlink == 0 for p in procs if isinstance(p, ProcExec))
+    assert any(
+        p.exec_id == result.finished.exec_id
+        and p.path == f"/proc/self/fd/{fd}"
+        and p.inode == exec_inode
+        and p.nlink == 0
+        for p in procs
+        if isinstance(p, ProcExec)
+    )
 
 
 @pytest.mark.tracer
@@ -955,12 +1095,27 @@ async def test_file_setattr(backend: DockerBackend, store: LocalEventStore) -> N
     finally:
         await sb.close()
 
-    attrs = [e.payload() for e in await events(store, run_id, "file.setattr")]
-    attrs = [p for p in attrs if isinstance(p, FileSetattr) and p.path == "/work/f"]
-    assert all(p.exec_id == result.finished.exec_id for p in attrs)
-    assert any(p.mode is not None and p.mode & 0o777 == 0o600 for p in attrs)
-    assert any(p.size == 1 for p in attrs)
-    assert any(p.mtime_us == 978307200000000 for p in attrs)
+    evs = await events(store, run_id, "file.setattr")
+    assert evs
+    assert all(e.agent_id == "a1" for e in evs)
+    attrs = [p for p in (e.payload() for e in evs) if isinstance(p, FileSetattr)]
+    attrs = [p for p in attrs if p.path == "/work/f"]
+    assert all(p.exec_id == result.finished.exec_id and not p.partial for p in attrs)
+    assert any(
+        p.valid & audit_module.ATTR_MODE
+        and p.mode == 0o100600
+        and p.uid is None
+        and p.gid is None
+        and p.size is None
+        for p in attrs
+    )
+    assert any(p.valid & audit_module.ATTR_SIZE and p.size == 1 and p.mode is None for p in attrs)
+    assert any(
+        p.valid & (audit_module.ATTR_ATIME | audit_module.ATTR_MTIME)
+        and p.atime_us == 978307200000000
+        and p.mtime_us == 978307200000000
+        for p in attrs
+    )
 
 
 @pytest.mark.tracer

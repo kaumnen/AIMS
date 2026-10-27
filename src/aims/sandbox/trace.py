@@ -587,12 +587,20 @@ def _ipc(body: str, at: Stamp) -> Ipc | RawFifo:
         f = _fields(body, 6)
         if f[2] != "2":
             raise ValueError("unknown shm family")
-        return Ipc(pid, "shmget", "sysv", key=int(f[3]), size=int(f[4]), flags=int(f[5]), at=at)
+        return Ipc(
+            pid,
+            "shmget",
+            "sysv",
+            key=_clamp(int(f[3])),
+            size=min(int(f[4]), MAX_INT),
+            flags=_clamp(int(f[5])),
+            at=at,
+        )
     if kind == "a":
         f = _fields(body, 5)
         if f[2] != "2":
             raise ValueError("unknown shm family")
-        return Ipc(pid, "shmat", "sysv", id=int(f[3]), flags=int(f[4]), at=at)
+        return Ipc(pid, "shmat", "sysv", id=_clamp(int(f[3])), flags=_clamp(int(f[4])), at=at)
     raise ValueError("unknown ipc kind")
 
 
@@ -601,13 +609,20 @@ def _ptrace(body: str, at: Stamp) -> Ptrace:
     pid, target, request, ret = _ints(body, 4)
     name = PTRACE_REQUESTS.get(request, f"request_{request:#x}")
     refused = ret < 0 and request not in (1, 2, 3)
-    return Ptrace(pid, target, name, refused, -ret if refused else None, at=at)
+    return Ptrace(
+        pid,
+        _clamp(target),
+        name,
+        refused,
+        _clamp(-ret) if refused else None,
+        at=at,
+    )
 
 
 @record("S")
 def _signal(body: str, at: Stamp) -> Signal:
     pid, target, sig = _ints(body, 3)
-    return Signal(pid, target, sig, at=at)
+    return Signal(pid, _clamp(target), _clamp(sig), at=at)
 
 
 @record("M")
@@ -622,13 +637,28 @@ def _mem(body: str, at: Stamp) -> Mem | RawMmap:
             raise ValueError("expected five mem fields")
         path = f[4]
         partial = not path.startswith("/") or _cut(path)
-        return Mem(pid, "exec", path, int(f[2]), int(f[3]), partial=partial, at=at)
+        return Mem(
+            pid,
+            "exec",
+            path,
+            min(int(f[2]), MAX_INT),
+            min(int(f[3]), MAX_INT),
+            partial=partial,
+            at=at,
+        )
     if kind == "m":
         f = body.split(" ", 7)
         if len(f) != 8:
             raise ValueError("expected eight mem fields")
         walk = _walk(int(f[4]), int(f[6]), f[7].split("/"))
-        return RawMmap(pid, walk, int(f[2]), int(f[3]), int(f[5]), at=at)
+        return RawMmap(
+            pid,
+            walk,
+            min(int(f[2]), MAX_INT),
+            min(int(f[3]), MAX_INT),
+            _clamp(int(f[5])),
+            at=at,
+        )
     raise ValueError("unknown mem kind")
 
 
@@ -638,7 +668,7 @@ def _setattr(body: str, at: Stamp) -> RawSetattr:
     if len(f) != 12:
         raise ValueError("expected twelve setattr fields")
     pid, dev, depth = int(f[0]), int(f[1]), int(f[2])
-    valid, mode, uid, gid = (int(x) for x in f[3:7])
+    valid, mode, uid, gid = (_clamp(int(x)) for x in f[3:7])
     size, atime_us, mtime_us, ctime_us = (int(x) for x in f[7:11])
     walk = _walk(dev, depth, f[11].split("/"))
     return RawSetattr(
@@ -648,7 +678,7 @@ def _setattr(body: str, at: Stamp) -> RawSetattr:
         mode,
         uid,
         gid,
-        min(size, MAX_INT),
+        _clamp(size),
         _clamp(atime_us),
         _clamp(mtime_us),
         _clamp(ctime_us),
@@ -666,14 +696,25 @@ def _ns(body: str, at: Stamp) -> Ns:
         change = "setns"
     else:
         raise ValueError("unknown namespace change")
-    bits = int(flags)
+    bits = _clamp(int(flags))
     return Ns(int(pid), change, bits, namespaces(bits), at=at)
 
 
 @record("L")
 def _identity(body: str, at: Stamp) -> Identity:
     pid, ppid, inode, dev, nlink, magic, size, mtime_us, ctime_us = _ints(body, 9)
-    return Identity(pid, ppid, inode, dev, nlink, magic, size, mtime_us, ctime_us, at=at)
+    return Identity(
+        pid,
+        _clamp(ppid),
+        _clamp(inode),
+        _clamp(dev),
+        _clamp(nlink),
+        _clamp(magic),
+        _clamp(size),
+        _clamp(mtime_us),
+        _clamp(ctime_us),
+        at=at,
+    )
 
 
 @record("P")
