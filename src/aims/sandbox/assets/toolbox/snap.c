@@ -479,21 +479,21 @@ static void hash_one(const char *path, long long cap) {
     unsigned long long ino = 0;
     int r = find_root(path);
     if (r < 0) {
-        printf("H - 0 0 0 0 0 0 0\n");
+        printf("H - 0 0 0 0 0 0\n");
         fflush(stdout);
         return;
     }
     size_t plen = strlen(roots[r].path);
     if (plen == 1) plen = 0;
     if (!path[plen]) {
-        printf("H - 0 0 0 0 0 0 0\n");
+        printf("H - 0 0 0 0 0 0\n");
         fflush(stdout);
         return;
     }
     const char *rel = path + plen + 1;
     int dfd = open(roots[r].dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (dfd < 0) {
-        printf("H - 0 0 0 0 0 0 0\n");
+        printf("H - 0 0 0 0 0 0\n");
         fflush(stdout);
         return;
     }
@@ -502,7 +502,7 @@ static void hash_one(const char *path, long long cap) {
     struct stat st;
     if (fd < 0 || fstat(fd, &st) || !S_ISREG(st.st_mode)) {
         if (fd >= 0) close(fd);
-        printf("H - 0 0 0 0 0 0 0\n");
+        printf("H - 0 0 0 0 0 0\n");
         fflush(stdout);
         return;
     }
@@ -528,7 +528,7 @@ static void hash_one(const char *path, long long cap) {
     }
     if (st.st_size > cap) {
         close(fd);
-        printf("H - 0 0 0 0 0 0 0\n");
+        printf("H - 0 0 0 0 0 0\n");
         fflush(stdout);
         return;
     }
@@ -540,7 +540,7 @@ static void hash_one(const char *path, long long cap) {
     while ((got = read(fd, buf, sizeof buf)) > 0) {
         if (total + got > cap) {
             close(fd);
-            printf("H - 0 0 0 0 0 0 0\n");
+            printf("H - 0 0 0 0 0 0\n");
             fflush(stdout);
             return;
         }
@@ -549,7 +549,7 @@ static void hash_one(const char *path, long long cap) {
     }
     if (got != 0) {
         close(fd);
-        printf("H - 0 0 0 0 0 0 0\n");
+        printf("H - 0 0 0 0 0 0\n");
         fflush(stdout);
         return;
     }
@@ -560,7 +560,7 @@ static void hash_one(const char *path, long long cap) {
         after.st_ctim.tv_sec != st.st_ctim.tv_sec ||
         after.st_ctim.tv_nsec != st.st_ctim.tv_nsec) {
         close(fd);
-        printf("H - 0 0 0 0 0 0 0\n");
+        printf("H - 0 0 0 0 0 0\n");
         fflush(stdout);
         return;
     }
@@ -606,7 +606,7 @@ int main(int argc, char **argv) {
                     if (fread(drop, 1, take, stdin) != take) return 65;
                     len -= take;
                 }
-                printf("H - 0 0 0 0 0 0 0\n");
+                printf("H - 0 0 0 0 0 0\n");
                 fflush(stdout);
                 continue;
             }

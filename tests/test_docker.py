@@ -770,6 +770,26 @@ async def test_hash_budget_goes_to_the_smallest_files_first(
     assert last.unhashed == 10
 
 
+async def test_a_failed_hash_keeps_the_reader(
+    backend: DockerBackend, store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(reader_module, "HASH_CAP", 1000)
+    run_id, sb = await sandbox(backend, store)
+    try:
+        await sb.exec(
+            "mkdir dir && ln -s /bin/true link && head -c 2000 /dev/zero > big", timeout_s=20
+        )
+        for path in ("/work/gone", "/work/dir", "/work/link", "/work/big"):
+            assert await sb.sandbox.hash(path, inode=0) is None, path
+        result = await sb.exec("echo hi > note", timeout_s=20)
+    finally:
+        await sb.close()
+        await backend.remove_run(run_id)
+
+    last = [s for s in await snapshots(store, run_id) if s.exec_id == result.finished.exec_id]
+    assert [changed(s)["/work/note"].change for s in last] == ["added"]
+
+
 async def test_shared_volume_changes_land_in_the_next_window(
     backend: DockerBackend, store: LocalEventStore
 ) -> None:
