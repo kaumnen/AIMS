@@ -111,6 +111,10 @@ class Reader:
             try:
                 async with asyncio.timeout(TREE_S):
                     return await self._tree(start)
+            except asyncio.CancelledError:
+                self.broken = "file reader was cancelled mid-reply"
+                await self._end()
+                raise
             except Exception as e:
                 self.broken = f"file reader failed: {type(e).__name__}: {e}"
                 await self._end()

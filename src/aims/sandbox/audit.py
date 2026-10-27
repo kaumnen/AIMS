@@ -174,6 +174,7 @@ class AuditedSandbox:
         self._spill_bytes = 0
         self._spilled: set[int] = set()
         self._digest: str | None = None
+        self._diffs: set[asyncio.Task[None]] = set()
         self._outputs: dict[tuple[int, int], _Out] = {}
         self._exec_fds: OrderedDict[str, tuple[int, int]] = OrderedDict()
         self._env: OrderedDict[int, tuple[str, ...]] = OrderedDict()
@@ -199,6 +200,7 @@ class AuditedSandbox:
         sandbox = await backend.create(spec, run_id=run_id, agent_id=agent_id)
         audited = cls(sandbox, store, run_id=run_id, agent_id=agent_id, spec=spec)
         info = sandbox.info
+        started = False
         try:
             await audited._append(
                 [
@@ -212,16 +214,17 @@ class AuditedSandbox:
                     )
                 ]
             )
-        except BaseException:
-            await sandbox.close()
+            started = True
+            audited._queue = sandbox.records()
+            if audited._queue is not None:
+                audited._consumer = asyncio.create_task(audited._consume(audited._queue))
+            await audited._append(await audited._files(None, always=True))
+            audited._samples = sandbox.samples()
+            if audited._samples is not None:
+                audited._sampling = asyncio.create_task(audited._sample(audited._samples))
+        except BaseException as e:
+            await audited._abort(started, e)
             raise
-        audited._queue = sandbox.records()
-        if audited._queue is not None:
-            audited._consumer = asyncio.create_task(audited._consume(audited._queue))
-        await audited._append(await audited._files(None, always=True))
-        audited._samples = sandbox.samples()
-        if audited._samples is not None:
-            audited._sampling = asyncio.create_task(audited._sample(audited._samples))
         return audited
 
     async def exec(
@@ -235,9 +238,9 @@ class AuditedSandbox:
             audit = self.sandbox.audit
             wrapper = self.sandbox.wrapper(timeout_ms)
             before = await self._snapshot()
+            await self._diff_window()
             await self._append(
                 [
-                    *await self._files(None, always=False),
                     ExecStarted(
                         exec_id=exec_id,
                         call_id=call_id,
@@ -298,6 +301,11 @@ class AuditedSandbox:
                     await self._consumer
                 self._consumer = None
             self._drain()
+            if diffs := list(self._diffs):
+                await asyncio.wait(diffs)
+                for diff in diffs:
+                    if not diff.cancelled() and diff.exception() is not None:
+                        log.warning("file snapshot failed: %s", diff.exception())
             last = [
                 *await self._files(None, always=False),
                 *await self._spill_events(),
@@ -311,6 +319,45 @@ class AuditedSandbox:
                 await self._append(last)
         finally:
             await self.sandbox.close(keep_volumes=keep_volumes)
+
+    async def _abort(self, started: bool, error: BaseException) -> None:
+        """Undo a start that failed after the sandbox was created."""
+        for task in (self._consumer, self._sampling):
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
+        try:
+            if started:
+                sandbox_id = self.sandbox.info.sandbox_id
+                detail = f"start failed: {type(error).__name__}: {error}"
+                with contextlib.suppress(Exception):
+                    await self._append(
+                        [SandboxStopped(sandbox_id=sandbox_id, reason="closed", detail=detail)]
+                    )
+        finally:
+            self._stopped = True
+            await self.sandbox.close()
+
+    async def _diff_window(self) -> None:
+        """Log what changed in the volumes since the last diff.
+
+        The diff runs to the end even when the exec is cancelled, so the reader is never left
+        mid-reply and the changes it found are still logged.
+        """
+        diff = asyncio.ensure_future(self._log_files())
+        self._diffs.add(diff)
+        diff.add_done_callback(self._diffs.discard)
+        try:
+            await asyncio.shield(diff)
+        except asyncio.CancelledError:
+            await asyncio.wait({diff})
+            if not diff.cancelled() and diff.exception() is not None:
+                log.warning("file snapshot failed: %s", diff.exception())
+            raise
+
+    async def _log_files(self) -> None:
+        await self._append(await self._files(None, always=False))
 
     async def _finish(
         self,
@@ -404,6 +451,7 @@ class AuditedSandbox:
             return [AuditLost(count=None, reason=f"file snapshot failed: {e}")]
         if tree is None:
             return []
+        base, self._digest = self._digest, tree.digest
         changes: list[FsChange] = []
         for c in tree.changes:
             content = None if c.data is None else await self._store.put_blob(self._run_id, c.data)
@@ -421,7 +469,6 @@ class AuditedSandbox:
                     timestomp=c.timestomp,
                 )
             )
-        base, self._digest = self._digest, tree.digest
         if not changes and not always:
             return []
         more = None

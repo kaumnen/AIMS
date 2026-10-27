@@ -65,6 +65,8 @@ class FakeSandbox:
         self.procs: list[Proc] = []
         self.after: list[Proc] | None = None
         self.trees: list[Tree | Exception] | None = None
+        self.tree_hold: asyncio.Event | None = None
+        self.tree_entered = asyncio.Event()
         self.killed = False
         self.closed = False
 
@@ -108,6 +110,9 @@ class FakeSandbox:
     async def tree(self) -> Tree | None:
         if self.trees is None:
             return None
+        if self.tree_hold is not None:
+            self.tree_entered.set()
+            await self.tree_hold.wait()
         tree = self.trees.pop(0)
         if isinstance(tree, Exception):
             raise tree
@@ -796,3 +801,52 @@ async def test_output_over_cap_spills_before_the_exec_finishes(
         ("proc.output", "stderr"),
         ("proc.output", "pipe"),
     ]
+
+
+async def test_a_cancelled_exec_still_logs_its_diff(store: LocalEventStore) -> None:
+    sb = FakeSandbox(kernel=False)
+    sb.trees = [tree("d0"), tree("d1", change("/work/plan", "added", b"x")), tree("d1")]
+    run_id, audited = await start(store, sb)
+    sb.tree_hold = asyncio.Event()
+    task = asyncio.create_task(audited.exec("x", timeout_s=5))
+    await sb.tree_entered.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    sb.tree_hold.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await audited.close()
+
+    evs = await events(store, run_id)
+    assert kinds(evs) == [
+        "run.started",
+        "sandbox.started",
+        "fs.snapshot",
+        "fs.snapshot",
+        "sandbox.stopped",
+    ]
+    diff = evs[3].payload()
+    assert isinstance(diff, FsSnapshot)
+    assert (diff.base, diff.digest, [c.path for c in diff.changes]) == ("d0", "d1", ["/work/plan"])
+    assert sb.runs == []
+
+
+async def test_a_failed_start_closes_the_sandbox(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def broken(run_id: str, data: bytes) -> BlobRef:
+        raise OSError("disk full")
+
+    sb = FakeSandbox()
+    sb.trees = [tree("d0", change("/work/a", "added", b"a"))]
+    run_id = await store.create_run(RunStarted(scenario="t", oversight="observe", agents=["a1"]))
+    monkeypatch.setattr(store, "put_blob", broken)
+    with pytest.raises(OSError, match="disk full"):
+        await AuditedSandbox.start(
+            FakeBackend(sb), SandboxSpec(image="img"), store, run_id=run_id, agent_id="a1"
+        )
+
+    assert sb.closed
+    evs = await events(store, run_id)
+    assert kinds(evs) == ["run.started", "sandbox.started", "sandbox.stopped"]
+    assert evs[-1].data["detail"] == "start failed: OSError: disk full"
