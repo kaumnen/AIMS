@@ -574,7 +574,7 @@ async def test_tracer_routes_by_pid_namespace(monkeypatch: pytest.MonkeyPatch) -
     ]
     assert tracer.clock == (10, 0)
     assert tracer.garbled == 1
-    assert [json.loads(x)["data"][0] for x in tracer.unrouted_lines] == ["E", "W"]
+    assert (tracer.unrouted, tracer.foreign) == (0, 2)
     assert tracer.kernel_lost == 2
     assert await tracer.confirm(10, 99)
     assert await tracer.confirm(50, 77)
@@ -584,7 +584,32 @@ async def test_tracer_routes_by_pid_namespace(monkeypatch: pytest.MonkeyPatch) -
     tracer.unregister(route)
     feed("W 10 /work/late")
     feed("W 11 /work/late")
+    feed("W 12 /nobody")
     assert route.queue.empty()
+    assert (tracer.unrouted, tracer.foreign) == (1, 4)
+    assert json.loads(tracer.unrouted_lines[-1])["data"].endswith(" 12 /nobody\n")
+    await tracer.stop()
+
+
+@pytest.mark.anyio
+async def test_runtime_setup_in_a_sandbox_cgroup_is_foreign() -> None:
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    route = tracer.register(99, Mounts.parse(MOUNTINFO), SYSCALLS["aarch64"])
+    feed = Feed(tracer)
+    feed("R 0 999")
+    init = b"runc\0init\0"
+    feed(f"E 70 60 1 0 0 0 {len(init)} {hx(init)}")
+    feed("W 70 /proc/70/oom_score_adj")
+    feed("F 70 71")
+    s = feed(f"E 71 70 1 1000 99 5 3 {hx(b'sh\0')}")
+    t = feed("W 71 /work/x")
+    feed("X 70 0 0")
+
+    assert drain(route) == [
+        Exec(71, 70, 5, 1000, "sh", ("sh",), 3, True, at=s),
+        File(71, "write", "/work/x", at=t),
+    ]
+    assert (tracer.unrouted, tracer.foreign) == (0, 4)
     await tracer.stop()
 
 

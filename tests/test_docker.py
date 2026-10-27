@@ -278,7 +278,11 @@ async def test_kernel_audit_sees_what_ran(backend: DockerBackend, store: LocalEv
         ("rename", "/work/scorer.py", "/work/d/s.py"),
         ("delete", "/work/d/s.py", None),
         ("denied", "/etc/shadow", None),
-    } <= files, (files, [e.data for e in evs if e.type == "audit.lost"])
+    } <= files, (
+        files,
+        [e.data for e in evs if e.type == "audit.lost"],
+        list(backend.tracer.unrouted_lines) if backend.tracer else None,
+    )
     assert "unshare" in [p.syscall for p in payloads if isinstance(p, SysDenied)]
     connects = [(p.address, p.port) for p in payloads if isinstance(p, NetConnect)]
     assert ("169.254.169.254", 80) in connects

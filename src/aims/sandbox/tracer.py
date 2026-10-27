@@ -153,6 +153,7 @@ class Tracer:
         self._routes: dict[int, Route] = {}
         self._pids: dict[int, Route] = {}
         self._gone: OrderedDict[int, Route] = OrderedDict()
+        self._foreign: OrderedDict[int, None] = OrderedDict()
         self._parts: OrderedDict[int, dict[str, object]] = OrderedDict()
         self._cwd: OrderedDict[int, str] = OrderedDict()
         self._env: OrderedDict[int, bytearray] = OrderedDict()
@@ -164,6 +165,9 @@ class Tracer:
         self.alive = False
         self.garbled = 0
         self.unrouted = 0
+        # Records of processes in no registered sandbox: the runtime's own setup in a sandbox's
+        # cgroup, the runner's helpers, sandboxes already closed.
+        self.foreign = 0
         self.unrouted_lines: deque[str] = deque(maxlen=32)
         self._line = ""
         self.clock: tuple[int, int] | None = None
@@ -240,8 +244,10 @@ class Tracer:
         self._routes.pop(route.pidns, None)
         for pid in [p for p, r in self._pids.items() if r is route]:
             del self._pids[pid]
+            self._disown(pid)
         for pid in [p for p, r in self._gone.items() if r is route]:
             del self._gone[pid]
+            self._disown(pid)
 
     async def confirm(self, pid: int, pidns: int) -> bool:
         """Whether the tracer saw the runtime start process `pid` in namespace `pidns`."""
@@ -327,10 +333,13 @@ class Tracer:
                     route.put(Lost(1, f"unparseable tracer line: {text[:500]}"))
             case Fork(parent, child):
                 self._gone.pop(child, None)
+                self._foreign.pop(child, None)
                 route = self._route(parent)
                 if route is not None:
                     self._pids[child] = route
                     route.put(item)
+                elif parent in self._foreign:
+                    self._disown(child)
             case ExecPart(pid):
                 parts = self._parts.setdefault(pid, {})
                 parts.update(item.fields())
@@ -389,7 +398,7 @@ class Tracer:
                 self._env_bytes.pop(pid, None)
                 route = self._pids.pop(pid, None)
                 if route is None:
-                    self._unrouted()
+                    self._unrouted(pid)
                 else:
                     route.put(item)
                     self._gone[pid] = route
@@ -480,13 +489,22 @@ class Tracer:
     def _route(self, pid: int) -> Route | None:
         route = self._lookup(pid)
         if route is None:
-            self._unrouted()
+            self._unrouted(pid)
         return route
 
-    def _unrouted(self) -> None:
-        """Count a record no sandbox claimed, keeping the latest lines to show what they were."""
+    def _unrouted(self, pid: int) -> None:
+        """Count a record no sandbox claimed, keeping the latest unexplained lines."""
+        if pid in self._foreign:
+            self.foreign += 1
+            return
         self.unrouted += 1
         self.unrouted_lines.append(self._line)
+
+    def _disown(self, pid: int) -> None:
+        self._foreign[pid] = None
+        self._foreign.move_to_end(pid)
+        if len(self._foreign) > MEMORY:
+            self._foreign.popitem(last=False)
 
     def _lookup(self, pid: int) -> Route | None:
         """The route of `pid`, also for a while after it exits: its files close after its exit."""
@@ -505,6 +523,7 @@ class Tracer:
 
     def _exec(self, raw: RawExec) -> None:
         self._gone.pop(raw.pid, None)
+        self._foreign.pop(raw.pid, None)
         if raw.root:
             self._roots[raw.pid] = raw.pidns
             if len(self._roots) > MEMORY:
@@ -514,7 +533,8 @@ class Tracer:
                 waiter.set_result(raw.pidns)
         route = self._routes.get(raw.pidns)
         if route is None:
-            self._unrouted()
+            self._disown(raw.pid)
+            self.foreign += 1
             return
         self._pids[raw.pid] = route
         parts = self._parts.pop(raw.pid, {})
