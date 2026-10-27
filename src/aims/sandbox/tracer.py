@@ -574,8 +574,9 @@ class Tracer:
             if waiter is not None and not waiter.done():
                 waiter.set_result(raw.pidns)
         route = self._routes.get(raw.pidns)
+        # Before a root exec the pid is still the runtime's: runc's last stage after its setns.
         if held is not None:
-            self._count(held, foreign=route is None)
+            self._count(held, foreign=route is None or raw.root)
         if route is None:
             self._disown(raw.pid)
             self.foreign += 1

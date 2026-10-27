@@ -413,6 +413,48 @@ async def test_tracer_sees_only_sandboxes(backend: DockerBackend, store: LocalEv
 
 @pytest.mark.tracer
 @pytest.mark.usefixtures("traced")
+async def test_renamed_processes_stay_visible(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    command = (
+        'python3 -c "import ctypes, os\n'
+        "assert ctypes.CDLL(None).prctl(15, b'runc:x', 0, 0, 0) == 0\n"
+        "assert open('/proc/self/comm').read() == 'runc:x\\n'\n"
+        "open('/work/a', 'w').write('a')\n"
+        "os.unlink('/work/a')\" && "
+        'python3 -c "import os\n'
+        "open('/proc/self/comm', 'w').write('runc:y')\n"
+        "assert open('/proc/self/comm').read() == 'runc:y\\n'\n"
+        "open('/work/b', 'w').write('bb')\n"
+        "os.unlink('/work/b')\""
+    )
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+
+    assert result.finished.exit_code == 0
+    kernel = by_kernel_order(await events(store, run_id))
+    first, second = [p.pid for p in kernel if isinstance(p, ProcExec) and p.argv[0] == "python3"]
+    work = [
+        (p.pid, p.op if isinstance(p, FileAccess) else "close", p.path)
+        for p in kernel
+        if isinstance(p, FileAccess | FileWrite) and p.path.startswith("/work/")
+    ]
+    assert work == [
+        (first, "write", "/work/a"),
+        (first, "close", "/work/a"),
+        (first, "delete", "/work/a"),
+        (second, "write", "/work/b"),
+        (second, "close", "/work/b"),
+        (second, "delete", "/work/b"),
+    ]
+    assert all(p.exec_id == result.finished.exec_id for p in kernel if p.pid in (first, second))
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
 async def test_odd_file_names_keep_their_bytes(
     backend: DockerBackend, store: LocalEventStore
 ) -> None:

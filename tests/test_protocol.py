@@ -98,6 +98,28 @@ def test_string_cap_matches_the_script() -> None:
     assert f"while ($n < {STRLEN})" in script
 
 
+def test_sandbox_probes_filter_by_pid_namespace() -> None:
+    # A sandbox process can rename itself but cannot leave its pid namespace. bpftrace tags the
+    # level as kernel memory and syscall exit maps as user memory, and warns when && joins them;
+    # `!` drops the tag.
+    script = (ASSETS / "tracer" / "trace.bt").read_text()
+    probes = [line for line in script.splitlines() if re.match(r"(fentry|fexit|tracepoint):", line)]
+    assert not [line for line in probes if "comm" in line]
+    level = re.compile(
+        r"curtask->thread_pid->level > @base|!\(curtask->thread_pid->level <= @base\)"
+    )
+    unfiltered = [
+        line.split(" ", 1)[0]
+        for line in probes
+        if "@sandbox[cgroup]" in line and not level.search(line)
+    ]
+    assert unfiltered == [
+        "tracepoint:task:task_newtask",
+        "tracepoint:sched:sched_process_exec",
+        "tracepoint:sched:sched_process_exit",
+    ]
+
+
 def test_overlay_filters_match_the_script() -> None:
     script = (ASSETS / "tracer" / "trace.bt").read_text()
     assert "!(args.file->f_mode & 0x1000000)" in script

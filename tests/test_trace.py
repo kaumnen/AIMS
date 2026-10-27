@@ -652,6 +652,28 @@ async def test_runtime_setup_in_a_sandbox_cgroup_is_foreign() -> None:
 
 
 @pytest.mark.anyio
+async def test_runtime_stage_before_a_root_exec_is_foreign() -> None:
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    route = tracer.register(99, Mounts.parse(MOUNTINFO), SYSCALLS["aarch64"])
+    feed = Feed(tracer)
+    feed("R 0 999")
+    feed("A 70 /proc/filesystems")
+    feed("S 70 71 33")
+    feed("A 70 /.aims/aims-exec")
+    s = feed(f"E 70 60 1 0 99 5 10 {hx(b'aims-exec\0')}")
+    feed("W 80 /work/x")
+    t = feed(f"E 80 70 0 1000 99 6 3 {hx(b'sh\0')}")
+
+    assert drain(route) == [
+        Exec(70, 60, 5, 0, "aims-exec", ("aims-exec",), 10, True, at=s),
+        Exec(80, 70, 6, 1000, "sh", ("sh",), 3, False, at=t),
+    ]
+    assert (tracer.unrouted, tracer.foreign) == (1, 3)
+    assert json.loads(tracer.unrouted_lines[-1])["data"].endswith(" 80 /work/x\n")
+    await tracer.stop()
+
+
+@pytest.mark.anyio
 async def test_exited_pids_route_until_reused() -> None:
     tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
     route = tracer.register(99, Mounts.parse(MOUNTINFO), SYSCALLS["aarch64"])

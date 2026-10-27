@@ -104,7 +104,7 @@ tracepoint:oom:mark_victim {
 
 // Overlayfs makes its upper-layer calls with overridden creds; cred == real_cred keeps only the
 // sandbox's own calls, not overlay's copy of them or its copy-up work.
-fentry:vmlinux:security_file_open /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && curtask->cred == curtask->real_cred && (args.file->f_inode->i_mode & 0xF000) == 0x8000/ {
+fentry:vmlinux:security_file_open /@sandbox[cgroup] && curtask->thread_pid->level > @base && curtask->cred == curtask->real_cred && (args.file->f_inode->i_mode & 0xF000) == 0x8000/ {
   $p = path(args.file->f_path);
   if (args.file->f_mode & 2) {
     $s = @seq[cpu] + 1; @seq[cpu] = $s;
@@ -150,7 +150,7 @@ fentry:vmlinux:security_file_open /@sandbox[cgroup] && strncmp(comm, "runc:", 5)
 // The last reference to a file, on every path: close(2) on 6.8+ never reaches filp_close, and an
 // exiting task releases its files after its X line. Overlay's backing files are skipped by
 // FMODE_BACKING, bit 24 from 6.14; the tracer swaps in bit 25 on older kernels.
-fentry:vmlinux:security_file_release /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && (args.file->f_mode & 2) && !(args.file->f_mode & 0x1000000) && (args.file->f_inode->i_mode & 0xF000) == 0x8000/ {
+fentry:vmlinux:security_file_release /@sandbox[cgroup] && curtask->thread_pid->level > @base && (args.file->f_mode & 2) && !(args.file->f_mode & 0x1000000) && (args.file->f_inode->i_mode & 0xF000) == 0x8000/ {
   $d = args.file->f_path.dentry;
   $x = $d; $k = 0;
   unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } }
@@ -170,7 +170,7 @@ fentry:vmlinux:security_file_release /@sandbox[cgroup] && strncmp(comm, "runc:",
     str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
 }
 
-fentry:vmlinux:security_inode_unlink, fentry:vmlinux:security_inode_rmdir /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && curtask->cred == curtask->real_cred/ {
+fentry:vmlinux:security_inode_unlink, fentry:vmlinux:security_inode_rmdir /@sandbox[cgroup] && curtask->thread_pid->level > @base && curtask->cred == curtask->real_cred/ {
   $d = args.dentry;
   $x = $d; $k = 0;
   unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } }
@@ -190,7 +190,7 @@ fentry:vmlinux:security_inode_unlink, fentry:vmlinux:security_inode_rmdir /@sand
     str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
 }
 
-fentry:vmlinux:security_inode_rename /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && curtask->cred == curtask->real_cred/ {
+fentry:vmlinux:security_inode_rename /@sandbox[cgroup] && curtask->thread_pid->level > @base && curtask->cred == curtask->real_cred/ {
   $o = args.old_dentry;
   $n = args.new_dentry;
   $x = $o; $ko = 0;
@@ -225,7 +225,7 @@ fentry:vmlinux:security_inode_rename /@sandbox[cgroup] && strncmp(comm, "runc:",
     str($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
 }
 
-fentry:vmlinux:security_inode_mkdir /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && curtask->cred == curtask->real_cred/ {
+fentry:vmlinux:security_inode_mkdir /@sandbox[cgroup] && curtask->thread_pid->level > @base && curtask->cred == curtask->real_cred/ {
   $d = args.dentry;
   $x = $d; $k = 0;
   unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } }
@@ -247,7 +247,7 @@ fentry:vmlinux:security_inode_mkdir /@sandbox[cgroup] && strncmp(comm, "runc:", 
 
 // The target is read up to its NUL, so bytes left in the buffer after it are never printed.
 // Its length is printed too: buf() keeps at most max_strlen - 4 bytes.
-fentry:vmlinux:security_inode_symlink /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && curtask->cred == curtask->real_cred/ {
+fentry:vmlinux:security_inode_symlink /@sandbox[cgroup] && curtask->thread_pid->level > @base && curtask->cred == curtask->real_cred/ {
   $d = args.dentry;
   $n = (uint64)0;
   while ($n < 384) { if (*(args.old_name + $n) == 0) { break; } $n++; }
@@ -270,7 +270,7 @@ fentry:vmlinux:security_inode_symlink /@sandbox[cgroup] && strncmp(comm, "runc:"
     str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
 }
 
-fentry:vmlinux:security_inode_link /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && curtask->cred == curtask->real_cred/ {
+fentry:vmlinux:security_inode_link /@sandbox[cgroup] && curtask->thread_pid->level > @base && curtask->cred == curtask->real_cred/ {
   $o = args.old_dentry;
   $n = args.new_dentry;
   $x = $o; $ko = 0;
@@ -305,7 +305,7 @@ fentry:vmlinux:security_inode_link /@sandbox[cgroup] && strncmp(comm, "runc:", 5
     str($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
 }
 
-fentry:vmlinux:security_socket_connect /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0/ {
+fentry:vmlinux:security_socket_connect /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
   $a = args.address;
   if ($a->sa_family == 2) {
     $in = (struct sockaddr_in *)$a;
@@ -327,7 +327,7 @@ fentry:vmlinux:security_socket_connect /@sandbox[cgroup] && strncmp(comm, "runc:
   }
 }
 
-fentry:vmlinux:security_socket_sendmsg /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && args.msg->msg_name != 0/ {
+fentry:vmlinux:security_socket_sendmsg /@sandbox[cgroup] && curtask->thread_pid->level > @base && args.msg->msg_name != 0/ {
   $a = (struct sockaddr *)args.msg->msg_name;
   if ($a->sa_family == 2) {
     $in = (struct sockaddr_in *)$a;
@@ -340,7 +340,7 @@ fentry:vmlinux:security_socket_sendmsg /@sandbox[cgroup] && strncmp(comm, "runc:
   }
 }
 
-fentry:vmlinux:security_socket_bind /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0/ {
+fentry:vmlinux:security_socket_bind /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
   $ba = args.address;
   if ($ba->sa_family == 1) {
     $bu = (struct sockaddr_un *)$ba;
@@ -354,7 +354,7 @@ fentry:vmlinux:security_socket_bind /@sandbox[cgroup] && strncmp(comm, "runc:", 
   }
 }
 
-fentry:vmlinux:security_inode_mknod /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && curtask->cred == curtask->real_cred && (args.mode & 0xF000) == 0x1000/ {
+fentry:vmlinux:security_inode_mknod /@sandbox[cgroup] && curtask->thread_pid->level > @base && curtask->cred == curtask->real_cred && (args.mode & 0xF000) == 0x1000/ {
   $md = args.dentry;
   $mx = $md; $mk = 0;
   unroll(12) { if ($mx != $mx->d_parent) { $mk++; $mx = $mx->d_parent; } }
@@ -374,22 +374,22 @@ fentry:vmlinux:security_inode_mknod /@sandbox[cgroup] && strncmp(comm, "runc:", 
     str($md->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
 }
 
-tracepoint:syscalls:sys_enter_shmget /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0/ {
+tracepoint:syscalls:sys_enter_shmget /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
   $s = @seq[cpu] + 1; @seq[cpu] = $s;
   printf("I %llu %llu %llu %d g 2 %d %lu %d\n", nsecs(boot), cpu, $s, curtask->tgid, args.key, args.size, args.shmflg);
 }
 
-tracepoint:syscalls:sys_enter_shmat /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0/ {
+tracepoint:syscalls:sys_enter_shmat /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
   $s = @seq[cpu] + 1; @seq[cpu] = $s;
   printf("I %llu %llu %llu %d a 2 %d %d\n", nsecs(boot), cpu, $s, curtask->tgid, args.shmid, args.shmflg);
 }
 
-tracepoint:syscalls:sys_enter_ptrace /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0/ {
+tracepoint:syscalls:sys_enter_ptrace /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
   @ptrace_req[tid] = args.request + 1;
   @ptrace_pid[tid] = args.pid;
 }
 
-tracepoint:syscalls:sys_exit_ptrace /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && @ptrace_req[tid] != 0/ {
+tracepoint:syscalls:sys_exit_ptrace /@sandbox[cgroup] && !(curtask->thread_pid->level <= @base) && @ptrace_req[tid] != 0/ {
   $rq = @ptrace_req[tid] - 1;
   $tg = @ptrace_pid[tid];
   if ($rq == 0) { $tg = curtask->real_parent->tgid; }
@@ -399,24 +399,24 @@ tracepoint:syscalls:sys_exit_ptrace /@sandbox[cgroup] && strncmp(comm, "runc:", 
   printf("K %llu %llu %llu %d %lld %llu %lld\n", nsecs(boot), cpu, $s, curtask->tgid, $tg, $rq, args.ret);
 }
 
-tracepoint:syscalls:sys_enter_process_vm_writev /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0/ {
+tracepoint:syscalls:sys_enter_process_vm_writev /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
   @vmw[tid] = args.pid + 1;
 }
 
-tracepoint:syscalls:sys_exit_process_vm_writev /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && @vmw[tid] != 0/ {
+tracepoint:syscalls:sys_exit_process_vm_writev /@sandbox[cgroup] && !(curtask->thread_pid->level <= @base) && @vmw[tid] != 0/ {
   $vt = @vmw[tid] - 1;
   delete(@vmw[tid]);
   $s = @seq[cpu] + 1; @seq[cpu] = $s;
   printf("K %llu %llu %llu %d %lld -1 %lld\n", nsecs(boot), cpu, $s, curtask->tgid, $vt, args.ret);
 }
 
-fentry:vmlinux:security_task_kill /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0
+fentry:vmlinux:security_task_kill /@sandbox[cgroup] && curtask->thread_pid->level > @base
     && args.p->tgid != curtask->tgid && args.sig != 17/ {
   $s = @seq[cpu] + 1; @seq[cpu] = $s;
   printf("S %llu %llu %llu %d %d %d\n", nsecs(boot), cpu, $s, curtask->tgid, args.p->tgid, args.sig);
 }
 
-fentry:vmlinux:security_mmap_file /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && args.file != 0
+fentry:vmlinux:security_mmap_file /@sandbox[cgroup] && curtask->thread_pid->level > @base && args.file != 0
     && (args.prot & 4) != 0 && (args.file->f_inode->i_mode & 0xF000) == 0x8000
     && args.file->f_inode->i_sb->s_magic != 0x794c7630/ {
   $fd = args.file->f_path.dentry;
@@ -439,7 +439,7 @@ fentry:vmlinux:security_mmap_file /@sandbox[cgroup] && strncmp(comm, "runc:", 5)
     str($fd->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
 }
 
-fentry:vmlinux:security_inode_setattr /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && curtask->cred == curtask->real_cred/ {
+fentry:vmlinux:security_inode_setattr /@sandbox[cgroup] && curtask->thread_pid->level > @base && curtask->cred == curtask->real_cred/ {
   $sd = args.dentry;
   $sa = args.attr;
   $sx = $sd; $sk = 0;
@@ -465,11 +465,11 @@ fentry:vmlinux:security_inode_setattr /@sandbox[cgroup] && strncmp(comm, "runc:"
     str($sd->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
 }
 
-tracepoint:syscalls:sys_enter_unshare /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0/ {
+tracepoint:syscalls:sys_enter_unshare /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
   @unshare[tid] = args.unshare_flags + 1;
 }
 
-tracepoint:syscalls:sys_exit_unshare /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && @unshare[tid] != 0/ {
+tracepoint:syscalls:sys_exit_unshare /@sandbox[cgroup] && !(curtask->thread_pid->level <= @base) && @unshare[tid] != 0/ {
   $nf = @unshare[tid] - 1;
   delete(@unshare[tid]);
   if (args.ret == 0 && ($nf & 0x7E020080) != 0) {
@@ -478,11 +478,11 @@ tracepoint:syscalls:sys_exit_unshare /@sandbox[cgroup] && strncmp(comm, "runc:",
   }
 }
 
-tracepoint:syscalls:sys_enter_setns /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0/ {
+tracepoint:syscalls:sys_enter_setns /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
   @setns[tid] = args.flags + 1;
 }
 
-tracepoint:syscalls:sys_exit_setns /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && @setns[tid] != 0/ {
+tracepoint:syscalls:sys_exit_setns /@sandbox[cgroup] && !(curtask->thread_pid->level <= @base) && @setns[tid] != 0/ {
   $sf = @setns[tid] - 1;
   delete(@setns[tid]);
   if (args.ret == 0) {
@@ -493,19 +493,19 @@ tracepoint:syscalls:sys_exit_setns /@sandbox[cgroup] && strncmp(comm, "runc:", 5
 
 // Refused opens, with the kernel's copy of the name so a racing thread cannot change what is
 // logged. 7.0 renamed do_filp_open to do_file_open; the tracer picks the name.
-fexit:vmlinux:do_filp_open /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && ((int64)retval == -1 || (int64)retval == -13)/ {
+fexit:vmlinux:do_filp_open /@sandbox[cgroup] && curtask->thread_pid->level > @base && ((int64)retval == -1 || (int64)retval == -13)/ {
   $s = @seq[cpu] + 1; @seq[cpu] = $s;
   printf("P %llu %llu %llu %d %d %s\n", nsecs(boot), cpu, $s, curtask->tgid, -(int64)retval, str(args.pathname->name));
 }
 
-tracepoint:raw_syscalls:sys_exit /args.ret == -1 && @sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0/ {
+tracepoint:raw_syscalls:sys_exit /args.ret == -1 && @sandbox[cgroup] && curtask->thread_pid->level > @base/ {
   $s = @seq[cpu] + 1; @seq[cpu] = $s;
   printf("D %llu %llu %llu %d %d %d\n", nsecs(boot), cpu, $s, curtask->tgid, args.id, -args.ret);
 }
 
 // From 6.15 the tracer attaches anon_pipe_write and fifo_pipe_write here instead; anon_pipe_write
 // keeps only pipefs files, since a FIFO write through fifo_pipe_write may call it too.
-fentry:vmlinux:pipe_write /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0
+fentry:vmlinux:pipe_write /@sandbox[cgroup] && curtask->thread_pid->level > @base
     && (probe != "fentry:vmlinux:anon_pipe_write" || args.iocb->ki_filp->f_inode->i_sb->s_magic == 0x50495045)/ {
   $f = args.iocb->ki_filp; $it = args.from; $ino = $f->f_inode->i_ino; $n = $it->count;
   $m = $f->f_inode->i_sb->s_magic;
