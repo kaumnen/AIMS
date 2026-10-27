@@ -11,6 +11,7 @@ from aiodocker.execs import Exec as DockerExec
 from pydantic import JsonValue
 
 from aims.sandbox.base import Denied, Exec, Exit, File, Fork, Kernel, Lost, Record
+from aims.sandbox.execs import exec_output
 from aims.sandbox.images import ensure_image
 from aims.sandbox.trace import (
     Delete,
@@ -36,6 +37,7 @@ QUEUE = 100_000
 MEMORY = 4096
 READY_S = 120.0
 CONFIRM_S = 5.0
+PMU_S = 60.0
 SETTLE_S = 2.0
 TRACE = (
     "mountpoint -q /sys/kernel/tracing || mount -t tracefs nodev /sys/kernel/tracing; "
@@ -149,36 +151,28 @@ class Tracer:
             },
             name=self._name,
         )
-        await self._container.start()
-        trace = await self._container.exec(["sh", "-c", TRACE], stdout=True, stderr=True)
-        self._reader = asyncio.create_task(self._read(trace))
         try:
+            await self._container.start()
+            trace = await self._container.exec(["sh", "-c", TRACE], stdout=True, stderr=True)
+            self._reader = asyncio.create_task(self._read(trace))
             async with asyncio.timeout(READY_S):
                 base = await asyncio.shield(self._ready)
+            if base != 0:
+                raise TracerError("the tracer is not in the host pid namespace")
+            self.alive = True
+            await self._probe_pmu(self._container)
         except BaseException:
             await self.stop()
             raise
-        if base != 0:
-            await self.stop()
-            raise TracerError("the tracer is not in the host pid namespace")
-        self.alive = True
-        try:
-            self.pmu = await self._probe_pmu()
-        except aiodocker.DockerError as e:
-            log.warning("hardware counter probe failed: %s", e)
 
-    async def _probe_pmu(self) -> dict[str, JsonValue]:
+    async def _probe_pmu(self, container: DockerContainer) -> None:
         """Which hardware counters the host offers: event source devices and an attach attempt."""
-        assert self._container is not None
-        probe = await self._container.exec(["sh", "-c", PMU], stdout=True, stderr=True)
-        out = b""
-        stream = await probe.start(detach=False).__aenter__()
         try:
-            while (message := await stream.read_out()) is not None:
-                out += message.data
-        finally:
-            await stream.close()
-        return parse_pmu(out.decode(errors="replace"))
+            out = await exec_output(container, ["sh", "-c", PMU], timeout_s=PMU_S)
+        except Exception as e:
+            log.warning("hardware counter probe failed: %s", e)
+            return
+        self.pmu = parse_pmu(out.decode(errors="replace"))
 
     async def stop(self) -> None:
         self.alive = False

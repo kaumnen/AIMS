@@ -16,12 +16,14 @@ from aiodocker.execs import Exec as DockerExec
 
 from aims.events import ResourceSample
 from aims.sandbox.base import RUNNER_UID, Lost, Sample
+from aims.sandbox.execs import exec_output
 
 log = logging.getLogger("aims.sandbox")
 
 QUEUE = 10_000
 WINDOW_US = 1_000_000
 CGROUPS = "/sys/fs/cgroup"
+FIND_S = 10.0
 
 
 class SamplerError(Exception):
@@ -207,19 +209,11 @@ class Sampler:
         assert self._container is not None
         if not container_id.isalnum():
             raise SamplerError(f"not a container id: {container_id!r}")
-        find = await self._container.exec(
+        out = await exec_output(
+            self._container,
             ["find", CGROUPS, "-maxdepth", "4", "-type", "d", "-name", f"*{container_id}*"],
-            stdout=True,
-            stderr=True,
+            timeout_s=FIND_S,
         )
-        out = b""
-        stream = await find.start(detach=False).__aenter__()
-        try:
-            while (message := await stream.read_out()) is not None:
-                if message.stream == 1:
-                    out += message.data
-        finally:
-            await stream.close()
         found = [p for p in out.decode(errors="replace").split("\n") if p]
         if len(found) != 1:
             raise SamplerError(f"found {len(found)} cgroups for {container_id[:12]}")

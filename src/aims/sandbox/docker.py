@@ -84,6 +84,7 @@ class DockerBackend:
         """
         docker = aiodocker.Docker(url=url)
         sampler: Sampler | None = None
+        tracer: Tracer | None = None
         try:
             info = await docker.system.info()
             arch = ARCHES.get(info["Architecture"], info["Architecture"])
@@ -95,7 +96,6 @@ class DockerBackend:
             await _sweep(docker, labels["aims.host"])
             toolbox = await _toolbox(docker)
             sampler = await _sampler(docker, labels, toolbox[0])
-            tracer = None
             if audit != "snapshot":
                 name = f"aims-tracer-{uuid.uuid4().hex[:12]}"
                 tracer = Tracer(docker, labels, name, ring_pages=ring_pages)
@@ -110,6 +110,8 @@ class DockerBackend:
                 docker, arch=arch, labels=labels, toolbox=toolbox, tracer=tracer, sampler=sampler
             )
         except BaseException:
+            if tracer is not None:
+                await tracer.stop()
             if sampler is not None:
                 await sampler.stop()
             await docker.close()

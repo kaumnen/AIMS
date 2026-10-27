@@ -1,6 +1,6 @@
 import asyncio
 import json
-from typing import cast
+from typing import Any, cast
 
 import aiodocker
 import pytest
@@ -399,3 +399,25 @@ async def test_env_of_an_exec_never_keeps_an_earlier_exec_tail() -> None:
     execs = [r for r in drain(route) if isinstance(r, Exec)]
     assert [(e.env, e.env_bytes) for e in execs] == [((), 0), (("B=2",), len(short))]
     await tracer.stop()
+
+
+class StuckContainer:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+
+    async def exec(self, *args: object, **kwargs: object) -> object:
+        if self.error is not None:
+            raise self.error
+        await asyncio.Event().wait()
+        raise AssertionError
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("container", [StuckContainer(), StuckContainer(OSError("gone"))])
+async def test_pmu_probe_failure_leaves_the_tracer_running(
+    monkeypatch: pytest.MonkeyPatch, container: StuckContainer
+) -> None:
+    monkeypatch.setattr(tracer_module, "PMU_S", 0.05)
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    await tracer._probe_pmu(cast(Any, container))
+    assert tracer.pmu is None
