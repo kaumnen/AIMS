@@ -43,6 +43,7 @@ log = logging.getLogger("aims.sandbox")
 
 GRACE_MS = 1000
 DRAIN_S = 5.0
+SAMPLES_END_S = 1.0
 MIB = 1024 * 1024
 HOME = "/home/agent"
 
@@ -495,8 +496,12 @@ class DockerSandbox:
         return archive.fileobj.getvalue()
 
     async def kill(self) -> None:
+        """Kill the container; return once its last resource readings are queued."""
         with contextlib.suppress(aiodocker.DockerError):
             await self._container.kill(signal="SIGKILL")
+        if self._watch is not None:
+            # The cgroup goes after the kill returns; the sampler then prints its last batch.
+            await self._watch.ended(SAMPLES_END_S)
 
     async def close(self, *, keep_volumes: bool = False) -> None:
         if self._watch is not None:

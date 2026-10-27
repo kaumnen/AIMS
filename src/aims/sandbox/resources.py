@@ -109,6 +109,10 @@ class Watch:
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await self._reader
 
+    async def ended(self, timeout_s: float) -> None:
+        """Wait up to `timeout_s` for the readings to end, as they do once the cgroup is gone."""
+        await asyncio.wait({self._reader}, timeout=timeout_s)
+
     def _put(self, item: Sample | Lost) -> None:
         if self.overflow:
             try:
