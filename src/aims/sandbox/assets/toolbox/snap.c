@@ -173,7 +173,7 @@ static int same_stat(const entry *a, const entry *b) {
            a->mtime_ns == b->mtime_ns && a->ctime_ns == b->ctime_ns;
 }
 
-static void hash_file(int dfd, const char *name, entry *e) {
+static void hash_file(int dfd, const char *name, entry *e, const entry *was) {
     if (e->size > hash_left) {
         n_unhashed++;
         return;
@@ -184,7 +184,8 @@ static void hash_file(int dfd, const char *name, entry *e) {
         n_unhashed++;
         return;
     }
-    if (fstat(fd, &st) || (unsigned long long)st.st_ino != e->ino || !S_ISREG(st.st_mode)) {
+    if (fstat(fd, &st) || (unsigned long long)st.st_ino != e->ino ||
+        (unsigned long long)st.st_dev != e->dev || !S_ISREG(st.st_mode)) {
         close(fd);
         n_unhashed++;
         return;
@@ -217,7 +218,8 @@ static void hash_file(int dfd, const char *name, entry *e) {
     sha_final(&s, e->sha);
     e->hashed = 1;
     n_hashed += total;
-    if (keep && total == e->size) {
+    int same = was && was->kind == 'f' && was->hashed && !memcmp(was->sha, e->sha, 32);
+    if (keep && total == e->size && !same) {
         e->clen = (size_t)total;
         blob_left -= total;
     } else {
@@ -269,7 +271,7 @@ static void walk(int dfd, int self, char *path, size_t plen, int depth, list *ou
                 e->hashed = 1;
             } else {
                 e->fresh = 1;
-                hash_file(dfd, name, e);
+                hash_file(dfd, name, e, was);
             }
         } else if (e->kind == 'l') {
             char target[MAX_PATH];

@@ -30,6 +30,7 @@ from aims.events import (
 )
 from aims.sandbox import AuditedSandbox, DockerBackend, Mount, SandboxSpec
 from aims.sandbox import audit as audit_module
+from aims.sandbox import reader as reader_module
 
 pytestmark = [pytest.mark.anyio, pytest.mark.docker]
 
@@ -421,6 +422,32 @@ async def test_file_contents_are_diffed_per_exec(
     assert files["/work/gone"].change == "removed"
     assert (files["/work/link"].kind, files["/work/link"].target) == ("symlink", "scorer.py")
     assert (await store.verify(run_id)).ok
+
+
+async def test_touched_files_do_not_use_up_the_content_budget(
+    backend: DockerBackend, store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(reader_module, "BLOB_CAP", 100)
+    shared = [Mount(volume="shared", target="/shared")]
+    run_id, sb = await sandbox(backend, store, mounts=shared)
+    try:
+        await sb.exec("for i in $(seq 20); do head -c 90 /dev/zero > pad$i; done", timeout_s=20)
+        result = await sb.exec(
+            "touch pad* && echo 'def score(): return 1  # rigged' > /shared/target", timeout_s=20
+        )
+    finally:
+        await sb.close()
+        await backend.remove_run(run_id)
+
+    last = next(s for s in await snapshots(store, run_id) if s.exec_id == result.finished.exec_id)
+    files = changed(last)
+    target = files.pop("/shared/target")
+    assert target.content is not None
+    assert (
+        await store.get_blob(run_id, target.content.sha256) == b"def score(): return 1  # rigged\n"
+    )
+    assert {c.change for c in files.values()} == {"meta"}
+    assert last.content_skipped == 0
 
 
 async def test_shared_volume_changes_land_in_the_next_window(
