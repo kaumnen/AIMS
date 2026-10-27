@@ -39,9 +39,14 @@ READY_S = 120.0
 CONFIRM_S = 5.0
 PMU_S = 60
 SETTLE_S = 2.0
+# Kernels from 6.15 split pipe_write into anon_pipe_write and fifo_pipe_write.
 TRACE = (
     "mountpoint -q /sys/kernel/tracing || mount -t tracefs nodev /sys/kernel/tracing; "
-    "exec bpftrace -B line -f json /aims/trace.bt"
+    "f=/aims/trace.bt; "
+    "if grep -qx anon_pipe_write /sys/kernel/tracing/available_filter_functions; then "
+    "sed 's/^fentry:vmlinux:pipe_write /fentry:vmlinux:anon_pipe_write, "
+    "fentry:vmlinux:fifo_pipe_write /' $f > /tmp/trace.bt && f=/tmp/trace.bt; fi; "
+    "exec bpftrace -B line -f json $f"
 )
 PMU_EVENTS = ("cpu-cycles", "instructions", "cache-misses")
 PMU = (

@@ -219,7 +219,10 @@ tracepoint:raw_syscalls:sys_exit /curtask->thread_pid->level > @base && strncmp(
   printf("D %llu %llu %llu %d %d %d\n", nsecs(boot), cpu, $s, curtask->tgid, args.id, -args.ret);
 }
 
-fentry:vmlinux:pipe_write /curtask->thread_pid->level > @base && strncmp(comm, "runc:", 5) != 0/ {
+// From 6.15 the tracer attaches anon_pipe_write and fifo_pipe_write here instead; anon_pipe_write
+// keeps only pipefs files, since a FIFO write through fifo_pipe_write may call it too.
+fentry:vmlinux:pipe_write /curtask->thread_pid->level > @base && strncmp(comm, "runc:", 5) != 0
+    && (probe != "fentry:vmlinux:anon_pipe_write" || args.iocb->ki_filp->f_inode->i_sb->s_magic == 0x50495045)/ {
   $f = args.iocb->ki_filp; $it = args.from; $ino = $f->f_inode->i_ino; $n = $it->count;
   $m = $f->f_inode->i_sb->s_magic;
   $a = (uint64)0; $na = (uint64)0; $b = (uint64)0; $nb = (uint64)0; $cap = (uint64)64;

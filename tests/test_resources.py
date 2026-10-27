@@ -168,7 +168,8 @@ def anyio_backend() -> str:
 @pytest.fixture(scope="module")
 async def backend() -> AsyncIterator[DockerBackend]:
     try:
-        backend = await DockerBackend.open(audit="auto")
+        audit = "kernel" if os.environ.get("AIMS_REQUIRE_TRACER") else "auto"
+        backend = await DockerBackend.open(audit=audit)
     except Exception as e:
         if os.environ.get("AIMS_REQUIRE_DOCKER"):
             raise
