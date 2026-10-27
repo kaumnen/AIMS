@@ -261,7 +261,8 @@ class Tracer:
     def adopt(self, route: Route, pids: list[int]) -> None:
         """Route processes that were already running in the sandbox when it registered."""
         for pid in pids:
-            self._pids.setdefault(pid, route)
+            self._pids[pid] = route
+            self._gone.pop(pid, None)
             self._foreign.pop(pid, None)
 
     def unregister(self, route: Route) -> None:
@@ -274,9 +275,12 @@ class Tracer:
             self._disown(pid)
 
     async def confirm(self, pid: int, pidns: int) -> bool:
-        """Whether the tracer saw the runtime start process `pid` in namespace `pidns`."""
-        if pid in self._roots:
-            return self._roots[pid] == pidns
+        """Whether the tracer saw the runtime start process `pid` in namespace `pidns`.
+
+        Another namespace on record may be an older process with the same pid, so it waits.
+        """
+        if self._roots.get(pid) == pidns:
+            return True
         future = self._waiters.setdefault(pid, asyncio.get_running_loop().create_future())
         try:
             async with asyncio.timeout(CONFIRM_S):

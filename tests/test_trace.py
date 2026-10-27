@@ -625,6 +625,25 @@ async def test_processes_running_at_registration_are_adopted() -> None:
 
 
 @pytest.mark.anyio
+async def test_adoption_replaces_a_stale_route() -> None:
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    old = tracer.register(77, Mounts.parse(MOUNTINFO), SYSCALLS["aarch64"])
+    route = tracer.register(99, Mounts.parse(MOUNTINFO), SYSCALLS["aarch64"])
+    feed = Feed(tracer)
+    feed("R 0 999")
+    feed(f"E 5 1 1 1000 77 5 3 {hx(b'sh\0')}")
+    feed(f"E 6 1 1 1000 77 6 3 {hx(b'sh\0')}")
+    feed("X 6 0 0")
+    drain(old)
+    tracer.adopt(route, [5, 6])
+    s = feed("W 5 /work/a")
+    t = feed("W 6 /work/b")
+    assert drain(route) == [File(5, "write", "/work/a", at=s), File(6, "write", "/work/b", at=t)]
+    assert drain(old) == []
+    await tracer.stop()
+
+
+@pytest.mark.anyio
 async def test_runtime_setup_in_a_sandbox_cgroup_is_foreign() -> None:
     tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
     route = tracer.register(99, Mounts.parse(MOUNTINFO), SYSCALLS["aarch64"])
@@ -728,6 +747,21 @@ async def test_exited_pids_stop_routing_after_a_while() -> None:
 
     assert drain(route) == []
     assert tracer.unrouted == 1
+    await tracer.stop()
+
+
+@pytest.mark.anyio
+async def test_confirm_waits_past_an_older_process_with_the_pid() -> None:
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    feed = Feed(tracer)
+    feed("R 0 999")
+    feed(f"E 10 1 1 1000 77 5 3 {hx(b'sh\0')}")
+    confirm = asyncio.create_task(tracer.confirm(10, 99))
+    await asyncio.sleep(0)
+    assert not confirm.done()
+    feed(f"E 10 1 1 1000 99 5 3 {hx(b'sh\0')}")
+
+    assert await confirm
     await tracer.stop()
 
 

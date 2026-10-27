@@ -578,6 +578,54 @@ async def test_root_seen_before_its_pid_is_known(store: LocalEventStore) -> None
     assert [e.data["exec_id"] for e in procs] == [result.finished.exec_id] * 2
 
 
+def late(*records: Record, pid: int) -> Step:
+    """An exec whose records are recorded before the runtime reports its pid."""
+
+    async def run(sb: FakeSandbox, capture: Capture, on_pid: Callable[[int], None] | None):
+        for record in records:
+            sb.queue.put_nowait(record)
+        await asyncio.sleep(0.05)
+        if on_pid is not None:
+            on_pid(pid)
+        return Outcome("exited", 0, pid, 5)
+
+    return run
+
+
+async def test_a_reused_root_pid_goes_to_the_new_exec(store: LocalEventStore) -> None:
+    sb = FakeSandbox()
+    sb.steps.append(late(root(100), Exit(100, 0, None, at=AT), pid=100))
+    sb.steps.append(step(root(100), child(101, 100, "ls"), pid=None))
+    run_id, audited = await start(store, sb)
+    first = await audited.exec("true", timeout_s=5)
+    second = await audited.exec("ls", timeout_s=5)
+    await audited.close()
+
+    procs = [e.data["exec_id"] for e in await events(store, run_id) if e.type == "proc.exec"]
+    ids = (first.finished.exec_id, second.finished.exec_id)
+    assert procs == [ids[0], ids[1], ids[1]]
+
+
+async def test_a_reused_root_pid_of_a_runner_exec_is_recorded(store: LocalEventStore) -> None:
+    sb = FakeSandbox()
+    sb.after = [Proc(pid=9, ppid=1, uid=AGENT_UID, command="miner")]
+    sb.steps.append(step(root(100), Exit(100, 0, None, at=AT)))
+    sb.steps.append(late(root(200), Exit(200, 0, None, at=AT), pid=200))
+    sb.steps.append(step(root(200), pid=None))
+    run_id, audited = await start(store, sb, kill_leftovers=True)
+    first = await audited.exec("miner &", timeout_s=5)
+    second = await audited.exec("ls", timeout_s=5)
+    await audited.close()
+
+    assert first.finished.leftover_killed
+    procs = [
+        (e.data["pid"], e.data["exec_id"])
+        for e in await events(store, run_id)
+        if e.type == "proc.exec"
+    ]
+    assert procs == [(100, first.finished.exec_id), (200, second.finished.exec_id)]
+
+
 def spilled(data: bytes) -> list[tuple[str, dict]]:
     lines = [json.loads(line) for line in data.decode().splitlines()]
     return [(line["type"], line["data"]) for line in lines]

@@ -477,6 +477,8 @@ class AuditedSandbox:
             return None
 
     def _root(self, pid: int, active: _Active) -> None:
+        if pid == active.root and active.exited.is_set():
+            return
         self._roots[pid] = active.exec_id
         if len(self._roots) > MEMORY:
             self._roots.popitem(last=False)
@@ -850,6 +852,7 @@ class AuditedSandbox:
 
     def _on_exit(self, record: Exit) -> None:
         owner = self._owner.pop(record.pid, None)
+        self._roots.pop(record.pid, None)
         self._gone[record.pid] = owner
         self._gone.move_to_end(record.pid)
         if len(self._gone) > MEMORY:
@@ -1087,7 +1090,7 @@ class AuditedSandbox:
         if record.pid in self._roots:
             return self._roots[record.pid]
         active = self._active
-        if active is None or active.exec_id == INTERNAL or record.uid != AGENT_UID:
+        if active is None or (active.exec_id != INTERNAL and record.uid != AGENT_UID):
             return INTERNAL
         if active.root is None:
             self._root(record.pid, active)
