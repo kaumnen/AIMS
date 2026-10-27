@@ -64,7 +64,11 @@ MEMORY = 4096
 READY_S = 120.0
 CONFIRM_S = 5.0
 PMU_S = 60
-SETTLE_S = 2.0
+# bpftrace prints a loss once its ring has drained, within a tick of the last record before it.
+# The hole shows at its cpu's next record, a tick later at most, and expires at the first tick
+# more than a second after that: every cpu ticks in phase, a little under a second apart, so
+# that can take two ticks.
+RIPE_US = 4_500_000
 # Kernels from 6.15 split pipe_write into anon_pipe_write and fifo_pipe_write, 7.0 renamed
 # do_filp_open to do_file_open, and FMODE_BACKING is bit 24 from 6.14 and bit 25 before.
 TRACE = (
@@ -174,7 +178,8 @@ class Tracer:
         self._roots: OrderedDict[int, int] = OrderedDict()
         self._waiters: dict[int, asyncio.Future[int]] = {}
         self._sequence = Sequence()
-        self._settle: asyncio.TimerHandle | None = None
+        # Stream time of each loss bpftrace reported, and the kernel's total by then.
+        self._drops: deque[tuple[int, int]] = deque()
         self.alive = False
         self.garbled = 0
         self.unrouted = 0
@@ -236,9 +241,6 @@ class Tracer:
 
     async def stop(self) -> None:
         self.alive = False
-        if self._settle is not None:
-            self._settle.cancel()
-            self._settle = None
         if self._reader is not None:
             self._reader.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -306,21 +308,27 @@ class Tracer:
                 route.put(Lost(None, "tracer stopped"))
 
     def settle(self) -> None:
-        """Report holes older than a second, then any loss the kernel counted that no hole explains.
+        """Report holes older than a second, then loss the kernel counted that no hole explains.
 
-        Unexplained loss is reported with an unknown count, so a hole found later is not counted
-        twice.
+        Loss is judged on the stream's clock once its holes must have been found, so a reader that
+        falls behind does not report loss it has not read up to yet. Unexplained loss is reported
+        with an unknown count, so a hole found later is not counted twice. The mark is what the
+        last check left unexplained, so a hole found late lowers it for the checks after.
         """
-        self._settle = None
         self._expire()
-        excess = self.kernel_lost - self.located
+        counted = None
+        while self._drops and self._drops[0][0] <= self._sequence.latest - RIPE_US:
+            counted = self._drops.popleft()[1]
+        if counted is None:
+            return
+        excess = counted - self.located
         if excess > self.unlocated:
             reason = (
                 f"the kernel dropped {excess - self.unlocated} records no sequence hole located"
             )
             for route in self._routes.values():
                 route.put(Lost(None, reason))
-            self.unlocated = excess
+        self.unlocated = max(excess, 0)
 
     def _handle(self, line: str) -> None:
         self._line = line
@@ -337,15 +345,14 @@ class Tracer:
                 if not self._ready.done():
                     self._ready.set_result(base)
             case Tick():
-                self._expire()
+                self.settle()
             case Note(text):
                 log.warning("tracer: %s", text)
                 if not self._ready.done() and "ERROR" in text:
                     self._ready.set_exception(TracerError(text))
             case Dropped(count):
                 self.kernel_lost += count
-                if self._settle is None:
-                    self._settle = asyncio.get_running_loop().call_later(SETTLE_S, self.settle)
+                self._drops.append((self._sequence.latest, self.kernel_lost))
             case Garbled(pid, text):
                 self.garbled += 1
                 route = self._lookup(pid) if pid is not None else None

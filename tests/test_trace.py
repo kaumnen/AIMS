@@ -767,14 +767,42 @@ async def test_tracer_reports_sequence_gaps_once() -> None:
         feed("W 1 /c")
     tracer._handle(json.dumps({"type": "lost_events", "data": {"events": 7}}))
     tracer.settle()
+    assert drain(route) == [Lost(5, "kernel record gap", (3,), 10, 70)]
+    late_tick(tracer, 5_000_000)
 
-    assert drain(route) == [
-        Lost(5, "kernel record gap", (3,), 10, 70),
-        Lost(None, "the kernel dropped 2 records no sequence hole located"),
-    ]
+    assert drain(route) == [Lost(None, "the kernel dropped 2 records no sequence hole located")]
     assert (tracer.kernel_lost, tracer.located, tracer.unlocated) == (7, 5, 2)
     tracer.settle()
     assert route.queue.empty()
+    await tracer.stop()
+
+
+def tick(tracer: Tracer, ts_us: int, cpu: int, seq: int) -> None:
+    tracer._handle(json.dumps({"type": "printf", "data": f"Q {ts_us * 1000} {cpu} {seq}\n"}))
+
+
+@pytest.mark.anyio
+async def test_loss_waits_for_its_hole_to_ripen() -> None:
+    """Records lost at the end of a burst leave a hole that the cpu's next tick shows. Every cpu
+    ticks in phase, a little under a second apart, so the hole ripens two ticks later.
+    """
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    route = tracer.register(99, Mounts([]), {})
+    tick(tracer, 1_000_000, 0, 1)
+    tick(tracer, 1_000_000, 1, 1)
+    tracer._handle(json.dumps({"type": "lost_events", "data": {"events": 3}}))
+    tick(tracer, 1_100_000, 1, 5)
+    tick(tracer, 2_099_000, 0, 2)
+    tracer.settle()
+    assert route.queue.empty()
+    for n in range(3, 7):
+        tick(tracer, 1_100_000 + (n - 1) * 999_000, 0, n)
+
+    assert drain(route) == [Lost(3, "kernel record gap", (1,), 1_000_000, 1_100_000)]
+    assert (tracer.kernel_lost, tracer.located, tracer.unlocated) == (3, 3, 0)
+    tracer._handle(json.dumps({"type": "lost_events", "data": {"events": 2}}))
+    tick(tracer, 11_000_000, 0, 7)
+    assert drain(route) == [Lost(None, "the kernel dropped 2 records no sequence hole located")]
     await tracer.stop()
 
 
