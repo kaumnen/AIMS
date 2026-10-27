@@ -382,3 +382,20 @@ async def test_route_reports_overflow() -> None:
         Lost(3, "audit queue full", (), 102, 104),
         late,
     ]
+
+
+@pytest.mark.anyio
+async def test_env_of_an_exec_never_keeps_an_earlier_exec_tail() -> None:
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    route = tracer.register(99, Mounts([]), {})
+    feed = Feed(tracer)
+    feed("R 0 999")
+    feed(f"E 10 1 1 1000 99 5 3 {hx(b'sh\0')}")
+    long, short = b"A=1\0OLD=stale\0", b"B=2\0"
+    feed(f"G 10 {len(long)} 0 {hx(long)}")
+    feed(f"G 10 {len(short)} 0 {hx(short)}")
+    feed(f"E 10 1 1 1000 99 5 3 {hx(b'ls\0')}")
+
+    execs = [r for r in drain(route) if isinstance(r, Exec)]
+    assert [(e.env, e.env_bytes) for e in execs] == [((), 0), (("B=2",), len(short))]
+    await tracer.stop()

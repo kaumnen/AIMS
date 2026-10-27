@@ -2,7 +2,7 @@ import re
 
 from aims.events.schema import _registry
 from aims.sandbox.images import ASSETS
-from aims.sandbox.trace import PARSERS
+from aims.sandbox.trace import ENV_CAP, PARSERS
 
 TAGS = set("RFBEXOWAUNCPD") | set("VGT") | set("Z")
 TYPES = {
@@ -68,3 +68,12 @@ def test_every_tracer_line_has_a_parser_and_a_header() -> None:
         assert fmt.startswith("%llu %llu %llu "), tag
         assert args.startswith("nsecs(boot), cpu, $s,"), tag
         assert before == SEQ, tag
+
+
+def test_env_cap_matches_the_probe() -> None:
+    script = (ASSETS / "tracer" / "trace.bt").read_text()
+    chunks = re.search(r"unroll\((\d+)\) \{\s*if \(\$eo < \$en\)", script)
+    size = re.search(r"\$eo \+= (\d+);", script)
+    assert chunks is not None
+    assert size is not None
+    assert int(chunks.group(1)) * int(size.group(1)) == ENV_CAP

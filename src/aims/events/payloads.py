@@ -167,8 +167,9 @@ class FdInfo(BaseModel):
 class ProcExec(KernelPayload):
     """A program the kernel started in the sandbox. `root` marks one the runtime spawned.
 
-    `cwd`, `env` and `fds` are read at exec. `env` is empty with `env_inherited` set when it matches
-    the parent, to keep the log small. `fds` holds stdin, stdout and stderr, giving the pipe graph.
+    `cwd`, `env` and `fds` are read at exec. Only the first 4 KiB of `env` is read; `env_bytes` is
+    its full size. `env` is empty with `env_inherited` set when it was read whole and matches the
+    parent's, to keep the log small. `fds` holds stdin, stdout and stderr, giving the pipe graph.
     """
 
     type = "proc.exec"

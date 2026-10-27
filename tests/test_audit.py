@@ -850,3 +850,30 @@ async def test_a_failed_start_closes_the_sandbox(
     evs = await events(store, run_id)
     assert kinds(evs) == ["run.started", "sandbox.started", "sandbox.stopped"]
     assert evs[-1].data["detail"] == "start failed: OSError: disk full"
+
+
+async def test_env_is_only_deduped_when_read_whole(store: LocalEventStore) -> None:
+    fds = (Fd(0, "char"), Fd(500, "pipe"), Fd(501, "pipe"))
+    head = tuple(f"V{i}={'x' * 500}" for i in range(8))
+    parent = with_context(root(100), cwd="/work", env=head, fds=fds)
+    parent = dataclasses.replace(parent, env_bytes=6000)
+    longer = dataclasses.replace(parent, pid=101, ppid=100, root=False, env_bytes=6100)
+    same = dataclasses.replace(parent, pid=102, ppid=100, root=False)
+    sb = FakeSandbox()
+    sb.steps.append(
+        step(
+            parent,
+            Fork(100, 101, at=AT),
+            longer,
+            Fork(100, 102, at=AT),
+            same,
+            Exit(100, 0, None, at=AT),
+        )
+    )
+    run_id, audited = await start(store, sb)
+    await audited.exec("x", timeout_s=5)
+    await audited.close()
+
+    procs = {e.data["pid"]: e.data for e in await events(store, run_id) if e.type == "proc.exec"}
+    assert [procs[pid]["env_inherited"] for pid in (100, 101, 102)] == [False, False, False]
+    assert all(procs[pid]["env"] == list(head) for pid in (100, 101, 102))

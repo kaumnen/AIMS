@@ -59,13 +59,13 @@ from aims.sandbox.base import (
     SandboxSpec,
 )
 from aims.sandbox.resources import Windows
+from aims.sandbox.trace import ENV_CAP, PIPEFS_MAGIC
 
 log = logging.getLogger("aims.sandbox")
 
 CAPS = {"procs": 1000, "files": 2000, "other": 500, "output": 200}
 SPILL_BYTES = 32 * 1024 * 1024
 CHANGES = 200
-PIPEFS_MAGIC = 0x50495045
 OUTPUT_PREFIX = 64
 FLUSH_S = 0.1
 FLUSH_N = 500
@@ -177,7 +177,7 @@ class AuditedSandbox:
         self._diffs: set[asyncio.Task[None]] = set()
         self._outputs: dict[tuple[int, int], _Out] = {}
         self._exec_fds: OrderedDict[str, tuple[int, int]] = OrderedDict()
-        self._env: OrderedDict[int, tuple[str, ...]] = OrderedDict()
+        self._env: OrderedDict[int, tuple[tuple[str, ...], int]] = OrderedDict()
         self._queue: asyncio.Queue[Record] | None = None
         self._samples: asyncio.Queue[Sample | Lost] | None = None
         self._windows = Windows(sandbox.info.sandbox_id, spec.sample_hz)
@@ -667,13 +667,17 @@ class AuditedSandbox:
             self._shown.add(record.pid)
 
     def _exec_env(self, record: Exec) -> tuple[tuple[str, ...], bool]:
-        """`record`'s env, blanked when it matches the parent's, so the log does not repeat it."""
+        """`record`'s env, blanked when it was read whole and matches the parent's.
+
+        An env past `ENV_CAP` was cut short, so a match proves nothing and it is always kept.
+        """
+        env = (record.env, record.env_bytes)
         parent = self._env.get(record.ppid)
-        self._env[record.pid] = record.env
+        self._env[record.pid] = env
         self._env.move_to_end(record.pid)
         if len(self._env) > MEMORY:
             self._env.popitem(last=False)
-        if record.env and record.env == parent:
+        if record.env and env == parent and record.env_bytes <= ENV_CAP:
             return (), True
         return record.env, False
 

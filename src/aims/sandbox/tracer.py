@@ -294,6 +294,8 @@ class Tracer:
                 if len(self._parts) > MEMORY:
                     self._parts.popitem(last=False)
             case EnvChunk(pid):
+                if item.offset == 0:
+                    self._env[pid] = bytearray()
                 env = self._env.setdefault(pid, bytearray())
                 self._env.move_to_end(pid)
                 if len(self._env) > MEMORY:
@@ -359,11 +361,12 @@ class Tracer:
             parts["cwd"], parts["cwd_partial"] = route.mounts.resolve(walk)
         env = self._env.pop(raw.pid, None)
         if env is not None:
-            entries = bytes(env).split(b"\0")
+            size = self._env_bytes.pop(raw.pid, len(env))
+            entries = bytes(env[:size]).split(b"\0")
             if entries and entries[-1] == b"":
                 entries.pop()
             parts["env"] = tuple(e.decode("utf-8", "backslashreplace") for e in entries)
-            parts["env_bytes"] = self._env_bytes.pop(raw.pid, len(env))
+            parts["env_bytes"] = size
         record = Exec(
             raw.pid,
             raw.ppid,

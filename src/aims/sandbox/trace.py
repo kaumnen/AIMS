@@ -32,6 +32,7 @@ def _fd(ino: int, mode: int, magic: int) -> Fd:
 
 
 DEPTH = 12
+ENV_CAP = 4096
 MAX_INT = 2**53 - 1
 
 _HEX = re.compile(r"^(?:\\x[0-9a-f]{2})*$")
