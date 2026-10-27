@@ -6,17 +6,33 @@ BEGIN {
   printf("R %llu %llu %llu %d %llu\n", nsecs(boot), cpu, $s, @base, nsecs(tai));
 }
 
-tracepoint:task:task_newtask /curtask->thread_pid->level > @base && !(args.clone_flags & 0x10000)/ {
+// One record per cpu each second, so a record lost at the end of a burst still leaves a hole.
+profile:s:1 {
+  $s = @seq[cpu] + 1; @seq[cpu] = $s;
+  printf("Q %llu %llu %llu %llu\n", nsecs(boot), cpu, $s, nsecs(tai));
+}
+
+tracepoint:task:task_newtask /@sandbox[cgroup] && !(args.clone_flags & 0x10000)/ {
   $s = @seq[cpu] + 1; @seq[cpu] = $s;
   printf("F %llu %llu %llu %d %d\n", nsecs(boot), cpu, $s, curtask->tgid, args.pid);
 }
 
+// A sandbox is a cgroup where the runner started a toolbox binary. Only the runner makes root
+// execs (parent outside every container), and sidecars and other containers have no /.aims.
 fentry:vmlinux:security_bprm_check /curtask->thread_pid->level > @base/ {
-  $s = @seq[cpu] + 1; @seq[cpu] = $s;
-  printf("B %llu %llu %llu %d %s\n", nsecs(boot), cpu, $s, curtask->tgid, str(args.bprm->filename));
+  $f = str(args.bprm->filename);
+  if (!@sandbox[cgroup] && curtask->real_parent->thread_pid->level <= @base && strncmp($f, "/.aims/", 7) == 0) {
+    @sandbox[cgroup] = 1;
+  }
+  if (@sandbox[cgroup]) {
+    $s = @seq[cpu] + 1; @seq[cpu] = $s;
+    printf("B %llu %llu %llu %d %s\n", nsecs(boot), cpu, $s, curtask->tgid, $f);
+  }
 }
 
-tracepoint:sched:sched_process_exec /curtask->thread_pid->level > @base/ {
+tracepoint:cgroup:cgroup_rmdir /@sandbox[args.id]/ { delete(@sandbox[args.id]); }
+
+tracepoint:sched:sched_process_exec /@sandbox[cgroup]/ {
   $tp = curtask->thread_pid;
   $ns = $tp->numbers[1].nr;
   $inum = $tp->numbers[1].ns->ns.inum;
@@ -60,7 +76,7 @@ tracepoint:sched:sched_process_exec /curtask->thread_pid->level > @base/ {
     buf(uptr(curtask->mm->arg_start), $len));
 }
 
-tracepoint:sched:sched_process_exit /curtask->thread_pid->level > @base && curtask->pid == curtask->tgid/ {
+tracepoint:sched:sched_process_exit /@sandbox[cgroup] && curtask->pid == curtask->tgid/ {
   $s = @seq[cpu] + 1; @seq[cpu] = $s;
   printf("X %llu %llu %llu %d %d %d\n", nsecs(boot), cpu, $s, curtask->tgid, (curtask->exit_code >> 8) & 0xff, curtask->exit_code & 0x7f);
 }
@@ -70,7 +86,7 @@ tracepoint:oom:mark_victim {
   printf("O %llu %llu %llu %d\n", nsecs(boot), cpu, $s, args.pid);
 }
 
-fentry:vmlinux:security_file_open /curtask->thread_pid->level > @base && strncmp(comm, "runc:", 5) != 0 && (args.file->f_inode->i_mode & 0xF000) == 0x8000/ {
+fentry:vmlinux:security_file_open /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && (args.file->f_inode->i_mode & 0xF000) == 0x8000/ {
   $p = path(args.file->f_path);
   if (args.file->f_mode & 2) {
     $s = @seq[cpu] + 1; @seq[cpu] = $s;
@@ -113,12 +129,12 @@ fentry:vmlinux:security_file_open /curtask->thread_pid->level > @base && strncmp
   }
 }
 
-fentry:vmlinux:filp_close /curtask->thread_pid->level > @base && strncmp(comm, "runc:", 5) != 0 && (args.filp->f_mode & 2) && (args.filp->f_inode->i_mode & 0xF000) == 0x8000/ {
+fentry:vmlinux:filp_close /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && (args.filp->f_mode & 2) && (args.filp->f_inode->i_mode & 0xF000) == 0x8000/ {
   $s = @seq[cpu] + 1; @seq[cpu] = $s;
   printf("Z %llu %llu %llu %d %lld %s\n", nsecs(boot), cpu, $s, curtask->tgid, args.filp->f_inode->i_size, path(args.filp->f_path));
 }
 
-fentry:vmlinux:security_inode_unlink, fentry:vmlinux:security_inode_rmdir /curtask->thread_pid->level > @base && strncmp(comm, "runc:", 5) != 0/ {
+fentry:vmlinux:security_inode_unlink, fentry:vmlinux:security_inode_rmdir /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0/ {
   $d = args.dentry;
   $x = $d; $k = 0;
   unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } }
@@ -138,7 +154,7 @@ fentry:vmlinux:security_inode_unlink, fentry:vmlinux:security_inode_rmdir /curta
     str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
 }
 
-fentry:vmlinux:security_inode_rename /curtask->thread_pid->level > @base && strncmp(comm, "runc:", 5) != 0/ {
+fentry:vmlinux:security_inode_rename /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0/ {
   $o = args.old_dentry;
   $n = args.new_dentry;
   $x = $o; $ko = 0;
@@ -173,7 +189,7 @@ fentry:vmlinux:security_inode_rename /curtask->thread_pid->level > @base && strn
     str($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
 }
 
-fentry:vmlinux:security_socket_connect /curtask->thread_pid->level > @base && strncmp(comm, "runc:", 5) != 0/ {
+fentry:vmlinux:security_socket_connect /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0/ {
   $a = args.address;
   if ($a->sa_family == 2) {
     $in = (struct sockaddr_in *)$a;
@@ -189,7 +205,7 @@ fentry:vmlinux:security_socket_connect /curtask->thread_pid->level > @base && st
   }
 }
 
-fentry:vmlinux:security_socket_sendmsg /curtask->thread_pid->level > @base && strncmp(comm, "runc:", 5) != 0 && args.msg->msg_name != 0/ {
+fentry:vmlinux:security_socket_sendmsg /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && args.msg->msg_name != 0/ {
   $a = (struct sockaddr *)args.msg->msg_name;
   if ($a->sa_family == 2) {
     $in = (struct sockaddr_in *)$a;
@@ -202,7 +218,7 @@ fentry:vmlinux:security_socket_sendmsg /curtask->thread_pid->level > @base && st
   }
 }
 
-tracepoint:syscalls:sys_enter_openat /curtask->thread_pid->level > @base && strncmp(comm, "runc:", 5) != 0/ {
+tracepoint:syscalls:sys_enter_openat /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0/ {
   @openat[tid] = args.filename;
 }
 
@@ -214,14 +230,14 @@ tracepoint:syscalls:sys_exit_openat /@openat[tid]/ {
   delete(@openat[tid]);
 }
 
-tracepoint:raw_syscalls:sys_exit /curtask->thread_pid->level > @base && strncmp(comm, "runc:", 5) != 0 && args.ret == -1/ {
+tracepoint:raw_syscalls:sys_exit /args.ret == -1 && @sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0/ {
   $s = @seq[cpu] + 1; @seq[cpu] = $s;
   printf("D %llu %llu %llu %d %d %d\n", nsecs(boot), cpu, $s, curtask->tgid, args.id, -args.ret);
 }
 
 // From 6.15 the tracer attaches anon_pipe_write and fifo_pipe_write here instead; anon_pipe_write
 // keeps only pipefs files, since a FIFO write through fifo_pipe_write may call it too.
-fentry:vmlinux:pipe_write /curtask->thread_pid->level > @base && strncmp(comm, "runc:", 5) != 0
+fentry:vmlinux:pipe_write /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0
     && (probe != "fentry:vmlinux:anon_pipe_write" || args.iocb->ki_filp->f_inode->i_sb->s_magic == 0x50495045)/ {
   $f = args.iocb->ki_filp; $it = args.from; $ino = $f->f_inode->i_ino; $n = $it->count;
   $m = $f->f_inode->i_sb->s_magic;
@@ -251,4 +267,5 @@ fentry:vmlinux:pipe_write /curtask->thread_pid->level > @base && strncmp(comm, "
     buf(uptr($a), $na), buf(uptr($b), $nb));
 }
 
-interval:s:5 { clear(@opipe); }
+// clear() would go through the ring, where a drop is loss no sequence hole explains.
+interval:s:5 { for ($kv : @opipe) { delete(@opipe, $kv.0); } }

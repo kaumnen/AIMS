@@ -168,6 +168,12 @@ class Ready:
 
 
 @dataclass(frozen=True, slots=True)
+class Tick:
+    tai_us: int
+    at: Stamp
+
+
+@dataclass(frozen=True, slots=True)
 class Dropped:
     count: int
 
@@ -264,7 +270,7 @@ class Note:
     text: str
 
 
-Item = Ready | Raw | Kernel
+Item = Ready | Tick | Raw | Kernel
 Parser = Callable[[str, Stamp], Item]
 
 PARSERS: dict[str, Parser] = {}
@@ -321,6 +327,12 @@ def parse(line: str) -> Item | Dropped | Garbled | Note | None:
 def _ready(body: str, at: Stamp) -> Ready:
     base, tai = _ints(body, 2)
     return Ready(base, at.ts, tai // 1000, at)
+
+
+@record("Q")
+def _tick(body: str, at: Stamp) -> Tick:
+    (tai,) = _ints(body, 1)
+    return Tick(tai // 1000, at)
 
 
 @record("F")

@@ -103,7 +103,7 @@ async def test_exec_reports_output_and_exit(backend: DockerBackend, store: Local
 
 
 async def test_sandbox_is_locked_down(backend: DockerBackend, store: LocalEventStore) -> None:
-    _, sb = await sandbox(backend, store)
+    _, sb = await sandbox(backend, store, tmp_mb=4)
     checks = {
         "id -u": b"1000\n",
         "grep -E '^(CapEff|NoNewPrivs)' /proc/self/status | tr -s '\\t' ' '": (
@@ -112,6 +112,9 @@ async def test_sandbox_is_locked_down(backend: DockerBackend, store: LocalEventS
         "touch /etc/x 2>/dev/null || echo ro": b"ro\n",
         "echo ok > /work/f && cat /work/f && echo ok > /tmp/f && cat /tmp/f": b"ok\nok\n",
         "echo $HOME && touch $HOME/f && echo home": b"/home/agent\nhome\n",
+        "grep -cE ' (/tmp|/home/agent) tmpfs rw,nosuid,nodev' /proc/mounts": b"2\n",
+        "stat -c '%u %a' /tmp /home/agent": b"0 1777\n1000 755\n",
+        "head -c 8M /dev/zero > /tmp/big 2>/dev/null || echo full": b"full\n",
         "unshare -Ur true 2>/dev/null || echo denied": b"denied\n",
         (
             "python3 -c \"import socket\ntry: socket.create_connection(('1.1.1.1', 443), 2)\n"
@@ -355,10 +358,39 @@ async def test_sequence_locates_every_lost_record(store: LocalEventStore) -> Non
         tracer = small.tracer
         assert tracer is not None
         await flood(small, store, 3)
+        # Every cpu ticks once a second, so a hole is found and ripe within two.
+        await asyncio.sleep(2.5)
         tracer.settle()
 
     assert tracer.kernel_lost > 0
     assert tracer.located == tracer.kernel_lost
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_tracer_sees_only_sandboxes(backend: DockerBackend, store: LocalEventStore) -> None:
+    tracer = backend.tracer
+    assert tracer is not None
+    run_id, sb = await sandbox(backend, store)
+    other = None
+    try:
+        before = tracer.unrouted
+        await sb.exec("for i in $(seq 200); do echo $i > f$i; done", timeout_s=30)
+        loop = "for i in $(seq 200); do echo $i > /tmp/f$i; cat /tmp/f$i; done"
+        other = await backend.docker.containers.run(
+            config={"Image": IMAGE, "Cmd": ["sh", "-c", loop], "NetworkDisabled": True}
+        )
+        await other.wait()
+        await asyncio.sleep(1)
+        unrouted = tracer.unrouted - before
+    finally:
+        if other is not None:
+            await other.delete(force=True)
+        await sb.close()
+        await backend.remove_run(run_id)
+
+    assert unrouted == 0
+    assert any(e.type == "file.write" for e in await events(store, run_id, "file.write"))
 
 
 @pytest.mark.tracer
@@ -425,6 +457,33 @@ async def test_file_contents_are_diffed_per_exec(
     assert (await store.verify(run_id)).ok
 
 
+async def test_tmp_and_home_are_diffed_with_content(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    run_id, sb = await sandbox(backend, store)
+    scratch = {f"aims-{run_id}-a1-tmp", f"aims-{run_id}-a1-home"}
+    try:
+        result = await sb.exec(
+            "printf 'sleep 999 &\\n' > /tmp/trip.sh && echo 'export X=1' > $HOME/.profile",
+            timeout_s=10,
+        )
+    finally:
+        await sb.close()
+    listing = await backend.docker.volumes.list()
+    left = {v["Name"] for v in listing.get("Volumes") or []} & scratch
+    await backend.remove_run(run_id)
+
+    last = next(s for s in await snapshots(store, run_id) if s.exec_id == result.finished.exec_id)
+    assert {"/tmp", "/home/agent"} <= set(last.roots)
+    files = changed(last)
+    expected = {"/tmp/trip.sh": b"sleep 999 &\n", "/home/agent/.profile": b"export X=1\n"}
+    for path, data in expected.items():
+        content = files[path].content
+        assert content is not None, path
+        assert await store.get_blob(run_id, content.sha256) == data
+    assert left == set()
+
+
 async def test_touched_files_do_not_use_up_the_content_budget(
     backend: DockerBackend, store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -449,6 +508,30 @@ async def test_touched_files_do_not_use_up_the_content_budget(
     )
     assert {c.change for c in files.values()} == {"meta"}
     assert last.content_skipped == 0
+
+
+async def test_hash_budget_goes_to_the_smallest_files_first(
+    backend: DockerBackend, store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(reader_module, "HASH_CAP", 1000)
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(
+            "for i in $(seq 10); do head -c 980 /dev/zero > pad$i; done && "
+            "echo 'def score(): return 1  # rigged' > scorer.py",
+            timeout_s=20,
+        )
+    finally:
+        await sb.close()
+        await backend.remove_run(run_id)
+
+    last = next(s for s in await snapshots(store, run_id) if s.exec_id == result.finished.exec_id)
+    files = changed(last)
+    scorer = files.pop("/work/scorer.py")
+    assert scorer.sha256 is not None
+    assert scorer.content is not None
+    assert [c.sha256 for c in files.values()] == [None] * 10
+    assert last.unhashed == 10
 
 
 async def test_shared_volume_changes_land_in_the_next_window(

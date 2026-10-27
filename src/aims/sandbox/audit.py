@@ -459,8 +459,10 @@ class AuditedSandbox:
         self, tree: Tree, base: str | None, exec_id: str | None, *, always: bool
     ) -> list[Payload]:
         changes: list[FsChange] = []
+        datas = [c.data for c in tree.changes if c.data is not None]
+        refs = iter(await self._store.put_blobs(self._run_id, datas) if datas else [])
         for c in tree.changes:
-            content = None if c.data is None else await self._store.put_blob(self._run_id, c.data)
+            content = None if c.data is None else next(refs)
             changes.append(
                 FsChange(
                     path=c.path,

@@ -133,6 +133,9 @@ def test_parse_pmu() -> None:
 
 
 class StuckContainer:
+    async def show(self) -> dict[str, Any]:
+        return {"State": {"Running": True}}
+
     async def exec(self, *args: object, **kwargs: object) -> object:
         await asyncio.Event().wait()
         raise AssertionError
@@ -279,11 +282,13 @@ async def test_sandbox_records_hardware_counters(
 
 @pytest.mark.docker
 @pytest.mark.anyio
-async def test_sampler_death_is_recorded(store: LocalEventStore) -> None:
+@pytest.mark.parametrize("death", ["kill", "delete"])
+async def test_sampler_death_is_a_gap(store: LocalEventStore, death: str) -> None:
     async with await DockerBackend.open(audit="snapshot") as snapshot:
         sampler = snapshot.sampler
         assert sampler is not None
-        assert sampler._container is not None
+        dead = sampler._container
+        assert dead is not None
         run_id = await store.create_run(RunStarted(scenario="t", oversight="observe"))
         sb = await AuditedSandbox.start(
             snapshot, SandboxSpec(image=IMAGE), store, run_id=run_id, agent_id="a1"
@@ -291,8 +296,8 @@ async def test_sampler_death_is_recorded(store: LocalEventStore) -> None:
         try:
             assert sb.sandbox.audit == "snapshot"
             await asyncio.sleep(1.5)
-            await sampler._container.kill()
-            await asyncio.sleep(0.5)
+            await (dead.kill() if death == "kill" else dead.delete(force=True))
+            await asyncio.sleep(2.5)
             later = await AuditedSandbox.start(
                 snapshot, SandboxSpec(image=IMAGE), store, run_id=run_id, agent_id="a2"
             )
@@ -300,17 +305,19 @@ async def test_sampler_death_is_recorded(store: LocalEventStore) -> None:
         finally:
             await sb.close()
             await snapshot.remove_run(run_id)
+        assert sampler._container is not dead
 
     evs = await store.events(run_id, limit=1000)
     mine = [e for e in evs if e.agent_id == "a1"]
-    assert any(e.type == "resource.sample" for e in mine)
-    lost = [e.data["reason"] for e in mine if e.type == "audit.lost"]
+    lost = [i for i, e in enumerate(mine) if e.type == "audit.lost"]
     assert len(lost) == 1
-    assert str(lost[0]).startswith("resource sampler stopped")
+    assert str(mine[lost[0]].data["reason"]).startswith("resource sampler stopped")
+    samples = [i for i, e in enumerate(mine) if e.type == "resource.sample"]
+    assert samples[0] < lost[0] < samples[-1]
     started = [e for e in evs if e.type == "sandbox.started" and e.agent_id == "a2"]
     config = started[0].data["config"]
     assert isinstance(config, dict)
-    assert config["resources"] is None
+    assert config["resources"] is not None
 
 
 @pytest.mark.docker

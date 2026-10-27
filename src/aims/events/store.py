@@ -50,6 +50,8 @@ class EventStore(Protocol):
 
     async def put_blob(self, run_id: str, data: bytes) -> BlobRef: ...
 
+    async def put_blobs(self, run_id: str, datas: Sequence[bytes]) -> list[BlobRef]: ...
+
     async def get_blob(self, run_id: str, sha256: str) -> bytes: ...
 
     async def content(self, run_id: str, text: str) -> Content: ...
@@ -186,6 +188,9 @@ class LocalEventStore:
 
     async def put_blob(self, run_id: str, data: bytes) -> BlobRef:
         return await asyncio.to_thread(self._blobs(run_id).put, data)
+
+    async def put_blobs(self, run_id: str, datas: Sequence[bytes]) -> list[BlobRef]:
+        return await asyncio.to_thread(self._blobs(run_id).put_many, datas)
 
     async def get_blob(self, run_id: str, sha256: str) -> bytes:
         return await asyncio.to_thread(self._blobs(run_id).get, sha256)

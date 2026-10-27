@@ -367,6 +367,20 @@ async def test_blobs(store: LocalEventStore) -> None:
     assert verify_run(store.root / run_id).missing_blobs == (long.sha256,)
 
 
+async def test_blob_batches(store: LocalEventStore) -> None:
+    run_id = await store.create_run(STARTED)
+    first = await store.put_blob(run_id, b"a")
+    refs = await store.put_blobs(run_id, [b"b", b"a", b"b", b""])
+    assert [r.size for r in refs] == [1, 1, 1, 0]
+    assert refs[1] == first
+    assert refs[0] == refs[2]
+    for ref, data in zip(refs, [b"b", b"a", b"b", b""], strict=True):
+        assert await store.get_blob(run_id, ref.sha256) == data
+    assert sorted(p.name for p in (store.root / run_id / "blobs").iterdir()) == sorted(
+        {r.sha256 for r in refs}
+    )
+
+
 async def test_stream_tails_until_finished(store: LocalEventStore) -> None:
     run_id = await store.create_run(STARTED)
     await store.append(run_id, [call(1)])

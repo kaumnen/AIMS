@@ -10,8 +10,9 @@
  *
  * CHANGE is A added, M content changed, T mode or mtime changed only, D removed, K kind changed.
  * KIND is f, d, l, p, s or o. SHA is the sha256 of a file or link target, "-" when not hashed.
- * A file is hashed again only when its inode, size, mtime or ctime moved. Links are never
- * followed. A walk stopped by ENTRY_CAP reports no removals.
+ * A file is hashed again only when its inode, size, mtime or ctime moved, smallest first, so
+ * HASH_CAP and BLOB_CAP cover as many files as they can. Links are never followed. A walk
+ * stopped by ENTRY_CAP reports no removals.
  */
 #define _GNU_SOURCE
 #include <dirent.h>
@@ -116,6 +117,7 @@ typedef struct {
     char kind;
     int hashed;
     int fresh;
+    int root;
     unsigned mode;
     long long size, mtime_ns, ctime_ns;
     unsigned long long ino, dev;
@@ -130,6 +132,8 @@ typedef struct {
 typedef struct {
     const char *path;
     const char *dir;
+    size_t rel;
+    int fd;
 } root;
 
 static root *roots;
@@ -168,17 +172,44 @@ static entry *push(list *l) {
     return e;
 }
 
+static int by_size(const void *a, const void *b) {
+    const entry *x = *(entry *const *)a, *y = *(entry *const *)b;
+    if (x->size != y->size) return x->size < y->size ? -1 : 1;
+    return strcmp(x->path, y->path);
+}
+
 static int same_stat(const entry *a, const entry *b) {
     return a->ino == b->ino && a->dev == b->dev && a->size == b->size &&
            a->mtime_ns == b->mtime_ns && a->ctime_ns == b->ctime_ns;
 }
 
-static void hash_file(int dfd, const char *name, entry *e, const entry *was) {
+/* Opens a path below dfd one component at a time without following links, as the walk did. */
+static int open_below(int dfd, const char *rel) {
+    char buf[MAX_PATH];
+    size_t n = strlen(rel);
+    if (n >= sizeof buf) return -1;
+    memcpy(buf, rel, n + 1);
+    int fd = dfd;
+    char *name = buf;
+    for (char *slash; (slash = strchr(name, '/')); name = slash + 1) {
+        *slash = 0;
+        int next = openat(fd, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        if (fd != dfd) close(fd);
+        if (next < 0) return -1;
+        fd = next;
+    }
+    int out = openat(fd, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_NOCTTY | O_CLOEXEC);
+    if (fd != dfd) close(fd);
+    return out;
+}
+
+static void hash_file(entry *e) {
     if (e->size > hash_left) {
         n_unhashed++;
         return;
     }
-    int fd = openat(dfd, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_NOCTTY | O_CLOEXEC);
+    const entry *was = find_old(e->path);
+    int fd = open_below(roots[e->root].fd, e->path + roots[e->root].rel);
     struct stat st;
     if (fd < 0) {
         n_unhashed++;
@@ -271,7 +302,7 @@ static void walk(int dfd, int self, char *path, size_t plen, int depth, list *ou
                 e->hashed = 1;
             } else {
                 e->fresh = 1;
-                hash_file(dfd, name, e, was);
+                e->root = self;
             }
         } else if (e->kind == 'l') {
             char target[MAX_PATH];
@@ -355,15 +386,26 @@ static void snapshot(void) {
     truncated = 0;
     n_hashed = n_unhashed = n_skipped = 0;
     for (int i = 0; i < nroots; i++) {
-        int fd = open(roots[i].dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-        if (fd < 0) continue;
+        roots[i].fd = -1;
         size_t plen = strlen(roots[i].path);
         if (plen >= MAX_PATH) continue;
+        roots[i].fd = open(roots[i].dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        if (roots[i].fd < 0) continue;
         memcpy(path, roots[i].path, plen + 1);
         if (plen == 1) plen = 0;
-        walk(fd, i, path, plen, 0, &now);
-        close(fd);
+        roots[i].rel = plen + 1;
+        walk(roots[i].fd, i, path, plen, 0, &now);
     }
+    entry **fresh = malloc((now.n ? now.n : 1) * sizeof *fresh);
+    if (!fresh) exit(70);
+    size_t nfresh = 0;
+    for (size_t k = 0; k < now.n; k++)
+        if (now.v[k].fresh) fresh[nfresh++] = &now.v[k];
+    qsort(fresh, nfresh, sizeof *fresh, by_size);
+    for (size_t k = 0; k < nfresh; k++) hash_file(fresh[k]);
+    free(fresh);
+    for (int i = 0; i < nroots; i++)
+        if (roots[i].fd >= 0) close(roots[i].fd);
     qsort(now.v, now.n, sizeof(entry), by_path);
     size_t i = 0, j = 0, walked = now.n;
     while (i < old.n || j < walked) {

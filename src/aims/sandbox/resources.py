@@ -24,6 +24,9 @@ QUEUE = 10_000
 WINDOW_US = 1_000_000
 CGROUPS = "/sys/fs/cgroup"
 FIND_S = 10
+RETRY_S = 1.0
+RETRY_MAX_S = 30.0
+GONE = 1
 
 
 class SamplerError(Exception):
@@ -83,16 +86,21 @@ def _deltas(values: list[int], *, trim: bool = True) -> list[int]:
 
 
 class Watch:
-    """The readings of one sandbox's cgroup, as they arrive."""
+    """The readings of one sandbox's cgroup, as they arrive.
 
-    def __init__(self, cgroup: str, hz: int, trace: DockerExec) -> None:
+    A stream that fails is recorded as a gap and replaced, after a backoff, until the cgroup is
+    gone. The sampler container is started again if it died.
+    """
+
+    def __init__(self, sampler: Sampler, cgroup: str, hz: int, trace: DockerExec) -> None:
         self.cgroup = cgroup
         self.hz = hz
         self.queue: asyncio.Queue[Sample | Lost] = asyncio.Queue(QUEUE)
         self.overflow = 0
         self.garbled = 0
-        self._trace = trace
-        self._reader = asyncio.create_task(self._read())
+        self.restarts = 0
+        self._sampler = sampler
+        self._reader = asyncio.create_task(self._run(trace))
         self._closing = False
 
     async def close(self) -> None:
@@ -114,11 +122,35 @@ class Watch:
         except asyncio.QueueFull:
             self.overflow += 1
 
-    async def _read(self) -> None:
+    async def _run(self, trace: DockerExec) -> None:
+        tries = 0
+        while True:
+            failure, delivered = await self._read(trace)
+            if failure is None or self._closing:
+                return
+            if delivered:
+                tries = 0
+            if tries == 0:
+                self._put(Lost(None, f"resource sampler stopped: {failure}"))
+            while True:
+                await asyncio.sleep(min(RETRY_MAX_S, RETRY_S * (2**tries - 1)))
+                tries += 1
+                try:
+                    trace = await self._sampler.stream(self.cgroup, self.hz)
+                    break
+                except Exception as e:
+                    log.warning("resource sampler for %s: %s", self.cgroup, e)
+            self.restarts += 1
+
+    async def _read(self, trace: DockerExec) -> tuple[str | None, bool]:
+        """Read one stream to its end; return why it failed, if it did, and if it read a sample.
+
+        `aims-sample` exits 0 or GONE when the cgroup is removed or missing.
+        """
         pending = b""
-        failure: str | None = None
+        delivered = False
         try:
-            stream = await self._trace.start(detach=False).__aenter__()
+            stream = await trace.start(detach=False).__aenter__()
             try:
                 while (message := await stream.read_out()) is not None:
                     if message.stream == 2:
@@ -132,18 +164,16 @@ class Watch:
                         if sample is None:
                             self.garbled += 1
                         else:
+                            delivered = True
                             self._put(sample)
             finally:
                 await stream.close()
-            state = await self._trace.inspect()
-            if state.get("ExitCode") != 0:
-                failure = f"exit {state.get('ExitCode')}"
+            code = (await trace.inspect()).get("ExitCode")
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            failure = f"{type(e).__name__}: {e}"
-        if failure is not None and not self._closing:
-            self._put(Lost(None, f"resource sampler stopped: {failure}"))
+            return f"{type(e).__name__}: {e}", delivered
+        return (None if code in (0, GONE) else f"exit {code}"), delivered
 
 
 class Sampler:
@@ -157,13 +187,17 @@ class Sampler:
         self._name = name
         self._image = image
         self._container: DockerContainer | None = None
+        self._lock = asyncio.Lock()
 
     @property
     def alive(self) -> bool:
         return self._container is not None
 
     async def start(self) -> None:
-        self._container = await self._docker.containers.create(
+        self._container = await self._create()
+
+    async def _create(self) -> DockerContainer:
+        container = await self._docker.containers.create(
             config={
                 "Image": self._image,
                 "Cmd": ["sleep", "infinity"],
@@ -183,10 +217,12 @@ class Sampler:
             name=self._name,
         )
         try:
-            await self._container.start()
+            await container.start()
         except BaseException:
-            await self.stop()
+            with contextlib.suppress(aiodocker.DockerError):
+                await container.delete(force=True)
             raise
+        return container
 
     async def stop(self) -> None:
         if self._container is not None:
@@ -196,22 +232,52 @@ class Sampler:
 
     async def watch(self, container_id: str, hz: int) -> Watch:
         """Start reading the cgroup of container `container_id` `hz` times a second."""
-        if self._container is None:
-            raise SamplerError("the sampler is not running")
-        cgroup = await self._find(container_id)
-        trace = await self._container.exec(
+        container = await self._ensure()
+        cgroup = await self._find(container, container_id)
+        return Watch(self, cgroup, hz, await self._sample(container, cgroup, hz))
+
+    async def stream(self, cgroup: str, hz: int) -> DockerExec:
+        """A new reading stream of `cgroup`."""
+        return await self._sample(await self._ensure(), cgroup, hz)
+
+    async def _sample(self, container: DockerContainer, cgroup: str, hz: int) -> DockerExec:
+        return await container.exec(
             ["/aims/aims-sample", str(hz), cgroup], stdout=True, stderr=True
         )
-        return Watch(cgroup, hz, trace)
 
-    async def _find(self, container_id: str) -> str:
+    async def _ensure(self) -> DockerContainer:
+        """The running sampler container, started again if it died.
+
+        Watches that find it dead at the same time share one restart.
+        """
+        container = self._container
+        if container is None:
+            raise SamplerError("the sampler is not running")
+        try:
+            running = (await container.show())["State"]["Running"]
+        except aiodocker.DockerError as e:
+            if e.status != 404:
+                raise
+            running = False
+        if running:
+            return container
+        async with self._lock:
+            if self._container is container:
+                log.warning("resource sampler %s stopped; starting it again", self._name)
+                with contextlib.suppress(aiodocker.DockerError):
+                    await container.delete(force=True)
+                self._container = await self._create()
+        if self._container is None:
+            raise SamplerError("the sampler is not running")
+        return self._container
+
+    async def _find(self, container: DockerContainer, container_id: str) -> str:
         """The cgroup directory of a container, wherever the cgroup driver put it."""
-        assert self._container is not None
         if not container_id.isalnum():
             raise SamplerError(f"not a container id: {container_id!r}")
         try:
             out = await exec_output(
-                self._container,
+                container,
                 ["find", CGROUPS, "-maxdepth", "4", "-type", "d", "-name", f"*{container_id}*"],
                 timeout_s=FIND_S,
             )

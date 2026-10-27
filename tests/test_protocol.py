@@ -1,10 +1,11 @@
 import re
 
 from aims.events.schema import _registry
+from aims.sandbox.base import TOOLBOX
 from aims.sandbox.images import ASSETS
 from aims.sandbox.trace import ENV_CAP, PARSERS
 
-TAGS = set("RFBEXOWAUNCPD") | set("VGT") | set("Z")
+TAGS = set("RFBEXOWAUNCPD") | set("VGT") | set("Z") | set("Q")
 TYPES = {
     "run.started",
     "run.finished",
@@ -77,3 +78,8 @@ def test_env_cap_matches_the_probe() -> None:
     assert chunks is not None
     assert size is not None
     assert int(chunks.group(1)) * int(size.group(1)) == ENV_CAP
+
+
+def test_sandbox_mark_matches_the_toolbox_mount() -> None:
+    script = (ASSETS / "tracer" / "trace.bt").read_text()
+    assert f'strncmp($f, "{TOOLBOX}/", {len(TOOLBOX) + 1}) == 0' in script

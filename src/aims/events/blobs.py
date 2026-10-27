@@ -1,6 +1,7 @@
 import hashlib
 import os
 import secrets
+from collections.abc import Sequence
 from pathlib import Path
 
 from aims.events.schema import BlobRef
@@ -22,23 +23,36 @@ class BlobStore:
         return self.root / sha256
 
     def put(self, data: bytes) -> BlobRef:
-        ref = BlobRef(sha256=hashlib.sha256(data).hexdigest(), size=len(data))
-        path = self.path(ref.sha256)
-        if path.exists():
-            return ref
+        return self.put_many([data])[0]
+
+    def put_many(self, datas: Sequence[bytes]) -> list[BlobRef]:
+        """Store `datas` durably, with one directory fsync for the whole batch."""
+        refs = [BlobRef(sha256=hashlib.sha256(d).hexdigest(), size=len(d)) for d in datas]
+        todo = {r.sha256: d for r, d in zip(refs, datas, strict=True)}
+        todo = {sha: d for sha, d in todo.items() if not self.path(sha).exists()}
+        if not todo:
+            return refs
         self.root.mkdir(parents=True, exist_ok=True)
-        tmp = self.root / f".{ref.sha256}.{secrets.token_hex(4)}"
-        with tmp.open("xb") as f:
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
-        tmp.replace(path)
+        written: list[tuple[Path, Path]] = []
+        try:
+            for sha, data in todo.items():
+                tmp = self.root / f".{sha}.{secrets.token_hex(4)}"
+                with tmp.open("xb") as f:
+                    written.append((tmp, self.path(sha)))
+                    f.write(data)
+                    f.flush()
+                    os.fsync(f.fileno())
+            for tmp, path in written:
+                tmp.replace(path)
+        finally:
+            for tmp, _ in written:
+                tmp.unlink(missing_ok=True)
         dir_fd = os.open(self.root, os.O_RDONLY)
         try:
             os.fsync(dir_fd)
         finally:
             os.close(dir_fd)
-        return ref
+        return refs
 
     def get(self, sha256: str) -> bytes:
         try:

@@ -141,6 +141,15 @@ class DockerBackend:
             targets = {name: target for name, target, _ in volumes}
             await self._prepare(image["Id"], [(name, targets[name]) for name in created])
 
+        owner = f"uid={AGENT_UID},gid={AGENT_UID},mode=0755"
+        scratch = [
+            (f"aims-{run_id}-{agent_id}-tmp", "/tmp", f"size={spec.tmp_mb}m,mode=1777"),
+            (f"aims-{run_id}-{agent_id}-home", HOME, f"size=64m,{owner}"),
+        ]
+        for volume, _, options in scratch:
+            await self._scratch(run_id, volume, f"nosuid,nodev,{options}")
+        volumes += [(volume, target, False) for volume, target, _ in scratch]
+
         labels = {**self._labels, "aims.run": run_id, "aims.agent": agent_id}
         mounts = [
             {"Type": "volume", "Source": self._toolbox_volume, "Target": TOOLBOX, "ReadOnly": True},
@@ -156,10 +165,6 @@ class DockerBackend:
             ),
         ]
         env = {"HOME": HOME, **spec.env}
-        tmpfs = {
-            "/tmp": f"rw,nosuid,nodev,size={spec.tmp_mb}m,mode=1777",
-            HOME: f"rw,nosuid,nodev,size=64m,uid={AGENT_UID},gid={AGENT_UID},mode=0755",
-        }
         config: dict[str, Any] = {
             "Image": image["Id"],
             "Entrypoint": [f"{TOOLBOX}/busybox"],
@@ -179,7 +184,6 @@ class DockerBackend:
                 "MemorySwap": spec.memory_mb * MIB,
                 "NanoCpus": int(spec.cpus * 1e9),
                 "ReadonlyRootfs": not spec.writable_root,
-                "Tmpfs": tmpfs,
                 "Mounts": mounts,
                 "LogConfig": {"Type": "none"},
             },
@@ -190,7 +194,9 @@ class DockerBackend:
         try:
             await container.start()
             reader = await self._reader(name, labels, volumes)
-            sandbox = await DockerSandbox.attach(self, container, spec, image, work, reader)
+            sandbox = await DockerSandbox.attach(
+                self, container, spec, image, work, reader, tuple(v for v, _, _ in scratch)
+            )
         except BaseException:
             if isinstance(reader, Reader):
                 await reader.close()
@@ -239,6 +245,22 @@ class DockerBackend:
                 created.append(name)
         return created
 
+    async def _scratch(self, run_id: str, name: str, options: str) -> None:
+        """A fresh tmpfs volume, which the reader can see into, unlike a container's own tmpfs.
+
+        Its content lives while a container mounts it.
+        """
+        with contextlib.suppress(aiodocker.DockerError):
+            await DockerVolume(self.docker, name).delete()
+        await self.docker.volumes.create(
+            {
+                "Name": name,
+                "Labels": {**self._labels, "aims.run": run_id},
+                "Driver": "local",
+                "DriverOpts": {"type": "tmpfs", "device": "tmpfs", "o": options},
+            }
+        )
+
     async def _prepare(self, image: str, volumes: list[tuple[str, str]]) -> None:
         """Fill new volumes from the image at their mount points and hand them to the agent."""
         mounts = [
@@ -266,12 +288,14 @@ class DockerSandbox:
         shell: list[str],
         route: Route | None,
         reader: Reader | str | None = None,
+        scratch: tuple[str, ...] = (),
     ) -> None:
         self._backend = backend
         self._container = container
         self._spec = spec
         self._info = info
         self._work = work
+        self._scratch = scratch
         self._shell = shell
         self._route = route
         self._watch: Watch | None = None
@@ -286,6 +310,7 @@ class DockerSandbox:
         image: dict[str, Any],
         work: str,
         reader: Reader | str | None = None,
+        scratch: tuple[str, ...] = (),
     ) -> DockerSandbox:
         """Learn the sandbox's pid namespace and mounts, and hand them to the tracer."""
         probe = (
@@ -294,7 +319,7 @@ class DockerSandbox:
         )
         capture = Capture(limit=MIB)
         info = _info(container, spec, image)
-        holder = cls(backend, container, spec, info, work, [], None, reader)
+        holder = cls(backend, container, spec, info, work, [], None, reader, scratch)
         outcome = await holder.run(
             [f"{TOOLBOX}/busybox", "sh", "-c", probe],
             uid=RUNNER_UID,
@@ -458,9 +483,9 @@ class DockerSandbox:
             await self._reader.close()
         with contextlib.suppress(aiodocker.DockerError):
             await self._container.delete(force=True)
-        if not keep_volumes:
+        for name in (*self._scratch, *(() if keep_volumes else (self._work,))):
             with contextlib.suppress(aiodocker.DockerError):
-                await DockerVolume(self._backend.docker, self._work).delete()
+                await DockerVolume(self._backend.docker, name).delete()
 
 
 def _info(container: DockerContainer, spec: SandboxSpec, image: dict[str, Any]) -> SandboxInfo:

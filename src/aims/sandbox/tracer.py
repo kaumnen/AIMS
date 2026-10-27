@@ -27,6 +27,7 @@ from aims.sandbox.trace import (
     Ready,
     Rename,
     Sequence,
+    Tick,
     Walk,
     parse,
 )
@@ -128,6 +129,7 @@ class Tracer:
         self._settle: asyncio.TimerHandle | None = None
         self.alive = False
         self.garbled = 0
+        self.unrouted = 0
         self.clock: tuple[int, int] | None = None
         self.kernel_lost = 0
         self.located = 0
@@ -247,7 +249,7 @@ class Tracer:
         twice.
         """
         self._settle = None
-        self._gaps(self._sequence.expire(self._sequence.latest - 1_000_000))
+        self._expire()
         excess = self.kernel_lost - self.located
         if excess > self.unlocated:
             reason = (
@@ -269,6 +271,9 @@ class Tracer:
                 self.clock = (boot_us, tai_us)
                 if not self._ready.done():
                     self._ready.set_result(base)
+            case Tick(tai_us):
+                self.clock = (item.at.ts, tai_us)
+                self._expire()
             case Note(text):
                 log.warning("tracer: %s", text)
                 if not self._ready.done() and "ERROR" in text:
@@ -283,7 +288,7 @@ class Tracer:
                 if route is not None:
                     route.put(Lost(1, f"unparseable tracer line: {text[:500]}"))
             case Fork(parent, child):
-                route = self._pids.get(parent)
+                route = self._route(parent)
                 if route is not None:
                     self._pids[child] = route
                     route.put(item)
@@ -311,28 +316,39 @@ class Tracer:
                 self._env.pop(pid, None)
                 self._env_bytes.pop(pid, None)
                 route = self._pids.pop(pid, None)
-                if route is not None:
+                if route is None:
+                    self.unrouted += 1
+                else:
                     route.put(item)
             case Delete(pid, walk):
-                route = self._pids.get(pid)
+                route = self._route(pid)
                 if route is not None:
                     path, partial = route.mounts.resolve(walk)
                     route.put(File(pid, "delete", path, partial=partial, at=item.at))
             case Rename(pid, old, new):
-                route = self._pids.get(pid)
+                route = self._route(pid)
                 if route is not None:
                     path, partial = route.mounts.resolve(old)
                     target, partial_target = route.mounts.resolve(new)
                     partial = partial or partial_target
                     route.put(File(pid, "rename", path, target, partial=partial, at=item.at))
             case RawDenied(pid, nr, errno):
-                route = self._pids.get(pid)
+                route = self._route(pid)
                 if route is not None and nr in route.syscalls:
                     route.put(Denied(pid, route.syscalls[nr], errno, at=item.at))
             case Kernel(pid):
-                route = self._pids.get(pid)
+                route = self._route(pid)
                 if route is not None:
                     route.put(item)
+
+    def _route(self, pid: int) -> Route | None:
+        route = self._pids.get(pid)
+        if route is None:
+            self.unrouted += 1
+        return route
+
+    def _expire(self) -> None:
+        self._gaps(self._sequence.expire(self._sequence.latest - 1_000_000))
 
     def _gaps(self, gaps: list[Gap]) -> None:
         for gap in gaps:
@@ -351,6 +367,7 @@ class Tracer:
                 waiter.set_result(raw.pidns)
         route = self._routes.get(raw.pidns)
         if route is None:
+            self.unrouted += 1
             return
         self._pids[raw.pid] = route
         parts = self._parts.pop(raw.pid, {})

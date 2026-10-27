@@ -890,7 +890,7 @@ async def test_env_is_only_deduped_when_read_whole(store: LocalEventStore) -> No
 async def test_an_unstored_diff_is_recorded_as_lost(
     store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def broken(run_id: str, data: bytes) -> BlobRef:
+    async def broken(run_id: str, datas: Sequence[bytes]) -> list[BlobRef]:
         raise OSError("disk full")
 
     sb = FakeSandbox(kernel=False)
@@ -898,7 +898,7 @@ async def test_an_unstored_diff_is_recorded_as_lost(
     sb.steps.append(step())
     run_id, audited = await start(store, sb)
     with monkeypatch.context() as m:
-        m.setattr(store, "put_blob", broken)
+        m.setattr(store, "put_blobs", broken)
         await audited.exec("x", timeout_s=5)
     await audited.close()
 
