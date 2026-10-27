@@ -10,6 +10,7 @@ import pytest
 from aims.events import (
     AuditSpill,
     BlobRef,
+    Draft,
     Event,
     FsSnapshot,
     LocalEventStore,
@@ -810,11 +811,14 @@ async def test_a_cancelled_exec_still_logs_its_diff(store: LocalEventStore) -> N
     sb.tree_hold = asyncio.Event()
     task = asyncio.create_task(audited.exec("x", timeout_s=5))
     await sb.tree_entered.wait()
-    task.cancel()
-    await asyncio.sleep(0)
+    for _ in range(2):
+        task.cancel()
+        await asyncio.sleep(0)
+    assert not task.done()
     sb.tree_hold.set()
     with pytest.raises(asyncio.CancelledError):
         await task
+    assert len(await events(store, run_id, "fs.snapshot")) == 2
     await audited.close()
 
     evs = await events(store, run_id)
@@ -834,13 +838,17 @@ async def test_a_cancelled_exec_still_logs_its_diff(store: LocalEventStore) -> N
 async def test_a_failed_start_closes_the_sandbox(
     store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def broken(run_id: str, data: bytes) -> BlobRef:
-        raise OSError("disk full")
+    append = store.append
+
+    async def no_snapshots(run_id: str, drafts: Sequence[Draft]) -> list[Event]:
+        if any(isinstance(d.payload, FsSnapshot) for d in drafts):
+            raise OSError("disk full")
+        return await append(run_id, drafts)
 
     sb = FakeSandbox()
-    sb.trees = [tree("d0", change("/work/a", "added", b"a"))]
+    sb.trees = [tree("d0")]
     run_id = await store.create_run(RunStarted(scenario="t", oversight="observe", agents=["a1"]))
-    monkeypatch.setattr(store, "put_blob", broken)
+    monkeypatch.setattr(store, "append", no_snapshots)
     with pytest.raises(OSError, match="disk full"):
         await AuditedSandbox.start(
             FakeBackend(sb), SandboxSpec(image="img"), store, run_id=run_id, agent_id="a1"
@@ -877,3 +885,53 @@ async def test_env_is_only_deduped_when_read_whole(store: LocalEventStore) -> No
     procs = {e.data["pid"]: e.data for e in await events(store, run_id) if e.type == "proc.exec"}
     assert [procs[pid]["env_inherited"] for pid in (100, 101, 102)] == [False, False, False]
     assert all(procs[pid]["env"] == list(head) for pid in (100, 101, 102))
+
+
+async def test_an_unstored_diff_is_recorded_as_lost(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def broken(run_id: str, data: bytes) -> BlobRef:
+        raise OSError("disk full")
+
+    sb = FakeSandbox(kernel=False)
+    sb.trees = [tree("d0"), tree("d1", change("/work/a", "added", b"a")), tree("d1"), tree("d1")]
+    sb.steps.append(step())
+    run_id, audited = await start(store, sb)
+    with monkeypatch.context() as m:
+        m.setattr(store, "put_blob", broken)
+        await audited.exec("x", timeout_s=5)
+    await audited.close()
+
+    evs = await events(store, run_id)
+    assert kinds(evs) == [
+        "run.started",
+        "sandbox.started",
+        "fs.snapshot",
+        "audit.lost",
+        "exec.started",
+        "fs.snapshot",
+        "exec.finished",
+        "sandbox.stopped",
+    ]
+    assert evs[3].data["reason"] == "file snapshot not stored: disk full"
+    assert evs[5].data["base"] == "d1"
+
+
+async def test_output_streams_stay_within_their_cap(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(audit_module, "MEMORY", 1)
+    kids = [
+        r
+        for pid in range(101, 107)
+        for r in (Fork(100, pid, at=AT), Output(pid, 7, 1, PIPEFS, b"x", at=AT))
+    ]
+    sb = FakeSandbox()
+    sb.steps.append(step(root(100), *kids, Exit(100, 0, None, at=AT)))
+    run_id, audited = await start(store, sb)
+    result = await audited.exec("x", timeout_s=5)
+
+    assert (len(audited._outputs), audited._output_streams) == (4, 4)
+    assert result.finished.dropped == 2
+    await audited.close()
+    assert len(await events(store, run_id, "proc.output")) == 4
