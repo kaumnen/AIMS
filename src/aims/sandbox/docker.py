@@ -342,9 +342,15 @@ class DockerSandbox:
                 log.warning("tracer did not see sandbox %s start; using snapshot audit", pidns)
                 tracer.unregister(route)
                 route = None
-            elif tracer.clock is not None:
-                boot_us, tai_us = tracer.clock
-                holder._info.config["kernel_clock"] = {"boot_us": boot_us, "tai_us": tai_us}
+            else:
+                # The init and keepalive started before the tracer marked the sandbox.
+                try:
+                    tracer.adopt(route, [p.pid for p in await holder.processes()])
+                except Exception as e:
+                    log.warning("could not list sandbox %s processes: %s", pidns, e)
+                if tracer.clock is not None:
+                    boot_us, tai_us = tracer.clock
+                    holder._info.config["kernel_clock"] = {"boot_us": boot_us, "tai_us": tai_us}
         if tracer is not None and tracer.pmu is not None:
             holder._info.config["pmu"] = tracer.pmu
         await holder._sample(backend.sampler)

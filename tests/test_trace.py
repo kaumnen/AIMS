@@ -592,6 +592,20 @@ async def test_tracer_routes_by_pid_namespace(monkeypatch: pytest.MonkeyPatch) -
 
 
 @pytest.mark.anyio
+async def test_processes_running_at_registration_are_adopted() -> None:
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    route = tracer.register(99, Mounts.parse(MOUNTINFO), SYSCALLS["aarch64"])
+    feed = Feed(tracer)
+    feed("R 0 999")
+    tracer.adopt(route, [5, 6])
+    s = feed("X 6 0 9")
+    feed("X 7 0 9")
+    assert drain(route) == [Exit(6, None, 9, at=s)]
+    assert (tracer.unrouted, tracer.foreign) == (1, 0)
+    await tracer.stop()
+
+
+@pytest.mark.anyio
 async def test_runtime_setup_in_a_sandbox_cgroup_is_foreign() -> None:
     tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
     route = tracer.register(99, Mounts.parse(MOUNTINFO), SYSCALLS["aarch64"])

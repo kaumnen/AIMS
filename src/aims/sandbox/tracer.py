@@ -240,6 +240,12 @@ class Tracer:
         self._routes[pidns] = route
         return route
 
+    def adopt(self, route: Route, pids: list[int]) -> None:
+        """Route processes that were already running in the sandbox when it registered."""
+        for pid in pids:
+            self._pids.setdefault(pid, route)
+            self._foreign.pop(pid, None)
+
     def unregister(self, route: Route) -> None:
         self._routes.pop(route.pidns, None)
         for pid in [p for p, r in self._pids.items() if r is route]:
