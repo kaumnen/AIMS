@@ -498,7 +498,7 @@ fexit:vmlinux:do_filp_open /@sandbox[cgroup] && curtask->thread_pid->level > @ba
   printf("P %llu %llu %llu %d %d %s\n", nsecs(boot), cpu, $s, curtask->tgid, -(int64)retval, str(args.pathname->name));
 }
 
-tracepoint:raw_syscalls:sys_exit /args.ret == -1 && @sandbox[cgroup] && curtask->thread_pid->level > @base/ {
+tracepoint:raw_syscalls:sys_exit /args.ret == -1 && @sandbox[cgroup]/ {
   $s = @seq[cpu] + 1; @seq[cpu] = $s;
   printf("D %llu %llu %llu %d %d %d\n", nsecs(boot), cpu, $s, curtask->tgid, args.id, -args.ret);
 }

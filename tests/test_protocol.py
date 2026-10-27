@@ -101,7 +101,9 @@ def test_string_cap_matches_the_script() -> None:
 def test_sandbox_probes_filter_by_pid_namespace() -> None:
     # A sandbox process can rename itself but cannot leave its pid namespace. bpftrace tags the
     # level as kernel memory and syscall exit maps as user memory, and warns when && joins them;
-    # `!` drops the tag.
+    # `!` drops the tag. On 7.0 a tracepoint probe that reads curtask->thread_pid after args makes
+    # bpftrace 0.23 lose struct filename's anonymous head, so raw_syscalls:sys_exit goes without
+    # the level test; the runtime records it lets through are already foreign.
     script = (ASSETS / "tracer" / "trace.bt").read_text()
     probes = [line for line in script.splitlines() if re.match(r"(fentry|fexit|tracepoint):", line)]
     assert not [line for line in probes if "comm" in line]
@@ -117,6 +119,7 @@ def test_sandbox_probes_filter_by_pid_namespace() -> None:
         "tracepoint:task:task_newtask",
         "tracepoint:sched:sched_process_exec",
         "tracepoint:sched:sched_process_exit",
+        "tracepoint:raw_syscalls:sys_exit",
     ]
 
 
