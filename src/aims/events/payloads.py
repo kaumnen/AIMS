@@ -9,7 +9,7 @@ Oversight = Literal["observe", "autonomous", "human"]
 RunStatus = Literal["completed", "failed", "killed", "cancelled"]
 AuditLevel = Literal["kernel", "snapshot"]
 ExecEnd = Literal["exited", "timeout", "cancelled", "failed"]
-FileOp = Literal["read", "write", "delete", "rename", "denied"]
+FileOp = Literal["read", "write", "delete", "rename", "denied", "mkdir", "symlink", "link"]
 FsChangeType = Literal["added", "modified", "meta", "removed", "kind"]
 FsKind = Literal["file", "dir", "symlink", "fifo", "socket", "other"]
 FdKind = Literal["pipe", "fifo", "file", "char", "sock", "dir", "other"]
@@ -123,8 +123,9 @@ class ExecStarted(Payload):
 class ExecFinished(Payload):
     """How an exec ended, measured from the host side. `end` never trusts the exit code.
 
-    `spilled` counts the exec's kernel records kept in an `audit.spill` by the time it finished;
-    `dropped` counts those neither logged nor spilled.
+    `procs` counts the exec's `proc.exec` records in the log. `spilled` counts its kernel records
+    kept in an `audit.spill` by the time it finished; `dropped` counts those neither logged nor
+    spilled.
     """
 
     type = "exec.finished"
@@ -206,7 +207,23 @@ class ProcExec(KernelPayload):
     sha256: str | None = None
 
 
+class ProcFork(KernelPayload):
+    """A forked child seen before any exec of its own, or one that never execs.
+
+    `ppid` forked it and the stamp is the fork's. It is recorded when the child or a descendant is
+    first seen, so it comes late and sorts into place by kernel order. A child whose first record is
+    its exec gets only `proc.exec`, unless it was reparented before the exec: then this keeps the
+    pid that forked it.
+    """
+
+    type = "proc.fork"
+
+    ppid: int
+
+
 class ProcExit(KernelPayload):
+    """The end of a process recorded by `proc.exec` or `proc.fork`."""
+
     type = "proc.exit"
 
     exit_code: int | None
@@ -215,11 +232,14 @@ class ProcExit(KernelPayload):
 
 
 class FileAccess(KernelPayload):
-    """A file open, delete or rename the sandbox requested, or a refused open.
+    """A file open, delete, rename or creation the sandbox requested, or a refused open.
 
-    `op` read and write are open intents; delete and rename are recorded before they complete, so
-    they do not prove the change happened. `denied` is a refusal. A `partial` path is not exact:
-    it lacks its leading part, or it reached the tracer's string cap and may be cut at the end.
+    `op` read and write are open intents. delete, rename, mkdir, symlink and link are attempts
+    recorded at the kernel's security check, so the call can still fail and they do not prove the
+    change happened. `target` is the new name for rename, the link content (not resolved) for
+    symlink, and the existing file for link, whose `path` is the new name. `denied` is a refusal.
+    `partial` marks a path or target that is not exact: it lacks its leading part, or it reached the
+    tracer's string cap and may be cut at the end.
     """
 
     type = "file.access"

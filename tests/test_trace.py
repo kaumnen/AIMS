@@ -41,6 +41,8 @@ from aims.sandbox.trace import (
     Gap,
     Garbled,
     Identity,
+    Link,
+    Mkdir,
     Mounts,
     Note,
     RawDenied,
@@ -51,6 +53,7 @@ from aims.sandbox.trace import (
     Ready,
     Rename,
     Sequence,
+    Symlink,
     Tick,
     Walk,
     namespaces,
@@ -180,6 +183,22 @@ def test_parse_simple_lines() -> None:
     assert parse(line("C 10 s 6 ::1 53")) == Net(10, "sendto", "inet6", "::1", 53, at=PARSED)
 
 
+def mkdir(pid: int, dev: int, *names: str) -> str:
+    depth, text = walk(*names)
+    return f"Y {pid} d {dev} {depth} {text}"
+
+
+def symlink(pid: int, dev: int, target: bytes, *names: str, length: int | None = None) -> str:
+    depth, text = walk(*names)
+    size = len(target) if length is None else length
+    return f"Y {pid} s {dev} {depth} {size} {hx(target)} {text}"
+
+
+def link(pid: int, devs: tuple[int, int], old: tuple[str, ...], new: tuple[str, ...]) -> str:
+    (old_depth, old_text), (new_depth, new_text) = walk(*old), walk(*new)
+    return f"Y {pid} l {devs[0]} {devs[1]} {old_depth} {new_depth} {old_text}/{new_text}"
+
+
 def test_paths_at_the_string_cap_are_partial() -> None:
     near, cut = "/work/" + "a" * (STRLEN - 8), "/work/" + "a" * (STRLEN - 7)
     assert parse(line(f"W 10 {near}")) == File(10, "write", near, at=PARSED)
@@ -193,6 +212,16 @@ def test_paths_at_the_string_cap_are_partial() -> None:
     assert parse(line(f"M 10 x 42 0 {cut}")) == Mem(10, "exec", cut, 42, 0, partial=True, at=PARSED)
     assert Bprm(10, cut, at=PARSED).fields()["path_partial"] is True
     assert Bprm(10, near, at=PARSED).fields()["path_partial"] is False
+    whole, full, kept = "a" * (STRLEN - 1), "a" * STRLEN, "a" * (STRLEN - 4)
+    s = Walk(VDA1, (b"s", b"/"))
+    assert parse(line(symlink(10, VDA1, whole.encode(), "s"))) == Symlink(10, s, whole, at=PARSED)
+    assert parse(line(symlink(10, VDA1, full.encode(), "s"))) == Symlink(
+        10, s, full, True, at=PARSED
+    )
+    for length in (STRLEN - 3, STRLEN):
+        assert parse(line(symlink(10, VDA1, kept.encode(), "s", length=length))) == Symlink(
+            10, s, kept, True, at=PARSED
+        )
 
 
 def test_odd_bytes_never_hide_a_cut_path() -> None:
@@ -357,6 +386,17 @@ def test_parse_walks() -> None:
     assert (root.old.names, root.new.names) == ((b"a",) * DEPTH, (b"/",))
 
 
+def test_parse_creations() -> None:
+    item = parse(line(mkdir(10, VDA1, "e f", "d", "_data")))
+    assert item == Mkdir(10, Walk(VDA1, (b"e f", b"d", b"_data", b"/")), at=PARSED)
+    item = parse(line(symlink(10, TMP, b"/etc/sha dow\n\xff", "s p", "x")))
+    s = Walk(TMP, (b"s p", b"x", b"/"))
+    assert item == Symlink(10, s, "/etc/sha dow\n\\xff", at=PARSED)
+    item = parse(line(link(10, (VDA1, TMP), ("f", "_data"), ("h",))))
+    old, new = Walk(VDA1, (b"f", b"_data", b"/")), Walk(TMP, (b"h", b"/"))
+    assert item == Link(10, old, new, at=PARSED)
+
+
 def test_parse_keeps_bytes_that_are_not_utf8() -> None:
     raw = b'{"type": "printf", "data": "W 5000 0 1 10 /work/scorer.py\xff\\n"}'
     item = parse(raw.decode("utf-8", "surrogateescape"))
@@ -405,6 +445,14 @@ def test_parse_keeps_bytes_that_are_not_utf8() -> None:
         "J 10 u 0 0",
         "L 10 1 2 3",
         "L 10 1 2 3 4 5 6 x y",
+        "Y 10",
+        "Y 10 q 1 1 " + walk("a")[1],
+        "Y 10 d 1 2 a/b//",
+        "Y 10 d 1 x " + walk("a")[1],
+        "Y 10 s 1 1 " + walk("a")[1],
+        "Y 10 s 1 1 3 nothex " + walk("a")[1],
+        f"Y 10 s 1 1 1 {hx(b'ab')} {walk('a')[1]}",
+        f"Y 10 l 1 1 2 1 {walk('a')[1]}",
     ],
 )
 def test_parse_rejects_misshapen_lines(text: str) -> None:
@@ -545,6 +593,12 @@ async def test_tracer_resolves_new_records() -> None:
         feed(f"I 10 f 0 {VDA1} {fifo_depth} {fifo_text}"),
         feed(f"M 10 m 43 1 {VDA1} 5 {mmap_depth} {mmap_text}"),
         feed(f"H 10 {VDA1} {note_depth} 65 33152 0 0 1 0 0 0 {note_text}"),
+        feed(mkdir(10, VDA1, "d", "_data", "aims-r-a1-work", "volumes", "docker")),
+        feed(
+            symlink(10, VDA1, b"/etc/shadow", "s", "_data", "aims-r-a1-work", "volumes", "docker")
+        ),
+        feed(symlink(10, TMP, b"a" * (STRLEN - 4), "long", length=STRLEN)),
+        feed(link(10, (VDA1, TMP), ("f", "_data", "aims-r-a1-work", "volumes", "docker"), ("h",))),
     ]
 
     assert drain(route) == [
@@ -556,6 +610,10 @@ async def test_tracer_resolves_new_records() -> None:
         Ipc(10, "fifo", path="/work/pipe", at=s[5]),
         Mem(10, "mmap", "/work/code.so", 43, 1, 5, at=s[6]),
         Setattr(10, "/work/note", False, 65, 33152, 0, 0, 1, 0, 0, 0, at=s[7]),
+        File(10, "mkdir", "/work/d", at=s[8]),
+        File(10, "symlink", "/work/s", "/etc/shadow", at=s[9]),
+        File(10, "symlink", "/tmp/long", "a" * (STRLEN - 4), partial=True, at=s[10]),
+        File(10, "link", "/tmp/h", "/work/f", at=s[11]),
     ]
     await tracer.stop()
 

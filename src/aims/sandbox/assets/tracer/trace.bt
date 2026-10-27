@@ -205,6 +205,86 @@ fentry:vmlinux:security_inode_rename /@sandbox[cgroup] && strncmp(comm, "runc:",
     str($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
 }
 
+fentry:vmlinux:security_inode_mkdir /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0/ {
+  $d = args.dentry;
+  $x = $d; $k = 0;
+  unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } }
+  $s = @seq[cpu] + 1; @seq[cpu] = $s;
+  printf("Y %llu %llu %llu %d d %u %d %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, curtask->tgid, $d->d_sb->s_dev, $k,
+    str($d->d_name.name),
+    str($d->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
+}
+
+// The target is read up to its NUL, so bytes left in the buffer after it are never printed.
+// Its length is printed too: buf() keeps at most max_strlen - 4 bytes.
+fentry:vmlinux:security_inode_symlink /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0/ {
+  $d = args.dentry;
+  $n = (uint64)0;
+  while ($n < 384) { if (*(args.old_name + $n) == 0) { break; } $n++; }
+  $x = $d; $k = 0;
+  unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } }
+  $s = @seq[cpu] + 1; @seq[cpu] = $s;
+  printf("Y %llu %llu %llu %d s %u %d %llu %rx %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, curtask->tgid, $d->d_sb->s_dev, $k, $n,
+    buf(args.old_name, $n),
+    str($d->d_name.name),
+    str($d->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
+}
+
+fentry:vmlinux:security_inode_link /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0/ {
+  $o = args.old_dentry;
+  $n = args.new_dentry;
+  $x = $o; $ko = 0;
+  unroll(12) { if ($x != $x->d_parent) { $ko++; $x = $x->d_parent; } }
+  $x = $n; $kn = 0;
+  unroll(12) { if ($x != $x->d_parent) { $kn++; $x = $x->d_parent; } }
+  $s = @seq[cpu] + 1; @seq[cpu] = $s;
+  printf("Y %llu %llu %llu %d l %u %u %d %d %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, curtask->tgid, $o->d_sb->s_dev, $n->d_sb->s_dev, $ko, $kn,
+    str($o->d_name.name),
+    str($o->d_parent->d_name.name),
+    str($o->d_parent->d_parent->d_name.name),
+    str($o->d_parent->d_parent->d_parent->d_name.name),
+    str($o->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($n->d_name.name),
+    str($n->d_parent->d_name.name),
+    str($n->d_parent->d_parent->d_name.name),
+    str($n->d_parent->d_parent->d_parent->d_name.name),
+    str($n->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
+}
+
 fentry:vmlinux:security_socket_connect /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0/ {
   $a = args.address;
   if ($a->sa_family == 2) {

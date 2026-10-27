@@ -5,7 +5,7 @@ from aims.sandbox.base import TOOLBOX
 from aims.sandbox.images import ASSETS
 from aims.sandbox.trace import ENV_CAP, PARSERS, STRLEN
 
-TAGS = set("RFBEXOWAUNCPD") | set("VGT") | set("Z") | set("Q") | set("IKSMHJL")
+TAGS = set("RFBEXOWAUNCPD") | set("VGT") | set("Z") | set("Q") | set("IKSMHJL") | set("Y")
 TYPES = {
     "run.started",
     "run.finished",
@@ -17,6 +17,7 @@ TYPES = {
     "exec.started",
     "exec.finished",
     "proc.exec",
+    "proc.fork",
     "proc.exit",
     "proc.output",
     "file.access",
@@ -93,3 +94,4 @@ def test_sandbox_mark_matches_the_toolbox_mount() -> None:
 def test_string_cap_matches_the_script() -> None:
     script = (ASSETS / "tracer" / "trace.bt").read_text()
     assert f"max_strlen = {STRLEN}" in script
+    assert f"while ($n < {STRLEN})" in script

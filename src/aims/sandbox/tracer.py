@@ -37,6 +37,8 @@ from aims.sandbox.trace import (
     Gap,
     Garbled,
     Identity,
+    Link,
+    Mkdir,
     Mounts,
     Note,
     RawDenied,
@@ -47,6 +49,7 @@ from aims.sandbox.trace import (
     Ready,
     Rename,
     Sequence,
+    Symlink,
     Tick,
     Walk,
     parse,
@@ -388,6 +391,24 @@ class Tracer:
                     target, partial_target = route.mounts.resolve(new)
                     partial = partial or partial_target
                     route.put(File(pid, "rename", path, target, partial=partial, at=item.at))
+            case Mkdir(pid, walk):
+                route = self._route(pid)
+                if route is not None:
+                    path, partial = route.mounts.resolve(walk)
+                    route.put(File(pid, "mkdir", path, partial=partial, at=item.at))
+            case Symlink(pid, walk, target, cut):
+                route = self._route(pid)
+                if route is not None:
+                    path, partial = route.mounts.resolve(walk)
+                    partial = partial or cut
+                    route.put(File(pid, "symlink", path, target, partial=partial, at=item.at))
+            case Link(pid, old, new):
+                route = self._route(pid)
+                if route is not None:
+                    path, partial = route.mounts.resolve(new)
+                    target, partial_target = route.mounts.resolve(old)
+                    partial = partial or partial_target
+                    route.put(File(pid, "link", path, target, partial=partial, at=item.at))
             case RawDenied(pid, nr, errno):
                 route = self._route(pid)
                 if route is not None and nr in route.syscalls:

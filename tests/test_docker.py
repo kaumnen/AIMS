@@ -26,6 +26,7 @@ from aims.events import (
     NetConnect,
     ProcExec,
     ProcExit,
+    ProcFork,
     ProcOutput,
     ProcSignal,
     PtraceEvent,
@@ -36,6 +37,7 @@ from aims.events import (
 from aims.sandbox import AuditedSandbox, DockerBackend, Mount, SandboxSpec
 from aims.sandbox import audit as audit_module
 from aims.sandbox import reader as reader_module
+from aims.sandbox.trace import STRLEN
 
 pytestmark = [pytest.mark.anyio, pytest.mark.docker]
 
@@ -1133,3 +1135,109 @@ async def test_refused_namespace_change_is_not_recorded(
     assert not await events(store, run_id, "ns.event")
     denied = [e.payload() for e in await events(store, run_id, "sys.denied")]
     assert any(isinstance(p, SysDenied) and p.syscall == "unshare" for p in denied)
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_file_creation_records(backend: DockerBackend, store: LocalEventStore) -> None:
+    long = "a" * 400
+    command = (
+        "mkdir -p /work/d/e && ln -s /etc/shadow /work/s && echo x > /work/f && ln /work/f /work/h"
+        f" && ln -s {long} /work/long && rm -r /work/d /work/s /work/h /work/f /work/long"
+    )
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+
+    assert result.finished.exit_code == 0
+    exec_id = result.finished.exec_id
+    payloads = [e.payload() for e in await events(store, run_id, "proc.exec", "file.access")]
+    assert all(isinstance(p, KernelPayload) and p.exec_id == exec_id for p in payloads)
+    pids = {p.pid: p.argv[0] for p in payloads if isinstance(p, ProcExec)}
+    made = [
+        (pids.get(p.pid), p.op, p.path, p.target, p.partial)
+        for p in payloads
+        if isinstance(p, FileAccess) and p.op in ("mkdir", "symlink", "link")
+    ]
+    assert made == [
+        ("mkdir", "mkdir", "/work/d", None, False),
+        ("mkdir", "mkdir", "/work/d/e", None, False),
+        ("ln", "symlink", "/work/s", "/etc/shadow", False),
+        ("ln", "link", "/work/h", "/work/f", False),
+        ("ln", "symlink", "/work/long", long[: STRLEN - 4], True),
+    ]
+    deleted = {p.path for p in payloads if isinstance(p, FileAccess) and p.op == "delete"}
+    assert {"/work/d/e", "/work/d", "/work/s", "/work/h", "/work/f", "/work/long"} <= deleted
+
+
+def by_kernel_order(evs: list[Event]) -> list[KernelPayload]:
+    kernel = [p for p in (e.payload() for e in evs) if isinstance(p, KernelPayload)]
+    return sorted(kernel, key=lambda p: (p.ts_kernel, p.cpu, p.cpu_seq))
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_fork_only_child_outlives_its_exec(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    command = (
+        'python3 -c "import os, time\n'
+        "if os.fork() == 0:\n"
+        "    null = os.open('/dev/null', os.O_RDWR)\n"
+        "    for fd in (0, 1, 2): os.dup2(null, fd)\n"
+        "    time.sleep(0.5)\n"
+        "    with open('/work/late', 'w') as f: f.write('x')\n"
+        '    os._exit(4)"'
+    )
+    run_id, sb = await sandbox(backend, store)
+    try:
+        first = await sb.exec(command, timeout_s=20)
+        await sb.exec("sleep 1", timeout_s=20)
+    finally:
+        await sb.close()
+
+    exec_id = first.finished.exec_id
+    assert any(p.command.startswith("python3 -c") for p in first.finished.leftover)
+    kernel = by_kernel_order(await events(store, run_id))
+    python = next(p for p in kernel if isinstance(p, ProcExec) and p.argv[0] == "python3")
+    (fork,) = [p for p in kernel if isinstance(p, ProcFork)]
+    assert (fork.ppid, fork.exec_id) == (python.pid, exec_id)
+    assert python.ts_kernel < fork.ts_kernel
+    child = [p for p in kernel if p.pid == fork.pid]
+    assert all(p.exec_id == exec_id for p in child)
+    child = [p for p in child if not isinstance(p, FileWrite)]
+    assert [type(p) for p in child] == [ProcFork, FileAccess, ProcExit]
+    _, access, end = child
+    assert isinstance(access, FileAccess)
+    assert (access.op, access.path, access.partial) == ("write", "/work/late", False)
+    assert isinstance(end, ProcExit)
+    assert (end.exit_code, end.signal) == (4, None)
+    assert (await store.verify(run_id)).ok
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_subshell_output_is_recorded_as_a_fork(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec("echo $(echo hi)", timeout_s=20)
+    finally:
+        await sb.close()
+
+    assert result.stdout == b"hi\n"
+    exec_id = result.finished.exec_id
+    kernel = by_kernel_order(await events(store, run_id))
+    sh = next(p for p in kernel if isinstance(p, ProcExec) and p.argv[:2] == ["/bin/sh", "-c"])
+    (fork,) = [p for p in kernel if isinstance(p, ProcFork)]
+    assert (fork.ppid, fork.exec_id) == (sh.pid, exec_id)
+    child = [p for p in kernel if p.pid == fork.pid]
+    assert [type(p) for p in child] == [ProcFork, ProcOutput, ProcExit]
+    _, output, end = child
+    assert isinstance(output, ProcOutput)
+    assert (output.stream, output.prefix, output.bytes) == ("pipe", "hi\n", 3)
+    assert isinstance(end, ProcExit)
+    assert (end.exec_id, end.exit_code) == (exec_id, 0)

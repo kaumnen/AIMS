@@ -348,6 +348,24 @@ class Rename(Raw):
 
 
 @dataclass(frozen=True, slots=True)
+class Mkdir(Raw):
+    walk: Walk
+
+
+@dataclass(frozen=True, slots=True)
+class Symlink(Raw):
+    walk: Walk
+    target: str
+    cut: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class Link(Raw):
+    old: Walk
+    new: Walk
+
+
+@dataclass(frozen=True, slots=True)
 class RawDenied(Raw):
     nr: int
     errno: int
@@ -540,6 +558,32 @@ def _rename(body: str, at: Stamp) -> Rename:
     cut = 2 * DEPTH - int(old_depth)
     old = _walk(int(old_dev), int(old_depth), parts[:cut])
     return Rename(int(pid), old, _walk(int(new_dev), int(new_depth), parts[cut:]), at=at)
+
+
+@record("Y")
+def _create(body: str, at: Stamp) -> Mkdir | Symlink | Link:
+    head = body.split(" ", 2)
+    if len(head) < 3:
+        raise ValueError("short create line")
+    pid, kind = int(head[0]), head[1]
+    if kind == "d":
+        dev, depth, names = head[2].split(" ", 2)
+        return Mkdir(pid, _walk(int(dev), int(depth), names.split("/")), at=at)
+    if kind == "s":
+        dev, depth, size, target, names = head[2].split(" ", 4)
+        raw, length = _hex(target), int(size)
+        if len(raw) > length:
+            raise ValueError("symlink target is longer than its length")
+        walk = _walk(int(dev), int(depth), names.split("/"))
+        cut = length > len(raw) or length >= STRLEN
+        return Symlink(pid, walk, _text(raw), cut, at=at)
+    if kind == "l":
+        old_dev, new_dev, old_depth, new_depth, names = head[2].split(" ", 4)
+        parts = names.split("/")
+        cut = 2 * DEPTH - int(old_depth)
+        old = _walk(int(old_dev), int(old_depth), parts[:cut])
+        return Link(pid, old, _walk(int(new_dev), int(new_depth), parts[cut:]), at=at)
+    raise ValueError("unknown create kind")
 
 
 @record("C")

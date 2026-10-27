@@ -185,6 +185,14 @@ def root(pid: int, uid: int = AGENT_UID) -> Exec:
     return Exec(pid, 1, pid, uid, "wrap", ("wrap", "sh"), 7, True, at=AT)
 
 
+def tick(ts: int) -> Stamp:
+    return Stamp(ts, 0, ts)
+
+
+def tick_data(ts: int) -> dict[str, int]:
+    return {"ts_kernel": ts, "cpu": 0, "cpu_seq": ts}
+
+
 def child(pid: int, ppid: int, *argv: str) -> Exec:
     return Exec(pid, ppid, pid, AGENT_UID, argv[0], argv, 9, False, at=AT)
 
@@ -243,6 +251,11 @@ async def events(store: LocalEventStore, run_id: str, *types: str) -> list[Event
 
 def kinds(evs: list[Event]) -> list[str]:
     return [e.type for e in evs]
+
+
+def lineage(evs: list[Event]) -> list[tuple[str, object, object]]:
+    kernel = [e for e in evs if "ts_kernel" in e.data]
+    return [(e.type, e.data["pid"], e.data.get("ppid")) for e in kernel]
 
 
 async def test_exec_writes_ahead_and_attributes_kernel_records(store: LocalEventStore) -> None:
@@ -320,8 +333,183 @@ async def test_orphaned_child_keeps_its_exec(store: LocalEventStore) -> None:
     evs = await events(store, run_id)
     procs = [e for e in evs if e.type == "proc.exec"]
     assert [e.data["exec_id"] for e in procs] == [result.finished.exec_id] * 2
+    assert lineage(evs) == [
+        ("proc.exec", 100, 1),
+        ("proc.exit", 100, None),
+        ("proc.fork", 101, 100),
+        ("proc.exec", 101, 1),
+    ]
     assert [p.command for p in result.finished.leftover] == ["sleep 30"]
     assert not result.finished.leftover_killed
+
+
+async def test_fork_only_children_are_recorded_when_seen(store: LocalEventStore) -> None:
+    sb = FakeSandbox()
+    sb.steps.append(
+        step(
+            root(100),
+            Fork(100, 101, at=tick(1)),
+            Fork(101, 102, at=tick(2)),
+            File(102, "write", "/work/x", at=tick(3)),
+            Fork(100, 103, at=tick(4)),
+            child(103, 100, "ls"),
+            Fork(100, 104, at=tick(5)),
+            Exit(104, 0, None, at=tick(6)),
+            Fork(100, 105, at=tick(7)),
+            Fork(105, 106, at=tick(8)),
+            child(106, 105, "cat"),
+            Fork(100, 107, at=tick(9)),
+            Output(107, 7, 3, PIPEFS, b"hi\n", at=tick(10)),
+            Exit(107, 0, None, at=tick(11)),
+            *(Exit(pid, 0, None, at=AT) for pid in (102, 101, 103, 106, 105, 100)),
+        )
+    )
+    run_id, audited = await start(store, sb)
+    result = await audited.exec("x", timeout_s=5)
+    await audited.close()
+
+    evs = await events(store, run_id)
+    assert lineage(evs) == [
+        ("proc.exec", 100, 1),
+        ("proc.fork", 101, 100),
+        ("proc.fork", 102, 101),
+        ("file.access", 102, None),
+        ("proc.exec", 103, 100),
+        ("proc.fork", 105, 100),
+        ("proc.exec", 106, 105),
+        ("proc.fork", 107, 100),
+        ("proc.output", 107, None),
+        ("proc.exit", 107, None),
+        ("proc.exit", 102, None),
+        ("proc.exit", 101, None),
+        ("proc.exit", 103, None),
+        ("proc.exit", 106, None),
+        ("proc.exit", 105, None),
+        ("proc.exit", 100, None),
+    ]
+    exec_id = result.finished.exec_id
+    fork = next(e for e in evs if e.type == "proc.fork")
+    assert fork.data == {"exec_id": exec_id, "pid": 101, "ppid": 100, **tick_data(1)}
+    assert all(e.data["exec_id"] == exec_id for e in evs if "ts_kernel" in e.data)
+    assert result.finished.procs == 3
+    assert (await store.verify(run_id)).ok
+
+
+async def test_a_dead_parent_is_recorded_before_its_child(store: LocalEventStore) -> None:
+    sb = FakeSandbox()
+    sb.steps.append(
+        step(
+            root(100),
+            Fork(100, 101, at=tick(1)),
+            Fork(101, 102, at=tick(2)),
+            Exit(101, 3, None, at=tick(3)),
+            File(102, "write", "/work/late", at=tick(4)),
+            Fork(100, 103, at=tick(5)),
+            Fork(103, 104, at=tick(6)),
+            Exit(103, 0, None, at=tick(7)),
+            Fork(100, 103, at=tick(8)),
+            File(104, "write", "/work/y", at=tick(9)),
+            File(103, "write", "/work/z", at=tick(10)),
+        )
+    )
+    run_id, audited = await start(store, sb)
+    await audited.exec("x", timeout_s=5)
+    await audited.close()
+
+    evs = await events(store, run_id)
+    assert lineage(evs) == [
+        ("proc.exec", 100, 1),
+        ("proc.fork", 101, 100),
+        ("proc.exit", 101, None),
+        ("proc.fork", 102, 101),
+        ("file.access", 102, None),
+        ("proc.fork", 104, 103),
+        ("file.access", 104, None),
+        ("proc.fork", 103, 100),
+        ("file.access", 103, None),
+    ]
+    dead = [e.data for e in evs if e.data.get("pid") == 101]
+    assert [(d["ts_kernel"], d.get("exit_code")) for d in dead] == [(1, None), (3, 3)]
+    reused = next(e for e in evs if e.type == "proc.fork" and e.data["pid"] == 103)
+    assert reused.data["ts_kernel"] == 8
+
+
+async def test_forks_follow_their_event_into_the_spill(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(audit_module.CAPS, "procs", 1)
+    monkeypatch.setitem(audit_module.CAPS, "files", 2)
+    sb = FakeSandbox()
+    sb.steps.append(
+        step(
+            root(100),
+            File(100, "write", "/work/a", at=AT),
+            Fork(100, 101, at=tick(1)),
+            File(101, "write", "/work/b", at=tick(2)),
+            Fork(100, 102, at=tick(3)),
+            File(102, "write", "/work/c", at=tick(4)),
+            Exit(101, 0, None, at=tick(5)),
+            Exit(102, 0, None, at=tick(6)),
+            Exit(100, 0, None, at=AT),
+        )
+    )
+    run_id, audited = await start(store, sb)
+    result = await audited.exec("x", timeout_s=5)
+    await audited.close()
+
+    evs = await events(store, run_id)
+    assert lineage(evs) == [
+        ("proc.exec", 100, 1),
+        ("file.access", 100, None),
+        ("proc.fork", 101, 100),
+        ("file.access", 101, None),
+        ("proc.exit", 101, None),
+        ("proc.exit", 100, None),
+    ]
+    assert (result.finished.procs, result.finished.spilled, result.finished.dropped) == (1, 3, 0)
+    spill = next(e.payload() for e in evs if e.type == "audit.spill")
+    assert isinstance(spill, AuditSpill)
+    assert spill.kinds == {"procs": 2, "files": 1}
+    records = spilled(await store.get_blob(run_id, spill.records.sha256))
+    assert [(t, d["pid"], d.get("ppid")) for t, d in records] == [
+        ("proc.fork", 102, 100),
+        ("file.access", 102, None),
+        ("proc.exit", 102, None),
+    ]
+
+
+async def test_an_exec_keeps_its_exit_in_the_log_after_a_spilled_fork(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(audit_module.CAPS, "files", 1)
+    sb = FakeSandbox()
+    sb.steps.append(
+        step(
+            root(100),
+            File(100, "write", "/work/a", at=AT),
+            Fork(100, 101, at=tick(1)),
+            Close(101, 3, "/tmp/out", at=tick(2)),
+            child(101, 100, "true"),
+            Exit(101, 0, None, at=tick(3)),
+            Exit(100, 0, None, at=AT),
+        )
+    )
+    run_id, audited = await start(store, sb)
+    await audited.exec("x", timeout_s=5)
+    await audited.close()
+
+    evs = await events(store, run_id)
+    assert lineage(evs) == [
+        ("proc.exec", 100, 1),
+        ("file.access", 100, None),
+        ("proc.exec", 101, 100),
+        ("proc.exit", 101, None),
+        ("proc.exit", 100, None),
+    ]
+    spill = next(e.payload() for e in evs if e.type == "audit.spill")
+    assert isinstance(spill, AuditSpill)
+    records = spilled(await store.get_blob(run_id, spill.records.sha256))
+    assert [(t, d["pid"]) for t, d in records] == [("proc.fork", 101), ("file.write", 101)]
 
 
 async def test_runner_and_foreign_roots_are_not_recorded(store: LocalEventStore) -> None:

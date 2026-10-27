@@ -34,6 +34,7 @@ from aims.events import (
     Proc,
     ProcExec,
     ProcExit,
+    ProcFork,
     ProcOutput,
     ProcSignal,
     PtraceEvent,
@@ -157,6 +158,21 @@ class _Out:
 
 
 @dataclass(slots=True)
+class _Fork:
+    """A child not recorded yet: its fork, its owner then, and its exit if it ended unseen."""
+
+    record: Fork
+    owner: str | None
+    exit: Exit | None = None
+    oom: bool = False
+
+    def forked(self, child: Fork) -> bool:
+        """Whether `child` was forked while this process lived, so a reused pid is never taken."""
+        ts = child.at.ts
+        return self.record.at.ts <= ts and (self.exit is None or ts <= self.exit.at.ts)
+
+
+@dataclass(slots=True)
 class _Active:
     exec_id: str
     audit: AuditLevel = "snapshot"
@@ -191,6 +207,7 @@ class AuditedSandbox:
         self._owner: dict[int, str | None] = {}
         self._roots: OrderedDict[int, str] = OrderedDict()
         self._shown: set[int] = set()
+        self._forks: OrderedDict[int, _Fork] = OrderedDict()
         self._oom: set[int] = set()
         self._scopes: OrderedDict[str | None, _Scope] = OrderedDict()
         self._losses: dict[str, _Loss] = {}
@@ -710,6 +727,11 @@ class AuditedSandbox:
         owner = self._owner.get(record.pid, _UNKNOWN)
         if owner != _UNKNOWN:
             self._owner[record.child] = owner
+        if owner != INTERNAL and record.child not in self._shown:
+            self._forks[record.child] = _Fork(record, None if owner == _UNKNOWN else owner)
+            self._forks.move_to_end(record.child)
+            if len(self._forks) > MEMORY:
+                self._forks.popitem(last=False)
 
     def _on_pre_exec(self, record: PreExec) -> None:
         task = asyncio.create_task(self._pre_hash(record))
@@ -765,6 +787,9 @@ class AuditedSandbox:
     def _on_exec(self, record: Exec) -> None:
         owner = self._attribute(record)
         self._owner[record.pid] = owner
+        fork = self._forks.get(record.pid)
+        if fork is not None and (record.root or fork.record.pid == record.ppid):
+            del self._forks[record.pid]
         if record.cwd and not record.cwd_partial:
             self._cwd[record.pid] = record.cwd
             self._cwd.move_to_end(record.pid)
@@ -802,7 +827,8 @@ class AuditedSandbox:
             magic=record.magic or None,
             sha256=record.sha256,
         )
-        if self._admit(owner, "procs", payload):
+        reveal = record.pid if record.pid in self._forks else record.ppid
+        if self._admit(owner, "procs", payload, reveal=reveal):
             self._shown.add(record.pid)
 
     def _exec_env(self, record: Exec) -> tuple[tuple[str, ...], bool]:
@@ -829,26 +855,32 @@ class AuditedSandbox:
         active = self._active
         if active is not None and record.pid == active.root:
             active.exited.set()
+        fork = self._forks.get(record.pid)
         if record.pid in self._shown:
             self._shown.discard(record.pid)
-            payload = self._kernel(
-                ProcExit,
-                record,
-                owner,
-                exit_code=record.exit_code,
-                signal=record.signal,
-                oom=record.pid in self._oom,
-            )
-            if record.pid in self._spilled:
-                self._spilled.discard(record.pid)
-                scope = self._scope(owner)
-                if self._spill("procs", payload):
-                    scope.spilled += 1
-                else:
-                    scope.dropped += 1
-            else:
-                self._emit_payload(payload)
+            self._record_exit(record, owner, record.pid in self._oom)
+        elif fork is not None and fork.exit is None:
+            fork.exit, fork.oom = record, record.pid in self._oom
         self._oom.discard(record.pid)
+
+    def _record_exit(self, record: Exit, owner: str | None, oom: bool) -> None:
+        payload = self._kernel(
+            ProcExit,
+            record,
+            owner,
+            exit_code=record.exit_code,
+            signal=record.signal,
+            oom=oom,
+        )
+        if record.pid in self._spilled:
+            self._spilled.discard(record.pid)
+            scope = self._scope(owner)
+            if self._spill("procs", payload):
+                scope.spilled += 1
+            else:
+                scope.dropped += 1
+        else:
+            self._emit_payload(payload)
 
     def _on_output(self, record: Output) -> None:
         owner = self._owner.get(record.pid)
@@ -1080,20 +1112,63 @@ class AuditedSandbox:
             }
         )
 
-    def _admit(self, owner: str | None, kind: str, payload: Payload) -> bool:
+    def _admit(
+        self, owner: str | None, kind: str, payload: KernelPayload, *, reveal: int | None = None
+    ) -> bool:
         """Record `payload` unless its exec is internal. Past the cap of `kind` it is spilled.
 
+        The pending forks of `reveal`, the payload's pid by default, go first by the same route.
         True when the record was kept, in the log or in a spill.
         """
         if owner == INTERNAL:
             return False
         scope = self._scope(owner)
         count = scope.counts.get(kind, 0)
+        pid = payload.pid if reveal is None else reveal
+        if pid in self._forks:
+            self._reveal(pid, spill=count >= CAPS[kind])
         if count >= CAPS[kind]:
             return self._over_cap(scope, kind, payload)
         scope.counts[kind] = count + 1
+        if isinstance(payload, ProcExec):
+            self._spilled.discard(payload.pid)
         self._emit_payload(payload)
         return True
+
+    def _reveal(self, pid: int, *, spill: bool) -> None:
+        """Record `proc.fork` for `pid` and its unrecorded ancestors, oldest first.
+
+        So a `ppid` always names a process already recorded. An ancestor that already ended gets
+        its `proc.exit` right after its fork.
+        """
+        chain: list[_Fork] = []
+        seen: set[int] = set()
+        while pid not in self._shown and pid not in seen:
+            fork = self._forks.get(pid)
+            if fork is None or (chain and not fork.forked(chain[-1].record)):
+                break
+            chain.append(fork)
+            seen.add(pid)
+            pid = fork.record.pid
+        for fork in reversed(chain):
+            child = fork.record.child
+            del self._forks[child]
+            parent = fork.record.pid
+            payload = self._kernel(ProcFork, fork.record, fork.owner, pid=child, ppid=parent)
+            if spill:
+                scope = self._scope(fork.owner)
+                if not self._spill("procs", payload):
+                    scope.dropped += 1
+                    continue
+                scope.spilled += 1
+                self._spilled.add(child)
+            else:
+                self._spilled.discard(child)
+                self._emit_payload(payload)
+            if fork.exit is None:
+                self._shown.add(child)
+            else:
+                self._record_exit(fork.exit, fork.owner, fork.oom)
 
     def _over_cap(self, scope: _Scope, kind: str, payload: Payload) -> bool:
         if not self._spill(kind, payload):
