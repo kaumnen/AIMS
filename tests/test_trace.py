@@ -788,6 +788,30 @@ async def test_confirm_waits_past_an_older_process_with_the_pid() -> None:
 
 
 @pytest.mark.anyio
+async def test_quiesce_waits_for_every_process_to_exit() -> None:
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    tracer.alive = True
+    route = tracer.register(99, Mounts.parse(MOUNTINFO), SYSCALLS["aarch64"])
+    feed = Feed(tracer)
+    feed("R 0 999")
+    feed(f"E 10 1 1 1000 99 5 3 {hx(b'sh\0')}")
+    feed("F 10 11")
+    quiet = asyncio.create_task(tracer.quiesce(route, 5))
+    feed("X 11 0 0")
+    await asyncio.sleep(0.01)
+    assert not quiet.done()
+    feed("X 10 0 9")
+    async with asyncio.timeout(1):
+        await quiet
+
+    feed(f"E 20 1 1 1000 99 5 3 {hx(b'sh\0')}")
+    async with asyncio.timeout(1):
+        await tracer.quiesce(route, 0.1)
+    tracer.alive = False
+    await tracer.stop()
+
+
+@pytest.mark.anyio
 async def test_tracer_resolves_new_records() -> None:
     tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
     route = tracer.register(99, Mounts.parse(MOUNTINFO), SYSCALLS["aarch64"])

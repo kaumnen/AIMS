@@ -71,6 +71,7 @@ PMU_S = 60
 RIPE_US = 4_500_000
 # An exited pid stays routable this long for the records its exit leaves, such as closes.
 GONE_US = 10_000_000
+EXIT_GRACE_S = 0.05
 UNKNOWN = "kernel records of an unknown process"
 # Kernels from 6.15 split pipe_write into anon_pipe_write and fifo_pipe_write, 7.0 renamed
 # do_filp_open to do_file_open, and FMODE_BACKING is bit 24 from 6.14 and bit 25 before.
@@ -183,6 +184,7 @@ class Tracer:
         self._roots: OrderedDict[int, int] = OrderedDict()
         self._waiters: dict[int, asyncio.Future[int]] = {}
         self._sequence = Sequence()
+        self._exited = asyncio.Event()
         # Stream time of each loss bpftrace reported, and the kernel's total by then.
         self._drops: deque[tuple[int, int]] = deque()
         self.alive = False
@@ -292,6 +294,15 @@ class Tracer:
         finally:
             self._waiters.pop(pid, None)
 
+    async def quiesce(self, route: Route, timeout_s: float) -> None:
+        """Wait until every process of `route` has exited, then for the records its exit leaves."""
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(timeout_s):
+                while self.alive and any(r is route for r in self._pids.values()):
+                    self._exited.clear()
+                    await self._exited.wait()
+                await asyncio.sleep(EXIT_GRACE_S)
+
     async def _read(self, trace: DockerExec) -> None:
         """Read bpftrace's output as bytes, so file names that are not UTF-8 keep their bytes."""
         pending = {1: b"", 2: b""}
@@ -313,6 +324,7 @@ class Tracer:
             if self.alive:
                 log.error("tracer stopped; sandboxes fall back to snapshot audit")
             self.alive = False
+            self._exited.set()
             for route in self._routes.values():
                 route.put(Lost(None, "tracer stopped"))
 
@@ -446,6 +458,7 @@ class Tracer:
                     self._gone.move_to_end(pid)
                     if len(self._gone) > MEMORY:
                         self._gone.popitem(last=False)
+                    self._exited.set()
             case RawClose(pid, size, walk):
                 route = self._route(pid)
                 if route is not None:

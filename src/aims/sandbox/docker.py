@@ -44,6 +44,7 @@ log = logging.getLogger("aims.sandbox")
 GRACE_MS = 1000
 DRAIN_S = 5.0
 SAMPLES_END_S = 1.0
+QUIESCE_S = 2.0
 MIB = 1024 * 1024
 HOME = "/home/agent"
 
@@ -502,6 +503,11 @@ class DockerSandbox:
         if self._watch is not None:
             # The cgroup goes after the kill returns; the sampler then prints its last batch.
             await self._watch.ended(SAMPLES_END_S)
+
+    async def quiesce(self) -> None:
+        tracer = self._backend.tracer
+        if self._route is not None and tracer is not None:
+            await tracer.quiesce(self._route, QUIESCE_S)
 
     async def close(self, *, keep_volumes: bool = False) -> None:
         if self._watch is not None:

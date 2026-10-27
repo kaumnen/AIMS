@@ -399,6 +399,10 @@ class Sandbox(Protocol):
 
     async def kill(self) -> None: ...
 
+    async def quiesce(self) -> None:
+        """After a kill, wait for the kernel records of the sandbox's last processes."""
+        ...
+
     async def close(self, *, keep_volumes: bool = False) -> None: ...
 
 

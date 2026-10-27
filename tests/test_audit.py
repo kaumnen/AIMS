@@ -164,6 +164,9 @@ class FakeSandbox:
     async def kill(self) -> None:
         self.killed = True
 
+    async def quiesce(self) -> None:
+        pass
+
     async def close(self, *, keep_volumes: bool = False) -> None:
         self.closed = True
 
@@ -624,6 +627,59 @@ async def test_a_reused_root_pid_of_a_runner_exec_is_recorded(store: LocalEventS
         if e.type == "proc.exec"
     ]
     assert procs == [(100, first.finished.exec_id), (200, second.finished.exec_id)]
+
+
+class Dying(FakeSandbox):
+    """A sandbox whose processes leave their exit records when it is killed."""
+
+    async def kill(self) -> None:
+        await super().kill()
+        self.queue.put_nowait(Exit(101, None, 9, at=AT))
+
+
+@pytest.mark.parametrize("end", ["stop", "close"])
+async def test_the_last_exits_come_before_the_sandbox_stops(
+    store: LocalEventStore, end: str
+) -> None:
+    sb = Dying()
+    sb.steps.append(step(root(100), child(101, 100, "sleep"), Exit(100, 0, None, at=AT)))
+    run_id, audited = await start(store, sb)
+    await audited.exec("sleep 9 &", timeout_s=5)
+    if end == "stop":
+        await audited.stop()
+    await audited.close()
+
+    evs = await events(store, run_id)
+    assert sb.killed
+    assert [e.data["pid"] for e in evs if e.type == "proc.exit"] == [100, 101]
+    assert kinds(evs)[-1] == "sandbox.stopped"
+    assert kinds(evs).count("sandbox.stopped") == 1
+
+
+async def test_a_stop_waits_for_a_flush_in_progress(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sb = FakeSandbox()
+    run_id, audited = await start(store, sb)
+    hold, entered = asyncio.Event(), asyncio.Event()
+    append = store.append
+
+    async def held(run_id: str, drafts: Any) -> Any:
+        entered.set()
+        await hold.wait()
+        return await append(run_id, drafts)
+
+    monkeypatch.setattr(store, "append", held)
+    sb.queue.put_nowait(Lost(None, "flushed"))
+    await entered.wait()
+    stopping = asyncio.create_task(audited.stop())
+    await asyncio.sleep(0.05)
+    hold.set()
+    await stopping
+    await audited.close()
+
+    reasons = [e.data["reason"] for e in await events(store, run_id) if e.type == "audit.lost"]
+    assert reasons == ["flushed"]
 
 
 def spilled(data: bytes) -> list[tuple[str, dict]]:

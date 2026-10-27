@@ -644,6 +644,24 @@ async def test_threaded_exits_report_what_wait_sees(
     assert sum(isinstance(p, ProcExit) for p in leader) == 1
 
 
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_close_records_the_last_exits(backend: DockerBackend, store: LocalEventStore) -> None:
+    run_id, sb = await sandbox(backend, store)
+    try:
+        await sb.exec("sleep 60 >/dev/null 2>&1 & echo $!", timeout_s=10)
+    finally:
+        await sb.close()
+        await backend.remove_run(run_id)
+
+    evs = await events(store, run_id)
+    payloads = [e.payload() for e in evs]
+    sleep = next(p for p in payloads if isinstance(p, ProcExec) and p.argv[:1] == ["sleep"])
+    exits = [p for p in payloads if isinstance(p, ProcExit) and p.pid == sleep.pid]
+    assert [(p.exit_code, p.signal) for p in exits] == [(None, 9)]
+    assert evs[-1].type == "sandbox.stopped"
+
+
 async def test_file_contents_are_diffed_per_exec(
     backend: DockerBackend, store: LocalEventStore
 ) -> None:

@@ -229,6 +229,8 @@ class AuditedSandbox:
         self._sample_append: asyncio.Task[None] | None = None
         self._active: _Active | None = None
         self._consumer: asyncio.Task[None] | None = None
+        self._waiting = False
+        self._quiescing = False
         self._stopped = False
 
     @classmethod
@@ -333,6 +335,7 @@ class AuditedSandbox:
             return
         self._stopped = True
         await self.sandbox.kill()
+        await self._quiesce()
         stopped = SandboxStopped(
             sandbox_id=self.sandbox.info.sandbox_id, reason=reason, detail=detail
         )
@@ -340,12 +343,9 @@ class AuditedSandbox:
 
     async def close(self, *, keep_volumes: bool = False) -> None:
         try:
-            if self._consumer is not None:
-                self._consumer.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await self._consumer
-                self._consumer = None
-            await self._drain()
+            if not self._stopped:
+                await self.sandbox.kill()
+            await self._quiesce()
             last = [
                 *await self._files(None, always=False),
                 *await self._spill_events(),
@@ -600,13 +600,16 @@ class AuditedSandbox:
         return drafts
 
     async def _consume(self, queue: asyncio.Queue[Record]) -> None:
-        while True:
+        while not self._quiescing:
+            self._waiting = True
             try:
                 async with asyncio.timeout(FLUSH_S if self._buffer or self._losses else None):
                     record = await queue.get()
             except TimeoutError:
+                self._waiting = False
                 await self._flush()
                 continue
+            self._waiting = False
             if isinstance(record, Exec):
                 record = await self._with_hash(record)
             self._handle(record)
@@ -673,6 +676,21 @@ class AuditedSandbox:
             path, record.inode, record.dev, record.size, record.mtime_us, record.ctime_us
         )
         return record if sha256 is None else replace(record, sha256=sha256)
+
+    async def _quiesce(self) -> None:
+        """Wait for the killed sandbox's last kernel records, then record what is queued.
+
+        The consumer is cancelled only while it waits for a record, so none is dropped mid-way.
+        """
+        await self.sandbox.quiesce()
+        if self._consumer is not None:
+            self._quiescing = True
+            if self._waiting:
+                self._consumer.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._consumer
+            self._consumer = None
+        await self._drain()
 
     async def _drain(self) -> None:
         """Record what is still queued when the sandbox closes, then any unflushed output."""
