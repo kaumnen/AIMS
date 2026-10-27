@@ -15,15 +15,20 @@ from aims.events import (
     AuditSpill,
     Event,
     FileAccess,
+    FileSetattr,
     FileWrite,
     FsChange,
     FsSnapshot,
+    IpcEvent,
     KernelPayload,
     LocalEventStore,
+    MemExec,
     NetConnect,
     ProcExec,
     ProcExit,
     ProcOutput,
+    ProcSignal,
+    PtraceEvent,
     RunStarted,
     SandboxStarted,
     SysDenied,
@@ -259,6 +264,8 @@ async def test_kernel_audit_sees_what_ran(backend: DockerBackend, store: LocalEv
     argvs = [p.argv for p in procs]
     assert argvs[0][0] == "/.aims/aims-exec"
     assert argvs[1] == ["/bin/sh", "-c", command]
+    assert all(p.inode and p.dev and p.magic for p in procs)
+    assert all(p.nlink is not None and p.nlink >= 1 for p in procs)
     assert ["sh", "-c", "exit 7"] in argvs
     assert ["cat", "/etc/shadow"] in argvs
     files = {(p.op, p.path, p.target) for p in payloads if isinstance(p, FileAccess)}
@@ -753,3 +760,172 @@ async def test_output_prepending_is_visible(backend: DockerBackend, store: Local
     assert any(p.startswith("all tests passed") for p in prefixes)
     # The bytes on the pipe are recorded even though the command exited non-zero.
     assert result.stdout == b"all tests passed\n"
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_ipc_events(backend: DockerBackend, store: LocalEventStore) -> None:
+    command = (
+        "python3 - <<'EOF'\n"
+        "import ctypes, os, socket\n"
+        "s = socket.socket(socket.AF_UNIX)\n"
+        "s.bind('/work/s.sock')\n"
+        "s.listen()\n"
+        "c = socket.socket(socket.AF_UNIX)\n"
+        "c.connect('/work/s.sock')\n"
+        "c.close(); s.close()\n"
+        "os.mkfifo('/work/f')\n"
+        "libc = ctypes.CDLL(None, use_errno=True)\n"
+        "libc.shmget.argtypes = [ctypes.c_int, ctypes.c_size_t, ctypes.c_int]\n"
+        "libc.shmget.restype = ctypes.c_int\n"
+        "libc.shmat.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int]\n"
+        "libc.shmat.restype = ctypes.c_void_p\n"
+        "i = libc.shmget(1234, 4096, 0o1600)\n"
+        "libc.shmat(i, None, 0)\n"
+        "EOF"
+    )
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+
+    ipc = [e.payload() for e in await events(store, run_id, "ipc.event")]
+    ipc = [p for p in ipc if isinstance(p, IpcEvent)]
+    assert all(p.exec_id == result.finished.exec_id for p in ipc)
+    seen = {(p.kind, p.path) for p in ipc}
+    assert {
+        ("bind", "/work/s.sock"),
+        ("connect", "/work/s.sock"),
+        ("fifo", "/work/f"),
+    } <= seen
+    assert any(p.kind == "shmget" and p.key == 1234 and p.size == 4096 for p in ipc)
+    assert any(p.kind == "shmat" and p.flags == 0 for p in ipc)
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_ptrace_event(backend: DockerBackend, store: LocalEventStore) -> None:
+    command = (
+        "python3 - <<'EOF'\n"
+        "import ctypes\n"
+        "libc = ctypes.CDLL(None, use_errno=True)\n"
+        "libc.ptrace.argtypes = [ctypes.c_long, ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p]\n"
+        "libc.ptrace.restype = ctypes.c_long\n"
+        "libc.ptrace(16, 1, None, None)\n"
+        "EOF"
+    )
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+
+    events_ = [e.payload() for e in await events(store, run_id, "ptrace.event")]
+    events_ = [p for p in events_ if isinstance(p, PtraceEvent)]
+    assert any(
+        p.exec_id == result.finished.exec_id
+        and p.target == 1
+        and p.request == "attach"
+        and p.refused
+        for p in events_
+    )
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_signal_event(backend: DockerBackend, store: LocalEventStore) -> None:
+    command = "sleep 30 & p=$!; kill -TERM $p; wait $p 2>/dev/null; true"
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+
+    signals = [e.payload() for e in await events(store, run_id, "proc.signal")]
+    signals = [p for p in signals if isinstance(p, ProcSignal)]
+    assert any(
+        p.exec_id == result.finished.exec_id and p.signal == 15 and p.target != p.pid
+        for p in signals
+    )
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_mem_exec(backend: DockerBackend, store: LocalEventStore) -> None:
+    command = (
+        "python3 - <<'EOF'\n"
+        "import mmap, os\n"
+        "open('/work/code', 'wb').write(b'\\x90' * 16)\n"
+        "fd = os.open('/work/code', os.O_RDONLY)\n"
+        "mmap.mmap(fd, 16, prot=mmap.PROT_READ | mmap.PROT_EXEC)\n"
+        "os.close(fd)\n"
+        "EOF\n"
+        "python3 - <<'EOF'\n"
+        "import os, shutil\n"
+        "shutil.copy('/bin/true', '/work/x')\n"
+        "fd = os.open('/work/x', os.O_RDONLY)\n"
+        "os.unlink('/work/x')\n"
+        "os.set_inheritable(fd, True)\n"
+        "os.execve(f'/proc/self/fd/{fd}', ['x'], {})\n"
+        "EOF"
+    )
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+
+    mem = [e.payload() for e in await events(store, run_id, "mem.exec")]
+    mem = [p for p in mem if isinstance(p, MemExec)]
+    assert any(
+        p.exec_id == result.finished.exec_id
+        and p.kind == "exec"
+        and p.nlink == 0
+        and p.path.startswith("/proc/self/fd/")
+        for p in mem
+    )
+    assert any(
+        p.exec_id == result.finished.exec_id
+        and p.kind == "mmap"
+        and p.path == "/work/code"
+        and p.prot == 5
+        for p in mem
+    )
+    procs = [e.payload() for e in await events(store, run_id, "proc.exec")]
+    assert any(p.nlink == 0 for p in procs if isinstance(p, ProcExec))
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_file_setattr(backend: DockerBackend, store: LocalEventStore) -> None:
+    command = "echo hi > f; chmod 600 f; touch -d '2001-01-01' f; truncate -s 1 f"
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+
+    attrs = [e.payload() for e in await events(store, run_id, "file.setattr")]
+    attrs = [p for p in attrs if isinstance(p, FileSetattr) and p.path == "/work/f"]
+    assert all(p.exec_id == result.finished.exec_id for p in attrs)
+    assert any(p.mode is not None and p.mode & 0o777 == 0o600 for p in attrs)
+    assert any(p.size == 1 for p in attrs)
+    assert any(p.mtime_us == 978307200000000 for p in attrs)
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_refused_namespace_change_is_not_recorded(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    command = "unshare -Ur true 2>/dev/null; true"
+    run_id, sb = await sandbox(backend, store)
+    try:
+        await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+
+    assert not await events(store, run_id, "ns.event")
+    denied = [e.payload() for e in await events(store, run_id, "sys.denied")]
+    assert any(isinstance(p, SysDenied) and p.syscall == "unshare" for p in denied)

@@ -1,4 +1,5 @@
-config = { max_strlen = 512 }
+// 384 keeps the added dentry walks within the BPF stack budget.
+config = { max_strlen = 384 }
 
 BEGIN {
   @base = curtask->thread_pid->level;
@@ -17,8 +18,8 @@ tracepoint:task:task_newtask /@sandbox[cgroup] && !(args.clone_flags & 0x10000)/
   printf("F %llu %llu %llu %d %d\n", nsecs(boot), cpu, $s, curtask->tgid, args.pid);
 }
 
-// A sandbox is a cgroup where the runner started a toolbox binary. Only the runner makes root
-// execs (parent outside every container), and sidecars and other containers have no /.aims.
+// A sandbox is a cgroup where a root process started a /.aims/ binary. The runner's helpers
+// match too; their cgroups are unmarked on rmdir.
 fentry:vmlinux:security_bprm_check /curtask->thread_pid->level > @base/ {
   $f = str(args.bprm->filename);
   if (!@sandbox[cgroup] && curtask->real_parent->thread_pid->level <= @base && strncmp($f, "/.aims/", 7) == 0) {
@@ -27,6 +28,17 @@ fentry:vmlinux:security_bprm_check /curtask->thread_pid->level > @base/ {
   if (@sandbox[cgroup]) {
     $s = @seq[cpu] + 1; @seq[cpu] = $s;
     printf("B %llu %llu %llu %d %s\n", nsecs(boot), cpu, $s, curtask->tgid, $f);
+    $lf = args.bprm->file;
+    $s = @seq[cpu] + 1; @seq[cpu] = $s;
+    printf("L %llu %llu %llu %d %lu %lu %d %lu\n", nsecs(boot), cpu, $s, curtask->tgid,
+      $lf->f_inode->i_ino, $lf->f_inode->i_sb->s_dev, $lf->f_inode->i_nlink,
+      $lf->f_inode->i_sb->s_magic);
+    if ($lf->f_inode->i_nlink == 0 || strncmp($f, "/dev/fd/", 8) == 0
+        || strncmp($f, "/proc/self/fd/", 14) == 0) {
+      $s = @seq[cpu] + 1; @seq[cpu] = $s;
+      printf("M %llu %llu %llu %d x %lu %d %s\n", nsecs(boot), cpu, $s, curtask->tgid,
+        $lf->f_inode->i_ino, $lf->f_inode->i_nlink, $f);
+    }
   }
 }
 
@@ -200,8 +212,14 @@ fentry:vmlinux:security_socket_connect /@sandbox[cgroup] && strncmp(comm, "runc:
     $s = @seq[cpu] + 1; @seq[cpu] = $s;
     printf("C %llu %llu %llu %d c 6 %s %d\n", nsecs(boot), cpu, $s, curtask->tgid, ntop(10, $in6->sin6_addr.in6_u.u6_addr8), bswap($in6->sin6_port));
   } else if ($a->sa_family == 1) {
-    $s = @seq[cpu] + 1; @seq[cpu] = $s;
-    printf("C %llu %llu %llu %d c 1 %rx 0\n", nsecs(boot), cpu, $s, curtask->tgid, buf(((struct sockaddr_un *)$a)->sun_path, 108));
+    $u = (struct sockaddr_un *)$a;
+    $ul = args.addrlen > 110 ? 110 : args.addrlen;
+    $un = $ul - 2;
+    if ($un > 0) {
+      $s = @seq[cpu] + 1; @seq[cpu] = $s;
+      printf("I %llu %llu %llu %d c 1 %rx\n", nsecs(boot), cpu, $s, curtask->tgid,
+        buf((uint64)$u + 2, $un));
+    }
   }
 }
 
@@ -215,6 +233,157 @@ fentry:vmlinux:security_socket_sendmsg /@sandbox[cgroup] && strncmp(comm, "runc:
     $in6 = (struct sockaddr_in6 *)$a;
     $s = @seq[cpu] + 1; @seq[cpu] = $s;
     printf("C %llu %llu %llu %d s 6 %s %d\n", nsecs(boot), cpu, $s, curtask->tgid, ntop(10, $in6->sin6_addr.in6_u.u6_addr8), bswap($in6->sin6_port));
+  }
+}
+
+fentry:vmlinux:security_socket_bind /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0/ {
+  $ba = args.address;
+  if ($ba->sa_family == 1) {
+    $bu = (struct sockaddr_un *)$ba;
+    $bl = args.addrlen > 110 ? 110 : args.addrlen;
+    $bn = $bl - 2;
+    if ($bn > 0) {
+      $s = @seq[cpu] + 1; @seq[cpu] = $s;
+      printf("I %llu %llu %llu %d b 1 %rx\n", nsecs(boot), cpu, $s, curtask->tgid,
+        buf((uint64)$bu + 2, $bn));
+    }
+  }
+}
+
+fentry:vmlinux:security_inode_mknod /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && (args.mode & 0xF000) == 0x1000/ {
+  $md = args.dentry;
+  $mx = $md; $mk = 0;
+  unroll(12) { if ($mx != $mx->d_parent) { $mk++; $mx = $mx->d_parent; } }
+  $s = @seq[cpu] + 1; @seq[cpu] = $s;
+  printf("I %llu %llu %llu %d f 0 %u %d %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, curtask->tgid, $md->d_sb->s_dev, $mk,
+    str($md->d_name.name),
+    str($md->d_parent->d_name.name),
+    str($md->d_parent->d_parent->d_name.name),
+    str($md->d_parent->d_parent->d_parent->d_name.name),
+    str($md->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($md->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($md->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($md->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($md->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($md->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($md->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($md->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
+}
+
+tracepoint:syscalls:sys_enter_shmget /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0/ {
+  $s = @seq[cpu] + 1; @seq[cpu] = $s;
+  printf("I %llu %llu %llu %d g 2 %d %lu %d\n", nsecs(boot), cpu, $s, curtask->tgid, args.key, args.size, args.shmflg);
+}
+
+tracepoint:syscalls:sys_enter_shmat /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0/ {
+  $s = @seq[cpu] + 1; @seq[cpu] = $s;
+  printf("I %llu %llu %llu %d a 2 %d %d\n", nsecs(boot), cpu, $s, curtask->tgid, args.shmid, args.shmflg);
+}
+
+tracepoint:syscalls:sys_enter_ptrace /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0/ {
+  @ptrace_req[tid] = args.request + 1;
+  @ptrace_pid[tid] = args.pid;
+}
+
+tracepoint:syscalls:sys_exit_ptrace /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && @ptrace_req[tid] != 0/ {
+  $rq = @ptrace_req[tid] - 1;
+  $tg = @ptrace_pid[tid];
+  if ($rq == 0) { $tg = curtask->real_parent->tgid; }
+  delete(@ptrace_req[tid]);
+  delete(@ptrace_pid[tid]);
+  $s = @seq[cpu] + 1; @seq[cpu] = $s;
+  printf("K %llu %llu %llu %d %lld %llu %lld\n", nsecs(boot), cpu, $s, curtask->tgid, $tg, $rq, args.ret);
+}
+
+tracepoint:syscalls:sys_enter_process_vm_writev /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0/ {
+  @vmw[tid] = args.pid + 1;
+}
+
+tracepoint:syscalls:sys_exit_process_vm_writev /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && @vmw[tid] != 0/ {
+  $vt = @vmw[tid] - 1;
+  delete(@vmw[tid]);
+  $s = @seq[cpu] + 1; @seq[cpu] = $s;
+  printf("K %llu %llu %llu %d %lld -1 %lld\n", nsecs(boot), cpu, $s, curtask->tgid, $vt, args.ret);
+}
+
+fentry:vmlinux:security_task_kill /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0
+    && args.p->tgid != curtask->tgid && args.sig != 17/ {
+  $s = @seq[cpu] + 1; @seq[cpu] = $s;
+  printf("S %llu %llu %llu %d %d %d\n", nsecs(boot), cpu, $s, curtask->tgid, args.p->tgid, args.sig);
+}
+
+fentry:vmlinux:security_mmap_file /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && args.file != 0
+    && (args.prot & 4) != 0 && (args.file->f_inode->i_mode & 0xF000) == 0x8000
+    && args.file->f_inode->i_sb->s_magic != 0x794c7630/ {
+  $fd = args.file->f_path.dentry;
+  $fx = $fd; $fk = 0;
+  unroll(12) { if ($fx != $fx->d_parent) { $fk++; $fx = $fx->d_parent; } }
+  $s = @seq[cpu] + 1; @seq[cpu] = $s;
+  printf("M %llu %llu %llu %d m %lu %d %lu %lu %d %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, curtask->tgid,
+    args.file->f_inode->i_ino, args.file->f_inode->i_nlink, args.file->f_inode->i_sb->s_dev, args.prot, $fk,
+    str($fd->d_name.name),
+    str($fd->d_parent->d_name.name),
+    str($fd->d_parent->d_parent->d_name.name),
+    str($fd->d_parent->d_parent->d_parent->d_name.name),
+    str($fd->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($fd->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($fd->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($fd->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($fd->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($fd->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($fd->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($fd->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
+}
+
+fentry:vmlinux:security_inode_setattr /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0/ {
+  $sd = args.dentry;
+  $sa = args.attr;
+  $sx = $sd; $sk = 0;
+  unroll(12) { if ($sx != $sx->d_parent) { $sk++; $sx = $sx->d_parent; } }
+  $s = @seq[cpu] + 1; @seq[cpu] = $s;
+  printf("H %llu %llu %llu %d %u %d %u %d %u %u %lld %lld %lld %lld %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, curtask->tgid,
+    $sd->d_sb->s_dev, $sk, $sa->ia_valid, $sa->ia_mode,
+    *(uint32 *)((uint8 *)$sa + 8), *(uint32 *)((uint8 *)$sa + 12), $sa->ia_size,
+    $sa->ia_atime.tv_sec * 1000000 + (int64)((uint64)$sa->ia_atime.tv_nsec / 1000),
+    $sa->ia_mtime.tv_sec * 1000000 + (int64)((uint64)$sa->ia_mtime.tv_nsec / 1000),
+    $sa->ia_ctime.tv_sec * 1000000 + (int64)((uint64)$sa->ia_ctime.tv_nsec / 1000),
+    str($sd->d_name.name),
+    str($sd->d_parent->d_name.name),
+    str($sd->d_parent->d_parent->d_name.name),
+    str($sd->d_parent->d_parent->d_parent->d_name.name),
+    str($sd->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($sd->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($sd->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($sd->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($sd->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($sd->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($sd->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($sd->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
+}
+
+tracepoint:syscalls:sys_enter_unshare /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0/ {
+  @unshare[tid] = args.unshare_flags + 1;
+}
+
+tracepoint:syscalls:sys_exit_unshare /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && @unshare[tid] != 0/ {
+  $nf = @unshare[tid] - 1;
+  delete(@unshare[tid]);
+  if (args.ret == 0 && ($nf & 0x7E020080) != 0) {
+    $s = @seq[cpu] + 1; @seq[cpu] = $s;
+    printf("J %llu %llu %llu %d u %llu\n", nsecs(boot), cpu, $s, curtask->tgid, $nf);
+  }
+}
+
+tracepoint:syscalls:sys_enter_setns /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0/ {
+  @setns[tid] = args.flags + 1;
+}
+
+tracepoint:syscalls:sys_exit_setns /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && @setns[tid] != 0/ {
+  $sf = @setns[tid] - 1;
+  delete(@setns[tid]);
+  if (args.ret == 0) {
+    $s = @seq[cpu] + 1; @seq[cpu] = $s;
+    printf("J %llu %llu %llu %d n %llu\n", nsecs(boot), cpu, $s, curtask->tgid, $sf);
   }
 }
 

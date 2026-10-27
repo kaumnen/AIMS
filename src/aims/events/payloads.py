@@ -177,6 +177,8 @@ class ProcExec(KernelPayload):
     `cwd`, `env` and `fds` are read at exec. Only the first 4 KiB of `env` is read; `env_bytes` is
     its full size. `env` is empty with `env_inherited` set when it was read whole and matches the
     parent's, to keep the log small. `fds` holds stdin, stdout and stderr, giving the pipe graph.
+    `inode`, `dev`, `nlink` and `magic` identify the executed file; `nlink` is 0 for a fileless
+    exec. `path_partial` marks a path that reached the tracer's string cap and may be cut.
     """
 
     type = "proc.exec"
@@ -188,12 +190,17 @@ class ProcExec(KernelPayload):
     argv: list[str]
     argv_bytes: int
     root: bool
+    path_partial: bool = False
     cwd: str = ""
     cwd_partial: bool = False
     env: list[str] = Field(default_factory=list)
     env_bytes: int = 0
     env_inherited: bool = False
     fds: tuple[FdInfo, FdInfo, FdInfo] | None = None
+    inode: int | None = None
+    dev: int | None = None
+    nlink: int | None = None
+    magic: int | None = None
 
 
 class ProcExit(KernelPayload):
@@ -205,7 +212,11 @@ class ProcExit(KernelPayload):
 
 
 class FileAccess(KernelPayload):
-    """A file opened, deleted, renamed, or refused. `partial` paths lack their leading part."""
+    """A file opened, deleted, renamed, or refused.
+
+    A `partial` path is not exact: it lacks its leading part, or it reached the tracer's string
+    cap and may be cut at the end.
+    """
 
     type = "file.access"
 
@@ -217,12 +228,16 @@ class FileAccess(KernelPayload):
 
 
 class FileWrite(KernelPayload):
-    """A file opened for writing was closed. `size` is its size at the close."""
+    """A file opened for writing was closed. `size` is its size at the close.
+
+    A `partial` path reached the tracer's string cap and may be cut at the end.
+    """
 
     type = "file.write"
 
     path: str
     size: int
+    partial: bool = False
 
 
 class FsChange(BaseModel):
@@ -278,7 +293,7 @@ class NetConnect(KernelPayload):
     type = "net.connect"
 
     kind: Literal["connect", "sendto"]
-    family: Literal["inet", "inet6", "unix"]
+    family: Literal["inet", "inet6"]
     address: str
     port: int | None
 
@@ -310,6 +325,93 @@ class ProcOutput(KernelPayload):
     prefix: Content
     prefix_bytes: int
     truncated: bool
+
+
+class IpcEvent(KernelPayload):
+    """A request to open a unix socket, FIFO or SysV shared memory channel.
+
+    It is recorded when asked for, so it does not prove the channel was made. `path` is the socket
+    or FIFO path; for a bind it is local, for a connect the peer. `key` and `size` are a shmget
+    key and size, `id` a shmat segment. Abstract unix names start with `@`. A `partial` path is
+    not exact.
+    """
+
+    type = "ipc.event"
+
+    kind: Literal["bind", "connect", "fifo", "shmget", "shmat"]
+    family: Literal["unix", "sysv"] | None = None
+    path: str | None = None
+    key: int | None = None
+    id: int | None = None
+    size: int | None = None
+    flags: int | None = None
+    partial: bool = False
+
+
+class PtraceEvent(KernelPayload):
+    """A ptrace request by `pid` against `target`. `errno` is set when it was refused."""
+
+    type = "ptrace.event"
+
+    target: int
+    request: str
+    refused: bool = False
+    errno: int | None = None
+
+
+class ProcSignal(KernelPayload):
+    type = "proc.signal"
+
+    target: int
+    signal: int
+
+
+class MemExec(KernelPayload):
+    """A request to run a program without a file on disk, or to map a written file executable.
+
+    It is recorded when asked for, so it does not prove the exec or mapping happened; a `proc.exec`
+    confirms an exec. `nlink` is 0 for a memfd or a file already deleted. `prot` is the mmap
+    protection. A `partial` path is not exact: it lacks its leading part or may be cut at the end.
+    """
+
+    type = "mem.exec"
+
+    kind: Literal["exec", "mmap"]
+    path: str
+    inode: int
+    nlink: int
+    prot: int | None = None
+    partial: bool = False
+
+
+class FileSetattr(KernelPayload):
+    """A requested metadata change, which the kernel may still refuse.
+
+    `valid` is the kernel's iattr mask; unset fields are None.
+    """
+
+    type = "file.setattr"
+
+    path: str
+    partial: bool = False
+    valid: int
+    mode: int | None = None
+    uid: int | None = None
+    gid: int | None = None
+    size: int | None = None
+    atime_us: int | None = None
+    mtime_us: int | None = None
+    ctime_us: int | None = None
+
+
+class NsEvent(KernelPayload):
+    """A namespace change that succeeded. `namespaces` lists the CLONE_NEW* kinds."""
+
+    type = "ns.event"
+
+    kind: Literal["unshare", "setns"]
+    flags: int
+    namespaces: list[str] = Field(default_factory=list)
 
 
 class AuditLost(Payload):

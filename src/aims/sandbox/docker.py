@@ -98,7 +98,7 @@ class DockerBackend:
             sampler = await _sampler(docker, labels, toolbox[0])
             if audit != "snapshot":
                 name = f"aims-tracer-{uuid.uuid4().hex[:12]}"
-                tracer = Tracer(docker, labels, name, ring_pages=ring_pages)
+                tracer = Tracer(docker, labels, name, ring_pages=ring_pages, toolbox=toolbox[1])
                 try:
                     await tracer.start()
                 except (TracerError, aiodocker.DockerError, TimeoutError) as e:

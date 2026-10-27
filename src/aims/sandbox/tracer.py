@@ -10,7 +10,20 @@ from aiodocker.containers import DockerContainer
 from aiodocker.execs import Exec as DockerExec
 from pydantic import JsonValue
 
-from aims.sandbox.base import Denied, Exec, Exit, File, Fork, Kernel, Lost, Record
+from aims.sandbox.base import (
+    TOOLBOX,
+    Denied,
+    Exec,
+    Exit,
+    File,
+    Fork,
+    Ipc,
+    Kernel,
+    Lost,
+    Mem,
+    Record,
+    Setattr,
+)
 from aims.sandbox.execs import exec_output
 from aims.sandbox.images import ensure_image
 from aims.sandbox.trace import (
@@ -24,6 +37,9 @@ from aims.sandbox.trace import (
     Note,
     RawDenied,
     RawExec,
+    RawFifo,
+    RawMmap,
+    RawSetattr,
     Ready,
     Rename,
     Sequence,
@@ -110,11 +126,13 @@ class Tracer:
         name: str,
         *,
         ring_pages: int | None = None,
+        toolbox: str | None = None,
     ) -> None:
         self._docker = docker
         self._labels = labels
         self._name = name
         self._ring_pages = ring_pages
+        self._toolbox = None if toolbox is None else toolbox.encode()
         self._container: DockerContainer | None = None
         self._reader: asyncio.Task[None] | None = None
         self._ready: asyncio.Future[int] = asyncio.get_running_loop().create_future()
@@ -336,6 +354,43 @@ class Tracer:
                 route = self._route(pid)
                 if route is not None and nr in route.syscalls:
                     route.put(Denied(pid, route.syscalls[nr], errno, at=item.at))
+            case RawFifo(pid, walk):
+                route = self._route(pid)
+                if route is not None:
+                    path, partial = route.mounts.resolve(walk)
+                    route.put(Ipc(pid, "fifo", path=path, partial=partial, at=item.at))
+            case RawMmap(pid, walk, inode, nlink, prot):
+                if (
+                    self._toolbox is not None
+                    and len(walk.names) > 2
+                    and walk.names[2] == self._toolbox
+                ):
+                    return
+                route = self._route(pid)
+                if route is not None:
+                    path, partial = route.mounts.resolve(walk)
+                    if path != TOOLBOX and not path.startswith(f"{TOOLBOX}/"):
+                        route.put(Mem(pid, "mmap", path, inode, nlink, prot, partial, at=item.at))
+            case RawSetattr(pid, walk, valid, mode, uid, gid, size, atime_us, mtime_us, ctime_us):
+                route = self._route(pid)
+                if route is not None:
+                    path, partial = route.mounts.resolve(walk)
+                    route.put(
+                        Setattr(
+                            pid,
+                            path,
+                            partial,
+                            valid,
+                            mode,
+                            uid,
+                            gid,
+                            size,
+                            atime_us,
+                            mtime_us,
+                            ctime_us,
+                            at=item.at,
+                        )
+                    )
             case Kernel(pid):
                 route = self._route(pid)
                 if route is not None:

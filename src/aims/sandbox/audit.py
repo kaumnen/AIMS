@@ -20,16 +20,22 @@ from aims.events import (
     ExecStarted,
     FdInfo,
     FileAccess,
+    FileSetattr,
     FileWrite,
     FsChange,
     FsSnapshot,
+    IpcEvent,
     KernelPayload,
+    MemExec,
     NetConnect,
+    NsEvent,
     Payload,
     Proc,
     ProcExec,
     ProcExit,
     ProcOutput,
+    ProcSignal,
+    PtraceEvent,
     SandboxStarted,
     SandboxStopped,
     SysDenied,
@@ -46,17 +52,23 @@ from aims.sandbox.base import (
     Exit,
     File,
     Fork,
+    Ipc,
     Kernel,
     Lost,
+    Mem,
     Net,
+    Ns,
     Oom,
     Outcome,
     Output,
+    Ptrace,
     Record,
     Sample,
     Sandbox,
     SandboxBackend,
     SandboxSpec,
+    Setattr,
+    Signal,
     Tree,
 )
 from aims.sandbox.resources import Windows
@@ -65,6 +77,15 @@ from aims.sandbox.trace import ENV_CAP, PIPEFS_MAGIC
 log = logging.getLogger("aims.sandbox")
 
 CAPS = {"procs": 1000, "files": 2000, "other": 500, "output": 200}
+ATTR_MODE, ATTR_UID, ATTR_GID, ATTR_SIZE, ATTR_ATIME, ATTR_MTIME, ATTR_CTIME = (
+    1,
+    2,
+    4,
+    8,
+    16,
+    32,
+    64,
+)
 SPILL_BYTES = 32 * 1024 * 1024
 CHANGES = 200
 OUTPUT_PREFIX = 64
@@ -630,6 +651,18 @@ class AuditedSandbox:
                     self._on_denied(record)
                 case Output():
                     self._on_output(record)
+                case Ipc():
+                    self._on_ipc(record)
+                case Ptrace():
+                    self._on_ptrace(record)
+                case Signal():
+                    self._on_signal(record)
+                case Mem():
+                    self._on_mem(record)
+                case Setattr():
+                    self._on_setattr(record)
+                case Ns():
+                    self._on_ns(record)
                 case Lost():
                     self._on_lost(record)
                 case _:
@@ -661,6 +694,7 @@ class AuditedSandbox:
             ns_pid=record.ns_pid,
             uid=record.uid,
             path=record.path,
+            path_partial=record.path_partial,
             argv=list(record.argv),
             argv_bytes=record.argv_bytes,
             root=record.root,
@@ -670,6 +704,10 @@ class AuditedSandbox:
             env_bytes=record.env_bytes,
             env_inherited=inherited,
             fds=fds,
+            inode=record.inode or None,
+            dev=record.dev or None,
+            nlink=record.nlink if record.inode else None,
+            magic=record.magic or None,
         )
         if self._admit(owner, "procs", payload):
             self._shown.add(record.pid)
@@ -796,7 +834,9 @@ class AuditedSandbox:
         scope = self._scope(owner)
         if key in scope.seen:
             return
-        payload = self._kernel(FileWrite, record, owner, path=record.path, size=record.size)
+        payload = self._kernel(
+            FileWrite, record, owner, path=record.path, size=record.size, partial=record.partial
+        )
         if self._admit(owner, "files", payload):
             scope.seen.add(key)
 
@@ -816,6 +856,89 @@ class AuditedSandbox:
     def _on_denied(self, record: Denied) -> None:
         owner = self._owner.get(record.pid)
         payload = self._kernel(SysDenied, record, owner, syscall=record.syscall, errno=record.errno)
+        self._admit(owner, "other", payload)
+
+    def _on_ipc(self, record: Ipc) -> None:
+        owner = self._owner.get(record.pid)
+        payload = self._kernel(
+            IpcEvent,
+            record,
+            owner,
+            kind=record.kind,
+            family=record.family,
+            path=record.path,
+            key=record.key,
+            id=record.id,
+            size=record.size,
+            flags=record.flags,
+            partial=record.partial,
+        )
+        self._admit(owner, "other", payload)
+
+    def _on_ptrace(self, record: Ptrace) -> None:
+        owner = self._owner.get(record.pid)
+        payload = self._kernel(
+            PtraceEvent,
+            record,
+            owner,
+            target=record.target,
+            request=record.request,
+            refused=record.refused,
+            errno=record.errno,
+        )
+        self._admit(owner, "other", payload)
+
+    def _on_signal(self, record: Signal) -> None:
+        owner = self._owner.get(record.pid)
+        payload = self._kernel(
+            ProcSignal, record, owner, target=record.target, signal=record.signal
+        )
+        self._admit(owner, "other", payload)
+
+    def _on_mem(self, record: Mem) -> None:
+        owner = self._owner.get(record.pid)
+        payload = self._kernel(
+            MemExec,
+            record,
+            owner,
+            kind=record.kind,
+            path=record.path,
+            inode=record.inode,
+            nlink=record.nlink,
+            prot=record.prot,
+            partial=record.partial,
+        )
+        self._admit(owner, "other", payload)
+
+    def _on_setattr(self, record: Setattr) -> None:
+        owner = self._owner.get(record.pid)
+        payload = self._kernel(
+            FileSetattr,
+            record,
+            owner,
+            path=record.path,
+            partial=record.partial,
+            valid=record.valid,
+            mode=record.mode if record.valid & ATTR_MODE else None,
+            uid=record.uid if record.valid & ATTR_UID else None,
+            gid=record.gid if record.valid & ATTR_GID else None,
+            size=record.size if record.valid & ATTR_SIZE else None,
+            atime_us=record.atime_us if record.valid & ATTR_ATIME else None,
+            mtime_us=record.mtime_us if record.valid & ATTR_MTIME else None,
+            ctime_us=record.ctime_us if record.valid & ATTR_CTIME else None,
+        )
+        self._admit(owner, "other", payload)
+
+    def _on_ns(self, record: Ns) -> None:
+        owner = self._owner.get(record.pid)
+        payload = self._kernel(
+            NsEvent,
+            record,
+            owner,
+            kind=record.kind,
+            flags=record.flags,
+            namespaces=list(record.namespaces),
+        )
         self._admit(owner, "other", payload)
 
     def _on_lost(self, record: Lost) -> None:

@@ -12,9 +12,16 @@ from aims.events import (
     BlobRef,
     Draft,
     Event,
+    FileSetattr,
     FsSnapshot,
+    IpcEvent,
     LocalEventStore,
+    MemExec,
+    NsEvent,
     Proc,
+    ProcExec,
+    ProcSignal,
+    PtraceEvent,
     ResourceSample,
     RunStarted,
 )
@@ -33,15 +40,21 @@ from aims.sandbox.base import (
     Fd,
     File,
     Fork,
+    Ipc,
     Lost,
+    Mem,
     Net,
+    Ns,
     Oom,
     Outcome,
     Output,
+    Ptrace,
     Record,
     Sample,
     SandboxInfo,
     SandboxSpec,
+    Setattr,
+    Signal,
     Stamp,
     Tree,
 )
@@ -642,7 +655,14 @@ async def test_file_writes_are_recorded_once_per_size(store: LocalEventStore) ->
 
     writes = [e.data for e in await events(store, run_id, "file.write")]
     assert writes == [
-        {"exec_id": result.finished.exec_id, "pid": 101, "path": "/work/log", "size": s, **STAMP}
+        {
+            "exec_id": result.finished.exec_id,
+            "pid": 101,
+            "path": "/work/log",
+            "size": s,
+            "partial": False,
+            **STAMP,
+        }
         for s in (3, 9)
     ]
 
@@ -935,3 +955,68 @@ async def test_output_streams_stay_within_their_cap(
     assert result.finished.dropped == 2
     await audited.close()
     assert len(await events(store, run_id, "proc.output")) == 4
+
+
+async def test_new_kernel_records_are_mapped(store: LocalEventStore) -> None:
+    sb = FakeSandbox()
+    exe = dataclasses.replace(child(101, 100, "sh"), inode=7, dev=254, nlink=0, magic=61267)
+    sb.steps.append(
+        step(
+            root(100),
+            Fork(100, 101, at=AT),
+            exe,
+            Ipc(101, "bind", "unix", "/work/s.sock", at=AT),
+            Ptrace(101, 1, "attach", True, 1, at=AT),
+            Signal(101, 102, 15, at=AT),
+            Mem(101, "mmap", "/work/x.so", 8, 1, 5, at=AT),
+            Setattr(101, "/work/f", False, 127, 33152, 0, 0, 1, 0, 0, 0, at=AT),
+            Ns(101, "unshare", 268435456, ("user",), at=AT),
+            Exit(101, 0, None, at=AT),
+            Exit(100, 0, None, at=AT),
+        )
+    )
+    run_id, audited = await start(store, sb)
+    result = await audited.exec("x", timeout_s=5)
+    await audited.close()
+
+    evs = await events(
+        store,
+        run_id,
+        "proc.exec",
+        "ipc.event",
+        "ptrace.event",
+        "proc.signal",
+        "mem.exec",
+        "file.setattr",
+        "ns.event",
+    )
+    exec_id = result.finished.exec_id
+    assert all(e.data["exec_id"] == exec_id for e in evs[1:])
+    assert all(e.data["ts_kernel"] == 42 for e in evs[1:])
+    procs = [e.payload() for e in evs if e.type == "proc.exec"]
+    proc = next(p for p in procs if isinstance(p, ProcExec) and p.pid == 101)
+    assert (proc.inode, proc.dev, proc.nlink, proc.magic) == (7, 254, 0, 61267)
+
+    by_type = {e.type: e.payload() for e in evs[1:]}
+    ipc, ptrace, signal = by_type["ipc.event"], by_type["ptrace.event"], by_type["proc.signal"]
+    mem, setattr, ns = by_type["mem.exec"], by_type["file.setattr"], by_type["ns.event"]
+    assert isinstance(ipc, IpcEvent)
+    assert (ipc.kind, ipc.family, ipc.path) == ("bind", "unix", "/work/s.sock")
+    assert isinstance(ptrace, PtraceEvent)
+    assert (ptrace.target, ptrace.request, ptrace.refused, ptrace.errno) == (1, "attach", True, 1)
+    assert isinstance(signal, ProcSignal)
+    assert (signal.target, signal.signal) == (102, 15)
+    assert isinstance(mem, MemExec)
+    assert (mem.kind, mem.path, mem.inode, mem.nlink, mem.prot) == (
+        "mmap",
+        "/work/x.so",
+        8,
+        1,
+        5,
+    )
+    assert isinstance(setattr, FileSetattr)
+    assert (setattr.mode, setattr.uid, setattr.gid, setattr.size) == (33152, 0, 0, 1)
+    assert (setattr.atime_us, setattr.mtime_us, setattr.ctime_us) == (0, 0, 0)
+    assert isinstance(ns, NsEvent)
+    assert (ns.kind, ns.flags, ns.namespaces) == ("unshare", 268435456, ["user"])
+    assert (await store.verify(run_id)).ok

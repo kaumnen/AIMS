@@ -13,7 +13,23 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from aims.events import MAX_INT, FdKind
-from aims.sandbox.base import Close, Exit, Fd, File, Fork, Kernel, Net, Oom, Output, Stamp
+from aims.sandbox.base import (
+    Close,
+    Exit,
+    Fd,
+    File,
+    Fork,
+    Ipc,
+    Kernel,
+    Mem,
+    Net,
+    Ns,
+    Oom,
+    Output,
+    Ptrace,
+    Signal,
+    Stamp,
+)
 
 PIPEFS_MAGIC = 0x50495045
 _FD_KINDS: dict[int, FdKind] = {
@@ -33,7 +49,62 @@ def _fd(ino: int, mode: int, magic: int) -> Fd:
 
 
 DEPTH = 12
+STRLEN = 384
 ENV_CAP = 4096
+
+PTRACE_REQUESTS: dict[int, str] = {
+    -1: "process_vm_writev",
+    0: "traceme",
+    1: "peektext",
+    2: "peekdata",
+    3: "peekuser",
+    4: "poketext",
+    5: "pokedata",
+    6: "pokeuser",
+    7: "cont",
+    8: "kill",
+    9: "singlestep",
+    12: "getregs",
+    13: "setregs",
+    14: "getfpregs",
+    15: "setfpregs",
+    16: "attach",
+    17: "detach",
+    18: "getfpxregs",
+    19: "setfpxregs",
+    24: "syscall",
+    0x4200: "setoptions",
+    0x4201: "geteventmsg",
+    0x4202: "getsiginfo",
+    0x4203: "setsiginfo",
+    0x4204: "getregset",
+    0x4205: "setregset",
+    0x4206: "seize",
+    0x4207: "interrupt",
+    0x4208: "listen",
+    0x4209: "peeksiginfo",
+    0x420A: "getsigmask",
+    0x420B: "setsigmask",
+    0x420C: "peekmtetags",
+    0x420D: "pokemtetags",
+    0x420E: "get_syscall_info",
+}
+
+NS_FLAGS: tuple[tuple[int, str], ...] = (
+    (0x00000080, "time"),
+    (0x00020000, "mount"),
+    (0x02000000, "cgroup"),
+    (0x04000000, "uts"),
+    (0x08000000, "ipc"),
+    (0x10000000, "user"),
+    (0x20000000, "pid"),
+    (0x40000000, "net"),
+)
+
+
+def namespaces(flags: int) -> tuple[str, ...]:
+    return tuple(name for bit, name in NS_FLAGS if flags & bit)
+
 
 _HEX = re.compile(r"^(?:\\x[0-9a-f]{2})*$")
 
@@ -199,7 +270,20 @@ class Bprm(ExecPart):
     path: str
 
     def fields(self) -> dict[str, object]:
-        return {"path": self.path}
+        return {"path": self.path, "path_partial": _cut(self.path)}
+
+
+@dataclass(frozen=True, slots=True)
+class Identity(ExecPart):
+    """The executed file's inode, device, link count and filesystem magic."""
+
+    inode: int
+    dev: int
+    nlink: int
+    magic: int
+
+    def fields(self) -> dict[str, object]:
+        return {"inode": self.inode, "dev": self.dev, "nlink": self.nlink, "magic": self.magic}
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,6 +340,32 @@ class Rename(Raw):
 class RawDenied(Raw):
     nr: int
     errno: int
+
+
+@dataclass(frozen=True, slots=True)
+class RawFifo(Raw):
+    walk: Walk
+
+
+@dataclass(frozen=True, slots=True)
+class RawMmap(Raw):
+    walk: Walk
+    inode: int
+    nlink: int
+    prot: int
+
+
+@dataclass(frozen=True, slots=True)
+class RawSetattr(Raw):
+    walk: Walk
+    valid: int
+    mode: int
+    uid: int
+    gid: int
+    size: int
+    atime_us: int
+    mtime_us: int
+    ctime_us: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -395,13 +505,13 @@ def _oom(body: str, at: Stamp) -> Oom:
 @record("W")
 def _write(body: str, at: Stamp) -> File:
     pid, path = body.split(" ", 1)
-    return File(int(pid), "write", path, at=at)
+    return File(int(pid), "write", path, partial=_cut(path), at=at)
 
 
 @record("A")
 def _read(body: str, at: Stamp) -> File:
     pid, path = body.split(" ", 1)
-    return File(int(pid), "read", path, at=at)
+    return File(int(pid), "read", path, partial=_cut(path), at=at)
 
 
 @record("U")
@@ -422,35 +532,163 @@ def _rename(body: str, at: Stamp) -> Rename:
 @record("C")
 def _net(body: str, at: Stamp) -> Net:
     f = _fields(body, 5)
+    if f[2] not in ("4", "6"):
+        raise ValueError("unknown address family")
     kind: Literal["connect", "sendto"] = "connect" if f[1] == "c" else "sendto"
-    if f[2] == "1":
-        raw = _hex(f[3])
-        if raw.startswith(b"\0"):
-            path = "@" + _text(raw[1:].rstrip(b"\0"))
-        else:
-            path = _text(raw.split(b"\0")[0])
-        return Net(int(f[0]), kind, "unix", path, None, at=at)
     family: Literal["inet", "inet6"] = "inet" if f[2] == "4" else "inet6"
     return Net(int(f[0]), kind, family, f[3], int(f[4]), at=at)
+
+
+@record("I")
+def _ipc(body: str, at: Stamp) -> Ipc | RawFifo:
+    head = body.split(" ", 3)
+    if len(head) < 2:
+        raise ValueError("short ipc line")
+    pid, kind = int(head[0]), head[1]
+    if kind in ("b", "c"):
+        f = _fields(body, 4)
+        if f[2] != "1":
+            raise ValueError("unknown socket family")
+        raw = _hex(f[3])
+        if not raw:
+            raise ValueError("empty socket path")
+        if raw.startswith(b"\0"):
+            path = "@" + _text(raw[1:].rstrip(b"\0"))
+            partial = False
+        else:
+            path = _text(raw.rstrip(b"\0"))
+            partial = not path.startswith("/")
+        return Ipc(
+            pid,
+            "bind" if kind == "b" else "connect",
+            "unix",
+            path,
+            partial=partial,
+            at=at,
+        )
+    if kind == "f":
+        f = _fields(body, 6)
+        if f[2] != "0":
+            raise ValueError("unknown fifo family")
+        return RawFifo(pid, _walk(int(f[3]), int(f[4]), f[5].split("/")), at=at)
+    if kind == "g":
+        f = _fields(body, 6)
+        if f[2] != "2":
+            raise ValueError("unknown shm family")
+        return Ipc(pid, "shmget", "sysv", key=int(f[3]), size=int(f[4]), flags=int(f[5]), at=at)
+    if kind == "a":
+        f = _fields(body, 5)
+        if f[2] != "2":
+            raise ValueError("unknown shm family")
+        return Ipc(pid, "shmat", "sysv", id=int(f[3]), flags=int(f[4]), at=at)
+    raise ValueError("unknown ipc kind")
+
+
+@record("K")
+def _ptrace(body: str, at: Stamp) -> Ptrace:
+    pid, target, request, ret = _ints(body, 4)
+    name = PTRACE_REQUESTS.get(request, f"request_{request:#x}")
+    refused = ret < 0 and request not in (1, 2, 3)
+    return Ptrace(pid, target, name, refused, -ret if refused else None, at=at)
+
+
+@record("S")
+def _signal(body: str, at: Stamp) -> Signal:
+    pid, target, sig = _ints(body, 3)
+    return Signal(pid, target, sig, at=at)
+
+
+@record("M")
+def _mem(body: str, at: Stamp) -> Mem | RawMmap:
+    head = body.split(" ", 2)
+    if len(head) < 3:
+        raise ValueError("short mem line")
+    pid, kind = int(head[0]), head[1]
+    if kind == "x":
+        f = body.split(" ", 4)
+        if len(f) != 5:
+            raise ValueError("expected five mem fields")
+        path = f[4]
+        partial = not path.startswith("/") or _cut(path)
+        return Mem(pid, "exec", path, int(f[2]), int(f[3]), partial=partial, at=at)
+    if kind == "m":
+        f = body.split(" ", 7)
+        if len(f) != 8:
+            raise ValueError("expected eight mem fields")
+        walk = _walk(int(f[4]), int(f[6]), f[7].split("/"))
+        return RawMmap(pid, walk, int(f[2]), int(f[3]), int(f[5]), at=at)
+    raise ValueError("unknown mem kind")
+
+
+@record("H")
+def _setattr(body: str, at: Stamp) -> RawSetattr:
+    f = body.split(" ", 11)
+    if len(f) != 12:
+        raise ValueError("expected twelve setattr fields")
+    pid, dev, depth = int(f[0]), int(f[1]), int(f[2])
+    valid, mode, uid, gid = (int(x) for x in f[3:7])
+    size, atime_us, mtime_us, ctime_us = (int(x) for x in f[7:11])
+    walk = _walk(dev, depth, f[11].split("/"))
+    return RawSetattr(
+        pid,
+        walk,
+        valid,
+        mode,
+        uid,
+        gid,
+        min(size, MAX_INT),
+        _clamp(atime_us),
+        _clamp(mtime_us),
+        _clamp(ctime_us),
+        at=at,
+    )
+
+
+@record("J")
+def _ns(body: str, at: Stamp) -> Ns:
+    pid, kind, flags = body.split(" ", 2)
+    change: Literal["unshare", "setns"]
+    if kind == "u":
+        change = "unshare"
+    elif kind == "n":
+        change = "setns"
+    else:
+        raise ValueError("unknown namespace change")
+    bits = int(flags)
+    return Ns(int(pid), change, bits, namespaces(bits), at=at)
+
+
+@record("L")
+def _identity(body: str, at: Stamp) -> Identity:
+    pid, inode, dev, nlink, magic = _ints(body, 5)
+    return Identity(pid, inode, dev, nlink, magic, at=at)
 
 
 @record("P")
 def _refused(body: str, at: Stamp) -> File:
     pid, errno, path = body.split(" ", 2)
-    relative = not path.startswith("/")
-    return File(int(pid), "denied", path, errno=int(errno), partial=relative, at=at)
+    partial = not path.startswith("/") or _cut(path)
+    return File(int(pid), "denied", path, errno=int(errno), partial=partial, at=at)
 
 
 @record("Z")
 def _close(body: str, at: Stamp) -> Close:
     pid, size, path = body.split(" ", 2)
-    return Close(int(pid), min(int(size), MAX_INT), path, at=at)
+    return Close(int(pid), min(int(size), MAX_INT), path, partial=_cut(path), at=at)
 
 
 @record("D")
 def _denied(body: str, at: Stamp) -> RawDenied:
     pid, nr, errno = _ints(body, 3)
     return RawDenied(pid, nr, errno, at=at)
+
+
+def _cut(path: str) -> bool:
+    """Whether a path the kernel printed may be cut at the tracer's string cap, or is missing.
+
+    Bytes that are not UTF-8 arrive as four-character escapes, so this never undercounts.
+    """
+    return not path or len(path.encode()) >= STRLEN - 1
 
 
 def _walk(dev: int, depth: int, parts: list[str]) -> Walk:
@@ -486,6 +724,10 @@ def _hex(value: str) -> bytes:
 
 def _text(value: bytes) -> str:
     return value.decode("utf-8", errors="backslashreplace")
+
+
+def _clamp(value: int) -> int:
+    return max(-MAX_INT, min(value, MAX_INT))
 
 
 def _pid(body: str) -> int | None:

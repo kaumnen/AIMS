@@ -140,11 +140,16 @@ class Exec(Kernel):
     argv: tuple[str, ...]
     argv_bytes: int
     root: bool
+    path_partial: bool = False
     cwd: str = ""
     cwd_partial: bool = False
     env: tuple[str, ...] = ()
     env_bytes: int = 0
     fds: tuple[Fd, Fd, Fd] | None = None
+    inode: int = 0
+    dev: int = 0
+    nlink: int = 0
+    magic: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,12 +178,13 @@ class Close(Kernel):
 
     size: int
     path: str
+    partial: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class Net(Kernel):
     kind: Literal["connect", "sendto"]
-    family: Literal["inet", "inet6", "unix"]
+    family: Literal["inet", "inet6"]
     address: str
     port: int | None
 
@@ -197,6 +203,65 @@ class Output(Kernel):
     nbytes: int
     magic: int | None = None
     prefix: bytes | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Ipc(Kernel):
+    """A unix socket or FIFO channel, or a SysV shared memory segment."""
+
+    kind: Literal["bind", "connect", "fifo", "shmget", "shmat"]
+    family: Literal["unix", "sysv"] | None = None
+    path: str | None = None
+    key: int | None = None
+    id: int | None = None
+    size: int | None = None
+    flags: int | None = None
+    partial: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class Ptrace(Kernel):
+    target: int
+    request: str
+    refused: bool = False
+    errno: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Signal(Kernel):
+    target: int
+    signal: int
+
+
+@dataclass(frozen=True, slots=True)
+class Mem(Kernel):
+    kind: Literal["exec", "mmap"]
+    path: str
+    inode: int
+    nlink: int
+    prot: int | None = None
+    partial: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class Setattr(Kernel):
+    path: str
+    partial: bool
+    valid: int
+    mode: int | None = None
+    uid: int | None = None
+    gid: int | None = None
+    size: int | None = None
+    atime_us: int | None = None
+    mtime_us: int | None = None
+    ctime_us: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Ns(Kernel):
+    kind: Literal["unshare", "setns"]
+    flags: int
+    namespaces: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

@@ -16,14 +16,21 @@ from aims.sandbox.base import (
     Fd,
     File,
     Fork,
+    Ipc,
     Lost,
+    Mem,
     Net,
+    Ns,
     Oom,
     Output,
+    Ptrace,
+    Setattr,
+    Signal,
     Stamp,
 )
 from aims.sandbox.trace import (
     DEPTH,
+    STRLEN,
     SYSCALLS,
     Bprm,
     Context,
@@ -32,10 +39,14 @@ from aims.sandbox.trace import (
     EnvChunk,
     Gap,
     Garbled,
+    Identity,
     Mounts,
     Note,
     RawDenied,
     RawExec,
+    RawFifo,
+    RawMmap,
+    RawSetattr,
     Ready,
     Rename,
     Sequence,
@@ -165,15 +176,114 @@ def test_parse_simple_lines() -> None:
     assert parse(line("C 10 s 6 ::1 53")) == Net(10, "sendto", "inet6", "::1", 53, at=PARSED)
 
 
-def test_parse_unix_sockets() -> None:
-    path = b"/var/run/x.sock".ljust(108, b"\0")
-    assert parse(line(f"C 10 c 1 {hx(path)} 0")) == Net(
-        10, "connect", "unix", "/var/run/x.sock", None, at=PARSED
+def test_paths_at_the_string_cap_are_partial() -> None:
+    near, cut = "/work/" + "a" * (STRLEN - 8), "/work/" + "a" * (STRLEN - 7)
+    assert parse(line(f"W 10 {near}")) == File(10, "write", near, at=PARSED)
+    assert parse(line(f"W 10 {cut}")) == File(10, "write", cut, partial=True, at=PARSED)
+    assert parse(line("W 10 ")) == File(10, "write", "", partial=True, at=PARSED)
+    assert parse(line(f"A 10 {cut}")) == File(10, "read", cut, partial=True, at=PARSED)
+    assert parse(line(f"P 10 13 {cut}")) == File(
+        10, "denied", cut, errno=13, partial=True, at=PARSED
     )
-    abstract = b"\0hidden".ljust(108, b"\0")
-    assert parse(line(f"C 10 c 1 {hx(abstract)} 0")) == Net(
-        10, "connect", "unix", "@hidden", None, at=PARSED
+    assert parse(line(f"Z 10 1 {cut}")) == Close(10, 1, cut, partial=True, at=PARSED)
+    assert parse(line(f"M 10 x 42 0 {cut}")) == Mem(10, "exec", cut, 42, 0, partial=True, at=PARSED)
+    assert Bprm(10, cut, at=PARSED).fields()["path_partial"] is True
+    assert Bprm(10, near, at=PARSED).fields()["path_partial"] is False
+
+
+def test_odd_bytes_never_hide_a_cut_path() -> None:
+    odd = "/work/" + "\\xff" * (STRLEN // 4)
+    item = parse(line(f"W 10 {odd}"))
+    assert isinstance(item, File)
+    assert item.partial
+
+
+def test_parse_ipc_sockets() -> None:
+    path = b"/var/run/x.sock\0"
+    assert parse(line(f"I 10 b 1 {hx(path)}")) == Ipc(
+        10, "bind", "unix", "/var/run/x.sock", at=PARSED
     )
+    assert parse(line(f"I 10 c 1 {hx(path)}")) == Ipc(
+        10, "connect", "unix", "/var/run/x.sock", at=PARSED
+    )
+    abstract = b"\0hidden\0"
+    assert parse(line(f"I 10 c 1 {hx(abstract)}")) == Ipc(
+        10, "connect", "unix", "@hidden", at=PARSED
+    )
+    relative = b"../x.sock\0"
+    assert parse(line(f"I 10 b 1 {hx(relative)}")) == Ipc(
+        10, "bind", "unix", "../x.sock", partial=True, at=PARSED
+    )
+
+
+def test_parse_ipc_fifo_and_shm() -> None:
+    depth, text = walk("f", "_data", "aims-r-a1-work", "volumes", "docker")
+    item = parse(line(f"I 10 f 0 {VDA1} {depth} {text}"))
+    assert item == RawFifo(
+        10,
+        Walk(VDA1, (b"f", b"_data", b"aims-r-a1-work", b"volumes", b"docker", b"/")),
+        at=PARSED,
+    )
+    assert parse(line("I 10 g 2 7 4096 384")) == Ipc(
+        10, "shmget", "sysv", key=7, size=4096, flags=384, at=PARSED
+    )
+    assert parse(line("I 10 a 2 9 0")) == Ipc(10, "shmat", "sysv", id=9, flags=0, at=PARSED)
+
+
+def test_parse_ptrace_and_signal() -> None:
+    assert parse(line("K 10 11 16 -1")) == Ptrace(10, 11, "attach", True, 1, at=PARSED)
+    assert parse(line("K 10 11 5 123")) == Ptrace(10, 11, "pokedata", False, None, at=PARSED)
+    assert parse(line("K 10 11 -1 24")) == Ptrace(
+        10, 11, "process_vm_writev", False, None, at=PARSED
+    )
+    assert parse(line("S 10 11 15")) == Signal(10, 11, 15, at=PARSED)
+
+
+def test_parse_mem_exec_and_mmap() -> None:
+    assert parse(line("M 10 x 42 0 /proc/self/fd/3")) == Mem(
+        10, "exec", "/proc/self/fd/3", 42, 0, at=PARSED
+    )
+    depth, text = walk("m", "_data", "aims-r-a1-work", "volumes", "docker")
+    item = parse(line(f"M 10 m 43 1 {VDA1} 5 {depth} {text}"))
+    assert item == RawMmap(
+        10,
+        Walk(VDA1, (b"m", b"_data", b"aims-r-a1-work", b"volumes", b"docker", b"/")),
+        43,
+        1,
+        5,
+        at=PARSED,
+    )
+
+
+def test_parse_setattr() -> None:
+    depth, text = walk("f", "_data", "aims-r-a1-work", "volumes", "docker")
+    item = parse(
+        line(f"H 10 {VDA1} {depth} 65 33152 0 0 1 978307200000000 978307200000000 0 {text}")
+    )
+    assert item == RawSetattr(
+        10,
+        Walk(VDA1, (b"f", b"_data", b"aims-r-a1-work", b"volumes", b"docker", b"/")),
+        65,
+        33152,
+        0,
+        0,
+        1,
+        978307200000000,
+        978307200000000,
+        0,
+        at=PARSED,
+    )
+
+
+def test_parse_namespace_changes() -> None:
+    assert parse(line("J 10 u 268435456")) == Ns(10, "unshare", 268435456, ("user",), at=PARSED)
+    assert parse(line("J 10 n 0")) == Ns(10, "setns", 0, (), at=PARSED)
+    flags = 0x20000 | 0x40000000
+    assert parse(line(f"J 10 u {flags}")) == Ns(10, "unshare", flags, ("mount", "net"), at=PARSED)
+
+
+def test_parse_exec_identity() -> None:
+    assert parse(line("L 10 42 254 1 61267")) == Identity(10, 42, 254, 1, 61267, at=PARSED)
 
 
 def test_parse_walks() -> None:
@@ -206,6 +316,13 @@ def test_parse_keeps_bytes_that_are_not_utf8() -> None:
         "X 10 zero 0",
         "unknown 10",
         f"N 10 1 2 1 1 {walk('a')[1]}",
+        "I 10 z 0",
+        f"I 10 b 2 {hx(b'/x')}",
+        "K 10 1",
+        "M 10 m 1 2 3 4 5",
+        "H 10 1 2 3",
+        "J 10 x 0",
+        "L 10 1 2 3",
     ],
 )
 def test_parse_rejects_misshapen_lines(text: str) -> None:
@@ -322,6 +439,56 @@ async def test_tracer_routes_by_pid_namespace(monkeypatch: pytest.MonkeyPatch) -
     tracer.unregister(route)
     feed("W 10 /work/late")
     assert route.queue.empty()
+    await tracer.stop()
+
+
+@pytest.mark.anyio
+async def test_tracer_resolves_new_records() -> None:
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    route = tracer.register(99, Mounts.parse(MOUNTINFO), SYSCALLS["aarch64"])
+    feed = Feed(tracer)
+    feed("R 0 999")
+    feed(f"E 10 1 1 1000 99 5 3 {hx(b'sh\0')}")
+    drain(route)
+
+    fifo_depth, fifo_text = walk("pipe", "_data", "aims-r-a1-work", "volumes", "docker")
+    mmap_depth, mmap_text = walk("code.so", "_data", "aims-r-a1-work", "volumes", "docker")
+    note_depth, note_text = walk("note", "_data", "aims-r-a1-work", "volumes", "docker")
+    s = [
+        feed("I 10 b 1 " + hx(b"/work/s.sock\0")),
+        feed("K 10 1 16 -1"),
+        feed("S 10 1 15"),
+        feed("M 10 x 42 0 /memfd:x"),
+        feed("J 10 u 268435456"),
+        feed(f"I 10 f 0 {VDA1} {fifo_depth} {fifo_text}"),
+        feed(f"M 10 m 43 1 {VDA1} 5 {mmap_depth} {mmap_text}"),
+        feed(f"H 10 {VDA1} {note_depth} 65 33152 0 0 1 0 0 0 {note_text}"),
+    ]
+
+    assert drain(route) == [
+        Ipc(10, "bind", "unix", "/work/s.sock", at=s[0]),
+        Ptrace(10, 1, "attach", True, 1, at=s[1]),
+        Signal(10, 1, 15, at=s[2]),
+        Mem(10, "exec", "/memfd:x", 42, 0, at=s[3]),
+        Ns(10, "unshare", 268435456, ("user",), at=s[4]),
+        Ipc(10, "fifo", path="/work/pipe", at=s[5]),
+        Mem(10, "mmap", "/work/code.so", 43, 1, 5, at=s[6]),
+        Setattr(10, "/work/note", False, 65, 33152, 0, 0, 1, 0, 0, 0, at=s[7]),
+    ]
+    await tracer.stop()
+
+
+@pytest.mark.anyio
+async def test_exec_path_at_the_cap_is_partial() -> None:
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    route = tracer.register(99, Mounts.parse(MOUNTINFO), SYSCALLS["aarch64"])
+    feed = Feed(tracer)
+    feed("R 0 999")
+    feed("B 10 /work/" + "a" * STRLEN)
+    feed(f"E 10 1 1 1000 99 5 3 {hx(b'sh\0')}")
+    (record,) = drain(route)
+    assert isinstance(record, Exec)
+    assert record.path_partial
     await tracer.stop()
 
 

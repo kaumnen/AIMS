@@ -3,9 +3,9 @@ import re
 from aims.events.schema import _registry
 from aims.sandbox.base import TOOLBOX
 from aims.sandbox.images import ASSETS
-from aims.sandbox.trace import ENV_CAP, PARSERS
+from aims.sandbox.trace import ENV_CAP, PARSERS, STRLEN
 
-TAGS = set("RFBEXOWAUNCPD") | set("VGT") | set("Z") | set("Q")
+TAGS = set("RFBEXOWAUNCPD") | set("VGT") | set("Z") | set("Q") | set("IKSMHJL")
 TYPES = {
     "run.started",
     "run.finished",
@@ -21,23 +21,22 @@ TYPES = {
     "proc.output",
     "file.access",
     "file.write",
+    "file.setattr",
     "fs.snapshot",
     "net.connect",
     "sys.denied",
+    "ipc.event",
+    "ptrace.event",
+    "proc.signal",
+    "mem.exec",
+    "ns.event",
     "audit.lost",
     "audit.spill",
     "resource.sample",
     "monitor.flag",
 }
-RESERVED_TAGS = set("IKSMHJL")
-RESERVED_TYPES = {
-    "ipc.event",
-    "ptrace.event",
-    "proc.signal",
-    "mem.exec",
-    "file.setattr",
-    "ns.event",
-}
+RESERVED_TAGS: set[str] = set()
+RESERVED_TYPES: set[str] = set()
 
 SEQ = "$s = @seq[cpu] + 1; @seq[cpu] = $s;"
 _PRINTF = re.compile(r'printf\("(\S+) ([^"]*)",\s*([^;]*)\);', re.S)
@@ -83,3 +82,8 @@ def test_env_cap_matches_the_probe() -> None:
 def test_sandbox_mark_matches_the_toolbox_mount() -> None:
     script = (ASSETS / "tracer" / "trace.bt").read_text()
     assert f'strncmp($f, "{TOOLBOX}/", {len(TOOLBOX) + 1}) == 0' in script
+
+
+def test_string_cap_matches_the_script() -> None:
+    script = (ASSETS / "tracer" / "trace.bt").read_text()
+    assert f"max_strlen = {STRLEN}" in script
