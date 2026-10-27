@@ -638,6 +638,8 @@ async def test_writev_output_keeps_its_prefix(
 ) -> None:
     command = (
         "python3 -c \"import os; os.writev(1, [b'', b'', b'vec-', b'tail'])\" | cat >/dev/null; "
+        "python3 -c \"import os; os.writev(1, [b'ab', b'', b'', b'payload'])\" | cat >/dev/null; "
+        "python3 -c \"import os; os.writev(1, [b''] * 6 + [b'late'])\" | cat >/dev/null; "
         "/.aims/busybox printf 'musl-stdio' | cat >/dev/null"
     )
     run_id, sb = await sandbox(backend, store)
@@ -648,7 +650,7 @@ async def test_writev_output_keeps_its_prefix(
 
     outs = [e.payload() for e in await events(store, run_id, "proc.output")]
     prefixes = {p.prefix for p in outs if isinstance(p, ProcOutput)}
-    assert {"vec-tail", "musl-stdio"} <= prefixes
+    assert {"vec-tail", "abpayload", "late", "musl-stdio"} <= prefixes
 
 
 @pytest.mark.tracer
