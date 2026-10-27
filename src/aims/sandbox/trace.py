@@ -802,15 +802,19 @@ def _cut(path: str) -> bool:
 def _walk(dev: int, depth: int, parts: list[str]) -> Walk:
     """A walk printed as `DEPTH` names joined by `/`, where `depth` names precede the root.
 
-    Names cannot hold `/`, and the root's name is `/`, so each root level adds two empty parts.
+    Names cannot hold `/`, and a filesystem root's name is `/`, so each root level adds two empty
+    parts. A pseudo filesystem's file, such as a pipe or an eventfd, is its own root and repeats
+    its own name, so its walk resolves as a partial path.
     """
-    if not 0 <= depth <= DEPTH or len(parts) != 2 * DEPTH - depth:
-        raise ValueError("walk does not match its depth")
     names, rest = parts[:depth], parts[depth:]
-    if not all(names) or any(rest):
+    if not 0 <= depth <= DEPTH or not all(names):
         raise ValueError("walk does not match its depth")
-    root = (b"/",) if depth < DEPTH else ()
-    return Walk(dev, tuple(n.encode() for n in names) + root)
+    if len(parts) == 2 * DEPTH - depth and not any(rest):
+        root = (b"/",) if depth < DEPTH else ()
+        return Walk(dev, tuple(n.encode() for n in names) + root)
+    if len(parts) == DEPTH and depth < DEPTH and len(set(rest)) == 1:
+        return Walk(dev, tuple(n.encode() for n in [*names, rest[0]]))
+    raise ValueError("walk does not match its depth")
 
 
 def _fields(body: str, count: int) -> list[str]:

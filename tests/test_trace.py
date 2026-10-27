@@ -317,6 +317,15 @@ def test_parse_setattr() -> None:
         0,
         at=PARSED,
     )
+    mounts = Mounts.parse(MOUNTINFO)
+    pipe = parse(line(f"H 10 14 0 2118 0 1000 0 0 0 0 0 {'/' * (DEPTH - 1)}"))
+    assert isinstance(pipe, RawSetattr)
+    assert pipe.walk == Walk(14, (b"",))
+    assert mounts.resolve(pipe.walk) == (".../", True)
+    eventfd = parse(line(f"H 10 15 0 65 384 0 0 0 0 0 0 {'/'.join(['[eventfd]'] * DEPTH)}"))
+    assert isinstance(eventfd, RawSetattr)
+    assert eventfd.walk == Walk(15, (b"[eventfd]",))
+    assert mounts.resolve(eventfd.walk) == (".../[eventfd]", True)
 
 
 def test_parse_namespace_changes() -> None:
@@ -454,6 +463,9 @@ def test_parse_keeps_bytes_that_are_not_utf8() -> None:
         "H 10 1 2 3 4 5 6 7 8 9 10",
         "H 10 1 2 x 4 5 6 7 8 9 10 " + walk("a")[1],
         f"H 10 {VDA1} 99 65 33152 0 0 1 0 0 0 {walk('a')[1]}",
+        f"H 10 15 0 65 384 0 0 0 0 0 0 {'/'.join(['[eventfd]'] * (DEPTH - 1))}",
+        f"H 10 15 0 65 384 0 0 0 0 0 0 {'/'.join(['a'] * (DEPTH - 1) + ['b'])}",
+        f"H 10 15 1 65 384 0 0 0 0 0 0 {'/'.join([''] + ['a'] * (DEPTH - 1))}",
         "J 10 x 0",
         "J 10 u",
         "J 10 u x",

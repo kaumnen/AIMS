@@ -1172,7 +1172,14 @@ async def test_mem_exec(backend: DockerBackend, store: LocalEventStore) -> None:
 @pytest.mark.tracer
 @pytest.mark.usefixtures("traced")
 async def test_file_setattr(backend: DockerBackend, store: LocalEventStore) -> None:
-    command = "echo hi > f; chmod 600 f; touch -d '2001-01-01' f; truncate -s 1 f"
+    command = (
+        "echo hi > f; chmod 600 f; touch -d '2001-01-01' f; truncate -s 1 f; "
+        'python3 -c "import os\n'
+        "r, w = os.pipe()\n"
+        "os.fchmod(r, 0o600)\n"
+        "try: os.fchmod(os.eventfd(0), 0o600)\n"
+        'except PermissionError: pass"'
+    )
     run_id, sb = await sandbox(backend, store)
     try:
         result = await sb.exec(command, timeout_s=20)
@@ -1183,6 +1190,10 @@ async def test_file_setattr(backend: DockerBackend, store: LocalEventStore) -> N
     assert evs
     assert all(e.agent_id == "a1" for e in evs)
     attrs = [p for p in (e.payload() for e in evs) if isinstance(p, FileSetattr)]
+    pseudo = {(p.path, p.partial, p.exec_id) for p in attrs if p.path.startswith(".../")}
+    exec_id = result.finished.exec_id
+    assert pseudo == {(".../", True, exec_id), (".../[eventfd]", True, exec_id)}
+    assert not await events(store, run_id, "audit.lost")
     attrs = [p for p in attrs if p.path == "/work/f"]
     assert all(p.exec_id == result.finished.exec_id and not p.partial for p in attrs)
     assert any(
