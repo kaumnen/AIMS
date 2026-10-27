@@ -714,13 +714,13 @@ class AuditedSandbox:
         owner = self._owner.get(record.pid)
         if owner == INTERNAL:
             return
-        streams = self._outputs.setdefault(record.pid, {})
-        acc = streams.get(record.inode)
+        streams = self._outputs.get(record.pid)
+        acc = None if streams is None else streams.get(record.inode)
         if acc is None:
             if self._output_streams >= 4 * MEMORY:
                 self._scope(owner).dropped += 1
                 return
-            acc = streams[record.inode] = _Out(record)
+            acc = self._outputs.setdefault(record.pid, {})[record.inode] = _Out(record)
             self._output_streams += 1
         acc.nbytes += record.nbytes
         acc.writes += 1
