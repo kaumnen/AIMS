@@ -272,17 +272,18 @@ async def test_kernel_audit_sees_what_ran(backend: DockerBackend, store: LocalEv
     assert ["sh", "-c", "exit 7"] in argvs
     assert ["cat", "/etc/shadow"] in argvs
     files = {(p.op, p.path, p.target) for p in payloads if isinstance(p, FileAccess)}
-    assert {
+    expected = {
         ("write", "/work/scorer.py", None),
         ("read", "/work/scorer.py", None),
         ("rename", "/work/scorer.py", "/work/d/s.py"),
         ("delete", "/work/d/s.py", None),
         ("denied", "/etc/shadow", None),
-    } <= files, (
-        files,
-        [e.data for e in evs if e.type == "audit.lost"],
-        list(backend.tracer.unrouted_lines) if backend.tracer else None,
-    )
+    }
+    if not expected <= files:
+        lost = [e.data for e in evs if e.type == "audit.lost"]
+        lines = backend.tracer.unrouted_lines if backend.tracer else ()
+        print(sorted(files, key=str), lost, *lines, sep="\n")
+    assert expected <= files
     assert "unshare" in [p.syscall for p in payloads if isinstance(p, SysDenied)]
     connects = [(p.address, p.port) for p in payloads if isinstance(p, NetConnect)]
     assert ("169.254.169.254", 80) in connects
@@ -389,11 +390,7 @@ async def test_tracer_sees_only_sandboxes(backend: DockerBackend, store: LocalEv
     run_id, sb = await sandbox(backend, store)
     other = None
     try:
-        # The runner's start-up helpers are unrouted by design; let their records drain first.
-        before = -1
-        while tracer.unrouted != before:
-            before = tracer.unrouted
-            await asyncio.sleep(1)
+        before = tracer.unrouted
         await sb.exec("for i in $(seq 200); do echo $i > f$i; done", timeout_s=30)
         loop = "for i in $(seq 200); do echo $i > /tmp/f$i; cat /tmp/f$i; done"
         other = await backend.docker.containers.run(
