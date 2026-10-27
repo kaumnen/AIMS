@@ -45,7 +45,7 @@ tracepoint:sched:sched_process_exec /curtask->thread_pid->level > @base/ {
     str($pw->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
     str($pw->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
     str($pw->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
-  $ea = curtask->mm->env_start; $en = curtask->mm->env_end - $ea; $eo = 0;
+  $ea = curtask->mm->env_start; $en = curtask->mm->env_end - $ea; $eo = (uint64)0;
   unroll(8) {
     if ($eo < $en) {
       $s = @seq[cpu] + 1; @seq[cpu] = $s;
