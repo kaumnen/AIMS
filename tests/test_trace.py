@@ -63,7 +63,7 @@ from aims.sandbox.trace import (
 from aims.sandbox.trace import (
     PIPEFS_MAGIC as PIPEFS,
 )
-from aims.sandbox.tracer import Tracer
+from aims.sandbox.tracer import UNKNOWN, Tracer
 
 MOUNTINFO = """\
 161 93 0:64 / / ro,relatime - overlay overlay rw,lowerdir=/x
@@ -542,6 +542,10 @@ def drain(route: tracer_module.Route) -> list[object]:
     return got
 
 
+def losses(route: tracer_module.Route) -> list[object]:
+    return [r for r in drain(route) if isinstance(r, Lost)]
+
+
 @pytest.mark.anyio
 async def test_tracer_routes_by_pid_namespace(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(tracer_module, "CONFIRM_S", 0.05)
@@ -618,8 +622,8 @@ async def test_processes_running_at_registration_are_adopted() -> None:
     feed("R 0 999")
     tracer.adopt(route, [5, 6])
     s = feed("X 6 0 9")
-    feed("X 7 0 9")
-    assert drain(route) == [Exit(6, None, 9, at=s)]
+    t = feed("X 7 0 9")
+    assert drain(route) == [Exit(6, None, 9, at=s), Lost(1, UNKNOWN, (), t.ts, t.ts)]
     assert (tracer.unrouted, tracer.foreign) == (1, 0)
     await tracer.stop()
 
@@ -680,11 +684,12 @@ async def test_runtime_stage_before_a_root_exec_is_foreign() -> None:
     feed("S 70 71 33")
     feed("A 70 /.aims/aims-exec")
     s = feed(f"E 70 60 1 0 99 5 10 {hx(b'aims-exec\0')}")
-    feed("W 80 /work/x")
+    w = feed("W 80 /work/x")
     t = feed(f"E 80 70 0 1000 99 6 3 {hx(b'sh\0')}")
 
     assert drain(route) == [
         Exec(70, 60, 5, 0, "aims-exec", ("aims-exec",), 10, True, at=s),
+        Lost(1, UNKNOWN, (), w.ts, w.ts),
         Exec(80, 70, 6, 1000, "sh", ("sh",), 3, False, at=t),
     ]
     assert (tracer.unrouted, tracer.foreign) == (1, 3)
@@ -742,11 +747,28 @@ async def test_exited_pids_stop_routing_after_a_while() -> None:
     feed("X 10 0 0")
     drain(route)
     tick(tracer, tracer_module.GONE_US + 1_000, 7, 1)
-    feed("W 10 /work/late")
+    w = feed("W 10 /work/late")
     tick(tracer, tracer_module.GONE_US + 2_000_000, 7, 2)
 
-    assert drain(route) == []
+    assert drain(route) == [Lost(1, UNKNOWN, (), w.ts, w.ts)]
     assert tracer.unrouted == 1
+    await tracer.stop()
+
+
+@pytest.mark.anyio
+async def test_unrouted_records_are_lost_in_every_sandbox() -> None:
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    one = tracer.register(98, Mounts.parse(MOUNTINFO), SYSCALLS["aarch64"])
+    two = tracer.register(99, Mounts.parse(MOUNTINFO), SYSCALLS["aarch64"])
+    feed = Feed(tracer)
+    feed("R 0 999")
+    s = feed("W 80 /work/a")
+    t = feed("W 80 /work/b")
+    assert one.queue.empty()
+    late_tick(tracer, 2_000_000)
+
+    lost = Lost(2, UNKNOWN, (), s.ts, t.ts)
+    assert (drain(one), drain(two)) == ([lost], [lost])
     await tracer.stop()
 
 
@@ -829,6 +851,7 @@ async def test_exec_path_at_the_cap_is_partial() -> None:
 async def test_tracer_reports_sequence_gaps_once() -> None:
     tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
     route = tracer.register(99, Mounts([]), {})
+    tracer.adopt(route, [1])
     feed = Feed(tracer, cpu=3)
     feed("W 1 /a")
     feed.seq += 5
@@ -837,10 +860,10 @@ async def test_tracer_reports_sequence_gaps_once() -> None:
         feed("W 1 /c")
     tracer._handle(json.dumps({"type": "lost_events", "data": {"events": 7}}))
     tracer.settle()
-    assert drain(route) == [Lost(5, "kernel record gap", (3,), 10, 70)]
+    assert losses(route) == [Lost(5, "kernel record gap", (3,), 10, 70)]
     late_tick(tracer, 5_000_000)
 
-    assert drain(route) == [Lost(None, "the kernel dropped 2 records no sequence hole located")]
+    assert losses(route) == [Lost(None, "the kernel dropped 2 records no sequence hole located")]
     assert (tracer.kernel_lost, tracer.located, tracer.unlocated) == (7, 5, 2)
     tracer.settle()
     assert route.queue.empty()

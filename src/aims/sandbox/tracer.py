@@ -71,6 +71,7 @@ PMU_S = 60
 RIPE_US = 4_500_000
 # An exited pid stays routable this long for the records its exit leaves, such as closes.
 GONE_US = 10_000_000
+UNKNOWN = "kernel records of an unknown process"
 # Kernels from 6.15 split pipe_write into anon_pipe_write and fifo_pipe_write, 7.0 renamed
 # do_filp_open to do_file_open, and FMODE_BACKING is bit 24 from 6.14 and bit 25 before.
 TRACE = (
@@ -140,6 +141,7 @@ class _Held:
     """Records of a pid the tracer has not seen start, until it execs, exits, or a second passes."""
 
     ts: int
+    last: int
     count: int = 0
     lines: list[str] = field(default_factory=list)
 
@@ -540,19 +542,24 @@ class Tracer:
             return
         held = self._held.get(pid)
         if held is None:
-            held = self._held[pid] = _Held(self._ts)
+            held = self._held[pid] = _Held(self._ts, self._ts)
             if len(self._held) > MEMORY:
                 self._count(self._held.popitem(last=False)[1])
         held.count += 1
+        held.last = self._ts
         if len(held.lines) < 8:
             held.lines.append(self._line)
 
-    def _count(self, held: _Held, *, foreign: bool = False) -> None:
+    def _count(self, held: _Held, *, foreign: bool = False, route: Route | None = None) -> None:
+        """Count held records as foreign, or as loss of `route`, or of every sandbox if unknown."""
         if foreign:
             self.foreign += held.count
-        else:
-            self.unrouted += held.count
-            self.unrouted_lines.extend(held.lines)
+            return
+        self.unrouted += held.count
+        self.unrouted_lines.extend(held.lines)
+        lost = Lost(held.count, UNKNOWN, (), held.ts, held.last)
+        for target in self._routes.values() if route is None else (route,):
+            target.put(lost)
 
     def _disown(self, pid: int) -> None:
         self._foreign[pid] = None
@@ -597,7 +604,7 @@ class Tracer:
         route = self._routes.get(raw.pidns)
         # Before a root exec the pid is still the runtime's: runc's last stage after its setns.
         if held is not None:
-            self._count(held, foreign=route is None or raw.root)
+            self._count(held, foreign=route is None or raw.root, route=route)
         if route is None:
             self._disown(raw.pid)
             self.foreign += 1
