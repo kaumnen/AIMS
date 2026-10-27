@@ -606,6 +606,26 @@ async def test_pipe_output_captured(backend: DockerBackend, store: LocalEventSto
 
 @pytest.mark.tracer
 @pytest.mark.usefixtures("traced")
+async def test_writev_output_keeps_its_prefix(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    command = (
+        "python3 -c \"import os; os.writev(1, [b'', b'', b'vec-', b'tail'])\" | cat >/dev/null; "
+        "/.aims/busybox printf 'musl-stdio' | cat >/dev/null"
+    )
+    run_id, sb = await sandbox(backend, store)
+    try:
+        await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+
+    outs = [e.payload() for e in await events(store, run_id, "proc.output")]
+    prefixes = {p.prefix for p in outs if isinstance(p, ProcOutput)}
+    assert {"vec-tail", "musl-stdio"} <= prefixes
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
 async def test_output_prepending_is_visible(backend: DockerBackend, store: LocalEventStore) -> None:
     # The shell prints a false line, then runs a command whose real output differs.
     command = "{ echo 'all tests passed'; sh -c 'exit 1'; } | cat"

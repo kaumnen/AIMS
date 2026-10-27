@@ -222,18 +222,29 @@ tracepoint:raw_syscalls:sys_exit /curtask->thread_pid->level > @base && strncmp(
 fentry:vmlinux:pipe_write /curtask->thread_pid->level > @base && strncmp(comm, "runc:", 5) != 0/ {
   $f = args.iocb->ki_filp; $it = args.from; $ino = $f->f_inode->i_ino; $n = $it->count;
   $m = $f->f_inode->i_sb->s_magic;
-  if (@opipe[curtask->tgid, $ino] != 0) {
-    $s = @seq[cpu] + 1; @seq[cpu] = $s;
-    printf("T %llu %llu %llu %d %lu %u %lu %rx\n", nsecs(boot), cpu, $s, curtask->tgid, $ino, $m, $n, buf(uptr($it->ubuf), 0));
-  } else if ($it->iter_type == 0) {
-    @opipe[curtask->tgid, $ino] = 1;
-    $s = @seq[cpu] + 1; @seq[cpu] = $s;
-    printf("T %llu %llu %llu %d %lu %u %lu %rx\n", nsecs(boot), cpu, $s, curtask->tgid, $ino, $m, $n, buf(uptr($it->ubuf), $n > 64 ? 64 : $n));
-  } else {
-    @opipe[curtask->tgid, $ino] = 1;
-    $s = @seq[cpu] + 1; @seq[cpu] = $s;
-    printf("T %llu %llu %llu %d %lu %u %lu %rx\n", nsecs(boot), cpu, $s, curtask->tgid, $ino, $m, $n, buf(uptr($it->__ubuf_iovec.iov_base), $n > 64 ? 64 : $n));
+  $a = (uint64)0; $na = (uint64)0; $b = (uint64)0; $nb = (uint64)0; $cap = (uint64)64;
+  if (@opipe[curtask->tgid, $ino] == 0) {
+    if ($it->iter_type == 0) {
+      $a = (uint64)$it->ubuf + $it->iov_offset;
+      $na = $n > $cap ? $cap : $n;
+    } else if ($it->iter_type == 1) {
+      // writev: the prefix spans the first two non-empty segments; musl often leads with an empty one.
+      $v = $it->__iov; $ns = $it->nr_segs; $i = (uint64)0;
+      $la = $v->iov_len - $it->iov_offset;
+      unroll(3) { if ($la == 0 && $i + 1 < $ns) { $i++; $la = ($v + $i)->iov_len; } }
+      $a = (uint64)($v + $i)->iov_base + ($i == 0 ? $it->iov_offset : 0);
+      $na = $la > $cap ? $cap : $la;
+      if ($na < $cap && $i + 1 < $ns) {
+        $b = (uint64)($v + $i + 1)->iov_base;
+        $lb = ($v + $i + 1)->iov_len;
+        $nb = $lb > $cap - $na ? $cap - $na : $lb;
+      }
+    }
+    if ($na + $nb > 0) { @opipe[curtask->tgid, $ino] = 1; }
   }
+  $s = @seq[cpu] + 1; @seq[cpu] = $s;
+  printf("T %llu %llu %llu %d %lu %u %lu %rx%rx\n", nsecs(boot), cpu, $s, curtask->tgid, $ino, $m, $n,
+    buf(uptr($a), $na), buf(uptr($b), $nb));
 }
 
 interval:s:5 { clear(@opipe); }
