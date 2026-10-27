@@ -5,6 +5,7 @@ from typing import Any, cast
 import aiodocker
 import pytest
 
+from aims.sandbox import execs as execs_module
 from aims.sandbox import tracer as tracer_module
 from aims.sandbox.base import (
     Capture,
@@ -417,7 +418,8 @@ class StuckContainer:
 async def test_pmu_probe_failure_leaves_the_tracer_running(
     monkeypatch: pytest.MonkeyPatch, container: StuckContainer
 ) -> None:
-    monkeypatch.setattr(tracer_module, "PMU_S", 0.05)
+    monkeypatch.setattr(tracer_module, "PMU_S", 0)
+    monkeypatch.setattr(execs_module, "GRACE_S", 0.05)
     tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
     await tracer._probe_pmu(cast(Any, container))
     assert tracer.pmu is None

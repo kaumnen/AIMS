@@ -23,7 +23,7 @@ log = logging.getLogger("aims.sandbox")
 QUEUE = 10_000
 WINDOW_US = 1_000_000
 CGROUPS = "/sys/fs/cgroup"
-FIND_S = 10.0
+FIND_S = 10
 
 
 class SamplerError(Exception):
@@ -209,11 +209,14 @@ class Sampler:
         assert self._container is not None
         if not container_id.isalnum():
             raise SamplerError(f"not a container id: {container_id!r}")
-        out = await exec_output(
-            self._container,
-            ["find", CGROUPS, "-maxdepth", "4", "-type", "d", "-name", f"*{container_id}*"],
-            timeout_s=FIND_S,
-        )
+        try:
+            out = await exec_output(
+                self._container,
+                ["find", CGROUPS, "-maxdepth", "4", "-type", "d", "-name", f"*{container_id}*"],
+                timeout_s=FIND_S,
+            )
+        except TimeoutError as e:
+            raise SamplerError(f"cgroup lookup for {container_id[:12]} timed out") from e
         found = [p for p in out.decode(errors="replace").split("\n") if p]
         if len(found) != 1:
             raise SamplerError(f"found {len(found)} cgroups for {container_id[:12]}")

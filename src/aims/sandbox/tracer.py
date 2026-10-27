@@ -37,7 +37,7 @@ QUEUE = 100_000
 MEMORY = 4096
 READY_S = 120.0
 CONFIRM_S = 5.0
-PMU_S = 60.0
+PMU_S = 60
 SETTLE_S = 2.0
 TRACE = (
     "mountpoint -q /sys/kernel/tracing || mount -t tracefs nodev /sys/kernel/tracing; "

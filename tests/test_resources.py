@@ -3,15 +3,17 @@ import itertools
 import os
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from pydantic import ValidationError
 
 from aims.events import Event, LocalEventStore, ResourceSample, RunStarted
 from aims.sandbox import AuditedSandbox, DockerBackend, SandboxSpec
+from aims.sandbox import execs as execs_module
+from aims.sandbox import resources as resources_module
 from aims.sandbox.base import Sample
-from aims.sandbox.resources import Windows, parse_sample
+from aims.sandbox.resources import Sampler, SamplerError, Windows, parse_sample
 from aims.sandbox.tracer import parse_pmu
 
 COLUMNS = len(ResourceSample.COLUMNS)
@@ -128,6 +130,22 @@ def test_parse_pmu() -> None:
         },
     }
     assert parse_pmu("")["available"] is False
+
+
+class StuckContainer:
+    async def exec(self, *args: object, **kwargs: object) -> object:
+        await asyncio.Event().wait()
+        raise AssertionError
+
+
+@pytest.mark.anyio
+async def test_a_slow_cgroup_lookup_is_a_sampler_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(resources_module, "FIND_S", 0)
+    monkeypatch.setattr(execs_module, "GRACE_S", 0.05)
+    sampler = Sampler(cast(Any, None), {}, "s", "img")
+    sampler._container = cast(Any, StuckContainer())
+    with pytest.raises(SamplerError, match="timed out"):
+        await sampler.watch("abc123", 50)
 
 
 @pytest.fixture
