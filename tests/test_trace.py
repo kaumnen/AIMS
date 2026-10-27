@@ -114,6 +114,11 @@ def unlink(pid: int, dev: int, *names: str) -> str:
     return f"U {pid} {dev} {depth} {text}"
 
 
+def late_tick(tracer: Tracer, ts_us: int) -> None:
+    """A heartbeat from an idle cpu at `ts_us`, so held and missing records ripen."""
+    tracer._handle(json.dumps({"type": "printf", "data": f"Q {ts_us * 1000} 7 1\n"}))
+
+
 def release(pid: int, size: int, dev: int, *names: str) -> str:
     depth, text = walk(*names)
     return f"Z {pid} {size} {dev} {depth} {text}"
@@ -585,6 +590,8 @@ async def test_tracer_routes_by_pid_namespace(monkeypatch: pytest.MonkeyPatch) -
     feed("W 10 /work/late")
     feed("W 11 /work/late")
     feed("W 12 /nobody")
+    assert (tracer.unrouted, tracer.foreign) == (0, 4)
+    late_tick(tracer, 5_000_000)
     assert route.queue.empty()
     assert (tracer.unrouted, tracer.foreign) == (1, 4)
     assert json.loads(tracer.unrouted_lines[-1])["data"].endswith(" 12 /nobody\n")
@@ -612,6 +619,7 @@ async def test_runtime_setup_in_a_sandbox_cgroup_is_foreign() -> None:
     feed = Feed(tracer)
     feed("R 0 999")
     init = b"runc\0init\0"
+    feed("A 70 /runc")
     feed(f"E 70 60 1 0 0 0 {len(init)} {hx(init)}")
     feed("W 70 /proc/70/oom_score_adj")
     feed("F 70 71")
@@ -623,7 +631,11 @@ async def test_runtime_setup_in_a_sandbox_cgroup_is_foreign() -> None:
         Exec(71, 70, 5, 1000, "sh", ("sh",), 3, True, at=s),
         File(71, "write", "/work/x", at=t),
     ]
-    assert (tracer.unrouted, tracer.foreign) == (0, 4)
+    assert (tracer.unrouted, tracer.foreign) == (0, 5)
+    feed("W 80 /a")
+    feed("W 80 /b")
+    feed("X 80 0 0")
+    assert tracer.unrouted == 3
     await tracer.stop()
 
 

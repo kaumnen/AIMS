@@ -65,14 +65,16 @@ READY_S = 120.0
 CONFIRM_S = 5.0
 PMU_S = 60
 SETTLE_S = 2.0
-# Kernels from 6.15 split pipe_write into anon_pipe_write and fifo_pipe_write. FMODE_BACKING is
-# bit 24 from 6.14 and bit 25 before.
+# Kernels from 6.15 split pipe_write into anon_pipe_write and fifo_pipe_write, 7.0 renamed
+# do_filp_open to do_file_open, and FMODE_BACKING is bit 24 from 6.14 and bit 25 before.
 TRACE = (
     "mountpoint -q /sys/kernel/tracing || mount -t tracefs nodev /sys/kernel/tracing; "
-    "f=/tmp/trace.bt; cp /aims/trace.bt $f; "
-    "if grep -qx anon_pipe_write /sys/kernel/tracing/available_filter_functions; then "
+    "f=/tmp/trace.bt; cp /aims/trace.bt $f; a=/sys/kernel/tracing/available_filter_functions; "
+    "if grep -qx anon_pipe_write $a; then "
     "sed -i 's/^fentry:vmlinux:pipe_write /fentry:vmlinux:anon_pipe_write, "
     "fentry:vmlinux:fifo_pipe_write /' $f; fi; "
+    "if ! grep -qx do_filp_open $a; then "
+    "sed -i 's/^fexit:vmlinux:do_filp_open /fexit:vmlinux:do_file_open /' $f; fi; "
     "v=$(uname -r); m=${v%%.*}; n=${v#*.}; n=${n%%.*}; "
     'if [ "$m" -lt 6 ] || { [ "$m" -eq 6 ] && [ "$n" -lt 14 ]; }; then '
     r"sed -i 's/f_mode & 0x1000000)/f_mode \& 0x2000000)/' $f; fi; "
@@ -127,6 +129,15 @@ class Route:
             self.window = (min(low, ts), max(high, ts))
 
 
+@dataclass(slots=True)
+class _Held:
+    """Records of a pid the tracer has not seen start, until it execs, exits, or a second passes."""
+
+    ts: int
+    count: int = 0
+    lines: list[str] = field(default_factory=list)
+
+
 class Tracer:
     """A privileged bpftrace container that sees every process, file and socket call in sandboxes.
 
@@ -154,6 +165,8 @@ class Tracer:
         self._pids: dict[int, Route] = {}
         self._gone: OrderedDict[int, Route] = OrderedDict()
         self._foreign: OrderedDict[int, None] = OrderedDict()
+        self._held: OrderedDict[int, _Held] = OrderedDict()
+        self._ts = 0
         self._parts: OrderedDict[int, dict[str, object]] = OrderedDict()
         self._cwd: OrderedDict[int, str] = OrderedDict()
         self._env: OrderedDict[int, bytearray] = OrderedDict()
@@ -313,6 +326,7 @@ class Tracer:
         self._line = line
         item = parse(line)
         at = getattr(item, "at", None)
+        self._ts = self._sequence.latest if at is None else at.ts
         if at is not None:
             self._gaps(self._sequence.observe(at))
         match item:
@@ -405,6 +419,9 @@ class Tracer:
                 route = self._pids.pop(pid, None)
                 if route is None:
                     self._unrouted(pid)
+                    held = self._held.pop(pid, None)
+                    if held is not None:
+                        self._count(held)
                 else:
                     route.put(item)
                     self._gone[pid] = route
@@ -499,12 +516,27 @@ class Tracer:
         return route
 
     def _unrouted(self, pid: int) -> None:
-        """Count a record no sandbox claimed, keeping the latest unexplained lines."""
+        """Count a record no sandbox claimed. One from an unknown pid waits to see what the pid is:
+        the runtime's own processes open and map files before their exec record.
+        """
         if pid in self._foreign:
             self.foreign += 1
             return
-        self.unrouted += 1
-        self.unrouted_lines.append(self._line)
+        held = self._held.get(pid)
+        if held is None:
+            held = self._held[pid] = _Held(self._ts)
+            if len(self._held) > MEMORY:
+                self._count(self._held.popitem(last=False)[1])
+        held.count += 1
+        if len(held.lines) < 8:
+            held.lines.append(self._line)
+
+    def _count(self, held: _Held, *, foreign: bool = False) -> None:
+        if foreign:
+            self.foreign += held.count
+        else:
+            self.unrouted += held.count
+            self.unrouted_lines.extend(held.lines)
 
     def _disown(self, pid: int) -> None:
         self._foreign[pid] = None
@@ -518,7 +550,10 @@ class Tracer:
         return self._gone.get(pid) if route is None else route
 
     def _expire(self) -> None:
-        self._gaps(self._sequence.expire(self._sequence.latest - 1_000_000))
+        cutoff = self._sequence.latest - 1_000_000
+        self._gaps(self._sequence.expire(cutoff))
+        while self._held and next(iter(self._held.values())).ts < cutoff:
+            self._count(self._held.popitem(last=False)[1])
 
     def _gaps(self, gaps: list[Gap]) -> None:
         for gap in gaps:
@@ -530,6 +565,7 @@ class Tracer:
     def _exec(self, raw: RawExec) -> None:
         self._gone.pop(raw.pid, None)
         self._foreign.pop(raw.pid, None)
+        held = self._held.pop(raw.pid, None)
         if raw.root:
             self._roots[raw.pid] = raw.pidns
             if len(self._roots) > MEMORY:
@@ -538,6 +574,8 @@ class Tracer:
             if waiter is not None and not waiter.done():
                 waiter.set_result(raw.pidns)
         route = self._routes.get(raw.pidns)
+        if held is not None:
+            self._count(held, foreign=route is None)
         if route is None:
             self._disown(raw.pid)
             self.foreign += 1
