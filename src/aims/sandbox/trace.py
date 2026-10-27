@@ -12,7 +12,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
-from aims.sandbox.base import Close, Exit, Fd, FdKind, File, Fork, Kernel, Net, Oom, Output, Stamp
+from aims.events import MAX_INT, FdKind
+from aims.sandbox.base import Close, Exit, Fd, File, Fork, Kernel, Net, Oom, Output, Stamp
 
 PIPEFS_MAGIC = 0x50495045
 _FD_KINDS: dict[int, FdKind] = {
@@ -33,7 +34,6 @@ def _fd(ino: int, mode: int, magic: int) -> Fd:
 
 DEPTH = 12
 ENV_CAP = 4096
-MAX_INT = 2**53 - 1
 
 _HEX = re.compile(r"^(?:\\x[0-9a-f]{2})*$")
 

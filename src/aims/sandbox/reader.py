@@ -9,7 +9,7 @@ import aiodocker
 from aiodocker.containers import DockerContainer
 from aiodocker.stream import Stream
 
-from aims.events import FsChangeType, FsKind
+from aims.events import MAX_INT, FsChangeType, FsKind
 from aims.sandbox.base import Change, Tree
 
 log = logging.getLogger("aims.sandbox")
@@ -19,7 +19,6 @@ BLOB_CAP = 16 * 1024 * 1024
 ENTRY_CAP = 100_000
 HASH_CAP = 64 * 1024 * 1024
 TREE_S = 60.0
-MAX_INT = 2**53 - 1
 MOUNT = "/r"
 HELPER = "/reader/aims-snap"
 

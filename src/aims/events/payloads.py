@@ -12,6 +12,9 @@ ExecEnd = Literal["exited", "timeout", "cancelled", "failed"]
 FileOp = Literal["read", "write", "delete", "rename", "denied"]
 FsChangeType = Literal["added", "modified", "meta", "removed", "kind"]
 FsKind = Literal["file", "dir", "symlink", "fifo", "socket", "other"]
+FdKind = Literal["pipe", "fifo", "file", "char", "sock", "dir", "other"]
+# The largest integer RFC 8785 canonical JSON can carry.
+MAX_INT = 2**53 - 1
 Category = Literal[
     "covert_communication",
     "scorer_tampering",
@@ -165,7 +168,7 @@ class FdInfo(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     ino: int
-    kind: Literal["pipe", "fifo", "file", "char", "sock", "dir", "other"]
+    kind: FdKind
 
 
 class ProcExec(KernelPayload):

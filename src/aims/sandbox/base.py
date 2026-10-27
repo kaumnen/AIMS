@@ -6,7 +6,7 @@ from typing import Annotated, Literal, Protocol
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, JsonValue
 
-from aims.events import AuditLevel, ExecEnd, FileOp, FsChangeType, FsKind, Proc
+from aims.events import AuditLevel, ExecEnd, FdKind, FileOp, FsChangeType, FsKind, Proc
 
 AGENT_UID = 1000
 RUNNER_UID = 1001
@@ -121,9 +121,6 @@ class Kernel:
 @dataclass(frozen=True, slots=True)
 class Fork(Kernel):
     child: int
-
-
-FdKind = Literal["pipe", "fifo", "file", "char", "sock", "dir", "other"]
 
 
 @dataclass(frozen=True, slots=True)

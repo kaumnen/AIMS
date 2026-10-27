@@ -3,6 +3,7 @@ from aims.events.chain import ChainError, Head
 from aims.events.index import RunInfo, SampleWindow
 from aims.events.log import RunLocked
 from aims.events.payloads import (
+    MAX_INT,
     AuditLevel,
     AuditLost,
     AuditSpill,
@@ -11,6 +12,7 @@ from aims.events.payloads import (
     ExecFinished,
     ExecStarted,
     FdInfo,
+    FdKind,
     FileAccess,
     FileOp,
     FileWrite,
@@ -41,6 +43,7 @@ from aims.events.schema import BlobRef, Content, Draft, Event, Payload, payload_
 from aims.events.store import EventStore, LocalEventStore, RunCorrupt, Verification, verify_run
 
 __all__ = [
+    "MAX_INT",
     "AuditLevel",
     "AuditLost",
     "AuditSpill",
@@ -57,6 +60,7 @@ __all__ = [
     "ExecFinished",
     "ExecStarted",
     "FdInfo",
+    "FdKind",
     "FileAccess",
     "FileOp",
     "FileWrite",
