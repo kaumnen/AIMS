@@ -295,8 +295,7 @@ class Tracer:
                 self.clock = (boot_us, tai_us)
                 if not self._ready.done():
                     self._ready.set_result(base)
-            case Tick(tai_us):
-                self.clock = (item.at.ts, tai_us)
+            case Tick():
                 self._expire()
             case Note(text):
                 log.warning("tracer: %s", text)

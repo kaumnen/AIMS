@@ -51,6 +51,7 @@ from aims.sandbox.trace import (
     Ready,
     Rename,
     Sequence,
+    Tick,
     Walk,
     namespaces,
     parse,
@@ -127,6 +128,7 @@ def test_parse_reads_the_header() -> None:
     assert parse(line("F 10 11", wire)) == Fork(10, 11, at=parsed)
     ready = parse(line("R 0 1793054641268664792", AT))
     assert ready == Ready(0, 5, 1793054641268664, PARSED)
+    assert parse(json.dumps({"type": "printf", "data": "Q 5000 0 1\n"})) == Tick(PARSED)
 
 
 def test_parse_exec_context() -> None:

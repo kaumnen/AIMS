@@ -8,9 +8,11 @@ BEGIN {
 }
 
 // One record per cpu each second, so a record lost at the end of a burst still leaves a hole.
+// It runs in interrupt context, so its printf must fit on_stack_limit (32 bytes): a larger one
+// shares the cpu's printf buffer with the probe it interrupts and overwrites that record.
 profile:s:1 {
   $s = @seq[cpu] + 1; @seq[cpu] = $s;
-  printf("Q %llu %llu %llu %llu\n", nsecs(boot), cpu, $s, nsecs(tai));
+  printf("Q %llu %llu %llu\n", nsecs(boot), cpu, $s);
 }
 
 tracepoint:task:task_newtask /@sandbox[cgroup] && !(args.clone_flags & 0x10000)/ {

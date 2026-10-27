@@ -65,9 +65,15 @@ def test_every_tracer_line_has_a_parser_and_a_header() -> None:
     printfs = _printfs()
     assert {tag for tag, *_ in printfs} == TAGS
     for tag, fmt, args, before in printfs:
-        assert fmt.startswith("%llu %llu %llu "), tag
-        assert args.startswith("nsecs(boot), cpu, $s,"), tag
+        assert fmt.startswith("%llu %llu %llu ") or fmt == "%llu %llu %llu\\n", tag
+        assert args.startswith("nsecs(boot), cpu, $s,") or args == "nsecs(boot), cpu, $s", tag
         assert before == SEQ, tag
+
+
+def test_heartbeat_fits_on_the_stack() -> None:
+    # The profile probe interrupts other probes; a printf over 32 bytes would share their buffer.
+    (tick,) = [p for p in _printfs() if p[0] == "Q"]
+    assert tick[1:3] == ("%llu %llu %llu\\n", "nsecs(boot), cpu, $s")
 
 
 def test_env_cap_matches_the_probe() -> None:

@@ -240,7 +240,6 @@ class Ready:
 
 @dataclass(frozen=True, slots=True)
 class Tick:
-    tai_us: int
     at: Stamp
 
 
@@ -414,8 +413,8 @@ def parse(line: str) -> Item | Dropped | Garbled | Note | None:
     """Turn one line of `bpftrace -f json` output into an item.
 
     A record line is `TAG TS CPU SEQ FIELDS...`: the kernel boot clock in ns, the cpu, and the
-    cpu's sequence number, then the fields of that tag. Times are kept in µs, which canonical
-    JSON can hold.
+    cpu's sequence number, then the fields of that tag, if it has any. Times are kept in µs,
+    which canonical JSON can hold.
     """
     try:
         doc = json.loads(line)
@@ -432,8 +431,9 @@ def parse(line: str) -> Item | Dropped | Garbled | Note | None:
         data.removesuffix("\n").encode("utf-8", "surrogateescape").decode(errors="backslashreplace")
     )
     try:
-        tag, ts, cpu, seq, body = text.split(" ", 4)
+        tag, ts, cpu, seq, *rest = text.split(" ", 4)
         at = Stamp(int(ts) // 1000, int(cpu), int(seq))
+        body = rest[0] if rest else ""
     except ValueError:
         return Garbled(None, text)
     parser = PARSERS.get(tag)
@@ -453,8 +453,9 @@ def _ready(body: str, at: Stamp) -> Ready:
 
 @record("Q")
 def _tick(body: str, at: Stamp) -> Tick:
-    (tai,) = _ints(body, 1)
-    return Tick(tai // 1000, at)
+    if body:
+        raise ValueError("a tick has no fields")
+    return Tick(at)
 
 
 @record("F")
