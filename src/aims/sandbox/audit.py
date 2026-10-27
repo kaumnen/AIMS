@@ -2,11 +2,12 @@ import asyncio
 import contextlib
 import json
 import logging
+import posixpath
 import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 from aims.events import (
@@ -61,6 +62,7 @@ from aims.sandbox.base import (
     Oom,
     Outcome,
     Output,
+    PreExec,
     Ptrace,
     Record,
     Sample,
@@ -200,6 +202,8 @@ class AuditedSandbox:
         self._output_streams = 0
         self._exec_fds: OrderedDict[str, tuple[int, int]] = OrderedDict()
         self._env: OrderedDict[int, tuple[tuple[str, ...], int]] = OrderedDict()
+        self._cwd: OrderedDict[int, str] = OrderedDict()
+        self._pending: OrderedDict[int, asyncio.Task[str | None]] = OrderedDict()
         self._queue: asyncio.Queue[Record] | None = None
         self._samples: asyncio.Queue[Sample | Lost] | None = None
         self._windows = Windows(sandbox.info.sandbox_id, spec.sample_hz)
@@ -238,6 +242,7 @@ class AuditedSandbox:
             )
             started = True
             audited._queue = sandbox.records()
+            sandbox.on_pre_exec(audited._on_pre_exec)
             if audited._queue is not None:
                 audited._consumer = asyncio.create_task(audited._consume(audited._queue))
             await audited._append(await audited._files(None, always=True))
@@ -322,7 +327,7 @@ class AuditedSandbox:
                 with contextlib.suppress(asyncio.CancelledError):
                     await self._consumer
                 self._consumer = None
-            self._drain()
+            await self._drain()
             last = [
                 *await self._files(None, always=False),
                 *await self._spill_events(),
@@ -582,6 +587,8 @@ class AuditedSandbox:
             except TimeoutError:
                 await self._flush()
                 continue
+            if isinstance(record, Exec):
+                record = await self._with_hash(record)
             self._handle(record)
             if len(self._buffer) >= FLUSH_N:
                 await self._flush()
@@ -623,10 +630,37 @@ class AuditedSandbox:
         window = self._windows.flush()
         return payloads if window is None else [*payloads, window]
 
-    def _drain(self) -> None:
+    async def _with_hash(self, record: Exec) -> Exec:
+        """Add the sha256 of an executed file that lives under a captured root."""
+        task = self._pending.pop(record.pid, None)
+        if task is not None:
+            try:
+                sha256 = await task
+            except Exception as e:
+                log.warning("could not hash the executed file: %s", e)
+            else:
+                if sha256 is not None:
+                    return replace(record, sha256=sha256)
+        path = record.path
+        if not path or record.path_partial:
+            return record
+        if not posixpath.isabs(path):
+            if not record.cwd or record.cwd_partial:
+                return record
+            path = posixpath.join(record.cwd, path)
+        path = posixpath.normpath(path)
+        sha256 = await self._hash(
+            path, record.inode, record.dev, record.size, record.mtime_us, record.ctime_us
+        )
+        return record if sha256 is None else replace(record, sha256=sha256)
+
+    async def _drain(self) -> None:
         """Record what is still queued when the sandbox closes, then any unflushed output."""
         while self._queue is not None and not self._queue.empty():
-            self._handle(self._queue.get_nowait())
+            record = self._queue.get_nowait()
+            if isinstance(record, Exec):
+                record = await self._with_hash(record)
+            self._handle(record)
         for pid in list(self._outputs):
             self._flush_outputs(pid, self._owner.get(pid))
 
@@ -635,6 +669,8 @@ class AuditedSandbox:
             match record:
                 case Fork():
                     self._on_fork(record)
+                case PreExec():
+                    self._on_pre_exec(record)
                 case Exec():
                     self._on_exec(record)
                 case Exit():
@@ -675,9 +711,65 @@ class AuditedSandbox:
         if owner != _UNKNOWN:
             self._owner[record.child] = owner
 
+    def _on_pre_exec(self, record: PreExec) -> None:
+        task = asyncio.create_task(self._pre_hash(record))
+        self._pending[record.pid] = task
+        self._pending.move_to_end(record.pid)
+        if len(self._pending) > MEMORY:
+            self._pending.popitem(last=False)
+
+    async def _pre_hash(self, record: PreExec) -> str | None:
+        for _ in range(50):
+            path = self._resolve(record.path, record.ppid)
+            if path is not None:
+                return await self._hash(
+                    path,
+                    record.inode,
+                    record.dev,
+                    record.size,
+                    record.mtime_us,
+                    record.ctime_us,
+                )
+            if posixpath.isabs(record.path):
+                return None
+            await asyncio.sleep(0.001)
+        return None
+
+    async def _hash(
+        self,
+        path: str,
+        inode: int,
+        dev: int = 0,
+        size: int = 0,
+        mtime_us: int = 0,
+        ctime_us: int = 0,
+    ) -> str | None:
+        try:
+            return await self.sandbox.hash(
+                path, inode=inode, dev=dev, size=size, mtime_us=mtime_us, ctime_us=ctime_us
+            )
+        except Exception as e:
+            log.warning("could not hash the executed file: %s", e)
+            return None
+
+    def _resolve(self, path: str, ppid: int) -> str | None:
+        if not path or path.startswith("..."):
+            return None
+        if posixpath.isabs(path):
+            return posixpath.normpath(path)
+        cwd = self._cwd.get(ppid)
+        if cwd is None:
+            return None
+        return posixpath.normpath(posixpath.join(cwd, path))
+
     def _on_exec(self, record: Exec) -> None:
         owner = self._attribute(record)
         self._owner[record.pid] = owner
+        if record.cwd and not record.cwd_partial:
+            self._cwd[record.pid] = record.cwd
+            self._cwd.move_to_end(record.pid)
+            if len(self._cwd) > MEMORY:
+                self._cwd.popitem(last=False)
         env, inherited = self._exec_env(record)
         fds = None
         if record.fds is not None:
@@ -708,6 +800,7 @@ class AuditedSandbox:
             dev=record.dev or None,
             nlink=record.nlink if record.inode else None,
             magic=record.magic or None,
+            sha256=record.sha256,
         )
         if self._admit(owner, "procs", payload):
             self._shown.add(record.pid)
@@ -731,6 +824,8 @@ class AuditedSandbox:
         owner = self._owner.pop(record.pid, None)
         self._flush_outputs(record.pid, owner)
         self._env.pop(record.pid, None)
+        self._cwd.pop(record.pid, None)
+        self._pending.pop(record.pid, None)
         active = self._active
         if active is not None and record.pid == active.root:
             active.exited.set()

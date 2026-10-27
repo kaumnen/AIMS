@@ -433,6 +433,55 @@ def changed(snapshot: FsSnapshot) -> dict[str, FsChange]:
     return {c.path: c for c in snapshot.changes}
 
 
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_exec_hash_matches_the_snapshot(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    command = "cp /bin/true /work/true && chmod +x /work/true && ./true; sha256sum /work/true"
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+
+    expected = result.stdout.split()[0].decode()
+    procs = [e.payload() for e in await events(store, run_id, "proc.exec")]
+    proc = next(p for p in procs if isinstance(p, ProcExec) and p.path == "./true")
+    assert proc.sha256 == expected
+    last = next(s for s in await snapshots(store, run_id) if s.exec_id == result.finished.exec_id)
+    assert changed(last)["/work/true"].sha256 == expected
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_exec_hash_of_every_captured_root(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    shared = [Mount(volume="shared", target="/shared")]
+    run_id, sb = await sandbox(backend, store, mounts=shared)
+    command = (
+        "for p in /tmp/t $HOME/h /shared/s; do "
+        "cp /bin/true $p && chmod +x $p && $p; done; "
+        "sha256sum /tmp/t $HOME/h /shared/s"
+    )
+    try:
+        result = await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+        await backend.remove_run(run_id)
+
+    expected = {line.split()[1]: line.split()[0] for line in result.stdout.decode().splitlines()}
+    procs = [e.payload() for e in await events(store, run_id, "proc.exec")]
+    for path, digest in expected.items():
+        proc = next(p for p in procs if isinstance(p, ProcExec) and p.path == path)
+        assert proc.sha256 == digest, path
+    last = next(s for s in await snapshots(store, run_id) if s.exec_id == result.finished.exec_id)
+    changes = changed(last)
+    for path, digest in expected.items():
+        assert changes[path].sha256 == digest, path
+
+
 async def test_file_contents_are_diffed_per_exec(
     backend: DockerBackend, store: LocalEventStore
 ) -> None:

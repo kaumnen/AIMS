@@ -25,6 +25,7 @@ from aims.sandbox.base import (
     Capture,
     Lost,
     Outcome,
+    PreExec,
     Record,
     Sample,
     SandboxInfo,
@@ -442,6 +443,10 @@ class DockerSandbox:
     def records(self) -> asyncio.Queue[Record] | None:
         return None if self._route is None else self._route.queue
 
+    def on_pre_exec(self, callback: Callable[[PreExec], None]) -> None:
+        if self._route is not None:
+            self._route.pre_exec = callback
+
     def samples(self) -> asyncio.Queue[Sample | Lost] | None:
         return None if self._watch is None else self._watch.queue
 
@@ -451,6 +456,22 @@ class DockerSandbox:
         if isinstance(self._reader, str):
             raise SandboxError(self._reader)
         return await self._reader.tree()
+
+    async def hash(
+        self,
+        path: str,
+        *,
+        inode: int,
+        dev: int = 0,
+        size: int = 0,
+        mtime_us: int = 0,
+        ctime_us: int = 0,
+    ) -> str | None:
+        if self._reader is None or isinstance(self._reader, str):
+            return None
+        return await self._reader.hash(
+            path, inode=inode, dev=dev, size=size, mtime_us=mtime_us, ctime_us=ctime_us
+        )
 
     async def pause(self) -> None:
         await self._container.pause()

@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import logging
+import posixpath
 import time
 from collections.abc import Sequence
 from typing import get_args
@@ -18,6 +19,7 @@ FILE_CAP = 1024 * 1024
 BLOB_CAP = 16 * 1024 * 1024
 ENTRY_CAP = 100_000
 HASH_CAP = 64 * 1024 * 1024
+HASH_S = 10.0
 TREE_S = 60.0
 MOUNT = "/r"
 HELPER = "/reader/aims-snap"
@@ -60,6 +62,7 @@ class Reader:
         volumes: Sequence[tuple[str, str]],
         labels: dict[str, str],
     ) -> Reader:
+        volumes = [(volume, target.rstrip("/") or "/") for volume, target in volumes]
         container = await docker.containers.create(
             config={
                 "Image": image,
@@ -123,6 +126,65 @@ class Reader:
         await self._end()
         with contextlib.suppress(aiodocker.DockerError):
             await self._container.delete(force=True)
+
+    async def hash(
+        self,
+        path: str,
+        *,
+        inode: int = 0,
+        dev: int = 0,
+        size: int = 0,
+        mtime_us: int = 0,
+        ctime_us: int = 0,
+    ) -> str | None:
+        """The sha256 of one file under a root, if it is still the version the exec read."""
+        path = posixpath.normpath(path)
+        if not path.startswith("/") or "\0" in path:
+            return None
+        if not any(_under(path, root) for root in self.roots):
+            return None
+        async with self._lock:
+            stream = self._stream
+            if self.broken is not None or stream is None:
+                return None
+            data = path.encode("utf-8", "surrogateescape")
+            try:
+                async with asyncio.timeout(HASH_S):
+                    await stream.write_in(f"H {HASH_CAP} {len(data)}\n".encode() + data)
+                    line = (await self._line()).decode()
+            except asyncio.CancelledError:
+                self.broken = "file reader was cancelled mid-hash"
+                await self._end()
+                raise
+            except Exception as e:
+                self.broken = f"file reader failed: {type(e).__name__}: {e}"
+                await self._end()
+                raise ReaderError(self.broken) from e
+            f = line.split(" ")
+            if f[0] != "H" or len(f) != 8:
+                self.broken = f"unexpected line from the file reader: {line[:200]!r}"
+                await self._end()
+                raise ReaderError(self.broken)
+            sha, got_ino, got_major, got_minor, got_size, got_mtime, got_ctime = (
+                f[1],
+                int(f[2]),
+                int(f[3]),
+                int(f[4]),
+                int(f[5]),
+                int(f[6]),
+                int(f[7]),
+            )
+            if sha == "-":
+                return None
+            if (
+                (inode and got_ino != inode)
+                or (dev and (got_major != ((dev >> 20) & 0xFFF) or got_minor != (dev & 0xFFFFF)))
+                or (size and got_size != size)
+                or (mtime_us and got_mtime != mtime_us)
+                or (ctime_us and got_ctime != ctime_us)
+            ):
+                return None
+            return sha
 
     async def _end(self) -> None:
         if self._stream is not None:
@@ -205,6 +267,12 @@ class Reader:
 
 def _int(value: int) -> int:
     return max(-MAX_INT, min(value, MAX_INT))
+
+
+def _under(path: str, root: str) -> bool:
+    if root == "/":
+        return path.startswith("/")
+    return path == root or path.startswith(f"{root}/")
 
 
 def _text(value: bytes) -> str:

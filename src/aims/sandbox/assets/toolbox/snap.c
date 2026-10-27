@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <unistd.h>
 
 #define MAX_DEPTH 128
@@ -193,10 +194,18 @@ static int open_below(int dfd, const char *rel) {
     char *name = buf;
     for (char *slash; (slash = strchr(name, '/')); name = slash + 1) {
         *slash = 0;
+        if (!*name || !strcmp(name, "..")) {
+            if (fd != dfd) close(fd);
+            return -1;
+        }
         int next = openat(fd, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
         if (fd != dfd) close(fd);
         if (next < 0) return -1;
         fd = next;
+    }
+    if (!*name || !strcmp(name, "..")) {
+        if (fd != dfd) close(fd);
+        return -1;
     }
     int out = openat(fd, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_NOCTTY | O_CLOEXEC);
     if (fd != dfd) close(fd);
@@ -455,6 +464,122 @@ static void snapshot(void) {
     old = now;
 }
 
+static int find_root(const char *path) {
+    for (int i = 0; i < nroots; i++) {
+        if (strcmp(roots[i].path, "/") == 0) return i;
+        size_t n = strlen(roots[i].path);
+        if (n && strncmp(path, roots[i].path, n) == 0 && (path[n] == '/' || path[n] == 0))
+            return i;
+    }
+    return -1;
+}
+
+static void hash_one(const char *path, long long cap) {
+    char sha[65] = "-";
+    unsigned long long ino = 0;
+    int r = find_root(path);
+    if (r < 0) {
+        printf("H - 0 0 0 0 0 0 0\n");
+        fflush(stdout);
+        return;
+    }
+    size_t plen = strlen(roots[r].path);
+    if (plen == 1) plen = 0;
+    if (!path[plen]) {
+        printf("H - 0 0 0 0 0 0 0\n");
+        fflush(stdout);
+        return;
+    }
+    const char *rel = path + plen + 1;
+    int dfd = open(roots[r].dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (dfd < 0) {
+        printf("H - 0 0 0 0 0 0 0\n");
+        fflush(stdout);
+        return;
+    }
+    int fd = open_below(dfd, rel);
+    close(dfd);
+    struct stat st;
+    if (fd < 0 || fstat(fd, &st) || !S_ISREG(st.st_mode)) {
+        if (fd >= 0) close(fd);
+        printf("H - 0 0 0 0 0 0 0\n");
+        fflush(stdout);
+        return;
+    }
+    entry probe;
+    memset(&probe, 0, sizeof probe);
+    probe.path = (char *)path;
+    probe.kind = 'f';
+    probe.ino = st.st_ino;
+    probe.dev = st.st_dev;
+    probe.size = st.st_size;
+    probe.mtime_ns = st.st_mtim.tv_sec * 1000000000LL + st.st_mtim.tv_nsec;
+    probe.ctime_ns = st.st_ctim.tv_sec * 1000000000LL + st.st_ctim.tv_nsec;
+    long long mtime_us = st.st_mtim.tv_sec * 1000000LL + st.st_mtim.tv_nsec / 1000;
+    long long ctime_us = st.st_ctim.tv_sec * 1000000LL + st.st_ctim.tv_nsec / 1000;
+    entry *was = find_old(path);
+    if (was && was->kind == 'f' && was->hashed && same_stat(was, &probe)) {
+        hex(was->sha, sha);
+        close(fd);
+        printf("H %s %llu %u %u %lld %lld %lld\n", sha, (unsigned long long)st.st_ino,
+               major(st.st_dev), minor(st.st_dev), (long long)st.st_size, mtime_us, ctime_us);
+        fflush(stdout);
+        return;
+    }
+    if (st.st_size > cap) {
+        close(fd);
+        printf("H - 0 0 0 0 0 0 0\n");
+        fflush(stdout);
+        return;
+    }
+    sha256 s;
+    sha_init(&s);
+    unsigned char buf[65536];
+    ssize_t got;
+    long long total = 0;
+    while ((got = read(fd, buf, sizeof buf)) > 0) {
+        if (total + got > cap) {
+            close(fd);
+            printf("H - 0 0 0 0 0 0 0\n");
+            fflush(stdout);
+            return;
+        }
+        sha_update(&s, buf, (size_t)got);
+        total += got;
+    }
+    if (got != 0) {
+        close(fd);
+        printf("H - 0 0 0 0 0 0 0\n");
+        fflush(stdout);
+        return;
+    }
+    struct stat after;
+    if (fstat(fd, &after) || after.st_size != st.st_size || total != st.st_size ||
+        after.st_mtim.tv_sec != st.st_mtim.tv_sec ||
+        after.st_mtim.tv_nsec != st.st_mtim.tv_nsec ||
+        after.st_ctim.tv_sec != st.st_ctim.tv_sec ||
+        after.st_ctim.tv_nsec != st.st_ctim.tv_nsec) {
+        close(fd);
+        printf("H - 0 0 0 0 0 0 0\n");
+        fflush(stdout);
+        return;
+    }
+    close(fd);
+    unsigned char out[32];
+    sha_final(&s, out);
+    hex(out, sha);
+    ino = (unsigned long long)st.st_ino;
+    printf("H %s %llu %u %u %lld %lld %lld\n", sha, ino, major(st.st_dev), minor(st.st_dev),
+           (long long)st.st_size, mtime_us, ctime_us);
+    fflush(stdout);
+}
+
+static int read_path(char *buf, size_t len) {
+    if (fread(buf, 1, len, stdin) != len) return -1;
+    buf[len] = 0;
+    return 0;
+}
+
 int main(int argc, char **argv) {
     nroots = argc - 1;
     roots = calloc((size_t)(nroots ? nroots : 1), sizeof(root));
@@ -470,6 +595,25 @@ int main(int argc, char **argv) {
     }
     char line[256];
     while (fgets(line, sizeof line, stdin)) {
+        long long cap;
+        size_t len;
+        if (sscanf(line, "H %lld %zu", &cap, &len) == 2) {
+            char path[MAX_PATH];
+            if (len >= MAX_PATH) {
+                char drop[4096];
+                while (len) {
+                    size_t take = len < sizeof drop ? len : sizeof drop;
+                    if (fread(drop, 1, take, stdin) != take) return 65;
+                    len -= take;
+                }
+                printf("H - 0 0 0 0 0 0 0\n");
+                fflush(stdout);
+                continue;
+            }
+            if (read_path(path, len)) return 65;
+            hash_one(path, cap);
+            continue;
+        }
         long long caps[4];
         if (sscanf(line, "S %lld %lld %lld %lld", &caps[0], &caps[1], &caps[2], &caps[3]) != 4) {
             fprintf(stderr, "aims-snap: bad request\n");

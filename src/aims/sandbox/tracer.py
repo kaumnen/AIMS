@@ -2,7 +2,9 @@ import asyncio
 import contextlib
 import dataclasses
 import logging
+import posixpath
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import aiodocker
@@ -21,6 +23,7 @@ from aims.sandbox.base import (
     Kernel,
     Lost,
     Mem,
+    PreExec,
     Record,
     Setattr,
 )
@@ -33,6 +36,7 @@ from aims.sandbox.trace import (
     ExecPart,
     Gap,
     Garbled,
+    Identity,
     Mounts,
     Note,
     RawDenied,
@@ -89,6 +93,7 @@ class Route:
     queue: asyncio.Queue[Record] = field(default_factory=lambda: asyncio.Queue(QUEUE))
     overflow: int = 0
     window: tuple[int, int] | None = None
+    pre_exec: Callable[[PreExec], None] | None = None
 
     def put(self, record: Record) -> None:
         if self.overflow:
@@ -139,6 +144,7 @@ class Tracer:
         self._routes: dict[int, Route] = {}
         self._pids: dict[int, Route] = {}
         self._parts: OrderedDict[int, dict[str, object]] = OrderedDict()
+        self._cwd: OrderedDict[int, str] = OrderedDict()
         self._env: OrderedDict[int, bytearray] = OrderedDict()
         self._env_bytes: dict[int, int] = {}
         self._roots: OrderedDict[int, int] = OrderedDict()
@@ -311,10 +317,43 @@ class Tracer:
                     self._pids[child] = route
                     route.put(item)
             case ExecPart(pid):
-                self._parts.setdefault(pid, {}).update(item.fields())
+                parts = self._parts.setdefault(pid, {})
+                parts.update(item.fields())
                 self._parts.move_to_end(pid)
                 if len(self._parts) > MEMORY:
                     self._parts.popitem(last=False)
+                path = parts.get("path")
+                if (
+                    isinstance(item, Identity)
+                    and isinstance(path, str)
+                    and path
+                    and parts.get("path_partial") is not True
+                ):
+                    if not posixpath.isabs(path):
+                        cwd = self._cwd.get(item.ppid)
+                        path = "" if cwd is None else posixpath.join(cwd, path)
+                    if path:
+                        route = self._pids.get(pid)
+                        if route is not None:
+                            record = PreExec(
+                                pid,
+                                item.ppid,
+                                path,
+                                item.inode,
+                                item.dev,
+                                item.size,
+                                item.mtime_us,
+                                item.ctime_us,
+                                at=item.at,
+                            )
+                            if route.pre_exec is None:
+                                route.put(record)
+                            else:
+                                try:
+                                    route.pre_exec(record)
+                                except Exception:
+                                    log.exception("pre-exec callback failed")
+                                    route.put(record)
             case EnvChunk(pid):
                 if item.offset == 0:
                     self._env[pid] = bytearray()
@@ -430,6 +469,12 @@ class Tracer:
         walk = parts.pop("cwd", None)
         if isinstance(walk, Walk):
             parts["cwd"], parts["cwd_partial"] = route.mounts.resolve(walk)
+        cwd = parts.get("cwd")
+        if isinstance(cwd, str) and not parts.get("cwd_partial"):
+            self._cwd[raw.pid] = cwd
+            self._cwd.move_to_end(raw.pid)
+            if len(self._cwd) > MEMORY:
+                self._cwd.popitem(last=False)
         env = self._env.pop(raw.pid, None)
         if env is not None:
             size = self._env_bytes.pop(raw.pid, len(env))

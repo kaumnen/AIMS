@@ -179,6 +179,7 @@ class ProcExec(KernelPayload):
     parent's, to keep the log small. `fds` holds stdin, stdout and stderr, giving the pipe graph.
     `inode`, `dev`, `nlink` and `magic` identify the executed file; `nlink` is 0 for a fileless
     exec. `path_partial` marks a path that reached the tracer's string cap and may be cut.
+    `sha256` is set when the file lives under a captured root and could be read.
     """
 
     type = "proc.exec"
@@ -201,6 +202,7 @@ class ProcExec(KernelPayload):
     dev: int | None = None
     nlink: int | None = None
     magic: int | None = None
+    sha256: str | None = None
 
 
 class ProcExit(KernelPayload):

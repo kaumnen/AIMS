@@ -283,7 +283,9 @@ def test_parse_namespace_changes() -> None:
 
 
 def test_parse_exec_identity() -> None:
-    assert parse(line("L 10 42 254 1 61267")) == Identity(10, 42, 254, 1, 61267, at=PARSED)
+    assert parse(line("L 10 1 42 254 1 61267 100 978307200000000 0")) == Identity(
+        10, 1, 42, 254, 1, 61267, 100, 978307200000000, 0, at=PARSED
+    )
 
 
 def test_parse_walks() -> None:

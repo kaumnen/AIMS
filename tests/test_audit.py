@@ -48,6 +48,7 @@ from aims.sandbox.base import (
     Oom,
     Outcome,
     Output,
+    PreExec,
     Ptrace,
     Record,
     Sample,
@@ -77,6 +78,7 @@ class FakeSandbox:
         self.steps: list[Step] = []
         self.runs: list[list[str]] = []
         self.procs: list[Proc] = []
+        self.hashes: dict[str, str] = {}
         self.after: list[Proc] | None = None
         self.trees: list[Tree | Exception] | None = None
         self.tree_hold: asyncio.Event | None = None
@@ -131,6 +133,21 @@ class FakeSandbox:
         if isinstance(tree, Exception):
             raise tree
         return tree
+
+    async def hash(
+        self,
+        path: str,
+        *,
+        inode: int,
+        dev: int = 0,
+        size: int = 0,
+        mtime_us: int = 0,
+        ctime_us: int = 0,
+    ) -> str | None:
+        return self.hashes.get(path)
+
+    def on_pre_exec(self, callback: Callable[[PreExec], None]) -> None:
+        pass
 
     async def pause(self) -> None:
         pass
@@ -935,6 +952,55 @@ async def test_an_unstored_diff_is_recorded_as_lost(
     ]
     assert evs[3].data["reason"] == "file snapshot not stored: disk full"
     assert evs[5].data["base"] == "d1"
+
+
+async def test_exec_hashes_a_file_under_a_captured_root(store: LocalEventStore) -> None:
+    digest = "a" * 64
+    sb = FakeSandbox()
+    sb.hashes["/work/x"] = digest
+    sb.steps.append(
+        step(
+            root(100),
+            Fork(100, 101, at=AT),
+            dataclasses.replace(child(101, 100, "./x"), cwd="/work"),
+            Exit(101, 0, None, at=AT),
+            Exit(100, 0, None, at=AT),
+        )
+    )
+    run_id, audited = await start(store, sb)
+    await audited.exec("x", timeout_s=5)
+    await audited.close()
+
+    procs = [e.payload() for e in await events(store, run_id, "proc.exec")]
+    proc = next(p for p in procs if isinstance(p, ProcExec) and p.argv == ["./x"])
+    assert proc.sha256 == digest
+    root_proc = next(p for p in procs if isinstance(p, ProcExec) and p.root)
+    assert root_proc.sha256 is None
+
+
+async def test_pre_exec_hashes_before_the_exec(store: LocalEventStore) -> None:
+    digest = "b" * 64
+    sb = FakeSandbox()
+    sb.hashes["/work/x"] = digest
+    root_exec = dataclasses.replace(root(100), cwd="/work")
+    child_exec = dataclasses.replace(child(101, 100, "./x"), cwd="/other")
+    sb.steps.append(
+        step(
+            root_exec,
+            Fork(100, 101, at=AT),
+            PreExec(101, 100, "./x", 0, at=AT),
+            child_exec,
+            Exit(101, 0, None, at=AT),
+            Exit(100, 0, None, at=AT),
+        )
+    )
+    run_id, audited = await start(store, sb)
+    await audited.exec("x", timeout_s=5)
+    await audited.close()
+
+    procs = [e.payload() for e in await events(store, run_id, "proc.exec")]
+    proc = next(p for p in procs if isinstance(p, ProcExec) and p.argv == ["./x"])
+    assert proc.sha256 == digest
 
 
 async def test_output_streams_stay_within_their_cap(

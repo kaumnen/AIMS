@@ -277,13 +277,25 @@ class Bprm(ExecPart):
 class Identity(ExecPart):
     """The executed file's inode, device, link count and filesystem magic."""
 
+    ppid: int
     inode: int
     dev: int
     nlink: int
     magic: int
+    size: int
+    mtime_us: int
+    ctime_us: int
 
     def fields(self) -> dict[str, object]:
-        return {"inode": self.inode, "dev": self.dev, "nlink": self.nlink, "magic": self.magic}
+        return {
+            "inode": self.inode,
+            "dev": self.dev,
+            "nlink": self.nlink,
+            "magic": self.magic,
+            "size": self.size,
+            "mtime_us": self.mtime_us,
+            "ctime_us": self.ctime_us,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -660,8 +672,8 @@ def _ns(body: str, at: Stamp) -> Ns:
 
 @record("L")
 def _identity(body: str, at: Stamp) -> Identity:
-    pid, inode, dev, nlink, magic = _ints(body, 5)
-    return Identity(pid, inode, dev, nlink, magic, at=at)
+    pid, ppid, inode, dev, nlink, magic, size, mtime_us, ctime_us = _ints(body, 9)
+    return Identity(pid, ppid, inode, dev, nlink, magic, size, mtime_us, ctime_us, at=at)
 
 
 @record("P")

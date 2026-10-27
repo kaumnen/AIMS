@@ -30,9 +30,11 @@ fentry:vmlinux:security_bprm_check /curtask->thread_pid->level > @base/ {
     printf("B %llu %llu %llu %d %s\n", nsecs(boot), cpu, $s, curtask->tgid, $f);
     $lf = args.bprm->file;
     $s = @seq[cpu] + 1; @seq[cpu] = $s;
-    printf("L %llu %llu %llu %d %lu %lu %d %lu\n", nsecs(boot), cpu, $s, curtask->tgid,
-      $lf->f_inode->i_ino, $lf->f_inode->i_sb->s_dev, $lf->f_inode->i_nlink,
-      $lf->f_inode->i_sb->s_magic);
+    printf("L %llu %llu %llu %d %d %lu %lu %d %lu %lld %lld %lld\n", nsecs(boot), cpu, $s, curtask->tgid,
+      curtask->real_parent->tgid, $lf->f_inode->i_ino, $lf->f_inode->i_sb->s_dev,
+      $lf->f_inode->i_nlink, $lf->f_inode->i_sb->s_magic, $lf->f_inode->i_size,
+      $lf->f_inode->i_mtime_sec * 1000000 + (int64)((uint64)$lf->f_inode->i_mtime_nsec / 1000),
+      $lf->f_inode->i_ctime_sec * 1000000 + (int64)((uint64)$lf->f_inode->i_ctime_nsec / 1000));
     if ($lf->f_inode->i_nlink == 0 || strncmp($f, "/dev/fd/", 8) == 0
         || strncmp($f, "/proc/self/fd/", 14) == 0) {
       $s = @seq[cpu] + 1; @seq[cpu] = $s;

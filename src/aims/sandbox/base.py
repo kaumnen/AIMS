@@ -150,6 +150,23 @@ class Exec(Kernel):
     dev: int = 0
     nlink: int = 0
     magic: int = 0
+    size: int = 0
+    mtime_us: int = 0
+    ctime_us: int = 0
+    sha256: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PreExec(Kernel):
+    """A file about to run, sent before its `Exec` so the hash can start before the program does."""
+
+    ppid: int
+    path: str
+    inode: int
+    dev: int = 0
+    size: int = 0
+    mtime_us: int = 0
+    ctime_us: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -349,7 +366,24 @@ class Sandbox(Protocol):
 
     def records(self) -> asyncio.Queue[Record] | None: ...
 
+    def on_pre_exec(self, callback: Callable[[PreExec], None]) -> None:
+        """Tell the backend where to send a file about to run, before its `Exec`."""
+        ...
+
     def samples(self) -> asyncio.Queue[Sample | Lost] | None: ...
+
+    async def hash(
+        self,
+        path: str,
+        *,
+        inode: int,
+        dev: int = 0,
+        size: int = 0,
+        mtime_us: int = 0,
+        ctime_us: int = 0,
+    ) -> str | None:
+        """The sha256 of a file under a captured root, if it is still that version."""
+        ...
 
     async def tree(self) -> Tree | None:
         """Diff the sandbox's volumes against the previous call. None when it cannot read them."""
