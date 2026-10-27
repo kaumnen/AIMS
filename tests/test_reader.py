@@ -27,11 +27,6 @@ class SlowStream:
         self.closed = True
 
 
-@pytest.fixture
-def anyio_backend() -> str:
-    return "asyncio"
-
-
 async def test_a_cancelled_diff_breaks_the_reader_instead_of_desyncing() -> None:
     stream = SlowStream()
     reader = Reader(cast(Any, None), ("/work",))
