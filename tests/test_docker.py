@@ -278,7 +278,7 @@ async def test_kernel_audit_sees_what_ran(backend: DockerBackend, store: LocalEv
         ("rename", "/work/scorer.py", "/work/d/s.py"),
         ("delete", "/work/d/s.py", None),
         ("denied", "/etc/shadow", None),
-    } <= files, files
+    } <= files, (files, [e.data for e in evs if e.type == "audit.lost"])
     assert "unshare" in [p.syscall for p in payloads if isinstance(p, SysDenied)]
     connects = [(p.address, p.port) for p in payloads if isinstance(p, NetConnect)]
     assert ("169.254.169.254", 80) in connects
@@ -385,7 +385,11 @@ async def test_tracer_sees_only_sandboxes(backend: DockerBackend, store: LocalEv
     run_id, sb = await sandbox(backend, store)
     other = None
     try:
-        before = tracer.unrouted
+        # The runner's start-up helpers are unrouted by design; let their records drain first.
+        before = -1
+        while tracer.unrouted != before:
+            before = tracer.unrouted
+            await asyncio.sleep(1)
         await sb.exec("for i in $(seq 200); do echo $i > f$i; done", timeout_s=30)
         loop = "for i in $(seq 200); do echo $i > /tmp/f$i; cat /tmp/f$i; done"
         other = await backend.docker.containers.run(
@@ -400,7 +404,9 @@ async def test_tracer_sees_only_sandboxes(backend: DockerBackend, store: LocalEv
         await sb.close()
         await backend.remove_run(run_id)
 
-    assert unrouted == 0, list(tracer.unrouted_lines)
+    late = list(tracer.unrouted_lines)[-unrouted:] if unrouted else []
+    print("\n".join(late))
+    assert unrouted == 0
     assert any(e.type == "file.write" for e in await events(store, run_id, "file.write"))
 
 
