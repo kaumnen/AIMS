@@ -175,7 +175,8 @@ class AuditedSandbox:
         self._spilled: set[int] = set()
         self._digest: str | None = None
         self._diffs: set[asyncio.Task[None]] = set()
-        self._outputs: dict[tuple[int, int], _Out] = {}
+        self._outputs: dict[int, dict[int, _Out]] = {}
+        self._output_streams = 0
         self._exec_fds: OrderedDict[str, tuple[int, int]] = OrderedDict()
         self._env: OrderedDict[int, tuple[tuple[str, ...], int]] = OrderedDict()
         self._queue: asyncio.Queue[Record] | None = None
@@ -598,7 +599,7 @@ class AuditedSandbox:
         """Record what is still queued when the sandbox closes, then any unflushed output."""
         while self._queue is not None and not self._queue.empty():
             self._handle(self._queue.get_nowait())
-        for pid in {k[0] for k in self._outputs}:
+        for pid in list(self._outputs):
             self._flush_outputs(pid, self._owner.get(pid))
 
     def _handle(self, record: Record) -> None:
@@ -710,13 +711,14 @@ class AuditedSandbox:
         owner = self._owner.get(record.pid)
         if owner == INTERNAL:
             return
-        key = (record.pid, record.inode)
-        acc = self._outputs.get(key)
+        streams = self._outputs.setdefault(record.pid, {})
+        acc = streams.get(record.inode)
         if acc is None:
-            if len(self._outputs) >= 4 * MEMORY:
+            if self._output_streams >= 4 * MEMORY:
                 self._scope(owner).dropped += 1
                 return
-            acc = self._outputs[key] = _Out(record)
+            acc = streams[record.inode] = _Out(record)
+            self._output_streams += 1
         acc.nbytes += record.nbytes
         acc.writes += 1
         if record.prefix is not None and not acc.prefix:
@@ -725,8 +727,10 @@ class AuditedSandbox:
                 acc.first = record
 
     def _flush_outputs(self, pid: int, owner: str | None) -> None:
-        for key in [k for k in self._outputs if k[0] == pid]:
-            self._emit_output(owner, self._outputs.pop(key))
+        streams = self._outputs.pop(pid, {})
+        self._output_streams -= len(streams)
+        for acc in streams.values():
+            self._emit_output(owner, acc)
 
     def _emit_output(self, owner: str | None, acc: _Out) -> None:
         rec = acc.first
