@@ -118,7 +118,11 @@ class ExecStarted(Payload):
 
 
 class ExecFinished(Payload):
-    """How an exec ended, measured from the host side. `end` never trusts the exit code."""
+    """How an exec ended, measured from the host side. `end` never trusts the exit code.
+
+    `spilled` counts the exec's kernel records kept in an `audit.spill` by the time it finished;
+    `dropped` counts those neither logged nor spilled.
+    """
 
     type = "exec.finished"
 

@@ -701,8 +701,11 @@ class AuditedSandbox:
             )
             if record.pid in self._spilled:
                 self._spilled.discard(record.pid)
-                if not self._spill("procs", payload):
-                    self._scope(owner).dropped += 1
+                scope = self._scope(owner)
+                if self._spill("procs", payload):
+                    scope.spilled += 1
+                else:
+                    scope.dropped += 1
             else:
                 self._emit_payload(payload)
         self._oom.discard(record.pid)

@@ -338,7 +338,7 @@ async def test_caps_spill_what_they_do_not_log(
     assert kinds(evs).count("proc.exec") == 3
     assert kinds(evs).count("file.access") == 2
     assert kinds(evs)[-3:] == ["audit.spill", "exec.finished", "sandbox.stopped"]
-    assert (result.finished.procs, result.finished.spilled, result.finished.dropped) == (3, 4, 0)
+    assert (result.finished.procs, result.finished.spilled, result.finished.dropped) == (3, 5, 0)
     spill = evs[-3].payload()
     assert isinstance(spill, AuditSpill)
     assert spill.exec_id == result.finished.exec_id
