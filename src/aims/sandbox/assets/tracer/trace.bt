@@ -145,9 +145,26 @@ fentry:vmlinux:security_file_open /@sandbox[cgroup] && strncmp(comm, "runc:", 5)
   }
 }
 
-fentry:vmlinux:filp_close /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && (args.filp->f_mode & 2) && (args.filp->f_inode->i_mode & 0xF000) == 0x8000/ {
+// The last reference to a file, on every path: close(2) on 6.8+ never reaches filp_close, and an
+// exiting task releases its files after its X line.
+fentry:vmlinux:security_file_release /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0 && (args.file->f_mode & 2) && (args.file->f_inode->i_mode & 0xF000) == 0x8000/ {
+  $d = args.file->f_path.dentry;
+  $x = $d; $k = 0;
+  unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } }
   $s = @seq[cpu] + 1; @seq[cpu] = $s;
-  printf("Z %llu %llu %llu %d %lld %s\n", nsecs(boot), cpu, $s, curtask->tgid, args.filp->f_inode->i_size, path(args.filp->f_path));
+  printf("Z %llu %llu %llu %d %lld %u %d %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, curtask->tgid, args.file->f_inode->i_size, $d->d_sb->s_dev, $k,
+    str($d->d_name.name),
+    str($d->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
 }
 
 fentry:vmlinux:security_inode_unlink, fentry:vmlinux:security_inode_rmdir /@sandbox[cgroup] && strncmp(comm, "runc:", 5) != 0/ {

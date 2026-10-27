@@ -14,6 +14,7 @@ from pydantic import JsonValue
 
 from aims.sandbox.base import (
     TOOLBOX,
+    Close,
     Denied,
     Exec,
     Exit,
@@ -41,6 +42,7 @@ from aims.sandbox.trace import (
     Mkdir,
     Mounts,
     Note,
+    RawClose,
     RawDenied,
     RawExec,
     RawFifo,
@@ -146,6 +148,7 @@ class Tracer:
         self._ready: asyncio.Future[int] = asyncio.get_running_loop().create_future()
         self._routes: dict[int, Route] = {}
         self._pids: dict[int, Route] = {}
+        self._gone: OrderedDict[int, Route] = OrderedDict()
         self._parts: OrderedDict[int, dict[str, object]] = OrderedDict()
         self._cwd: OrderedDict[int, str] = OrderedDict()
         self._env: OrderedDict[int, bytearray] = OrderedDict()
@@ -231,6 +234,8 @@ class Tracer:
         self._routes.pop(route.pidns, None)
         for pid in [p for p, r in self._pids.items() if r is route]:
             del self._pids[pid]
+        for pid in [p for p, r in self._gone.items() if r is route]:
+            del self._gone[pid]
 
     async def confirm(self, pid: int, pidns: int) -> bool:
         """Whether the tracer saw the runtime start process `pid` in namespace `pidns`."""
@@ -310,10 +315,11 @@ class Tracer:
                     self._settle = asyncio.get_running_loop().call_later(SETTLE_S, self.settle)
             case Garbled(pid, text):
                 self.garbled += 1
-                route = self._pids.get(pid) if pid is not None else None
+                route = self._lookup(pid) if pid is not None else None
                 if route is not None:
                     route.put(Lost(1, f"unparseable tracer line: {text[:500]}"))
             case Fork(parent, child):
+                self._gone.pop(child, None)
                 route = self._route(parent)
                 if route is not None:
                     self._pids[child] = route
@@ -379,6 +385,15 @@ class Tracer:
                     self.unrouted += 1
                 else:
                     route.put(item)
+                    self._gone[pid] = route
+                    self._gone.move_to_end(pid)
+                    if len(self._gone) > MEMORY:
+                        self._gone.popitem(last=False)
+            case RawClose(pid, size, walk):
+                route = self._route(pid)
+                if route is not None:
+                    path, partial = route.mounts.resolve(walk)
+                    route.put(Close(pid, size, path, partial, at=item.at))
             case Delete(pid, walk):
                 route = self._route(pid)
                 if route is not None:
@@ -456,10 +471,15 @@ class Tracer:
                     route.put(item)
 
     def _route(self, pid: int) -> Route | None:
-        route = self._pids.get(pid)
+        route = self._lookup(pid)
         if route is None:
             self.unrouted += 1
         return route
+
+    def _lookup(self, pid: int) -> Route | None:
+        """The route of `pid`, also for a while after it exits: its files close after its exit."""
+        route = self._pids.get(pid)
+        return self._gone.get(pid) if route is None else route
 
     def _expire(self) -> None:
         self._gaps(self._sequence.expire(self._sequence.latest - 1_000_000))
@@ -472,6 +492,7 @@ class Tracer:
                 route.put(lost)
 
     def _exec(self, raw: RawExec) -> None:
+        self._gone.pop(raw.pid, None)
         if raw.root:
             self._roots[raw.pid] = raw.pidns
             if len(self._roots) > MEMORY:

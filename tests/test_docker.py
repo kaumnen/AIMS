@@ -712,6 +712,42 @@ async def test_kernel_records_file_writes_and_self_probes(
 
 @pytest.mark.tracer
 @pytest.mark.usefixtures("traced")
+async def test_file_writes_are_recorded_on_every_close(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    command = (
+        'python3 -c "import os\n'
+        "f = open('/work/c', 'w'); f.write('abc'); f.close()\n"
+        "if os.fork() == 0:\n"
+        "    os.write(os.open('/work/e', os.O_WRONLY | os.O_CREAT), b'xy')\n"
+        "    os._exit(0)\n"
+        "os.wait()\n"
+        "os.write(os.open('/work/p', os.O_WRONLY | os.O_CREAT), b'wxyz')\n"
+        'os._exit(0)"'
+    )
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+
+    kernel = by_kernel_order(await events(store, run_id))
+    python = next(p for p in kernel if isinstance(p, ProcExec) and p.argv[0] == "python3")
+    (fork,) = [p for p in kernel if isinstance(p, ProcFork)]
+    writes = [p for p in kernel if isinstance(p, FileWrite) and p.path.startswith("/work/")]
+    assert [(p.pid, p.path, p.size, p.partial) for p in writes] == [
+        (python.pid, "/work/c", 3, False),
+        (fork.pid, "/work/e", 2, False),
+        (python.pid, "/work/p", 4, False),
+    ]
+    assert all(p.exec_id == result.finished.exec_id for p in writes)
+    exits = {p.pid: p.ts_kernel for p in kernel if isinstance(p, ProcExit)}
+    assert exits[fork.pid] < writes[1].ts_kernel
+    assert exits[python.pid] < writes[2].ts_kernel
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
 async def test_over_cap_records_spill_to_a_blob(
     backend: DockerBackend, store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1207,11 +1243,12 @@ async def test_fork_only_child_outlives_its_exec(
     assert python.ts_kernel < fork.ts_kernel
     child = [p for p in kernel if p.pid == fork.pid]
     assert all(p.exec_id == exec_id for p in child)
-    child = [p for p in child if not isinstance(p, FileWrite)]
-    assert [type(p) for p in child] == [ProcFork, FileAccess, ProcExit]
-    _, access, end = child
+    assert [type(p) for p in child] == [ProcFork, FileAccess, FileWrite, ProcExit]
+    _, access, write, end = child
     assert isinstance(access, FileAccess)
     assert (access.op, access.path, access.partial) == ("write", "/work/late", False)
+    assert isinstance(write, FileWrite)
+    assert (write.path, write.size, write.partial) == ("/work/late", 1, False)
     assert isinstance(end, ProcExit)
     assert (end.exit_code, end.signal) == (4, None)
     assert (await store.verify(run_id)).ok

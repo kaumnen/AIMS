@@ -205,6 +205,7 @@ class AuditedSandbox:
         self._emit = asyncio.Lock()
         self._buffer: list[Draft] = []
         self._owner: dict[int, str | None] = {}
+        self._gone: OrderedDict[int, str | None] = OrderedDict()
         self._roots: OrderedDict[int, str] = OrderedDict()
         self._shown: set[int] = set()
         self._forks: OrderedDict[int, _Fork] = OrderedDict()
@@ -679,7 +680,7 @@ class AuditedSandbox:
                 record = await self._with_hash(record)
             self._handle(record)
         for pid in list(self._outputs):
-            self._flush_outputs(pid, self._owner.get(pid))
+            self._flush_outputs(pid, self._owner_of(pid))
 
     def _handle(self, record: Record) -> None:
         try:
@@ -724,7 +725,8 @@ class AuditedSandbox:
             log.exception("could not record %r", record)
 
     def _on_fork(self, record: Fork) -> None:
-        owner = self._owner.get(record.pid, _UNKNOWN)
+        owner = self._owner.get(record.pid, self._gone.get(record.pid, _UNKNOWN))
+        self._gone.pop(record.child, None)
         if owner != _UNKNOWN:
             self._owner[record.child] = owner
         if owner != INTERNAL and record.child not in self._shown:
@@ -848,6 +850,10 @@ class AuditedSandbox:
 
     def _on_exit(self, record: Exit) -> None:
         owner = self._owner.pop(record.pid, None)
+        self._gone[record.pid] = owner
+        self._gone.move_to_end(record.pid)
+        if len(self._gone) > MEMORY:
+            self._gone.popitem(last=False)
         self._flush_outputs(record.pid, owner)
         self._env.pop(record.pid, None)
         self._cwd.pop(record.pid, None)
@@ -883,7 +889,7 @@ class AuditedSandbox:
             self._emit_payload(payload)
 
     def _on_output(self, record: Output) -> None:
-        owner = self._owner.get(record.pid)
+        owner = self._owner_of(record.pid)
         if owner == INTERNAL:
             return
         streams = self._outputs.get(record.pid)
@@ -933,7 +939,7 @@ class AuditedSandbox:
         self._admit(owner, "output", payload)
 
     def _on_file(self, record: File) -> None:
-        owner = self._owner.get(record.pid)
+        owner = self._owner_of(record.pid)
         if owner == INTERNAL:
             return
         key = (record.op, record.path, record.target)
@@ -954,7 +960,7 @@ class AuditedSandbox:
             scope.seen.add(key)
 
     def _on_close(self, record: Close) -> None:
-        owner = self._owner.get(record.pid)
+        owner = self._owner_of(record.pid)
         if owner == INTERNAL:
             return
         key = ("close", record.pid, record.path, record.size)
@@ -968,7 +974,7 @@ class AuditedSandbox:
             scope.seen.add(key)
 
     def _on_net(self, record: Net) -> None:
-        owner = self._owner.get(record.pid)
+        owner = self._owner_of(record.pid)
         payload = self._kernel(
             NetConnect,
             record,
@@ -981,12 +987,12 @@ class AuditedSandbox:
         self._admit(owner, "other", payload)
 
     def _on_denied(self, record: Denied) -> None:
-        owner = self._owner.get(record.pid)
+        owner = self._owner_of(record.pid)
         payload = self._kernel(SysDenied, record, owner, syscall=record.syscall, errno=record.errno)
         self._admit(owner, "other", payload)
 
     def _on_ipc(self, record: Ipc) -> None:
-        owner = self._owner.get(record.pid)
+        owner = self._owner_of(record.pid)
         payload = self._kernel(
             IpcEvent,
             record,
@@ -1003,7 +1009,7 @@ class AuditedSandbox:
         self._admit(owner, "other", payload)
 
     def _on_ptrace(self, record: Ptrace) -> None:
-        owner = self._owner.get(record.pid)
+        owner = self._owner_of(record.pid)
         payload = self._kernel(
             PtraceEvent,
             record,
@@ -1016,14 +1022,14 @@ class AuditedSandbox:
         self._admit(owner, "other", payload)
 
     def _on_signal(self, record: Signal) -> None:
-        owner = self._owner.get(record.pid)
+        owner = self._owner_of(record.pid)
         payload = self._kernel(
             ProcSignal, record, owner, target=record.target, signal=record.signal
         )
         self._admit(owner, "other", payload)
 
     def _on_mem(self, record: Mem) -> None:
-        owner = self._owner.get(record.pid)
+        owner = self._owner_of(record.pid)
         payload = self._kernel(
             MemExec,
             record,
@@ -1038,7 +1044,7 @@ class AuditedSandbox:
         self._admit(owner, "other", payload)
 
     def _on_setattr(self, record: Setattr) -> None:
-        owner = self._owner.get(record.pid)
+        owner = self._owner_of(record.pid)
         payload = self._kernel(
             FileSetattr,
             record,
@@ -1057,7 +1063,7 @@ class AuditedSandbox:
         self._admit(owner, "other", payload)
 
     def _on_ns(self, record: Ns) -> None:
-        owner = self._owner.get(record.pid)
+        owner = self._owner_of(record.pid)
         payload = self._kernel(
             NsEvent,
             record,
@@ -1077,7 +1083,7 @@ class AuditedSandbox:
     def _attribute(self, record: Exec) -> str | None:
         if not record.root:
             owner = self._owner.get(record.pid, _UNKNOWN)
-            return self._owner.get(record.ppid) if owner == _UNKNOWN else owner
+            return self._owner_of(record.ppid) if owner == _UNKNOWN else owner
         if record.pid in self._roots:
             return self._roots[record.pid]
         active = self._active
@@ -1087,6 +1093,10 @@ class AuditedSandbox:
             self._root(record.pid, active)
             return active.exec_id
         return INTERNAL
+
+    def _owner_of(self, pid: int) -> str | None:
+        """The exec of `pid`, also for a while after it exits: its files close after its exit."""
+        return self._owner[pid] if pid in self._owner else self._gone.get(pid)
 
     def _scope(self, owner: str | None) -> _Scope:
         scope = self._scopes.get(owner)

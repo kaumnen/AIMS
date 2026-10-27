@@ -252,9 +252,11 @@ class FileAccess(KernelPayload):
 
 
 class FileWrite(KernelPayload):
-    """A file opened for writing was closed. `size` is its size at the close.
+    """A file opened for writing was closed for the last time: `pid` dropped the last reference
+    to that open, by close, dup2 or exit. `size` is its size then.
 
-    A `partial` path reached the tracer's string cap and may be cut at the end.
+    A close at exit follows the process's `proc.exit`. A `partial` path reached the tracer's
+    string cap or lacks its leading part.
     """
 
     type = "file.write"

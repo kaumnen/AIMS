@@ -14,7 +14,6 @@ from typing import Literal
 
 from aims.events import MAX_INT, FdKind
 from aims.sandbox.base import (
-    Close,
     Exit,
     Fd,
     File,
@@ -363,6 +362,12 @@ class Symlink(Raw):
 class Link(Raw):
     old: Walk
     new: Walk
+
+
+@dataclass(frozen=True, slots=True)
+class RawClose(Raw):
+    size: int
+    walk: Walk
 
 
 @dataclass(frozen=True, slots=True)
@@ -770,9 +775,10 @@ def _refused(body: str, at: Stamp) -> File:
 
 
 @record("Z")
-def _close(body: str, at: Stamp) -> Close:
-    pid, size, path = body.split(" ", 2)
-    return Close(int(pid), min(int(size), MAX_INT), path, partial=_cut(path), at=at)
+def _close(body: str, at: Stamp) -> RawClose:
+    pid, size, dev, depth, names = body.split(" ", 4)
+    walk = _walk(int(dev), int(depth), names.split("/"))
+    return RawClose(int(pid), min(int(size), MAX_INT), walk, at=at)
 
 
 @record("D")

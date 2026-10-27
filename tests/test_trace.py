@@ -45,6 +45,7 @@ from aims.sandbox.trace import (
     Mkdir,
     Mounts,
     Note,
+    RawClose,
     RawDenied,
     RawExec,
     RawFifo,
@@ -113,6 +114,11 @@ def unlink(pid: int, dev: int, *names: str) -> str:
     return f"U {pid} {dev} {depth} {text}"
 
 
+def release(pid: int, size: int, dev: int, *names: str) -> str:
+    depth, text = walk(*names)
+    return f"Z {pid} {size} {dev} {depth} {text}"
+
+
 def rename(pid: int, devs: tuple[int, int], old: tuple[str, ...], new: tuple[str, ...]) -> str:
     (old_depth, old_text), (new_depth, new_text) = walk(*old), walk(*new)
     return f"N {pid} {devs[0]} {devs[1]} {old_depth} {new_depth} {old_text}/{new_text}"
@@ -173,10 +179,6 @@ def test_parse_simple_lines() -> None:
     )
     assert parse(line("P 10 1 rel")) == File(10, "denied", "rel", errno=1, partial=True, at=PARSED)
     assert parse(line("D 10 97 1")) == RawDenied(10, 97, 1, at=PARSED)
-    assert parse(line("Z 10 42 /work/a b")) == Close(10, 42, "/work/a b", at=PARSED)
-    assert parse(line(f"Z 10 {2**62} /work/sparse")) == Close(
-        10, 2**53 - 1, "/work/sparse", at=PARSED
-    )
     assert parse(line("C 10 c 4 169.254.169.254 80")) == Net(
         10, "connect", "inet", "169.254.169.254", 80, at=PARSED
     )
@@ -208,7 +210,6 @@ def test_paths_at_the_string_cap_are_partial() -> None:
     assert parse(line(f"P 10 13 {cut}")) == File(
         10, "denied", cut, errno=13, partial=True, at=PARSED
     )
-    assert parse(line(f"Z 10 1 {cut}")) == Close(10, 1, cut, partial=True, at=PARSED)
     assert parse(line(f"M 10 x 42 0 {cut}")) == Mem(10, "exec", cut, 42, 0, partial=True, at=PARSED)
     assert Bprm(10, cut, at=PARSED).fields()["path_partial"] is True
     assert Bprm(10, near, at=PARSED).fields()["path_partial"] is False
@@ -384,6 +385,10 @@ def test_parse_walks() -> None:
     root = parse(line(rename(10, (1, 1), ("a",) * DEPTH, ())))
     assert isinstance(root, Rename)
     assert (root.old.names, root.new.names) == ((b"a",) * DEPTH, (b"/",))
+    item = parse(line(release(10, 42, VDA1, "a b", "_data")))
+    assert item == RawClose(10, 42, Walk(VDA1, (b"a b", b"_data", b"/")), at=PARSED)
+    item = parse(line(release(10, 2**62, TMP, "sparse")))
+    assert item == RawClose(10, MAX_INT, Walk(TMP, (b"sparse", b"/")), at=PARSED)
 
 
 def test_parse_creations() -> None:
@@ -539,6 +544,7 @@ async def test_tracer_routes_by_pid_namespace(monkeypatch: pytest.MonkeyPatch) -
             "O 11",
             "X 11 0 0",
             "W 11 /work/after-exit",
+            release(11, 5, VDA1, "out", "_data", "aims-r-a1-work", "volumes", "docker"),
             f"E 50 1 1 1000 77 5 {len(argv)} {hx(argv)}",
             "W 50 /other",
             "E 11 broken",
@@ -557,6 +563,9 @@ async def test_tracer_routes_by_pid_namespace(monkeypatch: pytest.MonkeyPatch) -
         Net(11, "connect", "inet", "1.1.1.1", 443, at=s[10]),
         Oom(11, at=s[11]),
         Exit(11, 0, None, at=s[12]),
+        File(11, "write", "/work/after-exit", at=s[13]),
+        Close(11, 5, "/work/out", at=s[14]),
+        Lost(1, f"unparseable tracer line: E {s[-1].ts * 1000} 0 {s[-1].seq} 11 broken"),
     ]
     assert tracer.clock == (10, 0)
     assert tracer.garbled == 1
@@ -568,7 +577,30 @@ async def test_tracer_routes_by_pid_namespace(monkeypatch: pytest.MonkeyPatch) -
 
     tracer.unregister(route)
     feed("W 10 /work/late")
+    feed("W 11 /work/late")
     assert route.queue.empty()
+    await tracer.stop()
+
+
+@pytest.mark.anyio
+async def test_exited_pids_route_until_reused() -> None:
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    route = tracer.register(99, Mounts.parse(MOUNTINFO), SYSCALLS["aarch64"])
+    feed = Feed(tracer)
+    feed("R 0 999")
+    feed(f"E 10 1 1 1000 99 5 3 {hx(b'sh\0')}")
+    feed("F 10 11")
+    feed("F 10 12")
+    feed("X 11 0 0")
+    feed("X 12 0 0")
+    drain(route)
+
+    late = feed(release(11, 3, TMP, "c"))
+    feed("F 7 11")
+    feed("W 11 /work/reused")
+    feed(f"E 12 1 1 1000 77 5 3 {hx(b'sh\0')}")
+    feed("W 12 /work/reused")
+    assert drain(route) == [Close(11, 3, "/tmp/c", at=late)]
     await tracer.stop()
 
 
