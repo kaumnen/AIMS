@@ -55,6 +55,20 @@ context_tokens = 1048576
 price = { input = 1.25, cached = 0.15, output = 4.25 }
 limits = { rpm = 600, concurrency = 8, group = "fireworks" }
 
+# Hackathon slug, served in NVFP4. Structured output is accepted but not enforced.
+[profiles."baseten-spark-open"]
+backend = "chat"
+base_url = "https://inference.baseten.co/v1"
+model = "meta-models/muse-spark-open-1026"
+weights = "meta/muse-spark-open"
+api_key_env = "BASETEN_API_KEY"
+reasoning = "full"
+effort = "medium"
+max_output_tokens = 16384
+context_tokens = 1048576
+price = { input = 1.25, cached = 0.15, output = 4.25 }
+limits = { rpm = 100, tpm = 2000000, concurrency = 8, group = "baseten" }
+
 [profiles."modal-glimmer"]
 backend = "chat"
 base_url_env = "AIMS_GLIMMER_URL"

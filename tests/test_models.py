@@ -235,6 +235,32 @@ async def test_chat_stream_records_the_attempt(store: LocalEventStore) -> None:
     assert {"text", "reasoning", "tool_call", "tool_args"} <= set(kinds)
 
 
+async def test_chat_usage_on_every_chunk_keeps_the_last(store: LocalEventStore) -> None:
+    """Baseten sends the running usage on every chunk, so the last one is the total."""
+
+    def used(out: int, thought: int) -> dict[str, Any]:
+        return {
+            "prompt_tokens": 10,
+            "completion_tokens": out,
+            "prompt_tokens_details": {"cached_tokens": 4},
+            "completion_tokens_details": {"reasoning_tokens": thought},
+        }
+
+    events = [
+        chunk({"role": "assistant"}, usage=used(1, 1)),
+        chunk({"reasoning_content": "sum"}, usage=used(3, 3)),
+        chunk({"content": "42"}, usage=used(5, 3)),
+        chunk({}, "stop", usage=used(6, 3)),
+    ]
+    run_id = await new_run(store)
+    handler, _ = scripted(lambda: stream(sse(events)))
+    async with client(store, run_id, profile(), handler) as mc:
+        reply = await mc.call("test", PROMPT)
+    assert reply.text == "42"
+    assert (reply.usage.input_tokens, reply.usage.output_tokens) == (10, 6)
+    assert reply.usage.reasoning_tokens == 3
+
+
 RESPONSE = {
     "id": "resp_1",
     "status": "completed",

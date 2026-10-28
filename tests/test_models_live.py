@@ -45,6 +45,7 @@ SMALL = Overrides(effort="low", max_output_tokens=2048)
 KINDS = {
     "responses": "meta-spark-1.3-contributor",
     "chat": "fireworks-spark-open",
+    "baseten": "baseten-spark-open",
     "retry": "fireworks-spark-open",
     "cancel": "meta-spark-1.3-contributor",
 }
@@ -135,7 +136,7 @@ async def recorded(store: EventStore, run_id: str) -> list[ModelResponse]:
     return [r for e in events if isinstance(r := e.payload(), ModelResponse)]
 
 
-@pytest.mark.parametrize("kind", ["responses", "chat"])
+@pytest.mark.parametrize("kind", ["responses", "chat", "baseten"])
 async def test_replay_of_a_recorded_run(kind: str, tmp_path: Path) -> None:
     async for client, source, run_id in replaying(kind, tmp_path):
         replies = await script(client, KINDS[kind])
@@ -148,7 +149,7 @@ async def test_replay_of_a_recorded_run(kind: str, tmp_path: Path) -> None:
         assert [r.usage for r in ours] == [r.usage for r in theirs]
         assert [r.reasoning_kind for r in ours] == [r.reasoning_kind for r in theirs]
         assert {r.source for r in ours} == {"replay"}
-        if kind == "chat":
+        if kind != "responses":
             assert replies[0].reasoning_kind == "full"
             assert replies[0].turn.reasoning
 
@@ -193,7 +194,7 @@ async def test_record_fixture(kind: str, tmp_path: Path) -> None:
         run_id = await store.create_run(RunStarted(scenario=f"fixture.{kind}", oversight="observe"))
         async with ModelClient(store, run_id, models, bus=bus, transport=transport) as client:
             match kind:
-                case "responses" | "chat":
+                case "responses" | "chat" | "baseten":
                     await script(client, KINDS[kind])
                 case "retry":
                     await plain_call(client, KINDS[kind])
