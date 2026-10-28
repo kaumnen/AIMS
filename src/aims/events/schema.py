@@ -30,7 +30,9 @@ Hash = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
 
 class BlobRef(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", json_schema_serialization_defaults_required=True
+    )
 
     sha256: Hash
     size: int = Field(ge=0)
@@ -44,7 +46,9 @@ _registry: dict[str, type[Payload]] = {}
 class Payload(BaseModel):
     """Typed body of one event type. Subclasses register themselves by setting `type`."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", json_schema_serialization_defaults_required=True
+    )
 
     type: ClassVar[str]
 
@@ -64,6 +68,11 @@ class Payload(BaseModel):
 
 def payload_type(name: str) -> type[Payload] | None:
     return _registry.get(name)
+
+
+def payload_types() -> dict[str, type[Payload]]:
+    """Every registered event type and its payload model."""
+    return dict(_registry)
 
 
 def is_blob_ref(value: object) -> bool:
@@ -103,7 +112,9 @@ def text_of(value: Any) -> str:
 class Event(BaseModel):
     """One line of `events.jsonl`. `hash` covers every other field, `prev_hash` links the chain."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", json_schema_serialization_defaults_required=True
+    )
 
     v: Literal[1]
     run_id: str

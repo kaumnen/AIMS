@@ -10,13 +10,63 @@ requires-python = ">=3.14"
 dependencies = [
     "aiodocker>=0.27.0",
     "aiosqlite>=0.22.1",
+    "fastapi>=0.162.0",
+    "httpx2>=2.16.0",
+    "openai>=3.40.0",
     "pydantic>=2.14.1",
     "rfc8785>=0.1.4",
+    "rich>=15.0.0",
+    "ruamel-yaml>=0.19.1",
+    "tomlkit>=0.15.2",
     "typer>=0.27.3",
+    "uvicorn>=0.54.0",
 ]
 
 [project.scripts]
 aims = "aims.cli:app"
+
+[project.entry-points."aims.tools"]
+bash = "aims.tools.builtin:Bash"
+edit = "aims.tools.builtin:Edit"
+submit = "aims.tools.builtin:Submit"
+report_to_operator = "aims.tools.builtin:Report"
+
+[project.entry-points."aims.signals"]
+namespace_escape = "aims.monitor.signals.catalogue:NamespaceEscape"
+privileged_syscall = "aims.monitor.signals.catalogue:PrivilegedSyscall"
+fileless_exec = "aims.monitor.signals.catalogue:FilelessExec"
+deleted_binary_exec = "aims.monitor.signals.catalogue:DeletedBinaryExec"
+timestomp = "aims.monitor.signals.catalogue:Timestomp"
+timestomp_attempt = "aims.monitor.signals.catalogue:TimestompAttempt"
+leftover = "aims.monitor.signals.catalogue:Leftover"
+audit_gap = "aims.monitor.signals.catalogue:AuditGap"
+operator_report = "aims.monitor.signals.catalogue:OperatorReport"
+toolbox_read = "aims.monitor.signals.catalogue:ToolboxRead"
+sandbox_probe = "aims.monitor.signals.catalogue:SandboxProbe"
+history_peek = "aims.monitor.signals.catalogue:HistoryPeek"
+escape_path = "aims.monitor.signals.catalogue:EscapePath"
+sensitive_read = "aims.monitor.signals.catalogue:SensitiveRead"
+credential_search = "aims.monitor.signals.catalogue:CredentialSearch"
+priv_tool_exec = "aims.monitor.signals.catalogue:PrivToolExec"
+net_tool_exec = "aims.monitor.signals.catalogue:NetToolExec"
+shell_rc_write = "aims.monitor.signals.catalogue:ShellRcWrite"
+startup_hook_write = "aims.monitor.signals.catalogue:StartupHookWrite"
+test_tamper = "aims.monitor.signals.catalogue:TestTamper"
+grader_access = "aims.monitor.signals.catalogue:GraderAccess"
+foreign_output = "aims.monitor.signals.process:ForeignOutput"
+ptrace = "aims.monitor.signals.process:Ptrace"
+harness_signal = "aims.monitor.signals.process:HarnessSignal"
+egress = "aims.monitor.signals.process:Egress"
+verifier_hook = "aims.monitor.signals.verifier:VerifierHook"
+verifier_env = "aims.monitor.signals.verifier:VerifierEnv"
+verifier_anomaly = "aims.monitor.signals.verifier:VerifierAnomaly"
+link_redirect = "aims.monitor.signals.verifier:LinkRedirect"
+hack_pattern = "aims.monitor.signals.content:HackPattern"
+monitor_manipulation = "aims.monitor.signals.content:MonitorManipulation"
+repeat = "aims.monitor.signals.agent:Repeat"
+no_progress = "aims.monitor.signals.agent:NoProgress"
+submit_vs_score = "aims.monitor.signals.agent:SubmitVsScore"
+deny_retry = "aims.monitor.signals.agent:DenyRetry"
 
 [project.urls]
 Repository = "https://github.com/kaumnen/AIMS"
@@ -52,3 +102,6 @@ markers = [
     "docker: needs a Docker daemon",
     "tracer: needs the privileged kernel tracer",
 ]
+
+[tool.ty.src]
+exclude = ["scenarios"]

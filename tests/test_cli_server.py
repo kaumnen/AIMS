@@ -1,0 +1,257 @@
+import asyncio
+import contextlib
+import json
+import os
+import re
+import signal
+import stat
+import sys
+from collections.abc import AsyncGenerator, AsyncIterator
+from pathlib import Path
+
+import httpx2
+import pytest
+from cp import CP, control_plane
+from typer.testing import CliRunner
+
+from aims.cli import app
+from aims.events import Draft, LocalEventStore, RunFinished, RunStarted, ToolCall
+from aims.sandbox import DockerBackend, SandboxSpec
+from aims.server.serve import ServeError, UiOptions, _redirect, check, connect_host, server_dir
+
+pytestmark = pytest.mark.anyio
+ROOT = Path(__file__).parent.parent
+
+
+def test_exposed_binds_need_tls_or_a_proxy() -> None:
+    check(UiOptions(host="127.0.0.1"))
+    check(UiOptions(host="[::1]"))
+    with pytest.raises(ServeError, match="exposes"):
+        check(UiOptions(host="0.0.0.0"))
+    check(UiOptions(host="0.0.0.0", behind_proxy=["10.0.0.2"]))
+    with pytest.raises(ServeError, match="loopback only"):
+        check(UiOptions(host="0.0.0.0", behind_proxy=["10.0.0.2"], auth=False))
+    with pytest.raises(ServeError, match="go together"):
+        check(UiOptions(tls_cert=Path("c.pem")))
+
+
+def test_the_browser_opens_a_private_redirect_not_the_token(tmp_path: Path) -> None:
+    url = "http://127.0.0.1:8484/#token=aims_abc&x=<b>"
+    path = _redirect(tmp_path, url)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert "token" not in path.as_uri()
+    text = path.read_text()
+    assert "#token=aims_abc&amp;x=&lt;b&gt;" in text
+    assert "<b>" not in text
+
+
+def test_local_processes_reach_the_address_bound() -> None:
+    assert connect_host("127.0.0.1") == "127.0.0.1"
+    assert connect_host("0.0.0.0") == "127.0.0.1"
+    assert connect_host("::") == "[::1]"
+    assert connect_host("[::1]") == "[::1]"
+    assert connect_host("10.0.0.5") == "10.0.0.5"
+    assert connect_host("aims.example") == "aims.example"
+    assert server_dir({"AIMS_SERVER_DIR": "/srv/aims"}) == Path("/srv/aims")
+
+
+def test_tokens_from_the_cli(tmp_path: Path) -> None:
+    runner = CliRunner()
+    made = runner.invoke(
+        app, ["token", "create", "ci", "--role", "runner", "--data-dir", str(tmp_path)]
+    )
+    assert made.exit_code == 0, made.output
+    assert made.output.strip().startswith("aims_")
+    again = runner.invoke(app, ["token", "create", "ci", "--data-dir", str(tmp_path)])
+    assert again.exit_code == 1
+    listed = runner.invoke(app, ["token", "list", "--data-dir", str(tmp_path)])
+    assert re.search(r"^ci  runner  .*  live$", listed.output, re.M)
+    gone = runner.invoke(app, ["token", "revoke", "ci", "--data-dir", str(tmp_path)])
+    assert gone.exit_code == 0
+    listed = runner.invoke(app, ["token", "list", "--data-dir", str(tmp_path)])
+    assert "revoked" in listed.output
+    assert made.output.strip() not in (tmp_path / "server.sqlite").read_text(errors="ignore")
+
+
+def test_the_openapi_export_is_stable_and_committed(tmp_path: Path) -> None:
+    runner = CliRunner()
+    a, b = tmp_path / "a.json", tmp_path / "b.json"
+    assert runner.invoke(app, ["openapi", "--out", str(a)]).exit_code == 0
+    assert runner.invoke(app, ["openapi", "--out", str(b)]).exit_code == 0
+    assert a.read_bytes() == b.read_bytes()
+    assert a.read_bytes() == (ROOT / "web" / "openapi.json").read_bytes(), (
+        "web/openapi.json is stale: run `uv run aims openapi --out web/openapi.json`"
+    )
+
+
+@pytest.fixture
+async def cp(tmp_path: Path) -> AsyncIterator[CP]:
+    async with control_plane(tmp_path) as cp:
+        yield cp
+
+
+async def test_push_ships_runs_recorded_offline(cp: CP, tmp_path: Path) -> None:
+    started = RunStarted(scenario="offline", oversight="observe", agents=["a"])
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        sealed = await store.create_run(started)
+        await store.append(
+            sealed,
+            [
+                Draft(ToolCall(call_id="c", name="x", arguments="{}"), "a"),
+                Draft(RunFinished(status="completed")),
+            ],
+        )
+        open_run = await store.create_run(started)
+    env = {"AIMS_TOKEN": cp.runner}
+    result = await asyncio.to_thread(
+        CliRunner().invoke, app, ["push", str(tmp_path / "runs"), "--server", cp.url], env=env
+    )
+    assert result.exit_code == 0, result.output
+    assert f"{sealed} completed 3 events" in result.output
+    assert f"skip {open_run}" in result.output
+    copy = cp.state.store.root / sealed / "events.jsonl"
+    assert copy.read_bytes() == (tmp_path / "runs" / sealed / "events.jsonl").read_bytes()
+    meta = await cp.state.db.run_meta(sealed)
+    assert meta is not None
+    assert meta.runner is not None
+    assert meta.runner.startswith("push@")
+
+
+async def read_url(proc: asyncio.subprocess.Process) -> str:
+    assert proc.stderr is not None
+    async with asyncio.timeout(60):
+        while line := await proc.stderr.readline():
+            text = line.decode()
+            if text.startswith("open "):
+                return text.removeprefix("open ").strip()
+    raise AssertionError("aims ui printed no URL")
+
+
+@contextlib.asynccontextmanager
+async def ui_process(
+    tmp_path: Path, *args: str
+) -> AsyncGenerator[tuple[asyncio.subprocess.Process, str]]:
+    env = {**os.environ, "XDG_DATA_HOME": str(tmp_path / "xdg")}
+    env.pop("AIMS_TOKEN", None)
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "aims",
+        "ui",
+        "--port",
+        "0",
+        "--no-open",
+        "--data-dir",
+        str(tmp_path / "server"),
+        *args,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+        cwd=tmp_path,
+    )
+    try:
+        yield proc, await read_url(proc)
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+
+
+async def test_aims_ui_hands_the_browser_a_token_once(tmp_path: Path) -> None:
+    async with ui_process(tmp_path, "--no-runner") as (proc, url):
+        base, _, fragment = url.partition("/#token=")
+        assert base.startswith("http://127.0.0.1:")
+        info = tmp_path / "server" / "server.json"
+        assert stat.S_IMODE(info.stat().st_mode) == 0o600
+        local = json.loads(info.read_text())
+        assert local["url"] == base
+        assert local["operator"] == fragment
+        async with httpx2.AsyncClient(base_url=base, trust_env=False) as c:
+            assert (await c.get("/api/health")).status_code == 401
+            shell = await c.get("/")
+            assert shell.status_code == 200
+            r = await c.post("/api/session", json={"token": fragment})
+            assert r.status_code == 204
+            assert (await c.get("/api/session")).json() == {
+                "name": "ui",
+                "role": "operator",
+                "auth": True,
+            }
+            r = await c.post("/api/session", json={"token": local["token"]})
+            assert r.status_code == 401
+        async with httpx2.AsyncClient(
+            base_url=base, headers={"Authorization": f"Bearer {local['token']}"}, trust_env=False
+        ) as rc:
+            r = await rc.post("/runner/v1/heads", json={"run_ids": []})
+            assert (r.status_code, r.json()["code"]) == (400, "runner_name")
+        proc.send_signal(signal.SIGTERM)
+        async with asyncio.timeout(30):
+            assert await proc.wait() == 0
+        assert not info.exists()
+    async with ui_process(tmp_path, "--no-runner") as (proc, second):
+        assert second.partition("/#token=")[2] != fragment
+        proc.send_signal(signal.SIGTERM)
+        await proc.wait()
+
+
+async def test_aims_ui_answers_on_the_address_it_binds(tmp_path: Path) -> None:
+    async with ui_process(tmp_path, "--no-runner", "--host", "::1") as (proc, _):
+        local = json.loads((tmp_path / "server" / "server.json").read_text())
+        assert local["url"].startswith("http://[::1]:")
+        async with httpx2.AsyncClient(base_url=local["url"], trust_env=False) as c:
+            assert (await c.get("/api/health")).status_code == 401
+        proc.send_signal(signal.SIGTERM)
+        await proc.wait()
+
+
+@pytest.mark.docker
+async def test_aims_ui_brings_a_runner_and_stops_it(tmp_path: Path) -> None:
+    if not os.environ.get("AIMS_REQUIRE_DOCKER"):
+        try:
+            backend = await DockerBackend.open(audit="snapshot")
+            await backend.close()
+        except Exception as e:
+            pytest.skip(f"Docker is not available: {e}")
+    async with ui_process(tmp_path) as (proc, url):
+        base, _, token = url.partition("/#token=")
+        async with httpx2.AsyncClient(
+            base_url=base, headers={"Authorization": f"Bearer {token}"}, trust_env=False
+        ) as c:
+            async with asyncio.timeout(120):
+                while True:
+                    runners = (await c.get("/api/runners")).json()
+                    if runners and runners[0]["connected"]:
+                        break
+                    await asyncio.sleep(0.2)
+            assert (runners[0]["name"], runners[0]["local"]) == ("local", True)
+        proc.send_signal(signal.SIGTERM)
+        async with asyncio.timeout(120):
+            assert await proc.wait() == 0
+    assert (tmp_path / "xdg" / "aims" / "runner" / "runs").is_dir()
+
+
+@pytest.mark.docker
+@pytest.mark.tracer
+async def test_the_tracer_comes_back_after_it_stops(tmp_path: Path) -> None:
+    try:
+        backend = await DockerBackend.open(audit="kernel")
+    except Exception as e:
+        if os.environ.get("AIMS_REQUIRE_TRACER"):
+            raise
+        pytest.skip(f"no kernel tracer: {e}")
+    async with backend:
+        tracer = backend.tracer
+        assert tracer is not None
+        await tracer.stop()
+        assert not tracer.alive
+        await backend.restart_tracer()
+        assert backend.tracer is not None
+        assert backend.tracer is not tracer
+        assert backend.tracer.alive
+        assert backend.tracer_restarts == 1
+        sandbox = await backend.create(
+            SandboxSpec(image="python:3.13-slim"), run_id="r", agent_id="a"
+        )
+        try:
+            assert sandbox.audit == "kernel"
+        finally:
+            await sandbox.close()

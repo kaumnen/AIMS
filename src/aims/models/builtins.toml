@@ -1,0 +1,73 @@
+# Limits, timeouts, retries and output caps are starting values to tune.
+
+[profiles."meta-spark-1.3-contributor"]
+backend = "responses"
+base_url = "https://api.meta.ai/v1"
+model = "muse-spark-1.3-contributor"
+weights = "meta/muse-spark-1.3"
+api_key_env = "MODEL_API_KEY"
+reasoning = "summary"
+effort = "medium"
+summary = "auto"
+max_output_tokens = 16384
+context_tokens = 1048576
+price = { input = 0.10, cached = 0.002, output = 0.20 }
+limits = { rpm = 150, tpm = 3000000, concurrency = 8, group = "meta-contributor" }
+
+[profiles."meta-spark-1.3"]
+backend = "responses"
+base_url = "https://api.meta.ai/v1"
+model = "muse-spark-1.3"
+weights = "meta/muse-spark-1.3"
+api_key_env = "MODEL_API_KEY"
+reasoning = "summary"
+effort = "medium"
+summary = "auto"
+max_output_tokens = 16384
+context_tokens = 1048576
+price = { input = 1.25, cached = 0.15, output = 4.25 }
+limits = { rpm = 3000, tpm = 4000000, concurrency = 16, group = "meta-spark-1.3" }
+
+[profiles."meta-wonder-1.0"]
+backend = "responses"
+base_url = "https://api.meta.ai/v1"
+model = "muse-wonder-1.0"
+weights = "meta/muse-wonder-1.0"
+api_key_env = "MODEL_API_KEY"
+reasoning = "summary"
+effort = "high"
+summary = "auto"
+max_output_tokens = 32768
+context_tokens = 1048576
+price = { input = 4.00, cached = 0.20, output = 20.00 }
+limits = { rpm = 3000, tpm = 4000000, concurrency = 16, group = "meta-wonder-1.0" }
+
+[profiles."fireworks-spark-open"]
+backend = "chat"
+base_url = "https://api.fireworks.ai/inference/v1"
+model = "accounts/fireworks/models/muse-spark-open"
+weights = "meta/muse-spark-open"
+api_key_env = "FIREWORKS_API_KEY"
+reasoning = "full"
+effort = "medium"
+max_output_tokens = 16384
+context_tokens = 1048576
+price = { input = 1.25, cached = 0.15, output = 4.25 }
+limits = { rpm = 600, concurrency = 8, group = "fireworks" }
+
+[profiles."modal-glimmer"]
+backend = "chat"
+base_url_env = "AIMS_GLIMMER_URL"
+model = "muse-glimmer"
+weights = "meta/muse-glimmer"
+api_key_env = "AIMS_GLIMMER_KEY"
+reasoning = "full"
+max_output_tokens = 16384
+sampling = { temperature = 1.0, top_p = 0.95, top_k = 64 }
+limits = { concurrency = 8, group = "modal-glimmer" }
+timeouts = { connect = 30, stall = 600, wall = 1800 }
+
+[roles]
+agent = "meta-spark-1.3-contributor"
+sweep = "meta-wonder-1.0"
+judge = "meta-wonder-1.0"

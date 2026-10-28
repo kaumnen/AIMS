@@ -70,3 +70,35 @@ async def ensure_pulled(docker: aiodocker.Docker, image: str) -> dict:
         name, tag = image.rsplit(":", 1)
     await docker.images.pull(name, tag=tag)
     return await docker.images.inspect(image)
+
+
+ENV_REPO = "aims-env"
+
+
+def built_tag(context: bytes, dockerfile: str = "Dockerfile") -> str:
+    """The tag of the image built from the tar build context `context`."""
+    digest = hashlib.sha256(context + b"\0" + dockerfile.encode()).hexdigest()
+    return f"{ENV_REPO}:{digest[:16]}"
+
+
+async def ensure_built(
+    docker: aiodocker.Docker, context: bytes, dockerfile: str = "Dockerfile"
+) -> str:
+    """Build the tar build context `context` unless an image built from the same bytes exists."""
+    tag = built_tag(context, dockerfile)
+    try:
+        await docker.images.inspect(tag)
+    except aiodocker.DockerError as e:
+        if e.status != 404:
+            raise
+    else:
+        return tag
+    log.info("building %s", tag)
+    await docker.images.build(
+        fileobj=io.BytesIO(gzip.compress(context, mtime=0)),
+        encoding="gzip",
+        path_dockerfile=dockerfile,
+        tag=tag,
+        labels={"aims.managed": "1"},
+    )
+    return tag

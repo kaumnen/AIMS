@@ -64,6 +64,7 @@ jobs:
         with:
           bun-version: "1.4.4"
       - run: bun install --frozen-lockfile
+      - run: bun run gen && git diff --exit-code src/api/schema.gen.ts
       - run: bun fmt --check
       - run: bun run lint
       - run: bun check

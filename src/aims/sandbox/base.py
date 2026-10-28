@@ -1,6 +1,6 @@
 import asyncio
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Annotated, Literal, Protocol
 
@@ -11,6 +11,7 @@ from aims.events import AuditLevel, ExecEnd, FdKind, FileOp, FsChangeType, FsKin
 AGENT_UID = 1000
 RUNNER_UID = 1001
 TOOLBOX = "/.aims"
+RUNNER_DIR = "/.aims-runner"
 
 AuditMode = Literal["auto", "kernel", "snapshot"]
 
@@ -58,15 +59,23 @@ class SandboxSpec(BaseModel):
     kill_leftovers: bool = False
     output_limit: int = Field(default=4 * 1024 * 1024, ge=0)
     sample_hz: int = Field(default=50, ge=10, le=200)
+    runner_mb: int | None = Field(default=None, ge=1)
+    """Size of a tmpfs at `RUNNER_DIR` only the runner uid can enter, None for none."""
+    keep: bool = False
+    """Leave the container running and its volumes in place when the sandbox closes."""
 
 
 @dataclass(slots=True)
 class Capture:
-    """Output of one exec: the first `limit` bytes of each stream and the total sizes."""
+    """Output of one exec: the first `limit` and last `tail` bytes of each stream, and the total
+    sizes."""
 
     limit: int
+    tail: int = 8192
     stdout: bytearray = field(default_factory=bytearray)
     stderr: bytearray = field(default_factory=bytearray)
+    stdout_tail: bytearray = field(default_factory=bytearray)
+    stderr_tail: bytearray = field(default_factory=bytearray)
     stdout_bytes: int = 0
     stderr_bytes: int = 0
 
@@ -74,9 +83,11 @@ class Capture:
         if stream == 2:
             self.stderr_bytes += len(data)
             self.stderr += data[: max(0, self.limit - len(self.stderr))]
+            self.stderr_tail = (self.stderr_tail + data)[-self.tail :] if self.tail else bytearray()
         else:
             self.stdout_bytes += len(data)
             self.stdout += data[: max(0, self.limit - len(self.stdout))]
+            self.stdout_tail = (self.stdout_tail + data)[-self.tail :] if self.tail else bytearray()
 
     @property
     def truncated(self) -> bool:
@@ -360,7 +371,13 @@ class Sandbox(Protocol):
         timeout_ms: int,
         capture: Capture,
         on_pid: Callable[[int], None] | None = None,
-    ) -> Outcome: ...
+        stdin: bytes | None = None,
+        gid: int | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> Outcome:
+        """Run `argv`. `stdin` is written to the process and then closed; `gid` defaults to
+        `uid`; `env` adds to the container's environment."""
+        ...
 
     async def processes(self) -> list[Proc]: ...
 
@@ -408,6 +425,10 @@ class Sandbox(Protocol):
 
 class SandboxBackend(Protocol):
     name: str
+
+    async def build(self, context: bytes, dockerfile: str = "Dockerfile") -> str:
+        """Build an image from a tar build context, reusing one built from the same bytes."""
+        ...
 
     async def create(self, spec: SandboxSpec, *, run_id: str, agent_id: str) -> Sandbox: ...
 

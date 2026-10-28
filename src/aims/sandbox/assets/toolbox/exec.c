@@ -5,6 +5,10 @@
  * SIGTERM, then SIGKILL after GRACE_MS. Exits with PROG's status (128 + signal
  * when PROG was killed), 124 when SIGTERM ended it after the deadline and 137
  * when SIGKILL was needed.
+ *
+ * Time the sandbox spends frozen (docker pause) does not count: the wait runs
+ * in short slices, and a slice that took far longer than asked is taken as a
+ * freeze and moves the deadline on by the excess.
  */
 #define _GNU_SOURCE
 #include <errno.h>
@@ -22,15 +26,22 @@ static long long now_ms(void) {
     return t.tv_sec * 1000LL + t.tv_nsec / 1000000;
 }
 
+#define SLICE_MS 200
+#define FROZEN_MS 1000
+
 static int reap_until(pid_t pid, long long deadline, int *status, const sigset_t *chld) {
     for (;;) {
         pid_t r = waitpid(pid, status, WNOHANG);
         if (r == pid) return 1;
         if (r < 0 && errno != EINTR) return -1;
-        long long left = deadline - now_ms();
+        long long start = now_ms();
+        long long left = deadline - start;
         if (left <= 0) return 0;
-        struct timespec ts = {left / 1000, (left % 1000) * 1000000};
+        long long step = left < SLICE_MS ? left : SLICE_MS;
+        struct timespec ts = {step / 1000, (step % 1000) * 1000000};
         sigtimedwait(chld, NULL, &ts);
+        long long took = now_ms() - start;
+        if (took > step + FROZEN_MS) deadline += took - step;
     }
 }
 

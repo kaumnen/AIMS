@@ -36,7 +36,9 @@ def digest(body: dict[str, Any]) -> str:
 def seal(
     head: Head, *, run_id: str, ts: str, agent_id: str | None, type: str, data: dict[str, Any]
 ) -> tuple[dict[str, Any], bytes, Head]:
-    """Chain one event onto `head`. Returns the event, its canonical line and the new head."""
+    """Chain one event onto `head`. Returns the event, its canonical line and the new head.
+    The event is read back from the line, so it holds what any later reader of the log gets:
+    1.0 is written as 1 and comes back an int."""
     if head.finished:
         raise ChainError("run is finished", **_at(head))
     if (head.seq == -1) != (type == "run.started"):
@@ -55,6 +57,7 @@ def seal(
     line = rfc8785.dumps(event) + b"\n"
     if len(line) > MAX_LINE:
         raise ChainError(f"event is {len(line)} bytes, limit {MAX_LINE}", **_at(head))
+    event = json.loads(line)
     return event, line, _advance(head, event, len(line))
 
 

@@ -106,6 +106,9 @@ class FakeSandbox:
         timeout_ms: int,
         capture: Capture,
         on_pid: Callable[[int], None] | None = None,
+        stdin: bytes | None = None,
+        gid: int | None = None,
+        env: Any = None,
     ) -> Outcome:
         self.runs.append(list(argv))
         step = self.steps.pop(0)
@@ -176,6 +179,9 @@ class FakeBackend:
 
     def __init__(self, sandbox: FakeSandbox) -> None:
         self.sandbox = sandbox
+
+    async def build(self, context: bytes, dockerfile: str = "Dockerfile") -> str:
+        return "aims-env:fake"
 
     async def create(self, spec: SandboxSpec, *, run_id: str, agent_id: str) -> FakeSandbox:
         return self.sandbox
@@ -570,6 +576,17 @@ async def test_runner_and_foreign_roots_are_not_recorded(store: LocalEventStore)
     assert procs == [100]
 
 
+async def test_a_runner_exec_records_its_own_root(store: LocalEventStore) -> None:
+    sb = FakeSandbox()
+    sb.steps.append(step(root(100), root(200, uid=RUNNER_UID), pid=200))
+    run_id, audited = await start(store, sb)
+    result = await audited.exec("pytest", timeout_s=5, uid=RUNNER_UID, phase="verifier")
+    await audited.close()
+
+    procs = [e for e in await events(store, run_id) if e.type == "proc.exec"]
+    assert [(e.data["pid"], e.data["exec_id"]) for e in procs] == [(200, result.finished.exec_id)]
+
+
 async def test_root_seen_before_its_pid_is_known(store: LocalEventStore) -> None:
     sb = FakeSandbox()
     sb.steps.append(step(root(100), child(101, 100, "ls"), Exit(100, 0, None, at=AT), pid=None))
@@ -890,6 +907,18 @@ async def test_leftovers_killed_when_asked(store: LocalEventStore) -> None:
     assert [p.command for p in result.finished.leftover] == ["miner"]
     assert result.finished.leftover_killed
     assert sb.runs[-1] == ["/.aims/busybox", "kill", "-KILL", "-1"]
+
+
+async def test_runner_leftovers_are_not_reported_killed(store: LocalEventStore) -> None:
+    sb = FakeSandbox(kernel=False)
+    sb.after = [Proc(pid=9, ppid=1, uid=RUNNER_UID, command="pytest --forked")]
+    sb.steps += [step(), step(pid=None)]
+    _, audited = await start(store, sb, kill_leftovers=True)
+    result = await audited.exec("pytest", timeout_s=5, uid=RUNNER_UID, phase="verifier")
+    await audited.close()
+
+    assert [p.command for p in result.finished.leftover] == ["pytest --forked"]
+    assert not result.finished.leftover_killed
 
 
 async def test_unexpected_error_still_finishes_the_exec(store: LocalEventStore) -> None:

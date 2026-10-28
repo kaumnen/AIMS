@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import sqlite3
 from collections.abc import AsyncIterator, Callable
@@ -24,9 +25,11 @@ from aims.events import (
     RunFinished,
     RunLocked,
     RunStarted,
+    TaskScored,
     ToolCall,
     verify_run,
 )
+from aims.events.blobs import ZSTD_MAGIC
 from aims.events.chain import GENESIS, Head, digest, seal
 from aims.events.schema import now
 from aims.events.store import INLINE_LIMIT
@@ -88,6 +91,23 @@ async def test_lines_are_canonical(store: LocalEventStore) -> None:
     assert len(lines) == 5
     for line in lines:
         assert rfc8785.dumps(json.loads(line)) + b"\n" == line
+
+
+async def test_appended_events_match_what_a_reader_gets_later(tmp_path: Path) -> None:
+    async with await LocalEventStore.open(tmp_path) as store:
+        run_id = await store.create_run(RunStarted(scenario="s", oversight="observe"))
+        seen: list[Event] = []
+        store.tap(run_id, seen.extend)
+        (live,) = await store.append(run_id, [Draft(TaskScored(reward=1.0))])
+        assert live.data["reward"] == 1
+        assert isinstance(live.data["reward"], int)
+        assert seen == [live]
+        (indexed,) = await store.events(run_id, after=0)
+        assert indexed == live
+    async with await LocalEventStore.open(tmp_path) as store:
+        await store.rebuild()
+        (rebuilt,) = await store.events(run_id, after=0)
+        assert rebuilt == live
 
 
 async def test_finish_seals_run(store: LocalEventStore) -> None:
@@ -449,3 +469,23 @@ async def test_cli_verify(store: LocalEventStore) -> None:
     bad = runner.invoke(app, ["verify", str(store.root / run_id)])
     assert bad.exit_code == 1
     assert "expected seq 2" in bad.stderr
+
+
+async def test_blobs_are_compressed_on_disk(store: LocalEventStore) -> None:
+    run_id = await store.create_run(STARTED)
+    data = b"model output " * 1000
+    ref = await store.put_blob(run_id, data)
+    assert ref.size == len(data)
+    path = store.root / run_id / "blobs" / ref.sha256
+    assert path.read_bytes().startswith(ZSTD_MAGIC)
+    assert path.stat().st_size < len(data) // 10
+    assert await store.get_blob(run_id, ref.sha256) == data
+
+    for raw in [b"stored before compression", ZSTD_MAGIC + b"not a frame"]:
+        legacy = hashlib.sha256(raw).hexdigest()
+        (store.root / run_id / "blobs" / legacy).write_bytes(raw)
+        assert await store.get_blob(run_id, legacy) == raw
+        old = BlobRef(sha256=legacy, size=len(raw))
+        await store.append(run_id, [Draft(ToolCall(call_id="o", name="shell", arguments=old))])
+    await store.append(run_id, [Draft(ToolCall(call_id="c", name="shell", arguments=ref)), call(2)])
+    assert verify_run(store.root / run_id).ok

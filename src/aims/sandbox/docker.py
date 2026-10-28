@@ -8,7 +8,7 @@ import re
 import socket
 import time
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Self
 
 import aiodocker
@@ -19,6 +19,7 @@ from pydantic import JsonValue
 from aims.events import AuditLevel, Proc
 from aims.sandbox.base import (
     AGENT_UID,
+    RUNNER_DIR,
     RUNNER_UID,
     TOOLBOX,
     AuditMode,
@@ -33,7 +34,7 @@ from aims.sandbox.base import (
     Tree,
     check_name,
 )
-from aims.sandbox.images import ensure_image, ensure_pulled
+from aims.sandbox.images import ensure_built, ensure_image, ensure_pulled
 from aims.sandbox.reader import Reader
 from aims.sandbox.resources import Sampler, SamplerError, Watch
 from aims.sandbox.trace import ARCHES, SYSCALLS, Mounts
@@ -45,6 +46,8 @@ GRACE_MS = 1000
 DRAIN_S = 5.0
 SAMPLES_END_S = 1.0
 QUIESCE_S = 2.0
+STDIN_POLL_S = 0.1
+STDIN_GRACE_S = 1.0
 MIB = 1024 * 1024
 HOME = "/home/agent"
 
@@ -74,6 +77,8 @@ class DockerBackend:
         self.arch = arch
         self.tracer = tracer
         self.sampler = sampler
+        self.ring_pages: int | None = None
+        self.tracer_restarts = 0
         self._labels = labels
         self._toolbox_image, self._toolbox_volume = toolbox
 
@@ -109,9 +114,11 @@ class DockerBackend:
                         raise SandboxError(f"kernel audit unavailable: {e}") from e
                     log.warning("kernel audit unavailable, using snapshot audit: %s", e)
                     tracer = None
-            return cls(
+            backend = cls(
                 docker, arch=arch, labels=labels, toolbox=toolbox, tracer=tracer, sampler=sampler
             )
+            backend.ring_pages = ring_pages
+            return backend
         except BaseException:
             if tracer is not None:
                 await tracer.stop()
@@ -133,6 +140,33 @@ class DockerBackend:
             await self.sampler.stop()
         await self.docker.close()
 
+    async def restart_tracer(self) -> None:
+        """Start a new kernel tracer in place of one that stopped or never started. Sandboxes
+        made after it use the new one; call it only while no sandbox is open."""
+        old = self.tracer
+        if old is not None and old.alive:
+            return
+        if old is not None:
+            await old.stop()
+            self.tracer = None
+        name = f"aims-tracer-{uuid.uuid4().hex[:12]}"
+        tracer = Tracer(
+            self.docker,
+            self._labels,
+            name,
+            ring_pages=self.ring_pages,
+            toolbox=self._toolbox_volume,
+        )
+        try:
+            await tracer.start()
+        except (TracerError, aiodocker.DockerError, TimeoutError) as e:
+            raise SandboxError(f"kernel audit unavailable: {e}") from e
+        self.tracer = tracer
+        self.tracer_restarts += 1
+
+    async def build(self, context: bytes, dockerfile: str = "Dockerfile") -> str:
+        return await ensure_built(self.docker, context, dockerfile)
+
     async def create(self, spec: SandboxSpec, *, run_id: str, agent_id: str) -> DockerSandbox:
         check_name(agent_id)
         image = await ensure_pulled(self.docker, spec.image)
@@ -149,11 +183,17 @@ class DockerBackend:
             (f"aims-{run_id}-{agent_id}-tmp", "/tmp", f"size={spec.tmp_mb}m,mode=1777"),
             (f"aims-{run_id}-{agent_id}-home", HOME, f"size=64m,{owner}"),
         ]
+        if spec.runner_mb is not None:
+            runner = f"uid={RUNNER_UID},gid={RUNNER_UID},mode=0700"
+            options = f"size={spec.runner_mb}m,{runner}"
+            scratch.append((f"aims-{run_id}-{agent_id}-runner", RUNNER_DIR, options))
         for volume, _, options in scratch:
             await self._scratch(run_id, volume, f"nosuid,nodev,{options}")
         volumes += [(volume, target, False) for volume, target, _ in scratch]
 
         labels = {**self._labels, "aims.run": run_id, "aims.agent": agent_id}
+        if spec.keep:
+            labels["aims.keep"] = "1"
         mounts = [
             {"Type": "volume", "Source": self._toolbox_volume, "Target": TOOLBOX, "ReadOnly": True},
             *(
@@ -303,6 +343,10 @@ class DockerSandbox:
         self._route = route
         self._watch: Watch | None = None
         self._reader = reader
+        self._paused_at: float | None = None
+        self._frozen_s = 0.0
+        self._killed = False
+        self._deadlines: dict[asyncio.Timeout, float | None] = {}
 
     @classmethod
     async def attach(
@@ -317,7 +361,8 @@ class DockerSandbox:
     ) -> DockerSandbox:
         """Learn the sandbox's pid namespace and mounts, and hand them to the tracer."""
         probe = (
-            "readlink /proc/self/ns/pid; [ -x /bin/sh ] && echo /bin/sh || echo none; "
+            "readlink /proc/self/ns/pid; "
+            "for s in /bin/bash /bin/sh; do [ -x $s ] && break; s=none; done; echo $s; "
             "cat /proc/self/mountinfo"
         )
         capture = Capture(limit=MIB)
@@ -335,7 +380,7 @@ class DockerSandbox:
         if outcome.exit_code != 0 or match is None or len(lines) < 3:
             raise SandboxError(f"sandbox probe failed: {outcome} {bytes(capture.stderr)!r}")
         pidns = int(match.group(1))
-        shell = ["/bin/sh", "-c"] if lines[1] == "/bin/sh" else [f"{TOOLBOX}/busybox", "sh", "-c"]
+        shell = [lines[1], "-c"] if lines[1] != "none" else [f"{TOOLBOX}/busybox", "sh", "-c"]
         route = None
         tracer = backend.tracer
         if tracer is not None and tracer.alive and outcome.pid is not None:
@@ -393,6 +438,9 @@ class DockerSandbox:
         timeout_ms: int,
         capture: Capture,
         on_pid: Callable[[int], None] | None = None,
+        stdin: bytes | None = None,
+        gid: int | None = None,
+        env: Mapping[str, str] | None = None,
     ) -> Outcome:
         start = time.monotonic()
 
@@ -401,29 +449,52 @@ class DockerSandbox:
 
         try:
             exe = await self._container.exec(
-                list(argv), user=f"{uid}:{uid}", workdir=cwd, stdout=True, stderr=True
+                list(argv),
+                user=f"{uid}:{uid if gid is None else gid}",
+                workdir=cwd,
+                stdout=True,
+                stderr=True,
+                stdin=stdin is not None,
+                environment=dict(env) if env else None,
             )
         except aiodocker.DockerError as e:
             return Outcome("failed", None, None, elapsed(), error=e.message)
         end = "exited"
         pid: int | None = None
+        feeder: asyncio.Task[None] | None = None
+        frozen = self.frozen_s()
+        deadline = asyncio.timeout(timeout_ms / 1000 + GRACE_MS / 1000 + DRAIN_S)
         try:
-            async with asyncio.timeout(timeout_ms / 1000 + GRACE_MS / 1000 + DRAIN_S):
+            async with deadline:
+                self._deadlines[deadline] = None
+                if self._paused_at is not None:
+                    self._hold(deadline)
                 stream = await exe.start(detach=False).__aenter__()
                 try:
+                    if stdin is not None:
+                        feeder = asyncio.create_task(_feed(stream, stdin))
                     with contextlib.suppress(aiodocker.DockerError):
                         pid = (await exe.inspect()).get("Pid") or None
                     if pid is not None and on_pid is not None:
                         on_pid(pid)
-                    while (message := await stream.read_out()) is not None:
-                        capture.add(message.stream, message.data)
+                    if feeder is None:
+                        await _read(stream, capture)
+                    else:
+                        await _read_feeding(exe, stream, capture, feeder)
                 finally:
+                    if feeder is not None:
+                        feeder.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await feeder
                     await stream.close()
         except TimeoutError:
             end = "timeout"
         except aiodocker.DockerError as e:
             return Outcome("failed", None, pid, elapsed(), error=e.message)
+        finally:
+            self._deadlines.pop(deadline, None)
         duration = elapsed()
+        active = duration - int((self.frozen_s() - frozen) * 1000)
         try:
             state = await exe.inspect()
         except aiodocker.DockerError as e:
@@ -433,7 +504,7 @@ class DockerSandbox:
             if on_pid is not None:
                 on_pid(pid)
         exit_code = None if state.get("Running") else state.get("ExitCode")
-        if duration >= timeout_ms:
+        if active >= timeout_ms:
             end = "timeout"
         return Outcome(end, exit_code, pid, duration)
 
@@ -481,11 +552,45 @@ class DockerSandbox:
             path, inode=inode, dev=dev, size=size, mtime_us=mtime_us, ctime_us=ctime_us
         )
 
+    @property
+    def paused(self) -> bool:
+        return self._paused_at is not None
+
+    def frozen_s(self) -> float:
+        """Seconds the sandbox has spent paused so far."""
+        if self._paused_at is None:
+            return self._frozen_s
+        return self._frozen_s + time.monotonic() - self._paused_at
+
     async def pause(self) -> None:
+        """Freeze every process of the sandbox. Exec deadlines stop running while it is frozen.
+        Pausing a paused or killed sandbox does nothing."""
+        if self._paused_at is not None or self._killed:
+            return
         await self._container.pause()
+        self._paused_at = time.monotonic()
+        for deadline in self._deadlines:
+            self._hold(deadline)
 
     async def resume(self) -> None:
-        await self._container.unpause()
+        if self._paused_at is None:
+            return
+        if not self._killed:
+            await self._container.unpause()
+        self._frozen_s += time.monotonic() - self._paused_at
+        self._paused_at = None
+        now = asyncio.get_running_loop().time()
+        for deadline, left in self._deadlines.items():
+            if left is not None:
+                deadline.reschedule(now + left)
+                self._deadlines[deadline] = None
+
+    def _hold(self, deadline: asyncio.Timeout) -> None:
+        when = deadline.when()
+        if when is None:
+            return
+        self._deadlines[deadline] = max(0.0, when - asyncio.get_running_loop().time())
+        deadline.reschedule(None)
 
     async def put_archive(self, path: str, data: bytes) -> None:
         await self._container.put_archive(path, data)
@@ -497,9 +602,13 @@ class DockerSandbox:
         return archive.fileobj.getvalue()
 
     async def kill(self) -> None:
-        """Kill the container; return once its last resource readings are queued."""
+        """Kill the container, paused or not; return once its last resource readings are
+        queued."""
+        self._killed = True
         with contextlib.suppress(aiodocker.DockerError):
             await self._container.kill(signal="SIGKILL")
+        if self._paused_at is not None:
+            await self.resume()
         if self._watch is not None:
             # The cgroup goes after the kill returns; the sampler then prints its last batch.
             await self._watch.ended(SAMPLES_END_S)
@@ -519,11 +628,56 @@ class DockerSandbox:
             self._route = None
         if isinstance(self._reader, Reader):
             await self._reader.close()
+        if self._spec.keep:
+            return
         with contextlib.suppress(aiodocker.DockerError):
             await self._container.delete(force=True)
         for name in (*self._scratch, *(() if keep_volumes else (self._work,))):
             with contextlib.suppress(aiodocker.DockerError):
                 await DockerVolume(self._backend.docker, name).delete()
+
+
+async def _read(stream: Any, capture: Capture) -> None:
+    while (message := await stream.read_out()) is not None:
+        capture.add(message.stream, message.data)
+
+
+async def _read_feeding(
+    exe: Any, stream: Any, capture: Capture, feeder: asyncio.Task[None]
+) -> None:
+    """Read output while stdin is written. A process that exits before reading all of its
+    stdin leaves the daemon holding the connection open, so its exit ends the wait."""
+    reader = asyncio.create_task(_read(stream, capture))
+    try:
+        while not reader.done():
+            await asyncio.wait({reader}, timeout=STDIN_POLL_S)
+            if reader.done() or feeder.done():
+                continue
+            try:
+                running = (await exe.inspect()).get("Running")
+            except aiodocker.DockerError:
+                continue
+            if not running:
+                feeder.cancel()
+                await asyncio.wait({reader}, timeout=STDIN_GRACE_S)
+                break
+        if reader.done():
+            reader.result()
+    finally:
+        reader.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await reader
+
+
+async def _feed(stream: Any, data: bytes) -> None:
+    """Write `data` to the exec's stdin, then close it. A process that exits early stops it."""
+    try:
+        await stream.write_in(data)
+        transport = stream._resp.connection.transport
+        if transport is not None and transport.can_write_eof():
+            transport.write_eof()
+    except (ConnectionError, RuntimeError, AttributeError) as e:
+        log.debug("stdin not fully written: %s", e)
 
 
 def _info(container: DockerContainer, spec: SandboxSpec, image: dict[str, Any]) -> SandboxInfo:
@@ -537,6 +691,8 @@ def _info(container: DockerContainer, spec: SandboxSpec, image: dict[str, Any]) 
         "pids": spec.pids,
         "tmp_mb": spec.tmp_mb,
         "writable_root": spec.writable_root,
+        "runner_mb": spec.runner_mb,
+        "keep": spec.keep,
         "network": "none",
         "mounts": [m.model_dump() for m in spec.mounts],
         "repo_digests": list(image.get("RepoDigests") or []),
@@ -609,6 +765,8 @@ async def _sweep(docker: aiodocker.Docker, host: str) -> None:
     query = {"label": ["aims.managed=1", f"aims.host={host}"]}
     for container in await docker.containers.list(all=True, filters=json.dumps(query)):
         labels = container["Labels"] or {}
+        if labels.get("aims.keep") == "1":
+            continue
         try:
             pid = int(labels.get("aims.pid", ""))
         except ValueError:

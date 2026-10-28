@@ -1,12 +1,14 @@
 import asyncio
 import contextlib
+import io
 import json
 import logging
 import posixpath
+import tarfile
 import time
 import uuid
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Literal
 
@@ -18,6 +20,7 @@ from aims.events import (
     Draft,
     EventStore,
     ExecFinished,
+    ExecPhase,
     ExecStarted,
     FdInfo,
     FileAccess,
@@ -38,6 +41,7 @@ from aims.events import (
     ProcOutput,
     ProcSignal,
     PtraceEvent,
+    SandboxArchived,
     SandboxStarted,
     SandboxStopped,
     SysDenied,
@@ -96,6 +100,7 @@ FLUSH_S = 0.1
 FLUSH_N = 500
 BARRIER_S = 2.0
 MEMORY = 4096
+ARCHIVE_CAP = 256 * 1024 * 1024
 
 INTERNAL = "internal"
 _UNKNOWN = "\0unknown"
@@ -107,9 +112,13 @@ class SandboxStoppedError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class ExecResult:
+    """`stdout` and `stderr` hold the first bytes of each stream, `*_tail` the last ones."""
+
     finished: ExecFinished
     stdout: bytes
     stderr: bytes
+    stdout_tail: bytes = b""
+    stderr_tail: bytes = b""
 
 
 @dataclass(slots=True)
@@ -178,6 +187,7 @@ class _Active:
     audit: AuditLevel = "snapshot"
     root: int | None = None
     exited: asyncio.Event = field(default_factory=asyncio.Event)
+    uid: int = AGENT_UID
 
 
 class AuditedSandbox:
@@ -275,8 +285,21 @@ class AuditedSandbox:
         return audited
 
     async def exec(
-        self, command: str, *, timeout_s: float, call_id: str | None = None
+        self,
+        command: str,
+        *,
+        timeout_s: float,
+        call_id: str | None = None,
+        stdin: bytes | None = None,
+        uid: int = AGENT_UID,
+        gid: int | None = None,
+        phase: ExecPhase = "agent",
+        cwd: str | None = None,
+        env: Mapping[str, str] | None = None,
+        limit: int | None = None,
     ) -> ExecResult:
+        """Run `command` under the wrapper. `limit` caps the bytes kept of each output stream,
+        `spec.output_limit` by default."""
         async with self._lock:
             if self._stopped:
                 raise SandboxStoppedError("the sandbox is stopped")
@@ -284,6 +307,7 @@ class AuditedSandbox:
             timeout_ms = max(1, int(timeout_s * 1000))
             audit = self.sandbox.audit
             wrapper = self.sandbox.wrapper(timeout_ms)
+            workdir = cwd or self.spec.workdir
             before = await self._snapshot()
             await self._diff_window()
             await self._append(
@@ -293,25 +317,32 @@ class AuditedSandbox:
                         call_id=call_id,
                         command=await self._store.content(self._run_id, command),
                         wrapper=wrapper,
-                        user=str(AGENT_UID),
-                        cwd=self.spec.workdir,
+                        user=str(uid) if gid is None or gid == uid else f"{uid}:{gid}",
+                        cwd=workdir,
                         timeout_ms=timeout_ms,
                         audit=audit,
+                        phase=phase,
+                        stdin=None if stdin is None else await self._content(stdin),
+                        stdin_bytes=None if stdin is None else len(stdin),
+                        env=dict(env or {}),
                     ),
                 ]
             )
-            active = _Active(exec_id, audit)
+            active = _Active(exec_id, audit, uid=uid)
             self._active = active
-            capture = Capture(self.spec.output_limit)
+            capture = Capture(self.spec.output_limit if limit is None else limit)
             start = time.monotonic()
             try:
                 outcome = await self.sandbox.run(
                     [*wrapper, command],
-                    uid=AGENT_UID,
-                    cwd=self.spec.workdir,
+                    uid=uid,
+                    cwd=workdir,
                     timeout_ms=timeout_ms,
                     capture=capture,
                     on_pid=lambda pid: self._root(pid, active),
+                    stdin=stdin,
+                    gid=gid,
+                    env=env,
                 )
             except asyncio.CancelledError:
                 elapsed = int((time.monotonic() - start) * 1000)
@@ -326,6 +357,62 @@ class AuditedSandbox:
                 await asyncio.shield(self._finish(call_id, active, failed, capture, before))
                 raise
             return await asyncio.shield(self._finish(call_id, active, outcome, capture, before))
+
+    async def archive(
+        self, paths: Sequence[str], *, cap: int = ARCHIVE_CAP
+    ) -> SandboxArchived | None:
+        """Log the files under `paths` as one tar blob, up to `cap` bytes of tar.
+
+        Run it while the sandbox runs: tmpfs volumes lose their content once it stops.
+        """
+        if self._stopped:
+            return None
+        out = io.BytesIO()
+        entries = skipped = 0
+        truncated = False
+        errors: list[str] = []
+        with tarfile.open(fileobj=out, mode="w", format=tarfile.PAX_FORMAT) as tar:
+            for path in paths:
+                try:
+                    data = await self.sandbox.get_archive(path)
+                except Exception as e:
+                    errors.append(f"{path}: {type(e).__name__}: {e}")
+                    continue
+                parent = posixpath.dirname(path.rstrip("/")).lstrip("/")
+                try:
+                    with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as source:
+                        for member in source:
+                            size = member.size if member.isfile() else 0
+                            if truncated or out.tell() + size + 1024 > cap:
+                                truncated = True
+                                skipped += 1
+                                continue
+                            member.name = posixpath.join(parent, member.name)
+                            if member.islnk():
+                                member.linkname = posixpath.join(parent, member.linkname)
+                            fileobj = source.extractfile(member) if member.isfile() else None
+                            tar.addfile(member, fileobj)
+                            entries += 1
+                except tarfile.TarError as e:
+                    errors.append(f"{path}: {type(e).__name__}: {e}")
+        data = out.getvalue()
+        ref = await self._store.put_blob(self._run_id, data) if entries else None
+        archived = SandboxArchived(
+            sandbox_id=self.sandbox.info.sandbox_id,
+            paths=list(paths),
+            archive=ref,
+            entries=entries,
+            bytes=len(data),
+            skipped=skipped,
+            truncated=truncated,
+            errors=errors,
+        )
+        await self._append([archived])
+        return archived
+
+    @property
+    def stopped(self) -> bool:
+        return self._stopped
 
     async def stop(
         self, reason: Literal["killed", "exec_failed"] = "killed", detail: str | None = None
@@ -343,7 +430,7 @@ class AuditedSandbox:
 
     async def close(self, *, keep_volumes: bool = False) -> None:
         try:
-            if not self._stopped:
+            if not self._stopped and not self.spec.keep:
                 await self.sandbox.kill()
             await self._quiesce()
             last = [
@@ -420,10 +507,13 @@ class AuditedSandbox:
             after = await self._snapshot()
             if before is not None and after is not None:
                 known = {p.pid for p in before}
-                leftover = [p for p in after if p.pid not in known and p.uid != RUNNER_UID]
+                # Runner uid processes are the sandbox's own, unless the runner ran this exec.
+                own = RUNNER_UID if active.uid != RUNNER_UID else None
+                leftover = [p for p in after if p.pid not in known and p.uid != own]
             if leftover and self.spec.kill_leftovers:
+                # The kill runs as the agent, so it reaches only the agent's processes.
                 await self._internal([f"{TOOLBOX}/busybox", "kill", "-KILL", "-1"], AGENT_UID)
-                killed = True
+                killed = all(p.uid == AGENT_UID for p in leftover)
         files = await self._files(active.exec_id, always=True)
         spills = await self._spill_events()
         scope = self._scopes.get(active.exec_id)
@@ -452,7 +542,13 @@ class AuditedSandbox:
         await self._append([*files, *spills, finished])
         if outcome.end == "failed":
             await self.stop("exec_failed", outcome.error)
-        return ExecResult(finished, bytes(capture.stdout), bytes(capture.stderr))
+        return ExecResult(
+            finished,
+            bytes(capture.stdout),
+            bytes(capture.stderr),
+            bytes(capture.stdout_tail),
+            bytes(capture.stderr_tail),
+        )
 
     async def _internal(self, argv: Sequence[str], uid: int) -> None:
         active = _Active(INTERNAL)
@@ -1108,7 +1204,7 @@ class AuditedSandbox:
         if record.pid in self._roots:
             return self._roots[record.pid]
         active = self._active
-        if active is None or (active.exec_id != INTERNAL and record.uid != AGENT_UID):
+        if active is None or (active.exec_id != INTERNAL and record.uid != active.uid):
             return INTERNAL
         if active.root is None:
             self._root(record.pid, active)

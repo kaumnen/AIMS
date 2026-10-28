@@ -267,7 +267,7 @@ async def test_kernel_audit_sees_what_ran(backend: DockerBackend, store: LocalEv
     procs = [p for p in payloads if isinstance(p, ProcExec)]
     argvs = [p.argv for p in procs]
     assert argvs[0][0] == "/.aims/aims-exec"
-    assert argvs[1] == ["/bin/sh", "-c", command]
+    assert argvs[1] == ["/bin/bash", "-c", command]
     assert all(p.inode and p.dev and p.magic for p in procs)
     assert all(p.nlink is not None and p.nlink >= 1 for p in procs)
     assert ["sh", "-c", "exit 7"] in argvs
@@ -1023,16 +1023,27 @@ async def test_signal_flood_spills_without_losing_records(
     finished = result.finished
     assert (finished.end, finished.exit_code, finished.dropped) == ("exited", 0, 0)
     cap = audit_module.CAPS["other"]
-    # Every loop iteration sends SIGCONT; the final SIGKILL ends the target.
-    expected_spilled = SIGNAL_FLOOD + 1 - cap
-    assert finished.spilled == expected_spilled
-
     evs = await events(store, run_id)
     assert not [e for e in evs if e.type == "audit.lost"]
-    signals = [e for e in evs if e.type == "proc.signal"]
-    assert len(signals) == cap
-    assert all(e.agent_id == "a1" and e.data["exec_id"] == finished.exec_id for e in signals)
-    assert [e.data["signal"] for e in signals] == [18] * cap
+    other = {
+        "sys.denied",
+        "ipc.event",
+        "ptrace.event",
+        "proc.signal",
+        "mem.exec",
+        "file.setattr",
+        "ns.event",
+    }
+    mine = [e for e in evs if e.type in other and e.data.get("exec_id") == finished.exec_id]
+    assert len(mine) == cap
+    signals = [e for e in mine if e.type == "proc.signal"]
+    # The shell's own records of the same cap kind (bash maps a few libraries) come first.
+    assert len(signals) >= cap - 10
+    assert all(e.agent_id == "a1" for e in signals)
+    assert [e.data["signal"] for e in signals] == [18] * len(signals)
+    # Every loop iteration sends SIGCONT; the final SIGKILL ends the target.
+    expected_spilled = SIGNAL_FLOOD + 1 - len(signals)
+    assert finished.spilled == expected_spilled
 
     spills = [e.payload() for e in evs if e.type == "audit.spill"]
     spills = [s for s in spills if isinstance(s, AuditSpill)]
@@ -1501,7 +1512,7 @@ async def test_subshell_output_is_recorded_as_a_fork(
     assert result.stdout == b"hi\n"
     exec_id = result.finished.exec_id
     kernel = by_kernel_order(await events(store, run_id))
-    sh = next(p for p in kernel if isinstance(p, ProcExec) and p.argv[:2] == ["/bin/sh", "-c"])
+    sh = next(p for p in kernel if isinstance(p, ProcExec) and p.argv[:2] == ["/bin/bash", "-c"])
     (fork,) = [p for p in kernel if isinstance(p, ProcFork)]
     assert (fork.ppid, fork.exec_id) == (sh.pid, exec_id)
     child = [p for p in kernel if p.pid == fork.pid]

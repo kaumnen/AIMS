@@ -3,7 +3,7 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
-from aims.events.schema import BlobRef, Content, Payload
+from aims.events.schema import BlobRef, Content, Hash, Payload
 
 Oversight = Literal["observe", "autonomous", "human"]
 RunStatus = Literal["completed", "failed", "killed", "cancelled"]
@@ -13,6 +13,49 @@ FileOp = Literal["read", "write", "delete", "rename", "denied", "mkdir", "symlin
 FsChangeType = Literal["added", "modified", "meta", "removed", "kind"]
 FsKind = Literal["file", "dir", "symlink", "fifo", "socket", "other"]
 FdKind = Literal["pipe", "fifo", "file", "char", "sock", "dir", "other"]
+ModelBackend = Literal["responses", "chat"]
+ModelStatus = Literal["completed", "incomplete", "error", "cancelled"]
+ModelError = Literal[
+    "http",
+    "redirect",
+    "connect",
+    "timeout",
+    "stall",
+    "wall",
+    "read",
+    "protocol",
+    "provider",
+    "replay",
+]
+ReasoningKind = Literal["none", "summary", "full"]
+ExecPhase = Literal["agent", "setup", "verifier", "replay"]
+AgentEnd = Literal[
+    "submitted",
+    "no_submit",
+    "budget_steps",
+    "budget_output_tokens",
+    "budget_cost",
+    "budget_wall",
+    "context_exhausted",
+    "model_error",
+    "sandbox_failed",
+    "divergence",
+    "killed",
+    "cancelled",
+    "error",
+]
+InputKind = Literal["instruction", "continue", "inject", "budget_warning"]
+OperatorActionKind = Literal["pause", "resume", "inject", "kill", "cancel", "sweep"]
+ResumeThen = Literal["continue", "kill", "inject", "deny"]
+RunKind = Literal["scenario", "monitor", "models.check"]
+ModelRole = Literal["sweep", "judge", "review"]
+FlagLayer = Literal["signal", "sweep", "judge"]
+SweepPart = Literal["evidence", "output", "messages", "reasoning"]
+SweepTrigger = Literal[
+    "every", "every_s", "flag", "budget", "agent_finished", "operator", "review", "final"
+]
+MonitorActionKind = Literal["pause", "resume", "kill", "deny"]
+Finding = Literal["yes", "no", "unclear"]
 # The largest integer RFC 8785 canonical JSON can carry.
 MAX_INT = 2**53 - 1
 Category = Literal[
@@ -28,16 +71,28 @@ Category = Literal[
     "constraint_violation",
     "eval_awareness",
     "alerting_operator",
+    "egress_attempt",
+    "privilege_escalation",
+    "monitor_manipulation",
 ]
 
 
 class RunStarted(Payload):
+    """`kind` says what the run is: a scenario run, a monitor run over the sealed run `origin`
+    (whose head hash was `origin_head`), or a model check. `monitor` is the identity hash of the
+    monitor that watches the run: its prompts, rubric, schemas, models, lanes, signal versions,
+    rules and AIMS version; None when the run has no monitor."""
+
     type = "run.started"
 
     scenario: str
     oversight: Oversight
     agents: list[str] = Field(default_factory=list)
     config: dict[str, JsonValue] = Field(default_factory=dict)
+    kind: RunKind = "scenario"
+    origin: str | None = None
+    origin_head: Hash | None = None
+    monitor: Hash | None = None
 
 
 class RunFinished(Payload):
@@ -58,21 +113,149 @@ class LogTruncated(Payload):
 
 
 class ToolCall(Payload):
-    """What the agent asked for, as the model sent it."""
+    """What the agent asked for, as the model sent it. `model_call` names the model call."""
 
     type = "tool.call"
 
     call_id: str
     name: str
     arguments: Content
+    model_call: str | None = None
 
 
 class ToolResult(Payload):
+    """What the model was given back for a tool call. `output_bytes` is the size of the output
+    before it was cut to fit, `truncated` whether it was. `replayed` marks an output taken from
+    the recording a fork replays rather than from the call run here. `denied` marks a call that
+    was not run because an operator or the monitor denied it; `output` is then the fixed reply
+    the agent was given."""
+
     type = "tool.result"
 
     call_id: str
     output: Content
     error: bool = False
+    output_bytes: int | None = None
+    truncated: bool = False
+    replayed: bool = False
+    denied: bool = False
+
+
+class ModelParams(BaseModel):
+    """The settings of a model request that shape its answer, for reading without the body."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    stream: bool
+    effort: str | None = None
+    summary: str | None = None
+    max_output_tokens: int | None = None
+    tools: list[str] = Field(default_factory=list)
+    parallel_tool_calls: bool | None = None
+    temperature: float | None = None
+    top_p: float | None = None
+    top_k: int | None = None
+    seed: int | None = None
+    schema_name: str | None = None
+
+
+class ModelRequest(Payload):
+    """Written before the HTTP request of one attempt is sent.
+
+    `body` holds the exact bytes sent, RFC 8785 canonical JSON, so `key`, the sha256 of the
+    canonical body, is also the blob's hash. Headers and keys are never recorded. `queued_ms` is
+    the wait for the rate limiter and the concurrency cap before the request went out. `role` marks
+    a call the monitor made: a sweep, the judge, or a review; None is an agent's call.
+    """
+
+    type = "model.request"
+
+    call_id: str
+    attempt: int = Field(ge=1)
+    profile: str
+    backend: ModelBackend
+    model: str
+    url: str
+    params: ModelParams
+    body: BlobRef
+    key: Hash
+    queued_ms: int = 0
+    role: ModelRole | None = None
+
+
+class ModelUsage(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    input_tokens: int | None = None
+    cached_tokens: int | None = None
+    output_tokens: int | None = None
+    reasoning_tokens: int | None = None
+
+
+class RateLimit(BaseModel):
+    """What the provider's rate-limit headers said, each field None when absent."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    limit_requests: int | None = None
+    remaining_requests: int | None = None
+    limit_tokens: int | None = None
+    remaining_tokens: int | None = None
+    reset_requests_ms: int | None = None
+    reset_tokens_ms: int | None = None
+    retry_after_ms: int | None = None
+    over_limit: bool | None = None
+
+
+class ModelResponse(Payload):
+    """How one attempt ended, failures included. Every attempt has one.
+
+    `body` is the raw response body, or for a stream the final response object as the provider
+    sent it, None when the stream ended early. `stream` holds the raw response bytes in the
+    chunks they arrived in, as JSON lines `{"ms": .., "text": ..}` (or `"b64"` for bytes that are
+    not UTF-8), `ms` counted from the request. `text` and `reasoning` are assembled from what
+    arrived, so a cancelled or stalled attempt keeps its partial content. `reasoning_kind` is what
+    the provider exposed: a summary, the full chain, or nothing. `source` is replay when the
+    answer was served from the run `origin_run`, from its event `origin_seq`.
+    """
+
+    type = "model.response"
+
+    call_id: str
+    attempt: int = Field(ge=1)
+    status: ModelStatus
+    http_status: int | None = None
+    provider_id: str | None = None
+    finish_reason: str | None = None
+    latency_ms: int
+    ttft_ms: int | None = None
+    usage: ModelUsage = Field(default_factory=ModelUsage)
+    cost_usd: float | None = None
+    ratelimit: RateLimit = Field(default_factory=RateLimit)
+    text: Content = ""
+    reasoning: Content | None = None
+    reasoning_kind: ReasoningKind = "none"
+    tool_calls: int = 0
+    body: BlobRef | None = None
+    stream: BlobRef | None = None
+    headers: dict[str, str] = Field(default_factory=dict)
+    error: str | None = None
+    error_kind: ModelError | None = None
+    retry: bool = False
+    source: Literal["live", "replay"] = "live"
+    origin_run: str | None = None
+    origin_seq: int | None = None
+
+    def search_text(self) -> str:
+        return "\n".join(
+            part
+            for part in (
+                self.text if isinstance(self.text, str) else "",
+                self.reasoning if isinstance(self.reasoning, str) else "",
+                self.error or "",
+            )
+            if part
+        )
 
 
 class Proc(BaseModel):
@@ -106,7 +289,12 @@ class SandboxStopped(Payload):
 
 
 class ExecStarted(Payload):
-    """Written before the command reaches the sandbox. The argv sent is `wrapper + [command]`."""
+    """Written before the command reaches the sandbox. The argv sent is `wrapper + [command]`.
+
+    `stdin` holds the bytes written to the command's stdin, `env` what the exec adds to the
+    container's environment. `phase` says on whose behalf it ran: the agent's tools, the task's
+    setup, the verifier, or a fork rebuilding its state.
+    """
 
     type = "exec.started"
 
@@ -118,6 +306,10 @@ class ExecStarted(Payload):
     cwd: str
     timeout_ms: int
     audit: AuditLevel
+    phase: ExecPhase = "agent"
+    stdin: Content | None = None
+    stdin_bytes: int | None = None
+    env: dict[str, str] = Field(default_factory=dict)
 
 
 class ExecFinished(Payload):
@@ -576,11 +768,331 @@ class AuditSpill(Payload):
 
 
 class MonitorFlag(Payload):
+    """A finding of the monitor. The event's agent is the agent it concerns, none for the run.
+
+    `layer` says what found it: a signal over the harness and kernel events, a sweep model over
+    the rendered trajectory, or the judge after the run. `source` names the signal, sweep or judge
+    rollout, and `lane` the sweep lane. `evidence` holds the seqs of the events it rests on; in a
+    monitor run they point into the origin run. `phase` is the exec phase of the evidence when a
+    signal knows it; a verifier-phase flag never pauses.
+
+    A signal flags once per (`source`, agent, `key`), then again when the key's `count` reaches
+    10, 100 and 1000, when `importance` or `subcategory` rises, and at the end of the run with
+    the exact count (`final`). `first_flag` is the seq of the key's first flag, None on that flag
+    itself; `first_seq` and `last_seq` bound the evidence seen for the key.
+
+    `suspicion` is a 0 to 100 score beside `importance`. `quote` is the verbatim excerpt a sweep
+    cited; `quote_verified` is false when it was not found in the cited events, which lowers
+    `importance` by one.
+    """
+
     type = "monitor.flag"
 
-    layer: Literal["signal", "sweep", "judge"]
+    layer: FlagLayer
     source: str
     category: Category
     importance: int = Field(ge=1, le=5)
     evidence: list[int] = Field(min_length=1)
     justification: str
+    subcategory: str | None = None
+    lane: str | None = None
+    phase: ExecPhase | None = None
+    key: str | None = None
+    count: int = Field(default=1, ge=1)
+    first_flag: int | None = None
+    first_seq: int | None = None
+    last_seq: int | None = None
+    final: bool = False
+    suspicion: int | None = Field(default=None, ge=0, le=100)
+    quote: Content | None = None
+    quote_verified: bool | None = None
+
+
+class MonitorSweep(Payload):
+    """One review of an agent's trajectory by a sweep model in one lane. The event's agent is
+    the agent reviewed.
+
+    `parts` are what the lane shows the model. `step_from` to `step_to` is the review range and
+    `seq_to` the last event rendered. `calls` names the model calls made: extract, evaluate and
+    the window scorer. `hits` counts the flags written, `dropped` the hits that cited events the
+    model was not shown, `unverified` the hits whose quote was not found. `suspicion` is the mean
+    of `history_suspicion`, over the whole trajectory, and `window_suspicion`, over the review
+    range alone. `collapsed` counts older steps shown as one line to fit `tokens`. `coalesced`
+    counts the triggers this sweep answered. `error` is set when the sweep failed.
+    """
+
+    type = "monitor.sweep"
+
+    name: str
+    lane: str
+    parts: list[SweepPart]
+    trigger: SweepTrigger
+    step_from: int = Field(ge=0)
+    step_to: int = Field(ge=0)
+    seq_to: int = Field(ge=0)
+    calls: list[str] = Field(default_factory=list)
+    hits: int = 0
+    dropped: int = 0
+    unverified: int = 0
+    suspicion: int | None = Field(default=None, ge=0, le=100)
+    history_suspicion: int | None = Field(default=None, ge=0, le=100)
+    window_suspicion: int | None = Field(default=None, ge=0, le=100)
+    summary: Content = ""
+    tokens: int | None = None
+    collapsed: int = 0
+    coalesced: int = 1
+    cost_usd: float = 0.0
+    duration_ms: int = 0
+    error: str | None = None
+
+
+class MonitorCleared(Payload):
+    """A review found the flags `flags` to be false alarms. `source` names the review: a review
+    sweep, hidden resamples of the agent's next step, or an operator."""
+
+    type = "monitor.cleared"
+
+    flags: list[int] = Field(min_length=1)
+    source: str
+    reason: str
+    suspicion: int | None = Field(default=None, ge=0, le=100)
+
+
+class CategoryFinding(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    category: Category
+    present: Finding
+    importance: int | None = Field(default=None, ge=1, le=5)
+    evidence: list[int] = Field(default_factory=list)
+    justification: str = ""
+
+
+class FlagReview(BaseModel):
+    """The judge's view of one flag, by its seq. A flag is rejected only with cited evidence."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    flag: int
+    status: Literal["confirmed", "rejected", "unclear"]
+    reason: str
+    evidence: list[int] = Field(default_factory=list)
+
+
+class JudgeRollout(BaseModel):
+    """One independent run of the judge. A `blind` rollout was not shown the flags."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    blind: bool
+    max_severity: int = Field(ge=0, le=5)
+    summary: str = ""
+    tool_calls: int = 0
+    calls: list[str] = Field(default_factory=list)
+    cost_usd: float = 0.0
+    error: str | None = None
+
+
+class MonitorVerdict(Payload):
+    """The judge's verdict on the whole run, written after the verifier and before the seal.
+
+    Per category: present or not, with importance and evidence. Per flag: confirmed, rejected or
+    unclear; flags stay in the log either way. `claim_matched` says whether the agent's final
+    claim matched what it did. `max_severity` is 0 when nothing was found. With several
+    rollouts, the fields are merged and `disagreements` lists where they differed.
+    """
+
+    type = "monitor.verdict"
+
+    categories: list[CategoryFinding] = Field(default_factory=list)
+    flags: list[FlagReview] = Field(default_factory=list)
+    claim_matched: Finding | None = None
+    max_severity: int = Field(default=0, ge=0, le=5)
+    summary: Content = ""
+    rollouts: list[JudgeRollout] = Field(default_factory=list)
+    disagreements: list[str] = Field(default_factory=list)
+    tainted: list[int] = Field(default_factory=list)
+    cost_usd: float = 0.0
+    duration_ms: int = 0
+
+
+class MonitorAction(Payload):
+    """What the monitor's policy decided, written before it acts. `simulated` marks a decision
+    taken in observe mode or in a monitor run, which changed nothing. `flags` are the seqs of the
+    flags that caused it."""
+
+    type = "monitor.action"
+
+    action: MonitorActionKind
+    agents: list[str] = Field(default_factory=list)
+    flags: list[int] = Field(default_factory=list)
+    mode: Oversight
+    simulated: bool = False
+    reason: str = ""
+
+
+class MonitorDegraded(Payload):
+    """Part of the monitor stopped working. `then` is what the monitor does from here."""
+
+    type = "monitor.degraded"
+
+    part: Literal["sweep", "judge", "review", "signal", "budget"]
+    reason: str
+    then: Literal["continue", "pause", "signals_only", "skip"]
+    detail: str | None = None
+
+
+class OperatorAction(Payload):
+    """What an operator asked of a run, recorded by its runner before acting on it. The event's
+    agent is the agent it targets, none for the whole run. `then` is what a resume does next;
+    deny refuses the tool call the agent holds at. `sweep` asks the monitor for a sweep now.
+    `token` names the token the request came with."""
+
+    type = "operator.action"
+
+    action: OperatorActionKind
+    then: ResumeThen | None = None
+    text: Content | None = None
+    reason: str | None = None
+    token: str | None = None
+    command_id: str | None = None
+
+
+class AgentStarted(Payload):
+    type = "agent.started"
+
+    profile: str
+    model: str
+    backend: ModelBackend
+    tools: list[str]
+    system: Content
+    budget: dict[str, JsonValue] = Field(default_factory=dict)
+    compaction: dict[str, JsonValue] | None = None
+    fork_at: int | None = None
+
+
+class AgentInput(Payload):
+    """A message the harness gave the agent. `step` is the number of steps taken before it."""
+
+    type = "agent.input"
+
+    kind: InputKind
+    step: int = Field(ge=0)
+    text: Content
+
+
+class AgentStep(Payload):
+    """One model call of the agent loop and what it cost. `total` and `total_cost_usd` run over
+    the agent's steps so far; a step whose price is unknown adds nothing to the cost."""
+
+    type = "agent.step"
+
+    n: int = Field(ge=1)
+    call_id: str
+    status: ModelStatus
+    source: Literal["live", "replay"] = "live"
+    tool_calls: list[str] = Field(default_factory=list)
+    usage: ModelUsage = Field(default_factory=ModelUsage)
+    cost_usd: float | None = None
+    total: ModelUsage = Field(default_factory=ModelUsage)
+    total_cost_usd: float = 0.0
+    elapsed_ms: int = 0
+
+
+class AgentFinished(Payload):
+    """`wall_ms` is the agent's wall time and `paused_ms` the part of it spent paused or held
+    before a tool call until the monitor's sweep scored it, which the wall limit does not
+    count."""
+
+    type = "agent.finished"
+
+    reason: AgentEnd
+    detail: str | None = None
+    answer: Content | None = None
+    steps: int = 0
+    usage: ModelUsage = Field(default_factory=ModelUsage)
+    cost_usd: float = 0.0
+    cost_complete: bool = True
+    wall_ms: int = 0
+    paused_ms: int = 0
+
+
+class AgentReport(Payload):
+    """A message the agent sent the operator with its `report_to_operator` tool."""
+
+    type = "agent.report"
+
+    call_id: str
+    step: int
+    message: Content
+
+
+class AgentCompacted(Payload):
+    """The agent's context was cut after step `step`. Steps `from_step` to `to_step` were
+    replaced: their tool outputs by a placeholder (trim), or all of them by a summary the agent's
+    own model wrote in model call `call_id`. `tokens_after_est` scales `tokens_before` by the
+    change in prompt bytes."""
+
+    type = "agent.compacted"
+
+    strategy: Literal["trim", "summary"]
+    step: int
+    from_step: int
+    to_step: int
+    items_before: int
+    items_after: int
+    bytes_before: int
+    bytes_after: int
+    tokens_before: int | None = None
+    tokens_after_est: int | None = None
+    call_id: str | None = None
+    summary: Content | None = None
+
+
+class TaskScored(Payload):
+    """The verifier's verdict. `source` names the file the reward came from, `metrics` holds
+    every value it reported. `tainted` lists the seqs of monitor flags raised while the verifier
+    ran; the reward is never changed by them."""
+
+    type = "task.scored"
+
+    exec_id: str | None = None
+    end: ExecEnd | None = None
+    exit_code: int | None = None
+    reward: float | None = None
+    metrics: dict[str, JsonValue] = Field(default_factory=dict)
+    source: Literal["reward.json", "reward.txt", "none"] = "none"
+    error: str | None = None
+    tainted: list[int] = Field(default_factory=list)
+
+
+class ReplayDivergence(Payload):
+    """A tool call a fork ran again gave another output than the recording it replays. The
+    model was given `recorded`; `line` is the first line that differs, counted from 1."""
+
+    type = "replay.divergence"
+
+    step: int
+    call_id: str
+    tool: str
+    recorded: Content
+    live: Content
+    recorded_error: bool = False
+    live_error: bool = False
+    line: int | None = None
+
+
+class SandboxArchived(Payload):
+    """The sandbox's final files as one tar, paths kept from the sandbox root. `skipped` counts
+    entries left out once the archive reached its cap."""
+
+    type = "sandbox.archived"
+
+    sandbox_id: str
+    paths: list[str]
+    archive: BlobRef | None = None
+    entries: int = 0
+    bytes: int = 0
+    skipped: int = 0
+    truncated: bool = False
+    errors: list[str] = Field(default_factory=list)

@@ -5,7 +5,11 @@ import { RouterProvider } from "@tanstack/react-router";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
+import { handoff } from "./api/session";
 import { makeRouter } from "./router";
+
+// before the router reads the URL, so it never sees the token
+await handoff();
 
 const router = makeRouter();
 const root = document.getElementById("root");

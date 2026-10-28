@@ -6,7 +6,7 @@
     "suspicious": "error",
     "perf": "warn"
   },
-  "ignorePatterns": ["src/routeTree.gen.ts"],
+  "ignorePatterns": ["src/routeTree.gen.ts", "src/api/schema.gen.ts"],
   "rules": {
     "react/react-in-jsx-scope": "off",
     "import/no-unassigned-import": [

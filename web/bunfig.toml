@@ -1,6 +1,6 @@
 [fmt]
 printWidth = 100
-ignorePatterns = ["**/*.gen.ts"]
+ignorePatterns = ["**/*.gen.ts", "openapi.json"]
 sortImports = true
 sortTailwindcss = true
 sortPackageJson = true

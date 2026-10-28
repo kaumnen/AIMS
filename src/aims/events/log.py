@@ -14,11 +14,19 @@ class RunLocked(Exception):
 
 def read_events(path: Path, run_id: str, head: Head) -> Generator[tuple[dict[str, Any], Head]]:
     """Yield verified events after `head`. Raises ChainError at the first bad line."""
+    for _, event, after in read_lines(path, run_id, head):
+        yield event, after
+
+
+def read_lines(
+    path: Path, run_id: str, head: Head
+) -> Generator[tuple[bytes, dict[str, Any], Head]]:
+    """Yield each verified line after `head` with its event and the head after it."""
     with path.open("rb") as f:
         f.seek(head.offset)
         while line := f.readline(MAX_LINE + 1):
             event, head = follow(head, line, run_id=run_id)
-            yield event, head
+            yield line, event, head
 
 
 def checkpoint_ok(path: Path, head: Head) -> bool:
