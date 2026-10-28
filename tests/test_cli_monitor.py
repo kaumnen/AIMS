@@ -5,6 +5,7 @@ on a runner, against the control plane on loopback."""
 import asyncio
 import contextlib
 import json
+import re
 import shutil
 import threading
 from collections.abc import AsyncGenerator, AsyncIterator
@@ -166,7 +167,7 @@ def test_aims_run_takes_a_monitor_preset(tmp_path: Path) -> None:
     path.write_text(SCENARIO)
     result = invoke("run", str(path), "--monitor", "loud", "--no-server")
     assert result.exit_code == 2
-    assert "--monitor" in result.output
+    assert "--monitor" in re.sub(r"\x1b\[[0-9;]*m", "", result.output)
 
 
 def test_prompts_show_lists_the_monitor_texts() -> None:
