@@ -159,7 +159,7 @@ async def _check(store: LocalEventStore, scenario: Scenario, case: Case, result:
         return outcome
     rows = await check_run(store, result.run_id)
     kinds = ["exec.started", "exec.finished", "tool.call", "tool.result", "task.scored"]
-    events = await store.events(result.run_id, types=kinds, limit=1 << 30)
+    events = await store.every(result.run_id, types=kinds)
     problems, notes = judge(case, scenario, rows, _ends(events), _scores(events))
     outcome.problems += problems
     outcome.notes += notes

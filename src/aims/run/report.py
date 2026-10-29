@@ -408,7 +408,7 @@ async def gather(store: LocalEventStore, origins: Sequence[str] | None) -> Repor
         row = mine[0]
         held = row.monitor or row.origin
         labels = await store.labels(held)
-        events = await store.events(run_id, types=["score.unexplained"], limit=1000)
+        events = await store.every(run_id, types=["score.unexplained"])
         for e in events:
             flag = e.data.get("flag")
             latest = labels.get(flag) if isinstance(flag, int) else None

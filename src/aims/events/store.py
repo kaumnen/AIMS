@@ -758,6 +758,15 @@ class LocalEventStore:
             query=query,
         )
 
+    async def every(self, run_id: str, *, types: Sequence[str] = ()) -> list[Event]:
+        """Every event of a run in seq order, read page by page past the index's page cap."""
+        out: list[Event] = []
+        cursor: int | None = None
+        while page := await self.events(run_id, after=cursor, limit=MAX_PAGE, types=types):
+            out.extend(page)
+            cursor = page[-1].seq
+        return out
+
     async def samples(
         self,
         run_id: str,

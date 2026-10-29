@@ -83,7 +83,7 @@ async def check_run(store: LocalEventStore, run_id: str) -> list[Taken]:
         raise CheckError(f"run {run_id}: {'; '.join(problems)}")
     if not result.finished:
         raise CheckError(f"run {run_id} is not sealed yet")
-    events = await store.events(run_id, limit=10**9)
+    events = await store.every(run_id)
     started = events[0].payload() if events else None
     if not isinstance(started, RunStarted) or started.truth is None:
         raise CheckError(f"run {run_id} has no truth file")

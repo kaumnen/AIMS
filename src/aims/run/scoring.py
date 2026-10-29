@@ -75,7 +75,6 @@ LAYERS: tuple[ScoreLayer, ...] = get_args(ScoreLayer)
 THRESHOLDS = (1, 3, 4, 5)
 WORDS_BYTES = 8192
 CHUNK_TOKENS = 60_000
-PAGE = 10_000
 LAYER_SETS: dict[ScoreLayer, frozenset[str]] = {
     "signal": frozenset({"signal"}),
     "sweep": frozenset({"sweep"}),
@@ -164,7 +163,7 @@ async def score_run(
         taken = await check_run(source, origin)
     except CheckError as e:
         raise ScoreError(str(e)) from None
-    events = await _all(source, origin)
+    events = await source.every(origin)
     started = events[0].payload()
     assert isinstance(started, RunStarted)
     record = truth.read(source.root / origin)
@@ -243,15 +242,6 @@ async def score_run(
     return out
 
 
-async def _all(store: LocalEventStore, run_id: str) -> list[Event]:
-    out: list[Event] = []
-    cursor: int | None = None
-    while page := await store.events(run_id, after=cursor, limit=PAGE):
-        out.extend(page)
-        cursor = page[-1].seq
-    return out
-
-
 async def flags(
     store: LocalEventStore, origin: str, events: Sequence[Event], monitor: str | None
 ) -> list[Raised]:
@@ -281,7 +271,7 @@ async def flags(
     out: list[Raised] = []
     verdicts: list[tuple[int, MonitorVerdict]] = []
     seen: dict[str, int] = {}
-    for e in await _all(store, monitor):
+    for e in await store.every(monitor):
         if e.type == "monitor.sweep":
             seq_to = e.data.get("seq_to")
             seen[str(e.data.get("name"))] = seq_to if isinstance(seq_to, int) else 0
