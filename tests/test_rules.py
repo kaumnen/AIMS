@@ -283,10 +283,10 @@ async def test_a_rule_counts_matches_per_agent_and_window(
     (flag,) = b.of("r")
     assert len(flag.evidence) == 3
 
-    r = rule(match={"op": "write"}, count=3, window_s=0.05, key="{path}")
+    r = rule(match={"op": "write"}, count=3, window_s=0.5, key="{path}")
     b = await run_rule(store, r)
     await b.bash("x", lambda ex: b.k(FileAccess, ex, op="write", path="/work/a"))
-    await asyncio.sleep(0.1)
+    await asyncio.sleep(1.0)
     await b.bash("x", lambda ex: b.k(FileAccess, ex, op="write", path="/work/a"))
     assert b.of("r") == []
     await b.bash(
