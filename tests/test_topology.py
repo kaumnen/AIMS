@@ -3,6 +3,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
+import anyio
 import pytest
 from scripted import Script, call, models, profile
 
@@ -190,6 +191,24 @@ async def test_a_start_waits_for_another_agent_to_reach_a_step(
     assert result.status == "completed", result.reason
     step = next(e for e in of(events, "agent.step", "a") if e.data.get("n") == 2)
     assert first(events, "agent.started", "b").seq > step.seq
+
+
+async def test_a_start_on_a_step_never_reached_begins_when_that_agent_finishes(
+    backend: DockerBackend, store: LocalEventStore, tmp_path: Path
+) -> None:
+    path = scenario(
+        tmp_path,
+        """\
+  - id: a
+  - id: b
+    start: {agent: a, on: step, step: 5}
+""",
+    )
+    script = Script(call("submit", answer="a"), call("submit", answer="b"))
+    with anyio.fail_after(120):
+        result, events = await run(backend, store, path, script)
+    assert result.status == "completed", result.reason
+    assert first(events, "agent.started", "b").seq > first(events, "agent.finished", "a").seq
 
 
 @pytest.mark.tracer

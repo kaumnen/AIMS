@@ -125,7 +125,7 @@ class Recording:
         canonical = rfc8785.dumps(json.loads(body))
         best: tuple[int, str, bytes] | None = None
         for key, sha in self.bodies.items():
-            other = await self.store.get_blob(self.run_id, sha)
+            other = rfc8785.dumps(json.loads(await self.store.get_blob(self.run_id, sha)))
             common = _common_prefix(canonical, other)
             if best is None or common > best[0]:
                 best = (common, key, other)

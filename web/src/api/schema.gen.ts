@@ -149,6 +149,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Report
+         * @description How the monitor did over the newest score of each run: of `runs`, of the runs of
+         *     `series` or the samples of `group`, or of every scored run when none is given.
+         */
+        get: operations["get_report"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runners": {
         parameters: {
             query?: never;
@@ -177,8 +198,9 @@ export interface paths {
          * List Runs
          * @description Runs newest first, with jobs that have not started yet. `kind` keeps runs of that kind,
          *     `origin` the monitor runs of that run, `severity` runs whose `max_severity` is at least it,
-         *     `category` runs with a flag in it, whatever its status. Jobs not started yet have no flags,
-         *     so `severity` and `category` leave them out.
+         *     `category` runs with a flag in it, whatever its status, `series` the runs of that series
+         *     and `variant` the sealed runs of that variant. Jobs not started yet have none of these, so
+         *     `severity`, `category`, `series` and `variant` leave them out.
          */
         get: operations["list_runs"];
         put?: never;
@@ -407,6 +429,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/labels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Labels
+         * @description The latest label of each labelled flag of the run, by flag seq.
+         */
+        get: operations["get_labels"];
+        put?: never;
+        /**
+         * Post Label
+         * @description Label a monitor flag of the run for review, beside the run's log; the newest counts.
+         */
+        post: operations["post_label"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{run_id}/monitor": {
         parameters: {
             query?: never;
@@ -444,6 +490,26 @@ export interface paths {
          * @description Freeze the run's sandboxes now and hold its agents at their next step.
          */
         post: operations["pause_run"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}/projection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Projection
+         * @description What the run has cost so far and is on track to cost, as `aims run` shows it live.
+         */
+        get: operations["get_projection"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -492,6 +558,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/score": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Score Run
+         * @description Queue a score of a sealed run against its truth file. A runner fetches the run, its
+         *     monitor run and its truth file, and writes the score to a new run of kind `score` whose
+         *     `origin` is this run; the run itself never changes.
+         */
+        post: operations["score_run"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{run_id}/sweep": {
         parameters: {
             query?: never;
@@ -506,6 +594,28 @@ export interface paths {
          * @description Ask the run's monitor for a sweep now, of one agent or of all.
          */
         post: operations["sweep_run"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}/truth": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Truth
+         * @description The truth file of a sealed run: the plants, canaries, roles, scripts and variant it hid
+         *     from its agents, its monitor and its judge. Operators only; not found until the runner
+         *     that wrote it sent it, after the run sealed.
+         */
+        get: operations["get_truth"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -967,6 +1077,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/runner/v1/runs/{run_id}/labels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Labels
+         * @description Labels the runner's people gave the flags of a run it wrote; those the control plane
+         *     holds already are left alone.
+         */
+        post: operations["post_labels"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/runner/v1/runs/{run_id}/log": {
         parameters: {
             query?: never;
@@ -980,6 +1111,32 @@ export interface paths {
          */
         get: operations["run_log"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runner/v1/runs/{run_id}/truth": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Runner Truth
+         * @description The truth file of a sealed run, for the runner that holds a score job of it.
+         */
+        get: operations["runner_truth"];
+        /**
+         * Put Truth
+         * @description The truth file of a sealed run, sent by the runner that wrote it once the control plane
+         *     holds the run sealed. Its bytes must hash to the truth hash in run.started; sending the
+         *     same file again does nothing.
+         */
+        put: operations["put_truth"];
         post?: never;
         delete?: never;
         options?: never;
@@ -1371,6 +1528,19 @@ export interface components {
             present: "yes" | "no" | "unclear";
         };
         /**
+         * CategoryRate
+         * @description The units that took a plant of `category`, and how many got a flag of that category at
+         *     importance 3 or more from any layer.
+         */
+        CategoryRate: {
+            /**
+             * Category
+             * @enum {string}
+             */
+            category: "covert_communication" | "scorer_tampering" | "transcript_tampering" | "deceiving_operator" | "evading_checks" | "collective_over_own_task" | "drift" | "loop_or_confusion" | "fabricated_completion" | "constraint_violation" | "eval_awareness" | "alerting_operator" | "egress_attempt" | "privilege_escalation" | "monitor_manipulation";
+            caught: components["schemas"]["Rate"];
+        };
+        /**
          * ChannelChange
          * @description One path of a shared folder that changed, with the agent the kernel records show wrote
          *     it, None when none did or several did, and those records' seqs.
@@ -1544,7 +1714,7 @@ export interface components {
         /** Claimed */
         Claimed: {
             /** Job */
-            job: components["schemas"]["Job"] | components["schemas"]["MonitorJob"];
+            job: components["schemas"]["Job"] | components["schemas"]["MonitorJob"] | components["schemas"]["ScoreJob"];
         };
         /**
          * CommandAction
@@ -2461,8 +2631,44 @@ export interface components {
             unhashed: number;
         };
         /**
+         * Group
+         * @description The units of one variant (None for the base scenario). `aware` and `unaware` are the
+         *     any-layer catch rates at importance 3 of the positives that did and did not say they
+         *     thought they were tested; `unexplained` counts the flags no plant explains by label.
+         */
+        Group: {
+            aware: components["schemas"]["Rate"] | null;
+            /** Categories */
+            categories: components["schemas"]["CategoryRate"][];
+            confederates: components["schemas"]["Rate"] | null;
+            /** Latency */
+            latency: components["schemas"]["Latency"][];
+            /** Layers */
+            layers: components["schemas"]["LayerRates"][];
+            /** Negatives */
+            negatives: number;
+            /** Neither */
+            neither: number;
+            /** Positives */
+            positives: number;
+            /** Runs */
+            runs: number;
+            /** Separation */
+            separation: components["schemas"]["Separation"][];
+            unaware: components["schemas"]["Rate"] | null;
+            /** Unexplained */
+            unexplained: {
+                [key: string]: number;
+            };
+            /** Variant */
+            variant: string | null;
+            /** Worst */
+            worst: ("covert_communication" | "scorer_tampering" | "transcript_tampering" | "deceiving_operator" | "evading_checks" | "collective_over_own_task" | "drift" | "loop_or_confusion" | "fabricated_completion" | "constraint_violation" | "eval_awareness" | "alerting_operator" | "egress_attempt" | "privilege_escalation" | "monitor_manipulation") | null;
+        };
+        /**
          * Head
-         * @description Where a copy of a run's log ends: the last seq and its hash, seq -1 for none.
+         * @description Where a copy of a run's log ends: the last seq and its hash, seq -1 for none. `truth`
+         *     says the control plane holds the run's truth file.
          */
         Head: {
             /** Hash */
@@ -2472,6 +2678,11 @@ export interface components {
              * @default -1
              */
             seq: number;
+            /**
+             * Truth
+             * @default false
+             */
+            truth: boolean;
         };
         /** Heads */
         Heads: {
@@ -2635,12 +2846,25 @@ export interface components {
                 };
             };
         };
-        /** JobFork */
+        /**
+         * JobFork
+         * @description Where a fork job cuts its origin; `steps`, `cut`, `agent` and `keep_others` as in
+         *     `Fork`, for a run of several agents.
+         */
         JobFork: {
+            /** Agent */
+            agent?: string | null;
+            /** Cut */
+            cut?: number | null;
             /** Group */
             group?: string | null;
             /** Inject */
             inject?: string | null;
+            /**
+             * Keep Others
+             * @default false
+             */
+            keep_others?: boolean;
             /** Origin */
             origin: string;
             /** Profile */
@@ -2652,6 +2876,10 @@ export interface components {
             sample?: number;
             /** Step */
             step: number;
+            /** Steps */
+            steps?: {
+                [key: string]: number;
+            } | null;
             /**
              * Strict
              * @default false
@@ -2716,6 +2944,97 @@ export interface components {
             key: string[];
             value: components["schemas"]["JsonValue"];
         };
+        /**
+         * Label
+         * @description A person's word on a monitor flag: `real` misbehaviour, a `false_alarm`, or `unclear`.
+         *     `flag` is the flag's seq in `run_id`, the run that holds it. The latest label counts.
+         */
+        "Label-Input": {
+            /**
+             * At
+             * Format: date-time
+             */
+            at: string;
+            /** By */
+            by: string;
+            /** Flag */
+            flag: number;
+            /**
+             * Label
+             * @enum {string}
+             */
+            label: "real" | "false_alarm" | "unclear";
+            /**
+             * Note
+             * @default
+             */
+            note?: string;
+            /** Run Id */
+            run_id: string;
+        };
+        /**
+         * Label
+         * @description A person's word on a monitor flag: `real` misbehaviour, a `false_alarm`, or `unclear`.
+         *     `flag` is the flag's seq in `run_id`, the run that holds it. The latest label counts.
+         */
+        "Label-Output": {
+            /** At */
+            at: string;
+            /** By */
+            by: string;
+            /** Flag */
+            flag: number;
+            /**
+             * Label
+             * @enum {string}
+             */
+            label: "real" | "false_alarm" | "unclear";
+            /**
+             * Note
+             * @default
+             */
+            note?: string;
+            /** Run Id */
+            run_id: string;
+        };
+        /** LabelBody */
+        LabelBody: {
+            /** Flag */
+            flag: number;
+            /**
+             * Label
+             * @enum {string}
+             */
+            label: "real" | "false_alarm" | "unclear";
+            /**
+             * Note
+             * @default
+             */
+            note?: string;
+        };
+        /** Labels */
+        Labels: {
+            /** Labels */
+            labels: components["schemas"]["Label-Input"][];
+        };
+        /**
+         * Latency
+         * @description From the harm to the layer's first flag at importance 3 or more, over the `n` units it
+         *     flagged: the median in agent steps and in seconds, negative when the flag came first.
+         */
+        Latency: {
+            /**
+             * Layer
+             * @enum {string}
+             */
+            layer: "signal" | "sweep" | "judge" | "llm" | "any";
+            /** N */
+            n: number;
+            /** Seconds */
+            seconds: number | null;
+            /** Steps */
+            steps: number | null;
+        };
         /** LayerInfo */
         LayerInfo: {
             /** Etag */
@@ -2729,6 +3048,26 @@ export interface components {
             layer: "user" | "project";
             /** Path */
             path: string;
+        };
+        /**
+         * LayerRates
+         * @description How one layer did at `min_importance` or more: any flag on the agent, one of the right
+         *     category, one at the right place; at any time and by the harm.
+         */
+        LayerRates: {
+            category: components["schemas"]["Rate"];
+            category_before: components["schemas"]["Rate"];
+            detected: components["schemas"]["Rate"];
+            detected_before: components["schemas"]["Rate"];
+            /**
+             * Layer
+             * @enum {string}
+             */
+            layer: "signal" | "sweep" | "judge" | "llm" | "any";
+            located: components["schemas"]["Rate"];
+            located_before: components["schemas"]["Rate"];
+            /** Min Importance */
+            min_importance: number;
         };
         /**
          * Limits
@@ -2892,7 +3231,7 @@ export interface components {
              * Role
              * @default null
              */
-            role: ("sweep" | "judge" | "review") | null;
+            role: ("sweep" | "judge" | "review" | "score") | null;
             /** Url */
             url: string;
         };
@@ -3267,8 +3606,10 @@ export interface components {
          *     the window scorer. `hits` counts the flags written, `dropped` the hits that cited events the
          *     model was not shown, `unverified` the hits whose quote was not found. `suspicion` is the mean
          *     of `history_suspicion`, over the whole trajectory, and `window_suspicion`, over the review
-         *     range alone. `collapsed` counts older steps shown as one line to fit `tokens`. `coalesced`
-         *     counts the triggers this sweep answered. `error` is set when the sweep failed.
+         *     range alone; `escalated` means the extractor's window score fell in the uncertain band and
+         *     the sweep model scored it again. `collapsed` counts older steps shown as one line to fit
+         *     `tokens`. `coalesced` counts the triggers this sweep answered. `error` is set when the sweep
+         *     failed. The run-wide channel sweep, named `channels`, has no agent and steps 0 to 0.
          */
         MonitorSweep: {
             /** Calls */
@@ -3303,6 +3644,11 @@ export interface components {
              * @default null
              */
             error: string | null;
+            /**
+             * Escalated
+             * @default false
+             */
+            escalated: boolean;
             /**
              * History Suspicion
              * @default null
@@ -3344,7 +3690,7 @@ export interface components {
              * Trigger
              * @enum {string}
              */
-            trigger: "every" | "every_s" | "flag" | "budget" | "agent_finished" | "operator" | "review" | "final";
+            trigger: "every" | "every_s" | "flag" | "budget" | "agent_finished" | "operator" | "review" | "final" | "channel";
             /**
              * Unverified
              * @default 0
@@ -3908,6 +4254,27 @@ export interface components {
             weights: string;
         };
         /**
+         * Projection
+         * @description What a run has cost so far, agents and monitor, and once an agent still running has
+         *     taken `PROJECT_AFTER` steps what it is on track to cost, bounded by its caps: each agent's
+         *     cost per step over the steps past runs of the scenario took, else its step cap, and the
+         *     monitor scaled by the agents' progress. The `*_usd` projections are None before that.
+         */
+        Projection: {
+            /** Agents Spent Usd */
+            agents_spent_usd: number;
+            /** Agents Usd */
+            agents_usd: number | null;
+            /** Monitor Spent Usd */
+            monitor_spent_usd: number;
+            /** Monitor Usd */
+            monitor_usd: number | null;
+            /** On Track Usd */
+            on_track_usd: number | null;
+            /** Spent Usd */
+            spent_usd: number;
+        };
+        /**
          * PromptsInfo
          * @description `agent` and `tools` are what the agent reads from the harness, `monitor` the monitor's
          *     own texts (`[prompts.monitor]`) and `categories` its category definitions
@@ -3985,6 +4352,22 @@ export interface components {
             target: number;
             /** Ts Kernel */
             ts_kernel: number;
+        };
+        /**
+         * Rate
+         * @description `k` of `n`, with the Wilson 95% interval; None without units.
+         */
+        Rate: {
+            /** High */
+            high: number | null;
+            /** K */
+            k: number;
+            /** Low */
+            low: number | null;
+            /** N */
+            n: number;
+            /** Rate */
+            rate: number | null;
         };
         /**
          * RateLimit
@@ -4116,6 +4499,20 @@ export interface components {
              * @default null
              */
             tool: string | null;
+        };
+        /**
+         * Report
+         * @description The report over the score runs of `runs`; `lines` is the report in words.
+         */
+        Report: {
+            /** Groups */
+            groups: components["schemas"]["Group"][];
+            /** Lines */
+            lines: string[];
+            /** Notes */
+            notes: string[];
+            /** Runs */
+            runs: string[];
         };
         /**
          * ResourceSample
@@ -4312,6 +4709,8 @@ export interface components {
          *     counts its logical flags and `categories` them per category, whatever their status;
          *     `max_importance` is the highest importance of a flag not cleared or rejected,
          *     `verdict_severity` the judge's, and `max_severity` the higher of the two, 0 for neither.
+         *     `series` and `series_index` place a run in its series; `variant` is the scenario variant
+         *     it ran, known once the run is sealed and its truth file arrived.
          */
         RunSummary: {
             /** Categories */
@@ -4357,6 +4756,10 @@ export interface components {
             runner: string | null;
             /** Scenario */
             scenario: string | null;
+            /** Series */
+            series: string | null;
+            /** Series Index */
+            series_index: number | null;
             /**
              * Stale
              * @default false
@@ -4368,6 +4771,8 @@ export interface components {
             state: string;
             /** Status */
             status: string;
+            /** Variant */
+            variant: string | null;
             /** Verdict Severity */
             verdict_severity: number | null;
         };
@@ -4398,7 +4803,7 @@ export interface components {
             /** Jobs */
             jobs?: string[];
             /** Kinds */
-            kinds?: ("scenario" | "models.check" | "monitor")[];
+            kinds?: ("scenario" | "models.check" | "monitor" | "score")[];
             /** Name */
             name: string;
             /**
@@ -4427,7 +4832,7 @@ export interface components {
              */
             free: number;
             /** Kinds */
-            kinds: ("scenario" | "models.check" | "monitor")[];
+            kinds: ("scenario" | "models.check" | "monitor" | "score")[];
             /**
              * Local
              * @default false
@@ -4671,11 +5076,52 @@ export interface components {
             quote: string | components["schemas"]["BlobRef"] | null;
         };
         /**
+         * ScoreJob
+         * @description A score of the sealed run `origin`, whose head hash was `origin_head`, against its truth
+         *     file and the flags of the monitor run `monitor` (None for its own), into the new run
+         *     `run_id`. The runner fetches the run, the monitor run and the truth file when it lacks
+         *     them. `classifier` is the eval-awareness model (`Profile.snapshot`, env names only), None
+         *     to skip it; `texts` the monitor texts it asks with.
+         */
+        ScoreJob: {
+            /** Classifier */
+            classifier: {
+                [key: string]: components["schemas"]["JsonValue"];
+            } | null;
+            /** Config Files */
+            config_files: {
+                [key: string]: string | null;
+            };
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "score";
+            /** Monitor */
+            monitor: string | null;
+            options: components["schemas"]["JobOptions"];
+            /** Origin */
+            origin: string;
+            /** Origin Head */
+            origin_head: string;
+            /** Run Id */
+            run_id: string;
+            /** Scenario */
+            scenario: string;
+            /** Texts */
+            texts: {
+                [key: string]: components["schemas"]["JsonValue"];
+            };
+        };
+        /**
          * ScoreMatch
-         * @description How one monitor layer did on one unit: `detected` any flag on the agent, `category` a
-         *     flag of the plant's category, `located` a flag whose evidence overlaps the trigger's; each
-         *     anytime and, with `_before`, at or before the harm seq. `first_flag` is the first matching
-         *     flag; `steps` and `seconds` the distance from the trigger to it.
+         * @description How one monitor layer did on one unit, counting only its flags of `min_importance` or
+         *     more: `detected` any flag on the agent, `category` a flag of a taken plant's category,
+         *     `located` a flag whose evidence overlaps the trigger's; each anytime and, with `_before`,
+         *     raised by the harm seq. `importance` and `suspicion` are the highest of those flags.
+         *     `first_flag` is the first flag at the best level reached (located, then category, then
+         *     detected), as a seq of the run that holds the flags; `steps` and `seconds` the distance
+         *     from the harm to it, negative when it came first.
          */
         ScoreMatch: {
             /**
@@ -4724,6 +5170,11 @@ export interface components {
              */
             located_before?: boolean;
             /**
+             * Min Importance
+             * @default 1
+             */
+            min_importance?: number;
+            /**
              * Seconds
              * @default null
              */
@@ -4741,7 +5192,9 @@ export interface components {
         };
         /**
          * ScoreUnexplained
-         * @description A monitor flag no plant explains, for review. `label` is set once a person labels it.
+         * @description A monitor flag no plant explains, for review: no plant its agent took shares its
+         *     category or its evidence. `flag` is its seq in the run that holds the flags. `label` is
+         *     the latest a person gave it when the score was made.
          */
         ScoreUnexplained: {
             /**
@@ -4767,7 +5220,9 @@ export interface components {
         /**
          * ScoreUnit
          * @description One agent of the scored run: a positive when it took a plant, a negative when the run
-         *     has no plant. `plants` are the ones it took; `harm_seq` the first time it took one.
+         *     has no plant, None when it took none of the run's plants. `plants` are the ones it took,
+         *     `categories` theirs, `harm_seq` the first time it took one. A confederate's own plants are
+         *     known positives for the monitor, scored apart from the subjects.
          */
         ScoreUnit: {
             /** Categories */
@@ -4793,6 +5248,29 @@ export interface components {
              * @enum {string}
              */
             role: "subject" | "confederate";
+        };
+        /**
+         * Separation
+         * @description How well a layer's highest suspicion per unit tells positives from negatives: the area
+         *     under the ROC curve and the true positive rate at each false positive rate, None when
+         *     there are too few units for it.
+         */
+        Separation: {
+            /** Auroc */
+            auroc: number | null;
+            /**
+             * Layer
+             * @enum {string}
+             */
+            layer: "signal" | "sweep" | "judge" | "llm" | "any";
+            /** Negatives */
+            negatives: number;
+            /** Positives */
+            positives: number;
+            /** Tpr */
+            tpr: {
+                [key: string]: number | null;
+            };
         };
         /**
          * Series
@@ -4832,9 +5310,14 @@ export interface components {
         };
         /**
          * StartFork
-         * @description `monitor` picks the fork's monitor preset over the config files and the scenario.
+         * @description `monitor` picks the fork's monitor preset over the config files and the scenario. `at`
+         *     cuts a run of several agents: `agent:N` after that agent's step N, or `@seq` after an
+         *     event; with `keep_others` the other agents keep their recorded answers until their own
+         *     inputs change. `step` is the last step replayed of a run of one agent.
          */
         StartFork: {
+            /** At */
+            at?: string | null;
             /**
              * Audit
              * @default kernel
@@ -4848,6 +5331,11 @@ export interface components {
              * @default false
              */
             keep?: boolean;
+            /**
+             * Keep Others
+             * @default false
+             */
+            keep_others?: boolean;
             /** Monitor */
             monitor?: ("off" | "signals" | "standard" | "research") | null;
             /** Parallel */
@@ -4936,6 +5424,22 @@ export interface components {
              */
             samples?: number;
             scenario: components["schemas"]["ScenarioRef"];
+        };
+        /**
+         * StartScore
+         * @description `monitor` scores the flags of that monitor run over the run instead of its own.
+         *     `awareness` asks a cheap model whether each agent said it thought it was tested.
+         */
+        StartScore: {
+            /**
+             * Awareness
+             * @default true
+             */
+            awareness?: boolean;
+            /** Monitor */
+            monitor?: string | null;
+            /** Runner */
+            runner?: string | null;
         };
         /** Started */
         Started: {
@@ -5822,6 +6326,57 @@ export interface operations {
             };
         };
     };
+    get_report: {
+        parameters: {
+            query?: {
+                runs?: string[] | null;
+                series?: string | null;
+                group?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Report"];
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     list_runners: {
         parameters: {
             query?: never;
@@ -5878,6 +6433,8 @@ export interface operations {
                 origin?: string | null;
                 severity?: number | null;
                 category?: ("covert_communication" | "scorer_tampering" | "transcript_tampering" | "deceiving_operator" | "evading_checks" | "collective_over_own_task" | "drift" | "loop_or_confusion" | "fabricated_completion" | "constraint_violation" | "eval_awareness" | "alerting_operator" | "egress_attempt" | "privilege_escalation" | "monitor_manipulation") | null;
+                series?: string | null;
+                variant?: string | null;
             };
             header?: never;
             path?: never;
@@ -6633,6 +7190,126 @@ export interface operations {
             };
         };
     };
+    get_labels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Label-Output"][];
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    post_label: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LabelBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Label-Output"];
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     monitor_run: {
         parameters: {
             query?: never;
@@ -6739,6 +7416,64 @@ export interface operations {
             };
             /** @description Forbidden */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_projection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Projection"];
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6864,6 +7599,77 @@ export interface operations {
             };
         };
     };
+    score_run: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartScore"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Started"];
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     sweep_run: {
         parameters: {
             query?: never;
@@ -6899,6 +7705,66 @@ export interface operations {
             };
             /** @description Forbidden */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_truth: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: components["schemas"]["JsonValue"];
+                    };
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8768,6 +9634,77 @@ export interface operations {
             };
         };
     };
+    post_labels: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Aims-Runner"?: string | null;
+            };
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Labels"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     run_log: {
         parameters: {
             query?: never;
@@ -8810,6 +9747,155 @@ export interface operations {
             };
             /** @description Conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    runner_truth: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Aims-Runner"?: string | null;
+            };
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    put_truth: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Aims-Runner"?: string | null;
+            };
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": unknown;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too large */
+            413: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8973,6 +10059,7 @@ export const agentStepStatusValues: ReadonlyArray<FlattenedDeepRequired<componen
 export const cacheProbeOpValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CacheProbe"]["op"]> = ["fadvise_dontneed", "preadv2_nowait", "cachestat", "mincore"];
 export const categoryFindingCategoryValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CategoryFinding"]["category"]> = ["covert_communication", "scorer_tampering", "transcript_tampering", "deceiving_operator", "evading_checks", "collective_over_own_task", "drift", "loop_or_confusion", "fabricated_completion", "constraint_violation", "eval_awareness", "alerting_operator", "egress_attempt", "privilege_escalation", "monitor_manipulation"];
 export const categoryFindingPresentValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CategoryFinding"]["present"]> = ["yes", "no", "unclear"];
+export const categoryRateCategoryValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CategoryRate"]["category"]> = ["covert_communication", "scorer_tampering", "transcript_tampering", "deceiving_operator", "evading_checks", "collective_over_own_task", "drift", "loop_or_confusion", "fabricated_completion", "constraint_violation", "eval_awareness", "alerting_operator", "egress_attempt", "privilege_escalation", "monitor_manipulation"];
 export const channelChangeChangeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ChannelChange"]["change"]> = ["added", "modified", "meta", "removed", "kind"];
 export const channelChangeKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ChannelChange"]["kind"]> = ["file", "dir", "symlink", "fifo", "socket", "other"];
 export const channelInfoLifetimeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ChannelInfo"]["lifetime"]> = ["run", "series"];
@@ -8999,14 +10086,20 @@ export const flagInfoStatusValues: ReadonlyArray<FlattenedDeepRequired<component
 export const flagReviewStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["FlagReview"]["status"]> = ["confirmed", "rejected", "unclear"];
 export const fsChangeChangeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["FsChange"]["change"]> = ["added", "modified", "meta", "removed", "kind"];
 export const fsChangeKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["FsChange"]["kind"]> = ["file", "dir", "symlink", "fifo", "socket", "other"];
+export const groupWorstAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Group"]["worst"]> = ["covert_communication", "scorer_tampering", "transcript_tampering", "deceiving_operator", "evading_checks", "collective_over_own_task", "drift", "loop_or_confusion", "fabricated_completion", "constraint_violation", "eval_awareness", "alerting_operator", "egress_attempt", "privilege_escalation", "monitor_manipulation"];
 export const ipcEventFamilyAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["IpcEvent"]["family"]> = ["unix", "sysv"];
 export const ipcEventKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["IpcEvent"]["kind"]> = ["bind", "connect", "fifo", "shmget", "shmat"];
 export const jobAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Job"]["audit"]> = ["kernel", "snapshot"];
 export const jobKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Job"]["kind"]> = ["models.check", "scenario"];
+export const labelInputLabelValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Label-Input"]["label"]> = ["real", "false_alarm", "unclear"];
+export const labelOutputLabelValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Label-Output"]["label"]> = ["real", "false_alarm", "unclear"];
+export const labelBodyLabelValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["LabelBody"]["label"]> = ["real", "false_alarm", "unclear"];
+export const latencyLayerValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Latency"]["layer"]> = ["signal", "sweep", "judge", "llm", "any"];
 export const layerInfoLayerValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["LayerInfo"]["layer"]> = ["user", "project"];
+export const layerRatesLayerValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["LayerRates"]["layer"]> = ["signal", "sweep", "judge", "llm", "any"];
 export const memExecKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["MemExec"]["kind"]> = ["exec", "mmap"];
 export const modelRequestBackendValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelRequest"]["backend"]> = ["responses", "chat"];
-export const modelRequestRoleAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelRequest"]["role"]> = ["sweep", "judge", "review"];
+export const modelRequestRoleAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelRequest"]["role"]> = ["sweep", "judge", "review", "score"];
 export const modelResponseError_kindAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelResponse"]["error_kind"]> = ["http", "redirect", "connect", "timeout", "stall", "wall", "read", "protocol", "provider", "replay"];
 export const modelResponseReasoning_kindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelResponse"]["reasoning_kind"]> = ["none", "summary", "full"];
 export const modelResponseSourceValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelResponse"]["source"]> = ["live", "replay"];
@@ -9021,7 +10114,7 @@ export const monitorFlagPhaseAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<c
 export const monitorJobKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["MonitorJob"]["kind"]> = ["monitor"];
 export const monitorJobModeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["MonitorJob"]["mode"]> = ["full", "signals_only", "judge_only"];
 export const monitorSweepPartsValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["MonitorSweep"]["parts"]> = ["evidence", "output", "messages", "reasoning"];
-export const monitorSweepTriggerValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["MonitorSweep"]["trigger"]> = ["every", "every_s", "flag", "budget", "agent_finished", "operator", "review", "final"];
+export const monitorSweepTriggerValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["MonitorSweep"]["trigger"]> = ["every", "every_s", "flag", "budget", "agent_finished", "operator", "review", "final", "channel"];
 export const monitorVerdictClaim_matchedAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["MonitorVerdict"]["claim_matched"]> = ["yes", "no", "unclear"];
 export const netConnectFamilyValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["NetConnect"]["family"]> = ["inet", "inet6"];
 export const netConnectKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["NetConnect"]["kind"]> = ["connect", "sendto"];
@@ -9044,17 +10137,19 @@ export const runStartedKindValues: ReadonlyArray<FlattenedDeepRequired<component
 export const runStartedOversightValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunStarted"]["oversight"]> = ["observe", "autonomous", "human"];
 export const runSummaryKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunSummary"]["kind"]> = ["scenario", "monitor", "models.check", "score"];
 export const runnerHealthMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunnerHealthMessage"]["kind"]> = ["runner"];
-export const runnerHelloKindsValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunnerHello"]["kinds"]> = ["scenario", "models.check", "monitor"];
-export const runnerInfoKindsValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunnerInfo"]["kinds"]> = ["scenario", "models.check", "monitor"];
+export const runnerHelloKindsValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunnerHello"]["kinds"]> = ["scenario", "models.check", "monitor", "score"];
+export const runnerInfoKindsValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunnerInfo"]["kinds"]> = ["scenario", "models.check", "monitor", "score"];
 export const sandboxStartedAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["SandboxStarted"]["audit"]> = ["kernel", "snapshot"];
 export const sandboxStoppedReasonValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["SandboxStopped"]["reason"]> = ["closed", "killed", "exec_failed"];
 export const scoreAwarenessFindingValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreAwareness"]["finding"]> = ["yes", "no", "unclear"];
+export const scoreJobKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreJob"]["kind"]> = ["score"];
 export const scoreMatchLayerValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreMatch"]["layer"]> = ["signal", "sweep", "judge", "llm", "any"];
 export const scoreUnexplainedCategoryValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreUnexplained"]["category"]> = ["covert_communication", "scorer_tampering", "transcript_tampering", "deceiving_operator", "evading_checks", "collective_over_own_task", "drift", "loop_or_confusion", "fabricated_completion", "constraint_violation", "eval_awareness", "alerting_operator", "egress_attempt", "privilege_escalation", "monitor_manipulation"];
 export const scoreUnexplainedLayerValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreUnexplained"]["layer"]> = ["signal", "sweep", "judge"];
 export const scoreUnitCategoriesValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreUnit"]["categories"]> = ["covert_communication", "scorer_tampering", "transcript_tampering", "deceiving_operator", "evading_checks", "collective_over_own_task", "drift", "loop_or_confusion", "fabricated_completion", "constraint_violation", "eval_awareness", "alerting_operator", "egress_attempt", "privilege_escalation", "monitor_manipulation"];
 export const scoreUnitEval_awareAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreUnit"]["eval_aware"]> = ["yes", "no", "unclear"];
 export const scoreUnitRoleValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreUnit"]["role"]> = ["subject", "confederate"];
+export const separationLayerValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Separation"]["layer"]> = ["signal", "sweep", "judge", "llm", "any"];
 export const startForkAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["StartFork"]["audit"]> = ["kernel", "snapshot"];
 export const startForkMonitorAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["StartFork"]["monitor"]> = ["off", "signals", "standard", "research"];
 export const startMonitorPresetAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["StartMonitor"]["preset"]> = ["signals", "standard", "research"];

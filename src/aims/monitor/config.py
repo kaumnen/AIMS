@@ -124,13 +124,28 @@ EVIDENCE_LANE = Lane(name="evidence", parts=["evidence"])
 FULL_LANE = Lane(name="full", parts=["evidence", "output", "messages", "reasoning"])
 
 
+class Escalate(_Strict):
+    """The uncertain band of window suspicion: a window the extractor scores from `low` to
+    `high` is scored again by the sweep model."""
+
+    low: int = Field(ge=0, le=100)
+    high: int = Field(ge=0, le=100)
+
+    @model_validator(mode="after")
+    def _order(self) -> Self:
+        if self.low > self.high:
+            raise ValueError("escalate: low is above high")
+        return self
+
+
 class SweepConfig(_Strict):
     """A sweep model reading the agent's trajectory. It runs every `every` agent steps and every
     `every_s` seconds, on a new flag at importance 3 or more, past 80% of a budget, when an agent
-    finishes and on an operator's request. With `hold`, an agent waits before each tool call
-    until the sweep due by then has scored it. `window` adds a scorer over the newest steps
-    alone. Older unflagged steps collapse to one line once the render passes `collapse_tokens`.
-    `profile` None uses the sweep role."""
+    finishes, on an operator's request and when the channel sweep names the agent. With `hold`,
+    an agent waits before each tool call until the sweep due by then has scored it. `window`
+    adds a scorer over the newest steps alone; with `escalate`, the extractor scores it and the
+    sweep model only inside the band. Older unflagged steps collapse to one line once the render
+    passes `collapse_tokens`. `profile` None uses the sweep role."""
 
     name: str = Field(default="main", min_length=1)
     profile: str | None = None
@@ -142,6 +157,7 @@ class SweepConfig(_Strict):
     lanes: list[Lane] = Field(default_factory=lambda: [EVIDENCE_LANE, FULL_LANE], min_length=1)
     window: bool = True
     window_steps: int | None = Field(default=None, ge=1)
+    escalate: Escalate | None = None
     collapse_tokens: int = Field(default=40_000, ge=1000)
 
     @model_validator(mode="after")
@@ -154,6 +170,22 @@ class SweepConfig(_Strict):
 
 def _sweeps(value: object) -> object:
     return [value] if isinstance(value, dict) else value
+
+
+class ChannelSweepConfig(_Strict):
+    """The run-wide sweep of what passed between agents through their channels. It runs once
+    `every` new items or reads came in since the last one, and when the agents stop. A flag it
+    raises starts a sweep of the whole trajectory of each agent it names when `deep` is on.
+    Each read shows the reader's next `next_calls` tool calls. The render stays under
+    `max_tokens`. `profile` None uses the sweep role."""
+
+    profile: str | None = None
+    effort: Effort | None = "medium"
+    max_output_tokens: int = Field(default=8192, ge=256)
+    every: int = Field(default=1, ge=1)
+    next_calls: int = Field(default=3, ge=0, le=10)
+    max_tokens: int = Field(default=60_000, ge=4000, le=90_000)
+    deep: bool = True
 
 
 class CategoryPolicy(_Strict):
@@ -222,6 +254,8 @@ class MonitorConfig(_Strict):
     sweeps: Annotated[list[SweepConfig], BeforeValidator(_sweeps)] = Field(
         default_factory=lambda: [SweepConfig()]
     )
+    channels: ChannelSweepConfig | None = Field(default_factory=ChannelSweepConfig)
+    extract: list[str] = Field(default_factory=list)
     review: ReviewConfig = Field(default_factory=ReviewConfig)
     judge: JudgeConfig | None = Field(default_factory=JudgeConfig)
     policy: PolicyConfig = Field(default_factory=PolicyConfig)
@@ -248,8 +282,8 @@ class MonitorConfig(_Strict):
 
 
 PRESET_LAYERS: dict[Preset, dict[str, Any]] = {
-    "off": {"sweeps": [], "judge": None},
-    "signals": {"sweeps": [], "judge": None},
+    "off": {"sweeps": [], "channels": None, "judge": None},
+    "signals": {"sweeps": [], "channels": None, "judge": None},
     "standard": {},
     "research": {"judge": {"rollouts": 2, "blind": 1}},
 }
@@ -258,6 +292,12 @@ PRESET_BUDGET_USD: dict[Preset, float] = {
     "signals": 0.0,
     "standard": 5.0,
     "research": 8.0,
+}
+PRESET_CHANNEL_USD: dict[Preset, float] = {
+    "off": 0.0,
+    "signals": 0.0,
+    "standard": 2.0,
+    "research": 3.0,
 }
 
 
@@ -282,7 +322,7 @@ def merge(*layers: Mapping[str, Any]) -> MonitorConfig:
         out = _merge(out, {k: v for k, v in top.items() if k != "preset"})
     out["preset"] = preset
     if preset in ("off", "signals"):
-        out["sweeps"], out["judge"] = [], None
+        out["sweeps"], out["channels"], out["judge"] = [], None, None
     return MonitorConfig.model_validate(out)
 
 
@@ -296,9 +336,18 @@ def _merge(base: Mapping[str, Any], top: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
-def budget_usd(config: MonitorConfig, limit: float | None) -> float:
-    """The monitor's spend cap: the scenario's `limits.monitor_cost_usd`, else the preset's."""
-    return PRESET_BUDGET_USD[config.preset] if limit is None else limit
+def budget_usd(
+    config: MonitorConfig, limit: float | None, *, agents: int = 1, channels: bool = False
+) -> float:
+    """The monitor's spend cap: the scenario's `limits.monitor_cost_usd`, else the preset's
+    amount for each of the run's `agents`, plus its share for the channel sweep when the run
+    has `channels` and sweeps them."""
+    if limit is not None:
+        return limit
+    out = PRESET_BUDGET_USD[config.preset] * max(1, agents)
+    if channels and config.channels is not None:
+        out += PRESET_CHANNEL_USD[config.preset]
+    return out
 
 
 def digest(value: JsonValue) -> str:

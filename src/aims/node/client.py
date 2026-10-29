@@ -10,6 +10,7 @@ import httpx2
 from pydantic import TypeAdapter
 
 from aims import __version__
+from aims.events import Label
 from aims.run.job import Job
 from aims.wire import (
     Ack,
@@ -19,11 +20,13 @@ from aims.wire import (
     Heads,
     HeadsReply,
     HelloReply,
+    Labels,
     MonitorJob,
     Release,
     RunnerFeed,
     RunnerHello,
     RunnerStatus,
+    ScoreJob,
     Shas,
 )
 
@@ -134,9 +137,9 @@ class ControlClient:
     async def ack(self, command_id: str, ack: Ack) -> None:
         await self._post(f"/commands/{command_id}/ack", ack)
 
-    async def claim(self, run_id: str) -> Job | MonitorJob | None:
-        """The job offered as `run_id`, a scenario or models.check Job or a MonitorJob; None
-        when it went to another runner."""
+    async def claim(self, run_id: str) -> Job | MonitorJob | ScoreJob | None:
+        """The job offered as `run_id`, a scenario or models.check Job, a MonitorJob or a
+        ScoreJob; None when it went to another runner."""
         response = await self._http.post(f"/jobs/{run_id}/claim")
         if response.status_code == 409:
             return None
@@ -175,6 +178,15 @@ class ControlClient:
         )
         await _check(response)
 
+    async def put_truth(self, run_id: str, data: bytes) -> None:
+        response = await self._http.put(
+            f"/runs/{run_id}/truth",
+            content=data,
+            headers={"Content-Type": "application/json"},
+            timeout=httpx2.Timeout(60.0, connect=10.0),
+        )
+        await _check(response)
+
     async def post_events(self, run_id: str, lines: Sequence[bytes]) -> Head:
         body = zstd.compress(b"".join(lines))
         response = await self._http.post(
@@ -195,6 +207,13 @@ class ControlClient:
             f"/runs/{run_id}/log", timeout=httpx2.Timeout(300.0, connect=10.0)
         )
         return (await _check(response)).content
+
+    async def run_truth(self, run_id: str) -> bytes:
+        """The truth file of a sealed run, for a score job of it."""
+        return (await _check(await self._http.get(f"/runs/{run_id}/truth"))).content
+
+    async def post_labels(self, run_id: str, labels: Sequence[Label]) -> None:
+        await self._post(f"/runs/{run_id}/labels", Labels(labels=list(labels)))
 
     async def run_blob(self, run_id: str, sha256: str) -> bytes:
         response = await _check(await self._http.get(f"/runs/{run_id}/blobs/{sha256}"))

@@ -32,7 +32,7 @@ from aims.wire import (
 
 log = logging.getLogger("aims.node")
 
-KINDS: tuple[JobKindName, ...] = (*BASE_KINDS, "monitor")
+KINDS: tuple[JobKindName, ...] = (*BASE_KINDS, "monitor", "score")
 DELTA_EVERY_S = 0.05
 DELTA_BATCH = 2000
 MAX_DONE = 10_000
@@ -158,8 +158,31 @@ class Link:
                 server = heads.get(run_id)
                 if local is None:
                     continue
-                if server is None or server.seq < local.seq or server.hash != local.hash:
+                if (
+                    server is None
+                    or server.seq < local.seq
+                    or server.hash != local.hash
+                    or (
+                        local.finished
+                        and not server.truth
+                        and self.store.truth_path(run_id).is_file()
+                    )
+                ):
                     self.ship(run_id)
+                elif server is not None and server.seq >= 0:
+                    await self._labels(run_id)
+
+    async def _labels(self, run_id: str) -> None:
+        """Send the labels people gave the flags of a run the server holds; it keeps those it
+        lacks."""
+        path = self.store.labels_path(run_id)
+        if not path.is_file():
+            return
+        labels = await self.store.label_history(run_id)
+        try:
+            await self.client.post_labels(run_id, labels)
+        except (ApiError, httpx2.TransportError, OSError) as e:
+            log.warning("run %s: labels not sent: %s", run_id, e)
 
     def _spawn(self, coro: Awaitable[None]) -> None:
         async def wrap() -> None:

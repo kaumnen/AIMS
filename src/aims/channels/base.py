@@ -9,11 +9,11 @@ state); `close` at the end, which returns the state the next run of a series sta
 A channel class whose tools have agent-visible texts also offers `tool_texts`, so the run can
 resolve and record those texts with the agent's other texts before the channel is built."""
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from importlib.metadata import entry_points
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Protocol
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
 from aims.events import ChannelInfo, EventStore
 
@@ -36,7 +36,10 @@ class ChannelSetup:
     """What a channel is built with. `restored` is the archive of its state the last run of
     the series left, None for a fresh one. `texts` are each member's resolved tool texts, by
     agent id and then tool name (see `tool_texts`). `backend` runs the sandboxes; `base` is
-    the scenario's directory, which `files` sources are read from."""
+    the scenario's directory, which `files` sources are read from. Without one, as in a fork,
+    `sources` reads a source from what the run's truth file recorded: its members, each with
+    `name` (relative to the source, "" for itself), `kind`, `mode`, `mtime`, `data` and
+    `target`."""
 
     config: ChannelConfig
     scenario: Scenario
@@ -46,6 +49,7 @@ class ChannelSetup:
     texts: Mapping[str, Mapping[str, Mapping[str, str]]] = field(default_factory=dict)
     backend: SandboxBackend | None = None
     base: Path | None = None
+    sources: Callable[[str], Sequence[Any]] | None = None
 
 
 class Channel(Protocol):

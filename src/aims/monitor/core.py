@@ -23,6 +23,8 @@ from aims.events import (
     SweepTrigger,
 )
 from aims.models import ModelClient, Profile, Prompt
+from aims.monitor.channels import NAME as CHANNELS
+from aims.monitor.channels import ChannelLog, ChannelSweeper
 from aims.monitor.config import SweepConfig
 from aims.monitor.judge import Judge, JudgeResult
 from aims.monitor.policy import Cutoffs, Decision, Policy
@@ -45,6 +47,8 @@ ACTION_CALLS = 20
 
 type Key = tuple[str, str]
 type Trigger = tuple[str | None, SweepTrigger, str | None]
+# The run-wide channel sweep's place among the sweeps due; no agent id is empty.
+CHANNEL_KEY: Key = (CHANNELS, "")
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,8 +134,10 @@ class Monitor:
     Signals run on every event; a gate point waits at `barrier` until every event appended
     before it was taken in, so signal-driven pauses land before the agent moves on. Sweeps run
     one at a time in the background on their triggers; with `hold`, `hold` keeps an agent
-    before a tool call until the sweep due has scored it. Policy decisions are written as
-    `monitor.action` and carried out through the `Actuator` unless `simulated`.
+    before a tool call until the sweep due has scored it. When the run has channels, the
+    channel sweep runs among them on new channel records and at the end, and each agent its
+    flags name gets a sweep of its whole trajectory led by the finding. Policy decisions are
+    written as `monitor.action` and carried out through the `Actuator` unless `simulated`.
 
     `source` is the run whose events are fed, when it is not `run_id`: the origin of an offline
     re-run, whose blobs the signals, sweeps and judge read. The factories build the signal
@@ -152,6 +158,7 @@ class Monitor:
         engine_factory: Callable[..., SignalEngine] = SignalEngine,
         trajectory_factory: Callable[..., Trajectory] = Trajectory,
         sweeper_factory: Callable[..., Sweeper] = Sweeper,
+        channel_factory: Callable[..., ChannelSweeper] = ChannelSweeper,
         judge_factory: Callable[..., Judge] = Judge,
         key: bytes | None = None,
     ) -> None:
@@ -167,6 +174,7 @@ class Monitor:
         self.simulated = simulated or self.mode == "observe"
         self.offline = self.source != run_id
         self._sweeper_factory = sweeper_factory
+        self._channel_factory = channel_factory
         self._judge_factory = judge_factory
         self._trajectory_factory = trajectory_factory
         self._key = key or secrets.token_bytes(32)
@@ -189,6 +197,13 @@ class Monitor:
         self._sweep_configs: list[SweepConfig] = [
             c for c in self.config.sweeps if models and c.name in monitor.sweeps
         ]
+        self._channel_log: ChannelLog | None = None
+        channels = self.config.channels is not None and monitor.channels is not None
+        if models and channels and scenario.channels:
+            self._channel_log = ChannelLog(self.source, store, self._key, scenario)
+        self._channel_sweeper: ChannelSweeper | None = None
+        self._channel_count = 0
+        self._leads: dict[str, str] = {}
         self._sweepers: dict[Key, Sweeper] = {}
         self._scorers: dict[Key, Sweeper] = {}
         self._own_calls: set[str] = set()
@@ -267,10 +282,10 @@ class Monitor:
             return
         self._consumer = asyncio.create_task(self._consume(), name=f"monitor {self.run_id}")
         self._consumer.add_done_callback(lambda _: self._progress.set())
-        if self._sweep_configs:
+        if self._sweep_configs or self._channel_log is not None:
             self._tasks.append(asyncio.create_task(self._sweep_loop()))
-            if not self.offline:
-                self._tasks.append(asyncio.create_task(self._clock()))
+        if self._sweep_configs and not self.offline:
+            self._tasks.append(asyncio.create_task(self._clock()))
 
     async def barrier(self) -> None:
         """Wait until every event fed before this call was taken in and acted on."""
@@ -298,6 +313,9 @@ class Monitor:
             self._drop(pause)
         if not self._sweeps_on:
             return
+        log_ = self._channel_log
+        if log_ is not None and log_.last_seq > self._swept_seq.get(CHANNEL_KEY, -1):
+            self._request_channels("final")
         for c in self._sweep_configs:
             for agent_id in self._agents:
                 if self._visible(agent_id) > self._swept_seq.get((c.name, agent_id), -1):
@@ -425,6 +443,7 @@ class Monitor:
                 trajectory.add(event)
             except Exception:
                 log.exception("the trajectory of %s failed on seq %d", agent_id, event.seq)
+        self._channel_event(event)
         if drafts:
             for d in drafts:
                 if isinstance(d.payload, MonitorFlag):
@@ -533,6 +552,18 @@ class Monitor:
         elif action == "sweep":
             triggers.append((event.agent_id, "operator", None))
 
+    def _channel_event(self, event: Event) -> None:
+        log_, config = self._channel_log, self.config.channels
+        if log_ is None or config is None:
+            return
+        try:
+            log_.add(event)
+        except Exception:
+            log.exception("the channel log failed on seq %d", event.seq)
+            return
+        if log_.count - self._channel_count >= config.every:
+            self._request_channels("every")
+
     async def _clock(self) -> None:
         """Count each running agent's unpaused seconds, for `every_s` and the wall budget."""
         every = [c.every_s for c in self._sweep_configs if c.every_s is not None]
@@ -560,7 +591,8 @@ class Monitor:
 
     @property
     def _sweeps_on(self) -> bool:
-        return bool(self._sweep_configs) and not self._signals_only and not self._closed
+        sweeps = bool(self._sweep_configs) or self._channel_log is not None
+        return sweeps and not self._signals_only and not self._closed
 
     def _request(self, triggers: Sequence[Trigger]) -> None:
         if not self._sweeps_on:
@@ -571,13 +603,27 @@ class Monitor:
                 if name is not None and c.name != name:
                     continue
                 for a in agents:
-                    due = self._pending.get((c.name, a))
-                    if due is None:
-                        self._pending[(c.name, a)] = _Due(trigger)
-                    else:
-                        due.count += 1
+                    self._due_now((c.name, a), trigger)
         if self._pending:
             self._sweep_wake.set()
+
+    def _request_channels(self, trigger: SweepTrigger) -> None:
+        if not self._sweeps_on or self._channel_log is None:
+            return
+        self._channel_count = self._channel_log.count
+        self._due_now(CHANNEL_KEY, trigger)
+        self._sweep_wake.set()
+
+    def _due_now(self, key: Key, trigger: SweepTrigger) -> None:
+        """Ask for the sweep `key`; one already due answers this trigger too. A channel lead
+        makes the sweep due a deep one."""
+        due = self._pending.get(key)
+        if due is None:
+            self._pending[key] = _Due(trigger)
+            return
+        due.count += 1
+        if trigger == "channel":
+            due.trigger = trigger
 
     def _due(self, key: Key, step: int) -> bool:
         busy = key in self._pending or self._running == key
@@ -604,21 +650,37 @@ class Monitor:
 
     async def _sweep(self, key: Key, trigger: SweepTrigger, coalesced: int) -> None:
         name, agent_id = key
-        st = self._agent(agent_id)
-        last_seq = self._visible(agent_id)
-        if trigger not in ("operator", "review") and last_seq <= self._swept_seq.get(key, -1):
+        channels = key == CHANNEL_KEY
+        steps = 0
+        if channels:
+            assert self._channel_log is not None
+            last_seq = self._channel_log.last_seq
+        else:
+            steps = self._agent(agent_id).steps
+            last_seq = self._visible(agent_id)
+        again = ("operator", "review", "channel")
+        if trigger not in again and last_seq <= self._swept_seq.get(key, -1):
             return
         if not self._may_spend(self._last_cost.get(key, 0.0)):
             await self._out_of_budget()
             return
-        sweeper = self._sweeper(key)
-        steps = st.steps
         self._running = key
         error = None
+        leads: dict[str, str] = {}
         try:
-            result = await sweeper.sweep(trigger, coalesced=coalesced)
+            if channels:
+                found = await self._channel().sweep(trigger, coalesced=coalesced)
+                result, leads = found.result, found.leads
+            else:
+                lead = None
+                if trigger == "channel" and agent_id in self._leads:
+                    finding = self._leads[agent_id]
+                    lead = self.monitor.texts["channel_lead"].format(
+                        agent=agent_id, finding=finding
+                    )
+                result = await self._sweeper(key).sweep(trigger, coalesced=coalesced, lead=lead)
         except Exception as e:
-            log.exception("sweep %s of %s failed", name, agent_id)
+            log.exception("sweep %s of %s failed", name, agent_id or "the run")
             error = f"{type(e).__name__}: {e}"
             result = SweepResult(failed=True)
         self._spent += result.cost_usd
@@ -635,6 +697,18 @@ class Monitor:
             self._failures = 0
             self._covered[key] = max(self._covered.get(key, 0), steps)
             self._swept_seq[key] = max(self._swept_seq.get(key, -1), last_seq)
+            if trigger == "channel":
+                self._leads.pop(agent_id, None)
+        if channels:
+            for e in flags:
+                for t in self._trajectories_of(e.agent_id):
+                    t.mark(MonitorFlag.model_validate(e.data).evidence)
+            config = self.config.channels
+            if config is not None and config.deep and self._sweep_configs:
+                for agent, finding in leads.items():
+                    if agent in self._agents:
+                        self._leads[agent] = finding
+                        self._request([(agent, "channel", None)])
         for d in self.policy.decide(flags):
             await self._act(d)
 
@@ -643,6 +717,24 @@ class Monitor:
         so the verifier's events never call for another sweep."""
         trajectory = self._trajectories.get(agent_id)
         return self._agent(agent_id).last_seq if trajectory is None else trajectory.last_seq
+
+    def _channel(self) -> ChannelSweeper:
+        if self._channel_sweeper is None:
+            assert self._channel_log is not None
+            assert self.config.channels is not None
+            assert self.monitor.channels is not None
+            tasks = {a: self.scenario.task_for(a).instruction for a in self._budgets}
+            self._channel_sweeper = self._channel_factory(
+                config=self.config.channels,
+                profile=self.monitor.channels,
+                extractor=self.monitor.extract,
+                texts=self.monitor.texts,
+                client=self.client,
+                store=self.store,
+                log=self._channel_log,
+                tasks=tasks,
+            )
+        return self._channel_sweeper
 
     def _sweeper(self, key: Key) -> Sweeper:
         if key not in self._sweepers:
@@ -674,7 +766,8 @@ class Monitor:
             client=self.client,
             store=self.store,
             trajectory=self._trajectory(agent_id),
-            task=self.scenario.task.instruction,
+            task=self.scenario.task_for(agent_id).instruction,
+            extractor=self.monitor.extract,
         )
 
     def _may_spend(self, estimate: float = 0.0) -> bool:

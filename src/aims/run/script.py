@@ -1,18 +1,22 @@
 """Scripted agents and the waits that order the agents of one run.
 
-A scripted agent follows its scenario script step by step instead of calling a model. A step
-may wait for an event first: another agent starting or finishing, reaching a step, running a
-command, reading or writing a channel, or posting to a board.
+A scripted agent follows its scenario script step by step instead of calling a model: it runs
+commands, posts to boards and calls its tools. A step may wait for an event first: another
+agent starting or finishing, reaching a step, running a command, reading or writing a channel,
+or posting to a board.
 """
 
 import asyncio
 import contextlib
+import json
 import logging
 import posixpath
 import time
+import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
+from aims.agent import Gate, OpenGate, ReplayPlan, run_tool, settle
 from aims.events import (
     AgentEnd,
     AgentFinished,
@@ -22,17 +26,22 @@ from aims.events import (
     Event,
     LocalEventStore,
     Payload,
+    ToolCall,
+    ToolResult,
 )
 from aims.models import Profile
 from aims.plants.canary import Canary, render
 from aims.sandbox import AuditedSandbox
 from aims.scenario import AgentConfig, Scenario
-from aims.scenario.model import FolderChannel, ScriptStep, Start, Trigger
+from aims.scenario.model import Call, FolderChannel, ScriptStep, Start, Trigger
+from aims.tools import Tool, ToolContext, cap
 
 log = logging.getLogger("aims.run.script")
 
 Post = Callable[[str, str, str], Awaitable[Any]]
 """Post `text` to board `channel` for scripted agent `agent`."""
+End = tuple[AgentEnd, str | None, str | None]
+"""How a step ended its agent: the reason, the detail and the answer."""
 
 _READ_OPS = frozenset({"read"})
 _WRITE_OPS = frozenset({"write", "delete", "rename", "mkdir", "symlink", "link"})
@@ -105,7 +114,17 @@ class Watch:
         assert start.agent is not None
         if start.on == "step":
             assert start.step is not None
-            return self._steps.get(start.agent, {}).get(start.step)
+            reached = self._steps.get(start.agent, {})
+            at = reached.get(start.step)
+            if at is None and start.agent in self._finished:
+                log.warning(
+                    "agent %s finished after %d steps, short of step %d; starting what waits on it",
+                    start.agent,
+                    len(reached),
+                    start.step,
+                )
+                return self._finished[start.agent]
+            return at
         kind = "agent.started" if start.on == "started" else "agent.finished"
         for event, at in self.events:
             if event.type == kind and event.agent_id == start.agent:
@@ -216,7 +235,10 @@ class Watch:
 
 
 class ScriptedAgent:
-    """One scripted confederate: log its start, take its steps, log its finish."""
+    """One scripted agent: log its start, take its steps, log its finish. Its steps are its
+    own script, a confederate's, unless `steps` gives others; a call of `submit` ends it. In a
+    fork it takes its first `replay.fork_at` steps again without their triggers, each when the
+    origin's order reaches it at the turnstile, then goes on with the rest as written."""
 
     def __init__(
         self,
@@ -231,6 +253,10 @@ class ScriptedAgent:
         watch: Watch,
         post: Post | None = None,
         canaries: Mapping[str, Canary] | None = None,
+        replay: ReplayPlan | None = None,
+        steps: Sequence[ScriptStep] | None = None,
+        tools: Sequence[Tool] = (),
+        gate: Gate | None = None,
     ) -> None:
         self.config = config
         self.id = config.id
@@ -243,7 +269,10 @@ class ScriptedAgent:
         self.watch = watch
         self.post = post
         self.canaries = canaries or {}
-        self.script: list[ScriptStep] = list(config.script or [])
+        self.replay = replay
+        self.script: list[ScriptStep] = list(config.script or [] if steps is None else steps)
+        self.tools = {t.name: t for t in tools}
+        self.gate = gate or OpenGate()
         self.steps = 0
         self.answer: str | None = None
         self.killed: str | None = None
@@ -251,14 +280,15 @@ class ScriptedAgent:
 
     async def run(self) -> AgentFinished:
         start = time.monotonic()
-        reason = "error"
+        reason: AgentEnd = "error"
         detail: str | None = None
+        answer: str | None = None
         await self._emit(
             AgentStarted(
                 profile=self.profile.name,
                 model=self.profile.model,
                 backend=None,
-                tools=[],
+                tools=list(self.tools),
                 system=await self.store.content(self.run_id, ""),
                 budget=self.config.budget.model_dump(mode="json"),
                 compaction=None
@@ -267,24 +297,47 @@ class ScriptedAgent:
             )
         )
         try:
+            reason, detail = "no_submit", "the steps finished"
             for n, step in enumerate(self.script, 1):
-                if step.on is not None:
-                    await self.watch.wait_trigger(step.on)
-                if step.after_s:
-                    await asyncio.sleep(step.after_s)
-                await self._take(n, step)
+                if self.replay is not None and n <= self.replay.fork_at:
+                    end = await self._again(n, step)
+                else:
+                    if step.on is not None:
+                        await self.watch.wait_trigger(step.on)
+                    if step.after_s:
+                        await asyncio.sleep(step.after_s)
+                    end = await self._take(n, step)
                 self.steps = n
                 self.watch.record_step(self.id, n)
-            reason, detail = "no_submit", "the steps finished"
+                if end is not None:
+                    reason, detail, answer = end
+                    break
         except asyncio.CancelledError:
-            await asyncio.shield(self._finish(start, "cancelled", self.killed))
+            if self.killed is not None:
+                await settle(self._finish(start, "killed", self.killed))
+            else:
+                await settle(self._finish(start, "cancelled", None))
             raise
         except Exception as e:
             log.exception("scripted agent %s failed", self.id)
             reason, detail = "error", f"{type(e).__name__}: {e}"
-        return await asyncio.shield(self._finish(start, reason, detail))
+        return await settle(self._finish(start, reason, detail, answer))
 
-    async def _take(self, n: int, step: ScriptStep) -> None:
+    async def _again(self, n: int, step: ScriptStep) -> End | None:
+        """Take step `n` again where the origin's order has it."""
+        assert self.replay is not None
+        turnstile = self.replay.turnstile
+        actions = self.replay.actions
+        seq = actions[n - 1] if n - 1 < len(actions) else None
+        if turnstile is None or seq is None:
+            return await self._take(n, step)
+        await turnstile.wait(seq)
+        try:
+            return await self._take(n, step)
+        finally:
+            await turnstile.done(seq)
+
+    async def _take(self, n: int, step: ScriptStep) -> End | None:
         if step.run is not None:
             timeout = step.timeout_s or self.sandbox_config.command_timeout_s
             command = self._render(step.run)
@@ -296,22 +349,81 @@ class ScriptedAgent:
                 else:
                     end = finished.end
                 log.warning("scripted agent %s step %d ended with %s", self.id, n, end)
-            return
+            return None
+        if step.call is not None:
+            return await self._call(n, step.call)
         assert step.post is not None
         if self.post is None:
             raise RuntimeError(f"agent {self.id}: a post of step {n} needs a board post function")
         await self.post(self.id, step.post.channel, self._render(step.post.text))
+        return None
+
+    async def _call(self, n: int, call: Call) -> End | None:
+        """Call one of the agent's tools as its model would, with no model call behind it."""
+        call_id = str(uuid.uuid7())
+        arguments = json.dumps(self._render_value(call.arguments), ensure_ascii=False)
+        await self._emit(
+            ToolCall(
+                call_id=call_id,
+                name=call.tool,
+                arguments=await self.store.content(self.run_id, arguments),
+            )
+        )
+        ctx = ToolContext(
+            sandbox=self.sandbox,
+            store=self.store,
+            run_id=self.run_id,
+            agent_id=self.id,
+            call_id=call_id,
+            step=n,
+            config=self.sandbox_config,
+            gate=self.gate,
+        )
+        outcome = await run_tool(self.tools, ctx, call.tool, arguments)
+        data = outcome.output.encode()
+        text, truncated = cap(data)
+        await self._emit(
+            ToolResult(
+                call_id=call_id,
+                output=await self.store.content(self.run_id, text),
+                error=outcome.error,
+                output_bytes=len(data),
+                truncated=truncated,
+            )
+        )
+        if outcome.failed:
+            return "sandbox_failed", outcome.output, None
+        if outcome.answer is not None:
+            return "submitted", None, outcome.answer
+        if outcome.error:
+            log.warning("scripted agent %s step %d: %s failed: %s", self.id, n, call.tool, text)
+        return None
 
     def _render(self, text: str) -> str:
         if not self.canaries:
             return text
         return render(text, self.canaries)
 
-    async def _finish(self, start: float, reason: AgentEnd, detail: str | None) -> AgentFinished:
+    def _render_value(self, value: Any) -> Any:
+        if isinstance(value, str):
+            return self._render(value)
+        if isinstance(value, dict):
+            return {k: self._render_value(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self._render_value(v) for v in value]
+        return value
+
+    async def _finish(
+        self, start: float, reason: AgentEnd, detail: str | None, answer: str | None = None
+    ) -> AgentFinished:
         self.done = True
+        self.answer = answer
+        if self.replay is not None and self.replay.turnstile is not None:
+            await self.replay.turnstile.drop(self.replay.actions)
         finished = AgentFinished(
             reason=reason,
             detail=detail,
+            answer=None if answer is None else await self.store.content(self.run_id, answer),
             steps=self.steps,
             wall_ms=int((time.monotonic() - start) * 1000),
         )

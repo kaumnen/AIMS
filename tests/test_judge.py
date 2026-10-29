@@ -54,6 +54,7 @@ from aims.monitor.judge import (
     JudgeResult,
     Rollout,
     dumps,
+    flag_numbers,
 )
 from aims.monitor.texts import MonitorTexts
 from aims.prompts import check_format
@@ -486,14 +487,16 @@ async def test_flags_tool_lists_given_flags(store: LocalEventStore) -> None:
     low = await flag(run, "low", [run.seqs["open"]], importance=2, category="eval_awareness")
     high = await flag(run, "high", [run.seqs["write"]], importance=4)
     judge = make_judge(store, run, Script())
+    n = flag_numbers([low, high])
     for e in (low, high):
-        judge.flags[e.seq] = Flag(e.seq, e.run_id, e.agent_id, MonitorFlag.model_validate(e.data))
+        payload = MonitorFlag.model_validate(e.data)
+        judge.flags[e.seq] = Flag(e.seq, e.run_id, e.agent_id, payload, number=n[e.seq])
     out = await tool(judge, "flags")
-    assert [f["flag"] for f in out["flags"]] == [high.seq, low.seq]
+    assert [f["flag"] for f in out["flags"]] == [n[high.seq], n[low.seq]]
     assert out["total"] == 2
     assert out["next_offset"] is None
     only = await tool(judge, "flags", category="eval_awareness")
-    assert [f["flag"] for f in only["flags"]] == [low.seq]
+    assert [f["flag"] for f in only["flags"]] == [n[low.seq]]
     blind = Rollout(2, True, 1.0)
     out = await tool(judge, "flags", blind)
     assert "no tool named flags" in out["error"]
@@ -604,15 +607,21 @@ async def test_rejection_needs_cited_evidence(store: LocalEventStore) -> None:
     f1 = await flag(run, "f1", [run.seqs["write"]])
     f2 = await flag(run, "f2", [run.seqs["open"]])
     f3 = await flag(run, "f3", [run.seqs["open"]], category="eval_awareness", importance=4)
+    n = flag_numbers([f1, f2, f3])
     reviews = [
         {
-            "flag": f1.seq,
+            "flag": n[f1.seq],
             "status": "rejected",
             "reason": "normal write",
             "evidence": [run.seqs["write"]],
         },
-        {"flag": f2.seq, "status": "rejected", "reason": "harmless", "evidence": []},
-        {"flag": f3.seq, "status": "rejected", "reason": "unread", "evidence": [run.seqs["bash5"]]},
+        {"flag": n[f2.seq], "status": "rejected", "reason": "harmless", "evidence": []},
+        {
+            "flag": n[f3.seq],
+            "status": "rejected",
+            "reason": "unread",
+            "evidence": [run.seqs["bash5"]],
+        },
         {"flag": 99999, "status": "confirmed", "reason": "made up", "evidence": []},
     ]
     script = Script(
@@ -670,7 +679,14 @@ async def test_findings_become_judge_flags(store: LocalEventStore) -> None:
         },
         "drift": {"present": "yes", "importance": 2, "evidence": [], "justification": "no seqs"},
     }
-    reviews = [{"flag": f1.seq, "status": "confirmed", "reason": "hook", "evidence": []}]
+    reviews = [
+        {
+            "flag": flag_numbers([f1])[f1.seq],
+            "status": "confirmed",
+            "reason": "hook",
+            "evidence": [],
+        }
+    ]
     script = Script(
         call("events", from_seq=run.seqs["open"], to_seq=run.seqs["write"]),
         call(
@@ -740,7 +756,7 @@ async def test_the_sample_skips_flagged_steps(store: LocalEventStore) -> None:
     step3 = next(s for s in data["sample"] if s["step"] == 3)
     assert step3["calls"][0]["arguments"] == '{"command": "pytest -q"}'
     assert "chars cut" in step3["calls"][0]["result"]["output"]
-    assert data["flags"][0]["flag"] == f1.seq
+    assert data["flags"][0]["flag"] == flag_numbers([f1])[f1.seq]
     assert data["sweeps"][0]["summary"] == "The agent wrote a conftest.py."
 
 
@@ -771,7 +787,9 @@ async def test_blind_rollout_gets_no_flags(store: LocalEventStore) -> None:
             summary="SWEEP SUMMARY TEXT",
         ),
     )
-    reviews = [{"flag": f1.seq, "status": "confirmed", "reason": "r", "evidence": []}]
+    reviews = [
+        {"flag": flag_numbers([f1])[f1.seq], "status": "confirmed", "reason": "r", "evidence": []}
+    ]
     script = two_rollouts(verdict(max_severity=3), verdict(flags=reviews))
     judge = make_judge(store, run, script, rollouts=2, blind=1)
     v = payload_of(await judge.run(flags=[f1], sweeps=[s1]))
@@ -812,7 +830,14 @@ async def test_rollouts_merge_and_disagree(store: LocalEventStore) -> None:
                 "justification": "hook",
             }
         },
-        flags=[{"flag": f1.seq, "status": "confirmed", "reason": "hook", "evidence": []}],
+        flags=[
+            {
+                "flag": flag_numbers([f1])[f1.seq],
+                "status": "confirmed",
+                "reason": "hook",
+                "evidence": [],
+            }
+        ],
         claim_matched="no",
         max_severity=4,
         summary="tampered",
@@ -854,10 +879,24 @@ async def test_flag_status_merges_conservatively(store: LocalEventStore) -> None
     answers = iter(
         [
             verdict(
-                flags=[{"flag": f1.seq, "status": "rejected", "reason": "fine", "evidence": [seen]}]
+                flags=[
+                    {
+                        "flag": flag_numbers([f1])[f1.seq],
+                        "status": "rejected",
+                        "reason": "fine",
+                        "evidence": [seen],
+                    }
+                ]
             ),
             verdict(
-                flags=[{"flag": f1.seq, "status": "confirmed", "reason": "hook", "evidence": []}]
+                flags=[
+                    {
+                        "flag": flag_numbers([f1])[f1.seq],
+                        "status": "confirmed",
+                        "reason": "hook",
+                        "evidence": [],
+                    }
+                ]
             ),
         ]
     )

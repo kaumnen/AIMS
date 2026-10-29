@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import aiosqlite
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from aims.events.chain import Head
 from aims.events.payloads import (
@@ -18,11 +18,12 @@ from aims.events.payloads import (
     MonitorVerdict,
     ResourceSample,
     RunKind,
+    ScoreUnit,
     TaskScored,
 )
 from aims.events.schema import SCHEMA_VERSION, Content, Event, Timestamp, format_ts
 
-VERSION = 3
+VERSION = 5
 MAX_TEXT = 32 * 1024
 MAX_PAGE = 1000
 
@@ -42,10 +43,47 @@ create table runs (
     max_importance integer,
     verdict_severity integer,
     severity integer not null default 0,
-    categories text not null default '{}'
+    categories text not null default '{}',
+    series text,
+    series_index integer,
+    variant text,
+    run_group text
 ) strict;
 
 create index runs_by_origin on runs (origin, run_id) where origin is not null;
+create index runs_by_series on runs (series, series_index) where series is not null;
+
+create index runs_by_group on runs (run_group) where run_group is not null;
+
+create table score_units (
+    run_id text not null references runs (run_id),
+    origin text not null,
+    monitor text,
+    variant text,
+    agent text not null,
+    role text not null,
+    positive integer,
+    data text not null,
+    primary key (run_id, agent)
+) strict;
+
+create index score_units_by_origin on score_units (origin, run_id);
+
+create table labels (
+    run_id text not null references runs (run_id),
+    flag integer not null,
+    label text not null,
+    note text not null,
+    by text not null,
+    at text not null,
+    primary key (run_id, flag, at, by)
+) strict;
+
+create table run_costs (
+    run_id text primary key references runs (run_id),
+    last_hash text not null,
+    data text not null
+) strict;
 
 create table events (
     id integer primary key,
@@ -138,6 +176,9 @@ create table flags (
 """
 
 DROP = """
+drop table if exists labels;
+drop table if exists score_units;
+drop table if exists run_costs;
 drop table if exists flags;
 drop table if exists samples;
 drop trigger if exists events_fts_insert;
@@ -173,6 +214,41 @@ class RunInfo(BaseModel):
     verdict_severity: int | None = None
     severity: int = 0
     categories: dict[str, int] = Field(default_factory=dict)
+    series: str | None = None
+    series_index: int | None = None
+    variant: str | None = None
+    group: str | None = None
+
+
+LabelKind = Literal["real", "false_alarm", "unclear"]
+
+
+class Label(BaseModel):
+    """A person's word on a monitor flag: `real` misbehaviour, a `false_alarm`, or `unclear`.
+    `flag` is the flag's seq in `run_id`, the run that holds it. The latest label counts."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    run_id: str
+    flag: int = Field(ge=0)
+    label: LabelKind
+    note: str = ""
+    by: str
+    at: Timestamp
+
+
+class UnitRow(BaseModel):
+    """A unit of a score run as the index keeps it, with the run it scores, the monitor run
+    whose flags it used (None for the run's own) and the run's variant."""
+
+    run_id: str
+    origin: str
+    monitor: str | None
+    variant: str | None
+    agent: str
+    role: str
+    positive: bool | None
+    unit: ScoreUnit
 
 
 class FlagInfo(BaseModel):
@@ -264,6 +340,10 @@ RUN_KEYS = (
     "max_importance",
     "verdict_severity",
     "severity",
+    "series",
+    "series_index",
+    "variant",
+    "group",
     "categories",
 )
 AGGREGATE = """
@@ -378,7 +458,8 @@ class Index:
                     " select 'delete', id, text from events where run_id = ? and text != ''",
                     (run_id,),
                 )
-                for table in ("flags", "samples", "events", "runs"):
+                tables = ("labels", "score_units", "run_costs", "flags", "samples", "events")
+                for table in (*tables, "runs"):
                     await self._db.execute(f"delete from {table} where run_id = ?", (run_id,))
             except BaseException:
                 await self._db.execute("rollback")
@@ -417,10 +498,15 @@ class Index:
                 first = events[0]
                 if first.seq == 0:
                     origin = first.data.get("origin")
+                    series = first.data.get("series")
+                    series = series if isinstance(series, dict) else {}
+                    name, n = series.get("name"), series.get("index")
+                    config = first.data.get("config")
+                    group = config.get("group") if isinstance(config, dict) else None
                     await self._db.execute(
                         "insert into runs (run_id, scenario, status, started_at, ended_at,"
-                        " last_seq, last_hash, log_offset, kind, origin)"
-                        " values (?, ?, 'running', ?, null, -1, '', 0, ?, ?)"
+                        " last_seq, last_hash, log_offset, kind, origin, series, series_index,"
+                        " run_group) values (?, ?, 'running', ?, null, -1, '', 0, ?, ?, ?, ?, ?)"
                         " on conflict do nothing",
                         (
                             run_id,
@@ -428,10 +514,16 @@ class Index:
                             rows[0][2],
                             str(first.data.get("kind") or "scenario"),
                             origin if isinstance(origin, str) else None,
+                            name if isinstance(name, str) else None,
+                            n if isinstance(n, int) and not isinstance(n, bool) else None,
+                            group if isinstance(group, str) else None,
                         ),
                     )
                 if monitor:
                     await self._monitor(run_id, monitor)
+                units = [e for e in events if e.type == ScoreUnit.type]
+                if units:
+                    await self._units(run_id, events, units)
                 await self._db.executemany(
                     "insert into events (run_id, seq, ts, agent_id, type, data, prev_hash, hash,"
                     " text) values (?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict do nothing",
@@ -607,11 +699,25 @@ class Index:
         origin: str | None = None,
         severity: int | None = None,
         category: str | None = None,
+        series: str | None = None,
+        variant: str | None = None,
+        group: str | None = None,
     ) -> list[RunInfo]:
         """Runs newest first. `severity` keeps runs whose `severity` is at least it, `category`
-        those with a flag in it, whatever its status, `origin` the monitor runs of that run."""
+        those with a flag in it, whatever its status, `origin` the monitor runs of that run,
+        `series` the runs of that series, `variant` the sealed runs of that variant and `group`
+        the samples of that group."""
         where: list[str] = []
         args: list[Any] = []
+        if group is not None:
+            where.append("run_group = ?")
+            args.append(group)
+        if series is not None:
+            where.append("series = ?")
+            args.append(series)
+        if variant is not None:
+            where.append("variant = ?")
+            args.append(variant)
         if before:
             where.append("run_id < ?")
             args.append(before)
@@ -636,8 +742,8 @@ class Index:
     async def _runs(self, clause: str, args: Sequence[Any]) -> list[RunInfo]:
         async with self._db.execute(
             "select run_id, scenario, status, started_at, ended_at, last_seq + 1, last_hash, kind,"
-            " origin, flags, max_importance, verdict_severity, severity, categories"
-            f" from runs {clause}",
+            " origin, flags, max_importance, verdict_severity, severity, series, series_index,"
+            f" variant, run_group, categories from runs {clause}",
             args,
         ) as cur:
             rows = await cur.fetchall()
@@ -647,6 +753,146 @@ class Index:
             )
             for row in rows
         ]
+
+    async def _units(self, run_id: str, batch: Sequence[Event], units: Sequence[Event]) -> None:
+        """Keep the units of a score run, with the origin, monitor run and variant its
+        run.started names."""
+        first = next((e for e in batch if e.seq == 0), None)
+        if first is not None:
+            data: dict[str, Any] = dict(first.data)
+        else:
+            async with self._db.execute(
+                "select data from events where run_id = ? and seq = 0", (run_id,)
+            ) as cur:
+                row = await cur.fetchone()
+            data = json.loads(row[0]) if row is not None else {}
+        origin = data.get("origin")
+        if not isinstance(origin, str):
+            return
+        config = data.get("config")
+        config = config if isinstance(config, dict) else {}
+        monitor, variant = config.get("monitor"), config.get("variant")
+        await self._db.executemany(
+            "insert into score_units (run_id, origin, monitor, variant, agent, role, positive,"
+            " data) values (?, ?, ?, ?, ?, ?, ?, ?) on conflict do nothing",
+            [
+                (
+                    run_id,
+                    origin,
+                    monitor if isinstance(monitor, str) else None,
+                    variant if isinstance(variant, str) else None,
+                    e.agent_id or "",
+                    str(e.data.get("role") or "subject"),
+                    None if e.data.get("positive") is None else int(bool(e.data["positive"])),
+                    json.dumps(e.data, separators=(",", ":"), sort_keys=True),
+                )
+                for e in units
+            ],
+        )
+
+    async def score_units(
+        self, origins: Sequence[str] | None = None, *, latest: bool = True
+    ) -> list[UnitRow]:
+        """The units of score runs over `origins`, or over every run; with `latest`, only the
+        newest score run of each origin and monitor run."""
+        where, args = "", ()
+        if origins is not None:
+            if not origins:
+                return []
+            where = f"where origin in ({', '.join('?' * len(origins))})"
+            args = tuple(origins)
+        columns = "run_id, origin, monitor, variant, agent, role, positive, data"
+        if latest:
+            query = (
+                f"select {columns} from score_units where run_id in (select run_id from"
+                " (select run_id, row_number() over (partition by origin, coalesce(monitor, '')"
+                " order by run_id desc) as n from (select distinct run_id, origin, monitor"
+                f" from score_units {where})) where n = 1)"
+            )
+        else:
+            query = f"select {columns} from score_units {where}"
+        async with self._db.execute(f"{query} order by origin, run_id, agent", args) as cur:
+            rows = await cur.fetchall()
+        return [
+            UnitRow(
+                run_id=r[0],
+                origin=r[1],
+                monitor=r[2],
+                variant=r[3],
+                agent=r[4],
+                role=r[5],
+                positive=None if r[6] is None else bool(r[6]),
+                unit=ScoreUnit.model_validate_json(r[7]),
+            )
+            for r in rows
+        ]
+
+    async def put_labels(self, labels: Sequence[Label]) -> None:
+        if not labels:
+            return
+        async with self._lock:
+            await self._db.execute("begin immediate")
+            try:
+                await self._db.executemany(
+                    "insert into labels (run_id, flag, label, note, by, at)"
+                    " values (?, ?, ?, ?, ?, ?) on conflict do nothing",
+                    [(x.run_id, x.flag, x.label, x.note, x.by, format_ts(x.at)) for x in labels],
+                )
+            except BaseException:
+                await self._db.execute("rollback")
+                raise
+            await self._db.execute("commit")
+
+    async def labels(self, run_id: str) -> dict[int, Label]:
+        """The latest label of each labelled flag of `run_id`."""
+        async with self._db.execute(
+            "select run_id, flag, label, note, by, at from labels where run_id = ? order by at, by",
+            (run_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        out: dict[int, Label] = {}
+        for r in rows:
+            out[r[1]] = Label(run_id=r[0], flag=r[1], label=r[2], note=r[3], by=r[4], at=r[5])
+        return out
+
+    async def set_variant(self, run_id: str, variant: str | None) -> None:
+        """Name the variant of the sealed run `run_id`, from its truth file, and drop its cost
+        row, which was read without it."""
+        async with self._lock:
+            await self._db.execute("begin immediate")
+            try:
+                await self._db.execute(
+                    "update runs set variant = ? where run_id = ?", (variant, run_id)
+                )
+                await self._db.execute("delete from run_costs where run_id = ?", (run_id,))
+            except BaseException:
+                await self._db.execute("rollback")
+                raise
+            await self._db.execute("commit")
+
+    async def costs(self) -> dict[str, tuple[str, str]]:
+        """Each run's cost row: the head hash it was read at and its data."""
+        async with self._db.execute("select run_id, last_hash, data from run_costs") as cur:
+            rows = await cur.fetchall()
+        return {row[0]: (row[1], row[2]) for row in rows}
+
+    async def put_costs(self, rows: Sequence[tuple[str, str, str]]) -> None:
+        """Keep the cost rows `(run_id, last_hash, data)`."""
+        if not rows:
+            return
+        async with self._lock:
+            await self._db.execute("begin immediate")
+            try:
+                await self._db.executemany(
+                    "insert into run_costs (run_id, last_hash, data) values (?, ?, ?)"
+                    " on conflict (run_id) do update set last_hash = excluded.last_hash,"
+                    " data = excluded.data",
+                    rows,
+                )
+            except BaseException:
+                await self._db.execute("rollback")
+                raise
+            await self._db.execute("commit")
 
     async def flags(
         self,

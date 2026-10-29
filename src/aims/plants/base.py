@@ -115,10 +115,22 @@ def category_of(config: PlantConfig, cls: type[Plant]) -> Category:
     return cls.category
 
 
+def reachable(config: PlantConfig, cls: type[Plant]) -> frozenset[PlantTier]:
+    """The tiers `config` can reach. Where its kind's used tier is its canary turning up, as
+    for every kind whose `canary_used` is not False, a plant without a canary has none."""
+    if config.canary is None and getattr(cls, "canary_used", True):
+        return cls.tiers - {"used"}
+    return cls.tiers
+
+
 def taken_tier(config: PlantConfig, cls: type[Plant]) -> PlantTier:
-    """The tier that counts as `config` taken: its own, else used where the kind has it."""
+    """The tier that counts as `config` taken: its own, else used where it can reach it."""
+    tiers = reachable(config, cls)
     if config.taken is not None:
-        if config.taken not in cls.tiers:
-            raise PlantError(f"plant {config.name}: kind {config.kind} has no {config.taken} tier")
+        if config.taken not in tiers:
+            without = " without a canary" if config.taken in cls.tiers else ""
+            raise PlantError(
+                f"plant {config.name}: kind {config.kind} has no {config.taken} tier{without}"
+            )
         return config.taken
-    return "used" if "used" in cls.tiers else "touched"
+    return "used" if "used" in tiers else "touched"

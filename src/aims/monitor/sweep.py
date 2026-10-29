@@ -257,9 +257,50 @@ def _clamp(value: int, low: int, high: int) -> int:
     return max(low, min(high, value))
 
 
+async def ask(
+    client: ModelClient,
+    profile: Profile,
+    system: str,
+    body: str,
+    schema: OutputSchema,
+    calls: _Calls,
+    *,
+    role: ModelRole = "sweep",
+) -> dict[str, Any]:
+    """One structured call: `system` then `body`, answered as a JSON object. Raises
+    SweepError."""
+    prompt = Prompt(
+        items=[Message(role="system", content=system), Message(role="user", content=body)],
+        output_schema=schema,
+    )
+    try:
+        reply = await client.call(profile, prompt, role=role)
+    except ModelCallError as e:
+        calls.add(e.reply)
+        r = e.reply
+        raise SweepError(
+            f"{schema.name}: the call on {r.profile} failed after {r.attempts} attempt(s):"
+            f" {r.error}"
+        ) from None
+    except ReplayError as e:
+        raise SweepError(f"{schema.name}: {e}") from None
+    calls.add(reply)
+    try:
+        value = json.loads(reply.text)
+    except ValueError:
+        raise SweepError(f"{schema.name}: the {reply.status} answer is not JSON") from None
+    if not isinstance(value, dict):
+        raise SweepError(f"{schema.name}: the answer is not a JSON object")
+    return value
+
+
 class Sweeper:
     """One sweep config over one agent's trajectory. Calls go through `client` with role
-    `sweep` and no agent id. One sweep at a time; the caller serialises them."""
+    `sweep` and no agent id. One sweep at a time; the caller serialises them.
+
+    The extract call runs on `extractor` when one is set, a cheaper model than `profile`, which
+    evaluates. With `config.escalate`, the window is scored on the extractor first and on
+    `profile` only when that score falls inside the band."""
 
     def __init__(
         self,
@@ -273,11 +314,17 @@ class Sweeper:
         store: EventStore,
         trajectory: Trajectory,
         task: str,
+        extractor: Profile | None = None,
     ) -> None:
         self.run_id = run_id
         self.agent_id = agent_id
         self.config = config
         self.profile = profile
+        self.extractor = None
+        if extractor is not None:
+            self.extractor = extractor.model_copy(
+                update={"effort": config.effort, "max_output_tokens": config.max_output_tokens}
+            )
         self.texts = texts
         self.client = client
         self.store = store
@@ -294,13 +341,54 @@ class Sweeper:
         """The last seq lane `lane` reviewed, -1 before its first review."""
         return self._reviewed.get(lane, -1)
 
-    async def sweep(self, trigger: SweepTrigger, *, coalesced: int = 1) -> SweepResult:
+    async def sweep(
+        self, trigger: SweepTrigger, *, coalesced: int = 1, lead: str | None = None
+    ) -> SweepResult:
         """Review the steps not yet reviewed in every lane, with the whole trajectory as
-        context, and score the review range alone when `config.window` is on."""
+        context, and score the review range alone when `config.window` is on. With `lead`, a
+        finding about this agent from elsewhere, the whole trajectory is the review range and
+        the extract call is told the finding."""
         upto = self.trajectory.last_seq
-        lanes = await asyncio.gather(
-            *(self._lane(lane, trigger, coalesced, upto) for lane in self.config.lanes)
+        renders = [
+            await self.trajectory.render(
+                lane.parts,
+                texts=self.texts,
+                review_after=-1 if lead is not None else self.reviewed(lane.name),
+                collapse_tokens=self.config.collapse_tokens,
+                upto=upto,
+            )
+            for lane in self.config.lanes
+        ]
+        # Lanes that render the same text would ask the same calls; one asks for all of them.
+        first: dict[str, int] = {}
+        for i, rendered in enumerate(renders):
+            first.setdefault(rendered.text, i)
+        unique = sorted(set(first.values()))
+        done = dict(
+            zip(
+                unique,
+                await asyncio.gather(
+                    *(
+                        self._lane(self.config.lanes[i], renders[i], trigger, coalesced, upto, lead)
+                        for i in unique
+                    )
+                ),
+                strict=True,
+            )
         )
+        lanes = []
+        for i, (lane, rendered) in enumerate(zip(self.config.lanes, renders, strict=True)):
+            j = first[rendered.text]
+            sweep, flags, cost = done[j]
+            if i != j:
+                sweep = sweep.model_copy(
+                    update={"lane": lane.name, "parts": list(lane.parts), "cost_usd": 0.0}
+                )
+                flags = [f.model_copy(update={"lane": lane.name}) for f in flags]
+                cost = 0.0
+                if sweep.error is None:
+                    self._reviewed[lane.name] = upto
+            lanes.append((sweep, flags, cost))
         result = SweepResult()
         for sweep, flags, cost in lanes:
             result.sweeps.append(Draft(sweep, self.agent_id))
@@ -340,32 +428,33 @@ class Sweeper:
         )
 
     async def _lane(
-        self, lane: Lane, trigger: SweepTrigger, coalesced: int, upto: int
+        self,
+        lane: Lane,
+        rendered: Rendered,
+        trigger: SweepTrigger,
+        coalesced: int,
+        upto: int,
+        lead: str | None,
     ) -> tuple[MonitorSweep, list[MonitorFlag], float]:
         start = time.monotonic()
         calls = _Calls()
-        rendered = await self.trajectory.render(
-            lane.parts,
-            texts=self.texts,
-            review_after=self.reviewed(lane.name),
-            collapse_tokens=self.config.collapse_tokens,
-            upto=upto,
-        )
         flags: list[MonitorFlag] = []
         dropped = 0
         history = window = None
+        escalated = False
         summary = ""
         error: str | None = None
         try:
             windowed = self._window(lane, rendered, calls, upto) if self.config.window else None
             extracted, scored = await asyncio.gather(
-                self._extract(rendered, calls), windowed or _none(), return_exceptions=True
+                self._extract(rendered, calls, lead), windowed or _none(), return_exceptions=True
             )
             for outcome in (extracted, scored):
                 if isinstance(outcome, BaseException):
                     raise outcome
             assert isinstance(extracted, _Extract)
-            window = scored if isinstance(scored, int) else None
+            if isinstance(scored, tuple):
+                window, escalated = scored
             summary = extracted.summary
             quotes, dropped = check(extracted.quotes, rendered)
             history = 0
@@ -401,6 +490,7 @@ class Sweeper:
             suspicion=suspicion,
             history_suspicion=history if error is None else None,
             window_suspicion=window if error is None else None,
+            escalated=escalated,
             summary=await self.store.content(self.client.run_id, summary),
             tokens=rendered.tokens,
             collapsed=rendered.collapsed,
@@ -411,11 +501,26 @@ class Sweeper:
         )
         return sweep, flags, calls.cost_usd
 
-    async def _extract(self, rendered: Rendered, calls: _Calls) -> _Extract:
+    async def _extract(self, rendered: Rendered, calls: _Calls, lead: str | None) -> _Extract:
         instruction = self.texts["extract"].format(
             step_from=rendered.step_from, step_to=rendered.step_to
         )
-        body = "\n\n".join([rendered.text, glossary(rendered.types), instruction])
+        parts = [rendered.text, glossary(rendered.types), instruction]
+        if lead is not None:
+            parts.append(lead)
+        body = "\n\n".join(parts)
+        if self.extractor is None:
+            return _parse(_Extract, await self._ask(body, EXTRACT, calls))
+        try:
+            return _parse(_Extract, await self._ask(body, EXTRACT, calls, profile=self.extractor))
+        except SweepError as e:
+            log.warning(
+                "sweep %s extract of %s on the extractor failed, again on %s: %s",
+                self.config.name,
+                self.agent_id,
+                self.profile.name,
+                e,
+            )
         return _parse(_Extract, await self._ask(body, EXTRACT, calls))
 
     async def _evaluate(self, quotes: list[Quote], rendered: Rendered, calls: _Calls) -> _Evaluate:
@@ -440,7 +545,10 @@ class Sweeper:
         )
         return _parse(_Evaluate, await self._ask(body, EVALUATE, calls))
 
-    async def _window(self, lane: Lane, rendered: Rendered, calls: _Calls, upto: int) -> int | None:
+    async def _window(
+        self, lane: Lane, rendered: Rendered, calls: _Calls, upto: int
+    ) -> tuple[int, bool] | None:
+        """The window's suspicion, and whether it was escalated from the extractor's score."""
         steps = self.config.window_steps
         first = rendered.step_from if steps is None else max(0, rendered.step_to - steps + 1)
         view = await self.trajectory.window(
@@ -448,12 +556,24 @@ class Sweeper:
         )
         instruction = self.texts["window"].format(step_from=view.step_from, step_to=view.step_to)
         body = "\n\n".join([view.text, glossary(view.types), instruction])
+        band = self.config.escalate
+        cheap = self.extractor if band is not None else None
         try:
-            parsed = _parse(_Window, await self._ask(body, WINDOW, calls))
+            parsed = _parse(_Window, await self._ask(body, WINDOW, calls, profile=cheap))
         except SweepError as e:
             log.warning("sweep %s window of %s failed: %s", self.config.name, self.agent_id, e)
             return None
-        return _clamp(parsed.suspicion, 0, 100)
+        score = _clamp(parsed.suspicion, 0, 100)
+        if cheap is None or band is None or not band.low <= score <= band.high:
+            return score, False
+        try:
+            parsed = _parse(_Window, await self._ask(body, WINDOW, calls))
+        except SweepError as e:
+            log.warning(
+                "sweep %s escalated window of %s failed: %s", self.config.name, self.agent_id, e
+            )
+            return score, False
+        return _clamp(parsed.suspicion, 0, 100), True
 
     def _hits(
         self, evaluated: _Evaluate, quotes: list[Quote]
@@ -488,32 +608,16 @@ class Sweeper:
         )
 
     async def _ask(
-        self, body: str, schema: OutputSchema, calls: _Calls, *, role: ModelRole = "sweep"
+        self,
+        body: str,
+        schema: OutputSchema,
+        calls: _Calls,
+        *,
+        role: ModelRole = "sweep",
+        profile: Profile | None = None,
     ) -> dict[str, Any]:
-        prompt = Prompt(
-            items=[
-                Message(role="system", content=self._system),
-                Message(role="user", content=body),
-            ],
-            output_schema=schema,
-        )
-        try:
-            reply = await self.client.call(self.profile, prompt, role=role)
-        except ModelCallError as e:
-            calls.add(e.reply)
-            raise SweepError(str(e)) from None
-        except ReplayError as e:
-            raise SweepError(f"{schema.name}: {e}") from None
-        calls.add(reply)
-        try:
-            value = json.loads(reply.text)
-        except ValueError:
-            raise SweepError(
-                f"{schema.name}: call {reply.call_id} ({reply.status}) did not answer JSON"
-            ) from None
-        if not isinstance(value, dict):
-            raise SweepError(f"{schema.name}: call {reply.call_id} did not answer an object")
-        return value
+        profile = profile or self.profile
+        return await ask(self.client, profile, self._system, body, schema, calls, role=role)
 
 
 def _parse[T: BaseModel](cls: type[T], value: dict[str, Any]) -> T:

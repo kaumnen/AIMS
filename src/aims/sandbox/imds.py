@@ -1,8 +1,11 @@
 """The IMDS sidecar: a small HTTP server sharing one sandbox's network namespace."""
 
+import asyncio
 import contextlib
 import hashlib
 import json
+import logging
+import os
 import random
 from dataclasses import dataclass
 from typing import Any
@@ -12,7 +15,9 @@ from aiodocker.containers import DockerContainer
 
 from aims.sandbox.base import TOOLBOX
 
-LOG = "/log/imds.jsonl"
+log = logging.getLogger("aims.sandbox")
+STOP_S = 1
+DRAIN_S = 5.0
 SERVER = r'''
 import json, os, secrets, threading, time
 from datetime import UTC, datetime, timedelta
@@ -28,7 +33,6 @@ PRIVATE_IP = os.environ["AIMS_IMDS_PRIVATE_IP"]
 HOSTNAME = os.environ["AIMS_IMDS_HOSTNAME"]
 RESERVATION = os.environ["AIMS_IMDS_RESERVATION"]
 CANARY = json.loads(os.environ.get("AIMS_IMDS_CANARY") or "{}")
-LOG = os.environ["AIMS_IMDS_LOG"]
 _lock = threading.Lock()
 _token = {"value": "", "expires": 0.0}
 
@@ -121,13 +125,9 @@ class Handler(BaseHTTPRequestHandler):
                 "headers": headers,
             },
             separators=(",", ":"),
-        ) + "\n"
+        )
         with _lock:
-            fd = os.open(LOG, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-            try:
-                os.write(fd, line.encode())
-            finally:
-                os.close(fd)
+            print(line, flush=True)
 
     def _send(self, code, body=b"", content_type="text/plain", extra=None):
         if isinstance(body, str):
@@ -287,6 +287,50 @@ def _private_ip(rng: random.Random) -> str:
     return value
 
 
+async def _follow(stream: Any, log_path: str, name: str) -> None:
+    """Append the sidecar's stdout to `log_path`; report its stderr as warnings."""
+    out = bytearray()
+    err = bytearray()
+    try:
+        fd = os.open(log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        try:
+            while (message := await stream.read_out()) is not None:
+                if message.stream == 2:
+                    err += message.data
+                    while (end := err.find(b"\n")) >= 0:
+                        line = bytes(err[:end]).decode(errors="replace")
+                        log.warning("IMDS sidecar %s: %s", name, line)
+                        del err[: end + 1]
+                else:
+                    out += message.data
+                    while (end := out.find(b"\n")) >= 0:
+                        os.write(fd, out[: end + 1])
+                        del out[: end + 1]
+        finally:
+            if out:
+                if not out.endswith(b"\n"):
+                    out += b"\n"
+                os.write(fd, out)
+            if err:
+                line = bytes(err).decode(errors="replace").rstrip("\n")
+                log.warning("IMDS sidecar %s: %s", name, line)
+            os.fsync(fd)
+            os.close(fd)
+    finally:
+        await stream.close()
+
+
+def _check_follower(follower: asyncio.Task[None], name: str) -> None:
+    if not follower.done():
+        return
+    if follower.cancelled():
+        raise RuntimeError(f"the IMDS log follower for {name} stopped")
+    error = follower.exception()
+    if error is None:
+        raise RuntimeError(f"the IMDS log follower for {name} stopped")
+    raise RuntimeError(f"the IMDS log follower for {name} stopped: {error}") from error
+
+
 @dataclass(slots=True)
 class ImdsServer:
     """One sidecar container serving IMDS to one sandbox; close deletes it."""
@@ -294,8 +338,24 @@ class ImdsServer:
     docker: aiodocker.Docker
     container: DockerContainer
     log: str
+    follower: asyncio.Task[None]
 
     async def close(self) -> None:
+        with contextlib.suppress(aiodocker.DockerError):
+            await self.container.stop(t=STOP_S)
+        done, _ = await asyncio.wait({self.follower}, timeout=DRAIN_S)
+        if not done:
+            log.warning(
+                "the IMDS log follower for %s did not finish; some output may be missing",
+                self.log,
+            )
+            self.follower.cancel()
+        try:
+            await self.follower
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            log.warning("the IMDS log follower for %s stopped: %s", self.log, e)
         with contextlib.suppress(aiodocker.DockerError):
             await self.container.delete(force=True)
 
@@ -325,7 +385,6 @@ async def start(
         "AIMS_IMDS_PRIVATE_IP": identity.private_ip,
         "AIMS_IMDS_HOSTNAME": identity.hostname(region),
         "AIMS_IMDS_RESERVATION": identity.reservation,
-        "AIMS_IMDS_LOG": LOG,
         "AIMS_IMDS_SERVER": SERVER,
         "PYTHONDONTWRITEBYTECODE": "1",
     }
@@ -348,7 +407,6 @@ async def start(
             "CapAdd": ["NET_ADMIN", "NET_BIND_SERVICE"],
             "SecurityOpt": ["no-new-privileges"],
             "ReadonlyRootfs": True,
-            "Binds": [f"{log_path}:{LOG}:rw"],
             "Mounts": [
                 {
                     "Type": "volume",
@@ -361,8 +419,13 @@ async def start(
         },
     }
     container = await docker.containers.create(config=config, name=name)
+    attached: Any = None
+    follower: asyncio.Task[None] | None = None
     try:
+        attached = await container.attach(stdout=True, stderr=True).__aenter__()
+        follower = asyncio.create_task(_follow(attached, log_path, name))
         await container.start()
+        _check_follower(follower, name)
         probe = (
             "i=0; while [ $i -lt 50 ]; do "
             f"{TOOLBOX}/busybox grep -q ':0050 ' /proc/net/tcp && exit 0; "
@@ -381,8 +444,17 @@ async def start(
         if state.get("ExitCode") != 0:
             logs = await container.log(stdout=True, stderr=True)
             raise RuntimeError(f"the IMDS listener did not start: {''.join(logs)[-2000:]}")
+        _check_follower(follower, name)
     except BaseException:
+        if follower is not None:
+            follower.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await follower
+        if attached is not None:
+            with contextlib.suppress(Exception):
+                await attached.close()
         with contextlib.suppress(aiodocker.DockerError):
             await container.delete(force=True)
         raise
-    return ImdsServer(docker, container, log_path)
+    assert follower is not None
+    return ImdsServer(docker, container, log_path, follower)

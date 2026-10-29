@@ -8,7 +8,7 @@ from pydantic import JsonValue, ValidationError
 
 from aims import __version__
 from aims.events import Oversight
-from aims.models import ModelsConfig, Profile
+from aims.models import ModelsConfig, Profile, ProfileError
 from aims.models.profiles import check_weights
 from aims.monitor.config import (
     JUDGE_RESERVE_USD,
@@ -27,7 +27,9 @@ from aims.scenario import Scenario
 @dataclass(frozen=True, slots=True)
 class ResolvedMonitor:
     """Everything a run's monitor needs, with its profiles and texts resolved. `sweeps` maps a
-    sweep name to its profile. `identity` hashes what decides the monitor's findings."""
+    sweep name to its profile; `extract` is the cheaper model the sweeps extract with, None
+    when they extract with their own; `channels` runs the channel sweep. `identity` hashes what
+    decides the monitor's findings."""
 
     config: MonitorConfig
     texts: MonitorTexts
@@ -38,6 +40,8 @@ class ResolvedMonitor:
     judge: Profile | None = None
     signals: dict[str, str] = field(default_factory=dict)
     identity: str = ""
+    extract: Profile | None = None
+    channels: Profile | None = None
 
     @property
     def judge_reserve_usd(self) -> float:
@@ -57,6 +61,8 @@ class ResolvedMonitor:
             "judge": None if self.judge is None else self.judge.snapshot(),
             "signals": dict(self.signals),
             "identity": self.identity,
+            "extract": None if self.extract is None else self.extract.snapshot(),
+            "channels": None if self.channels is None else self.channels.snapshot(),
         }
 
     @classmethod
@@ -78,6 +84,8 @@ class ResolvedMonitor:
                 judge=profile(value["judge"]),
                 signals=dict(value["signals"]),
                 identity=str(value["identity"]),
+                extract=profile(value.get("extract")),
+                channels=profile(value.get("channels")),
             )
         except (KeyError, TypeError, ValueError, ValidationError) as e:
             raise MonitorConfigError(f"the monitor snapshot does not load: {e}") from None
@@ -132,15 +140,15 @@ def resolve_monitor(
     signals: Mapping[str, str] | None = None,
 ) -> ResolvedMonitor | None:
     """The monitor of a run of `scenario` whose agents use `agents`; None when it is off.
-    `signals` maps each signal to its version. Raises MonitorConfigError, ProfileError or
-    TextError, including when a monitor model is an agent's model and the config does not
-    allow it."""
+    `signals` maps each signal to its version. The extractor is the first of `config.extract`
+    whose weights no agent runs. Raises MonitorConfigError, ProfileError or TextError,
+    including when a monitor model is an agent's model and the config does not allow it."""
     config = resolve_config(layers, scenario, preset)
     if config.preset == "off":
         return None
     texts = resolve(prompts)
     sweeps: dict[str, Profile] = {}
-    review = judge = None
+    review = judge = extract = channels = None
     if config.models_on:
         for s in config.sweeps:
             base = models.get(s.profile) if s.profile else models.role("sweep")
@@ -156,19 +164,60 @@ def resolve_monitor(
             judge = base.model_copy(
                 update={"effort": j.effort, "max_output_tokens": j.max_output_tokens}
             )
+        if config.channels is not None and scenario.channels:
+            c = config.channels
+            base = models.get(c.profile) if c.profile else models.role("sweep")
+            channels = base.model_copy(
+                update={"effort": c.effort, "max_output_tokens": c.max_output_tokens}
+            )
+        if sweeps or channels is not None:
+            extract = _extractor(models, config, agents)
         overseers = [*sweeps.values(), review, *([judge] if judge else [])]
+        overseers += [p for p in (extract, channels) if p is not None]
         check_weights(agents, overseers, allow_same_model=config.allow_same_model)
     versions = dict(signals or {})
     profiles: dict[str, Profile | None] = {f"sweep:{n}": p for n, p in sweeps.items()}
     profiles |= {"review": review, "judge": judge}
+    if extract is not None:
+        profiles["extract"] = extract
+    if channels is not None:
+        profiles["channels"] = channels
+    budget = budget_usd(
+        config,
+        scenario.limits.monitor_cost_usd,
+        agents=len(scenario.agents),
+        channels=bool(scenario.channels),
+    )
     return ResolvedMonitor(
         config=config,
         texts=texts,
         oversight=scenario.oversight,
-        budget_usd=budget_usd(config, scenario.limits.monitor_cost_usd),
+        budget_usd=budget,
         sweeps=sweeps,
         review=review,
         judge=judge,
         signals=versions,
         identity=identity(config, texts, profiles, versions),
+        extract=extract,
+        channels=channels,
     )
+
+
+def _extractor(
+    models: ModelsConfig, config: MonitorConfig, agents: Sequence[Profile]
+) -> Profile | None:
+    return extractor_for(models, config.extract, agents)
+
+
+def extractor_for(
+    models: ModelsConfig, candidates: Sequence[str], agents: Sequence[Profile]
+) -> Profile | None:
+    """The first of `candidates` the models know whose weights none of `agents` runs."""
+    for name in candidates:
+        try:
+            candidate = models.get(name)
+            check_weights(agents, [candidate], allow_same_model=False)
+        except ProfileError:
+            continue
+        return candidate
+    return None

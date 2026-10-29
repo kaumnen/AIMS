@@ -27,6 +27,7 @@ from aims.server import (
     monitor_api,
     problems,
     runner_api,
+    score_api,
     stream,
 )
 from aims.server.auth import SecurityHeaders
@@ -88,6 +89,7 @@ def create_app(
     app.include_router(edit_api.router)
     app.include_router(monitor_api.router)
     app.include_router(estimate_api.router)
+    app.include_router(score_api.router)
     app.include_router(stream.router)
     app.include_router(runner_api.router)
     app.add_middleware(SecurityHeaders)

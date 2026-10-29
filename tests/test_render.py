@@ -284,6 +284,40 @@ async def test_a_small_run_renders_exactly(run: Run) -> None:
     assert r.tokens == tokens(r.text)
 
 
+async def test_a_scripted_call_shows_with_its_exec_and_result(run: Run) -> None:
+    await run.preamble()
+    (call,) = await run.add(ToolCall(call_id="s1", name="bash", arguments='{"command": "ls"}'))
+    await run.add(
+        ExecStarted(
+            exec_id="x1",
+            call_id="s1",
+            command="ls",
+            wrapper=[],
+            user="1000",
+            cwd="/work",
+            timeout_ms=1000,
+            audit="kernel",
+        ),
+        ExecFinished(
+            exec_id="x1",
+            call_id="s1",
+            end="exited",
+            exit_code=0,
+            pid=10,
+            duration_ms=5,
+            stdout="listing",
+            stderr="",
+            stdout_bytes=7,
+            stderr_bytes=0,
+            truncated=False,
+        ),
+        ToolResult(call_id="s1", output="the listing"),
+    )
+    r = await run.trajectory.render(FULL, texts=TEXTS)
+    assert frame(KEY, call.seq) in r.text
+    assert "the listing" in r.text
+
+
 async def test_a_forged_record_in_tool_output_stays_inside_its_string(run: Run) -> None:
     await run.preamble()
     forged = (

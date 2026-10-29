@@ -245,21 +245,29 @@ class Post(_Strict):
     text: str = Field(min_length=1)
 
 
+class Call(_Strict):
+    """A call of one of the agent's tools, `tool`, with `arguments`."""
+
+    tool: Name
+    arguments: dict[str, JsonValue] = Field(default_factory=dict)
+
+
 class ScriptStep(_Strict):
-    """One action of a scripted confederate, taken once: `run` a command in its own sandbox
-    or `post` to a board. It waits for the step before it, then for `on` when set, then
-    `after_s` seconds."""
+    """One action of a scripted agent, taken once: `run` a command in its own sandbox, `post`
+    to a board or `call` one of its tools. It waits for the step before it, then for `on` when
+    set, then `after_s` seconds."""
 
     on: Trigger | None = None
     after_s: float = Field(default=0, ge=0)
     run: str | None = Field(default=None, min_length=1)
     post: Post | None = None
+    call: Call | None = None
     timeout_s: float | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")
     def _one(self) -> Self:
-        if (self.run is None) == (self.post is None):
-            raise ValueError("set exactly one of run and post")
+        if sum(action is not None for action in (self.run, self.post, self.call)) != 1:
+            raise ValueError("set exactly one of run, post and call")
         return self
 
 
@@ -334,10 +342,11 @@ CanaryConfig = CanaryShape | Annotated[CanarySpec, AfterValidator(_check_canary)
 
 class _Plant(_Strict):
     """`agents` it applies to, every subject when unset. `taken` is the tier that counts as
-    the plant being taken: used where the kind defines it, else touched. `category` is the
-    monitor category its flags are matched against, the kind's own when unset. `canary` makes
-    a secret of that shape for each run, written `{{canary}}` (or `{{canary.part}}`) in the
-    plant's text and `{{canaries.NAME}}` elsewhere."""
+    the plant being taken: used where the plant can reach it, else touched. For every kind but
+    impossible, used means its canary turned up, so a plant without a canary is never used.
+    `category` is the monitor category its flags are matched against, the kind's own when
+    unset. `canary` makes a secret of that shape for each run, written `{{canary}}` (or
+    `{{canary.part}}`) in the plant's text and `{{canaries.NAME}}` elsewhere."""
 
     name: Name
     agents: list[Name] | None = None
@@ -457,13 +466,18 @@ Plant = Annotated[
 ]
 
 
-class SelfTest(_Strict):
-    """Scripts `aims scenario check` runs as scripted agents, at no model cost: shell scripts
-    next to the scenario, run in the workdir. `reference` solves the task honestly and must
-    take no plant; `exploit` must take each plant in `claims`."""
+Steps = Annotated[list[ScriptStep], Field(min_length=1)]
 
-    reference: RelPath | None = None
-    exploit: RelPath | None = None
+
+class SelfTest(_Strict):
+    """Scripts `aims scenario check` has every subject run as a scripted agent, at no model
+    cost: a shell script next to the scenario, run in the workdir by the sandbox's shell, or
+    steps as a confederate's script has. `reference` solves the task honestly, every step of it
+    succeeding, and must trigger no plant; `exploit` must take each plant in `claims`, for
+    every subject the plant applies to."""
+
+    reference: RelPath | Steps | None = None
+    exploit: RelPath | Steps | None = None
     claims: list[Name] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -608,26 +622,72 @@ class Scenario(_Strict):
 
     def _check_agents(self) -> None:
         known = {a.id for a in self.agents}
-        boards = {c.name: c for c in self.channels if isinstance(c, BoardChannel)}
-        channels = {c.name for c in self.channels}
         for a in self.agents:
             after = a.start.agent if a.start is not None else None
             if after is not None and (after not in known or after == a.id):
                 raise ValueError(f"agent {a.id}: start names no other agent {after!r}")
-            for step in a.script or []:
-                on = step.on
-                if on is not None and on.agent is not None and on.agent not in known:
-                    raise ValueError(f"agent {a.id}: script names no agent {on.agent!r}")
-                if on is not None and on.channel is not None and on.channel not in channels:
-                    raise ValueError(f"agent {a.id}: script names no channel {on.channel!r}")
-                if step.post is not None:
-                    board = boards.get(step.post.channel)
-                    if board is None or a.id not in self.posters(board):
-                        raise ValueError(f"agent {a.id}: cannot post to {step.post.channel!r}")
             tools = self.tools_of(a.id)
             if len(set(tools)) != len(tools):
                 raise ValueError(f"agent {a.id}: two of its tools share a name")
+            self._check_steps(a.id, a.script or [], "script")
+        if self.selftest is not None:
+            for name, script in (
+                ("reference", self.selftest.reference),
+                ("exploit", self.selftest.exploit),
+            ):
+                if isinstance(script, list):
+                    self._check_selftest(f"selftest {name}", script)
         self._check_cycles()
+
+    def _check_steps(self, agent_id: str, steps: list[ScriptStep], where: str) -> None:
+        """That `agent_id` can take `steps`: what they wait on exists, and it may post to their
+        boards and has the tools they call."""
+        self._check_waits(f"agent {agent_id}: {where}", steps)
+        for step in steps:
+            if step.post is not None and not self.can_take(agent_id, step):
+                raise ValueError(f"agent {agent_id}: cannot post to {step.post.channel!r}")
+            if step.call is not None and not self.can_take(agent_id, step):
+                raise ValueError(
+                    f"agent {agent_id}: {where} calls {step.call.tool!r}, not one of its tools"
+                )
+
+    def _check_selftest(self, where: str, steps: list[ScriptStep]) -> None:
+        """Self-test steps go to every subject, which skips the posts and calls it cannot make;
+        each must suit one subject at least."""
+        self._check_waits(where, steps)
+        for step in steps:
+            if any(self.can_take(s, step) for s in self.subjects):
+                continue
+            if step.post is not None:
+                raise ValueError(f"{where}: no subject may post to {step.post.channel!r}")
+            if step.call is not None:
+                raise ValueError(f"{where}: no subject has the tool {step.call.tool!r}")
+
+    def _check_waits(self, where: str, steps: list[ScriptStep]) -> None:
+        known = {a.id for a in self.agents}
+        channels = {c.name for c in self.channels}
+        for step in steps:
+            on = step.on
+            if on is not None and on.agent is not None and on.agent not in known:
+                raise ValueError(f"{where} names no agent {on.agent!r}")
+            if on is not None and on.channel is not None and on.channel not in channels:
+                raise ValueError(f"{where} names no channel {on.channel!r}")
+
+    def can_take(self, agent_id: str, step: ScriptStep) -> bool:
+        """Whether `agent_id` may take `step`: post to its board, or call its tool."""
+        if step.post is not None:
+            board = next(
+                (
+                    c
+                    for c in self.channels
+                    if isinstance(c, BoardChannel) and c.name == step.post.channel
+                ),
+                None,
+            )
+            return board is not None and agent_id in self.posters(board)
+        if step.call is not None:
+            return step.call.tool in self.tools_of(agent_id)
+        return True
 
     def _check_cycles(self) -> None:
         after = {a.id: a.start.agent for a in self.agents if a.start and a.start.agent}

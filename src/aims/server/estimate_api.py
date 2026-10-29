@@ -9,10 +9,19 @@ from fastapi import APIRouter, Query
 from aims.models import ProfileError
 from aims.monitor.config import MonitorConfigError, Preset
 from aims.prompts import TextError
-from aims.run.estimate import Estimate, History, ProviderCredit, estimate_runs, history, spend
+from aims.run.estimate import (
+    Estimate,
+    History,
+    Projection,
+    ProviderCredit,
+    estimate_runs,
+    history,
+    projection,
+    spend,
+)
 from aims.run.estimate import spend_lines as describe_spend
 from aims.scenario import ScenarioError, load
-from aims.server.api import Out, SourcesDep, State, Viewer, scenario_problems
+from aims.server.api import Out, SourcesDep, State, Viewer, _run_id, scenario_problems
 from aims.server.problems import ProblemException, responses
 from aims.server.state import ServerState
 
@@ -87,3 +96,12 @@ class Spend(Out):
 async def get_spend(principal: Viewer, state: State) -> Spend:
     credits = spend(await _history(state), state.config.settings().credits)
     return Spend(providers=credits, lines=describe_spend(credits))
+
+
+@router.get("/runs/{run_id}/projection", tags=["runs"], responses=responses(404))
+async def get_projection(run_id: str, principal: Viewer, state: State) -> Projection:
+    """What the run has cost so far and is on track to cost, as `aims run` shows it live."""
+    found = await projection(state.store, _run_id(run_id), await _history(state))
+    if found is None:
+        raise ProblemException(404, "Not found", f"no run {run_id}")
+    return found

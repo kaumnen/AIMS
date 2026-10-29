@@ -46,8 +46,9 @@ class Diverged(Exception):
 
 class Shipper:
     """Copies one run's log and blobs to the control plane as the log grows: blobs first, then
-    exact lines from where the server's copy ends. Ends once the server holds the sealed run.
-    Local writes never wait for it."""
+    exact lines from where the server's copy ends. Once the server holds the sealed run, sends
+    the run's truth file and its labels, each by its own path, and ends. Local writes never
+    wait for it."""
 
     def __init__(self, store: LocalEventStore, client: ControlClient, run_id: str) -> None:
         self.store = store
@@ -61,10 +62,12 @@ class Shipper:
         self.refused: str | None = None
         self.batches = 0
         self.lines = 0
+        self.truthful = False
+        self.truth_refused: str | None = None
 
     async def run(self) -> None:
         backoff = Backoff()
-        while not self.done:
+        while not self.done or not self.truthful:
             try:
                 await self._resume()
                 while not self.done:
@@ -80,6 +83,8 @@ class Shipper:
                     except TimeoutError:
                         continue
                     await asyncio.sleep(COALESCE_S)
+                await self._truth()
+                await self._labels()
             except Diverged as e:
                 self.diverged = str(e)
                 log.error("run %s: the control plane's copy differs: %s", self.run_id, e)
@@ -103,6 +108,39 @@ class Shipper:
             raise Diverged(f"event {server.seq} has another hash there")
         self.server, self.local = server, local
         self.done = local.finished
+        self.truthful = server.truth
+
+    async def _labels(self) -> None:
+        """Send the labels people gave the run's flags; the server keeps those it lacks."""
+        if not self.store.labels_path(self.run_id).is_file():
+            return
+        labels = await self.store.label_history(self.run_id)
+        try:
+            await self.client.post_labels(self.run_id, labels)
+        except ApiError as e:
+            if e.retryable:
+                raise
+            log.warning("run %s: labels not sent: %s", self.run_id, e)
+
+    async def _truth(self) -> None:
+        """Send the truth file once the server holds the sealed run; a run without one is
+        done."""
+        if self.truthful:
+            return
+        path = self.store.truth_path(self.run_id)
+        try:
+            data = await asyncio.to_thread(path.read_bytes)
+        except FileNotFoundError:
+            self.truthful = True
+            return
+        try:
+            await self.client.put_truth(self.run_id, data)
+        except ApiError as e:
+            if e.retryable:
+                raise
+            self.truth_refused = str(e)
+            log.error("run %s: the control plane refused its truth file: %s", self.run_id, e)
+        self.truthful = True
 
     async def _seek(self, seq: int) -> LogHead:
         """The local head after event `seq`; the server holding events this log lacks is a

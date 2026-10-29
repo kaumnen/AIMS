@@ -43,6 +43,7 @@ from aims.wire import (
     OfferMessage,
     RunnerHello,
     RunnerStatus,
+    ScoreJob,
     TracerHealth,
     WireDelta,
 )
@@ -382,7 +383,7 @@ async def start_run(cp: CP, **body: Any) -> list[str]:
 
 async def play_job(
     fake: FakeRunner, local: LocalEventStore, offer: OfferMessage
-) -> Job | MonitorJob:
+) -> Job | MonitorJob | ScoreJob:
     """Take an offered job as a runner would, and record a run for it."""
     job = await fake.client.claim(offer.run_id)
     assert job is not None

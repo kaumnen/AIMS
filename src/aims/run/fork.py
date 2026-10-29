@@ -1,13 +1,23 @@
 import hashlib
 import json
 import logging
+from bisect import bisect_right
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from aims.agent import RecordedOutput, ReplayPlan
-from aims.events import AgentInput, BlobRef, Content, EventStore, RunStarted, ToolResult
+from aims.agent import ChannelVersions, RecordedOutput, ReplayPlan, Turnstile
+from aims.events import (
+    AgentInput,
+    AgentStep,
+    BlobRef,
+    Content,
+    EventStore,
+    RunStarted,
+    ToolCall,
+    ToolResult,
+)
 from aims.models import ModelClient, ModelsConfig, Profile, ProfileError, Recording
 from aims.run import truth
 from aims.run.runner import Bench, Fork, RunError, Texts
@@ -33,6 +43,13 @@ class Origin:
     injects: dict[str, dict[int, list[str]]] = field(default_factory=dict)
     full_bundle: Bundle | None = None
     truth: dict[str, Any] | None = None
+    step_seqs: dict[str, list[int]] = field(default_factory=dict)
+    step_calls: dict[str, list[list[str]]] = field(default_factory=dict)
+    call_seqs: dict[str, dict[str, int]] = field(default_factory=dict)
+    actions: dict[str, list[int]] = field(default_factory=dict)
+    versions: dict[str, ChannelVersions] = field(default_factory=dict)
+    restored: dict[str, bytes] = field(default_factory=dict)
+    last_seq: int = -1
 
     @property
     def seed(self) -> bytes | None:
@@ -142,7 +159,158 @@ async def load_origin(store: EventStore, run_id: str, *, full: bool = True) -> O
     origin.steps = dict(steps)
     origin.outputs = dict(outputs)
     origin.injects = {a: dict(v) for a, v in injects.items()}
+    await _order(store, run_id, origin)
+    for c in started.channels:
+        if c.restored is not None:
+            origin.restored[c.name] = await store.get_blob(run_id, c.restored.sha256)
     return origin
+
+
+async def _order(store: EventStore, run_id: str, origin: Origin) -> None:
+    """When each agent took each step and tool call in the origin, a scripted agent's steps,
+    and what each tool call met of the channels."""
+    step_seqs: dict[str, list[int]] = defaultdict(list)
+    step_calls: dict[str, list[list[str]]] = defaultdict(list)
+    call_seqs: dict[str, dict[str, int]] = defaultdict(dict)
+    actions: dict[str, list[int]] = defaultdict(list)
+    execs: dict[str, tuple[str, str]] = {}
+    reads: dict[str, dict[str, int]] = defaultdict(dict)
+    writes: dict[str, dict[str, str | None]] = defaultdict(dict)
+    where: dict[str, dict[str, str]] = defaultdict(dict)
+    types = (
+        "agent.step",
+        "tool.call",
+        "exec.started",
+        "channel.message",
+        "channel.read",
+        "channel.snapshot",
+        "run.finished",
+    )
+    cursor: int | None = None
+    while page := await store.events(run_id, after=cursor, limit=PAGE, types=types):
+        for e in page:
+            cursor = e.seq
+            origin.last_seq = max(origin.last_seq, e.seq)
+            agent, d = e.agent_id or "", e.data
+            match e.type:
+                case "agent.step":
+                    step = AgentStep.model_validate(d)
+                    step_seqs[agent].append(e.seq)
+                    step_calls[agent].append(list(step.tool_calls))
+                case "tool.call":
+                    made = ToolCall.model_validate(d)
+                    call_seqs[agent][made.call_id] = e.seq
+                    # A call no model made is a scripted agent's step.
+                    if made.model_call is None:
+                        actions[agent].append(e.seq)
+                case "exec.started":
+                    call = d.get("call_id")
+                    if isinstance(call, str):
+                        execs[str(d.get("exec_id"))] = (call, agent)
+                    elif d.get("phase") == "agent":
+                        actions[agent].append(e.seq)
+                case "channel.message" if d.get("call_id") is None:
+                    actions[agent].append(e.seq)
+                case "channel.read" if isinstance(d.get("call_id"), str):
+                    through = d.get("through")
+                    if isinstance(through, int):
+                        reads[str(d["call_id"])][str(d.get("channel"))] = through
+                case "channel.snapshot" if str(d.get("exec_id")) in execs:
+                    call, writer = execs[str(d.get("exec_id"))]
+                    changes = d.get("changes")
+                    for c in changes if isinstance(changes, list) else []:
+                        path = c.get("path") if isinstance(c, dict) else None
+                        own = isinstance(c, dict) and c.get("agent") == writer
+                        if own and isinstance(c, dict) and isinstance(path, str):
+                            sha = c.get("sha256")
+                            writes[call][path] = sha if isinstance(sha, str) else None
+                            where[call][path] = str(d.get("channel"))
+    origin.step_seqs = dict(step_seqs)
+    origin.step_calls = dict(step_calls)
+    origin.call_seqs = dict(call_seqs)
+    origin.actions = dict(actions)
+    seqs = {c: s for calls in call_seqs.values() for c, s in calls.items()}
+    for call in set(reads) | set(writes):
+        origin.versions[call] = ChannelVersions(
+            seq=seqs.get(call, 0),
+            reads=dict(reads.get(call, {})),
+            writes=dict(writes.get(call, {})),
+            channels=dict(where.get(call, {})),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CutAt:
+    """A cut of a run of several agents: after the origin's event `seq`, by when each agent
+    had taken `steps[agent]` steps; `agent` is the one the cut names."""
+
+    seq: int
+    steps: dict[str, int]
+    agent: str | None = None
+
+
+def cut_at(origin: Origin, at: str) -> CutAt | int:
+    """Where `--fork-at` cuts `origin`: `agent:N` after that agent's step N, `@seq` after an
+    event of the origin, or a plain step N, the same for every agent, which only a run of one
+    agent takes. Returns the step for a plain N. Raises RunError."""
+    agents = [a.id for a in origin.bundle.scenario.agents]
+    text = at.strip()
+    if text.isdigit():
+        if len(agents) > 1:
+            raise RunError(
+                f"run {origin.run_id} has {len(agents)} agents; fork at agent:N (after that"
+                " agent's step N) or @seq (after an event of the run)"
+            )
+        return int(text)
+    if text.startswith("@"):
+        if not text[1:].isdigit():
+            raise RunError(f"bad cut {at!r}: @ takes an event seq")
+        seq = int(text[1:])
+        if seq > origin.last_seq:
+            raise RunError(f"run {origin.run_id} ends at event {origin.last_seq}")
+        return CutAt(seq, _taken(origin, seq))
+    name, sep, n = text.rpartition(":")
+    if not sep or not n.isdigit() or name not in agents:
+        known = ", ".join(agents)
+        raise RunError(f"bad cut {at!r}: give agent:N with one of {known}, or @seq")
+    step = int(n)
+    seqs = origin.step_seqs.get(name, [])
+    if step > len(seqs):
+        raise RunError(f"agent {name} of run {origin.run_id} took {len(seqs)} steps")
+    first = seqs[0] - 1 if seqs else origin.last_seq
+    seq = first if step == 0 else seqs[step - 1]
+    steps = _taken(origin, seq)
+    steps[name] = step
+    return CutAt(seq, steps, name)
+
+
+def _agents(origin: Origin) -> list[Any]:
+    """The origin's agents with their roles and scripts, which the public copy leaves out."""
+    return list((origin.full_bundle or origin.bundle).scenario.agents)
+
+
+def _taken(origin: Origin, seq: int) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for agent in _agents(origin):
+        if agent.script is not None:
+            out[agent.id] = bisect_right(origin.actions.get(agent.id, []), seq)
+        else:
+            out[agent.id] = bisect_right(origin.step_seqs.get(agent.id, []), seq)
+    return out
+
+
+def preview(origin: Origin, fork: Fork) -> list[str]:
+    """What a fork's cut keeps of each agent, in words."""
+    if fork.steps is None:
+        return [f"each agent replays its first {fork.step} steps of {origin.run_id}"]
+    head = f"cut of {origin.run_id} after event {fork.cut}"
+    lines = [head + (f", at step {fork.at(fork.agent)} of {fork.agent}" if fork.agent else "")]
+    for agent_id, n in fork.steps.items():
+        taken = len(origin.step_seqs.get(agent_id, origin.actions.get(agent_id, [])))
+        kept = fork.keep_others and agent_id != fork.agent
+        after = "keeps its recorded answers after" if kept else "goes live after"
+        lines.append(f"  {agent_id}: replays {n} of {taken} steps, {after}")
+    return lines
 
 
 def _schedule(value: object) -> list[tuple[int | None, Profile]]:
@@ -193,7 +361,7 @@ def fork_profiles(bench: Bench, origin: Origin, fork: Fork) -> dict[str, Profile
     out: dict[str, Profile] = {}
     for agent in origin.bundle.scenario.agents:
         if fork.profile is None:
-            recorded = _at(origin.schedules[agent.id], fork.step + 1)
+            recorded = _at(origin.schedules[agent.id], fork.at(agent.id) + 1)
             out[agent.id] = configured(bench.models, recorded)
         else:
             out[agent.id] = bench.models.get(fork.profile).apply(agent.overrides)
@@ -204,13 +372,14 @@ def fork_schedules(origin: Origin, fork: Fork) -> dict[str, list[tuple[int | Non
     """Which profile made each step a fork replays, cut at the fork step."""
     out: dict[str, list[tuple[int | None, Profile]]] = {}
     for agent_id, schedule in origin.schedules.items():
+        step = fork.at(agent_id)
         cut: list[tuple[int | None, Profile]] = []
         for until, profile in schedule:
-            if until is not None and until < fork.step:
+            if until is not None and until < step:
                 cut.append((until, profile))
                 continue
-            if fork.step > 0:
-                cut.append((fork.step, profile))
+            if step > 0:
+                cut.append((step, profile))
             break
         out[agent_id] = cut
     return out
@@ -221,6 +390,13 @@ def _at(schedule: list[tuple[int | None, Profile]], step: int) -> Profile:
         if until is None or step <= until:
             return profile
     return schedule[-1][1]
+
+
+def _replayed(origin: Origin, agent_id: str, step: int) -> dict[str, int]:
+    """The origin seq of each tool call of the agent's first `step` steps."""
+    seqs = origin.call_seqs.get(agent_id, {})
+    calls = origin.step_calls.get(agent_id, [])[:step]
+    return {c: seqs[c] for cs in calls for c in cs if c in seqs}
 
 
 def check_fork(origin: Origin, step: int) -> None:
@@ -239,17 +415,34 @@ def planner(bench: Bench, origin: Origin, fork: Fork, *, source: EventStore | No
     async def plans(run_id: str) -> dict[str, ReplayPlan]:
         recording = await Recording.load(source or bench.store, origin.run_id)
         client = ModelClient(bench.store, run_id, bench.models, bus=bench.bus, replay=recording)
+        orders = {a.id: _replayed(origin, a.id, fork.at(a.id)) for a in _agents(origin)}
+        actions = {
+            a.id: origin.actions.get(a.id, [])[: fork.at(a.id)]
+            for a in _agents(origin)
+            if a.script is not None
+        }
+        turnstile = None
+        if fork.cut is not None:
+            seqs = [s for order in orders.values() for s in order.values()]
+            turnstile = Turnstile([*seqs, *(s for a in actions.values() for s in a)])
         out: dict[str, ReplayPlan] = {}
         for agent in origin.bundle.scenario.agents:
+            step = fork.at(agent.id)
             injects = origin.injects.get(agent.id, {})
+            order = orders[agent.id]
             out[agent.id] = ReplayPlan(
                 client=client,
-                fork_at=fork.step,
+                fork_at=step,
                 schedule=origin.schedules[agent.id],
                 outputs=origin.outputs.get(agent.id, {}),
-                injects={s: list(t) for s, t in injects.items() if s < fork.step},
+                injects={s: list(t) for s, t in injects.items() if s < step},
                 strict=fork.strict,
-                inject=fork.inject,
+                inject=fork.inject if fork.agent in (None, agent.id) else None,
+                turnstile=turnstile,
+                order=order,
+                versions={c: v for c, v in origin.versions.items() if c in order},
+                keep=fork.keep_others and agent.id != fork.agent,
+                actions=actions.get(agent.id, []),
             )
         return out
 

@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import itertools
 import json
 import time
@@ -9,7 +8,6 @@ from typing import Any
 
 import httpx2
 import pytest
-import rfc8785
 from typer.testing import CliRunner
 
 from aims.cli import app
@@ -53,6 +51,7 @@ from aims.models import (
 )
 from aims.models.backends import Chat, Responses
 from aims.models.client import _cost
+from aims.models.replay import canonical_key
 from aims.models.transport import decode_chunks
 
 pytestmark = pytest.mark.anyio
@@ -208,8 +207,9 @@ async def test_chat_stream_records_the_attempt(store: LocalEventStore) -> None:
     assert isinstance(call, ToolCall)
     body = await store.get_blob(run_id, request.body.sha256)
     assert sent == [body]
-    assert body == rfc8785.dumps(json.loads(body))
-    assert request.key == hashlib.sha256(body).hexdigest()
+    assert request.key == canonical_key(body)
+    built = Chat().body(p, Prompt(items=PROMPT.items, tools=[WEATHER]))
+    assert body == json.dumps(built, ensure_ascii=False, separators=(",", ":")).encode()
     assert request.params.tools == ["get_weather"]
     assert request.params.parallel_tool_calls is False
     assert json.loads(body)["stream_options"] == {"include_usage": True}

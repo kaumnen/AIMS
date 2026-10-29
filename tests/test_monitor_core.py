@@ -107,6 +107,7 @@ class Sweeps:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, str, int]] = []
+        self.leads: list[tuple[str, str | None]] = []
         self.proposals: list[str] = []
         self.profiles: list[Profile] = []
         self.gate: asyncio.Event | None = None
@@ -128,12 +129,15 @@ class FakeSweeper:
         self.trajectory = kw["trajectory"]
         sweeps.profiles.append(kw["profile"])
 
-    async def sweep(self, trigger: str, *, coalesced: int = 1) -> SweepResult:
+    async def sweep(
+        self, trigger: str, *, coalesced: int = 1, lead: str | None = None
+    ) -> SweepResult:
         s = self.s
         s.active += 1
         s.most = max(s.most, s.active)
         try:
             s.calls.append((self.name, self.agent_id, trigger, coalesced))
+            s.leads.append((self.agent_id, lead))
             if s.gate is not None:
                 await s.gate.wait()
             return s.result(self, trigger)

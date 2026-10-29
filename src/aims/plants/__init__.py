@@ -6,6 +6,7 @@ from aims.plants.base import (
     PlantSetup,
     build,
     category_of,
+    reachable,
     registry,
     taken_tier,
 )
@@ -22,6 +23,7 @@ __all__ = [
     "category_of",
     "check",
     "make",
+    "reachable",
     "registry",
     "render",
     "taken_tier",

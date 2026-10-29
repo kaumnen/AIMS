@@ -7,14 +7,14 @@ from dataclasses import dataclass, field
 from pydantic import JsonValue
 
 from aims.events import Category
-from aims.monitor import judge_texts, review_texts, sweep_texts
+from aims.monitor import channel_texts, judge_texts, review_texts, score_texts, sweep_texts
 from aims.monitor.config import CATEGORIES
 from aims.prompts import Prompts, TextError, check_format
 
 
 def defaults() -> dict[str, tuple[str, frozenset[str]]]:
     out: dict[str, tuple[str, frozenset[str]]] = {}
-    for module in (sweep_texts, review_texts, judge_texts):
+    for module in (sweep_texts, review_texts, judge_texts, channel_texts, score_texts):
         for name, value in module.TEXTS.items():
             if name in out or name == "categories":
                 raise RuntimeError(f"monitor text {name!r} is defined twice")

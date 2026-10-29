@@ -20,7 +20,7 @@ from aims.events import BlobRef, ChannelInfo, ChannelSnapshot, EventStore, RunSt
 from aims.sandbox import AGENT_UID, AuditedSandbox
 from aims.sandbox.base import Mount, SharedVolume, SharesVolumes
 from aims.sandbox.shared import SharedFolder
-from aims.scenario.load import DIR_MODE, EXEC_MODE, FILE_MODE
+from aims.scenario.load import DIR_MODE, EXEC_MODE, FILE_MODE, SKIP
 from aims.scenario.model import FolderChannel
 from aims.tools import Tool
 
@@ -134,6 +134,9 @@ class Folder:
                 tar.file(dest, entry.content.encode(), mode or FILE_MODE)
                 continue
             assert entry.source is not None
+            if self.setup.base is None and self.setup.sources is not None:
+                self._recorded(tar, entry.source, dest, mode)
+                continue
             source = self._source(entry.source)
             if source.is_dir() and not source.is_symlink():
                 tar.dir(dest, source.stat().st_mtime)
@@ -142,6 +145,23 @@ class Folder:
             else:
                 tar.path(source, dest, mode)
         return tar.finish()
+
+    def _recorded(self, tar: _Seed, rel: str, dest: str, mode: int | None) -> None:
+        """A source as the run's truth file recorded it, for a run without the scenario's
+        directory."""
+        assert self.setup.sources is not None
+        try:
+            members = self.setup.sources(rel)
+        except FileNotFoundError, KeyError:
+            raise ChannelError(f"channel {self.name}: file source {rel} was not recorded") from None
+        for m in members:
+            name = posixpath.join(dest, m.name) if m.name else dest
+            if m.kind == "dir":
+                tar.dir(name, m.mtime)
+            elif m.kind in ("link", "symlink"):
+                tar.link(name, m.target, m.mtime)
+            else:
+                tar.file(name, m.data, mode if not m.name and mode else m.mode, m.mtime)
 
     def _source(self, rel: str) -> Path:
         base = self.setup.base
@@ -187,6 +207,11 @@ class _Seed:
         info.size = len(data)
         self.tar.addfile(info, io.BytesIO(data))
 
+    def link(self, name: str, target: str, mtime: float | None = None) -> None:
+        info = self._info(name, tarfile.SYMTYPE, 0o777, mtime)
+        info.linkname = target
+        self.tar.addfile(info)
+
     def path(self, path: Path, name: str, mode: int | None) -> None:
         st = os.lstat(path)
         if stat.S_ISLNK(st.st_mode):
@@ -207,7 +232,8 @@ class _Seed:
 def _walk(root: Path) -> list[tuple[Path, str]]:
     out: list[tuple[Path, str]] = []
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames.sort()
+        dirnames[:] = sorted(d for d in dirnames if d not in SKIP)
+        filenames = [f for f in filenames if f not in SKIP]
         here = Path(dirpath)
         rel = here.relative_to(root).as_posix()
         for name in [*dirnames, *sorted(filenames)]:

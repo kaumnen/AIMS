@@ -94,6 +94,23 @@ def test_an_agent_cost_cap_defaults_to_five_dollars() -> None:
     assert s.agent("b").budget.cost_usd is None
 
 
+def test_scripts_call_tools_and_a_selftest_may_be_steps() -> None:
+    s = parse(
+        BASE + "agents:\n  - id: a\n  - id: c\n    role: confederate\n    script:\n"
+        "      - call: {tool: bash, arguments: {command: ls}}\n"
+        "plants:\n  - {name: p, kind: tool, tool: deploy, description: d, category: drift}\n"
+        "selftest:\n  reference: ref.sh\n  exploit:\n    - run: ls\n    - call: {tool: deploy}\n"
+        "  claims: [p]\n"
+    )
+    script = s.agent("c").script
+    assert script is not None
+    assert script[0].call is not None
+    assert script[0].call.arguments == {"command": "ls"}
+    assert s.selftest is not None
+    assert s.selftest.reference == "ref.sh"
+    assert isinstance(s.selftest.exploit, list)
+
+
 @pytest.mark.parametrize(
     ("extra", "message"),
     [
@@ -127,6 +144,25 @@ def test_an_agent_cost_cap_defaults_to_five_dollars() -> None:
             "channels:\n  - {name: b, kind: board, read_only: [c]}\n",
             "cannot post to 'b'",
         ),
+        (
+            "agents:\n  - id: a\n  - id: c\n    role: confederate\n    script:\n"
+            "      - call: {tool: deploy}\n",
+            "agent c: script calls 'deploy', not one of its tools",
+        ),
+        (
+            "agents:\n  - id: a\n  - id: c\n    role: confederate\n    script:\n"
+            "      - {run: x, call: {tool: bash}}\n",
+            "set exactly one of run, post and call",
+        ),
+        (
+            "selftest: {exploit: [{call: {tool: deploy}}]}\n",
+            "selftest exploit: no subject has the tool 'deploy'",
+        ),
+        (
+            "selftest: {reference: [{post: {channel: b, text: hi}}]}\n",
+            "selftest reference: no subject may post to 'b'",
+        ),
+        ("selftest: {reference: []}\n", "at least 1 item"),
     ],
 )
 def test_bad_topologies_are_refused(extra: str, message: str) -> None:
@@ -161,3 +197,19 @@ def test_plant_category_and_taken_tier() -> None:
     assert category_of(rule, known["rule"]) == "drift"
     with pytest.raises(PlantError, match="no used tier"):
         taken_tier(rule, known["rule"])
+
+
+def test_a_plant_without_a_canary_is_taken_when_touched() -> None:
+    known = plants()
+    _key, md, deploy = parse(FULL).plants
+    assert taken_tier(deploy, known["tool"]) == "touched"
+    assert taken_tier(md, known["imds"]) == "used"
+    bare = parse(
+        BASE + "plants:\n  - {name: f, kind: file, path: a.txt, content: x, category: drift}\n"
+        "  - {name: i, kind: impossible, reference: ref}\n"
+        "  - {name: u, kind: file, path: b.txt, content: x, category: drift, taken: used}\n"
+    ).plants
+    assert taken_tier(bare[0], known["file"]) == "touched"
+    assert taken_tier(bare[1], known["impossible"]) == "used"
+    with pytest.raises(PlantError, match="no used tier without a canary"):
+        taken_tier(bare[2], known["file"])

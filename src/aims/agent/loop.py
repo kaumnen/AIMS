@@ -3,13 +3,15 @@ import json
 import logging
 import re
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 from pydantic import ValidationError
 
 from aims.agent.gate import Gate, GateKind, GatePoint, OpenGate, Verdict
+from aims.agent.turnstile import Turnstile
 from aims.events import (
+    MAX_INT,
     AgentCompacted,
     AgentEnd,
     AgentFinished,
@@ -59,6 +61,24 @@ def is_context_error(error: str | None) -> bool:
     The patterns follow OpenAI, vLLM and Fireworks wording; what Meta returns is unverified.
     """
     return bool(error) and _CONTEXT.search(error or "") is not None
+
+
+async def settle[T](aw: Awaitable[T]) -> T:
+    """Await `aw` to its end however often the caller is cancelled meanwhile, then raise the
+    cancel. A bare shield gives up at the next cancel and leaves `aw` running unawaited."""
+    task = asyncio.ensure_future(aw)
+    cancelled = False
+    while True:
+        try:
+            value = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.done():
+                raise
+            cancelled = True
+            continue
+        if cancelled:
+            raise asyncio.CancelledError
+        return value
 
 
 class AgentKilled(Exception):
@@ -234,6 +254,19 @@ class RecordedOutput:
     error: bool
 
 
+@dataclass(frozen=True, slots=True)
+class ChannelVersions:
+    """What a tool call met of the run's channels in the origin, at the origin's event `seq`:
+    the last message id each board it read showed (`reads`), and the sha256 each shared file
+    its exec changed was left at, None for removed (`writes`, with each path's channel in
+    `channels`)."""
+
+    seq: int
+    reads: dict[str, int] = field(default_factory=dict)
+    writes: dict[str, str | None] = field(default_factory=dict)
+    channels: dict[str, str] = field(default_factory=dict)
+
+
 @dataclass(slots=True)
 class ReplayPlan:
     """How a fork replays its origin: model answers for steps 1 to `fork_at` come from
@@ -241,7 +274,13 @@ class ReplayPlan:
     recorded in `outputs`. A replayed step uses the profile the origin used for it, from
     `schedule` (each profile with the last step it ran, None for no end), so its request
     matches; later steps use the agent's own profile. `injects` are the messages the origin was
-    given, by step."""
+    given, by step.
+
+    A fork of several agents runs the replayed tool calls of every agent in the origin's
+    order: each waits at `turnstile` for its seq in `order`, and what it met of the channels is
+    checked against `versions`. With `keep`, the agent goes on with recorded answers after
+    `fork_at` until a request of its own is not in the recording, then goes live. `actions`
+    are the origin seqs of a scripted agent's steps."""
 
     def profile_for(self, step: int) -> Profile:
         for until, profile in self.schedule:
@@ -256,6 +295,11 @@ class ReplayPlan:
     injects: dict[int, list[str]] = field(default_factory=dict)
     strict: bool = False
     inject: str | None = None
+    turnstile: Turnstile | None = None
+    order: dict[str, int] = field(default_factory=dict)
+    versions: dict[str, ChannelVersions] = field(default_factory=dict)
+    keep: bool = False
+    actions: list[int] = field(default_factory=list)
 
 
 class Agent:
@@ -303,6 +347,7 @@ class Agent:
         self.warned: set[str] = set()
         self.pending: list[tuple[InputKind, str]] = []
         self.answer: str | None = None
+        self._left_recording = False
         self.killed: str | None = None
         self.clock = clock or PauseClock()
         self.done = False
@@ -363,14 +408,14 @@ class Agent:
             reason, detail = "killed", str(e) or None
         except asyncio.CancelledError:
             if self.killed is not None:
-                await asyncio.shield(self._finish(start, "killed", self.killed, None))
+                await settle(self._finish(start, "killed", self.killed, None))
             else:
-                await asyncio.shield(self._finish(start, "cancelled", None, None))
+                await settle(self._finish(start, "cancelled", None, None))
             raise
         except Exception as e:
             log.exception("agent %s failed", self.id)
             reason, detail = "error", f"{type(e).__name__}: {e}"
-        return await asyncio.shield(self._finish(start, reason, detail, answer))
+        return await settle(self._finish(start, reason, detail, answer))
 
     def _paused_s(self, now: float | None = None) -> float:
         return self.clock.paused_s(now) - self._paused_base
@@ -414,6 +459,8 @@ class Agent:
     ) -> AgentFinished:
         self.answer = answer
         self.done = True
+        if self.replay is not None and self.replay.turnstile is not None:
+            await self.replay.turnstile.drop(self.replay.order.values())
         now = time.monotonic()
         self.run_budget.leave(self.id)
         finished = AgentFinished(
@@ -457,6 +504,7 @@ class Agent:
             nudges = 0
             for i, call in enumerate(calls):
                 if (await self._gate("before_tool", call.id)).action == "deny":
+                    await self._pass_turn(call)
                     await self._result(call, self.texts.denied, True, denied=True)
                     continue
                 outcome = await self._tool(call)
@@ -465,6 +513,7 @@ class Agent:
                     raise _End("sandbox_failed", outcome.output)
                 if outcome.answer is not None:
                     for skipped in calls[i + 1 :]:
+                        await self._pass_turn(skipped)
                         await self._result(skipped, "Not run: the task was submitted.", True)
                     return outcome.answer
             self._open = None
@@ -491,8 +540,12 @@ class Agent:
         """Whether the next model call is served from the recording of a fork's origin."""
         return self.replay is not None and self.steps < self.replay.fork_at
 
+    def _kept(self) -> bool:
+        """Whether a kept agent still answers from the recording past its fork step."""
+        return self.replay is not None and self.replay.keep and not self._left_recording
+
     def _model(self) -> tuple[ModelClient, Profile]:
-        if self.replay is not None and self._replaying():
+        if self.replay is not None and (self._replaying() or self._kept()):
             return self.replay.client, self.replay.profile_for(self.steps + 1)
         return self.client, self.profile
 
@@ -502,7 +555,15 @@ class Agent:
         start = time.monotonic()
         self._open_profile = profile
         try:
-            reply = await client.call(profile, prompt, agent_id=self.id)
+            try:
+                reply = await client.call(profile, prompt, agent_id=self.id)
+            except ReplayError:
+                if self._replaying() or not self._kept():
+                    raise
+                self._left_recording = True
+                client, profile = self._model()
+                self._open_profile = profile
+                reply = await client.call(profile, prompt, agent_id=self.id)
         except ModelCallError as e:
             self._charge(e.reply, step=False)
             error = e.reply.error
@@ -590,6 +651,34 @@ class Agent:
 
     async def _tool(self, call: ToolRequest) -> ToolOutcome:
         replayed = self.replay is not None and self.steps <= self.replay.fork_at
+        turn = None
+        if replayed and self.replay is not None and self.replay.turnstile is not None:
+            turn = self.replay.order.get(call.id)
+        if turn is None:
+            return await self._run_logged(call, replayed)
+        assert self.replay is not None
+        turnstile = self.replay.turnstile
+        assert turnstile is not None
+        await turnstile.wait(turn)
+        try:
+            last = await self.store.events(self.run_id, before=MAX_INT, limit=1)
+            mark = last[-1].seq if last else -1
+            outcome = await self._run_logged(call, replayed)
+        finally:
+            await turnstile.done(turn)
+        versions = self.replay.versions.get(call.id)
+        if versions is not None:
+            await self._check_channels(call, mark, versions)
+        return outcome
+
+    async def _pass_turn(self, call: ToolRequest) -> None:
+        """Give up the turn of a replayed call that will not run, so the others go on."""
+        if self.replay is not None and self.replay.turnstile is not None:
+            turn = self.replay.order.get(call.id)
+            if turn is not None:
+                await self.replay.turnstile.done(turn)
+
+    async def _run_logged(self, call: ToolRequest, replayed: bool) -> ToolOutcome:
         ctx = ToolContext(
             sandbox=self.sandbox,
             store=self.store,
@@ -623,31 +712,7 @@ class Agent:
         return outcome
 
     async def _run_tool(self, ctx: ToolContext, call: ToolRequest) -> ToolOutcome:
-        tool = self.tools.get(call.name)
-        if tool is None:
-            known = ", ".join(self.tools)
-            return ToolOutcome(f"There is no tool named {call.name!r}. Tools: {known}.", True)
-        try:
-            raw = json.loads(call.arguments) if call.arguments.strip() else {}
-        except ValueError as e:
-            return ToolOutcome(f"The arguments are not valid JSON: {e}", error=True)
-        if not isinstance(raw, dict):
-            return ToolOutcome("The arguments must be a JSON object.", error=True)
-        try:
-            args = tool.args.model_validate(raw)
-        except ValidationError as e:
-            problems = "; ".join(
-                f"{'.'.join(str(p) for p in err['loc']) or 'arguments'}: {err['msg']}"
-                for err in e.errors(include_url=False)
-            )
-            return ToolOutcome(f"Invalid arguments: {problems}", error=True)
-        try:
-            return await tool.run(ctx, args)
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            log.exception("tool %s failed", call.name)
-            return ToolOutcome(f"The tool failed: {type(e).__name__}: {e}", error=True)
+        return await run_tool(self.tools, ctx, call.name, call.arguments)
 
     async def _result(
         self,
@@ -700,6 +765,61 @@ class Agent:
         assert self.replay is not None
         if self.replay.strict:
             raise _End("divergence", f"tool call {call.id} at step {self.steps} diverged")
+
+    async def _check_channels(
+        self, call: ToolRequest, mark: int, versions: ChannelVersions
+    ) -> None:
+        """Compare what the replayed call met of the channels with the origin's: each board's
+        last message id it read, and the sha256 each shared file its exec left."""
+        types = ["exec.started", "channel.read", "channel.snapshot"]
+        events = await self.store.events(self.run_id, after=mark, types=types, limit=1000)
+        execs = {
+            str(e.data.get("exec_id"))
+            for e in events
+            if e.type == "exec.started"
+            and e.agent_id == self.id
+            and e.data.get("call_id") == call.id
+        }
+        reads: dict[str, int] = {}
+        writes: dict[str, str | None] = {}
+        for e in events:
+            d = e.data
+            if e.type == "channel.read" and e.agent_id == self.id and d.get("call_id") == call.id:
+                through = d.get("through")
+                if isinstance(through, int):
+                    reads[str(d.get("channel"))] = through
+            elif e.type == "channel.snapshot" and str(d.get("exec_id")) in execs:
+                changes = d.get("changes")
+                for c in changes if isinstance(changes, list) else []:
+                    if isinstance(c, dict) and c.get("agent") == self.id:
+                        sha = c.get("sha256")
+                        writes[str(c.get("path"))] = sha if isinstance(sha, str) else None
+        found: list[tuple[str | None, str | None, str | None, str | None]] = []
+        for channel in sorted(set(versions.reads) | set(reads)):
+            want, got = versions.reads.get(channel), reads.get(channel)
+            if want != got:
+                found.append((channel, None, _version(want), _version(got)))
+        for path in sorted(set(versions.writes) | set(writes)):
+            want_sha, got_sha = versions.writes.get(path), writes.get(path)
+            if want_sha != got_sha or (path in versions.writes) != (path in writes):
+                found.append((versions.channels.get(path), path, want_sha, got_sha))
+        for channel, path, want_v, got_v in found:
+            await self._emit(
+                ReplayDivergence(
+                    step=self.steps,
+                    call_id=call.id,
+                    tool=call.name,
+                    kind="channel",
+                    channel=channel,
+                    path=path,
+                    recorded_version=want_v,
+                    live_version=got_v,
+                    origin_seq=versions.seq,
+                )
+            )
+        assert self.replay is not None
+        if found and self.replay.strict:
+            raise _End("divergence", f"tool call {call.id} at step {self.steps} met other channels")
 
     async def _compact(self) -> None:
         c = self.config.compaction
@@ -779,5 +899,41 @@ class Agent:
         await self.store.append(self.run_id, [Draft(payload, self.id)])
 
 
+async def run_tool(
+    tools: Mapping[str, Tool], ctx: ToolContext, name: str, arguments: str
+) -> ToolOutcome:
+    """Run tool `name` of `tools` with `arguments`, a JSON object as text. An unknown tool, bad
+    arguments or a tool that raises give an error outcome, never an exception."""
+    tool = tools.get(name)
+    if tool is None:
+        known = ", ".join(tools)
+        return ToolOutcome(f"There is no tool named {name!r}. Tools: {known}.", True)
+    try:
+        raw = json.loads(arguments) if arguments.strip() else {}
+    except ValueError as e:
+        return ToolOutcome(f"The arguments are not valid JSON: {e}", error=True)
+    if not isinstance(raw, dict):
+        return ToolOutcome("The arguments must be a JSON object.", error=True)
+    try:
+        args = tool.args.model_validate(raw)
+    except ValidationError as e:
+        problems = "; ".join(
+            f"{'.'.join(str(p) for p in err['loc']) or 'arguments'}: {err['msg']}"
+            for err in e.errors(include_url=False)
+        )
+        return ToolOutcome(f"Invalid arguments: {problems}", error=True)
+    try:
+        return await tool.run(ctx, args)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        log.exception("tool %s failed", name)
+        return ToolOutcome(f"The tool failed: {type(e).__name__}: {e}", error=True)
+
+
 def _size(items: Sequence[Item]) -> int:
     return sum(len(item.model_dump_json()) for item in items)
+
+
+def _version(value: int | None) -> str | None:
+    return None if value is None else str(value)

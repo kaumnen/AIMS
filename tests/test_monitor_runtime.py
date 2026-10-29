@@ -526,6 +526,34 @@ async def test_a_kill_by_the_monitor_still_gets_the_final_sweeps_and_the_judge(
     assert fake_monitor[0].calls == ["start", "agents_done", "judge skip=False", "close"]
 
 
+async def test_a_kill_ends_a_scripted_confederate_as_killed(
+    store: LocalEventStore, tmp_path: Path, fake_monitor: list[FakeMonitor]
+) -> None:
+    path = tmp_path / "scenario.yaml"
+    confederate = (
+        "  - id: c\n    role: confederate\n    script:\n      - {after_s: 30, run: echo late}\n"
+    )
+    path.write_text(SCENARIO.format(oversight="observe", verifier="") + confederate)
+    script = Script(call("bash", command="x"), call("submit", answer="never"))
+    runner = Runner(bench(store, script), load(path), Options(), monitor=watched())
+    barriers = 0
+
+    async def kill() -> None:
+        nonlocal barriers
+        barriers += 1
+        if barriers == 3:
+            fake_monitor[0].on_barrier = None
+            await runner.kill("stopped by the test")
+
+    runner.on_start = lambda run_id: setattr(fake_monitor[0], "on_barrier", kill)
+    result = await runner.run()
+    assert result.status == "killed"
+    assert (result.agents["c"].reason, result.agents["c"].detail) == (
+        "killed",
+        "stopped by the test",
+    )
+
+
 async def test_a_cancelled_run_skips_the_final_sweeps_and_the_judge(
     store: LocalEventStore, tmp_path: Path, fake_monitor: list[FakeMonitor]
 ) -> None:

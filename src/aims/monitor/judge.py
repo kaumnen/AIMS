@@ -534,11 +534,45 @@ class Reader:
 
 @dataclass(slots=True)
 class Flag:
+    """A flag the judge reviews. `number` is how the judge's prompts name it: its place in an
+    order of the flags' own fields, so a re-run whose flags landed at other seqs asks the same."""
+
     seq: int
     run_id: str
     agent: str | None
     payload: MonitorFlag
     quote: Any = None
+    number: int = 0
+
+    def order(self) -> tuple[Any, ...]:
+        p = self.payload
+        return (
+            p.layer,
+            p.source,
+            self.agent or "",
+            p.evidence,
+            p.category,
+            p.lane or "",
+            p.subcategory or "",
+            p.importance,
+            p.key or "",
+            p.count,
+            p.justification,
+            self.seq,
+        )
+
+
+def flag_numbers(flags: Iterable[Event]) -> dict[int, int]:
+    """The number the judge's prompts give each of the `monitor.flag` events `flags`, by seq."""
+    return _numbers(
+        Flag(e.seq, e.run_id, e.agent_id, MonitorFlag.model_validate(e.data))
+        for e in flags
+        if e.type == "monitor.flag"
+    )
+
+
+def _numbers(flags: Iterable[Flag]) -> dict[int, int]:
+    return {f.seq: n for n, f in enumerate(sorted(flags, key=Flag.order), 1)}
 
 
 @dataclass(slots=True)
@@ -626,6 +660,7 @@ class Judge:
         self.budget_usd = budget_usd
         self.reader = Reader(store, source)
         self.flags: dict[int, Flag] = {}
+        self._numbered: dict[int, int] = {}
         self.sweeps: list[Event] = []
         self.agents: list[str] = []
         self.steps: list[Step] = []
@@ -653,6 +688,10 @@ class Judge:
                 payload = MonitorFlag.model_validate(e.data)
                 quote = e.data.get("quote")
                 self.flags[e.seq] = Flag(e.seq, e.run_id, e.agent_id, payload, quote)
+        numbers = _numbers(self.flags.values())
+        for f in self.flags.values():
+            f.number = numbers[f.seq]
+        self._numbered = {n: seq for seq, n in numbers.items()}
         self.sweeps = [e for e in sweeps if e.type == "monitor.sweep"]
         try:
             await self.reader.load()
@@ -801,7 +840,7 @@ class Judge:
     async def _flag_row(self, f: Flag, chars: int) -> dict[str, Any]:
         p = f.payload
         row: dict[str, Any] = {
-            "flag": f.seq,
+            "flag": f.number,
             "layer": p.layer,
             "source": p.source,
             "category": p.category,
@@ -829,7 +868,7 @@ class Judge:
         flags = [
             f for f in self.flags.values() if category is None or f.payload.category == category
         ]
-        return sorted(flags, key=lambda f: (-f.payload.importance, f.seq))
+        return sorted(flags, key=lambda f: (-f.payload.importance, f.number))
 
     async def _brief(self, r: Rollout) -> str:
         r.seen |= self._agent_seqs
@@ -1305,16 +1344,15 @@ class Judge:
         reviews: dict[int, FlagReview] = {}
         if not r.blind:
             for a in v.flags:
-                if a.flag not in self.flags or a.flag in reviews:
+                seq = self._numbered.get(a.flag)
+                if seq is None or seq in reviews:
                     continue
                 evidence = cite(a.evidence)
                 status, reason = a.status, a.reason
                 if status == "rejected" and not evidence:
                     status = "unclear"
                     reason = f"{reason} (the rejection cited no event the judge read)"
-                reviews[a.flag] = FlagReview(
-                    flag=a.flag, status=status, reason=reason, evidence=evidence
-                )
+                reviews[seq] = FlagReview(flag=seq, status=status, reason=reason, evidence=evidence)
             for seq in self.flags:
                 if seq not in reviews:
                     reviews[seq] = FlagReview(flag=seq, status="unclear", reason="not reviewed")

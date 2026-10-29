@@ -1,7 +1,9 @@
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
+import os
 import shutil
 import uuid
 from collections.abc import AsyncIterator, Callable, Generator, Sequence
@@ -11,7 +13,16 @@ from typing import Any, Protocol, Self
 
 from aims.events.blobs import BlobStore, BlobWriter, read_blob, stored_size
 from aims.events.chain import ChainError, Head, follow, seal
-from aims.events.index import MAX_PAGE, FlagInfo, Index, RunInfo, SampleWindow
+from aims.events.index import (
+    MAX_PAGE,
+    FlagInfo,
+    Index,
+    Label,
+    LabelKind,
+    RunInfo,
+    SampleWindow,
+    UnitRow,
+)
 from aims.events.log import LogFile, checkpoint_ok, read_events, read_lines, tail_only
 from aims.events.payloads import LogTruncated, RunFinished, RunStarted
 from aims.events.schema import BlobRef, Content, Draft, Event, blob_refs, now
@@ -21,12 +32,23 @@ log = logging.getLogger("aims.events")
 LOG = "events.jsonl"
 BLOBS = "blobs"
 INDEX = "index.sqlite"
+TRUTH = "truth.json"
+LABELS = "labels.jsonl"
 INLINE_LIMIT = 8 * 1024
 CHUNK = 1000
 
 
 class RunCorrupt(Exception):
     pass
+
+
+class TruthRefused(ValueError):
+    """A truth file the store will not keep: its run is unknown or not sealed, or its bytes do
+    not hash to what run.started committed to."""
+
+    def __init__(self, message: str, *, status: int) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 class IngestError(Exception):
@@ -369,7 +391,7 @@ class LocalEventStore:
                 self._drop_sink(run_id, sink)
                 raise
             sink.head = after
-            await self._index.add(events, after)
+            await self._indexed(run_id, events, after)
             if after.finished:
                 self._drop_sink(run_id, sink)
         self._notify(run_id)
@@ -478,7 +500,7 @@ class LocalEventStore:
             except OSError:
                 self._discard(run_id, writer)
                 raise
-            await self._index.add(events, head)
+            await self._indexed(run_id, events, head)
             if head.finished:
                 self._discard(run_id, writer)
             for fn in list(self._taps.get(run_id, ())):
@@ -568,6 +590,98 @@ class LocalEventStore:
                 async with asyncio.timeout(poll):
                     await signal.wait()
 
+    async def _indexed(self, run_id: str, events: Sequence[Event], head: Head) -> None:
+        """Index `events`; once the run seals, name its variant from its truth file."""
+        await self._index.add(events, head)
+        if head.finished and any(e.type == RunFinished.type for e in events):
+            truth = await asyncio.to_thread(_read_truth, self._dir(run_id))
+            if truth is not None:
+                await self._index.set_variant(run_id, _variant(truth))
+
+    def truth_path(self, run_id: str) -> Path:
+        return self._dir(run_id) / TRUTH
+
+    async def put_truth(self, run_id: str, data: bytes) -> bool:
+        """Keep the truth file of the sealed run `run_id`, outside its log and blobs, mode 0600.
+        It must hash to the truth run.started committed to. Returns False when the same file is
+        already kept. Raises TruthRefused."""
+        info = await self._index.run(run_id)
+        if info is None:
+            raise TruthRefused(f"no run {run_id}", status=404)
+        if info.status == "running":
+            raise TruthRefused(f"run {run_id} is not sealed yet", status=409)
+        [first] = await self._index.events(run_id, limit=1)
+        committed = first.data.get("truth")
+        digest = hashlib.sha256(data).hexdigest()
+        if committed is None:
+            raise TruthRefused(f"run {run_id} committed to no truth file", status=409)
+        if digest != committed:
+            raise TruthRefused(
+                f"the truth file hashes to {digest}, run.started committed to {committed}",
+                status=422,
+            )
+        try:
+            truth = json.loads(data)
+        except ValueError:
+            raise TruthRefused("the truth file is not JSON", status=422) from None
+        if not isinstance(truth, dict):
+            raise TruthRefused("the truth file is not a JSON object", status=422)
+        target = self.truth_path(run_id)
+        if await asyncio.to_thread(_same_file, target, data):
+            return False
+        await asyncio.to_thread(_write_private, target, data)
+        await self._index.set_variant(run_id, _variant(truth))
+        return True
+
+    async def add_label(
+        self, run_id: str, flag: int, label: LabelKind, *, by: str, note: str = ""
+    ) -> Label:
+        """Label the flag at seq `flag` of run `run_id`, in the run's labels file beside its
+        log, never in the log itself. Raises KeyError when there is no such flag."""
+        events = await self._index.events(run_id, after=flag - 1, before=flag + 1, limit=1)
+        if not events or events[0].seq != flag or events[0].type != "monitor.flag":
+            raise KeyError(f"run {run_id} has no flag at seq {flag}")
+        made = Label(run_id=run_id, flag=flag, label=label, note=note, by=by, at=now())
+        line = made.model_dump_json().encode() + b"\n"
+        await asyncio.to_thread(_append_line, self._dir(run_id) / LABELS, line)
+        await self._index.put_labels([made])
+        return made
+
+    async def merge_labels(self, run_id: str, labels: Sequence[Label]) -> int:
+        """Keep the labels of `run_id` another store made that this one lacks; returns how
+        many were new."""
+        path = self._dir(run_id) / LABELS
+        held = {(x.flag, x.at, x.by) for x in await asyncio.to_thread(_read_labels, path)}
+        fresh = [x for x in labels if (x.flag, x.at, x.by) not in held]
+        if fresh:
+            data = b"".join(x.model_dump_json().encode() + b"\n" for x in fresh)
+            await asyncio.to_thread(_append_line, path, data)
+            await self._index.put_labels(fresh)
+        return len(fresh)
+
+    def labels_path(self, run_id: str) -> Path:
+        return self._dir(run_id) / LABELS
+
+    async def label_history(self, run_id: str) -> list[Label]:
+        """Every label the run's labels file holds, oldest first."""
+        return await asyncio.to_thread(_read_labels, self.labels_path(run_id))
+
+    async def labels(self, run_id: str) -> dict[int, Label]:
+        """The latest label of each labelled flag of `run_id`, by seq."""
+        return await self._index.labels(run_id)
+
+    async def score_units(
+        self, origins: Sequence[str] | None = None, *, latest: bool = True
+    ) -> list[UnitRow]:
+        return await self._index.score_units(origins, latest=latest)
+
+    async def costs(self) -> dict[str, tuple[str, str]]:
+        """Each run's cost row for the estimate: the head hash it was read at and its data."""
+        return await self._index.costs()
+
+    async def put_costs(self, rows: Sequence[tuple[str, str, str]]) -> None:
+        await self._index.put_costs(rows)
+
     async def run(self, run_id: str) -> RunInfo | None:
         return await self._index.run(run_id)
 
@@ -580,15 +694,21 @@ class LocalEventStore:
         origin: str | None = None,
         severity: int | None = None,
         category: str | None = None,
+        series: str | None = None,
+        variant: str | None = None,
+        group: str | None = None,
     ) -> list[RunInfo]:
         """Runs newest first, filtered as `Index.runs` describes."""
         return await self._index.runs(
+            group=group,
             limit=limit,
             before=before,
             kind=kind,
             origin=origin,
             severity=severity,
             category=category,
+            series=series,
+            variant=variant,
         )
 
     async def flags(
@@ -682,6 +802,8 @@ class LocalEventStore:
                 error.reason == "incomplete line" and tail_only(self._log(run_id), error.offset)
             ):
                 log.warning("run %s: %s", run_id, error)
+            labels = await asyncio.to_thread(_read_labels, self._dir(run_id) / LABELS)
+            await self._index.put_labels(labels)
 
     async def _writer(self, run_id: str) -> _Writer:
         async with self._opening:
@@ -734,7 +856,7 @@ class LocalEventStore:
                 chunk, error = await asyncio.to_thread(_take, events, CHUNK)
                 if chunk:
                     head = chunk[-1][1]
-                    await self._index.add([Event.model_validate(e) for e, _ in chunk], head)
+                    await self._indexed(run_id, [Event.model_validate(e) for e, _ in chunk], head)
                 if error is not None or len(chunk) < CHUNK:
                     return head, error
         finally:
@@ -880,3 +1002,60 @@ def is_run_id(name: str) -> bool:
         return str(uuid.UUID(name)) == name
     except ValueError:
         return False
+
+
+def _read_truth(run_dir: Path) -> dict[str, Any] | None:
+    try:
+        value = json.loads((run_dir / TRUTH).read_bytes())
+    except OSError, ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _variant(truth: dict[str, Any]) -> str | None:
+    variant = truth.get("variant")
+    return variant if isinstance(variant, str) else None
+
+
+def _same_file(path: Path, data: bytes) -> bool:
+    try:
+        return path.read_bytes() == data
+    except OSError:
+        return False
+
+
+def _write_private(path: Path, data: bytes) -> None:
+    """Write `data` to `path` mode 0600, whole or not at all."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.write(fd, data)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(tmp, path)
+
+
+def _append_line(path: Path, line: bytes) -> None:
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    try:
+        os.write(fd, line)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _read_labels(path: Path) -> list[Label]:
+    """The labels a run's labels file holds; lines that do not read are skipped."""
+    try:
+        text = path.read_text()
+    except OSError:
+        return []
+    out: list[Label] = []
+    for line in text.splitlines():
+        try:
+            out.append(Label.model_validate_json(line))
+        except ValueError:
+            log.warning("%s: a line does not read as a label", path)
+    return out

@@ -15,6 +15,7 @@ from aims.agent import (
     RecordedOutput,
     ReplayPlan,
     RunBudget,
+    Turnstile,
     Verdict,
     is_context_error,
 )
@@ -453,6 +454,36 @@ async def test_cancelling_an_agent_logs_its_end(store: LocalEventStore) -> None:
     assert (finished.reason, finished.steps) == ("cancelled", 1)
 
 
+async def test_a_second_cancel_while_the_agent_ends_still_logs_its_end(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Hang(FakeSandbox):
+        async def exec(self, command: str, **kw: Any) -> ExecResult:
+            await asyncio.sleep(30)
+            raise AssertionError("not reached")
+
+    append = store.append
+
+    async def slow(run_id: str, drafts: Any) -> Any:
+        if any(isinstance(d.payload, AgentFinished) for d in drafts):
+            await asyncio.sleep(0.2)
+        return await append(run_id, drafts)
+
+    script = Script(call("bash", command="sleep 30"))
+    agent, run_id = await make_agent(store, script, sandbox=Hang(echo))
+    agent.killed = "killed by the monitor"
+    monkeypatch.setattr(store, "append", slow)
+    task = asyncio.create_task(agent.run())
+    await asyncio.sleep(0.2)
+    task.cancel()
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    (finished,) = await payloads(store, run_id, AgentFinished)
+    assert (finished.reason, finished.detail) == ("killed", "killed by the monitor")
+
+
 def test_budget_warning_text() -> None:
     text = AgentTexts().budget("cost_usd").format(used=0.4, limit=1.0)
     assert text == "You have spent 0.40 of your 1.00 USD."
@@ -489,6 +520,30 @@ def test_bad_texts_are_refused() -> None:
     with pytest.raises(UnknownTool, match="nope"):
         load_tools(["submit"], {"nope": {"description": "x"}})
     assert load_tools(["submit"], {"bash": {"description": "unused"}})[0].name == "submit"
+
+
+async def test_a_denied_replayed_call_gives_up_its_turn(store: LocalEventStore) -> None:
+    gate = Gate({("before_tool", 1): Verdict("deny")})
+    script = Script(call("bash", command="rm -rf /work"), call("submit", answer="done"))
+    agent, _ = await make_agent(store, script, gate=gate)
+    turnstile = Turnstile([10, 20, 30])
+    agent.replay = ReplayPlan(
+        client=agent.client,
+        fork_at=2,
+        schedule=[(None, agent.profile)],
+        outputs={"call_1": RecordedOutput("x", False), "call_2": RecordedOutput("y", False)},
+        turnstile=turnstile,
+        order={"call_1": 10, "call_2": 30},
+    )
+
+    async def other() -> None:
+        await turnstile.wait(20)
+        await turnstile.done(20)
+
+    waiting = asyncio.create_task(other())
+    finished = await asyncio.wait_for(agent.run(), 5)
+    assert finished.reason == "submitted"
+    await asyncio.wait_for(waiting, 1)
 
 
 async def test_a_denied_call_is_not_run_and_the_agent_moves_on(store: LocalEventStore) -> None:

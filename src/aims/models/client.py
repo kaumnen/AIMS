@@ -13,7 +13,6 @@ from typing import Any
 
 import httpx2
 import openai
-import rfc8785
 from openai import AsyncOpenAI, AsyncStream
 
 from aims.events import (
@@ -34,7 +33,7 @@ from aims.models.backends import BACKENDS, Accumulator, Assembled, Backend, Piec
 from aims.models.bus import Delta, DeltaBus
 from aims.models.limiter import Limiters
 from aims.models.profiles import ModelsConfig, Overrides, Price, Profile, ProfileError
-from aims.models.replay import Pace, Recording, Replayer, ReplayError, ReplayWall
+from aims.models.replay import Pace, Recording, Replayer, ReplayError, ReplayWall, canonical_key
 from aims.models.replay import chain as cause_chain
 from aims.models.transport import Exchange, Recorder, current, encode_chunks
 from aims.models.types import Prompt, Reply
@@ -131,8 +130,16 @@ class ModelClient:
             profile = self.config.get(profile)
         profile = profile.apply(overrides)
         backend = BACKENDS[profile.backend]
-        content = rfc8785.dumps(backend.body(profile, prompt))
+        # Keys go out in the order the body was built: a model writes a structured answer in
+        # its schema's order, and that order is part of the prompt.
+        content = json.dumps(
+            backend.body(profile, prompt),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode()
         body = await self.store.put_blob(self.run_id, content)
+        key = canonical_key(content)
         url = self._url(profile)
         client = self._client(profile, url)
         group = None if self.replay else self.limiters.group(profile.group, profile.limits)
@@ -153,7 +160,7 @@ class ModelClient:
                     url=url + backend.path,
                     params=request_params,
                     body=body,
-                    key=body.sha256,
+                    key=key,
                     queued_ms=0 if lease is None else lease.queued_ms,
                     role=role,
                 )

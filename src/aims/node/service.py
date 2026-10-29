@@ -18,18 +18,22 @@ import httpx2
 from aims.events import LocalEventStore, split_lines
 from aims.events.blobs import decode
 from aims.events.schema import blob_refs
-from aims.models import load_models
+from aims.events.store import TruthRefused
+from aims.models import ModelsConfig, Roles, load_models
 from aims.models.check import record_check
 from aims.monitor.config import MonitorConfigError
 from aims.monitor.offline import monitor_offline, stamped
+from aims.monitor.texts import MonitorTexts, resolve
 from aims.node.client import ApiError, ControlClient
 from aims.node.link import Link
 from aims.node.shipper import Backoff
+from aims.prompts import TextError
 from aims.run.fork import load_origin
 from aims.run.job import Job, bundle_of, runner_for
 from aims.run.runner import Bench, RunError, seal_unsealed
+from aims.run.scoring import ScoreError, score_with
 from aims.sandbox import DockerBackend, SandboxError
-from aims.wire import MonitorJob, OfferMessage, TracerHealth
+from aims.wire import MonitorJob, OfferMessage, ScoreJob, TracerHealth
 
 log = logging.getLogger("aims.node")
 
@@ -76,7 +80,7 @@ class _Open:
 class Node:
     def __init__(self, options: NodeOptions) -> None:
         self.options = options
-        self.claimed: dict[str, Job | MonitorJob | None] = {}
+        self.claimed: dict[str, Job | MonitorJob | ScoreJob | None] = {}
         self.stopping = False
         self.ready = asyncio.Event()
         self.backend: DockerBackend | None = None
@@ -201,12 +205,15 @@ class Node:
         self.claimed[offer.run_id] = job
         self._jobs[offer.run_id] = asyncio.create_task(self._execute(job))
 
-    async def _execute(self, job: Job | MonitorJob) -> None:
+    async def _execute(self, job: Job | MonitorJob | ScoreJob) -> None:
         ctx = self.ctx
         link, store = ctx.link, ctx.store
         try:
             if isinstance(job, MonitorJob):
                 await self._monitor(job)
+                return
+            if isinstance(job, ScoreJob):
+                await self._score(job)
                 return
             blobs: dict[str, bytes] = {}
             for sha in job.blobs():
@@ -280,6 +287,44 @@ class Node:
             transport=self.options.model_transport,
             on_start=ctx.link.ship,
         )
+
+    async def _score(self, job: ScoreJob) -> None:
+        """Score a sealed run into the new run `job.run_id`: fetch the run, its monitor run and
+        its truth file when this runner lacks them, then score as `aims score` does."""
+        ctx = self.ctx
+        source = await self._origin(job.origin)
+        if not source.truth_path(job.origin).is_file():
+            data = await ctx.link.client.run_truth(job.origin)
+            try:
+                await source.put_truth(job.origin, data)
+            except TruthRefused as e:
+                raise RunError(f"the truth file of {job.origin} does not check: {e}") from None
+        held = None if job.monitor is None else await self._origin(job.monitor)
+        profile = job.profile()
+        models = ctx.bench.models
+        if profile is not None:
+            roles = Roles(agent=profile.name, sweep=profile.name, judge=profile.name)
+            models = ModelsConfig(profiles={profile.name: profile}, roles=roles)
+        try:
+            texts = MonitorTexts.restore(job.texts) if job.texts else resolve(ctx.bench.prompts)
+        except TextError as e:
+            raise RunError(f"the job's texts do not load: {e}") from None
+        ctx.link.ship(job.run_id)
+        try:
+            await score_with(
+                ctx.store,
+                job.origin,
+                models=models,
+                texts=texts,
+                candidates=[] if profile is None else [profile.name],
+                monitor=job.monitor,
+                transport=self.options.model_transport,
+                run_id=job.run_id,
+                source=None if source is ctx.store else source,
+                monitor_source=None if held is None or held is ctx.store else held,
+            )
+        except ScoreError as e:
+            raise RunError(str(e)) from None
 
     async def _origin(self, run_id: str) -> LocalEventStore:
         """The store holding run `run_id`: this runner's own, or a copy fetched from the

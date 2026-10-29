@@ -15,6 +15,7 @@ from aims.events import (
     split_lines,
 )
 from aims.events.chain import Head, seal
+from aims.events.index import VERSION
 from aims.events.payloads import (
     FlagReview,
     MonitorCleared,
@@ -291,7 +292,7 @@ async def test_old_logs_and_old_indexes_rebuild(tmp_path: Path) -> None:
         assert runs[old].categories == {}
         assert await store.flags(old) == []
     db = sqlite3.connect(root / "index.sqlite")
-    assert db.execute("pragma user_version").fetchone() == (3,)
+    assert db.execute("pragma user_version").fetchone() == (VERSION,)
     db.close()
 
 

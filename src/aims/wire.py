@@ -4,7 +4,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
-from aims.events import Event, OperatorActionKind, ResumeThen, RunKind
+from aims.events import Event, Label, OperatorActionKind, ResumeThen, RunKind
+from aims.models import Profile
 from aims.monitor.setup import ResolvedMonitor
 from aims.run.job import Job, JobOptions
 
@@ -19,10 +20,12 @@ class _Wire(BaseModel):
 
 
 class Head(_Wire):
-    """Where a copy of a run's log ends: the last seq and its hash, seq -1 for none."""
+    """Where a copy of a run's log ends: the last seq and its hash, seq -1 for none. `truth`
+    says the control plane holds the run's truth file."""
 
     seq: int = -1
     hash: str | None = None
+    truth: bool = False
 
 
 class TracerHealth(_Wire):
@@ -31,7 +34,7 @@ class TracerHealth(_Wire):
     restarts: int = 0
 
 
-JobKindName = Literal["scenario", "models.check", "monitor"]
+JobKindName = Literal["scenario", "models.check", "monitor", "score"]
 MonitorMode = Literal["full", "signals_only", "judge_only"]
 BASE_KINDS: tuple[JobKindName, ...] = ("scenario", "models.check")
 
@@ -139,7 +142,39 @@ class MonitorJob(_Wire):
         return {"envs": list(self.envs()), "kernel": False, "kind": self.kind}
 
 
-AnyJob = Annotated[Job | MonitorJob, Field(discriminator="kind")]
+class ScoreJob(_Wire):
+    """A score of the sealed run `origin`, whose head hash was `origin_head`, against its truth
+    file and the flags of the monitor run `monitor` (None for its own), into the new run
+    `run_id`. The runner fetches the run, the monitor run and the truth file when it lacks
+    them. `classifier` is the eval-awareness model (`Profile.snapshot`, env names only), None
+    to skip it; `texts` the monitor texts it asks with."""
+
+    kind: Literal["score"] = "score"
+    run_id: str
+    origin: str
+    origin_head: str
+    scenario: str
+    monitor: str | None = None
+    classifier: dict[str, JsonValue] | None = None
+    texts: dict[str, JsonValue] = Field(default_factory=dict)
+    options: JobOptions = Field(default_factory=JobOptions)
+    config_files: dict[str, str | None] = Field(default_factory=dict)
+
+    def profile(self) -> Profile | None:
+        return None if self.classifier is None else Profile.model_validate(self.classifier)
+
+    def blobs(self) -> list[str]:
+        return []
+
+    def envs(self) -> list[str]:
+        p = self.profile()
+        return [] if p is None else sorted(e for e in (p.api_key_env, p.base_url_env) if e)
+
+    def needs(self) -> dict[str, JsonValue]:
+        return {"envs": list(self.envs()), "kernel": False, "kind": self.kind}
+
+
+AnyJob = Annotated[Job | MonitorJob | ScoreJob, Field(discriminator="kind")]
 
 
 class Claimed(_Wire):
@@ -160,6 +195,10 @@ class Heads(_Wire):
 
 class HeadsReply(_Wire):
     heads: dict[str, Head]
+
+
+class Labels(_Wire):
+    labels: list[Label] = Field(max_length=10_000)
 
 
 class WireDelta(_Wire):
@@ -193,7 +232,9 @@ class RunSummary(_Wire):
     """`kind` says what the run is and `origin` names the run a monitor run watched. `flags`
     counts its logical flags and `categories` them per category, whatever their status;
     `max_importance` is the highest importance of a flag not cleared or rejected,
-    `verdict_severity` the judge's, and `max_severity` the higher of the two, 0 for neither."""
+    `verdict_severity` the judge's, and `max_severity` the higher of the two, 0 for neither.
+    `series` and `series_index` place a run in its series; `variant` is the scenario variant
+    it ran, known once the run is sealed and its truth file arrived."""
 
     run_id: str
     scenario: str | None
@@ -214,6 +255,9 @@ class RunSummary(_Wire):
     max_importance: int | None = None
     verdict_severity: int | None = None
     max_severity: int = 0
+    series: str | None = None
+    series_index: int | None = None
+    variant: str | None = None
 
 
 class RunMessage(_Wire):

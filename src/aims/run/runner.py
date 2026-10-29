@@ -25,6 +25,7 @@ from aims.events import (
     AgentEnd,
     AgentFinished,
     ChannelMessage,
+    Cut,
     Draft,
     LocalEventStore,
     OperatorAction,
@@ -64,7 +65,7 @@ from aims.sandbox import (
 )
 from aims.sandbox.base import RUNNER_DIR, TOOLBOX, Mount
 from aims.scenario import AgentConfig, Bundle, Scenario
-from aims.scenario.model import HOME
+from aims.scenario.model import HOME, ScriptStep
 from aims.tools import Tool, UnknownTool, load_tools
 
 log = logging.getLogger("aims.run")
@@ -95,7 +96,10 @@ class RunError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class Fork:
-    """Where a run forks from: its origin run and the last step replayed from it."""
+    """Where a run forks from: its origin run and the last step replayed from it. A fork of
+    several agents cuts the origin after its event `cut`, by when each agent had taken
+    `steps[agent]` steps; with `keep_others`, the agents other than `agent` keep their recorded
+    answers until their own inputs change."""
 
     origin: str
     step: int
@@ -104,6 +108,14 @@ class Fork:
     strict: bool = False
     inject: str | None = None
     profile: str | None = None
+    steps: dict[str, int] | None = None
+    cut: int | None = None
+    agent: str | None = None
+    keep_others: bool = False
+
+    def at(self, agent_id: str) -> int:
+        """The last step of `agent_id` the fork replays."""
+        return self.step if self.steps is None else self.steps.get(agent_id, 0)
 
 
 @dataclass(slots=True)
@@ -120,6 +132,11 @@ class Options:
     series: Series | None = None
     restored: dict[str, bytes] | None = None
     """The archive each series folder starts from, by channel name (see `channels.archives`)."""
+    scripts: dict[str, list[ScriptStep]] | None = None
+    """Run every agent as a scripted agent, at no model cost: an agent named here follows these
+    steps, any other its own script, else none."""
+    overlays: dict[str, bytes] | None = None
+    """A tar laid over each named agent's sandbox at / once its setup commands ran."""
 
 
 @dataclass(slots=True)
@@ -315,6 +332,8 @@ class Runner:
         self._control.kill(reason)
         for agent in self.agents.values():
             agent.killed = reason
+        for scripted in self.scripted.values():
+            scripted.killed = reason
         sandboxes = list(self.sandboxes.items())
         for agent_id, sb in sandboxes:
             try:
@@ -481,6 +500,7 @@ class Runner:
             truth=truth_hash,
             series=self.options.series,
             channels=[c.info() for c in self._open_channels(run_id).values()],
+            cut=self._cut(),
         )
         if watch is not None:
             self._watch(run_id, watch)
@@ -514,6 +534,18 @@ class Runner:
         await asyncio.shield(self._close(kill=False))
         await asyncio.shield(self._seal(result))
         return result
+
+    def _cut(self) -> Cut | None:
+        f = self.options.fork
+        if f is None or f.cut is None:
+            return None
+        return Cut(
+            origin=f.origin,
+            seq=f.cut,
+            steps=dict(f.steps or {}),
+            agent=f.agent,
+            keep_others=f.keep_others,
+        )
 
     def _watch(self, run_id: str, watch: ResolvedMonitor) -> None:
         """Set up the run's monitor before `run.started` is written, so the tap feeds it every
@@ -586,6 +618,10 @@ class Runner:
                 "strict": f.strict,
                 "inject": f.inject,
                 "profile": f.profile,
+                "steps": None if f.steps is None else dict(f.steps),
+                "cut": f.cut,
+                "agent": f.agent,
+                "keep_others": f.keep_others,
             }
         return {
             "aims": __version__,
@@ -701,6 +737,16 @@ class Runner:
                 r = await sb.exec(command, timeout_s=task.setup_timeout_s, phase="setup")
                 if r.finished.end != "exited" or r.finished.exit_code != 0:
                     raise _Phase(f"setup command {n} for agent {agent_id} failed", _why(r))
+            overlay = (self.options.overlays or {}).get(agent_id)
+            if overlay is not None:
+                command = f"{BUSYBOX} tar -x -o -f - -C /"
+                r = await sb.exec(
+                    command, timeout_s=SEED_TIMEOUT_S, stdin=overlay, phase="setup", cwd="/"
+                )
+                if r.finished.end != "exited" or r.finished.exit_code != 0:
+                    raise _Phase(
+                        f"laying files over the sandbox of agent {agent_id} failed", _why(r)
+                    )
             if self.prepared is not None:
                 for config in self.scenario.plants_of(agent_id):
                     plant = self.prepared.plants.get(config.name)
@@ -736,9 +782,14 @@ class Runner:
             instruction = self.scenario.task_for(agent.id).instruction
             if self.prepared is not None:
                 instruction = self.prepared.instructions.get(agent.id, instruction)
-            if agent.script is not None:
+            tools = self._tools_of(agent)
+            steps = self._steps_of(agent)
+            if steps is not None:
                 scripted = ScriptedAgent(
                     config=agent,
+                    steps=steps,
+                    tools=tools,
+                    gate=self._control,
                     sandbox_config=self.scenario.sandbox,
                     instruction=instruction,
                     profile=profiles[agent.id],
@@ -748,14 +799,12 @@ class Runner:
                     watch=watch,
                     post=self.post or self.post_message,
                     canaries=None if self.prepared is None else self.prepared.canaries,
+                    replay=plans.get(agent.id),
                 )
+                scripted.killed = self.kill_reason
                 self.scripted[agent.id] = scripted
                 tasks[agent.id] = asyncio.create_task(start_then(agent.start, scripted.run))
                 continue
-            tools = load_tools(agent.tool_names, self.texts[agent.id].tools)
-            if self.prepared is not None:
-                tools += self.prepared.tools.get(agent.id, [])
-            tools += self._channel_tools(agent.id)
             self.agents[agent.id] = made = Agent(
                 config=agent,
                 sandbox_config=self.scenario.sandbox,
@@ -826,6 +875,20 @@ class Runner:
             watch.close()
         await self._collect_finished(result)
 
+    def _tools_of(self, agent: AgentConfig) -> list[Tool]:
+        """Every tool `agent` is given: its own, its plants' and its channels'."""
+        tools = load_tools(agent.tool_names, self.texts[agent.id].tools)
+        if self.prepared is not None:
+            tools += self.prepared.tools.get(agent.id, [])
+        return tools + self._channel_tools(agent.id)
+
+    def _steps_of(self, agent: AgentConfig) -> list[ScriptStep] | None:
+        """The steps `agent` takes as a scripted agent, None when a model runs it."""
+        scripts = self.options.scripts
+        if scripts is None:
+            return agent.script
+        return scripts.get(agent.id, agent.script or [])
+
     async def _collect_finished(self, result: Result) -> None:
         assert self.run_id is not None
         events = await self.bench.store.events(self.run_id, types=["agent.finished"], limit=1000)
@@ -844,7 +907,11 @@ class Runner:
             sb = self.sandboxes.get(agent_id)
             if sb is None or sb.stopped or finished.reason not in SCORED_ENDS:
                 continue
-            answer = self.agents[agent_id].answer if agent_id in self.agents else None
+            answer = None
+            if agent_id in self.agents:
+                answer = self.agents[agent_id].answer
+            elif agent_id in self.scripted:
+                answer = self.scripted[agent_id].answer
             scored = await self._verify(sb, agent_id, finished.reason, answer, verifier)
             scored = scored.model_copy(update={"tainted": await self._tainted(agent_id)})
             result.scores[agent_id] = scored
@@ -996,6 +1063,7 @@ class Runner:
                 texts=texts,
                 backend=self.bench.backend,
                 base=self.bundle.base,
+                sources=None if self.prepared is None else self.prepared.sources,
             )
             try:
                 self.channels[config.name] = build_channel(setup)

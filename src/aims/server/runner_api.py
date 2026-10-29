@@ -18,7 +18,7 @@ from aims import __version__
 from aims.events import Diverged, Gap, Invalid, MissingBlobs, RunCorrupt, split_lines
 from aims.events.blobs import BlobError
 from aims.events.chain import MAX_LINE
-from aims.events.store import is_run_id
+from aims.events.store import TruthRefused, is_run_id
 from aims.server.auth import Principal, require
 from aims.server.problems import ProblemException, responses
 from aims.server.state import Connected, ServerState
@@ -34,6 +34,7 @@ from aims.wire import (
     Heads,
     HeadsReply,
     HelloReply,
+    Labels,
     OfferMessage,
     Release,
     RunnerHello,
@@ -114,6 +115,11 @@ async def reader(state: ServerState, run_id: str, name: str) -> None:
         if isinstance(fork, dict) and fork.get("origin") == run_id:
             return
         if job.payload.get("kind") == "monitor" and job.payload.get("origin") == run_id:
+            return
+        if job.payload.get("kind") == "score" and run_id in (
+            job.payload.get("origin"),
+            job.payload.get("monitor"),
+        ):
             return
     raise ProblemException(403, "Forbidden", f"run {run_id} is not yours to read", code="owner")
 
@@ -318,7 +324,11 @@ async def run_heads(
             head = await state.store.head(run_id) if is_run_id(run_id) else None
         except RunCorrupt:
             head = None
-        out[run_id] = Head() if head is None else Head(seq=head.seq, hash=head.hash)
+        if head is None:
+            out[run_id] = Head()
+            continue
+        truth = await asyncio.to_thread(state.store.truth_path(run_id).is_file)
+        out[run_id] = Head(seq=head.seq, hash=head.hash, truth=truth)
     return HeadsReply(heads=out)
 
 
@@ -351,6 +361,73 @@ async def put_blob(
         await state.store.put_blob_stream(run_id, sha256, request.stream(), limit=BLOB_LIMIT)
     except BlobError as e:
         raise ProblemException(422, "Invalid request", str(e), code="blob") from None
+
+
+TRUTH_LIMIT = 16 * 1024 * 1024
+
+
+@router.put(
+    "/runs/{run_id}/truth",
+    status_code=204,
+    openapi_extra={"requestBody": {"content": {"application/json": {}}, "required": True}},
+    responses=responses(404, 413, 422),
+)
+async def put_truth(
+    run_id: str,
+    request: Request,
+    principal: RunnerToken,
+    state: State,
+    name: RunnerName = None,
+) -> None:
+    """The truth file of a sealed run, sent by the runner that wrote it once the control plane
+    holds the run sealed. Its bytes must hash to the truth hash in run.started; sending the
+    same file again does nothing."""
+    conn = connected(state, principal, name)
+    await writer(state, run_id, conn)
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > TRUTH_LIMIT:
+            raise ProblemException(413, "Too large", f"a truth file is at most {TRUTH_LIMIT} bytes")
+        chunks.append(chunk)
+    try:
+        await state.store.put_truth(run_id, b"".join(chunks))
+    except TruthRefused as e:
+        raise ProblemException(e.status, "Truth refused", str(e), code="truth") from None
+
+
+@router.get(
+    "/runs/{run_id}/truth",
+    response_class=Response,
+    responses={200: {"content": {"application/json": {}}}, **responses(404)},
+)
+async def runner_truth(
+    run_id: str, principal: RunnerToken, state: State, name: RunnerName = None
+) -> Response:
+    """The truth file of a sealed run, for the runner that holds a score job of it."""
+    conn = connected(state, principal, name)
+    await reader(state, run_id, conn.name)
+    try:
+        data = await asyncio.to_thread(state.store.truth_path(run_id).read_bytes)
+    except OSError:
+        raise ProblemException(404, "Not found", f"run {run_id} has no truth file here") from None
+    return Response(data, media_type="application/json")
+
+
+@router.post("/runs/{run_id}/labels", status_code=204, responses=responses(404, 422))
+async def post_labels(
+    run_id: str, body: Labels, principal: RunnerToken, state: State, name: RunnerName = None
+) -> None:
+    """Labels the runner's people gave the flags of a run it wrote; those the control plane
+    holds already are left alone."""
+    conn = connected(state, principal, name)
+    await writer(state, run_id, conn)
+    if await state.store.run(run_id) is None:
+        raise ProblemException(404, "Not found", f"no run {run_id}")
+    if any(x.run_id != run_id for x in body.labels):
+        raise ProblemException(422, "Invalid request", "every label must name this run")
+    await state.store.merge_labels(run_id, body.labels)
 
 
 async def _body(request: Request) -> bytes:

@@ -56,6 +56,7 @@ KERNEL = frozenset(
         "file.write",
         "file.setattr",
         "fs.snapshot",
+        "channel.snapshot",
         "net.connect",
         "sys.denied",
         "proc.output",
@@ -117,6 +118,19 @@ OVERRIDES = {
         " name, its arguments cut short, the exit codes of what it ran and whether it failed."
     ),
     "proposal": "An action the agent proposes to take next. It has not run.",
+    "channel.snapshot": (
+        "How a folder shared with other agents changed during the exec above, or between execs:"
+        " only the changes the kernel records put down to this agent. Each change has path,"
+        " change, kind and size."
+    ),
+    "channel.change": (
+        "A change of a shared folder that the kernel records put down to agent: path, change"
+        " (added, modified, meta, removed or kind), kind, size and the start of the content."
+    ),
+    "channel.item": (
+        "An older item shown as one line: the message or changed path, its writer (agent) and"
+        " the agents that read it."
+    ),
 }
 
 
@@ -316,7 +330,7 @@ def _policy(event: Event, written: set[str]) -> tuple[str, tuple[Any, ...] | Non
             return t, ("write", d.get("path")), 20, False
         case "file.setattr":
             return t, ("setattr", d.get("path")), 5, False
-        case "fs.snapshot":
+        case "fs.snapshot" | "channel.snapshot":
             changed = d.get("changes") or d.get("more") or d.get("truncated")
             return t, ("seq", event.seq) if changed else None, 5, False
         case "net.connect":
@@ -436,6 +450,8 @@ class Trajectory:
         return self._last
 
     def add(self, event: Event) -> None:
+        if event.type == "channel.snapshot" and event.agent_id is None:
+            event = self._own_changes(event)
         if event.agent_id != self.agent_id or event.type in SKIP:
             return
         if event.type.startswith("monitor."):
@@ -451,7 +467,7 @@ class Trajectory:
             case "model.response":
                 self._responses[str(data.get("call_id"))] = event
                 return
-            case "tool.call":
+            case "tool.call" if data.get("model_call") is not None:
                 self._pending.append(event)
                 return
             case "agent.step":
@@ -472,6 +488,9 @@ class Trajectory:
                     ex.finish = event
                 else:
                     step.late.append(event)
+            case "tool.call":
+                # A scripted agent's call, with no model call or step around it.
+                step.calls.append(_Call(event))
             case "tool.result":
                 call = self._call(step, data.get("call_id"))
                 if call is None:
@@ -492,6 +511,19 @@ class Trajectory:
                     step.late.append(event)
             case _:
                 step.notes.append(event)
+
+    def _own_changes(self, event: Event) -> Event:
+        """A shared folder's snapshot as this agent's, holding only the changes the kernel
+        records put down to it; other agents' snapshots stay out."""
+        changes = [
+            c
+            for c in _list(event.data.get("changes"))
+            if isinstance(c, dict) and c.get("agent") == self.agent_id
+        ]
+        if not changes:
+            return event
+        data = {**event.data, "changes": changes, "more": None}
+        return event.model_copy(update={"agent_id": self.agent_id, "data": data})
 
     def mark(self, seqs: Iterable[int]) -> None:
         for seq in seqs:
@@ -898,7 +930,7 @@ class Trajectory:
                         pid=pid,
                     )
                 )
-            case "fs.snapshot":
+            case "fs.snapshot" | "channel.snapshot":
                 changes = [
                     {
                         "path": cut(str(c.get("path")), FIELD_BYTES),
@@ -915,10 +947,16 @@ class Trajectory:
                     for c in _list(d.get("changes"))
                     if isinstance(c, dict)
                 ]
-                return {"changes": changes[:CHANGES]} | _some(
-                    changes_not_shown=len(changes) - CHANGES if len(changes) > CHANGES else None,
-                    more=d.get("more") is not None,
-                    truncated=d.get("truncated"),
+                return (
+                    _some(channel=d.get("channel"))
+                    | {"changes": changes[:CHANGES]}
+                    | _some(
+                        changes_not_shown=len(changes) - CHANGES
+                        if len(changes) > CHANGES
+                        else None,
+                        more=d.get("more") is not None,
+                        truncated=d.get("truncated"),
+                    )
                 )
             case "net.connect":
                 return {

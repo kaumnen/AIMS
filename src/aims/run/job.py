@@ -16,7 +16,7 @@ from aims.monitor.setup import ResolvedMonitor, resolve_config, resolve_monitor
 from aims.monitor.signals import signal_versions
 from aims.monitor.signals.base import SignalError
 from aims.prompts import Prompts
-from aims.run.fork import Origin, fork_profiles, fork_schedules, live_profiles, planner
+from aims.run.fork import CutAt, Origin, fork_profiles, fork_schedules, live_profiles, planner
 from aims.run.runner import Bench, Fork, Options, RunError, Runner, Texts, agent_profile
 from aims.run.runner import resolve_texts as texts_of
 from aims.scenario import Bundle, Scenario, ScenarioError, from_snapshot
@@ -30,6 +30,9 @@ class _Strict(BaseModel):
 
 
 class JobFork(_Strict):
+    """Where a fork job cuts its origin; `steps`, `cut`, `agent` and `keep_others` as in
+    `Fork`, for a run of several agents."""
+
     origin: str
     step: int = Field(ge=0)
     sample: int = 0
@@ -37,6 +40,10 @@ class JobFork(_Strict):
     strict: bool = False
     inject: str | None = None
     profile: str | None = None
+    steps: dict[str, int] | None = None
+    cut: int | None = None
+    agent: str | None = None
+    keep_others: bool = False
 
 
 class JobOptions(_Strict):
@@ -193,8 +200,11 @@ def fork_jobs(
     audit: AuditLevel = "kernel",
     config_files: dict[str, str | None] | None = None,
     monitor: ResolvedMonitor | None = None,
+    cut: CutAt | None = None,
+    keep_others: bool = False,
 ) -> list[Job]:
-    """Jobs that fork the run `origin` at `step`, watched by `monitor`. The runner loads the
+    """Jobs that fork the run `origin` at `step`, or at `cut` for a run of several agents,
+    watched by `monitor`. The runner loads the
     origin itself. Without `profile`, the live steps use the origin's profiles, and only if
     `models` has them with the same endpoint and key variable. Raises RunError or
     ProfileError."""
@@ -224,6 +234,10 @@ def fork_jobs(
                 strict=strict,
                 inject=inject,
                 profile=profile,
+                steps=None if cut is None else dict(cut.steps),
+                cut=None if cut is None else cut.seq,
+                agent=None if cut is None else cut.agent,
+                keep_others=keep_others,
             ),
             audit=audit,
             config_files=dict(config_files or {}),
@@ -284,6 +298,7 @@ def runner_for(
     bundle = origin.full_bundle or bundle
     options.seed = origin.seed
     options.inherited = origin.inherited
+    options.restored = dict(origin.restored) or None
     f = job.fork
     fork = Fork(
         origin=f.origin,
@@ -293,6 +308,10 @@ def runner_for(
         strict=f.strict,
         inject=f.inject,
         profile=f.profile,
+        steps=f.steps,
+        cut=f.cut,
+        agent=f.agent,
+        keep_others=f.keep_others,
     )
     options.fork = fork
     return Runner(

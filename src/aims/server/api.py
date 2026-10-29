@@ -14,7 +14,7 @@ from typing import IO, Annotated, Literal
 
 from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from aims import __version__
 from aims.config import Settings
@@ -40,7 +40,7 @@ from aims.monitor.config import MonitorConfigError, Preset
 from aims.monitor.offline import origin_agents
 from aims.monitor.setup import ResolvedMonitor
 from aims.prompts import Prompts, TextError, load_prompts
-from aims.run.fork import check_fork, live_profiles, load_origin
+from aims.run.fork import CutAt, check_fork, cut_at, live_profiles, load_origin
 from aims.run.job import Job, fork_jobs, monitor_for, scenario_jobs
 from aims.run.runner import RunError, agent_profile, check
 from aims.scenario import Bundle, Scenario, ScenarioError, load, parse
@@ -58,6 +58,7 @@ from aims.wire import (
     MonitorJob,
     RunnerInfo,
     RunSummary,
+    ScoreJob,
 )
 
 router = APIRouter(prefix="/api", responses=responses(401, 403, 422))
@@ -249,6 +250,9 @@ def summary(
         max_importance=None if info is None else info.max_importance,
         verdict_severity=None if info is None else info.verdict_severity,
         max_severity=0 if info is None else info.severity,
+        series=None if info is None else info.series,
+        series_index=None if info is None else info.series_index,
+        variant=None if info is None else info.variant,
     )
 
 
@@ -274,21 +278,47 @@ async def list_runs(
     origin: str | None = None,
     severity: Annotated[int | None, Query(ge=1, le=5)] = None,
     category: Category | None = None,
+    series: str | None = None,
+    variant: str | None = None,
 ) -> RunPage:
     """Runs newest first, with jobs that have not started yet. `kind` keeps runs of that kind,
     `origin` the monitor runs of that run, `severity` runs whose `max_severity` is at least it,
-    `category` runs with a flag in it, whatever its status. Jobs not started yet have no flags,
-    so `severity` and `category` leave them out."""
+    `category` runs with a flag in it, whatever its status, `series` the runs of that series
+    and `variant` the sealed runs of that variant. Jobs not started yet have none of these, so
+    `severity`, `category`, `series` and `variant` leave them out."""
     infos = await state.store.runs(
-        limit=limit, before=before, kind=kind, origin=origin, severity=severity, category=category
+        limit=limit,
+        before=before,
+        kind=kind,
+        origin=origin,
+        severity=severity,
+        category=category,
+        series=series,
+        variant=variant,
     )
-    if severity is None and category is None:
+    if severity is None and category is None and series is None and variant is None:
         jobs = await state.db.jobs_page(before=before, limit=limit, kind=kind, origin=origin)
     else:
         jobs = []
     ids = sorted({i.run_id for i in infos} | {j.run_id for j in jobs}, reverse=True)[:limit]
     items = await summaries(state, ids)
     return RunPage(items=items, next=ids[-1] if len(ids) == limit else None)
+
+
+@router.get("/runs/{run_id}/truth", tags=["runs"], responses=responses(404))
+async def get_truth(run_id: str, principal: Operator, state: State) -> dict[str, JsonValue]:
+    """The truth file of a sealed run: the plants, canaries, roles, scripts and variant it hid
+    from its agents, its monitor and its judge. Operators only; not found until the runner
+    that wrote it sent it, after the run sealed."""
+    path = state.store.truth_path(_run_id(run_id))
+    try:
+        data = await asyncio.to_thread(path.read_bytes)
+    except OSError:
+        raise ProblemException(404, "Not found", f"run {run_id} has no truth file here") from None
+    value = json.loads(data)
+    if not isinstance(value, dict):
+        raise ProblemException(404, "Not found", f"run {run_id} has no truth file here")
+    return value
 
 
 class RunDetail(Out):
@@ -344,9 +374,14 @@ class StartRun(BaseModel):
 
 
 class StartFork(BaseModel):
-    """`monitor` picks the fork's monitor preset over the config files and the scenario."""
+    """`monitor` picks the fork's monitor preset over the config files and the scenario. `at`
+    cuts a run of several agents: `agent:N` after that agent's step N, or `@seq` after an
+    event; with `keep_others` the other agents keep their recorded answers until their own
+    inputs change. `step` is the last step replayed of a run of one agent."""
 
     step: int | None = Field(default=None, ge=0)
+    at: str | None = None
+    keep_others: bool = False
     samples: int = Field(default=1, ge=1, le=100)
     parallel: int | None = Field(default=None, ge=1)
     profile: str | None = None
@@ -363,7 +398,9 @@ class Started(Out):
     group: str | None = None
 
 
-def _check_runner(state: ServerState, runner: str | None, jobs: Sequence[Job | MonitorJob]) -> None:
+def _check_runner(
+    state: ServerState, runner: str | None, jobs: Sequence[Job | MonitorJob | ScoreJob]
+) -> None:
     known = list(state.runners.values())
     if runner is not None:
         if runner not in state.runners:
@@ -372,7 +409,7 @@ def _check_runner(state: ServerState, runner: str | None, jobs: Sequence[Job | M
     if not known:
         raise ProblemException(409, "Conflict", "no runner has said hello", code="no_runner")
     kind = jobs[0].kind if jobs else None
-    if kind == "monitor" and not any(kind in c.hello.kinds for c in known):
+    if kind in ("monitor", "score") and not any(kind in c.hello.kinds for c in known):
         raise ProblemException(422, "Invalid request", f"no runner runs {kind} jobs", code="kind")
     envs = set(jobs[0].envs()) if jobs else set()
     if envs and not any(envs <= set(c.envs) for c in known):
@@ -387,7 +424,7 @@ def _check_runner(state: ServerState, runner: str | None, jobs: Sequence[Job | M
 async def _queue(
     state: ServerState,
     principal: Principal,
-    jobs: Sequence[Job | MonitorJob],
+    jobs: Sequence[Job | MonitorJob | ScoreJob],
     *,
     runner: str | None,
     parallel: int | None,
@@ -496,10 +533,24 @@ async def fork_run(run_id: str, body: StartFork, principal: Operator, state: Sta
     """Replay a recorded run up to a step and go on live from there."""
     run_id = _run_id(run_id)
     settings = state.config.settings()
+    if body.at is not None and body.step is not None:
+        raise ProblemException(422, "Invalid request", "give step or at, not both")
+    if body.keep_others and (body.at is None or ":" not in body.at):
+        raise ProblemException(422, "Invalid request", "keep_others needs at agent:N")
+    cut = None
     try:
         origin = await load_origin(state.store, run_id)
-        step = body.step if body.step is not None else min(origin.steps.values(), default=0)
-        check_fork(origin, step)
+        if body.at is None and len(origin.bundle.scenario.agents) > 1:
+            raise RunError("a run of several agents forks at agent:N or @seq")
+        found = cut_at(origin, body.at) if body.at is not None else None
+        if isinstance(found, CutAt):
+            cut = found
+            step = min(found.steps.values(), default=0)
+        else:
+            step = body.step if found is None else found
+            if step is None:
+                step = min(origin.steps.values(), default=0)
+            check_fork(origin, step)
         if body.profile is not None:
             live = [settings.models.get(body.profile)]
         else:
@@ -521,6 +572,8 @@ async def fork_run(run_id: str, body: StartFork, principal: Operator, state: Sta
             audit=body.audit,
             config_files=settings.layers.digests(),
             monitor=monitor,
+            cut=cut,
+            keep_others=body.keep_others,
         )
     except (RunError, ProfileError, KeyError) as e:
         raise ProblemException(422, "Cannot fork", str(e), code="fork") from None

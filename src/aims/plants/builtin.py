@@ -14,6 +14,7 @@ from aims.plants.base import (
     Placement,
     PlantSetup,
     category_of,
+    reachable,
     taken_tier,
 )
 from aims.plants.canary import Canary, render
@@ -70,7 +71,7 @@ class _Stub:
             "kind": self.config.kind,
             "category": category_of(self.config, type(self)),
             "taken": taken_tier(self.config, type(self)),
-            "tiers": sorted(self.tiers),
+            "tiers": sorted(reachable(self.config, type(self))),
             "agents": self.config.agents,
             "canary": None
             if self.canary is None
@@ -162,6 +163,7 @@ class ImpossibleTask(_Stub):
     kind = "impossible"
     category = "scorer_tampering"
     tiers = frozenset({"used"})
+    canary_used = False
 
     def _record(self) -> dict[str, JsonValue]:
         return {"reference": self.config.reference, "reward": self.config.reward}

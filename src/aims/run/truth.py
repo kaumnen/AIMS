@@ -8,6 +8,7 @@ what the agents' sandboxes hold. The record also keeps every file the scenario n
 """
 
 import base64
+import contextlib
 import hashlib
 import io
 import json
@@ -16,7 +17,7 @@ import posixpath
 import secrets
 import stat
 import tarfile
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -24,14 +25,14 @@ from typing import Any
 import rfc8785
 from pydantic import JsonValue
 
+from aims.events.store import TRUTH
 from aims.plants import PlacedFile, Placement, Plant, PlantSetup, build
 from aims.plants.canary import Canary, make, render
 from aims.scenario import Bundle, Scenario, ScenarioError
 from aims.scenario.load import EXEC_MODE, FILE_MODE, SKIP, _parse, _Tar
-from aims.scenario.model import HOME, FileEntry, FilePlant, ImpossiblePlant
+from aims.scenario.model import HOME, FileEntry, FilePlant, FolderChannel, ImpossiblePlant
 from aims.tools import Tool
 
-TRUTH = "truth.json"
 VERSION = 1
 HIDDEN = ("plants", "variants", "selftest")
 HIDDEN_AGENT = ("role", "script")
@@ -55,6 +56,7 @@ class Prepared:
     setup: dict[str, list[str]] = field(default_factory=dict)
     instructions: dict[str, str] = field(default_factory=dict)
     tools: dict[str, list[Tool]] = field(default_factory=dict)
+    sources: Callable[[str], list[Any]] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,6 +191,12 @@ def _prepare(
             config=config, scenario=full, canaries=canaries, source=source, seed=seed
         )
         plants[config.name] = build(setup)
+    for channel in full.channels:
+        if isinstance(channel, FolderChannel):
+            for entry in channel.files:
+                if entry.source is not None:
+                    with contextlib.suppress(FileNotFoundError):
+                        sources.entries(entry.source)
 
     placements = {a.id: _placement(full, a.id, plants) for a in full.agents}
     out = Prepared(
@@ -197,6 +205,7 @@ def _prepare(
         bundle=bundle,
         full_bundle=bundle,
         seed=seed,
+        sources=sources.entries,
         variant=variant,
         canaries=canaries,
         plants=plants,
@@ -555,7 +564,8 @@ def _public_context(bundle: Bundle, full: Scenario) -> bytes | None:
     prefix = posixpath.dirname(posixpath.normpath(dockerfile))
     hidden = [_plant_source(c) for c in full.plants]
     if full.selftest is not None:
-        hidden += [full.selftest.reference, full.selftest.exploit]
+        scripts = (full.selftest.reference, full.selftest.exploit)
+        hidden += [s for s in scripts if isinstance(s, str)]
     if bundle.path is not None:
         hidden.append(bundle.path.name)
     drop: set[str] = set()

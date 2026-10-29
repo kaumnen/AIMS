@@ -18,7 +18,7 @@ import math
 import statistics
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
@@ -27,6 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from aims.config import CONFIRM_ABOVE_USD, Settings
 from aims.events import LocalEventStore, RunInfo
+from aims.events.store import TRUTH
 from aims.models import Profile, ProfileError
 from aims.models.profiles import Price
 from aims.monitor.config import Preset
@@ -42,8 +43,9 @@ CACHED_SHARE = 0.9
 PROJECT_AFTER = 3
 STATUSES = frozenset({"completed", "killed"})
 TYPES = ("run.started", "agent.finished", "model.request", "model.response", "monitor.degraded")
-TRUTH = "truth.json"
 PAGE = 1000
+# The shape of a run's cost row in the index; a row of another shape is read again.
+ROW = 1
 MILLION = 1_000_000
 
 
@@ -208,18 +210,76 @@ class Plan:
     variant: str | None = None
 
 
+@dataclass(slots=True)
+class _Run:
+    """One run as the history reads it: the run an estimate can match, if it is one, what it
+    paid each provider, and each model's cached and reported input."""
+
+    past: Past | None = None
+    spend: dict[str, float] = field(default_factory=dict)
+    cached: dict[str, list[int]] = field(default_factory=dict)
+
+    def dump(self) -> str:
+        past = None if self.past is None else asdict(self.past)
+        return json.dumps({"v": ROW, "past": past, "spend": self.spend, "cached": self.cached})
+
+    @classmethod
+    def load(cls, text: str) -> _Run | None:
+        try:
+            value = json.loads(text)
+            if value.get("v") != ROW:
+                return None
+            p = value["past"]
+            past = None
+            if p is not None:
+                monitor = p["monitor"]
+                past = Past(
+                    run_id=p["run_id"],
+                    scenario=p["scenario"],
+                    variant=p["variant"],
+                    models=tuple((m, e) for m, e in p["models"]),
+                    budget=p["budget"],
+                    monitor=None
+                    if monitor is None
+                    else (monitor[0], tuple((m, e) for m, e in monitor[1])),
+                    agents={k: Tokens(**t) for k, t in p["agents"].items()},
+                    watch={k: Tokens(**t) for k, t in p["watch"].items()},
+                    steps=dict(p["steps"]),
+                    agents_capped=p["agents_capped"],
+                    monitor_capped=p["monitor_capped"],
+                )
+            return cls(past, dict(value["spend"]), {k: list(v) for k, v in value["cached"].items()})
+        except KeyError, TypeError, ValueError, AttributeError:
+            return None
+
+
 async def history(store: LocalEventStore) -> History:
-    """Read every run in `store` once for the estimate and the spend."""
+    """Every run in `store` for the estimate and the spend. A sealed run is read once; its
+    cost row in the index serves it after that, until the index is rebuilt or its truth file
+    arrives."""
     out = History()
     spend: dict[str, float] = defaultdict(float)
     cached: dict[str, list[int]] = defaultdict(lambda: [0, 0])
+    rows = await store.costs()
+    fresh: list[tuple[str, str, str]] = []
     before = None
     while page := await store.runs(limit=PAGE, before=before):
         before = page[-1].run_id
         for info in page:
-            past = await _read(store, info, spend, cached)
-            if past is not None:
-                out.runs.append(past)
+            kept = rows.get(info.run_id)
+            run = _Run.load(kept[1]) if kept is not None and kept[0] == info.head else None
+            if run is None:
+                run = await _read(store, info)
+                if info.status != "running":
+                    fresh.append((info.run_id, info.head, run.dump()))
+            if run.past is not None:
+                out.runs.append(run.past)
+            for where, cost in run.spend.items():
+                spend[where] += cost
+            for model, (part, total) in run.cached.items():
+                cached[model][0] += part
+                cached[model][1] += total
+    await store.put_costs(fresh)
     out.spend = dict(spend)
     out.shares = {m: c / total for m, (c, total) in cached.items() if total > 0}
     return out
@@ -233,12 +293,10 @@ async def load_history(runs_dir: Path) -> History:
         return await history(store)
 
 
-async def _read(
-    store: LocalEventStore,
-    info: RunInfo,
-    spend: dict[str, float],
-    cached: dict[str, list[int]],
-) -> Past | None:
+async def _read(store: LocalEventStore, info: RunInfo) -> _Run:
+    out = _Run()
+    spend: dict[str, float] = defaultdict(float)
+    cached: dict[str, list[int]] = defaultdict(lambda: [0, 0])
     calls: dict[str, tuple[str, bool, str]] = {}
     sides: tuple[dict[str, Tokens], dict[str, Tokens]] = ({}, {})
     started: dict[str, Any] | None = None
@@ -280,19 +338,20 @@ async def _read(
                     capped = capped or _str(d.get("reason")).startswith("budget_")
                 case "monitor.degraded":
                     watch_capped = watch_capped or d.get("part") == "budget"
+    out.spend, out.cached = dict(spend), dict(cached)
     if info.kind != "scenario" or info.status not in STATUSES or started is None:
-        return None
+        return out
     config = _dict(started.get("config"))
     if config.get("fork") is not None or started.get("cut") is not None:
-        return None
+        return out
     agents = _dict(config.get("agents"))
     if not agents:
-        return None
+        return out
     truth = _truth(store.root / info.run_id)
     variant = truth.get("variant")
     scripted = set(_dict(truth.get("scripts")))
     resolved = _dict(_dict(config.get("scenario")).get("resolved"))
-    return Past(
+    out.past = Past(
         run_id=info.run_id,
         scenario=info.scenario,
         variant=variant if isinstance(variant, str) else None,
@@ -305,6 +364,7 @@ async def _read(
         agents_capped=capped,
         monitor_capped=watch_capped,
     )
+    return out
 
 
 def _truth(run_dir: Path) -> dict[str, Any]:
@@ -703,7 +763,9 @@ def _watch_profiles(m: ResolvedMonitor | None) -> list[Profile]:
 def _monitor_key(m: ResolvedMonitor | None) -> MonitorKey | None:
     if m is None:
         return None
-    found = [q for q in (*m.sweeps.values(), m.review, m.judge) if q is not None]
+    found = [
+        q for q in (*m.sweeps.values(), m.review, m.judge, m.extract, m.channels) if q is not None
+    ]
     return m.config.preset, tuple(sorted((q.model, q.effort) for q in found))
 
 
@@ -713,6 +775,7 @@ def _snapshot_key(value: object) -> MonitorKey | None:
         return None
     preset = _str(_dict(m.get("config")).get("preset"))
     found = [*_dict(m.get("sweeps")).values(), m.get("review"), m.get("judge")]
+    found += [m.get("extract"), m.get("channels")]
     return preset, tuple(sorted(_model(q) for q in found if isinstance(q, dict)))
 
 
@@ -916,6 +979,114 @@ def project_run(
     if monitor_cap is not None:
         monitor = min(monitor, max(monitor_cap, monitor_cost))
     return total, monitor
+
+
+class Projection(_Out):
+    """What a run has cost so far, agents and monitor, and once an agent still running has
+    taken `PROJECT_AFTER` steps what it is on track to cost, bounded by its caps: each agent's
+    cost per step over the steps past runs of the scenario took, else its step cap, and the
+    monitor scaled by the agents' progress. The `*_usd` projections are None before that."""
+
+    spent_usd: float
+    agents_spent_usd: float
+    monitor_spent_usd: float
+    on_track_usd: float | None = None
+    agents_usd: float | None = None
+    monitor_usd: float | None = None
+
+
+PROJECTION_TYPES = (
+    "run.started",
+    "agent.started",
+    "agent.step",
+    "agent.finished",
+    "model.request",
+    "model.response",
+)
+
+
+async def projection(store: LocalEventStore, run_id: str, found: History) -> Projection | None:
+    """The projection of run `run_id` from its log and the past runs in `found`; None when
+    the store has no such run."""
+    if await store.run(run_id) is None:
+        return None
+    agents: dict[str, dict[str, Any]] = {}
+    watching: set[str] = set()
+    monitor = 0.0
+    scenario = ""
+    models: tuple[tuple[str, str | None], ...] = ()
+    cost_cap = monitor_cap = None
+    cursor: int | None = None
+    while page := await store.events(run_id, after=cursor, limit=PAGE, types=PROJECTION_TYPES):
+        cursor = page[-1].seq
+        for e in page:
+            d = e.data
+            a = agents.setdefault(e.agent_id, {}) if e.agent_id is not None else {}
+            match e.type:
+                case "run.started":
+                    scenario = _str(d.get("scenario"))
+                    config = _dict(d.get("config"))
+                    limits = _dict(
+                        _dict(_dict(config.get("scenario")).get("resolved")).get("limits")
+                    )
+                    cost_cap = _cap(limits.get("cost_usd"))
+                    monitor_cap = _cap(_dict(config.get("monitor")).get("budget_usd"))
+                    profiles = _dict(config.get("agents")).values()
+                    models = tuple(sorted(_model(_dict(_dict(q).get("profile"))) for q in profiles))
+                case "agent.started":
+                    budget = _dict(d.get("budget"))
+                    steps = _cap(budget.get("steps"))
+                    a["steps_cap"] = None if steps is None else int(steps)
+                    a["cost_cap"] = _cap(budget.get("cost_usd"))
+                case "agent.step":
+                    a["steps"] = _int(d.get("n"))
+                    a["cost"] = _num(d.get("total_cost_usd"))
+                case "agent.finished":
+                    a["done"] = True
+                case "model.request" if d.get("role") is not None:
+                    watching.add(_str(d.get("call_id")))
+                case "model.response" if d.get("call_id") in watching:
+                    monitor += _num(d.get("cost_usd"))
+    typical = typical_steps(found, scenario, models)
+    progress = [
+        Progress(
+            cost=a.get("cost", 0.0),
+            steps=a.get("steps", 0),
+            steps_cap=a.get("steps_cap"),
+            cost_cap=a.get("cost_cap"),
+            typical_steps=typical.get(agent_id),
+            done=bool(a.get("done")),
+        )
+        for agent_id, a in agents.items()
+        if agent_id
+    ]
+    spent = sum(p.cost for p in progress)
+    out = Projection(
+        spent_usd=round(spent + monitor, 10),
+        agents_spent_usd=round(spent, 10),
+        monitor_spent_usd=round(monitor, 10),
+    )
+    ahead = project_run(progress, cost_cap=cost_cap, monitor_cost=monitor, monitor_cap=monitor_cap)
+    if ahead is not None:
+        out.agents_usd, out.monitor_usd = round(ahead[0], 10), round(ahead[1], 10)
+        out.on_track_usd = round(ahead[0] + ahead[1], 10)
+    return out
+
+
+def typical_steps(
+    found: History, scenario: str, models: tuple[tuple[str, str | None], ...]
+) -> dict[str, float]:
+    """The median steps each agent took in the past runs of `scenario` on the same models."""
+    taken: dict[str, list[int]] = defaultdict(list)
+    for past in found.runs:
+        if past.scenario == scenario and past.models == models:
+            for agent_id, n in past.steps.items():
+                taken[agent_id].append(n)
+    return {a: float(statistics.median(ns)) for a, ns in taken.items() if ns}
+
+
+def _cap(value: object) -> float | None:
+    return float(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
 
 
 def _dict(value: object) -> dict[str, Any]:

@@ -9,10 +9,11 @@ from typing import Any
 import pytest
 from scripted import Script, call, models, profile
 
-from aims.events import LocalEventStore, ProcExec
+import aims.sandbox.imds as imds_module
+from aims.events import LocalEventStore, ProcExec, RunStarted
 from aims.run.runner import Bench, Options, Runner
 from aims.run.score import check_run
-from aims.sandbox import DockerBackend
+from aims.sandbox import AuditedSandbox, DockerBackend, SandboxSpec
 from aims.sandbox.imds import identity
 from aims.scenario import load
 
@@ -196,6 +197,116 @@ async def test_an_imds_request_alone_counts_as_touched(
     (row,) = await check_run(store, result.run_id)
     assert (row.tier, row.taken) == ("touched", False)
     assert "request" in row.detail
+
+
+async def sidecar(backend: DockerBackend, store: LocalEventStore) -> tuple[AuditedSandbox, Any]:
+    run_id = await store.create_run(RunStarted(scenario="t", oversight="observe", agents=["agent"]))
+    sandbox = await AuditedSandbox.start(
+        backend, SandboxSpec(image=IMAGE), store, run_id=run_id, agent_id="agent"
+    )
+    server = await backend.start_imds(
+        "agent",
+        sandbox,
+        role="ci-build-runner",
+        region="us-east-1",
+        canary=None,
+        identity=identity(b"seed", "md"),
+    )
+    return sandbox, server
+
+
+async def test_close_drains_the_last_request(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    sandbox, server = await sidecar(backend, store)
+    log = sandbox.run_dir / "imds-agent.jsonl"
+    try:
+        result = await sandbox.exec(
+            """\
+python3 - <<'PY'
+import urllib.request
+urllib.request.urlopen(
+    "http://169.254.169.254/latest/meta-data/instance-id", timeout=10
+).read()
+PY
+""",
+            timeout_s=10,
+        )
+        assert result.finished.exit_code == 0, result
+    finally:
+        await server.close()
+        await sandbox.close()
+        await backend.remove_run(sandbox.run_id)
+
+    entries = [json.loads(line) for line in log.read_text().splitlines()]
+    assert [entry["path"] for entry in entries] == ["/latest/meta-data/instance-id"]
+
+
+async def test_records_past_the_log_driver_limit_are_kept(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    sandbox, server = await sidecar(backend, store)
+    log = sandbox.run_dir / "imds-agent.jsonl"
+    count = 512
+    try:
+        result = await sandbox.exec(
+            f"""\
+python3 - <<'PY'
+import http.client
+client = http.client.HTTPConnection("169.254.169.254", 80, timeout=30)
+for _ in range({count}):
+    client.request(
+        "GET",
+        "/latest/meta-data/instance-id",
+        headers={{"X-Padding": "x" * 4096}},
+    )
+    response = client.getresponse()
+    response.read()
+client.close()
+PY
+""",
+            timeout_s=60,
+        )
+        assert result.finished.exit_code == 0, result
+    finally:
+        await server.close()
+        await sandbox.close()
+        await backend.remove_run(sandbox.run_id)
+
+    assert log.stat().st_size > 1_000_000
+    entries = [json.loads(line) for line in log.read_text().splitlines()]
+    assert len(entries) == count
+    assert {entry["path"] for entry in entries} == {"/latest/meta-data/instance-id"}
+
+
+async def test_start_fails_when_the_log_follower_cannot_start(
+    backend: DockerBackend, store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = await store.create_run(RunStarted(scenario="t", oversight="observe", agents=["agent"]))
+    sandbox = await AuditedSandbox.start(
+        backend, SandboxSpec(image=IMAGE), store, run_id=run_id, agent_id="agent"
+    )
+
+    async def broken(stream: Any, log_path: str, name: str) -> None:
+        raise RuntimeError("the follower broke")
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(imds_module, "_follow", broken)
+            with pytest.raises(RuntimeError, match="the follower broke"):
+                await backend.start_imds(
+                    "agent",
+                    sandbox,
+                    role="ci-build-runner",
+                    region="us-east-1",
+                    canary=None,
+                    identity=identity(b"seed", "md"),
+                )
+        query = {"label": [f"aims.run={run_id}", "aims.role=imds"]}
+        assert await backend.docker.containers.list(all=True, filters=json.dumps(query)) == []
+    finally:
+        await sandbox.close()
+        await backend.remove_run(run_id)
 
 
 def _sidecar(event: Any) -> bool:

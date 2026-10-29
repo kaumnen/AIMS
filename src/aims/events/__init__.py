@@ -1,6 +1,6 @@
 from aims.events.blobs import BlobError, BlobStore
 from aims.events.chain import ChainError, Head
-from aims.events.index import RunInfo, SampleWindow
+from aims.events.index import Label, LabelKind, RunInfo, SampleWindow, UnitRow
 from aims.events.log import RunLocked
 from aims.events.payloads import (
     MAX_INT,
@@ -172,6 +172,8 @@ __all__ = [
     "IpcEvent",
     "JudgeRollout",
     "KernelPayload",
+    "Label",
+    "LabelKind",
     "LocalEventStore",
     "LogTruncated",
     "MemExec",
@@ -234,6 +236,7 @@ __all__ = [
     "TaskScored",
     "ToolCall",
     "ToolResult",
+    "UnitRow",
     "Verification",
     "payload_type",
     "split_lines",
