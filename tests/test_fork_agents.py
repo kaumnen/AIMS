@@ -501,7 +501,8 @@ def test_the_command_line_checks_the_fork_and_series_flags(tmp_path: Path) -> No
     def said(*args: str) -> str:
         out = cli.invoke(app, ["run", *args], env={"COLUMNS": "200"})
         assert out.exit_code != 0
-        return " ".join(re.sub(r"\x1b\[[0-9;]*m|[│╭╮╰╯─]", " ", out.output).split())
+        text = re.sub(r"\x1b\[[0-9;]*m", "", out.output)
+        return " ".join(re.sub(r"[│╭╮╰╯─]", " ", text).split())
 
     assert "agent:N" in said("--replay", "x", "--keep-others")
     assert "needs --replay" in said("--keep-others", "--fork-at", "a:1", str(tmp_path / "s.yaml"))
