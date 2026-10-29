@@ -92,6 +92,7 @@ Repository = "https://github.com/kaumnen/AIMS"
 [dependency-groups]
 dev = [
     "anyio>=4.15.1",
+    "modal>=1.6.3",
     "pytest>=9.1.1",
     "pytest-xdist>=3.8.0",
     "ruff>=0.17.2",

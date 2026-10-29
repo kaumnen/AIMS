@@ -46,6 +46,7 @@ KINDS = {
     "responses": "meta-spark-1.3-contributor",
     "chat": "fireworks-spark-open",
     "baseten": "baseten-spark-open",
+    "glimmer": "modal-glimmer",
     "retry": "fireworks-spark-open",
     "cancel": "meta-spark-1.3-contributor",
 }
@@ -63,6 +64,8 @@ async def script(client: ModelClient, name: str) -> list[Reply]:
     outputs = [ToolOutput(call_id=c.id, output="18C and sunny") for c in first.tool_calls]
     items = [*prompt.items, first.turn, *outputs]
     second = await client.call(profile, prompt.model_copy(update={"items": items}), overrides=SMALL)
+    if not profile.structured_output:
+        return [first, second]
     plain = profile.model_copy(update={"stream": False})
     structured = Prompt(items=system("What is 12 + 30? Fill in the answer."), output_schema=VERDICT)
     third = await client.call(plain, structured, overrides=SMALL)
@@ -136,13 +139,14 @@ async def recorded(store: EventStore, run_id: str) -> list[ModelResponse]:
     return [r for e in events if isinstance(r := e.payload(), ModelResponse)]
 
 
-@pytest.mark.parametrize("kind", ["responses", "chat", "baseten"])
+@pytest.mark.parametrize("kind", ["responses", "chat", "baseten", "glimmer"])
 async def test_replay_of_a_recorded_run(kind: str, tmp_path: Path) -> None:
     async for client, source, run_id in replaying(kind, tmp_path):
         replies = await script(client, KINDS[kind])
-        assert [r.status for r in replies] == ["completed"] * 3
+        assert [r.status for r in replies] == ["completed"] * len(replies)
         assert replies[0].tool_calls
-        assert json.loads(replies[2].text)["answer"] == 42
+        if kind != "glimmer":
+            assert json.loads(replies[2].text)["answer"] == 42
         theirs = await recorded(client.store, source)
         ours = await recorded(client.store, run_id)
         assert [r.text for r in ours] == [r.text for r in theirs]
@@ -194,7 +198,7 @@ async def test_record_fixture(kind: str, tmp_path: Path) -> None:
         run_id = await store.create_run(RunStarted(scenario=f"fixture.{kind}", oversight="observe"))
         async with ModelClient(store, run_id, models, bus=bus, transport=transport) as client:
             match kind:
-                case "responses" | "chat" | "baseten":
+                case "responses" | "chat" | "baseten" | "glimmer":
                     await script(client, KINDS[kind])
                 case "retry":
                     await plain_call(client, KINDS[kind])
