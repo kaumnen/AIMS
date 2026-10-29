@@ -501,10 +501,12 @@ tracepoint:syscalls:sys_exit_setns /@sandbox[cgroup] && !(curtask->thread_pid->l
 }
 
 // Refused opens, with the kernel's copy of the name so a racing thread cannot change what is
-// logged. 7.0 renamed do_filp_open to do_file_open; the tracer picks the name.
+// logged. 7.0 renamed do_filp_open to do_file_open; the tracer picks the name. 7.0 also moved
+// `name` into an anonymous head, which bpftrace 0.23 loses once probes reading fd tables are
+// loaded, so it is read at its offset, 0 on every kernel.
 fexit:vmlinux:do_filp_open /@sandbox[cgroup] && curtask->thread_pid->level > @base && ((int64)retval == -1 || (int64)retval == -13)/ {
   $s = @seq[cpu] + 1; @seq[cpu] = $s;
-  printf("P %llu %llu %llu %d %d %s\n", nsecs(boot), cpu, $s, curtask->tgid, -(int64)retval, str(args.pathname->name));
+  printf("P %llu %llu %llu %d %d %s\n", nsecs(boot), cpu, $s, curtask->tgid, -(int64)retval, str(*(uint64 *)args.pathname));
 }
 
 tracepoint:raw_syscalls:sys_exit /args.ret == -1 && @sandbox[cgroup]/ {
