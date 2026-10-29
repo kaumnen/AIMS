@@ -73,6 +73,7 @@ class _Stub:
             "taken": taken_tier(self.config, type(self)),
             "tiers": sorted(reachable(self.config, type(self))),
             "agents": self.config.agents,
+            "used_in": self.config.used_in,
             "canary": None
             if self.canary is None
             else {"parts": dict(self.canary.parts), "value": self.canary.value},

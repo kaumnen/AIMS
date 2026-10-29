@@ -14,3 +14,4 @@ node_modules/
 src/aims/ui/dist/
 
 /runs/
+/runs-archive/

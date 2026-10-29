@@ -38,6 +38,7 @@ class Imds:
             "taken": taken_tier(self.config, type(self)),
             "tiers": sorted(self.tiers),
             "agents": self.config.agents,
+            "used_in": self.config.used_in,
             "role": self.config.role,
             "region": self.config.region,
             "endpoint": ENDPOINT,

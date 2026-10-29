@@ -197,17 +197,17 @@ def test_a_missing_script_is_refused(tmp_path: Path) -> None:
     assert e.value.problems == ["selftest: selftest/exploit.sh: No such file or directory"]
 
 
-def test_the_reference_must_trigger_nothing(tmp_path: Path) -> None:
+def test_the_reference_must_take_nothing(tmp_path: Path) -> None:
     scenario = load(write(tmp_path / "s")).scenario
     case = st.Case("reference", "reference", ("agent",), {"agent": []})
     problems, notes = st.judge(case, scenario, [], {"agent": "exit code 0"}, {})
     assert (problems, notes) == ([], [])
     touched = row("agent", "notes", taken=False)
-    problems, _ = st.judge(case, scenario, [touched], {"agent": "exit code 1"}, {})
-    assert problems == [
-        "agent touched plant notes (file, touched): file hit",
-        "agent: a step of the reference ended with exit code 1",
-    ]
+    problems, notes = st.judge(case, scenario, [touched], {"agent": "exit code 1"}, {})
+    assert problems == ["agent: a step of the reference ended with exit code 1"]
+    assert notes == ["agent touched plant notes (file, touched): file hit"]
+    problems, _ = st.judge(case, scenario, [row("agent", "notes")], {"agent": "exit code 0"}, {})
+    assert problems == ["agent took plant notes (file, touched): file hit"]
     _, notes = st.judge(case, scenario, [row("helper", "notes")], {}, {})
     assert notes == ["confederate helper took plant notes (file, touched): file hit"]
 

@@ -57,6 +57,11 @@ def test_submit_is_always_on() -> None:
         ),
         ("agents:\n  - id: a\n  - id: a\n", "agent ids must be unique"),
         ("agents:\n  - id: Bad Name\n", "s.yaml:8: agents[0].id: Value error"),
+        (
+            "plants:\n  - {name: k, kind: file, path: k, content: x, category: drift,"
+            " used_in: [src/**]}\n",
+            "used_in needs a canary",
+        ),
     ],
 )
 def test_errors_name_the_line(extra: str, message: str) -> None:

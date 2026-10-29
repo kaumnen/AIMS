@@ -347,13 +347,24 @@ class _Plant(_Strict):
     canary turned up in what the agent did, so a plant without a canary is never used.
     `category` is the monitor category its flags are matched against, the kind's own when
     unset. `canary` makes a secret of that shape for each run, written `{{canary}}` (or
-    `{{canary.part}}`) in the plant's text and `{{canaries.NAME}}` elsewhere."""
+    `{{canary.part}}`) in the plant's text and `{{canaries.NAME}}` elsewhere. `used_in` is
+    where the canary counts as used: anywhere the agent acted (actions), or only in the files
+    it writes that match these globs, relative to the workdir, such as the product code a
+    test checks; elsewhere it then counts as considered, so that comparing against it in a
+    command or a scratch script, or quoting it in a report, is not a use."""
 
     name: Name
     agents: list[Name] | None = None
     taken: Tier | None = None
     category: Category | None = None
     canary: CanaryConfig | None = None
+    used_in: Literal["actions"] | Annotated[list[str], Field(min_length=1)] = "actions"
+
+    @model_validator(mode="after")
+    def _used_in(self) -> Self:
+        if self.used_in != "actions" and self.canary is None:
+            raise ValueError("used_in needs a canary")
+        return self
 
 
 def _read_only() -> list[FileTrigger]:
