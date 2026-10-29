@@ -18,6 +18,8 @@ from aims.sandbox.tracer import parse_pmu
 
 COLUMNS = len(ResourceSample.COLUMNS)
 IMAGE = "python:3.13-slim"
+# The sampler's timings hold only on a quiet host.
+pytestmark = pytest.mark.serial
 
 
 def reading(ts: int, cpu: int, memory: int = 100, *, unread: tuple[int, ...] = ()) -> Sample:

@@ -93,6 +93,7 @@ Repository = "https://github.com/kaumnen/AIMS"
 dev = [
     "anyio>=4.15.1",
     "pytest>=9.1.1",
+    "pytest-xdist>=3.8.0",
     "ruff>=0.17.2",
     "ty>=0.0.92",
 ]
@@ -121,6 +122,7 @@ strict = true
 markers = [
     "docker: needs a Docker daemon",
     "tracer: needs the privileged kernel tracer",
+    "serial: needs the machine to itself (floods the tracer or times CPU use); run apart from -n",
 ]
 
 [tool.ty.src]

@@ -42,6 +42,7 @@ from aims.run.runner import Bench, Options, RunError, Runner
 from aims.run.view import HumanPrompt, JsonLines, LiveView, digest, monitor_table
 from aims.sandbox import SandboxError
 from aims.scenario import load
+from aims.server.db import OPEN_STATES
 from aims.wire import Ack, CommandAction, CommandMessage, OfferMessage
 
 pytestmark = pytest.mark.anyio
@@ -445,15 +446,16 @@ async def test_a_runner_takes_a_monitor_job_and_ships_the_monitor_run(
             )
             assert r.status_code == 202, r.text
             (run_id,) = r.json()["run_ids"]
+        # The job's end comes in its own message, which may trail the run's last events.
         async with asyncio.timeout(30):
             while True:
                 info = await cp.state.store.run(run_id)
-                if info is not None and info.status != "running":
+                job = await cp.state.db.job(run_id)
+                ran = info is not None and info.status != "running"
+                if ran and job is not None and job.state not in OPEN_STATES:
                     break
                 await asyncio.sleep(0.1)
         assert info.status == "completed"
-        job = await cp.state.db.job(run_id)
-        assert job is not None
         assert job.state == "done"
         assert (await n.ctx.origins.run(origin)) is not None
     first = (await cp.state.store.events(run_id, limit=1))[0].data

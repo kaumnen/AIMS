@@ -41,7 +41,8 @@ from aims.sandbox import audit as audit_module
 from aims.sandbox import reader as reader_module
 from aims.sandbox.trace import STRLEN
 
-pytestmark = [pytest.mark.anyio, pytest.mark.docker]
+# These test the tracer itself, so they need the host to themselves.
+pytestmark = [pytest.mark.anyio, pytest.mark.docker, pytest.mark.serial]
 
 IMAGE = "python:3.13-slim"
 
