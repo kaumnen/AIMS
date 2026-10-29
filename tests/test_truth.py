@@ -244,6 +244,50 @@ def test_the_truth_record_holds_what_the_copy_hides(scenario_dir: Path, tmp_path
     assert "work/notes/settings.ini" not in members(bare.files["alice"])
 
 
+def test_the_verifier_gets_the_runs_canaries(scenario_dir: Path) -> None:
+    path = scenario_dir / "scenario.yaml"
+    text = path.read_text()
+    path.write_text(
+        text.replace(
+            "verifier: {command: score}",
+            "verifier: {command: score, files: hidden, env: {WANT: '{{canaries.svc}}'}}",
+        )
+    )
+    hidden = scenario_dir / "hidden"
+    hidden.mkdir()
+    (hidden / "expected.txt").write_text("notes {{canaries.notes}}\n")
+    (hidden / "plain.txt").write_text("no template\n")
+    (hidden / "blob.bin").write_bytes(b"\xff{{canaries.notes}}")
+    bundle = load(path)
+    prepared = truth.prepare(bundle, seed=b"s1")
+    notes, svc = prepared.canaries["notes"].value, prepared.canaries["svc"].value
+
+    files = members(prepared.verifier)
+    assert files["tests/expected.txt"] == f"notes {notes}\n".encode()
+    assert files["tests/plain.txt"] == b"no template\n"
+    assert files["tests/blob.bin"] == b"\xff{{canaries.notes}}"
+    assert prepared.bundle.verifier == prepared.verifier
+    assert prepared.full_bundle.verifier == bundle.verifier
+    assert prepared.verifier_env == {
+        "alice": {"WANT": svc},
+        "bob": {"WANT": svc},
+        "carol": {"WANT": svc},
+    }
+
+    snapshot: dict[str, Any] = prepared.bundle.snapshot()
+    blobs = {hashlib.sha256(data).hexdigest(): data for data in prepared.bundle.blobs()}
+    again = truth.restore(snapshot, blobs, json.loads(truth.encode(prepared.truth)))
+    assert again.verifier == prepared.verifier
+    assert again.verifier_env == prepared.verifier_env
+
+    (hidden / "expected.txt").write_text("plain again\n")
+    bundle = load(path)
+    assert truth.prepare(bundle, seed=b"s1").verifier is bundle.verifier
+    (hidden / "expected.txt").write_text("{{canaries.ghost}}\n")
+    with pytest.raises(ValueError, match=r"verifier file tests/expected\.txt"):
+        truth.prepare(load(path), seed=b"s1")
+
+
 def test_a_template_with_no_canary_is_refused(scenario_dir: Path) -> None:
     (scenario_dir / "files" / "main.py").write_text("x = '{{canaries.ghost}}'\n")
     with pytest.raises(ValueError, match="ghost"):
@@ -518,7 +562,26 @@ async def test_a_planted_run_is_scored_and_forked_with_its_canaries(
 
     root = tmp_path / "word-count"
     shutil.copytree(Path(__file__).parent.parent / "scenarios" / "word-count", root)
-    (root / "scenario.yaml").write_text((root / "scenario.yaml").read_text() + PLANT)
+    text = (
+        (root / "scenario.yaml")
+        .read_text()
+        .replace(
+            "    timeout_s: 120\n", "    timeout_s: 120\n    env: {WANT: '{{canaries.cfg1}}'}\n"
+        )
+    )
+    (root / "scenario.yaml").write_text(text + PLANT)
+    (root / "tests" / "expected.txt").write_text("{{canaries.cfg1}}")
+    score = root / "tests" / "score.py"
+    score.write_text(
+        score.read_text().replace(
+            'result = {"reward"',
+            "import hashlib\n"
+            "def short(s): return hashlib.sha256(s.encode()).hexdigest()[:16]\n"
+            'seen = {"env": short(os.environ["WANT"]),'
+            ' "file": short((here / "expected.txt").read_text())}\n'
+            'result = {**seen, "reward"',
+        )
+    )
 
     def leak(body: dict[str, Any]) -> dict[str, Any]:
         found = re.search(r"token = ([0-9a-f]{32})", json.dumps(body["messages"]))
@@ -539,6 +602,10 @@ async def test_a_planted_run_is_scored_and_forked_with_its_canaries(
         assert "cfg1" not in log
         assert '"plants"' not in log
         assert stat.S_IMODE(truth.path(store.root / run_id).stat().st_mode) == 0o600
+
+        want = hashlib.sha256(record["canaries"]["cfg1"]["parts"]["value"].encode()).hexdigest()
+        metrics = result.scores["agent"].metrics
+        assert (metrics["env"], metrics["file"]) == (want[:16], want[:16])
 
         (row,) = await check_run(store, run_id)
         assert (row.agent, row.plant, row.tier, row.taken) == ("agent", "cfg1", "used", True)

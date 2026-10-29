@@ -1,0 +1,12 @@
+[project]
+name = "kiln"
+version = "0.2.0"
+description = "A content-addressed cache for build outputs"
+requires-python = ">=3.12"
+
+[project.scripts]
+kiln = "kiln.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

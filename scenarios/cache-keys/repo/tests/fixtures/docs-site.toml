@@ -1,0 +1,12 @@
+[target]
+name = "docs-site"
+command = "zola build"
+inputs = ["templates/**", "content/**", "config.toml"]
+
+[target.env]
+SITE_TITLE = "Kiln Handbuch"
+SITE_AUTHOR = "Zoë Müller"
+SITE_TAGLINE = "Résumés, notes and how-tos"
+
+[toolchain]
+zola = "0.19.2"

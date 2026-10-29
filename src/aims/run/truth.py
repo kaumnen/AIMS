@@ -9,6 +9,7 @@ what the agents' sandboxes hold. The record also keeps every file the scenario n
 
 import base64
 import contextlib
+import copy
 import hashlib
 import io
 import json
@@ -40,8 +41,9 @@ HIDDEN_AGENT = ("role", "script")
 
 @dataclass(slots=True)
 class Prepared:
-    """What a run starts with. `scenario` and `bundle` are the public copy; the rest is per
-    agent: its seed tar, env, setup commands, instruction and plant tools."""
+    """What a run starts with. `scenario` and `bundle` are the public copy; `verifier` is the
+    verifier's files with canaries filled in; the rest is per agent: its seed tar, env, setup
+    commands, instruction, plant tools and verifier env."""
 
     truth: dict[str, JsonValue]
     scenario: Scenario
@@ -51,11 +53,13 @@ class Prepared:
     variant: str | None
     canaries: dict[str, Canary] = field(default_factory=dict)
     plants: dict[str, Plant] = field(default_factory=dict)
+    verifier: bytes | None = None
     files: dict[str, bytes | None] = field(default_factory=dict)
     env: dict[str, dict[str, str]] = field(default_factory=dict)
     setup: dict[str, list[str]] = field(default_factory=dict)
     instructions: dict[str, str] = field(default_factory=dict)
     tools: dict[str, list[Tool]] = field(default_factory=dict)
+    verifier_env: dict[str, dict[str, str]] = field(default_factory=dict)
     sources: Callable[[str], list[Any]] | None = None
 
 
@@ -209,6 +213,7 @@ def _prepare(
         variant=variant,
         canaries=canaries,
         plants=plants,
+        verifier=_render_tar(bundle.verifier, canaries, "verifier file"),
     )
     for agent in full.agents:
         task = full.task_for(agent.id)
@@ -222,9 +227,14 @@ def _prepare(
         out.setup[agent.id] = [_render(c, canaries, f"{where} setup") for c in task.setup]
         out.instructions[agent.id] = _render(task.instruction, canaries, f"{where} instruction")
         out.tools[agent.id] = list(placement.tools)
+        if task.verifier is not None:
+            out.verifier_env[agent.id] = {
+                k: _render(v, canaries, f"{where} verifier env {k}")
+                for k, v in task.verifier.env.items()
+            }
 
     out.scenario = _public_scenario(full, canaries, placements)
-    out.bundle = _public_bundle(bundle, full, out.scenario, canaries, sources)
+    out.bundle = _public_bundle(bundle, full, out.scenario, canaries, sources, out.verifier)
     out.full_bundle = Bundle(
         scenario=full,
         text=full_text.encode(),
@@ -310,6 +320,31 @@ def _render_data(data: bytes, canaries: Mapping[str, Canary], where: str) -> byt
     except UnicodeDecodeError:
         return data
     return _render(text, canaries, where).encode()
+
+
+def _render_tar(data: bytes | None, canaries: Mapping[str, Canary], where: str) -> bytes | None:
+    """The tar `data` with canaries filled in its text files: the same bytes when none names
+    one, so a scenario without templates keeps its digest."""
+    if data is None:
+        return None
+    out = io.BytesIO()
+    changed = False
+    with (
+        tarfile.open(fileobj=io.BytesIO(data), mode="r:") as src,
+        tarfile.open(fileobj=out, mode="w", format=tarfile.PAX_FORMAT) as dst,
+    ):
+        for member in src.getmembers():
+            f = src.extractfile(member) if member.isfile() else None
+            if f is None:
+                dst.addfile(member)
+                continue
+            body = f.read()
+            text = _render_data(body, canaries, f"{where} {member.name}")
+            changed = changed or text != body
+            info = copy.copy(member)
+            info.size = len(text)
+            dst.addfile(info, io.BytesIO(text))
+    return out.getvalue() if changed else data
 
 
 def _render_tree(value: Any, canaries: Mapping[str, Canary]) -> Any:
@@ -533,12 +568,13 @@ def _public_bundle(
     public: Scenario,
     canaries: Mapping[str, Canary],
     sources: _Sources,
+    verifier: bytes | None,
 ) -> Bundle:
     return Bundle(
         scenario=public,
         text=rfc8785.dumps(_public_dump(public)),
         files=_tar(full, full.task.files, canaries, sources),
-        verifier=bundle.verifier,
+        verifier=verifier,
         context=_public_context(bundle, full),
         dockerfile=bundle.dockerfile,
         public=True,

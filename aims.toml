@@ -1,0 +1,5 @@
+# Settings for the experiments run from this repository.
+
+[profiles."spark-pilot"]
+extends = "baseten-spark-open"
+effort = "xhigh"

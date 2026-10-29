@@ -106,6 +106,8 @@ module-name = "aims"
 
 [tool.ruff]
 line-length = 100
+# Scenario repos are what agents work on, in their own style; some are wrong on purpose.
+extend-exclude = ["scenarios"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RUF", "ASYNC", "PT", "PIE", "RET", "TID"]

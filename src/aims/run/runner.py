@@ -935,18 +935,22 @@ class Runner:
             uid, gid, base = AGENT_UID, None, f"/tmp/aims-verifier-{secrets.token_hex(6)}"
         tests, logs, home = f"{base}/tests", f"{base}/logs", f"{base}/home"
         submission = f"{base}/submission.txt"
+        files, own_env = self.bundle.verifier, v.env
+        if self.prepared is not None:
+            files = self.prepared.verifier
+            own_env = self.prepared.verifier_env.get(agent_id, v.env)
         q = shlex.quote
         prep = (
             f"B={BUSYBOX}; $B mkdir -p -m 700 {q(base)} && $B mkdir -p {q(tests)} {q(logs)}"
             f" {q(home)}"
         )
-        if self.bundle.verifier is not None:
+        if files is not None:
             prep += f" && $B tar -x -o -f - -C {q(base)}"
 
         def run(command: str, timeout_s: float, **kw: Any) -> Awaitable[ExecResult]:
             return sb.exec(command, timeout_s=timeout_s, uid=uid, gid=gid, phase="verifier", **kw)
 
-        r = await run(prep, VERIFY_PREP_S, stdin=self.bundle.verifier, cwd="/")
+        r = await run(prep, VERIFY_PREP_S, stdin=files, cwd="/")
         if r.finished.end != "exited" or r.finished.exit_code != 0:
             return TaskScored(error=f"preparing the verifier failed: {_why(r)}")
         data = (answer or "").encode()
@@ -960,7 +964,7 @@ class Runner:
             "AIMS_LOGS_DIR": logs,
             "AIMS_SUBMISSION": submission,
             "AIMS_AGENT_END": end,
-            **v.env,
+            **own_env,
         }
         verdict = await run(v.command, v.timeout_s, env=env)
         f = verdict.finished
