@@ -1,13 +1,22 @@
+import hashlib
+import json
+import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
 from aims.agent import RecordedOutput, ReplayPlan
 from aims.events import AgentInput, BlobRef, Content, EventStore, RunStarted, ToolResult
 from aims.models import ModelClient, ModelsConfig, Profile, ProfileError, Recording
+from aims.run import truth
 from aims.run.runner import Bench, Fork, RunError, Texts
 from aims.scenario import Bundle, ScenarioError, from_snapshot
 
 PAGE = 1000
+
+
+log = logging.getLogger("aims.run")
 
 
 @dataclass(slots=True)
@@ -22,6 +31,17 @@ class Origin:
     steps: dict[str, int] = field(default_factory=dict)
     outputs: dict[str, dict[str, RecordedOutput]] = field(default_factory=dict)
     injects: dict[str, dict[int, list[str]]] = field(default_factory=dict)
+    full_bundle: Bundle | None = None
+    truth: dict[str, Any] | None = None
+
+    @property
+    def seed(self) -> bytes | None:
+        """The canary seed of the origin, which its forks reuse."""
+        return None if self.truth is None else bytes.fromhex(self.truth["seed"])
+
+    @property
+    def inherited(self) -> list[dict[str, Any]] | None:
+        return None if self.truth is None else self.truth.get("inherited")
 
 
 async def _text(store: EventStore, run_id: str, content: Content) -> str:
@@ -30,7 +50,36 @@ async def _text(store: EventStore, run_id: str, content: Content) -> str:
     return content
 
 
-async def load_origin(store: EventStore, run_id: str) -> Origin:
+def same_scenario(origin: Origin, bundle: Bundle) -> bool:
+    """Whether `bundle` is the scenario `origin` ran: the public copy it makes with the
+    origin's seed, variant and inherited canaries matches the one the origin recorded."""
+    if origin.truth is None:
+        return bundle.digest == origin.bundle.digest
+    try:
+        made = truth.prepare(bundle, origin.truth.get("variant"), origin.seed, origin.inherited)
+    except ValueError, OSError:
+        return False
+    return made.bundle.digest == origin.bundle.digest
+
+
+def _truth(store: EventStore, run_id: str, want: str) -> dict[str, Any] | None:
+    """The run's truth record, None when this machine does not hold it. A fork without it
+    starts from the public copy, which lacks the origin's plants, roles and scripts."""
+    root = getattr(store, "root", None)
+    file = truth.path(Path(root) / run_id) if root is not None else None
+    if file is None or not file.is_file():
+        log.warning("run %s: no truth file here; a fork of it starts from the public copy", run_id)
+        return None
+    try:
+        data = file.read_bytes()
+    except OSError as e:
+        raise RunError(f"run {run_id}: cannot read its truth file: {e.strerror}") from None
+    if hashlib.sha256(data).hexdigest() != want:
+        raise RunError(f"run {run_id}: its truth file does not match run.started")
+    return json.loads(data)
+
+
+async def load_origin(store: EventStore, run_id: str, *, full: bool = True) -> Origin:
     if await store.run(run_id) is None:
         raise RunError(f"unknown run {run_id}")
     first = await store.events(run_id, limit=1)
@@ -52,6 +101,15 @@ async def load_origin(store: EventStore, run_id: str) -> Origin:
         bundle = from_snapshot(snapshot, blobs)
     except ScenarioError as e:
         raise RunError(f"run {run_id}: {e}") from None
+    restored: Bundle | None = None
+    record: dict[str, Any] | None = None
+    if full and started.truth is not None:
+        record = _truth(store, run_id, started.truth)
+    if record is not None:
+        try:
+            restored = truth.restore(snapshot, blobs, record).full_bundle
+        except (KeyError, ValueError, OSError) as e:
+            raise RunError(f"run {run_id}: cannot restore its truth: {e}") from None
     schedules: dict[str, list[tuple[int | None, Profile]]] = {}
     texts: dict[str, Texts] = {}
     for agent_id, entry in agents.items():
@@ -63,7 +121,7 @@ async def load_origin(store: EventStore, run_id: str) -> Origin:
             raise RunError(
                 f"run {run_id}: agent {agent_id} recorded no usable texts: {e}"
             ) from None
-    origin = Origin(run_id, bundle, schedules, texts)
+    origin = Origin(run_id, bundle, schedules, texts, full_bundle=restored, truth=record)
     steps: dict[str, int] = defaultdict(int)
     outputs: dict[str, dict[str, RecordedOutput]] = defaultdict(dict)
     injects: dict[str, dict[int, list[str]]] = defaultdict(lambda: defaultdict(list))

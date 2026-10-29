@@ -25,6 +25,7 @@ from aims.sandbox.base import (
     AuditMode,
     Capture,
     Lost,
+    Mount,
     Outcome,
     PreExec,
     Record,
@@ -35,6 +36,8 @@ from aims.sandbox.base import (
     check_name,
 )
 from aims.sandbox.images import ensure_built, ensure_image, ensure_pulled
+from aims.sandbox.imds import Identity
+from aims.sandbox.imds import start as start_imds_server
 from aims.sandbox.reader import Reader
 from aims.sandbox.resources import Sampler, SamplerError, Watch
 from aims.sandbox.trace import ARCHES, SYSCALLS, Mounts
@@ -50,6 +53,20 @@ STDIN_POLL_S = 0.1
 STDIN_GRACE_S = 1.0
 MIB = 1024 * 1024
 HOME = "/home/agent"
+DEFAULT_MASKED_PATHS = (
+    "/proc/acpi",
+    "/proc/asound",
+    "/proc/interrupts",
+    "/proc/kcore",
+    "/proc/keys",
+    "/proc/latency_stats",
+    "/proc/sched_debug",
+    "/proc/scsi",
+    "/proc/timer_list",
+    "/proc/timer_stats",
+    "/sys/devices/virtual/powercap",
+    "/sys/firmware",
+)
 
 _PIDNS = re.compile(r"^pid:\[(\d+)\]$")
 
@@ -173,6 +190,8 @@ class DockerBackend:
         work = f"aims-{run_id}-{agent_id}-work"
         volumes = [(work, spec.workdir, False)]
         volumes += [(f"aims-{run_id}-{m.volume}", m.target, m.read_only) for m in spec.mounts]
+        shared = tuple(f"aims-{run_id}-{m.volume}" for m in spec.mounts)
+        logged = {f"aims-{run_id}-{m.volume}" for m in spec.mounts if m.channel is not None}
         created = await self._volumes(run_id, [name for name, _, _ in volumes])
         if created:
             targets = {name: target for name, target, _ in volumes}
@@ -208,6 +227,22 @@ class DockerBackend:
             ),
         ]
         env = {"HOME": HOME, **spec.env}
+        host: dict[str, Any] = {
+            "NetworkMode": "none",
+            "Init": True,
+            "CapDrop": ["ALL"],
+            "SecurityOpt": ["no-new-privileges"],
+            "PidsLimit": spec.pids,
+            "Memory": spec.memory_mb * MIB,
+            "MemorySwap": spec.memory_mb * MIB,
+            "NanoCpus": int(spec.cpus * 1e9),
+            "ReadonlyRootfs": not spec.writable_root,
+            "Mounts": mounts,
+            "LogConfig": {"Type": "none"},
+        }
+        if spec.masked_paths:
+            # Setting MaskedPaths replaces Docker's defaults, so keep them and add ours.
+            host["MaskedPaths"] = [*DEFAULT_MASKED_PATHS, *spec.masked_paths]
         config: dict[str, Any] = {
             "Image": image["Id"],
             "Entrypoint": [f"{TOOLBOX}/busybox"],
@@ -217,28 +252,23 @@ class DockerBackend:
             "Env": [f"{k}={v}" for k, v in env.items()],
             "Labels": labels,
             "NetworkDisabled": True,
-            "HostConfig": {
-                "NetworkMode": "none",
-                "Init": True,
-                "CapDrop": ["ALL"],
-                "SecurityOpt": ["no-new-privileges"],
-                "PidsLimit": spec.pids,
-                "Memory": spec.memory_mb * MIB,
-                "MemorySwap": spec.memory_mb * MIB,
-                "NanoCpus": int(spec.cpus * 1e9),
-                "ReadonlyRootfs": not spec.writable_root,
-                "Mounts": mounts,
-                "LogConfig": {"Type": "none"},
-            },
+            "HostConfig": host,
         }
         name = f"aims-{run_id}-{agent_id}"
         container = await self.docker.containers.create(config=config, name=name)
         reader: Reader | str | None = None
         try:
             await container.start()
-            reader = await self._reader(name, labels, volumes)
+            reader = await self._reader(name, labels, volumes, logged)
             sandbox = await DockerSandbox.attach(
-                self, container, spec, image, work, reader, tuple(v for v, _, _ in scratch)
+                self,
+                container,
+                spec,
+                image,
+                work,
+                reader,
+                tuple(v for v, _, _ in scratch),
+                shared,
             )
         except BaseException:
             if isinstance(reader, Reader):
@@ -248,21 +278,75 @@ class DockerBackend:
             raise
         return sandbox
 
+    async def start_imds(
+        self,
+        agent_id: str,
+        sandbox: Any,
+        *,
+        role: str,
+        region: str,
+        canary: dict[str, str] | None,
+        identity: Identity,
+    ) -> Any:
+        """Start this agent's metadata sidecar in the sandbox's network namespace."""
+        inner = getattr(sandbox, "sandbox", None)
+        if not isinstance(inner, DockerSandbox):
+            raise SandboxError("the IMDS sidecar needs a Docker sandbox")
+        run_id = sandbox.run_id
+        log_path = sandbox.run_dir / f"imds-{agent_id}.jsonl"
+        fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        os.close(fd)
+        os.chmod(log_path, 0o600)
+        labels = {**self._labels, "aims.run": run_id, "aims.agent": agent_id}
+        return await start_imds_server(
+            self.docker,
+            sandbox_container=inner._container,
+            image=inner.info.image_id,
+            toolbox_volume=self._toolbox_volume,
+            labels=labels,
+            name=f"aims-{run_id}-{agent_id}-imds",
+            role=role,
+            region=region,
+            canary=canary,
+            log_path=str(log_path),
+            identity=identity,
+        )
+
     async def _reader(
-        self, name: str, labels: dict[str, str], volumes: list[tuple[str, str, bool]]
+        self,
+        name: str,
+        labels: dict[str, str],
+        volumes: list[tuple[str, str, bool]],
+        logged: set[str] | frozenset[str] = frozenset(),
     ) -> Reader | str:
-        """The sandbox's file reader, or why it could not start."""
+        """The sandbox's file reader, or why it could not start. It hashes the `logged`
+        volumes but leaves their diffs to the channel that logs them."""
         try:
             return await Reader.start(
                 self.docker,
                 self._toolbox_image,
                 f"{name}-reader",
-                [(volume, target) for volume, target, _ in volumes],
+                [(volume, target) for volume, target, _ in volumes if volume not in logged],
                 labels,
+                hash_only=[(volume, target) for volume, target, _ in volumes if volume in logged],
             )
         except Exception as e:
             log.error("file reader for %s did not start: %s", name, e)
             return f"the file reader did not start: {e}"
+
+    async def volume(self, run_id: str, mount: Mount) -> DockerVolumeView:
+        """The shared volume `mount` of run `run_id`, with a file reader of its own. The
+        volume must exist: a sandbox that mounts it made it."""
+        name = f"aims-{run_id}-{mount.volume}"
+        labels = {**self._labels, "aims.run": run_id}
+        reader = await Reader.start(
+            self.docker,
+            self._toolbox_image,
+            f"{name}-{uuid.uuid4().hex[:8]}",
+            [(name, mount.target)],
+            labels,
+        )
+        return DockerVolumeView(self, name, mount.target, reader, labels)
 
     async def remove_run(self, run_id: str) -> None:
         """Delete the containers and volumes of one run."""
@@ -332,6 +416,7 @@ class DockerSandbox:
         route: Route | None,
         reader: Reader | str | None = None,
         scratch: tuple[str, ...] = (),
+        shared: tuple[str, ...] = (),
     ) -> None:
         self._backend = backend
         self._container = container
@@ -339,6 +424,7 @@ class DockerSandbox:
         self._info = info
         self._work = work
         self._scratch = scratch
+        self._shared = shared
         self._shell = shell
         self._route = route
         self._watch: Watch | None = None
@@ -358,6 +444,7 @@ class DockerSandbox:
         work: str,
         reader: Reader | str | None = None,
         scratch: tuple[str, ...] = (),
+        shared: tuple[str, ...] = (),
     ) -> DockerSandbox:
         """Learn the sandbox's pid namespace and mounts, and hand them to the tracer."""
         probe = (
@@ -367,7 +454,7 @@ class DockerSandbox:
         )
         capture = Capture(limit=MIB)
         info = _info(container, spec, image)
-        holder = cls(backend, container, spec, info, work, [], None, reader, scratch)
+        holder = cls(backend, container, spec, info, work, [], None, reader, scratch, shared)
         outcome = await holder.run(
             [f"{TOOLBOX}/busybox", "sh", "-c", probe],
             uid=RUNNER_UID,
@@ -635,6 +722,60 @@ class DockerSandbox:
         for name in (*self._scratch, *(() if keep_volumes else (self._work,))):
             with contextlib.suppress(aiodocker.DockerError):
                 await DockerVolume(self._backend.docker, name).delete()
+        # A shared volume goes with the last container that mounts it; Docker refuses earlier.
+        for name in () if keep_volumes else self._shared:
+            with contextlib.suppress(aiodocker.DockerError):
+                await DockerVolume(self._backend.docker, name).delete()
+
+
+class DockerVolumeView:
+    """A shared volume of a run, seen from the host: its own file reader, and tar copies in
+    through a container that never starts."""
+
+    def __init__(
+        self,
+        backend: DockerBackend,
+        name: str,
+        target: str,
+        reader: Reader,
+        labels: dict[str, str],
+    ) -> None:
+        self._backend = backend
+        self.name = name
+        self.target = target
+        self._reader = reader
+        self._labels = labels
+
+    async def tree(self) -> Tree:
+        return await self._reader.tree()
+
+    async def get_archive(self) -> bytes:
+        return await self._reader.get_archive(self.target)
+
+    async def put_archive(self, data: bytes) -> None:
+        docker = self._backend.docker
+        container = await docker.containers.create(
+            config={
+                "Image": self._backend._toolbox_image,
+                "Cmd": ["true"],
+                "Labels": {**self._labels, "aims.role": "helper"},
+                "NetworkDisabled": True,
+                "HostConfig": {
+                    "NetworkMode": "none",
+                    "CapDrop": ["ALL"],
+                    "Mounts": [{"Type": "volume", "Source": self.name, "Target": "/v"}],
+                    "LogConfig": {"Type": "none"},
+                },
+            }
+        )
+        try:
+            await container.put_archive("/v", data)
+        finally:
+            with contextlib.suppress(aiodocker.DockerError):
+                await container.delete(force=True)
+
+    async def close(self) -> None:
+        await self._reader.close()
 
 
 async def _read(stream: Any, capture: Capture) -> None:

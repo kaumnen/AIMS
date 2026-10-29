@@ -6,7 +6,7 @@ import contextlib
 import json
 import sys
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -20,6 +20,7 @@ from rich.text import Text
 from aims.events import BlobRef, Event, EventStore, ResumeThen
 from aims.models import Delta, DeltaBus
 from aims.monitor.core import HumanRequest
+from aims.run.estimate import Progress, project_run, usd
 from aims.run.runner import Result, RunError, Runner
 
 TAIL = 240
@@ -59,6 +60,8 @@ class _Agent:
     reward: str = ""
     divergences: int = 0
     paused: str = ""
+    steps_cap: int | None = None
+    cost_cap: float | None = None
 
 
 @dataclass(slots=True)
@@ -75,6 +78,10 @@ class _Run:
     sweeping: set[str] = field(default_factory=set)
     notes: list[str] = field(default_factory=list)
     verdict: str = ""
+    cost_cap: float | None = None
+    monitor_cap: float | None = None
+    monitor_calls: set[str] = field(default_factory=set)
+    monitor_cost: float = 0.0
 
 
 def flag_line(data: dict[str, Any], agent: str | None) -> str:
@@ -106,11 +113,16 @@ def action_line(e: Event) -> str:
 
 
 class LiveView:
-    """What each agent of each run is doing, from the run logs and the delta bus."""
+    """What each agent of each run is doing, from the run logs and the delta bus, and what the
+    run is on track to cost. `typical_steps` are the steps each agent took in past runs of the
+    scenario."""
 
-    def __init__(self, store: EventStore, bus: DeltaBus) -> None:
+    def __init__(
+        self, store: EventStore, bus: DeltaBus, typical_steps: Mapping[str, float] | None = None
+    ) -> None:
         self.store = store
         self.bus = bus
+        self.typical_steps = dict(typical_steps or {})
         self.runs: dict[str, _Run] = {}
         self._tasks: list[asyncio.Task[None]] = []
 
@@ -155,10 +167,13 @@ class LiveView:
     def _on_event(self, run: _Run, e: Event) -> None:
         data = e.data
         match e.type:
-            case "model.request" if data.get("role") == "sweep":
-                run.sweeping.add(str(data.get("call_id")))
-            case "model.response" if data.get("call_id") in run.sweeping:
+            case "model.request" if data.get("role") is not None:
+                run.monitor_calls.add(str(data.get("call_id")))
+                if data.get("role") == "sweep":
+                    run.sweeping.add(str(data.get("call_id")))
+            case "model.response" if data.get("call_id") in run.monitor_calls:
                 run.sweeping.discard(str(data.get("call_id")))
+                run.monitor_cost += _num(data.get("cost_usd"))
             case "monitor.flag":
                 importance = int(_num(data.get("importance")))
                 run.max_importance = max(run.max_importance, importance)
@@ -175,13 +190,19 @@ class LiveView:
                 self._acted(run, e)
             case "run.started":
                 run.scenario = str(data.get("scenario", ""))
+                config = data.get("config")
+                run.cost_cap = _cap(_at(config, "scenario", "resolved", "limits", "cost_usd"))
+                run.monitor_cap = _cap(_at(config, "monitor", "budget_usd"))
             case "sandbox.started":
                 run.phase = "sandbox"
             case "exec.started" if data.get("phase") in ("setup", "verifier"):
                 run.phase = str(data["phase"])
             case "agent.started":
                 run.phase = "agents"
-                self._agent(run, e.agent_id)
+                a = self._agent(run, e.agent_id)
+                steps = _cap(_at(data, "budget", "steps"))
+                a.steps_cap = None if steps is None else int(steps)
+                a.cost_cap = _cap(_at(data, "budget", "cost_usd"))
             case "agent.step":
                 a = self._agent(run, e.agent_id)
                 a.step = int(_num(data.get("n")))
@@ -270,10 +291,42 @@ class LiveView:
                     rows.append(Text(f"  < {a.result}", style="red" if a.result_error else ""))
                 if a.last_report:
                     rows.append(Text(f"  report: {a.last_report}", style="yellow"))
+            cost = self._cost_row(run)
+            if cost is not None:
+                rows.append(cost)
             rows += self._monitor_rows(run)
             title = Text(f"{run.scenario} {run.run_id}  {run.phase}")
             panels.append(Panel(Group(*rows) if rows else Text("starting"), title=title))
         return Group(*panels)
+
+    def _cost_row(self, run: _Run) -> Text | None:
+        """What the run has cost so far and is on track to cost, once an agent is a few steps
+        in, bounded by its caps."""
+        agents = [
+            Progress(
+                cost=a.cost,
+                steps=a.step,
+                steps_cap=a.steps_cap,
+                cost_cap=a.cost_cap,
+                typical_steps=self.typical_steps.get(agent_id),
+                done=bool(a.ended),
+            )
+            for agent_id, a in run.agents.items()
+        ]
+        found = project_run(
+            agents,
+            cost_cap=run.cost_cap,
+            monitor_cost=run.monitor_cost,
+            monitor_cap=run.monitor_cap,
+        )
+        if found is None:
+            return None
+        ahead, monitor = found
+        spent = sum(a.cost for a in agents) + run.monitor_cost
+        line = f"cost {usd(spent)} so far, on track for about {usd(ahead + monitor)}"
+        if run.monitor_cost:
+            line += f" (agents {usd(ahead)}, monitor {usd(monitor)})"
+        return Text(line, style="dim")
 
     def _monitor_rows(self, run: _Run) -> list[RenderableType]:
         if not (run.flags or run.sweeps or run.sweeping or run.notes or run.verdict):
@@ -309,6 +362,16 @@ def _text(value: object) -> str:
 
 def _num(value: object) -> float:
     return float(value) if isinstance(value, int | float) and not isinstance(value, bool) else 0.0
+
+
+def _cap(value: object) -> float | None:
+    return float(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
+
+
+def _at(value: object, *keys: str) -> object:
+    for key in keys:
+        value = value.get(key) if isinstance(value, dict) else None
+    return value
 
 
 def _args(args: object) -> str:

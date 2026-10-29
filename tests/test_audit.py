@@ -1388,6 +1388,23 @@ async def test_output_streams_stay_within_their_cap(
     assert len(await events(store, run_id, "proc.output")) == 4
 
 
+async def test_proc_reads_are_not_deduped_and_are_capped(
+    store: LocalEventStore,
+) -> None:
+    sb = FakeSandbox()
+    reads = [File(100, "read", "/proc/meminfo", at=tick(i)) for i in range(100)]
+    reads += [File(100, "read", "/proc/loadavg", at=tick(i)) for i in range(3)]
+    sb.steps.append(step(root(100), *reads))
+    run_id, audited = await start(store, sb)
+    await audited.exec("poll", timeout_s=5)
+    await audited.close()
+
+    evs = await events(store, run_id, "file.access")
+    paths = [e.data["path"] for e in evs]
+    assert paths.count("/proc/meminfo") == audit_module.PROC_READ_CAP
+    assert paths.count("/proc/loadavg") == 3
+
+
 async def test_new_kernel_records_are_mapped(store: LocalEventStore) -> None:
     sb = FakeSandbox()
     exe = dataclasses.replace(child(101, 100, "sh"), inode=7, dev=254, nlink=0, magic=61267)

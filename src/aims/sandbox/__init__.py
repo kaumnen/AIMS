@@ -1,6 +1,7 @@
 from aims.sandbox.audit import AuditedSandbox, ExecResult, SandboxStoppedError
 from aims.sandbox.base import (
     AGENT_UID,
+    MASK_PROC,
     RUNNER_UID,
     AuditMode,
     Capture,
@@ -17,6 +18,7 @@ from aims.sandbox.tracer import Tracer, TracerError
 
 __all__ = [
     "AGENT_UID",
+    "MASK_PROC",
     "RUNNER_UID",
     "AuditMode",
     "AuditedSandbox",

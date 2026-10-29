@@ -14,6 +14,7 @@ from pydantic import JsonValue
 
 from aims.sandbox.base import (
     TOOLBOX,
+    Cache,
     Close,
     Denied,
     Exec,
@@ -27,6 +28,7 @@ from aims.sandbox.base import (
     PreExec,
     Record,
     Setattr,
+    Sync,
 )
 from aims.sandbox.execs import exec_output
 from aims.sandbox.images import ensure_image
@@ -42,12 +44,14 @@ from aims.sandbox.trace import (
     Mkdir,
     Mounts,
     Note,
+    RawCache,
     RawClose,
     RawDenied,
     RawExec,
     RawFifo,
     RawMmap,
     RawSetattr,
+    RawSync,
     Ready,
     Rename,
     Sequence,
@@ -86,6 +90,16 @@ TRACE = (
     "v=$(uname -r); m=${v%%.*}; n=${v#*.}; n=${n%%.*}; "
     'if [ "$m" -lt 6 ] || { [ "$m" -eq 6 ] && [ "$n" -lt 14 ]; }; then '
     r"sed -i 's/f_mode & 0x1000000)/f_mode \& 0x2000000)/' $f; fi; "
+    # cachestat arrived in 6.5; older kernels have neither the syscall nor its tracepoint.
+    'if [ "$m" -lt 6 ] || { [ "$m" -eq 6 ] && [ "$n" -lt 5 ]; } '
+    "|| ! grep -q '_sys_cachestat$' $a "
+    "|| ! [ -e /sys/kernel/tracing/events/syscalls/sys_enter_cachestat/id ]; then "
+    "sed -i 's|^tracepoint:syscalls:sys_enter_cachestat |//&|' $f; fi; "
+    # x86_64 calls the 64-bit-offset tracepoint fadvise64_64; aarch64 calls it fadvise64.
+    "if [ ! -e /sys/kernel/tracing/events/syscalls/sys_enter_fadvise64_64/id ]; then "
+    "if [ -e /sys/kernel/tracing/events/syscalls/sys_enter_fadvise64/id ]; then "
+    "sed -i 's/sys_enter_fadvise64_64/sys_enter_fadvise64/g' $f; else "
+    "sed -i 's|^tracepoint:syscalls:sys_enter_fadvise64_64 |//&|' $f; fi; fi; "
     "exec bpftrace -B line -f json $f"
 )
 PMU_EVENTS = ("cpu-cycles", "instructions", "cache-misses")
@@ -535,6 +549,26 @@ class Tracer:
                             at=item.at,
                         )
                     )
+            case RawCache(pid, op, walk):
+                route = self._route(pid)
+                if route is not None:
+                    if walk is None:
+                        route.put(Cache(pid, op, None, at=item.at))
+                    else:
+                        path, partial = route.mounts.resolve(walk)
+                        route.put(Cache(pid, op, path, partial=partial, at=item.at))
+            case RawSync(pid, call, walk):
+                route = self._route(pid)
+                if route is not None:
+                    if walk is None:
+                        route.put(Sync(pid, call, None, at=item.at))
+                    else:
+                        path, partial = route.mounts.resolve(walk)
+                        route.put(Sync(pid, call, path, partial=partial, at=item.at))
+            case Cache(pid) | Sync(pid):
+                route = self._route(pid)
+                if route is not None:
+                    route.put(item)
             case Kernel(pid):
                 route = self._route(pid)
                 if route is not None:

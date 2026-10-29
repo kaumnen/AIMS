@@ -8,13 +8,16 @@
 
 A scenario overrides all of them for its agents. A missing file adds nothing; none is made until
 `aims init` or the UI writes one. API keys never live here, only the names of their variables.
+
+`[credits]` maps a provider to the USD of credit it holds, for `aims spend` and the cost estimate.
+`[estimate] confirm_above_usd` is the estimate past which `aims run` asks before it starts.
 """
 
 import hashlib
 import os
 import tomllib
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +30,8 @@ from aims.prompts import Prompts, load_prompts
 
 PROJECT = "aims.toml"
 USER = "config.toml"
-TABLES = frozenset({"profiles", "roles", "prompts", "scenarios", "monitor"})
+TABLES = frozenset({"profiles", "roles", "prompts", "scenarios", "monitor", "credits", "estimate"})
+CONFIRM_ABOVE_USD = 20.0
 
 
 class ConfigError(Exception):
@@ -86,6 +90,8 @@ class Settings:
     layers: Layers
     scenario_paths: tuple[Path, ...] = ()
     monitor: tuple[dict[str, Any], ...] = ()
+    credits: dict[str, float] = field(default_factory=dict)
+    confirm_above_usd: float = CONFIRM_ABOVE_USD
 
 
 def load(config: Path | None = None, env: Mapping[str, str] = os.environ) -> Settings:
@@ -97,6 +103,8 @@ def load_layers(found: Layers) -> Settings:
     files = found.files()
     paths: list[Path] = []
     monitor: list[dict[str, Any]] = []
+    credits: dict[str, float] = {}
+    confirm = CONFIRM_ABOVE_USD
     for path in files:
         try:
             data = tomllib.loads(path.read_text())
@@ -107,6 +115,8 @@ def load_layers(found: Layers) -> Settings:
             known = ", ".join(sorted(TABLES))
             raise ConfigError(f"{path}: unknown table(s) {', '.join(unknown)}; known: {known}")
         paths.extend(_scenario_paths(path, data.get("scenarios")))
+        credits |= _credits(path, data.get("credits"))
+        confirm = _confirm(path, data.get("estimate"), confirm)
         if "monitor" in data:
             try:
                 monitor.append(layer(data["monitor"], f"{path}: [monitor]"))
@@ -118,7 +128,15 @@ def load_layers(found: Layers) -> Settings:
         merge(*monitor)
     except ValidationError as e:
         raise ConfigError(f"[monitor]: {e}") from None
-    return Settings(load_models(*files), prompts, found, tuple(paths), tuple(monitor))
+    return Settings(
+        models=load_models(*files),
+        prompts=prompts,
+        layers=found,
+        scenario_paths=tuple(paths),
+        monitor=tuple(monitor),
+        credits=credits,
+        confirm_above_usd=confirm,
+    )
 
 
 def _scenario_paths(path: Path, table: object) -> list[Path]:
@@ -131,6 +149,31 @@ def _scenario_paths(path: Path, table: object) -> list[Path]:
     if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
         raise ConfigError(f"{path}: [scenarios] paths must be a list of strings")
     return [(path.parent / Path(v).expanduser()).resolve() for v in value]
+
+
+def _usd(value: object) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool) and value >= 0
+
+
+def _credits(path: Path, table: object) -> dict[str, float]:
+    """`[credits]`: USD of credit per provider, such as `meta = 150`."""
+    if table is None:
+        return {}
+    if not isinstance(table, dict) or not all(_usd(v) for v in table.values()):
+        raise ConfigError(f"{path}: [credits] maps each provider to a USD amount of 0 or more")
+    return {str(k).lower(): float(v) for k, v in table.items()}
+
+
+def _confirm(path: Path, table: object, current: float) -> float:
+    """`[estimate] confirm_above_usd`: past this estimate `aims run` asks before it starts."""
+    if table is None:
+        return current
+    if not isinstance(table, dict) or set(table) - {"confirm_above_usd"}:
+        raise ConfigError(f"{path}: [estimate] takes only `confirm_above_usd`")
+    value = table.get("confirm_above_usd", current)
+    if not _usd(value):
+        raise ConfigError(f"{path}: [estimate] confirm_above_usd must be a USD amount of 0 or more")
+    return float(value)
 
 
 STARTER = """\
@@ -157,6 +200,13 @@ STARTER = """\
 
 # [scenarios]
 # paths = ["~/aims-scenarios"]
+
+# [credits]
+# meta = 150
+# fireworks = 100
+
+# [estimate]
+# confirm_above_usd = 20
 """
 
 

@@ -1,7 +1,8 @@
 /*
- * aims-snap PATH=DIR...
+ * aims-snap PATH=DIR... [-- PATH=DIR...]
  *
- * Reports how the files under each DIR changed, named as the sandbox sees them at PATH. Each
+ * Reports how the files under each DIR changed, named as the sandbox sees them at PATH. Roots
+ * after "--" are only hashed on request, never walked: someone else diffs them. Each
  * stdin line "S FILE_CAP BLOB_CAP ENTRY_CAP HASH_CAP" takes a snapshot and answers on stdout:
  *
  *   C CHANGE KIND SIZE MODE MTIME_US SHA CONTENT_LEN TIMESTOMP PATH_LEN TARGET_LEN\n
@@ -135,6 +136,7 @@ typedef struct {
     const char *dir;
     size_t rel;
     int fd;
+    int walk;
 } root;
 
 static root *roots;
@@ -396,6 +398,7 @@ static void snapshot(void) {
     n_hashed = n_unhashed = n_skipped = 0;
     for (int i = 0; i < nroots; i++) {
         roots[i].fd = -1;
+        if (!roots[i].walk) continue;
         size_t plen = strlen(roots[i].path);
         if (plen >= MAX_PATH) continue;
         roots[i].fd = open(roots[i].dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
@@ -581,17 +584,23 @@ static int read_path(char *buf, size_t len) {
 }
 
 int main(int argc, char **argv) {
-    nroots = argc - 1;
-    roots = calloc((size_t)(nroots ? nroots : 1), sizeof(root));
-    for (int i = 0; i < nroots; i++) {
-        char *eq = strchr(argv[i + 1], '=');
+    roots = calloc((size_t)(argc > 1 ? argc - 1 : 1), sizeof(root));
+    int scan = 1;
+    for (int i = 1; i < argc; i++) {
+        if (scan && !strcmp(argv[i], "--")) {
+            scan = 0;
+            continue;
+        }
+        char *eq = strchr(argv[i], '=');
         if (!eq) {
-            fprintf(stderr, "usage: aims-snap PATH=DIR...\n");
+            fprintf(stderr, "usage: aims-snap PATH=DIR... [-- PATH=DIR...]\n");
             return 64;
         }
         *eq = 0;
-        roots[i].path = argv[i + 1];
-        roots[i].dir = eq + 1;
+        roots[nroots].path = argv[i];
+        roots[nroots].dir = eq + 1;
+        roots[nroots].walk = scan;
+        nroots++;
     }
     char line[256];
     while (fgets(line, sizeof line, stdin)) {

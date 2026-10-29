@@ -16,13 +16,14 @@ from collections import OrderedDict
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 
-from pydantic import JsonValue, ValidationError
+from pydantic import Field, JsonValue, ValidationError
 
 from aims.events import (
     AgentFinished,
     AgentStep,
     AuditSpill,
     BlobRef,
+    ChannelSnapshot,
     Content,
     Event,
     EventStore,
@@ -68,10 +69,13 @@ _SEPARATORS = re.compile(r"&&|\|\||[;|&\n()]")
 
 
 class FsChangeRecord(FsChange, Payload):
-    """One change of an `fs.snapshot`, as the `fs.change` virtual event. `exec_id` is the
-    snapshot's exec, None for changes between execs. It is not a registered event type."""
+    """One change of an `fs.snapshot` or `channel.snapshot`, as the `fs.change` virtual event.
+    `exec_id` is the snapshot's exec, None for changes between execs. A channel change keeps
+    the agent the kernel records put it on and their seqs. It is not a registered event type."""
 
     exec_id: str | None = None
+    agent: str | None = None
+    evidence: list[int] = Field(default_factory=list)
 
 
 def program(argv: Sequence[str], path: str) -> str:
@@ -251,6 +255,8 @@ class State:
                 out += await self._spilled(event, payload)
             elif isinstance(payload, FsSnapshot):
                 out += await self._changes(event, payload)
+            elif isinstance(payload, ChannelSnapshot):
+                out += await self._channel_changes(event, payload)
         except Exception:
             log.exception("monitor state could not take in event %s", event.seq)
         return out
@@ -667,6 +673,25 @@ class State:
         out: list[Event] = []
         for change in changes:
             virtual = _virtual(event, FS_CHANGE, {**change, "exec_id": snapshot.exec_id})
+            payload = self.payload(virtual)
+            if isinstance(payload, FsChangeRecord):
+                self._change(virtual, payload)
+                out.append(virtual)
+        return out
+
+    async def _channel_changes(self, event: Event, snapshot: ChannelSnapshot) -> list[Event]:
+        """A shared folder's changes become `fs.change` events too, each on the member the
+        kernel records show wrote it."""
+        changes: list[dict[str, JsonValue]] = [c.model_dump(mode="json") for c in snapshot.changes]
+        if snapshot.more is not None:
+            changes += await self._lines(snapshot.more)
+        out: list[Event] = []
+        for change in changes:
+            data = {**change, "exec_id": snapshot.exec_id}
+            writer = data.get("agent")
+            virtual = _virtual(event, FS_CHANGE, data)
+            if isinstance(writer, str):
+                virtual = virtual.model_copy(update={"agent_id": writer})
             payload = self.payload(virtual)
             if isinstance(payload, FsChangeRecord):
                 self._change(virtual, payload)

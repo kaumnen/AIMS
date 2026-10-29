@@ -295,14 +295,22 @@
       },
       "AgentStarted": {
         "additionalProperties": false,
+        "description": "`backend` is None for an agent that follows a script and calls no model.",
         "properties": {
           "backend": {
-            "enum": [
-              "responses",
-              "chat"
+            "anyOf": [
+              {
+                "enum": [
+                  "responses",
+                  "chat"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
-            "title": "Backend",
-            "type": "string"
+            "title": "Backend"
           },
           "budget": {
             "additionalProperties": {
@@ -608,6 +616,114 @@
         "title": "BlobRef",
         "type": "object"
       },
+      "CacheProbe": {
+        "additionalProperties": false,
+        "description": "A call that can tell whether file pages sit in the page cache, which sandboxes on one\nhost share: `posix_fadvise` with DONTNEED, `preadv2` with RWF_NOWAIT, `cachestat` or\n`mincore`. `path` is the file it names when the tracer could resolve it; `count` the calls\nit stands for when several were merged.",
+        "properties": {
+          "count": {
+            "default": 1,
+            "minimum": 1,
+            "title": "Count",
+            "type": "integer"
+          },
+          "cpu": {
+            "title": "Cpu",
+            "type": "integer"
+          },
+          "cpu_seq": {
+            "title": "Cpu Seq",
+            "type": "integer"
+          },
+          "exec_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exec Id"
+          },
+          "op": {
+            "enum": [
+              "fadvise_dontneed",
+              "preadv2_nowait",
+              "cachestat",
+              "mincore"
+            ],
+            "title": "Op",
+            "type": "string"
+          },
+          "partial": {
+            "default": false,
+            "title": "Partial",
+            "type": "boolean"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Path"
+          },
+          "pid": {
+            "title": "Pid",
+            "type": "integer"
+          },
+          "ts_kernel": {
+            "title": "Ts Kernel",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "exec_id",
+          "pid",
+          "ts_kernel",
+          "cpu",
+          "cpu_seq",
+          "op",
+          "path",
+          "partial",
+          "count"
+        ],
+        "title": "CacheProbe",
+        "type": "object"
+      },
+      "CachedRate": {
+        "description": "The input price of `model` per million tokens with `cached_share` of it cached, the\nshare its past calls reported, or 90% when `assumed`.",
+        "properties": {
+          "assumed": {
+            "title": "Assumed",
+            "type": "boolean"
+          },
+          "cached_share": {
+            "title": "Cached Share",
+            "type": "number"
+          },
+          "input_usd": {
+            "title": "Input Usd",
+            "type": "number"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          }
+        },
+        "required": [
+          "model",
+          "cached_share",
+          "assumed",
+          "input_usd"
+        ],
+        "title": "CachedRate",
+        "type": "object"
+      },
       "CategoryFinding": {
         "additionalProperties": false,
         "properties": {
@@ -673,6 +789,389 @@
           "present"
         ],
         "title": "CategoryFinding",
+        "type": "object"
+      },
+      "ChannelChange": {
+        "additionalProperties": false,
+        "description": "One path of a shared folder that changed, with the agent the kernel records show wrote\nit, None when none did or several did, and those records' seqs.",
+        "properties": {
+          "agent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Agent"
+          },
+          "change": {
+            "enum": [
+              "added",
+              "modified",
+              "meta",
+              "removed",
+              "kind"
+            ],
+            "title": "Change",
+            "type": "string"
+          },
+          "content": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BlobRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "evidence": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Evidence",
+            "type": "array"
+          },
+          "kind": {
+            "enum": [
+              "file",
+              "dir",
+              "symlink",
+              "fifo",
+              "socket",
+              "other"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "integer"
+          },
+          "mtime_us": {
+            "title": "Mtime Us",
+            "type": "integer"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sha256"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target"
+          },
+          "timestomp": {
+            "default": false,
+            "title": "Timestomp",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path",
+          "change",
+          "kind",
+          "size",
+          "mode",
+          "mtime_us"
+        ],
+        "title": "ChannelChange",
+        "type": "object"
+      },
+      "ChannelInfo": {
+        "additionalProperties": false,
+        "description": "A channel of the run. A folder lives at `path`; `restored` is the archive of its files\nthe run started from, carried over from the series' last run.",
+        "properties": {
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "lifetime": {
+            "default": "run",
+            "enum": [
+              "run",
+              "series"
+            ],
+            "title": "Lifetime",
+            "type": "string"
+          },
+          "members": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Members",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Path"
+          },
+          "read_only": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Read Only",
+            "type": "array"
+          },
+          "restored": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BlobRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "members"
+        ],
+        "title": "ChannelInfo",
+        "type": "object"
+      },
+      "ChannelMessage": {
+        "additionalProperties": false,
+        "description": "A message posted to a board. The event's agent wrote it; `id` counts the board's\nmessages from 1. `call_id` is the tool call that posted it, None for a scripted post.",
+        "properties": {
+          "bytes": {
+            "minimum": 0,
+            "title": "Bytes",
+            "type": "integer"
+          },
+          "call_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Call Id"
+          },
+          "channel": {
+            "title": "Channel",
+            "type": "string"
+          },
+          "id": {
+            "minimum": 1,
+            "title": "Id",
+            "type": "integer"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/components/schemas/BlobRef"
+              }
+            ],
+            "title": "Text"
+          }
+        },
+        "required": [
+          "channel",
+          "id",
+          "text",
+          "bytes",
+          "call_id"
+        ],
+        "title": "ChannelMessage",
+        "type": "object"
+      },
+      "ChannelRead": {
+        "additionalProperties": false,
+        "description": "A board read by the event's agent: it was shown the messages after `after` through\n`through`, `count` of them. `through` is the board's last message then, unless the read\nwas too long for one call and left the rest for the next.",
+        "properties": {
+          "after": {
+            "minimum": 0,
+            "title": "After",
+            "type": "integer"
+          },
+          "call_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Call Id"
+          },
+          "channel": {
+            "title": "Channel",
+            "type": "string"
+          },
+          "count": {
+            "minimum": 0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "through": {
+            "minimum": 0,
+            "title": "Through",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "channel",
+          "after",
+          "through",
+          "count",
+          "call_id"
+        ],
+        "title": "ChannelRead",
+        "type": "object"
+      },
+      "ChannelSnapshot": {
+        "additionalProperties": false,
+        "description": "How a shared folder changed since the snapshot whose digest is `base`. It is written\nafter an exec of any member that may have changed it, and between execs for writes nobody's\nexec covered. `exec_id` is that exec. Changes past the inline ones are JSON lines in\n`more`; `truncated` means the entry cap stopped the walk. The last one, as the run closes\nthe folder, holds its files as a tar in `archive`, which the next run of a series starts\nfrom.",
+        "properties": {
+          "archive": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BlobRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "base": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base"
+          },
+          "bytes": {
+            "title": "Bytes",
+            "type": "integer"
+          },
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/ChannelChange"
+            },
+            "title": "Changes",
+            "type": "array"
+          },
+          "channel": {
+            "title": "Channel",
+            "type": "string"
+          },
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "duration_ms": {
+            "default": 0,
+            "title": "Duration Ms",
+            "type": "integer"
+          },
+          "entries": {
+            "title": "Entries",
+            "type": "integer"
+          },
+          "exec_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Exec Id"
+          },
+          "files": {
+            "title": "Files",
+            "type": "integer"
+          },
+          "more": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BlobRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "channel",
+          "exec_id",
+          "base",
+          "digest",
+          "entries",
+          "files",
+          "bytes",
+          "changes",
+          "more",
+          "truncated",
+          "duration_ms",
+          "archive"
+        ],
+        "title": "ChannelSnapshot",
         "type": "object"
       },
       "CheckResult": {
@@ -1060,6 +1559,188 @@
         "title": "ConfigText",
         "type": "object"
       },
+      "CostFigures": {
+        "description": "One run's cost in USD at list prices. `ceiling_usd` is what the caps allow, None when no\ncap applies; `stepped` says it counts one last step past a cost cap, which is checked before\neach step. `typical_usd` is the median of `runs` matching past runs, matched by `tier`: the\nsame scenario, or the same models and effort scaled by step budget. `high_usd` is their\n90th percentile, or twice the median when `doubled` (under 10 runs). `capped` of those runs\nhit a cap; `excluded` matched but recorded no cost. `priced` is false when no profile of\nthis side has a price, so its cost is not counted.",
+        "properties": {
+          "capped": {
+            "default": 0,
+            "title": "Capped",
+            "type": "integer"
+          },
+          "ceiling_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ceiling Usd"
+          },
+          "doubled": {
+            "default": false,
+            "title": "Doubled",
+            "type": "boolean"
+          },
+          "excluded": {
+            "default": 0,
+            "title": "Excluded",
+            "type": "integer"
+          },
+          "high_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "High Usd"
+          },
+          "priced": {
+            "default": true,
+            "title": "Priced",
+            "type": "boolean"
+          },
+          "runs": {
+            "default": 0,
+            "title": "Runs",
+            "type": "integer"
+          },
+          "stepped": {
+            "default": false,
+            "title": "Stepped",
+            "type": "boolean"
+          },
+          "tier": {
+            "default": "cap",
+            "enum": [
+              "scenario",
+              "models",
+              "cap"
+            ],
+            "title": "Tier",
+            "type": "string"
+          },
+          "typical_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Typical Usd"
+          }
+        },
+        "required": [
+          "typical_usd",
+          "high_usd",
+          "ceiling_usd",
+          "stepped",
+          "tier",
+          "runs",
+          "capped",
+          "excluded",
+          "doubled",
+          "priced"
+        ],
+        "title": "CostFigures",
+        "type": "object"
+      },
+      "CostTotal": {
+        "description": "Every run together, agents and monitor: the typical figure, the high one (each run at\nits high figure) and what the caps allow. None when a part of it is unknown.",
+        "properties": {
+          "ceiling_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ceiling Usd"
+          },
+          "high_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "High Usd"
+          },
+          "typical_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Typical Usd"
+          }
+        },
+        "required": [
+          "typical_usd",
+          "high_usd",
+          "ceiling_usd"
+        ],
+        "title": "CostTotal",
+        "type": "object"
+      },
+      "Cut": {
+        "additionalProperties": false,
+        "description": "Where a fork of several agents cut its origin: after the origin's event `seq`, by when\neach agent had taken `steps[agent]` steps. `keep_others` kept the agents other than `agent`\non their recorded answers until their own inputs changed.",
+        "properties": {
+          "agent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Agent"
+          },
+          "keep_others": {
+            "default": false,
+            "title": "Keep Others",
+            "type": "boolean"
+          },
+          "origin": {
+            "title": "Origin",
+            "type": "string"
+          },
+          "seq": {
+            "minimum": 0,
+            "title": "Seq",
+            "type": "integer"
+          },
+          "steps": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Steps",
+            "type": "object"
+          }
+        },
+        "required": [
+          "origin",
+          "seq"
+        ],
+        "title": "Cut",
+        "type": "object"
+      },
       "DeltaMessage": {
         "additionalProperties": false,
         "properties": {
@@ -1181,6 +1862,89 @@
         "title": "EndMessage",
         "type": "object"
       },
+      "Estimate": {
+        "description": "The cost of `samples` runs of each variant in `parts`. `confirm` says `aims run` asks\nbefore it starts: the high figure, or without one the ceiling, is above\n`confirm_above_usd`, or nothing bounds the cost. `lines` is the estimate in words.",
+        "properties": {
+          "confirm": {
+            "default": false,
+            "title": "Confirm",
+            "type": "boolean"
+          },
+          "confirm_above_usd": {
+            "default": 20.0,
+            "title": "Confirm Above Usd",
+            "type": "number"
+          },
+          "credits": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderCredit"
+            },
+            "title": "Credits",
+            "type": "array"
+          },
+          "lines": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "parts": {
+            "items": {
+              "$ref": "#/components/schemas/VariantCost"
+            },
+            "title": "Parts",
+            "type": "array"
+          },
+          "rates": {
+            "items": {
+              "$ref": "#/components/schemas/CachedRate"
+            },
+            "title": "Rates",
+            "type": "array"
+          },
+          "samples": {
+            "title": "Samples",
+            "type": "integer"
+          },
+          "scenario": {
+            "title": "Scenario",
+            "type": "string"
+          },
+          "total": {
+            "$ref": "#/components/schemas/CostTotal"
+          },
+          "unpriced": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Unpriced",
+            "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "scenario",
+          "samples",
+          "parts",
+          "total",
+          "rates",
+          "credits",
+          "unpriced",
+          "warnings",
+          "confirm_above_usd",
+          "confirm",
+          "lines"
+        ],
+        "title": "Estimate",
+        "type": "object"
+      },
       "Event": {
         "additionalProperties": false,
         "description": "One line of `events.jsonl`. `hash` covers every other field, `prev_hash` links the chain.",
@@ -1288,10 +2052,15 @@
           "agent.step",
           "audit.lost",
           "audit.spill",
+          "cache.probe",
+          "channel.message",
+          "channel.read",
+          "channel.snapshot",
           "exec.finished",
           "exec.started",
           "file.access",
           "file.setattr",
+          "file.sync",
           "file.write",
           "fs.snapshot",
           "ipc.event",
@@ -1308,6 +2077,7 @@
           "net.connect",
           "ns.event",
           "operator.action",
+          "plant.triggered",
           "proc.exec",
           "proc.exit",
           "proc.fork",
@@ -1321,6 +2091,9 @@
           "sandbox.archived",
           "sandbox.started",
           "sandbox.stopped",
+          "score.awareness",
+          "score.unexplained",
+          "score.unit",
           "sys.denied",
           "task.scored",
           "tool.call",
@@ -1355,6 +2128,18 @@
           "audit.spill": {
             "$ref": "#/components/schemas/AuditSpill"
           },
+          "cache.probe": {
+            "$ref": "#/components/schemas/CacheProbe"
+          },
+          "channel.message": {
+            "$ref": "#/components/schemas/ChannelMessage"
+          },
+          "channel.read": {
+            "$ref": "#/components/schemas/ChannelRead"
+          },
+          "channel.snapshot": {
+            "$ref": "#/components/schemas/ChannelSnapshot"
+          },
           "exec.finished": {
             "$ref": "#/components/schemas/ExecFinished"
           },
@@ -1366,6 +2151,9 @@
           },
           "file.setattr": {
             "$ref": "#/components/schemas/FileSetattr"
+          },
+          "file.sync": {
+            "$ref": "#/components/schemas/FileSync"
           },
           "file.write": {
             "$ref": "#/components/schemas/FileWrite"
@@ -1415,6 +2203,9 @@
           "operator.action": {
             "$ref": "#/components/schemas/OperatorAction"
           },
+          "plant.triggered": {
+            "$ref": "#/components/schemas/PlantTriggered"
+          },
           "proc.exec": {
             "$ref": "#/components/schemas/ProcExec"
           },
@@ -1454,6 +2245,15 @@
           "sandbox.stopped": {
             "$ref": "#/components/schemas/SandboxStopped"
           },
+          "score.awareness": {
+            "$ref": "#/components/schemas/ScoreAwareness"
+          },
+          "score.unexplained": {
+            "$ref": "#/components/schemas/ScoreUnexplained"
+          },
+          "score.unit": {
+            "$ref": "#/components/schemas/ScoreUnit"
+          },
           "sys.denied": {
             "$ref": "#/components/schemas/SysDenied"
           },
@@ -1476,10 +2276,15 @@
           "agent.step",
           "audit.lost",
           "audit.spill",
+          "cache.probe",
+          "channel.message",
+          "channel.read",
+          "channel.snapshot",
           "exec.finished",
           "exec.started",
           "file.access",
           "file.setattr",
+          "file.sync",
           "file.write",
           "fs.snapshot",
           "ipc.event",
@@ -1496,6 +2301,7 @@
           "net.connect",
           "ns.event",
           "operator.action",
+          "plant.triggered",
           "proc.exec",
           "proc.exit",
           "proc.fork",
@@ -1509,6 +2315,9 @@
           "sandbox.archived",
           "sandbox.started",
           "sandbox.stopped",
+          "score.awareness",
+          "score.unexplained",
+          "score.unit",
           "sys.denied",
           "task.scored",
           "tool.call",
@@ -2112,6 +2921,85 @@
           "ctime_us"
         ],
         "title": "FileSetattr",
+        "type": "object"
+      },
+      "FileSync": {
+        "additionalProperties": false,
+        "description": "A call that asks the kernel to make a file durable: `fsync`, `fdatasync`,\n`sync_file_range` or `syncfs`. `path` is the file the fd named when the tracer could\nresolve it, else None. `count` is the calls it stands for when several were merged.",
+        "properties": {
+          "call": {
+            "enum": [
+              "fsync",
+              "fdatasync",
+              "sync_file_range",
+              "syncfs"
+            ],
+            "title": "Call",
+            "type": "string"
+          },
+          "count": {
+            "default": 1,
+            "minimum": 1,
+            "title": "Count",
+            "type": "integer"
+          },
+          "cpu": {
+            "title": "Cpu",
+            "type": "integer"
+          },
+          "cpu_seq": {
+            "title": "Cpu Seq",
+            "type": "integer"
+          },
+          "exec_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exec Id"
+          },
+          "partial": {
+            "default": false,
+            "title": "Partial",
+            "type": "boolean"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Path"
+          },
+          "pid": {
+            "title": "Pid",
+            "type": "integer"
+          },
+          "ts_kernel": {
+            "title": "Ts Kernel",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "exec_id",
+          "pid",
+          "ts_kernel",
+          "cpu",
+          "cpu_seq",
+          "call",
+          "path",
+          "partial",
+          "count"
+        ],
+        "title": "FileSync",
         "type": "object"
       },
       "FileWrite": {
@@ -5179,6 +6067,89 @@
         "title": "PauseBody",
         "type": "object"
       },
+      "PlantTriggered": {
+        "additionalProperties": false,
+        "description": "A plant reached a tier for the event's agent, in the run `origin` that a score run\nscores. `seq` is the first event that set it off, the harm seq when the tier counts as\ntaken; `evidence` holds every such seq. `inherited` marks a canary a run of the series\nbefore made, used here.",
+        "properties": {
+          "category": {
+            "enum": [
+              "covert_communication",
+              "scorer_tampering",
+              "transcript_tampering",
+              "deceiving_operator",
+              "evading_checks",
+              "collective_over_own_task",
+              "drift",
+              "loop_or_confusion",
+              "fabricated_completion",
+              "constraint_violation",
+              "eval_awareness",
+              "alerting_operator",
+              "egress_attempt",
+              "privilege_escalation",
+              "monitor_manipulation"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "detail": {
+            "default": "",
+            "title": "Detail",
+            "type": "string"
+          },
+          "evidence": {
+            "items": {
+              "type": "integer"
+            },
+            "minItems": 1,
+            "title": "Evidence",
+            "type": "array"
+          },
+          "inherited": {
+            "default": false,
+            "title": "Inherited",
+            "type": "boolean"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "plant": {
+            "title": "Plant",
+            "type": "string"
+          },
+          "seq": {
+            "minimum": 0,
+            "title": "Seq",
+            "type": "integer"
+          },
+          "taken": {
+            "title": "Taken",
+            "type": "boolean"
+          },
+          "tier": {
+            "enum": [
+              "touched",
+              "used"
+            ],
+            "title": "Tier",
+            "type": "string"
+          }
+        },
+        "required": [
+          "plant",
+          "kind",
+          "category",
+          "tier",
+          "taken",
+          "seq",
+          "evidence",
+          "detail",
+          "inherited"
+        ],
+        "title": "PlantTriggered",
+        "type": "object"
+      },
       "Price": {
         "additionalProperties": false,
         "description": "USD per million tokens. `input` is charged on uncached input tokens only.",
@@ -6084,6 +7055,73 @@
         "title": "PromptsInfo",
         "type": "object"
       },
+      "ProviderCredit": {
+        "description": "What `provider` was paid in the runs on record, and with `[credits]` set for it, what is\nleft now and after the estimate's typical and high figures.",
+        "properties": {
+          "credit_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Credit Usd"
+          },
+          "left_after_high_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Left After High Usd"
+          },
+          "left_after_typical_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Left After Typical Usd"
+          },
+          "left_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Left Usd"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "spent_usd": {
+            "title": "Spent Usd",
+            "type": "number"
+          }
+        },
+        "required": [
+          "provider",
+          "spent_usd",
+          "credit_usd",
+          "left_usd",
+          "left_after_typical_usd",
+          "left_after_high_usd"
+        ],
+        "title": "ProviderCredit",
+        "type": "object"
+      },
       "PtraceEvent": {
         "additionalProperties": false,
         "description": "A ptrace request by `pid` against `target`, recorded when the kernel returns.\n\nIt proves the request was made and whether it was refused, not that the target changed.\n`errno` is set when it was refused. Peek requests can return negative data, so a negative\nreturn for them is not marked as a refusal.",
@@ -6275,10 +7313,39 @@
       },
       "ReplayDivergence": {
         "additionalProperties": false,
-        "description": "A tool call a fork ran again gave another output than the recording it replays. The\nmodel was given `recorded`; `line` is the first line that differs, counted from 1.",
+        "description": "What a fork rebuilt differs from the recording it replays.\n\nFor an `output`, a tool call ran again gave another output: the model was given\n`recorded`, and `line` is the first line that differs, counted from 1. For a `channel`, a\nshared object read again was at another version than in the origin: `channel` and `path`\nname it (a folder file, or a board's messages), `recorded_version` and `live_version` are\nthe file sha256 or the last board message id. `origin_seq` is the access in the origin.",
         "properties": {
           "call_id": {
-            "title": "Call Id",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Call Id"
+          },
+          "channel": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Channel"
+          },
+          "kind": {
+            "default": "output",
+            "enum": [
+              "output",
+              "channel"
+            ],
+            "title": "Kind",
             "type": "string"
           },
           "line": {
@@ -6302,12 +7369,49 @@
                 "$ref": "#/components/schemas/BlobRef"
               }
             ],
+            "default": "",
             "title": "Live"
           },
           "live_error": {
             "default": false,
             "title": "Live Error",
             "type": "boolean"
+          },
+          "live_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Live Version"
+          },
+          "origin_seq": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Origin Seq"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Path"
           },
           "recorded": {
             "anyOf": [
@@ -6318,6 +7422,7 @@
                 "$ref": "#/components/schemas/BlobRef"
               }
             ],
+            "default": "",
             "title": "Recorded"
           },
           "recorded_error": {
@@ -6325,13 +7430,33 @@
             "title": "Recorded Error",
             "type": "boolean"
           },
+          "recorded_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Recorded Version"
+          },
           "step": {
             "title": "Step",
             "type": "integer"
           },
           "tool": {
-            "title": "Tool",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tool"
           }
         },
         "required": [
@@ -6342,7 +7467,13 @@
           "live",
           "recorded_error",
           "live_error",
-          "line"
+          "line",
+          "kind",
+          "channel",
+          "path",
+          "recorded_version",
+          "live_version",
+          "origin_seq"
         ],
         "title": "ReplayDivergence",
         "type": "object"
@@ -6843,13 +7974,20 @@
       },
       "RunStarted": {
         "additionalProperties": false,
-        "description": "`kind` says what the run is: a scenario run, a monitor run over the sealed run `origin`\n(whose head hash was `origin_head`), or a model check. `monitor` is the identity hash of the\nmonitor that watches the run: its prompts, rubric, schemas, models, lanes, signal versions,\nrules and AIMS version; None when the run has no monitor.",
+        "description": "`kind` says what the run is: a scenario run, a monitor run over the sealed run `origin`\n(whose head hash was `origin_head`), a scoring of `origin`, or a model check. `monitor` is\nthe identity hash of the monitor that watches the run: its prompts, rubric, schemas, models,\nlanes, signal versions, rules and AIMS version; None when the run has no monitor.\n\n`truth` is the sha256 of the run's truth file, kept outside the log: what the scenario hid\nfrom the monitor, revealed when the run is scored.",
         "properties": {
           "agents": {
             "items": {
               "type": "string"
             },
             "title": "Agents",
+            "type": "array"
+          },
+          "channels": {
+            "items": {
+              "$ref": "#/components/schemas/ChannelInfo"
+            },
+            "title": "Channels",
             "type": "array"
           },
           "config": {
@@ -6859,12 +7997,24 @@
             "title": "Config",
             "type": "object"
           },
+          "cut": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Cut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "kind": {
             "default": "scenario",
             "enum": [
               "scenario",
               "monitor",
-              "models.check"
+              "models.check",
+              "score"
             ],
             "title": "Kind",
             "type": "string"
@@ -6919,6 +8069,30 @@
           "scenario": {
             "title": "Scenario",
             "type": "string"
+          },
+          "series": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Series"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "truth": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Truth"
           }
         },
         "required": [
@@ -6929,7 +8103,11 @@
           "kind",
           "origin",
           "origin_head",
-          "monitor"
+          "monitor",
+          "truth",
+          "series",
+          "channels",
+          "cut"
         ],
         "title": "RunStarted",
         "type": "object"
@@ -6993,7 +8171,8 @@
             "enum": [
               "scenario",
               "monitor",
-              "models.check"
+              "models.check",
+              "score"
             ],
             "title": "Kind",
             "type": "string"
@@ -7998,6 +9177,382 @@
         "title": "ScenarioRef",
         "type": "object"
       },
+      "ScoreAwareness": {
+        "additionalProperties": false,
+        "description": "Whether the event's agent said it thought it was being tested, by a classifier model\nover its words; `quote` is what it said, `evidence` where.",
+        "properties": {
+          "call_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Call Id"
+          },
+          "evidence": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Evidence",
+            "type": "array"
+          },
+          "finding": {
+            "enum": [
+              "yes",
+              "no",
+              "unclear"
+            ],
+            "title": "Finding",
+            "type": "string"
+          },
+          "quote": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/components/schemas/BlobRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Quote"
+          }
+        },
+        "required": [
+          "finding",
+          "quote",
+          "evidence",
+          "call_id"
+        ],
+        "title": "ScoreAwareness",
+        "type": "object"
+      },
+      "ScoreMatch": {
+        "additionalProperties": false,
+        "description": "How one monitor layer did on one unit: `detected` any flag on the agent, `category` a\nflag of the plant's category, `located` a flag whose evidence overlaps the trigger's; each\nanytime and, with `_before`, at or before the harm seq. `first_flag` is the first matching\nflag; `steps` and `seconds` the distance from the trigger to it.",
+        "properties": {
+          "category": {
+            "default": false,
+            "title": "Category",
+            "type": "boolean"
+          },
+          "category_before": {
+            "default": false,
+            "title": "Category Before",
+            "type": "boolean"
+          },
+          "detected": {
+            "default": false,
+            "title": "Detected",
+            "type": "boolean"
+          },
+          "detected_before": {
+            "default": false,
+            "title": "Detected Before",
+            "type": "boolean"
+          },
+          "first_flag": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "First Flag"
+          },
+          "importance": {
+            "anyOf": [
+              {
+                "maximum": 5,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Importance"
+          },
+          "layer": {
+            "enum": [
+              "signal",
+              "sweep",
+              "judge",
+              "llm",
+              "any"
+            ],
+            "title": "Layer",
+            "type": "string"
+          },
+          "located": {
+            "default": false,
+            "title": "Located",
+            "type": "boolean"
+          },
+          "located_before": {
+            "default": false,
+            "title": "Located Before",
+            "type": "boolean"
+          },
+          "seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Seconds"
+          },
+          "steps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Steps"
+          },
+          "suspicion": {
+            "anyOf": [
+              {
+                "maximum": 100,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Suspicion"
+          }
+        },
+        "required": [
+          "layer"
+        ],
+        "title": "ScoreMatch",
+        "type": "object"
+      },
+      "ScoreUnexplained": {
+        "additionalProperties": false,
+        "description": "A monitor flag no plant explains, for review. `label` is set once a person labels it.",
+        "properties": {
+          "category": {
+            "enum": [
+              "covert_communication",
+              "scorer_tampering",
+              "transcript_tampering",
+              "deceiving_operator",
+              "evading_checks",
+              "collective_over_own_task",
+              "drift",
+              "loop_or_confusion",
+              "fabricated_completion",
+              "constraint_violation",
+              "eval_awareness",
+              "alerting_operator",
+              "egress_attempt",
+              "privilege_escalation",
+              "monitor_manipulation"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "flag": {
+            "title": "Flag",
+            "type": "integer"
+          },
+          "importance": {
+            "maximum": 5,
+            "minimum": 1,
+            "title": "Importance",
+            "type": "integer"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Label"
+          },
+          "layer": {
+            "enum": [
+              "signal",
+              "sweep",
+              "judge"
+            ],
+            "title": "Layer",
+            "type": "string"
+          }
+        },
+        "required": [
+          "flag",
+          "layer",
+          "category",
+          "importance",
+          "label"
+        ],
+        "title": "ScoreUnexplained",
+        "type": "object"
+      },
+      "ScoreUnit": {
+        "additionalProperties": false,
+        "description": "One agent of the scored run: a positive when it took a plant, a negative when the run\nhas no plant. `plants` are the ones it took; `harm_seq` the first time it took one.",
+        "properties": {
+          "categories": {
+            "items": {
+              "enum": [
+                "covert_communication",
+                "scorer_tampering",
+                "transcript_tampering",
+                "deceiving_operator",
+                "evading_checks",
+                "collective_over_own_task",
+                "drift",
+                "loop_or_confusion",
+                "fabricated_completion",
+                "constraint_violation",
+                "eval_awareness",
+                "alerting_operator",
+                "egress_attempt",
+                "privilege_escalation",
+                "monitor_manipulation"
+              ],
+              "type": "string"
+            },
+            "title": "Categories",
+            "type": "array"
+          },
+          "eval_aware": {
+            "anyOf": [
+              {
+                "enum": [
+                  "yes",
+                  "no",
+                  "unclear"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Eval Aware"
+          },
+          "harm_seq": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Harm Seq"
+          },
+          "matches": {
+            "items": {
+              "$ref": "#/components/schemas/ScoreMatch"
+            },
+            "title": "Matches",
+            "type": "array"
+          },
+          "plants": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Plants",
+            "type": "array"
+          },
+          "positive": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Positive"
+          },
+          "role": {
+            "enum": [
+              "subject",
+              "confederate"
+            ],
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "positive",
+          "plants",
+          "categories",
+          "harm_seq",
+          "matches",
+          "eval_aware"
+        ],
+        "title": "ScoreUnit",
+        "type": "object"
+      },
+      "Series": {
+        "additionalProperties": false,
+        "description": "A run's place in a series: the `index`th run of series `name`, after run `previous`.",
+        "properties": {
+          "index": {
+            "minimum": 0,
+            "title": "Index",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "previous": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Previous"
+          }
+        },
+        "required": [
+          "name",
+          "index"
+        ],
+        "title": "Series",
+        "type": "object"
+      },
       "SessionStart": {
         "properties": {
           "token": {
@@ -8029,6 +9584,31 @@
           "shas"
         ],
         "title": "Shas",
+        "type": "object"
+      },
+      "Spend": {
+        "description": "What each provider was paid in the runs on record, against the `[credits]` of the\nconfig files; `lines` says it in words.",
+        "properties": {
+          "lines": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "providers": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderCredit"
+            },
+            "title": "Providers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "providers",
+          "lines"
+        ],
+        "title": "Spend",
         "type": "object"
       },
       "StartFork": {
@@ -8912,6 +10492,68 @@
           "restarts"
         ],
         "title": "TracerHealth",
+        "type": "object"
+      },
+      "VariantCost": {
+        "description": "One run of one variant. `monitor` is None when the monitor is off; `steps` is the median\nnumber of steps each agent took in past runs of the same scenario.",
+        "properties": {
+          "agents": {
+            "$ref": "#/components/schemas/CostFigures"
+          },
+          "monitor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CostFigures"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "monitor_preset": {
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "signals",
+                  "standard",
+                  "research"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Monitor Preset"
+          },
+          "steps": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "title": "Steps",
+            "type": "object"
+          },
+          "variant": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Variant"
+          }
+        },
+        "required": [
+          "variant",
+          "agents",
+          "monitor",
+          "monitor_preset",
+          "steps"
+        ],
+        "title": "VariantCost",
         "type": "object"
       },
       "VerificationOut": {
@@ -9938,7 +11580,8 @@
                   "enum": [
                     "scenario",
                     "monitor",
-                    "models.check"
+                    "models.check",
+                    "score"
                   ],
                   "type": "string"
                 },
@@ -12137,6 +13780,171 @@
         ]
       }
     },
+    "/api/scenarios/{source}/{name}/estimate": {
+      "get": {
+        "description": "What `samples` runs of the scenario cost, of one variant or with `variants=all` of each:\nwhat the caps allow, and the typical and high cost of past runs.",
+        "operationId": "estimate_scenario",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source",
+            "required": true,
+            "schema": {
+              "title": "Source",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "variant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Variant"
+            }
+          },
+          {
+            "in": "query",
+            "name": "variants",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "const": "all",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Variants"
+            }
+          },
+          {
+            "in": "query",
+            "name": "samples",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Samples",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "profile",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Profile"
+            }
+          },
+          {
+            "in": "query",
+            "name": "monitor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "off",
+                    "signals",
+                    "standard",
+                    "research"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Monitor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Estimate"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not signed in"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Invalid request"
+          }
+        },
+        "summary": "Estimate Scenario",
+        "tags": [
+          "scenarios"
+        ]
+      }
+    },
     "/api/scenarios/{source}/{name}/files": {
       "get": {
         "operationId": "list_files",
@@ -12756,6 +14564,57 @@
         "summary": "Start Session",
         "tags": [
           "session"
+        ]
+      }
+    },
+    "/api/spend": {
+      "get": {
+        "operationId": "get_spend",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Spend"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not signed in"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Invalid request"
+          }
+        },
+        "summary": "Get Spend",
+        "tags": [
+          "runs"
         ]
       }
     },

@@ -101,6 +101,40 @@ def verify(
     typer.echo(f"ok: {result.events} events, {state}, head {result.head}")
 
 
+@app.command("check")
+def check_plants(
+    run: Annotated[str, typer.Argument(help="Run id.")],
+    runs_dir: Annotated[Path, typer.Option(help="Directory that holds the runs.")] = Path("runs"),
+    json_out: Annotated[bool, typer.Option("--json", help="Print JSON.")] = False,
+) -> None:
+    """Report which plants each agent of a sealed run took, from its log and truth file."""
+    import asyncio
+    import json
+
+    from aims.events import LocalEventStore
+    from aims.run.score import CheckError, check_run
+
+    async def main() -> list[Any]:
+        async with await LocalEventStore.open(runs_dir) as store:
+            return await check_run(store, run)
+
+    try:
+        rows = asyncio.run(main())
+    except (CheckError, KeyError) as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(EXIT_FAILED) from None
+    if json_out:
+        typer.echo(json.dumps([row.as_dict() for row in rows], ensure_ascii=False))
+        return
+    if not rows:
+        typer.echo("no plants taken")
+        return
+    for row in rows:
+        state = "took" if row.taken else "touched"
+        seqs = ",".join(str(seq) for seq in row.evidence)
+        typer.echo(f"{row.agent} {state} {row.plant} ({row.kind}, {row.tier}) at {row.seq}: {seqs}")
+
+
 @models_app.command("list")
 def models_list(config: ConfigOption = None) -> None:
     """Show the model profiles and whether their keys are set."""
@@ -213,9 +247,12 @@ def scenario_check(
     path: Annotated[Path, typer.Argument(help="The scenario file.")],
     config: ConfigOption = None,
     profile: Annotated[str | None, typer.Option(help="Profile for every agent.")] = None,
+    runs_dir: Annotated[
+        Path, typer.Option(help="Directory of past runs the cost estimate reads.")
+    ] = Path("runs"),
 ) -> None:
     """Validate a scenario file, the profiles and tools it names, and its monitor: the
-    rules, the signal options and the monitor's models."""
+    rules, the signal options and the monitor's models. Then estimate what a run costs."""
     from aims.run.runner import check
     from aims.scenario import ScenarioError, load
 
@@ -227,6 +264,16 @@ def scenario_check(
         problems = str(e).splitlines()
     else:
         problems += _monitor_problems(settings, bundle, profile)
+        if bundle.scenario.plants:
+            from aims.run import truth
+
+            try:
+                prepared = truth.prepare(bundle, seed=b"scenario-check")
+            except Exception as e:
+                problems.append(f"plants: {type(e).__name__}: {e}")
+            else:
+                for plant in prepared.plants.values():
+                    problems += list(plant.lint())
     for problem in problems:
         typer.echo(f"error: {problem}", err=True)
     if problems:
@@ -234,6 +281,42 @@ def scenario_check(
     s = bundle.scenario
     agents = ", ".join(a.id for a in s.agents)
     typer.echo(f"ok: {s.name}, agents {agents}, digest {bundle.digest[:16]}")
+    _echo_estimate(settings, [bundle], runs_dir, profile=profile)
+
+
+def _echo_estimate(
+    settings: Any,
+    bundles: list[Any],
+    runs_dir: Path,
+    *,
+    profile: str | None = None,
+    preset: Any = None,
+    samples: int = 1,
+    json_out: bool = False,
+) -> None:
+    """Print the cost estimate of `samples` runs of each bundle, from the runs under
+    `runs_dir`."""
+    import asyncio
+    import json
+
+    from aims.models import ProfileError
+    from aims.monitor.config import MonitorConfigError
+    from aims.prompts import TextError
+    from aims.run.estimate import estimate_runs, load_history
+
+    try:
+        found = asyncio.run(load_history(runs_dir))
+        cost = estimate_runs(
+            found, settings, bundles, profile=profile, preset=preset, samples=samples
+        )
+    except (MonitorConfigError, ProfileError, TextError) as e:
+        typer.echo(f"no cost estimate: {e}", err=True)
+        raise typer.Exit(EXIT_FAILED) from None
+    if json_out:
+        typer.echo(json.dumps(cost.model_dump(mode="json"), ensure_ascii=False))
+        return
+    for line in cost.lines:
+        typer.echo(line)
 
 
 def _monitor_problems(settings: Any, bundle: Any, profile: str | None) -> list[str]:
@@ -312,12 +395,27 @@ def run(
         bool, typer.Option("--no-server", help="Do not ship to a local `aims ui`.")
     ] = False,
     monitor: MonitorPresetOption = None,
+    variant: Annotated[
+        str | None, typer.Option("--variant", help="A named scenario variant to apply.")
+    ] = None,
+    series: Annotated[
+        str | None,
+        typer.Option("--series", help="Name of a series whose runs continue each other."),
+    ] = None,
+    runs: Annotated[
+        int, typer.Option("--runs", min=1, help="Runs to make in the series, one after another.")
+    ] = 1,
+    yes: Annotated[
+        bool, typer.Option("--yes", help="Start even when the cost estimate is above the limit.")
+    ] = False,
 ) -> None:
     """Run a scenario, or fork a recorded run at a step.
 
     With a control plane (a local `aims ui`, or --server) the runs ship to it and take its
     pause, inject and kill. The monitor's flags, pauses and verdict show in the live view, and
     as JSON lines with --json. Under human oversight a pause asks at the terminal.
+
+    With --series, --runs K makes K runs in a row, each continuing from the one before it.
     """
     import asyncio
 
@@ -328,6 +426,17 @@ def run(
         raise typer.BadParameter("give a scenario file or --replay", param_hint="SCENARIO")
     if replay is None and (fork_at is not None or strict_env or inject is not None):
         raise typer.BadParameter("needs --replay", param_hint="--fork-at/--strict-env/--inject")
+    if series is None and runs != 1:
+        raise typer.BadParameter("needs --series", param_hint="--runs")
+    if series is not None:
+        if not series.strip():
+            raise typer.BadParameter("a series needs a name", param_hint="--series")
+        if replay is not None:
+            raise typer.BadParameter("runs a scenario, not a replay", param_hint="--series")
+        if samples > 1:
+            raise typer.BadParameter(
+                "use --runs for a series, not --samples", param_hint="--samples"
+            )
     link = None if no_server else _connection(server, token_file, required=server is not None)
     code = asyncio.run(
         _run(
@@ -347,6 +456,10 @@ def run(
             inject=inject,
             link=link,
             monitor=monitor,
+            variant=variant,
+            series=series,
+            runs=runs,
+            yes=yes,
         )
     )
     raise typer.Exit(code)
@@ -384,11 +497,14 @@ async def _run(**o: Any) -> int:
     from rich.logging import RichHandler
     from rich.markup import escape
 
-    from aims.events import LocalEventStore
+    from aims.channels import archives
+    from aims.events import LocalEventStore, Series
     from aims.models import ProfileError
     from aims.monitor.config import MonitorConfigError
     from aims.node.client import ControlClient
     from aims.node.link import Link
+    from aims.run import truth
+    from aims.run.estimate import estimate_runs, guard, history
     from aims.run.fork import (
         check_fork,
         fork_profiles,
@@ -396,6 +512,7 @@ async def _run(**o: Any) -> int:
         live_profiles,
         load_origin,
         planner,
+        same_scenario,
     )
     from aims.run.job import monitor_for, monitor_profiles
     from aims.run.runner import Bench, Fork, Options, Result, RunError, Runner, agent_profile, check
@@ -434,14 +551,14 @@ async def _run(**o: Any) -> int:
                 if step is None:
                     step = min(origin.steps.values(), default=0)
                 check_fork(origin, step)
-                bundle = origin.bundle
-                if o["scenario"] is not None and load(o["scenario"]).digest != bundle.digest:
+                bundle = origin.full_bundle or origin.bundle
+                if o["scenario"] is not None and not same_scenario(origin, load(o["scenario"])):
                     return fail(f"{o['scenario']} changed since run {origin.run_id} was recorded")
                 fork_profile = o["profile"]
                 if fork_profile is not None:
                     models.get(fork_profile)
             else:
-                bundle = load(o["scenario"])
+                bundle = load(o["scenario"], o["variant"])
                 problems = check(bundle, models, o["profile"], prompts)
                 if problems:
                     for problem in problems:
@@ -479,6 +596,24 @@ async def _run(**o: Any) -> int:
                             " monitor: {preset: signals} in the scenario, or --monitor signals"
                         )
                     )
+        cost = None
+        try:
+            cost = estimate_runs(
+                await history(store),
+                settings,
+                [bundle],
+                profile=o["profile"],
+                preset=o["monitor"],
+                samples=o["samples"] * o.get("runs", 1),
+            )
+        except (MonitorConfigError, ProfileError, TextError) as e:
+            err.print(f"[yellow]no cost estimate:[/] {escape(str(e))}")
+        if cost is not None:
+            if o["json_out"]:
+                typer.echo(json.dumps({"type": "estimate", **cost.model_dump(mode="json")}))
+            else:
+                for text in cost.lines:
+                    err.print(escape(text), highlight=False)
         terminal = sys.stdin.isatty() and sys.stderr.isatty()
         interactive = terminal and not o["quiet"] and not o["json_out"]
         human = monitor is not None and monitor.oversight == "human"
@@ -487,6 +622,15 @@ async def _run(**o: Any) -> int:
                 "human oversight waits for a person: run it in a terminal without --json or"
                 " --quiet, or link the run to an aims ui with --server"
             )
+        if cost is not None:
+            refused = guard(
+                cost,
+                yes=o["yes"],
+                tty=terminal,
+                ask=lambda q: typer.confirm(q, default=False, err=True),
+            )
+            if refused is not None:
+                return fail(escape(refused))
         try:
             backend = await DockerBackend.open(audit=o["audit"])
         except (SandboxError, Exception) as e:
@@ -501,7 +645,8 @@ async def _run(**o: Any) -> int:
                 prompts=prompts,
                 config_files=settings.layers.digests(),
             )
-            view = None if o["quiet"] or o["json_out"] else LiveView(store, bench.bus)
+            steps = cost.parts[0].steps if cost is not None else None
+            view = None if o["quiet"] or o["json_out"] else LiveView(store, bench.bus, steps)
             lines = JsonLines(store, typer.echo) if o["json_out"] else None
             prompt = HumanPrompt(err) if human and interactive else None
 
@@ -511,18 +656,28 @@ async def _run(**o: Any) -> int:
                 if lines is not None:
                     lines.add(run_id)
 
-            group = uuid.uuid4().hex[:12] if o["samples"] > 1 else None
-            runners: list[Runner] = []
-            for i in range(o["samples"]):
+            group = uuid.uuid4().hex[:12] if o["samples"] > 1 and o["series"] is None else None
+
+            def make(
+                i: int,
+                series_run: Series | None = None,
+                inherited: list[dict[str, Any]] | None = None,
+                restored: dict[str, bytes] | None = None,
+            ) -> Runner:
                 options = Options(
                     profile=o["profile"],
                     keep=o["keep"],
                     group=group,
                     sample=i if group else None,
-                    samples=o["samples"],
+                    samples=o["samples"] if series_run is None else 1,
+                    variant=o["variant"],
                 )
                 kwargs: dict[str, Any] = {}
-                if origin is not None:
+                if series_run is not None:
+                    options.series = series_run
+                    options.inherited = inherited
+                    options.restored = restored
+                elif origin is not None:
                     fork = Fork(
                         origin=origin.run_id,
                         step=step,
@@ -533,6 +688,8 @@ async def _run(**o: Any) -> int:
                         profile=o["profile"],
                     )
                     options.fork = fork
+                    options.seed = origin.seed
+                    options.inherited = origin.inherited
                     kwargs = {
                         "profiles": fork_profiles(bench, origin, fork),
                         "schedules": fork_schedules(origin, fork),
@@ -542,7 +699,9 @@ async def _run(**o: Any) -> int:
                 made = Runner(bench, bundle, options, on_start=started, monitor=monitor, **kwargs)
                 if prompt is not None:
                     made.human = prompt.hook(made)
-                runners.append(made)
+                return made
+
+            runners: list[Runner] = []
             link = None
             if linked:
                 url, token = o["link"]
@@ -555,8 +714,6 @@ async def _run(**o: Any) -> int:
                     ),
                 )
                 await link.start()
-                for r in runners:
-                    link.track(r)
             gate = asyncio.Semaphore(o["parallel"])
             stops = 0
             main = asyncio.current_task()
@@ -584,21 +741,51 @@ async def _run(**o: Any) -> int:
                     except RunError as e:
                         return Result(r.run_id, "failed", str(e))
 
+            async def execute(batch: list[Runner]) -> list[Result]:
+                if view is None:
+                    return list(await asyncio.gather(*(one(r) for r in batch)))
+                with Live(view, console=err, refresh_per_second=4) as live:
+                    if prompt is not None:
+                        prompt.live = live
+                    try:
+                        found = list(await asyncio.gather(*(one(r) for r in batch)))
+                        await asyncio.sleep(0.3)
+                        return found
+                    finally:
+                        if prompt is not None:
+                            prompt.live = None
+
             results: list[Result] = []
             try:
                 if view is not None:
                     view.start()
-                    with Live(view, console=err, refresh_per_second=4) as live:
-                        if prompt is not None:
-                            prompt.live = live
-                        try:
-                            results = list(await asyncio.gather(*(one(r) for r in runners)))
-                            await asyncio.sleep(0.3)
-                        finally:
-                            if prompt is not None:
-                                prompt.live = None
+                if o["series"] is not None:
+                    previous = None
+                    inherited = None
+                    restored = None
+                    for i in range(o["runs"]):
+                        made = make(
+                            i,
+                            Series(name=o["series"], index=i, previous=previous),
+                            inherited,
+                            restored,
+                        )
+                        runners.append(made)
+                        if link is not None:
+                            link.track(made)
+                        found = await execute([made])
+                        results.extend(found)
+                        if not found or found[0].status != "completed" or found[0].run_id is None:
+                            break
+                        previous = found[0].run_id
+                        inherited = truth.inherit(store.root / previous)
+                        restored = await archives(store, previous)
                 else:
-                    results = list(await asyncio.gather(*(one(r) for r in runners)))
+                    runners.extend(make(i) for i in range(o["samples"]))
+                    if link is not None:
+                        for r in runners:
+                            link.track(r)
+                    results = await execute(runners)
             except asyncio.CancelledError:
                 err.print("[red]killed the sandboxes; the runs are sealed as cancelled[/]")
                 return EXIT_CANCELLED
@@ -1370,3 +1557,73 @@ def openapi(
         typer.echo(text, nl=False)
     else:
         out.write_text(text)
+
+
+@app.command("estimate")
+def estimate_cmd(
+    scenario: Annotated[Path, typer.Argument(help="The scenario file.")],
+    config: ConfigOption = None,
+    runs_dir: Annotated[Path, typer.Option(help="Directory of past runs.")] = Path("runs"),
+    profile: Annotated[str | None, typer.Option(help="Profile for every agent.")] = None,
+    samples: Annotated[int, typer.Option(min=1, help="Runs of each variant.")] = 1,
+    variant: Annotated[
+        str | None, typer.Option("--variant", help="A named scenario variant to apply.")
+    ] = None,
+    variants: Annotated[
+        str | None,
+        typer.Option("--variants", help="all, or a comma separated list of variants."),
+    ] = None,
+    monitor: MonitorPresetOption = None,
+    json_out: Annotated[bool, typer.Option("--json", help="Print JSON.")] = False,
+) -> None:
+    """Estimate what runs of a scenario cost: what the caps allow, and the typical and high
+    cost of past runs of the same scenario or models."""
+    from aims.scenario import ScenarioError, load
+
+    _preset(monitor)
+    if variant is not None and variants is not None:
+        raise typer.BadParameter("use --variant or --variants", param_hint="--variants")
+    settings = _settings(config)
+    try:
+        names: list[str | None] = [variant]
+        if variants is not None:
+            declared = list(load(scenario).scenario.variants)
+            names = list(declared if variants == "all" else variants.split(","))
+            if not names:
+                raise typer.BadParameter("the scenario has no variants", param_hint="--variants")
+        bundles = [load(scenario, n.strip() if n else None) for n in names]
+    except ScenarioError as e:
+        for problem in e.problems:
+            typer.echo(f"error: {problem}", err=True)
+        raise typer.Exit(EXIT_FAILED) from None
+    _echo_estimate(
+        settings,
+        bundles,
+        runs_dir,
+        profile=profile,
+        preset=monitor,
+        samples=samples,
+        json_out=json_out,
+    )
+
+
+@app.command("spend")
+def spend_cmd(
+    config: ConfigOption = None,
+    runs_dir: Annotated[Path, typer.Option(help="Directory that holds the runs.")] = Path("runs"),
+    json_out: Annotated[bool, typer.Option("--json", help="Print JSON.")] = False,
+) -> None:
+    """Show what each provider was paid in the runs on record, against the [credits] of the
+    config files."""
+    import asyncio
+    import json
+
+    from aims.run.estimate import load_history, spend, spend_lines
+
+    settings = _settings(config)
+    credits = spend(asyncio.run(load_history(runs_dir)), settings.credits)
+    if json_out:
+        typer.echo(json.dumps([c.model_dump(mode="json") for c in credits]))
+        return
+    for line in spend_lines(credits):
+        typer.echo(line)

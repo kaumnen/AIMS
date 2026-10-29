@@ -254,6 +254,7 @@ class SignalEngine:
     def _add(self, active: _Active, hit: Hit, event: Event | None, batch: _Batch) -> None:
         name = active.signal.name
         agent = hit.agent_id if hit.agent_id is not None else (event.agent_id if event else None)
+        at = None if event is None else event.ts.timestamp()
         importance = min(5, max(1, active.importance or hit.importance))
         evidence = [s for s in hit.evidence if s >= 0] or ([event.seq] if event else [])
         if not evidence:
@@ -292,12 +293,20 @@ class SignalEngine:
         rises = hit.importance > entry.flagged_importance
         new_sub = hit.subcategory not in entry.subcategories
         if entry.count == 1 or rises or new_sub:
-            self._flag(ident, entry, hit, hit, batch, final=False)
+            self._flag(ident, entry, hit, hit, batch, final=False, at=at)
         elif _power_of_ten(entry.count):
-            self._flag(ident, entry, entry.lead, hit, batch, final=False)
+            self._flag(ident, entry, entry.lead, hit, batch, final=False, at=at)
 
     def _flag(
-        self, ident: _Ident, entry: _Key, about: Hit, last: Hit, batch: _Batch, *, final: bool
+        self,
+        ident: _Ident,
+        entry: _Key,
+        about: Hit,
+        last: Hit,
+        batch: _Batch,
+        *,
+        final: bool,
+        at: float | None = None,
     ) -> None:
         """Flag `ident`, described by the hit `about`, with `last` the latest hit. A key
         flagged again in the same batch keeps one draft, about its most important hit."""
@@ -341,3 +350,13 @@ class SignalEngine:
         entry.flagged_importance = max(entry.flagged_importance, about.importance)
         entry.subcategories.add(last.subcategory)
         batch.put(ident, Draft(flag, agent), about)
+        # A narrow opt-in hook: signals that cross others (joint_action) see each flag as it is
+        # written, while every other signal keeps its feed-only interface.
+        for active in self.signals:
+            hook = getattr(active.signal, "saw_flag", None)
+            if hook is None:
+                continue
+            try:
+                hook(flag, agent, at)
+            except Exception:
+                log.exception("signal %s could not take in a flag", active.signal.name)

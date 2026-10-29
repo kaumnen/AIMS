@@ -73,7 +73,9 @@ class Rule(_Strict):
     when any item does (OR). A field path may end in `|modifier` (glob, contains, startswith,
     endswith, re, cidr, gt, gte, lt, lte, any, all). `filter` maps in the same form exclude what
     they match. Derived fields such as `agent_written` or `phase` are matchable too. `key` is a
-    `{field}` template for deduplication.
+    `{field}` template for deduplication. `count` matches only once that many matches by one
+    agent fall within `window_s` (over the whole run when it is None); `distinct`, a field path
+    or true, counts distinct values rather than events.
     """
 
     id: str = Field(min_length=1)
@@ -89,6 +91,9 @@ class Rule(_Strict):
     subcategory: str | None = None
     importance: int = Field(ge=1, le=5)
     key: str | None = None
+    count: int = Field(default=1, ge=1)
+    window_s: float | None = Field(default=None, gt=0)
+    distinct: str | bool = False
     tags: list[str] = Field(default_factory=list)
     falsepositives: list[str] = Field(default_factory=list)
     enabled: bool = True

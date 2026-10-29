@@ -18,10 +18,13 @@ from pydantic import JsonValue
 
 from aims import __version__
 from aims.agent import CONTINUE, DENY, Agent, Gate, OpenGate, ReplayPlan, RunBudget, Verdict
+from aims.channels import Board, Channel, ChannelError, ChannelSetup, tool_names, tool_texts
+from aims.channels import build as build_channel
 from aims.events import (
     MAX_INT,
     AgentEnd,
     AgentFinished,
+    ChannelMessage,
     Draft,
     LocalEventStore,
     OperatorAction,
@@ -31,6 +34,7 @@ from aims.events import (
     RunLocked,
     RunStarted,
     RunStatus,
+    Series,
     TaskScored,
 )
 from aims.models import (
@@ -46,19 +50,22 @@ from aims.monitor.core import HumanRequest, Monitor
 from aims.monitor.gate import MonitorGate
 from aims.monitor.setup import ResolvedMonitor
 from aims.prompts import AgentTexts, Prompts, TextError
+from aims.run import truth
 from aims.run.control import ControlGate
+from aims.run.script import Post, ScriptedAgent, Watch
 from aims.sandbox import (
     AGENT_UID,
+    MASK_PROC,
     RUNNER_UID,
     AuditedSandbox,
     ExecResult,
     SandboxBackend,
     SandboxSpec,
 )
-from aims.sandbox.base import RUNNER_DIR, TOOLBOX
+from aims.sandbox.base import RUNNER_DIR, TOOLBOX, Mount
 from aims.scenario import AgentConfig, Bundle, Scenario
 from aims.scenario.model import HOME
-from aims.tools import UnknownTool, load_tools
+from aims.tools import Tool, UnknownTool, load_tools
 
 log = logging.getLogger("aims.run")
 
@@ -107,6 +114,12 @@ class Options:
     sample: int | None = None
     samples: int = 1
     fork: Fork | None = None
+    variant: str | None = None
+    seed: bytes | None = None
+    inherited: list[dict[str, JsonValue]] | None = None
+    series: Series | None = None
+    restored: dict[str, bytes] | None = None
+    """The archive each series folder starts from, by channel name (see `channels.archives`)."""
 
 
 @dataclass(slots=True)
@@ -152,26 +165,39 @@ def agent_profile(models: ModelsConfig, agent: AgentConfig, override: str | None
 
 @dataclass(frozen=True, slots=True)
 class Texts:
-    """What one agent reads from the harness: the loop's texts and each of its tools' texts."""
+    """What one agent reads from the harness: the loop's texts, each of its tools' texts and
+    each of its channel tools' texts."""
 
     agent: AgentTexts
     tools: dict[str, dict[str, str]]
+    channels: dict[str, dict[str, str]] = field(default_factory=dict)
 
     def snapshot(self) -> dict[str, JsonValue]:
         tools: dict[str, JsonValue] = {name: dict(t) for name, t in self.tools.items()}
-        return {"agent": self.agent.model_dump(), "tools": tools}
+        out: dict[str, JsonValue] = {"agent": self.agent.model_dump(), "tools": tools}
+        if self.channels:
+            out["channels"] = {name: dict(t) for name, t in self.channels.items()}
+        return out
 
     @classmethod
     def restore(cls, value: Any) -> Texts:
-        return cls(AgentTexts.model_validate(value["agent"]), dict(value["tools"]))
+        agent = AgentTexts.model_validate(value["agent"])
+        return cls(agent, dict(value["tools"]), dict(value.get("channels") or {}))
 
 
-def resolve_texts(prompts: Prompts, agent: AgentConfig) -> Texts:
+def resolve_texts(prompts: Prompts, agent: AgentConfig, scenario: Scenario | None = None) -> Texts:
     """The texts of `agent`: the defaults, then `prompts` (the config files), then the agent's
-    own."""
+    own. With `scenario`, the texts of its channels' tools too, which sit under the tools'
+    names like any tool's."""
     layered = prompts.under(agent.prompts)
-    tools = load_tools(agent.tool_names, layered.tools)
-    return Texts(layered.agent_texts(), {t.name: dict(t.text) for t in tools})
+    channels: dict[str, dict[str, str]] = {}
+    own = layered.tools
+    if scenario is not None:
+        channels = tool_texts(scenario, agent.id, layered.tools)
+        skip = {*channels, *(tool_names(scenario) - set(agent.tool_names))}
+        own = {name: t for name, t in layered.tools.items() if name not in skip}
+    tools = load_tools(agent.tool_names, own)
+    return Texts(layered.agent_texts(), {t.name: dict(t.text) for t in tools}, channels)
 
 
 def check(
@@ -193,7 +219,7 @@ def check(
                 f"agent {agent.id}: compaction needs context_tokens in profile {p.name}"
             )
         try:
-            resolve_texts(prompts or Prompts(), agent)
+            resolve_texts(prompts or Prompts(), agent, bundle.scenario)
         except (UnknownTool, TextError) as e:
             problems.append(f"agent {agent.id}: {e}")
     return problems
@@ -221,11 +247,15 @@ class Runner:
         run_id: str | None = None,
         monitor: ResolvedMonitor | None = None,
         human: Callable[[HumanRequest], Awaitable[None]] | None = None,
+        post: Post | None = None,
     ) -> None:
         self.bench = bench
         self.wanted_id = run_id
         self.bundle = bundle
         self.scenario = bundle.scenario
+        self.public_bundle = bundle
+        self.public_scenario = bundle.scenario
+        self.prepared: truth.Prepared | None = None
         self.options = options
         self.given_profiles = profiles
         self.given_texts = texts or {}
@@ -235,25 +265,34 @@ class Runner:
         self.on_start = on_start
         self.watch = monitor
         self.human = human
+        self.post = post
         self.monitor: Monitor | None = None
         self.run_id: str | None = None
         self.sandboxes: dict[str, AuditedSandbox] = {}
         self.agents: dict[str, Agent] = {}
+        self.scripted: dict[str, ScriptedAgent] = {}
         self.cancelled = False
         self.killed = False
         self.kill_reason: str | None = None
         self.finished = False
         self._control = ControlGate(bench.gate)
         self._agents_task: asyncio.Task[Any] | None = None
+        self._agent_tasks: dict[str, asyncio.Task[Any]] = {}
         self._killing: asyncio.Future[None] | None = None
         self._clients: list[ModelClient] = []
         self._untap: Callable[[], None] | None = None
         self._agents_done = False
         self._judged = False
         self._monitor_closed = False
+        self._plants_stopped = False
+        self.channels: dict[str, Channel] = {}
+        self.archives: dict[str, bytes] = {}
+        self._channels_closed = False
 
     def cancel(self) -> None:
         self.cancelled = True
+        for task in self._agent_tasks.values():
+            task.cancel()
         if self._agents_task is not None:
             self._agents_task.cancel()
 
@@ -288,6 +327,8 @@ class Runner:
                 await sb.stop("killed", reason)
             except Exception as e:
                 log.warning("killing the sandbox of agent %s failed: %s", agent_id, e)
+        for task in self._agent_tasks.values():
+            task.cancel()
         if self._agents_task is not None:
             self._agents_task.cancel()
 
@@ -359,7 +400,9 @@ class Runner:
         for agent_id in targets:
             sb = self.sandboxes.get(agent_id)
             agent = self.agents.get(agent_id)
-            if sb is None or sb.stopped or (agent is not None and agent.done):
+            scripted = self.scripted.get(agent_id)
+            done = (agent is not None and agent.done) or (scripted is not None and scripted.done)
+            if sb is None or sb.stopped or done:
                 continue
             await sb.sandbox.pause()
 
@@ -408,25 +451,42 @@ class Runner:
         for agent in self.scenario.agents:
             try:
                 self.texts[agent.id] = self.given_texts.get(agent.id) or resolve_texts(
-                    self.bench.prompts, agent
+                    self.bench.prompts, agent, self.scenario
                 )
             except (UnknownTool, TextError) as e:
                 raise RunError(f"agent {agent.id}: {e}") from None
         watch = self.watch
-        started = RunStarted(
-            scenario=self.scenario.name,
-            oversight=self.scenario.oversight,
-            agents=[a.id for a in self.scenario.agents],
-            config=self._config(profiles),
-            monitor=(watch.identity or None) if watch is not None else None,
-        )
         store = self.bench.store
         run_id = self.wanted_id or str(uuid.uuid7())
+        try:
+            prepared = truth.prepare(
+                self.bundle,
+                self.options.variant or self.bundle.variant,
+                seed=self.options.seed,
+                inherited=self.options.inherited,
+            )
+        except Exception as e:
+            raise RunError(f"the run cannot prepare its plants: {type(e).__name__}: {e}") from None
+        self.prepared = prepared
+        self.public_scenario = prepared.scenario
+        self.public_bundle = prepared.bundle
+        store.prepare_run(run_id)
+        truth_hash = truth.write(store.root / run_id, prepared.truth)
+        started = RunStarted(
+            scenario=self.public_scenario.name,
+            oversight=self.public_scenario.oversight,
+            agents=[a.id for a in self.public_scenario.agents],
+            config=self._config(profiles),
+            monitor=(watch.identity or None) if watch is not None else None,
+            truth=truth_hash,
+            series=self.options.series,
+            channels=[c.info() for c in self._open_channels(run_id).values()],
+        )
         if watch is not None:
             self._watch(run_id, watch)
         try:
             self.run_id = run_id = await store.create_run(
-                started, blobs=self.bundle.blobs(), run_id=run_id
+                started, blobs=[*self.public_bundle.blobs(), *self._restored()], run_id=run_id
             )
         except BaseException:
             self._stop_tap()
@@ -470,7 +530,7 @@ class Runner:
         try:
             monitor = Monitor(
                 run_id=run_id,
-                scenario=self.scenario,
+                scenario=self.public_scenario,
                 monitor=watch,
                 store=bench.store,
                 client=client,
@@ -529,7 +589,7 @@ class Runner:
             }
         return {
             "aims": __version__,
-            "scenario": self.bundle.snapshot(),
+            "scenario": self.public_bundle.snapshot(),
             "agents": {
                 a: {
                     "profile": p.snapshot(),
@@ -553,7 +613,7 @@ class Runner:
     async def _phases(self, profiles: dict[str, Profile], result: Result) -> None:
         if self.monitor is not None:
             await self.monitor.start()
-        for phase in (self._image_and_sandboxes, self._seed, self._setup):
+        for phase in (self._image_and_sandboxes, self._seed, self._setup, self._start_channels):
             if self.cancelled or self.killed:
                 break
             await phase()
@@ -589,20 +649,25 @@ class Runner:
 
     async def _start_sandboxes(self, image: str) -> None:
         sc = self.scenario.sandbox
-        spec = SandboxSpec(
-            image=image,
-            workdir=sc.workdir,
-            env=sc.env,
-            cpus=sc.cpus,
-            memory_mb=sc.memory_mb,
-            pids=sc.pids,
-            tmp_mb=sc.tmp_mb,
-            kill_leftovers=sc.kill_leftovers,
-            runner_mb=RUNNER_MB,
-            keep=self.options.keep,
-        )
         assert self.run_id is not None
         for agent in self.scenario.agents:
+            env = sc.env
+            if self.prepared is not None:
+                env = self.prepared.env.get(agent.id, env)
+            spec = SandboxSpec(
+                image=image,
+                workdir=sc.workdir,
+                env=env,
+                cpus=sc.cpus,
+                memory_mb=sc.memory_mb,
+                pids=sc.pids,
+                tmp_mb=sc.tmp_mb,
+                kill_leftovers=sc.kill_leftovers,
+                runner_mb=RUNNER_MB,
+                keep=self.options.keep,
+                mounts=self._mounts(agent.id),
+                masked_paths=MASK_PROC if sc.mask_proc else [],
+            )
             try:
                 self.sandboxes[agent.id] = await AuditedSandbox.start(
                     self.bench.backend,
@@ -615,23 +680,32 @@ class Runner:
                 raise _Phase(f"sandbox for agent {agent.id} did not start", str(e)) from None
 
     async def _seed(self) -> None:
-        if self.bundle.files is None:
-            return
         command = f"{BUSYBOX} tar -x -o -f - -C /"
         for agent_id, sb in self.sandboxes.items():
-            r = await sb.exec(
-                command, timeout_s=SEED_TIMEOUT_S, stdin=self.bundle.files, phase="setup", cwd="/"
-            )
+            data = None if self.prepared is None else self.prepared.files.get(agent_id)
+            if data is None:
+                data = self.bundle.files
+            if data is None:
+                continue
+            r = await sb.exec(command, timeout_s=SEED_TIMEOUT_S, stdin=data, phase="setup", cwd="/")
             if r.finished.end != "exited" or r.finished.exit_code != 0:
                 raise _Phase(f"seeding files for agent {agent_id} failed", _why(r))
 
     async def _setup(self) -> None:
-        task = self.scenario.task
         for agent_id, sb in self.sandboxes.items():
-            for n, command in enumerate(task.setup, 1):
+            task = self.scenario.task_for(agent_id)
+            setup = task.setup
+            if self.prepared is not None:
+                setup = self.prepared.setup.get(agent_id, setup)
+            for n, command in enumerate(setup, 1):
                 r = await sb.exec(command, timeout_s=task.setup_timeout_s, phase="setup")
                 if r.finished.end != "exited" or r.finished.exit_code != 0:
                     raise _Phase(f"setup command {n} for agent {agent_id} failed", _why(r))
+            if self.prepared is not None:
+                for config in self.scenario.plants_of(agent_id):
+                    plant = self.prepared.plants.get(config.name)
+                    if plant is not None:
+                        await plant.start(agent_id, sb, self.bench.backend)
 
     async def _run_agents(self, profiles: dict[str, Profile], result: Result) -> None:
         assert self.run_id is not None
@@ -650,33 +724,96 @@ class Runner:
         if self.replay is not None:
             plans = await self.replay(self.run_id)
             self._clients.extend({id(p.client): p.client for p in plans.values()}.values())
+        watch = Watch(bench.store, self.run_id, self.scenario)
+        begin = asyncio.get_running_loop().time()
+        tasks: dict[str, asyncio.Task[AgentFinished]] = {}
+
+        async def start_then(start: Any, run: Callable[[], Awaitable[AgentFinished]]) -> Any:
+            await watch.wait_start(start, begin)
+            return await run()
+
         for agent in self.scenario.agents:
+            instruction = self.scenario.task_for(agent.id).instruction
+            if self.prepared is not None:
+                instruction = self.prepared.instructions.get(agent.id, instruction)
+            if agent.script is not None:
+                scripted = ScriptedAgent(
+                    config=agent,
+                    sandbox_config=self.scenario.sandbox,
+                    instruction=instruction,
+                    profile=profiles[agent.id],
+                    sandbox=self.sandboxes[agent.id],
+                    store=bench.store,
+                    run_id=self.run_id,
+                    watch=watch,
+                    post=self.post or self.post_message,
+                    canaries=None if self.prepared is None else self.prepared.canaries,
+                )
+                self.scripted[agent.id] = scripted
+                tasks[agent.id] = asyncio.create_task(start_then(agent.start, scripted.run))
+                continue
+            tools = load_tools(agent.tool_names, self.texts[agent.id].tools)
+            if self.prepared is not None:
+                tools += self.prepared.tools.get(agent.id, [])
+            tools += self._channel_tools(agent.id)
             self.agents[agent.id] = made = Agent(
                 config=agent,
                 sandbox_config=self.scenario.sandbox,
-                instruction=self.scenario.task.instruction,
+                instruction=instruction,
                 texts=self.texts[agent.id].agent,
                 profile=profiles[agent.id],
                 client=client,
                 sandbox=self.sandboxes[agent.id],
                 store=bench.store,
                 run_id=self.run_id,
-                tools=load_tools(agent.tool_names, self.texts[agent.id].tools),
+                tools=tools,
                 run_budget=budget,
                 gate=self._control,
                 replay=plans.get(agent.id),
                 clock=self._control.clock(agent.id),
             )
             made.killed = self.kill_reason
+            tasks[agent.id] = asyncio.create_task(start_then(agent.start, made.run))
+
+        subjects = self.scenario.subjects
+        stopped = [a.id for a in self.scenario.agents if a.role != "subject"]
 
         async def everyone() -> None:
-            async with asyncio.TaskGroup() as tg:
-                tasks = {a: tg.create_task(agent.run()) for a, agent in self.agents.items()}
-            for a, task in tasks.items():
-                result.agents[a] = task.result()
+            done = asyncio.create_task(watch.subjects_done(subjects))
+            try:
+                while not done.done():
+                    pending = [task for task in tasks.values() if not task.done()]
+                    if not pending:
+                        break
+                    await asyncio.wait([*pending, done], return_when=asyncio.FIRST_COMPLETED)
+                if done.done():
+                    for agent_id in stopped:
+                        task = tasks.get(agent_id)
+                        if task is not None and not task.done():
+                            task.cancel()
+                gathered = await asyncio.gather(*tasks.values(), return_exceptions=True)
+            except asyncio.CancelledError:
+                for task in tasks.values():
+                    task.cancel()
+                await asyncio.gather(*tasks.values(), return_exceptions=True)
+                raise
+            finally:
+                done.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await done
+            for agent_id, outcome in zip(tasks, gathered, strict=True):
+                if isinstance(outcome, AgentFinished):
+                    result.agents[agent_id] = outcome
+                elif isinstance(outcome, BaseException) and not isinstance(
+                    outcome, asyncio.CancelledError
+                ):
+                    log.error("agent %s ended with %s", agent_id, outcome)
 
+        self._agent_tasks = tasks
         self._agents_task = asyncio.create_task(everyone())
         if self.cancelled or self.killed:
+            for task in tasks.values():
+                task.cancel()
             self._agents_task.cancel()
         try:
             await self._agents_task
@@ -685,8 +822,9 @@ class Runner:
                 raise
         finally:
             self._agents_task = None
-        if self.cancelled:
-            await self._collect_finished(result)
+            self._agent_tasks = {}
+            watch.close()
+        await self._collect_finished(result)
 
     async def _collect_finished(self, result: Result) -> None:
         assert self.run_id is not None
@@ -697,23 +835,30 @@ class Runner:
                 result.agents[e.agent_id] = payload
 
     async def _verify_all(self, result: Result) -> None:
-        verifier = self.scenario.task.verifier
-        if verifier is None:
-            return
         for agent_id, finished in result.agents.items():
+            if self.scenario.agent(agent_id).role != "subject":
+                continue
+            verifier = self.scenario.task_for(agent_id).verifier
+            if verifier is None:
+                continue
             sb = self.sandboxes.get(agent_id)
             if sb is None or sb.stopped or finished.reason not in SCORED_ENDS:
                 continue
             answer = self.agents[agent_id].answer if agent_id in self.agents else None
-            scored = await self._verify(sb, agent_id, finished.reason, answer)
+            scored = await self._verify(sb, agent_id, finished.reason, answer, verifier)
             scored = scored.model_copy(update={"tainted": await self._tainted(agent_id)})
             result.scores[agent_id] = scored
             await self.bench.store.append(self.run_id or "", [Draft(scored, agent_id)])
 
     async def _verify(
-        self, sb: AuditedSandbox, agent_id: str, end: str, answer: str | None
+        self,
+        sb: AuditedSandbox,
+        agent_id: str,
+        end: str,
+        answer: str | None,
+        verifier: Any = None,
     ) -> TaskScored:
-        v = self.scenario.task.verifier
+        v = verifier or self.scenario.task.verifier
         assert v is not None
         if v.restore and (error := await self._restore(sb, v.restore)) is not None:
             return TaskScored(error=error)
@@ -835,6 +980,84 @@ class Runner:
         except Exception:
             log.exception("the monitor of run %s failed to finish", self.run_id)
 
+    def _open_channels(self, run_id: str) -> dict[str, Channel]:
+        """Build the run's channels, once, before its sandboxes start."""
+        if self.channels:
+            return self.channels
+        restored = self.options.restored or {}
+        texts = {a: t.channels for a, t in self.texts.items()}
+        for config in self.scenario.channels:
+            setup = ChannelSetup(
+                config=config,
+                scenario=self.scenario,
+                run_id=run_id,
+                store=self.bench.store,
+                restored=restored.get(config.name),
+                texts=texts,
+                backend=self.bench.backend,
+                base=self.bundle.base,
+            )
+            try:
+                self.channels[config.name] = build_channel(setup)
+            except Exception as e:
+                self.channels.clear()
+                raise RunError(f"channel {config.name}: {type(e).__name__}: {e}") from None
+        return self.channels
+
+    def _restored(self) -> list[bytes]:
+        """The series archives the channels start from, stored with the run."""
+        restored = self.options.restored or {}
+        return [
+            restored[name]
+            for name, c in self.channels.items()
+            if name in restored and c.info().restored is not None
+        ]
+
+    def _mounts(self, agent_id: str) -> list[Mount]:
+        return [m for c in self.channels.values() for m in c.mounts(agent_id)]
+
+    def _channel_tools(self, agent_id: str) -> list[Tool]:
+        return [t for c in self.channels.values() for t in c.tools(agent_id)]
+
+    async def _start_channels(self) -> None:
+        for name, channel in self.channels.items():
+            try:
+                await channel.start(self.sandboxes)
+            except Exception as e:
+                raise _Phase(f"channel {name} did not start", f"{type(e).__name__}: {e}") from None
+
+    async def _close_channels(self) -> None:
+        """Close every channel before the sandboxes go, keeping each series archive."""
+        if self._channels_closed:
+            return
+        self._channels_closed = True
+        for name, channel in self.channels.items():
+            try:
+                archive = await channel.close(self.sandboxes)
+            except Exception:
+                log.exception("closing channel %s of run %s failed", name, self.run_id)
+                continue
+            if archive is not None:
+                self.archives[name] = archive
+
+    async def post_message(self, agent_id: str, channel: str, text: str) -> ChannelMessage:
+        """Post `text` to board `channel` as `agent_id` with no tool call, as a scripted
+        actor does. Raises ChannelError."""
+        board = self.channels.get(channel)
+        if not isinstance(board, Board):
+            raise ChannelError(f"the run has no board {channel!r}")
+        return await board.post(agent_id, text)
+
+    async def _stop_plants(self) -> None:
+        if self._plants_stopped or self.prepared is None:
+            return
+        self._plants_stopped = True
+        for plant in self.prepared.plants.values():
+            try:
+                await plant.stop()
+            except Exception:
+                log.exception("stopping a plant of run %s failed", self.run_id)
+
     async def _close_monitor(self) -> None:
         monitor = self.monitor
         if monitor is None or self._monitor_closed:
@@ -851,6 +1074,7 @@ class Runner:
             self._stop_tap()
 
     async def _close_sandboxes(self, *, kill: bool) -> None:
+        await self._close_channels()
         for agent_id, sb in list(self.sandboxes.items()):
             try:
                 if kill and not self.options.keep:
@@ -861,6 +1085,7 @@ class Runner:
         self.sandboxes.clear()
 
     async def _close(self, *, kill: bool) -> None:
+        await self._stop_plants()
         await self._close_sandboxes(kill=kill)
         await self._close_monitor()
         for client in self._clients:

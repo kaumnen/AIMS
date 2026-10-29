@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import io
 import logging
 import posixpath
 import time
@@ -45,9 +46,15 @@ class Reader:
     keeps the last manifest in memory so each diff hashes only what moved.
     """
 
-    def __init__(self, container: DockerContainer, roots: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        container: DockerContainer,
+        roots: tuple[str, ...],
+        walked: tuple[str, ...] | None = None,
+    ) -> None:
         self._container = container
         self.roots = roots
+        self.walked = roots if walked is None else walked
         self._stream: Stream | None = None
         self._buf = bytearray()
         self._lock = asyncio.Lock()
@@ -61,8 +68,13 @@ class Reader:
         name: str,
         volumes: Sequence[tuple[str, str]],
         labels: dict[str, str],
+        hash_only: Sequence[tuple[str, str]] = (),
     ) -> Reader:
-        volumes = [(volume, target.rstrip("/") or "/") for volume, target in volumes]
+        """`hash_only` volumes are mounted for `hash` but left out of `tree`: someone else
+        diffs them."""
+        walked = [(volume, target.rstrip("/") or "/") for volume, target in volumes]
+        hashed = [(volume, target.rstrip("/") or "/") for volume, target in hash_only]
+        volumes = [*walked, *hashed]
         container = await docker.containers.create(
             config={
                 "Image": image,
@@ -94,10 +106,13 @@ class Reader:
             },
             name=name,
         )
-        reader = cls(container, tuple(target for _, target in volumes))
+        roots = tuple(target for _, target in volumes)
+        reader = cls(container, roots, tuple(target for _, target in walked))
         try:
             await container.start()
-            args = [f"{target}={MOUNT}{target}" for _, target in volumes]
+            args = [f"{target}={MOUNT}{target}" for _, target in walked]
+            if hashed:
+                args += ["--", *(f"{target}={MOUNT}{target}" for _, target in hashed)]
             exe = await container.exec([HELPER, *args], stdin=True, stdout=True, stderr=True)
             reader._stream = await exe.start(detach=False).__aenter__()
         except BaseException:
@@ -126,6 +141,13 @@ class Reader:
         await self._end()
         with contextlib.suppress(aiodocker.DockerError):
             await self._container.delete(force=True)
+
+    async def get_archive(self, path: str) -> bytes:
+        """The files under `path`, a root as the sandbox sees it, as Docker's tar of it."""
+        archive = await self._container.get_archive(f"{MOUNT}{path}")
+        if not isinstance(archive.fileobj, io.BytesIO):
+            raise ReaderError("archive came back without its bytes")
+        return archive.fileobj.getvalue()
 
     async def hash(
         self,
@@ -204,7 +226,7 @@ class Reader:
             if f[0] == "E" and len(f) == 9:
                 entries, files, size, hashed, unhashed, skipped, truncated = map(int, f[1:8])
                 return Tree(
-                    roots=self.roots,
+                    roots=self.walked,
                     digest=f[8],
                     entries=entries,
                     files=files,

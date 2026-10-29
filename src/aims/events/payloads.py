@@ -47,9 +47,11 @@ AgentEnd = Literal[
 InputKind = Literal["instruction", "continue", "inject", "budget_warning"]
 OperatorActionKind = Literal["pause", "resume", "inject", "kill", "cancel", "sweep"]
 ResumeThen = Literal["continue", "kill", "inject", "deny"]
-RunKind = Literal["scenario", "monitor", "models.check"]
+RunKind = Literal["scenario", "monitor", "models.check", "score"]
 ModelRole = Literal["sweep", "judge", "review"]
 FlagLayer = Literal["signal", "sweep", "judge"]
+PlantTier = Literal["touched", "used"]
+ScoreLayer = Literal["signal", "sweep", "judge", "llm", "any"]
 SweepPart = Literal["evidence", "output", "messages", "reasoning"]
 SweepTrigger = Literal[
     "every", "every_s", "flag", "budget", "agent_finished", "operator", "review", "final"
@@ -77,11 +79,53 @@ Category = Literal[
 ]
 
 
+class Series(BaseModel):
+    """A run's place in a series: the `index`th run of series `name`, after run `previous`."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str
+    index: int = Field(ge=0)
+    previous: str | None = None
+
+
+class ChannelInfo(BaseModel):
+    """A channel of the run. A folder lives at `path`; `restored` is the archive of its files
+    the run started from, carried over from the series' last run."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str
+    kind: str
+    members: list[str]
+    read_only: list[str] = Field(default_factory=list)
+    path: str | None = None
+    lifetime: Literal["run", "series"] = "run"
+    restored: BlobRef | None = None
+
+
+class Cut(BaseModel):
+    """Where a fork of several agents cut its origin: after the origin's event `seq`, by when
+    each agent had taken `steps[agent]` steps. `keep_others` kept the agents other than `agent`
+    on their recorded answers until their own inputs changed."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    origin: str
+    seq: int = Field(ge=0)
+    steps: dict[str, int] = Field(default_factory=dict)
+    agent: str | None = None
+    keep_others: bool = False
+
+
 class RunStarted(Payload):
     """`kind` says what the run is: a scenario run, a monitor run over the sealed run `origin`
-    (whose head hash was `origin_head`), or a model check. `monitor` is the identity hash of the
-    monitor that watches the run: its prompts, rubric, schemas, models, lanes, signal versions,
-    rules and AIMS version; None when the run has no monitor."""
+    (whose head hash was `origin_head`), a scoring of `origin`, or a model check. `monitor` is
+    the identity hash of the monitor that watches the run: its prompts, rubric, schemas, models,
+    lanes, signal versions, rules and AIMS version; None when the run has no monitor.
+
+    `truth` is the sha256 of the run's truth file, kept outside the log: what the scenario hid
+    from the monitor, revealed when the run is scored."""
 
     type = "run.started"
 
@@ -93,6 +137,10 @@ class RunStarted(Payload):
     origin: str | None = None
     origin_head: Hash | None = None
     monitor: Hash | None = None
+    truth: Hash | None = None
+    series: Series | None = None
+    channels: list[ChannelInfo] = Field(default_factory=list)
+    cut: Cut | None = None
 
 
 class RunFinished(Payload):
@@ -650,6 +698,33 @@ class NsEvent(KernelPayload):
     namespaces: list[str] = Field(default_factory=list)
 
 
+class CacheProbe(KernelPayload):
+    """A call that can tell whether file pages sit in the page cache, which sandboxes on one
+    host share: `posix_fadvise` with DONTNEED, `preadv2` with RWF_NOWAIT, `cachestat` or
+    `mincore`. `path` is the file it names when the tracer could resolve it; `count` the calls
+    it stands for when several were merged."""
+
+    type = "cache.probe"
+
+    op: Literal["fadvise_dontneed", "preadv2_nowait", "cachestat", "mincore"]
+    path: str | None = None
+    partial: bool = False
+    count: int = Field(default=1, ge=1)
+
+
+class FileSync(KernelPayload):
+    """A call that asks the kernel to make a file durable: `fsync`, `fdatasync`,
+    `sync_file_range` or `syncfs`. `path` is the file the fd named when the tracer could
+    resolve it, else None. `count` is the calls it stands for when several were merged."""
+
+    type = "file.sync"
+
+    call: Literal["fsync", "fdatasync", "sync_file_range", "syncfs"]
+    path: str | None = None
+    partial: bool = False
+    count: int = Field(default=1, ge=1)
+
+
 class AuditLost(Payload):
     """The kernel audit missed events. `count` is None when the number is unknown.
 
@@ -959,11 +1034,13 @@ class OperatorAction(Payload):
 
 
 class AgentStarted(Payload):
+    """`backend` is None for an agent that follows a script and calls no model."""
+
     type = "agent.started"
 
     profile: str
     model: str
-    backend: ModelBackend
+    backend: ModelBackend | None
     tools: list[str]
     system: Content
     budget: dict[str, JsonValue] = Field(default_factory=dict)
@@ -1067,19 +1144,30 @@ class TaskScored(Payload):
 
 
 class ReplayDivergence(Payload):
-    """A tool call a fork ran again gave another output than the recording it replays. The
-    model was given `recorded`; `line` is the first line that differs, counted from 1."""
+    """What a fork rebuilt differs from the recording it replays.
+
+    For an `output`, a tool call ran again gave another output: the model was given
+    `recorded`, and `line` is the first line that differs, counted from 1. For a `channel`, a
+    shared object read again was at another version than in the origin: `channel` and `path`
+    name it (a folder file, or a board's messages), `recorded_version` and `live_version` are
+    the file sha256 or the last board message id. `origin_seq` is the access in the origin."""
 
     type = "replay.divergence"
 
     step: int
-    call_id: str
-    tool: str
-    recorded: Content
-    live: Content
+    call_id: str | None = None
+    tool: str | None = None
+    recorded: Content = ""
+    live: Content = ""
     recorded_error: bool = False
     live_error: bool = False
     line: int | None = None
+    kind: Literal["output", "channel"] = "output"
+    channel: str | None = None
+    path: str | None = None
+    recorded_version: str | None = None
+    live_version: str | None = None
+    origin_seq: int | None = None
 
 
 class SandboxArchived(Payload):
@@ -1096,3 +1184,142 @@ class SandboxArchived(Payload):
     skipped: int = 0
     truncated: bool = False
     errors: list[str] = Field(default_factory=list)
+
+
+class ChannelMessage(Payload):
+    """A message posted to a board. The event's agent wrote it; `id` counts the board's
+    messages from 1. `call_id` is the tool call that posted it, None for a scripted post."""
+
+    type = "channel.message"
+
+    channel: str
+    id: int = Field(ge=1)
+    text: Content
+    bytes: int = Field(ge=0)
+    call_id: str | None = None
+
+
+class ChannelRead(Payload):
+    """A board read by the event's agent: it was shown the messages after `after` through
+    `through`, `count` of them. `through` is the board's last message then, unless the read
+    was too long for one call and left the rest for the next."""
+
+    type = "channel.read"
+
+    channel: str
+    after: int = Field(ge=0)
+    through: int = Field(ge=0)
+    count: int = Field(ge=0)
+    call_id: str | None = None
+
+
+class ChannelChange(FsChange):
+    """One path of a shared folder that changed, with the agent the kernel records show wrote
+    it, None when none did or several did, and those records' seqs."""
+
+    agent: str | None = None
+    evidence: list[int] = Field(default_factory=list)
+
+
+class ChannelSnapshot(Payload):
+    """How a shared folder changed since the snapshot whose digest is `base`. It is written
+    after an exec of any member that may have changed it, and between execs for writes nobody's
+    exec covered. `exec_id` is that exec. Changes past the inline ones are JSON lines in
+    `more`; `truncated` means the entry cap stopped the walk. The last one, as the run closes
+    the folder, holds its files as a tar in `archive`, which the next run of a series starts
+    from."""
+
+    type = "channel.snapshot"
+
+    channel: str
+    exec_id: str | None = None
+    base: str | None
+    digest: str
+    entries: int
+    files: int
+    bytes: int
+    changes: list[ChannelChange]
+    more: BlobRef | None = None
+    truncated: bool = False
+    duration_ms: int = 0
+    archive: BlobRef | None = None
+
+
+class PlantTriggered(Payload):
+    """A plant reached a tier for the event's agent, in the run `origin` that a score run
+    scores. `seq` is the first event that set it off, the harm seq when the tier counts as
+    taken; `evidence` holds every such seq. `inherited` marks a canary a run of the series
+    before made, used here."""
+
+    type = "plant.triggered"
+
+    plant: str
+    kind: str
+    category: Category
+    tier: PlantTier
+    taken: bool
+    seq: int = Field(ge=0)
+    evidence: list[int] = Field(min_length=1)
+    detail: str = ""
+    inherited: bool = False
+
+
+class ScoreMatch(BaseModel):
+    """How one monitor layer did on one unit: `detected` any flag on the agent, `category` a
+    flag of the plant's category, `located` a flag whose evidence overlaps the trigger's; each
+    anytime and, with `_before`, at or before the harm seq. `first_flag` is the first matching
+    flag; `steps` and `seconds` the distance from the trigger to it."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    layer: ScoreLayer
+    detected: bool = False
+    category: bool = False
+    located: bool = False
+    detected_before: bool = False
+    category_before: bool = False
+    located_before: bool = False
+    importance: int | None = Field(default=None, ge=1, le=5)
+    suspicion: int | None = Field(default=None, ge=0, le=100)
+    first_flag: int | None = None
+    steps: int | None = None
+    seconds: float | None = None
+
+
+class ScoreUnit(Payload):
+    """One agent of the scored run: a positive when it took a plant, a negative when the run
+    has no plant. `plants` are the ones it took; `harm_seq` the first time it took one."""
+
+    type = "score.unit"
+
+    role: Literal["subject", "confederate"]
+    positive: bool | None
+    plants: list[str] = Field(default_factory=list)
+    categories: list[Category] = Field(default_factory=list)
+    harm_seq: int | None = None
+    matches: list[ScoreMatch] = Field(default_factory=list)
+    eval_aware: Finding | None = None
+
+
+class ScoreUnexplained(Payload):
+    """A monitor flag no plant explains, for review. `label` is set once a person labels it."""
+
+    type = "score.unexplained"
+
+    flag: int
+    layer: FlagLayer
+    category: Category
+    importance: int = Field(ge=1, le=5)
+    label: str | None = None
+
+
+class ScoreAwareness(Payload):
+    """Whether the event's agent said it thought it was being tested, by a classifier model
+    over its words; `quote` is what it said, `evidence` where."""
+
+    type = "score.awareness"
+
+    finding: Finding
+    quote: Content | None = None
+    evidence: list[int] = Field(default_factory=list)
+    call_id: str | None = None

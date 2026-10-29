@@ -9,6 +9,7 @@ from aims.events import MAX_INT
 from aims.sandbox import execs as execs_module
 from aims.sandbox import tracer as tracer_module
 from aims.sandbox.base import (
+    Cache,
     Capture,
     Close,
     Denied,
@@ -28,6 +29,7 @@ from aims.sandbox.base import (
     Setattr,
     Signal,
     Stamp,
+    Sync,
 )
 from aims.sandbox.trace import (
     DEPTH,
@@ -45,12 +47,14 @@ from aims.sandbox.trace import (
     Mkdir,
     Mounts,
     Note,
+    RawCache,
     RawClose,
     RawDenied,
     RawExec,
     RawFifo,
     RawMmap,
     RawSetattr,
+    RawSync,
     Ready,
     Rename,
     Sequence,
@@ -408,6 +412,29 @@ def test_parse_walks() -> None:
     assert item == RawClose(10, 42, Walk(VDA1, (b"a b", b"_data", b"/")), at=PARSED)
     item = parse(line(release(10, 2**62, TMP, "sparse")))
     assert item == RawClose(10, MAX_INT, Walk(TMP, (b"sparse", b"/")), at=PARSED)
+
+
+def test_parse_page_cache_and_sync_lines() -> None:
+    depth, text = walk("page", "_data", "aims-r-a1-work", "volumes", "docker")
+    result = Walk(VDA1, (b"page", b"_data", b"aims-r-a1-work", b"volumes", b"docker", b"/"))
+    for tag, op in (
+        ("a", "fadvise_dontneed"),
+        ("b", "preadv2_nowait"),
+        ("c", "cachestat"),
+    ):
+        assert parse(line(f"{tag} 10 {VDA1} {depth} {text}")) == RawCache(10, op, result, at=PARSED)
+    assert parse(line("a 10 0 -1")) == RawCache(10, "fadvise_dontneed", None, at=PARSED)
+    assert parse(line("d 10")) == Cache(10, "mincore", None, at=PARSED)
+    for tag, call in (
+        ("e", "fsync"),
+        ("f", "fdatasync"),
+        ("g", "sync_file_range"),
+        ("h", "syncfs"),
+    ):
+        assert parse(line(f"{tag} 10 {VDA1} {depth} {text}")) == RawSync(
+            10, call, result, at=PARSED
+        )
+        assert parse(line(f"{tag} 10 0 -1")) == RawSync(10, call, None, at=PARSED)
 
 
 def test_parse_creations() -> None:
@@ -808,6 +835,30 @@ async def test_quiesce_waits_for_every_process_to_exit() -> None:
     async with asyncio.timeout(1):
         await tracer.quiesce(route, 0.1)
     tracer.alive = False
+    await tracer.stop()
+
+
+@pytest.mark.anyio
+async def test_tracer_resolves_cache_and_sync_paths() -> None:
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    route = tracer.register(99, Mounts.parse(MOUNTINFO), SYSCALLS["aarch64"])
+    feed = Feed(tracer)
+    feed("R 0 999")
+    feed(f"E 10 1 1 1000 99 5 3 {hx(b'sh\0')}")
+    drain(route)
+    depth, text = walk("page", "_data", "aims-r-a1-work", "volumes", "docker")
+    at = [
+        feed(f"a 10 {VDA1} {depth} {text}"),
+        feed(f"e 10 {VDA1} {depth} {text}"),
+        feed("d 10"),
+        feed("h 10 0 -1"),
+    ]
+    assert drain(route) == [
+        Cache(10, "fadvise_dontneed", "/work/page", at=at[0]),
+        Sync(10, "fsync", "/work/page", at=at[1]),
+        Cache(10, "mincore", None, at=at[2]),
+        Sync(10, "syncfs", None, at=at[3]),
+    ]
     await tracer.stop()
 
 

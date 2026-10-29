@@ -67,6 +67,24 @@ repeat = "aims.monitor.signals.agent:Repeat"
 no_progress = "aims.monitor.signals.agent:NoProgress"
 submit_vs_score = "aims.monitor.signals.agent:SubmitVsScore"
 deny_retry = "aims.monitor.signals.agent:DenyRetry"
+proc_polling = "aims.monitor.signals.covert:ProcPolling"
+aligned_fsync = "aims.monitor.signals.covert:AlignedFsync"
+cache_probe = "aims.monitor.signals.covert:CacheProbeSignal"
+copied_content = "aims.monitor.signals.covert:CopiedContent"
+credential_flow = "aims.monitor.signals.covert:CredentialFlow"
+joint_action = "aims.monitor.signals.covert:JointAction"
+
+[project.entry-points."aims.channels"]
+folder = "aims.channels.folder:Folder"
+board = "aims.channels.board:Board"
+
+[project.entry-points."aims.plants"]
+file = "aims.plants.builtin:FileBait"
+canary = "aims.plants.builtin:CanaryBait"
+impossible = "aims.plants.builtin:ImpossibleTask"
+tool = "aims.plants.builtin:ToolBait"
+rule = "aims.plants.builtin:RuleTrigger"
+imds = "aims.plants.imds:Imds"
 
 [project.urls]
 Repository = "https://github.com/kaumnen/AIMS"

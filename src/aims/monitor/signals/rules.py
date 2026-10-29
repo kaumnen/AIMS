@@ -14,6 +14,7 @@ import glob
 import ipaddress
 import re
 import types
+from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, ClassVar, TypeAliasType, Union, get_args, get_origin
@@ -393,6 +394,8 @@ class Compiled:
     match: tuple[Condition, ...]
     filters: tuple[tuple[Condition, ...], ...]
     key: tuple[tuple[str, Condition | None], ...]
+    distinct: Condition | None = None
+    by_key: bool = False
 
     async def matches(self, event: Event, payload: Any, state: State) -> bool:
         scope = self.rule.scope
@@ -407,6 +410,18 @@ class Compiled:
             if all([await c.holds(event, payload, state) for c in group]):
                 return False
         return True
+
+    async def value(self, event: Event, payload: Any, state: State) -> Any:
+        """The field a rate rule counts as distinct, or its key, or its payload."""
+        if self.distinct is not None:
+            if self.distinct.derived is not None:
+                return self.distinct.derived.get(event, payload, state)
+            found = _get(payload, self.distinct.path)
+            return found[0] if found else None
+        if self.by_key:
+            rendered = await self.render_key(event, payload, state)
+            return rendered if rendered else payload.model_dump_json()
+        return None
 
     async def render_key(self, event: Event, payload: Any, state: State) -> str:
         parts: list[str] = []
@@ -503,7 +518,13 @@ def _compile(rule: Rule) -> Compiled:
             at = m.end()
         if at < len(rule.key):
             key.append((rule.key[at:], None))
-    return Compiled(rule, rule_types, match, filters, tuple(key))
+    distinct = None
+    by_key = rule.distinct is True
+    if isinstance(rule.distinct, str):
+        segs = tuple(rule.distinct.split("."))
+        field = _field(rule.distinct, segs, rule_types, derived)
+        distinct = Condition(segs, field, None, False, ())
+    return Compiled(rule, rule_types, match, filters, tuple(key), distinct, by_key)
 
 
 def rule_problems(rule: Rule) -> list[str]:
@@ -532,6 +553,11 @@ def rule_problems(rule: Rule) -> list[str]:
                 _field(name, name.split("."), rule_types, derived)
             except ValueError as e:
                 problems.append(f"{where}: key: {e}")
+    if isinstance(rule.distinct, str):
+        try:
+            _field(rule.distinct, rule.distinct.split("."), rule_types, derived)
+        except ValueError as e:
+            problems.append(f"{where}: distinct: {e}")
     return problems
 
 
@@ -563,11 +589,40 @@ class RuleSignal(Base):
             for t in c.types:
                 self.by_type.setdefault(t, []).append(c)
         self.event_types = frozenset(self.by_type)
+        self.windows: dict[tuple[str, str | None], deque[tuple[float, int, Any]]] = {}
 
     @classmethod
     def build(cls, setup: SignalSetup) -> Sequence[Rule]:
         """The rules of this signal for a run; the class's own by default."""
         return cls.rules
+
+    async def _window(
+        self, c: Compiled, event: Event, payload: Any, state: State
+    ) -> list[int] | None:
+        """The evidence when this match completes the rule's count, else None."""
+        rule = c.rule
+        if rule.count <= 1 and rule.window_s is None and not rule.distinct:
+            return [event.seq]
+        now = event.ts.timestamp()
+        key = (rule.id, event.agent_id)
+        seen = self.windows.setdefault(key, deque())
+        if rule.window_s is not None:
+            cutoff = now - rule.window_s
+            while seen and seen[0][0] < cutoff:
+                seen.popleft()
+        elif len(seen) >= rule.count:
+            seen.popleft()
+        seen.append((now, event.seq, await c.value(event, payload, state)))
+        if rule.distinct:
+            distinct = {value for _, _, value in seen if value is not None}
+            reached = len(distinct) >= rule.count
+        else:
+            reached = len(seen) >= rule.count
+        if not reached:
+            return None
+        evidence = [seq for _, seq, _ in seen]
+        seen.clear()
+        return evidence
 
     async def feed(self, event: Event, state: State) -> list[Hit]:
         candidates = self.by_type.get(event.type)
@@ -577,11 +632,15 @@ class RuleSignal(Base):
         if payload is None:
             return []
         best: Compiled | None = None
+        evidence: list[int] = []
         for c in candidates:
-            if (best is None or c.rule.importance > best.rule.importance) and await c.matches(
-                event, payload, state
-            ):
-                best = c
+            if not await c.matches(event, payload, state):
+                continue
+            found = await self._window(c, event, payload, state)
+            if found is None:
+                continue
+            if best is None or c.rule.importance > best.rule.importance:
+                best, evidence = c, found
         if best is None:
             return []
         rule = best.rule
@@ -591,7 +650,7 @@ class RuleSignal(Base):
             Hit(
                 category=rule.category,
                 importance=rule.importance,
-                evidence=[event.seq],
+                evidence=evidence,
                 justification=text,
                 key=key,
                 subcategory=rule.subcategory,

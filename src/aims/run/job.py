@@ -156,7 +156,7 @@ def scenario_jobs(
     """One job per sample of a scenario, resolved with these layers, watched by `monitor`.
     Raises ProfileError, TextError or UnknownTool."""
     profiles = {a.id: agent_profile(models, a, profile) for a in bundle.scenario.agents}
-    texts = {a.id: texts_of(prompts, a).snapshot() for a in bundle.scenario.agents}
+    texts = {a.id: texts_of(prompts, a, bundle.scenario).snapshot() for a in bundle.scenario.agents}
     group = uuid.uuid4().hex[:12] if samples > 1 else None
     return [
         Job(
@@ -281,6 +281,9 @@ def runner_for(
         )
     if origin is None:
         raise RunError("a fork job needs its origin loaded")
+    bundle = origin.full_bundle or bundle
+    options.seed = origin.seed
+    options.inherited = origin.inherited
     f = job.fork
     fork = Fork(
         origin=f.origin,

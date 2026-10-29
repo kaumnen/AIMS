@@ -2,7 +2,7 @@ import asyncio
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Annotated, Literal, Protocol
+from typing import Annotated, Literal, Protocol, runtime_checkable
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, JsonValue
 
@@ -12,6 +12,8 @@ AGENT_UID = 1000
 RUNNER_UID = 1001
 TOOLBOX = "/.aims"
 RUNNER_DIR = "/.aims-runner"
+# The /proc files that expose host-wide numbers; `sandbox.mask_proc` makes them read empty.
+MASK_PROC = ["/proc/meminfo", "/proc/loadavg", "/proc/stat", "/proc/uptime"]
 
 AuditMode = Literal["auto", "kernel", "snapshot"]
 
@@ -35,13 +37,15 @@ AbsPath = Annotated[str, AfterValidator(_abs)]
 
 
 class Mount(BaseModel):
-    """A named volume shared by every sandbox of a run that mounts it."""
+    """A named volume shared by every sandbox of a run that mounts it. A volume a `channel`
+    logs is left out of the sandbox's own file snapshots; its execs are still hashed."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     volume: Name
     target: AbsPath
     read_only: bool = False
+    channel: str | None = None
 
 
 class SandboxSpec(BaseModel):
@@ -56,6 +60,8 @@ class SandboxSpec(BaseModel):
     tmp_mb: int = Field(default=256, ge=1)
     writable_root: bool = False
     mounts: list[Mount] = Field(default_factory=list)
+    masked_paths: list[AbsPath] = Field(default_factory=list)
+    """Paths added to the runtime's masked paths, which then read empty."""
     kill_leftovers: bool = False
     output_limit: int = Field(default=4 * 1024 * 1024, ge=0)
     sample_hz: int = Field(default=50, ge=10, le=200)
@@ -207,6 +213,29 @@ class Close(Kernel):
     size: int
     path: str
     partial: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class Cache(Kernel):
+    """A call that can tell whether a file's pages sit in the page cache.
+
+    `path` is None when the tracer could not name a file, as for mincore's address.
+    """
+
+    op: Literal["fadvise_dontneed", "preadv2_nowait", "cachestat", "mincore"]
+    path: str | None = None
+    partial: bool = False
+    count: int = 1
+
+
+@dataclass(frozen=True, slots=True)
+class Sync(Kernel):
+    """A durability call, and the file it names when the tracer could resolve the fd."""
+
+    call: Literal["fsync", "fdatasync", "sync_file_range", "syncfs"]
+    path: str | None = None
+    partial: bool = False
+    count: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -433,3 +462,29 @@ class SandboxBackend(Protocol):
     async def create(self, spec: SandboxSpec, *, run_id: str, agent_id: str) -> Sandbox: ...
 
     async def close(self) -> None: ...
+
+
+class SharedVolume(Protocol):
+    """One shared volume of a run, reached from the host: its own file reader, and tar copies
+    in and out that bypass every sandbox."""
+
+    async def tree(self) -> Tree | None:
+        """Diff the volume against the previous call. None when it cannot read it."""
+        ...
+
+    async def get_archive(self) -> bytes:
+        """The volume's files as a tar, named relative to its root."""
+        ...
+
+    async def put_archive(self, data: bytes) -> None:
+        """Extract the tar `data` at the volume's root, keeping its owners and modes."""
+        ...
+
+    async def close(self) -> None: ...
+
+
+@runtime_checkable
+class SharesVolumes(Protocol):
+    """A backend that can reach a run's shared volumes from the host."""
+
+    async def volume(self, run_id: str, mount: Mount) -> SharedVolume: ...

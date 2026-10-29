@@ -179,7 +179,7 @@ async def monitored(store: EventStore, run_id: str) -> tuple[Origin, RunInfo]:
         raise RunError(f"run {run_id} is not sealed yet")
     if info.kind != "scenario":
         raise RunError(f"run {run_id} is a {info.kind} run, with no agents to monitor")
-    return await load_origin(store, run_id), info
+    return await load_origin(store, run_id, full=False), info
 
 
 def origin_agents(origin: Origin) -> list[Profile]:

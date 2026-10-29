@@ -1,3 +1,4 @@
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -258,3 +259,95 @@ async def test_the_most_important_matching_rule_of_a_signal_wins(store: LocalEve
     )
     (flag,) = b.of("net_tool_exec")
     assert (flag.importance, flag.justification) == (3, "netcat with a command to run: nc")
+
+
+async def test_a_rule_counts_matches_per_agent_and_window(
+    store: LocalEventStore,
+) -> None:
+    r = rule(
+        match={"op": "write"},
+        count=3,
+        window_s=10,
+        key="{path}",
+    )
+    b = await run_rule(store, r)
+    await b.bash(
+        "x",
+        lambda ex: [b.k(FileAccess, ex, op="write", path="/work/a") for _ in range(2)],
+    )
+    assert b.of("r") == []
+    await b.bash(
+        "x",
+        lambda ex: [b.k(FileAccess, ex, op="write", path="/work/a") for _ in range(3)],
+    )
+    (flag,) = b.of("r")
+    assert len(flag.evidence) == 3
+
+    r = rule(match={"op": "write"}, count=3, window_s=0.05, key="{path}")
+    b = await run_rule(store, r)
+    await b.bash("x", lambda ex: b.k(FileAccess, ex, op="write", path="/work/a"))
+    await asyncio.sleep(0.1)
+    await b.bash("x", lambda ex: b.k(FileAccess, ex, op="write", path="/work/a"))
+    assert b.of("r") == []
+    await b.bash(
+        "x",
+        lambda ex: [b.k(FileAccess, ex, op="write", path="/work/a") for _ in range(2)],
+    )
+    assert len(b.of("r")) == 1
+
+
+async def test_a_rule_counts_a_field_distinctly(store: LocalEventStore) -> None:
+    r = rule(
+        match={"op": "write"},
+        count=2,
+        window_s=10,
+        distinct="path",
+        key="{path}",
+    )
+    b = await run_rule(store, r)
+    await b.bash(
+        "x",
+        lambda ex: [b.k(FileAccess, ex, op="write", path="/work/a") for _ in range(2)],
+    )
+    assert b.of("r") == []
+    await b.bash(
+        "x",
+        lambda ex: [
+            b.k(FileAccess, ex, op="write", path="/work/a"),
+            b.k(FileAccess, ex, op="write", path="/work/b"),
+        ],
+    )
+    assert len(b.of("r")) == 1
+
+
+async def test_rule_rate_counts_do_not_mix_agents(store: LocalEventStore) -> None:
+    from aims.scenario import Scenario
+
+    sc = Scenario.model_validate(
+        {
+            "version": 1,
+            "name": "two",
+            "oversight": "observe",
+            "task": {"instruction": "x", "environment": {"image": "python:3.13"}},
+            "agents": [{"id": "a"}, {"id": "b"}],
+        }
+    )
+    r = rule(match={"op": "write"}, count=3, window_s=10, key="{path}")
+    b = await bench(store, config=MonitorConfig(preset="signals", rules=[r]), scenario=sc)
+    for agent in ("a", "b"):
+        await b.bash(
+            "x",
+            lambda ex: [b.k(FileAccess, ex, op="write", path="/work/a") for _ in range(2)],
+            agent=agent,
+        )
+    assert b.of("r") == []
+    await b.bash(
+        "x",
+        lambda ex: b.k(FileAccess, ex, op="write", path="/work/a"),
+        agent="a",
+    )
+    assert len(b.of("r")) == 1
+
+
+def test_a_distinct_field_must_exist() -> None:
+    assert any("distinct" in p for p in problems(distinct="nope"))

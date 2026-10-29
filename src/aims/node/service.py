@@ -263,7 +263,7 @@ class Node:
         except MonitorConfigError as e:
             raise RunError(f"the job's monitor does not load: {e}") from None
         source = await self._origin(job.origin)
-        origin = await load_origin(source, job.origin)
+        origin = await load_origin(source, job.origin, full=False)
         await monitor_offline(
             ctx.store,
             origin,

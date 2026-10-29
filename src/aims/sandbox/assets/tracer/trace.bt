@@ -121,7 +121,9 @@ fentry:vmlinux:security_file_open /@sandbox[cgroup] && curtask->thread_pid->leve
     if (strncmp($p, "/proc/", 6) == 0) {
       if (strncmp($p, "/proc/1/", 8) == 0 || strncmp($p, "/proc/sys/kernel/", 17) == 0
           || strncmp($p, "/proc/kallsyms", 15) == 0 || strncmp($p, "/proc/modules", 14) == 0
-          || strncmp($p, "/proc/version", 14) == 0 || strncmp($p, "/proc/kcore", 12) == 0) {
+          || strncmp($p, "/proc/version", 14) == 0 || strncmp($p, "/proc/kcore", 12) == 0
+          || strncmp($p, "/proc/meminfo", 13) == 0 || strncmp($p, "/proc/loadavg", 13) == 0
+          || strncmp($p, "/proc/stat", 10) == 0 || strncmp($p, "/proc/uptime", 12) == 0) {
         $keep = 1;
       } else {
         $n = str(args.file->f_path.dentry->d_name.name);
@@ -508,6 +510,196 @@ fexit:vmlinux:do_filp_open /@sandbox[cgroup] && curtask->thread_pid->level > @ba
 tracepoint:raw_syscalls:sys_exit /args.ret == -1 && @sandbox[cgroup]/ {
   $s = @seq[cpu] + 1; @seq[cpu] = $s;
   printf("D %llu %llu %llu %d %d %d\n", nsecs(boot), cpu, $s, curtask->tgid, args.id, -args.ret);
+}
+
+// Page-cache calls that reveal whether another sandbox has touched the same host pages. The
+// file comes from the fd through the task's file table; -1 as the depth means no file.
+tracepoint:syscalls:sys_enter_fadvise64_64 /@sandbox[cgroup] && curtask->thread_pid->level > @base && (int64)args.advice == 4/ {
+  $fdt = curtask->files->fdt; $d = curtask->fs->pwd.dentry; $k = -1;
+  if ((int64)args.fd >= 0 && (uint64)args.fd < (uint64)$fdt->max_fds) {
+    $f = *($fdt->fd + args.fd);
+    if ($f != 0) {
+      $d = (*(struct path *)((uint64)$f + offsetof(struct file, f_path))).dentry; $x = $d; $k = 0;
+      unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } }
+    }
+  }
+  $s = @seq[cpu] + 1; @seq[cpu] = $s;
+  printf("a %llu %llu %llu %d %u %d %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, curtask->tgid,
+    $d->d_sb->s_dev, $k,
+    str($d->d_name.name),
+    str($d->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
+}
+
+tracepoint:syscalls:sys_enter_preadv2 /@sandbox[cgroup] && curtask->thread_pid->level > @base && ((uint64)args.flags & 0x8)/ {
+  $fdt = curtask->files->fdt; $d = curtask->fs->pwd.dentry; $k = -1;
+  if ((int64)args.fd >= 0 && (uint64)args.fd < (uint64)$fdt->max_fds) {
+    $f = *($fdt->fd + args.fd);
+    if ($f != 0) {
+      $d = (*(struct path *)((uint64)$f + offsetof(struct file, f_path))).dentry; $x = $d; $k = 0;
+      unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } }
+    }
+  }
+  $s = @seq[cpu] + 1; @seq[cpu] = $s;
+  printf("b %llu %llu %llu %d %u %d %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, curtask->tgid,
+    $d->d_sb->s_dev, $k,
+    str($d->d_name.name),
+    str($d->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
+}
+
+tracepoint:syscalls:sys_enter_cachestat /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
+  $fdt = curtask->files->fdt; $d = curtask->fs->pwd.dentry; $k = -1;
+  if ((int64)args.fd >= 0 && (uint64)args.fd < (uint64)$fdt->max_fds) {
+    $f = *($fdt->fd + args.fd);
+    if ($f != 0) {
+      $d = (*(struct path *)((uint64)$f + offsetof(struct file, f_path))).dentry; $x = $d; $k = 0;
+      unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } }
+    }
+  }
+  $s = @seq[cpu] + 1; @seq[cpu] = $s;
+  printf("c %llu %llu %llu %d %u %d %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, curtask->tgid,
+    $d->d_sb->s_dev, $k,
+    str($d->d_name.name),
+    str($d->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
+}
+
+tracepoint:syscalls:sys_enter_mincore /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
+  $s = @seq[cpu] + 1; @seq[cpu] = $s;
+  printf("d %llu %llu %llu %d\n", nsecs(boot), cpu, $s, curtask->tgid);
+}
+
+// Durability calls, with the file the fd names when the task still holds it.
+tracepoint:syscalls:sys_enter_fsync /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
+  $fdt = curtask->files->fdt; $d = curtask->fs->pwd.dentry; $k = -1;
+  if ((int64)args.fd >= 0 && (uint64)args.fd < (uint64)$fdt->max_fds) {
+    $f = *($fdt->fd + args.fd);
+    if ($f != 0) {
+      $d = (*(struct path *)((uint64)$f + offsetof(struct file, f_path))).dentry; $x = $d; $k = 0;
+      unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } }
+    }
+  }
+  $s = @seq[cpu] + 1; @seq[cpu] = $s;
+  printf("e %llu %llu %llu %d %u %d %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, curtask->tgid,
+    $d->d_sb->s_dev, $k,
+    str($d->d_name.name),
+    str($d->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
+}
+
+tracepoint:syscalls:sys_enter_fdatasync /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
+  $fdt = curtask->files->fdt; $d = curtask->fs->pwd.dentry; $k = -1;
+  if ((int64)args.fd >= 0 && (uint64)args.fd < (uint64)$fdt->max_fds) {
+    $f = *($fdt->fd + args.fd);
+    if ($f != 0) {
+      $d = (*(struct path *)((uint64)$f + offsetof(struct file, f_path))).dentry; $x = $d; $k = 0;
+      unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } }
+    }
+  }
+  $s = @seq[cpu] + 1; @seq[cpu] = $s;
+  printf("f %llu %llu %llu %d %u %d %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, curtask->tgid,
+    $d->d_sb->s_dev, $k,
+    str($d->d_name.name),
+    str($d->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
+}
+
+tracepoint:syscalls:sys_enter_sync_file_range /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
+  $fdt = curtask->files->fdt; $d = curtask->fs->pwd.dentry; $k = -1;
+  if ((int64)args.fd >= 0 && (uint64)args.fd < (uint64)$fdt->max_fds) {
+    $f = *($fdt->fd + args.fd);
+    if ($f != 0) {
+      $d = (*(struct path *)((uint64)$f + offsetof(struct file, f_path))).dentry; $x = $d; $k = 0;
+      unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } }
+    }
+  }
+  $s = @seq[cpu] + 1; @seq[cpu] = $s;
+  printf("g %llu %llu %llu %d %u %d %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, curtask->tgid,
+    $d->d_sb->s_dev, $k,
+    str($d->d_name.name),
+    str($d->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
+}
+
+tracepoint:syscalls:sys_enter_syncfs /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
+  $fdt = curtask->files->fdt; $d = curtask->fs->pwd.dentry; $k = -1;
+  if ((int64)args.fd >= 0 && (uint64)args.fd < (uint64)$fdt->max_fds) {
+    $f = *($fdt->fd + args.fd);
+    if ($f != 0) {
+      $d = (*(struct path *)((uint64)$f + offsetof(struct file, f_path))).dentry; $x = $d; $k = 0;
+      unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } }
+    }
+  }
+  $s = @seq[cpu] + 1; @seq[cpu] = $s;
+  printf("h %llu %llu %llu %d %u %d %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, curtask->tgid,
+    $d->d_sb->s_dev, $k,
+    str($d->d_name.name),
+    str($d->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
 }
 
 // From 6.15 the tracer attaches anon_pipe_write and fifo_pipe_write here instead; anon_pipe_write

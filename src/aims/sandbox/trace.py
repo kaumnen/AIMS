@@ -14,6 +14,7 @@ from typing import Literal
 
 from aims.events import MAX_INT, FdKind
 from aims.sandbox.base import (
+    Cache,
     Exit,
     Fd,
     File,
@@ -406,6 +407,22 @@ class RawSetattr(Raw):
 
 
 @dataclass(frozen=True, slots=True)
+class RawCache(Raw):
+    """A page-cache call with the walk of the fd's file, or None for an invalid fd."""
+
+    op: Literal["fadvise_dontneed", "preadv2_nowait", "cachestat", "mincore"]
+    walk: Walk | None
+
+
+@dataclass(frozen=True, slots=True)
+class RawSync(Raw):
+    """A durability call with the walk of the fd's file, or None for an invalid fd."""
+
+    call: Literal["fsync", "fdatasync", "sync_file_range", "syncfs"]
+    walk: Walk | None
+
+
+@dataclass(frozen=True, slots=True)
 class Garbled:
     pid: int | None
     line: str
@@ -552,6 +569,65 @@ def _write(body: str, at: Stamp) -> File:
 def _read(body: str, at: Stamp) -> File:
     pid, path = body.split(" ", 1)
     return File(int(pid), "read", path, partial=_cut(path), at=at)
+
+
+def _walked(body: str) -> tuple[int, Walk | None]:
+    """`PID DEV DEPTH NAMES`, or `PID DEV -1` when the fd named no file."""
+    f = body.split(" ", 3)
+    pid = int(f[0])
+    if len(f) >= 3 and int(f[2]) < 0:
+        return pid, None
+    if len(f) != 4:
+        raise ValueError("short cache line")
+    return pid, _walk(int(f[1]), int(f[2]), f[3].split("/"))
+
+
+@record("a")
+def _fadvise(body: str, at: Stamp) -> RawCache:
+    pid, walk = _walked(body)
+    return RawCache(pid, "fadvise_dontneed", walk, at=at)
+
+
+@record("b")
+def _preadv2(body: str, at: Stamp) -> RawCache:
+    pid, walk = _walked(body)
+    return RawCache(pid, "preadv2_nowait", walk, at=at)
+
+
+@record("c")
+def _cachestat(body: str, at: Stamp) -> RawCache:
+    pid, walk = _walked(body)
+    return RawCache(pid, "cachestat", walk, at=at)
+
+
+@record("d")
+def _mincore(body: str, at: Stamp) -> Cache:
+    (pid,) = _ints(body, 1)
+    return Cache(pid, "mincore", None, at=at)
+
+
+@record("e")
+def _fsync(body: str, at: Stamp) -> RawSync:
+    pid, walk = _walked(body)
+    return RawSync(pid, "fsync", walk, at=at)
+
+
+@record("f")
+def _fdatasync(body: str, at: Stamp) -> RawSync:
+    pid, walk = _walked(body)
+    return RawSync(pid, "fdatasync", walk, at=at)
+
+
+@record("g")
+def _sync_file_range(body: str, at: Stamp) -> RawSync:
+    pid, walk = _walked(body)
+    return RawSync(pid, "sync_file_range", walk, at=at)
+
+
+@record("h")
+def _syncfs(body: str, at: Stamp) -> RawSync:
+    pid, walk = _walked(body)
+    return RawSync(pid, "syncfs", walk, at=at)
 
 
 @record("U")

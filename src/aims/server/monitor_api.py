@@ -164,7 +164,7 @@ async def monitor_run(
         )
     settings = state.config.settings()
     try:
-        origin = await load_origin(state.store, run_id)
+        origin = await load_origin(state.store, run_id, full=False)
         jobs = monitor_jobs(origin, settings, head.hash, body)
     except (RunError, ProfileError, MonitorConfigError, TextError) as e:
         raise ProblemException(422, "Cannot monitor", str(e), code="monitor") from None

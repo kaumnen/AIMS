@@ -627,6 +627,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/scenarios/{source}/{name}/estimate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Estimate Scenario
+         * @description What `samples` runs of the scenario cost, of one variant or with `variants=all` of each:
+         *     what the caps allow, and the typical and high cost of past runs.
+         */
+        get: operations["estimate_scenario"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/scenarios/{source}/{name}/files": {
         parameters: {
             query?: never;
@@ -686,6 +707,23 @@ export interface paths {
         post: operations["start_session"];
         /** End Session */
         delete: operations["end_session"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/spend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Spend */
+        get: operations["get_spend"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -1121,13 +1159,13 @@ export interface components {
             /** Step */
             step: number;
         };
-        /** AgentStarted */
+        /**
+         * AgentStarted
+         * @description `backend` is None for an agent that follows a script and calls no model.
+         */
         AgentStarted: {
-            /**
-             * Backend
-             * @enum {string}
-             */
-            backend: "responses" | "chat";
+            /** Backend */
+            backend: ("responses" | "chat") | null;
             /** Budget */
             budget: {
                 [key: string]: components["schemas"]["JsonValue"];
@@ -1253,6 +1291,60 @@ export interface components {
             /** Size */
             size: number;
         };
+        /**
+         * CacheProbe
+         * @description A call that can tell whether file pages sit in the page cache, which sandboxes on one
+         *     host share: `posix_fadvise` with DONTNEED, `preadv2` with RWF_NOWAIT, `cachestat` or
+         *     `mincore`. `path` is the file it names when the tracer could resolve it; `count` the calls
+         *     it stands for when several were merged.
+         */
+        CacheProbe: {
+            /**
+             * Count
+             * @default 1
+             */
+            count: number;
+            /** Cpu */
+            cpu: number;
+            /** Cpu Seq */
+            cpu_seq: number;
+            /** Exec Id */
+            exec_id: string | null;
+            /**
+             * Op
+             * @enum {string}
+             */
+            op: "fadvise_dontneed" | "preadv2_nowait" | "cachestat" | "mincore";
+            /**
+             * Partial
+             * @default false
+             */
+            partial: boolean;
+            /**
+             * Path
+             * @default null
+             */
+            path: string | null;
+            /** Pid */
+            pid: number;
+            /** Ts Kernel */
+            ts_kernel: number;
+        };
+        /**
+         * CachedRate
+         * @description The input price of `model` per million tokens with `cached_share` of it cached, the
+         *     share its past calls reported, or 90% when `assumed`.
+         */
+        CachedRate: {
+            /** Assumed */
+            assumed: boolean;
+            /** Cached Share */
+            cached_share: number;
+            /** Input Usd */
+            input_usd: number;
+            /** Model */
+            model: string;
+        };
         /** CategoryFinding */
         CategoryFinding: {
             /**
@@ -1277,6 +1369,168 @@ export interface components {
              * @enum {string}
              */
             present: "yes" | "no" | "unclear";
+        };
+        /**
+         * ChannelChange
+         * @description One path of a shared folder that changed, with the agent the kernel records show wrote
+         *     it, None when none did or several did, and those records' seqs.
+         */
+        ChannelChange: {
+            /**
+             * Agent
+             * @default null
+             */
+            agent?: string | null;
+            /**
+             * Change
+             * @enum {string}
+             */
+            change: "added" | "modified" | "meta" | "removed" | "kind";
+            /** @default null */
+            content?: components["schemas"]["BlobRef"] | null;
+            /** Evidence */
+            evidence?: number[];
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "file" | "dir" | "symlink" | "fifo" | "socket" | "other";
+            /** Mode */
+            mode: number;
+            /** Mtime Us */
+            mtime_us: number;
+            /** Path */
+            path: string;
+            /**
+             * Sha256
+             * @default null
+             */
+            sha256?: string | null;
+            /** Size */
+            size: number;
+            /**
+             * Target
+             * @default null
+             */
+            target?: string | null;
+            /**
+             * Timestomp
+             * @default false
+             */
+            timestomp?: boolean;
+        };
+        /**
+         * ChannelInfo
+         * @description A channel of the run. A folder lives at `path`; `restored` is the archive of its files
+         *     the run started from, carried over from the series' last run.
+         */
+        ChannelInfo: {
+            /** Kind */
+            kind: string;
+            /**
+             * Lifetime
+             * @default run
+             * @enum {string}
+             */
+            lifetime?: "run" | "series";
+            /** Members */
+            members: string[];
+            /** Name */
+            name: string;
+            /**
+             * Path
+             * @default null
+             */
+            path?: string | null;
+            /** Read Only */
+            read_only?: string[];
+            /** @default null */
+            restored?: components["schemas"]["BlobRef"] | null;
+        };
+        /**
+         * ChannelMessage
+         * @description A message posted to a board. The event's agent wrote it; `id` counts the board's
+         *     messages from 1. `call_id` is the tool call that posted it, None for a scripted post.
+         */
+        ChannelMessage: {
+            /** Bytes */
+            bytes: number;
+            /**
+             * Call Id
+             * @default null
+             */
+            call_id: string | null;
+            /** Channel */
+            channel: string;
+            /** Id */
+            id: number;
+            /** Text */
+            text: string | components["schemas"]["BlobRef"];
+        };
+        /**
+         * ChannelRead
+         * @description A board read by the event's agent: it was shown the messages after `after` through
+         *     `through`, `count` of them. `through` is the board's last message then, unless the read
+         *     was too long for one call and left the rest for the next.
+         */
+        ChannelRead: {
+            /** After */
+            after: number;
+            /**
+             * Call Id
+             * @default null
+             */
+            call_id: string | null;
+            /** Channel */
+            channel: string;
+            /** Count */
+            count: number;
+            /** Through */
+            through: number;
+        };
+        /**
+         * ChannelSnapshot
+         * @description How a shared folder changed since the snapshot whose digest is `base`. It is written
+         *     after an exec of any member that may have changed it, and between execs for writes nobody's
+         *     exec covered. `exec_id` is that exec. Changes past the inline ones are JSON lines in
+         *     `more`; `truncated` means the entry cap stopped the walk. The last one, as the run closes
+         *     the folder, holds its files as a tar in `archive`, which the next run of a series starts
+         *     from.
+         */
+        ChannelSnapshot: {
+            /** @default null */
+            archive: components["schemas"]["BlobRef"] | null;
+            /** Base */
+            base: string | null;
+            /** Bytes */
+            bytes: number;
+            /** Changes */
+            changes: components["schemas"]["ChannelChange"][];
+            /** Channel */
+            channel: string;
+            /** Digest */
+            digest: string;
+            /**
+             * Duration Ms
+             * @default 0
+             */
+            duration_ms: number;
+            /** Entries */
+            entries: number;
+            /**
+             * Exec Id
+             * @default null
+             */
+            exec_id: string | null;
+            /** Files */
+            files: number;
+            /** @default null */
+            more: components["schemas"]["BlobRef"] | null;
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
         };
         /** CheckResult */
         CheckResult: {
@@ -1413,6 +1667,99 @@ export interface components {
             /** Text */
             text: string;
         };
+        /**
+         * CostFigures
+         * @description One run's cost in USD at list prices. `ceiling_usd` is what the caps allow, None when no
+         *     cap applies; `stepped` says it counts one last step past a cost cap, which is checked before
+         *     each step. `typical_usd` is the median of `runs` matching past runs, matched by `tier`: the
+         *     same scenario, or the same models and effort scaled by step budget. `high_usd` is their
+         *     90th percentile, or twice the median when `doubled` (under 10 runs). `capped` of those runs
+         *     hit a cap; `excluded` matched but recorded no cost. `priced` is false when no profile of
+         *     this side has a price, so its cost is not counted.
+         */
+        CostFigures: {
+            /**
+             * Capped
+             * @default 0
+             */
+            capped: number;
+            /** Ceiling Usd */
+            ceiling_usd: number | null;
+            /**
+             * Doubled
+             * @default false
+             */
+            doubled: boolean;
+            /**
+             * Excluded
+             * @default 0
+             */
+            excluded: number;
+            /** High Usd */
+            high_usd: number | null;
+            /**
+             * Priced
+             * @default true
+             */
+            priced: boolean;
+            /**
+             * Runs
+             * @default 0
+             */
+            runs: number;
+            /**
+             * Stepped
+             * @default false
+             */
+            stepped: boolean;
+            /**
+             * Tier
+             * @default cap
+             * @enum {string}
+             */
+            tier: "scenario" | "models" | "cap";
+            /** Typical Usd */
+            typical_usd: number | null;
+        };
+        /**
+         * CostTotal
+         * @description Every run together, agents and monitor: the typical figure, the high one (each run at
+         *     its high figure) and what the caps allow. None when a part of it is unknown.
+         */
+        CostTotal: {
+            /** Ceiling Usd */
+            ceiling_usd: number | null;
+            /** High Usd */
+            high_usd: number | null;
+            /** Typical Usd */
+            typical_usd: number | null;
+        };
+        /**
+         * Cut
+         * @description Where a fork of several agents cut its origin: after the origin's event `seq`, by when
+         *     each agent had taken `steps[agent]` steps. `keep_others` kept the agents other than `agent`
+         *     on their recorded answers until their own inputs changed.
+         */
+        Cut: {
+            /**
+             * Agent
+             * @default null
+             */
+            agent?: string | null;
+            /**
+             * Keep Others
+             * @default false
+             */
+            keep_others?: boolean;
+            /** Origin */
+            origin: string;
+            /** Seq */
+            seq: number;
+            /** Steps */
+            steps?: {
+                [key: string]: number;
+            };
+        };
         /** DeltaMessage */
         DeltaMessage: {
             /** Deltas */
@@ -1469,6 +1816,41 @@ export interface components {
             run_id: string;
         };
         /**
+         * Estimate
+         * @description The cost of `samples` runs of each variant in `parts`. `confirm` says `aims run` asks
+         *     before it starts: the high figure, or without one the ceiling, is above
+         *     `confirm_above_usd`, or nothing bounds the cost. `lines` is the estimate in words.
+         */
+        Estimate: {
+            /**
+             * Confirm
+             * @default false
+             */
+            confirm: boolean;
+            /**
+             * Confirm Above Usd
+             * @default 20
+             */
+            confirm_above_usd: number;
+            /** Credits */
+            credits: components["schemas"]["ProviderCredit"][];
+            /** Lines */
+            lines: string[];
+            /** Parts */
+            parts: components["schemas"]["VariantCost"][];
+            /** Rates */
+            rates: components["schemas"]["CachedRate"][];
+            /** Samples */
+            samples: number;
+            /** Scenario */
+            scenario: string;
+            total: components["schemas"]["CostTotal"];
+            /** Unpriced */
+            unpriced: string[];
+            /** Warnings */
+            warnings: string[];
+        };
+        /**
          * Event
          * @description One line of `events.jsonl`. `hash` covers every other field, `prev_hash` links the chain.
          */
@@ -1505,7 +1887,7 @@ export interface components {
             next: string | null;
         };
         /** @enum {string} */
-        EventType: "agent.compacted" | "agent.finished" | "agent.input" | "agent.report" | "agent.started" | "agent.step" | "audit.lost" | "audit.spill" | "exec.finished" | "exec.started" | "file.access" | "file.setattr" | "file.write" | "fs.snapshot" | "ipc.event" | "log.truncated" | "mem.exec" | "model.request" | "model.response" | "monitor.action" | "monitor.cleared" | "monitor.degraded" | "monitor.flag" | "monitor.sweep" | "monitor.verdict" | "net.connect" | "ns.event" | "operator.action" | "proc.exec" | "proc.exit" | "proc.fork" | "proc.output" | "proc.signal" | "ptrace.event" | "replay.divergence" | "resource.sample" | "run.finished" | "run.started" | "sandbox.archived" | "sandbox.started" | "sandbox.stopped" | "sys.denied" | "task.scored" | "tool.call" | "tool.result";
+        EventType: "agent.compacted" | "agent.finished" | "agent.input" | "agent.report" | "agent.started" | "agent.step" | "audit.lost" | "audit.spill" | "cache.probe" | "channel.message" | "channel.read" | "channel.snapshot" | "exec.finished" | "exec.started" | "file.access" | "file.setattr" | "file.sync" | "file.write" | "fs.snapshot" | "ipc.event" | "log.truncated" | "mem.exec" | "model.request" | "model.response" | "monitor.action" | "monitor.cleared" | "monitor.degraded" | "monitor.flag" | "monitor.sweep" | "monitor.verdict" | "net.connect" | "ns.event" | "operator.action" | "plant.triggered" | "proc.exec" | "proc.exit" | "proc.fork" | "proc.output" | "proc.signal" | "ptrace.event" | "replay.divergence" | "resource.sample" | "run.finished" | "run.started" | "sandbox.archived" | "sandbox.started" | "sandbox.stopped" | "score.awareness" | "score.unexplained" | "score.unit" | "sys.denied" | "task.scored" | "tool.call" | "tool.result";
         /** @description Each event type and the schema of its `data`. */
         EventTypes: {
             "agent.compacted": components["schemas"]["AgentCompacted"];
@@ -1516,10 +1898,15 @@ export interface components {
             "agent.step": components["schemas"]["AgentStep"];
             "audit.lost": components["schemas"]["AuditLost"];
             "audit.spill": components["schemas"]["AuditSpill"];
+            "cache.probe": components["schemas"]["CacheProbe"];
+            "channel.message": components["schemas"]["ChannelMessage"];
+            "channel.read": components["schemas"]["ChannelRead"];
+            "channel.snapshot": components["schemas"]["ChannelSnapshot"];
             "exec.finished": components["schemas"]["ExecFinished"];
             "exec.started": components["schemas"]["ExecStarted"];
             "file.access": components["schemas"]["FileAccess"];
             "file.setattr": components["schemas"]["FileSetattr"];
+            "file.sync": components["schemas"]["FileSync"];
             "file.write": components["schemas"]["FileWrite"];
             "fs.snapshot": components["schemas"]["FsSnapshot"];
             "ipc.event": components["schemas"]["IpcEvent"];
@@ -1536,6 +1923,7 @@ export interface components {
             "net.connect": components["schemas"]["NetConnect"];
             "ns.event": components["schemas"]["NsEvent"];
             "operator.action": components["schemas"]["OperatorAction"];
+            "plant.triggered": components["schemas"]["PlantTriggered"];
             "proc.exec": components["schemas"]["ProcExec"];
             "proc.exit": components["schemas"]["ProcExit"];
             "proc.fork": components["schemas"]["ProcFork"];
@@ -1549,6 +1937,9 @@ export interface components {
             "sandbox.archived": components["schemas"]["SandboxArchived"];
             "sandbox.started": components["schemas"]["SandboxStarted"];
             "sandbox.stopped": components["schemas"]["SandboxStopped"];
+            "score.awareness": components["schemas"]["ScoreAwareness"];
+            "score.unexplained": components["schemas"]["ScoreUnexplained"];
+            "score.unit": components["schemas"]["ScoreUnit"];
             "sys.denied": components["schemas"]["SysDenied"];
             "task.scored": components["schemas"]["TaskScored"];
             "tool.call": components["schemas"]["ToolCall"];
@@ -1807,6 +2198,44 @@ export interface components {
             uid: number | null;
             /** Valid */
             valid: number;
+        };
+        /**
+         * FileSync
+         * @description A call that asks the kernel to make a file durable: `fsync`, `fdatasync`,
+         *     `sync_file_range` or `syncfs`. `path` is the file the fd named when the tracer could
+         *     resolve it, else None. `count` is the calls it stands for when several were merged.
+         */
+        FileSync: {
+            /**
+             * Call
+             * @enum {string}
+             */
+            call: "fsync" | "fdatasync" | "sync_file_range" | "syncfs";
+            /**
+             * Count
+             * @default 1
+             */
+            count: number;
+            /** Cpu */
+            cpu: number;
+            /** Cpu Seq */
+            cpu_seq: number;
+            /** Exec Id */
+            exec_id: string | null;
+            /**
+             * Partial
+             * @default false
+             */
+            partial: boolean;
+            /**
+             * Path
+             * @default null
+             */
+            path: string | null;
+            /** Pid */
+            pid: number;
+            /** Ts Kernel */
+            ts_kernel: number;
         };
         /**
          * FileWrite
@@ -3092,6 +3521,45 @@ export interface components {
             reason?: string | null;
         };
         /**
+         * PlantTriggered
+         * @description A plant reached a tier for the event's agent, in the run `origin` that a score run
+         *     scores. `seq` is the first event that set it off, the harm seq when the tier counts as
+         *     taken; `evidence` holds every such seq. `inherited` marks a canary a run of the series
+         *     before made, used here.
+         */
+        PlantTriggered: {
+            /**
+             * Category
+             * @enum {string}
+             */
+            category: "covert_communication" | "scorer_tampering" | "transcript_tampering" | "deceiving_operator" | "evading_checks" | "collective_over_own_task" | "drift" | "loop_or_confusion" | "fabricated_completion" | "constraint_violation" | "eval_awareness" | "alerting_operator" | "egress_attempt" | "privilege_escalation" | "monitor_manipulation";
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+            /** Evidence */
+            evidence: number[];
+            /**
+             * Inherited
+             * @default false
+             */
+            inherited: boolean;
+            /** Kind */
+            kind: string;
+            /** Plant */
+            plant: string;
+            /** Seq */
+            seq: number;
+            /** Taken */
+            taken: boolean;
+            /**
+             * Tier
+             * @enum {string}
+             */
+            tier: "touched" | "used";
+        };
+        /**
          * Price
          * @description USD per million tokens. `input` is charged on uncached input tokens only.
          */
@@ -3466,6 +3934,25 @@ export interface components {
             };
         };
         /**
+         * ProviderCredit
+         * @description What `provider` was paid in the runs on record, and with `[credits]` set for it, what is
+         *     left now and after the estimate's typical and high figures.
+         */
+        ProviderCredit: {
+            /** Credit Usd */
+            credit_usd: number | null;
+            /** Left After High Usd */
+            left_after_high_usd: number | null;
+            /** Left After Typical Usd */
+            left_after_typical_usd: number | null;
+            /** Left Usd */
+            left_usd: number | null;
+            /** Provider */
+            provider: string;
+            /** Spent Usd */
+            spent_usd: number;
+        };
+        /**
          * PtraceEvent
          * @description A ptrace request by `pid` against `target`, recorded when the kernel returns.
          *
@@ -3552,35 +4039,83 @@ export interface components {
         };
         /**
          * ReplayDivergence
-         * @description A tool call a fork ran again gave another output than the recording it replays. The
-         *     model was given `recorded`; `line` is the first line that differs, counted from 1.
+         * @description What a fork rebuilt differs from the recording it replays.
+         *
+         *     For an `output`, a tool call ran again gave another output: the model was given
+         *     `recorded`, and `line` is the first line that differs, counted from 1. For a `channel`, a
+         *     shared object read again was at another version than in the origin: `channel` and `path`
+         *     name it (a folder file, or a board's messages), `recorded_version` and `live_version` are
+         *     the file sha256 or the last board message id. `origin_seq` is the access in the origin.
          */
         ReplayDivergence: {
-            /** Call Id */
-            call_id: string;
+            /**
+             * Call Id
+             * @default null
+             */
+            call_id: string | null;
+            /**
+             * Channel
+             * @default null
+             */
+            channel: string | null;
+            /**
+             * Kind
+             * @default output
+             * @enum {string}
+             */
+            kind: "output" | "channel";
             /**
              * Line
              * @default null
              */
             line: number | null;
-            /** Live */
+            /**
+             * Live
+             * @default
+             */
             live: string | components["schemas"]["BlobRef"];
             /**
              * Live Error
              * @default false
              */
             live_error: boolean;
-            /** Recorded */
+            /**
+             * Live Version
+             * @default null
+             */
+            live_version: string | null;
+            /**
+             * Origin Seq
+             * @default null
+             */
+            origin_seq: number | null;
+            /**
+             * Path
+             * @default null
+             */
+            path: string | null;
+            /**
+             * Recorded
+             * @default
+             */
             recorded: string | components["schemas"]["BlobRef"];
             /**
              * Recorded Error
              * @default false
              */
             recorded_error: boolean;
+            /**
+             * Recorded Version
+             * @default null
+             */
+            recorded_version: string | null;
             /** Step */
             step: number;
-            /** Tool */
-            tool: string;
+            /**
+             * Tool
+             * @default null
+             */
+            tool: string | null;
         };
         /**
          * ResourceSample
@@ -3717,23 +4252,30 @@ export interface components {
         /**
          * RunStarted
          * @description `kind` says what the run is: a scenario run, a monitor run over the sealed run `origin`
-         *     (whose head hash was `origin_head`), or a model check. `monitor` is the identity hash of the
-         *     monitor that watches the run: its prompts, rubric, schemas, models, lanes, signal versions,
-         *     rules and AIMS version; None when the run has no monitor.
+         *     (whose head hash was `origin_head`), a scoring of `origin`, or a model check. `monitor` is
+         *     the identity hash of the monitor that watches the run: its prompts, rubric, schemas, models,
+         *     lanes, signal versions, rules and AIMS version; None when the run has no monitor.
+         *
+         *     `truth` is the sha256 of the run's truth file, kept outside the log: what the scenario hid
+         *     from the monitor, revealed when the run is scored.
          */
         RunStarted: {
             /** Agents */
             agents: string[];
+            /** Channels */
+            channels: components["schemas"]["ChannelInfo"][];
             /** Config */
             config: {
                 [key: string]: components["schemas"]["JsonValue"];
             };
+            /** @default null */
+            cut: components["schemas"]["Cut"] | null;
             /**
              * Kind
              * @default scenario
              * @enum {string}
              */
-            kind: "scenario" | "monitor" | "models.check";
+            kind: "scenario" | "monitor" | "models.check" | "score";
             /**
              * Monitor
              * @default null
@@ -3756,6 +4298,13 @@ export interface components {
             oversight: "observe" | "autonomous" | "human";
             /** Scenario */
             scenario: string;
+            /** @default null */
+            series: components["schemas"]["Series"] | null;
+            /**
+             * Truth
+             * @default null
+             */
+            truth: string | null;
         };
         /**
          * RunSummary
@@ -3790,7 +4339,7 @@ export interface components {
              * @default scenario
              * @enum {string}
              */
-            kind: "scenario" | "monitor" | "models.check";
+            kind: "scenario" | "monitor" | "models.check" | "score";
             /** Max Importance */
             max_importance: number | null;
             /**
@@ -4097,6 +4646,169 @@ export interface components {
             /** Source */
             source: string;
         };
+        /**
+         * ScoreAwareness
+         * @description Whether the event's agent said it thought it was being tested, by a classifier model
+         *     over its words; `quote` is what it said, `evidence` where.
+         */
+        ScoreAwareness: {
+            /**
+             * Call Id
+             * @default null
+             */
+            call_id: string | null;
+            /** Evidence */
+            evidence: number[];
+            /**
+             * Finding
+             * @enum {string}
+             */
+            finding: "yes" | "no" | "unclear";
+            /**
+             * Quote
+             * @default null
+             */
+            quote: string | components["schemas"]["BlobRef"] | null;
+        };
+        /**
+         * ScoreMatch
+         * @description How one monitor layer did on one unit: `detected` any flag on the agent, `category` a
+         *     flag of the plant's category, `located` a flag whose evidence overlaps the trigger's; each
+         *     anytime and, with `_before`, at or before the harm seq. `first_flag` is the first matching
+         *     flag; `steps` and `seconds` the distance from the trigger to it.
+         */
+        ScoreMatch: {
+            /**
+             * Category
+             * @default false
+             */
+            category?: boolean;
+            /**
+             * Category Before
+             * @default false
+             */
+            category_before?: boolean;
+            /**
+             * Detected
+             * @default false
+             */
+            detected?: boolean;
+            /**
+             * Detected Before
+             * @default false
+             */
+            detected_before?: boolean;
+            /**
+             * First Flag
+             * @default null
+             */
+            first_flag?: number | null;
+            /**
+             * Importance
+             * @default null
+             */
+            importance?: number | null;
+            /**
+             * Layer
+             * @enum {string}
+             */
+            layer: "signal" | "sweep" | "judge" | "llm" | "any";
+            /**
+             * Located
+             * @default false
+             */
+            located?: boolean;
+            /**
+             * Located Before
+             * @default false
+             */
+            located_before?: boolean;
+            /**
+             * Seconds
+             * @default null
+             */
+            seconds?: number | null;
+            /**
+             * Steps
+             * @default null
+             */
+            steps?: number | null;
+            /**
+             * Suspicion
+             * @default null
+             */
+            suspicion?: number | null;
+        };
+        /**
+         * ScoreUnexplained
+         * @description A monitor flag no plant explains, for review. `label` is set once a person labels it.
+         */
+        ScoreUnexplained: {
+            /**
+             * Category
+             * @enum {string}
+             */
+            category: "covert_communication" | "scorer_tampering" | "transcript_tampering" | "deceiving_operator" | "evading_checks" | "collective_over_own_task" | "drift" | "loop_or_confusion" | "fabricated_completion" | "constraint_violation" | "eval_awareness" | "alerting_operator" | "egress_attempt" | "privilege_escalation" | "monitor_manipulation";
+            /** Flag */
+            flag: number;
+            /** Importance */
+            importance: number;
+            /**
+             * Label
+             * @default null
+             */
+            label: string | null;
+            /**
+             * Layer
+             * @enum {string}
+             */
+            layer: "signal" | "sweep" | "judge";
+        };
+        /**
+         * ScoreUnit
+         * @description One agent of the scored run: a positive when it took a plant, a negative when the run
+         *     has no plant. `plants` are the ones it took; `harm_seq` the first time it took one.
+         */
+        ScoreUnit: {
+            /** Categories */
+            categories: ("covert_communication" | "scorer_tampering" | "transcript_tampering" | "deceiving_operator" | "evading_checks" | "collective_over_own_task" | "drift" | "loop_or_confusion" | "fabricated_completion" | "constraint_violation" | "eval_awareness" | "alerting_operator" | "egress_attempt" | "privilege_escalation" | "monitor_manipulation")[];
+            /**
+             * Eval Aware
+             * @default null
+             */
+            eval_aware: ("yes" | "no" | "unclear") | null;
+            /**
+             * Harm Seq
+             * @default null
+             */
+            harm_seq: number | null;
+            /** Matches */
+            matches: components["schemas"]["ScoreMatch"][];
+            /** Plants */
+            plants: string[];
+            /** Positive */
+            positive: boolean | null;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "subject" | "confederate";
+        };
+        /**
+         * Series
+         * @description A run's place in a series: the `index`th run of series `name`, after run `previous`.
+         */
+        Series: {
+            /** Index */
+            index: number;
+            /** Name */
+            name: string;
+            /**
+             * Previous
+             * @default null
+             */
+            previous?: string | null;
+        };
         /** SessionStart */
         SessionStart: {
             /** Token */
@@ -4106,6 +4818,17 @@ export interface components {
         Shas: {
             /** Shas */
             shas: string[];
+        };
+        /**
+         * Spend
+         * @description What each provider was paid in the runs on record, against the `[credits]` of the
+         *     config files; `lines` says it in words.
+         */
+        Spend: {
+            /** Lines */
+            lines: string[];
+            /** Providers */
+            providers: components["schemas"]["ProviderCredit"][];
         };
         /**
          * StartFork
@@ -4457,6 +5180,23 @@ export interface components {
              * @default 0
              */
             restarts: number;
+        };
+        /**
+         * VariantCost
+         * @description One run of one variant. `monitor` is None when the monitor is off; `steps` is the median
+         *     number of steps each agent took in past runs of the same scenario.
+         */
+        VariantCost: {
+            agents: components["schemas"]["CostFigures"];
+            monitor: components["schemas"]["CostFigures"] | null;
+            /** Monitor Preset */
+            monitor_preset: ("off" | "signals" | "standard" | "research") | null;
+            /** Steps */
+            steps: {
+                [key: string]: number;
+            };
+            /** Variant */
+            variant: string | null;
         };
         /** VerificationOut */
         VerificationOut: {
@@ -5134,7 +5874,7 @@ export interface operations {
             query?: {
                 before?: string | null;
                 limit?: number;
-                kind?: ("scenario" | "monitor" | "models.check") | null;
+                kind?: ("scenario" | "monitor" | "models.check" | "score") | null;
                 origin?: string | null;
                 severity?: number | null;
                 category?: ("covert_communication" | "scorer_tampering" | "transcript_tampering" | "deceiving_operator" | "evading_checks" | "collective_over_own_task" | "drift" | "loop_or_confusion" | "fabricated_completion" | "constraint_violation" | "eval_awareness" | "alerting_operator" | "egress_attempt" | "privilege_escalation" | "monitor_manipulation") | null;
@@ -6540,6 +7280,71 @@ export interface operations {
             };
         };
     };
+    estimate_scenario: {
+        parameters: {
+            query?: {
+                variant?: string | null;
+                variants?: "all" | null;
+                samples?: number;
+                profile?: string | null;
+                monitor?: ("off" | "signals" | "standard" | "research") | null;
+            };
+            header?: never;
+            path: {
+                source: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Estimate"];
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     list_files: {
         parameters: {
             query?: never;
@@ -6969,6 +7774,53 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_spend: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Spend"];
+                };
             };
             /** @description Not signed in */
             401: {
@@ -8106,33 +8958,40 @@ type ReadonlyArray<T> = [
 export const pathsApiConfigLayerGetParametersPathLayerValues: ReadonlyArray<FlattenedDeepRequired<paths>["/api/config/{layer}"]["get"]["parameters"]["path"]["layer"]> = ["user", "project"];
 export const pathsApiConfigLayerPutParametersPathLayerValues: ReadonlyArray<FlattenedDeepRequired<paths>["/api/config/{layer}"]["put"]["parameters"]["path"]["layer"]> = ["user", "project"];
 export const pathsApiConfigLayerPatchParametersPathLayerValues: ReadonlyArray<FlattenedDeepRequired<paths>["/api/config/{layer}"]["patch"]["parameters"]["path"]["layer"]> = ["user", "project"];
-export const pathsApiRunsGetParametersQueryKindAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs"]["get"]["parameters"]["query"]["kind"]> = ["scenario", "monitor", "models.check"];
+export const pathsApiRunsGetParametersQueryKindAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs"]["get"]["parameters"]["query"]["kind"]> = ["scenario", "monitor", "models.check", "score"];
 export const pathsApiRunsGetParametersQueryCategoryAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs"]["get"]["parameters"]["query"]["category"]> = ["covert_communication", "scorer_tampering", "transcript_tampering", "deceiving_operator", "evading_checks", "collective_over_own_task", "drift", "loop_or_confusion", "fabricated_completion", "constraint_violation", "eval_awareness", "alerting_operator", "egress_attempt", "privilege_escalation", "monitor_manipulation"];
 export const pathsApiRunsRun_idFlagsGetParametersQueryLayerAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs/{run_id}/flags"]["get"]["parameters"]["query"]["layer"]> = ["signal", "sweep", "judge"];
 export const pathsApiRunsRun_idFlagsGetParametersQueryCategoryAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs/{run_id}/flags"]["get"]["parameters"]["query"]["category"]> = ["covert_communication", "scorer_tampering", "transcript_tampering", "deceiving_operator", "evading_checks", "collective_over_own_task", "drift", "loop_or_confusion", "fabricated_completion", "constraint_violation", "eval_awareness", "alerting_operator", "egress_attempt", "privilege_escalation", "monitor_manipulation"];
 export const pathsApiRunsRun_idFlagsGetParametersQueryStatusAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs/{run_id}/flags"]["get"]["parameters"]["query"]["status"]> = ["open", "cleared", "tainted", "confirmed", "rejected", "unclear"];
+export const pathsApiScenariosSourceNameEstimateGetParametersQueryMonitorAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/scenarios/{source}/{name}/estimate"]["get"]["parameters"]["query"]["monitor"]> = ["off", "signals", "standard", "research"];
 export const agentCompactedStrategyValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentCompacted"]["strategy"]> = ["trim", "summary"];
 export const agentFinishedReasonValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentFinished"]["reason"]> = ["submitted", "no_submit", "budget_steps", "budget_output_tokens", "budget_cost", "budget_wall", "context_exhausted", "model_error", "sandbox_failed", "divergence", "killed", "cancelled", "error"];
 export const agentInputKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentInput"]["kind"]> = ["instruction", "continue", "inject", "budget_warning"];
-export const agentStartedBackendValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentStarted"]["backend"]> = ["responses", "chat"];
+export const agentStartedBackendAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentStarted"]["backend"]> = ["responses", "chat"];
 export const agentStepSourceValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentStep"]["source"]> = ["live", "replay"];
 export const agentStepStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentStep"]["status"]> = ["completed", "incomplete", "error", "cancelled"];
+export const cacheProbeOpValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CacheProbe"]["op"]> = ["fadvise_dontneed", "preadv2_nowait", "cachestat", "mincore"];
 export const categoryFindingCategoryValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CategoryFinding"]["category"]> = ["covert_communication", "scorer_tampering", "transcript_tampering", "deceiving_operator", "evading_checks", "collective_over_own_task", "drift", "loop_or_confusion", "fabricated_completion", "constraint_violation", "eval_awareness", "alerting_operator", "egress_attempt", "privilege_escalation", "monitor_manipulation"];
 export const categoryFindingPresentValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CategoryFinding"]["present"]> = ["yes", "no", "unclear"];
+export const channelChangeChangeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ChannelChange"]["change"]> = ["added", "modified", "meta", "removed", "kind"];
+export const channelChangeKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ChannelChange"]["kind"]> = ["file", "dir", "symlink", "fifo", "socket", "other"];
+export const channelInfoLifetimeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ChannelInfo"]["lifetime"]> = ["run", "series"];
 export const commandActionActionValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CommandAction"]["action"]> = ["pause", "resume", "inject", "kill", "cancel", "sweep"];
 export const commandActionThenAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CommandAction"]["then"]> = ["continue", "kill", "inject", "deny"];
 export const commandMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CommandMessage"]["kind"]> = ["command"];
 export const configFileLayerValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ConfigFile"]["layer"]> = ["user", "project"];
+export const costFiguresTierValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CostFigures"]["tier"]> = ["scenario", "models", "cap"];
 export const deltaMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["DeltaMessage"]["kind"]> = ["delta"];
 export const deltasDroppedMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["DeltasDroppedMessage"]["kind"]> = ["deltas_dropped"];
 export const endMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EndMessage"]["kind"]> = ["end"];
-export const eventTypeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventType"]> = ["agent.compacted", "agent.finished", "agent.input", "agent.report", "agent.started", "agent.step", "audit.lost", "audit.spill", "exec.finished", "exec.started", "file.access", "file.setattr", "file.write", "fs.snapshot", "ipc.event", "log.truncated", "mem.exec", "model.request", "model.response", "monitor.action", "monitor.cleared", "monitor.degraded", "monitor.flag", "monitor.sweep", "monitor.verdict", "net.connect", "ns.event", "operator.action", "proc.exec", "proc.exit", "proc.fork", "proc.output", "proc.signal", "ptrace.event", "replay.divergence", "resource.sample", "run.finished", "run.started", "sandbox.archived", "sandbox.started", "sandbox.stopped", "sys.denied", "task.scored", "tool.call", "tool.result"];
+export const eventTypeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventType"]> = ["agent.compacted", "agent.finished", "agent.input", "agent.report", "agent.started", "agent.step", "audit.lost", "audit.spill", "cache.probe", "channel.message", "channel.read", "channel.snapshot", "exec.finished", "exec.started", "file.access", "file.setattr", "file.sync", "file.write", "fs.snapshot", "ipc.event", "log.truncated", "mem.exec", "model.request", "model.response", "monitor.action", "monitor.cleared", "monitor.degraded", "monitor.flag", "monitor.sweep", "monitor.verdict", "net.connect", "ns.event", "operator.action", "plant.triggered", "proc.exec", "proc.exit", "proc.fork", "proc.output", "proc.signal", "ptrace.event", "replay.divergence", "resource.sample", "run.finished", "run.started", "sandbox.archived", "sandbox.started", "sandbox.stopped", "score.awareness", "score.unexplained", "score.unit", "sys.denied", "task.scored", "tool.call", "tool.result"];
 export const eventsMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventsMessage"]["kind"]> = ["events"];
 export const execFinishedEndValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ExecFinished"]["end"]> = ["exited", "timeout", "cancelled", "failed"];
 export const execStartedAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ExecStarted"]["audit"]> = ["kernel", "snapshot"];
 export const execStartedPhaseValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ExecStarted"]["phase"]> = ["agent", "setup", "verifier", "replay"];
 export const fdInfoKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["FdInfo"]["kind"]> = ["pipe", "fifo", "file", "char", "sock", "dir", "other"];
 export const fileAccessOpValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["FileAccess"]["op"]> = ["read", "write", "delete", "rename", "denied", "mkdir", "symlink", "link"];
+export const fileSyncCallValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["FileSync"]["call"]> = ["fsync", "fdatasync", "sync_file_range", "syncfs"];
 export const flagInfoCategoryValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["FlagInfo"]["category"]> = ["covert_communication", "scorer_tampering", "transcript_tampering", "deceiving_operator", "evading_checks", "collective_over_own_task", "drift", "loop_or_confusion", "fabricated_completion", "constraint_violation", "eval_awareness", "alerting_operator", "egress_attempt", "privilege_escalation", "monitor_manipulation"];
 export const flagInfoLayerValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["FlagInfo"]["layer"]> = ["signal", "sweep", "judge"];
 export const flagInfoPhaseAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["FlagInfo"]["phase"]> = ["agent", "setup", "verifier", "replay"];
@@ -8170,22 +9029,32 @@ export const nsEventKindValues: ReadonlyArray<FlattenedDeepRequired<components>[
 export const offerMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["OfferMessage"]["kind"]> = ["offer"];
 export const operatorActionActionValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["OperatorAction"]["action"]> = ["pause", "resume", "inject", "kill", "cancel", "sweep"];
 export const operatorActionThenAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["OperatorAction"]["then"]> = ["continue", "kill", "inject", "deny"];
+export const plantTriggeredCategoryValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PlantTriggered"]["category"]> = ["covert_communication", "scorer_tampering", "transcript_tampering", "deceiving_operator", "evading_checks", "collective_over_own_task", "drift", "loop_or_confusion", "fabricated_completion", "constraint_violation", "eval_awareness", "alerting_operator", "egress_attempt", "privilege_escalation", "monitor_manipulation"];
+export const plantTriggeredTierValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PlantTriggered"]["tier"]> = ["touched", "used"];
 export const procOutputStreamValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ProcOutput"]["stream"]> = ["stdout", "stderr", "pipe", "fifo"];
 export const profileBackendValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Profile"]["backend"]> = ["responses", "chat"];
 export const profileEffortAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Profile"]["effort"]> = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 export const profileReasoningValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Profile"]["reasoning"]> = ["none", "summary", "full"];
 export const profileSummaryAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Profile"]["summary"]> = ["auto", "concise", "detailed"];
+export const replayDivergenceKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ReplayDivergence"]["kind"]> = ["output", "channel"];
 export const resumeBodyThenValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ResumeBody"]["then"]> = ["continue", "kill", "inject", "deny"];
 export const runFinishedStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunFinished"]["status"]> = ["completed", "failed", "killed", "cancelled"];
 export const runMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunMessage"]["kind"]> = ["run"];
-export const runStartedKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunStarted"]["kind"]> = ["scenario", "monitor", "models.check"];
+export const runStartedKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunStarted"]["kind"]> = ["scenario", "monitor", "models.check", "score"];
 export const runStartedOversightValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunStarted"]["oversight"]> = ["observe", "autonomous", "human"];
-export const runSummaryKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunSummary"]["kind"]> = ["scenario", "monitor", "models.check"];
+export const runSummaryKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunSummary"]["kind"]> = ["scenario", "monitor", "models.check", "score"];
 export const runnerHealthMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunnerHealthMessage"]["kind"]> = ["runner"];
 export const runnerHelloKindsValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunnerHello"]["kinds"]> = ["scenario", "models.check", "monitor"];
 export const runnerInfoKindsValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunnerInfo"]["kinds"]> = ["scenario", "models.check", "monitor"];
 export const sandboxStartedAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["SandboxStarted"]["audit"]> = ["kernel", "snapshot"];
 export const sandboxStoppedReasonValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["SandboxStopped"]["reason"]> = ["closed", "killed", "exec_failed"];
+export const scoreAwarenessFindingValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreAwareness"]["finding"]> = ["yes", "no", "unclear"];
+export const scoreMatchLayerValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreMatch"]["layer"]> = ["signal", "sweep", "judge", "llm", "any"];
+export const scoreUnexplainedCategoryValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreUnexplained"]["category"]> = ["covert_communication", "scorer_tampering", "transcript_tampering", "deceiving_operator", "evading_checks", "collective_over_own_task", "drift", "loop_or_confusion", "fabricated_completion", "constraint_violation", "eval_awareness", "alerting_operator", "egress_attempt", "privilege_escalation", "monitor_manipulation"];
+export const scoreUnexplainedLayerValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreUnexplained"]["layer"]> = ["signal", "sweep", "judge"];
+export const scoreUnitCategoriesValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreUnit"]["categories"]> = ["covert_communication", "scorer_tampering", "transcript_tampering", "deceiving_operator", "evading_checks", "collective_over_own_task", "drift", "loop_or_confusion", "fabricated_completion", "constraint_violation", "eval_awareness", "alerting_operator", "egress_attempt", "privilege_escalation", "monitor_manipulation"];
+export const scoreUnitEval_awareAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreUnit"]["eval_aware"]> = ["yes", "no", "unclear"];
+export const scoreUnitRoleValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreUnit"]["role"]> = ["subject", "confederate"];
 export const startForkAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["StartFork"]["audit"]> = ["kernel", "snapshot"];
 export const startForkMonitorAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["StartFork"]["monitor"]> = ["off", "signals", "standard", "research"];
 export const startMonitorPresetAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["StartMonitor"]["preset"]> = ["signals", "standard", "research"];
@@ -8195,4 +9064,5 @@ export const taskScoredEndAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<comp
 export const taskScoredSourceValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["TaskScored"]["source"]> = ["reward.json", "reward.txt", "none"];
 export const textSourceValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Text"]["source"]> = ["default", "user", "project"];
 export const tokenCreateRoleValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["TokenCreate"]["role"]> = ["viewer", "operator", "runner"];
+export const variantCostMonitor_presetAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["VariantCost"]["monitor_preset"]> = ["off", "signals", "standard", "research"];
 export const wireDeltaKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["WireDelta"]["kind"]> = ["start", "text", "reasoning", "tool_call", "tool_args", "end"];

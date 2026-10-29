@@ -162,7 +162,7 @@ class VerifierEnv(Base):
         self.harness: dict[str | None, set[str]] = {}
         self.roots = {"/", setup.scenario.sandbox.workdir, "/tmp", HOME}
 
-    def _planted(self, state: State, agent: str | None, value: str) -> bool:
+    def _agent_path(self, state: State, agent: str | None, value: str) -> bool:
         """Whether a path list entry is a file the agent wrote or a directory it filled, other
         than a workspace root, which a verifier may well put on a path itself."""
         if not value.startswith("/"):
@@ -190,7 +190,7 @@ class VerifierEnv(Base):
             if name not in self.names or entry in known:
                 continue
             if name in PATH_VALUED and not any(
-                self._planted(state, event.agent_id, v) for v in value.split(":")
+                self._agent_path(state, event.agent_id, v) for v in value.split(":")
             ):
                 continue
             out.append(

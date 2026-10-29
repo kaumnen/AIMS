@@ -10,12 +10,14 @@ import uuid
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Literal
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from aims.events import (
     AuditLevel,
     AuditLost,
     AuditSpill,
+    CacheProbe,
     Content,
     Draft,
     EventStore,
@@ -25,6 +27,7 @@ from aims.events import (
     FdInfo,
     FileAccess,
     FileSetattr,
+    FileSync,
     FileWrite,
     FsChange,
     FsSnapshot,
@@ -49,8 +52,10 @@ from aims.events import (
 from aims.events.store import INLINE_LIMIT
 from aims.sandbox.base import (
     AGENT_UID,
+    MASK_PROC,
     RUNNER_UID,
     TOOLBOX,
+    Cache,
     Capture,
     Close,
     Denied,
@@ -76,14 +81,21 @@ from aims.sandbox.base import (
     SandboxSpec,
     Setattr,
     Signal,
+    Sync,
     Tree,
 )
 from aims.sandbox.resources import Windows
 from aims.sandbox.trace import ENV_CAP, PIPEFS_MAGIC
 
+if TYPE_CHECKING:
+    from aims.events import Event
+    from aims.sandbox.shared import SharedFolder
+
 log = logging.getLogger("aims.sandbox")
 
 CAPS = {"procs": 1000, "files": 2000, "other": 500, "output": 200}
+PROC_READS = frozenset(MASK_PROC)
+PROC_READ_CAP = 64
 ATTR_MODE, ATTR_UID, ATTR_GID, ATTR_SIZE, ATTR_ATIME, ATTR_MTIME, ATTR_CTIME = (
     1,
     2,
@@ -99,6 +111,8 @@ OUTPUT_PREFIX = 64
 FLUSH_S = 0.1
 FLUSH_N = 500
 BARRIER_S = 2.0
+SETTLE_S = 0.5
+SETTLE_POLL_S = 0.005
 MEMORY = 4096
 ARCHIVE_CAP = 256 * 1024 * 1024
 
@@ -129,6 +143,7 @@ class _Scope:
     dropped: int = 0
     spilled: int = 0
     seen: set[tuple[object, ...]] = field(default_factory=set)
+    polled: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -242,6 +257,7 @@ class AuditedSandbox:
         self._waiting = False
         self._quiescing = False
         self._stopped = False
+        self._shared: list[tuple[SharedFolder, bool]] = []
 
     @classmethod
     async def start(
@@ -414,6 +430,33 @@ class AuditedSandbox:
     def stopped(self) -> bool:
         return self._stopped
 
+    @property
+    def run_id(self) -> str:
+        return self._run_id
+
+    @property
+    def run_dir(self) -> Path:
+        return Path(cast(Any, self._store).root) / self._run_id
+
+    def share(self, folder: SharedFolder, *, writes: bool) -> None:
+        """Feed `folder`, a shared volume this sandbox mounts, every event this sandbox logs,
+        and have it diffed before each exec and, when the sandbox `writes` it, after each."""
+        self._shared.append((folder, writes))
+
+    def unshare(self, folder: SharedFolder) -> None:
+        self._shared = [(f, w) for f, w in self._shared if f is not folder]
+
+    async def settle(self, timeout_s: float = SETTLE_S) -> None:
+        """Log the kernel records that have reached this sandbox, once its queue drains or
+        `timeout_s` passes."""
+        queue, consumer = self._queue, self._consumer
+        if queue is not None and consumer is not None and not consumer.done():
+            for _ in range(max(1, int(timeout_s / SETTLE_POLL_S))):
+                if queue.empty() and self._waiting:
+                    break
+                await asyncio.sleep(SETTLE_POLL_S)
+        await self._flush()
+
     async def stop(
         self, reason: Literal["killed", "exec_failed"] = "killed", detail: str | None = None
     ) -> None:
@@ -486,6 +529,8 @@ class AuditedSandbox:
 
     async def _log_files(self) -> None:
         await self._append(await self._files(None, always=False))
+        for folder, _ in list(self._shared):
+            await folder.diff(None)
 
     async def _finish(
         self,
@@ -539,7 +584,15 @@ class AuditedSandbox:
             error=outcome.error,
         )
         self._active = None
-        await self._append([*files, *spills, finished])
+        writes = [f for f, w in self._shared if w]
+        if writes:
+            # The exec's kernel records get their seqs first, so the folders can cite them.
+            await self._append(files)
+            for folder in writes:
+                await folder.diff(active.exec_id)
+            await self._append([*spills, finished])
+        else:
+            await self._append([*files, *spills, finished])
         if outcome.end == "failed":
             await self.stop("exec_failed", outcome.error)
         return ExecResult(
@@ -673,13 +726,17 @@ class AuditedSandbox:
         async with self._emit:
             drafts = self._take()
             drafts += [Draft(p, agent_id=self._agent_id) for p in payloads]
-            await self._store.append(self._run_id, drafts)
+            self._noted(await self._store.append(self._run_id, drafts))
 
     async def _flush(self) -> None:
         async with self._emit:
             drafts = self._take()
             if drafts:
-                await self._store.append(self._run_id, drafts)
+                self._noted(await self._store.append(self._run_id, drafts))
+
+    def _noted(self, events: Sequence[Event]) -> None:
+        for folder, _ in self._shared:
+            folder.note(events)
 
     def _take(self) -> list[Draft]:
         drafts, self._buffer = self._buffer, []
@@ -815,6 +872,10 @@ class AuditedSandbox:
                     self._on_file(record)
                 case Close():
                     self._on_close(record)
+                case Cache():
+                    self._on_cache(record)
+                case Sync():
+                    self._on_sync(record)
                 case Net():
                     self._on_net(record)
                 case Denied():
@@ -1059,10 +1120,18 @@ class AuditedSandbox:
         owner = self._owner_of(record.pid)
         if owner == INTERNAL:
             return
-        key = (record.op, record.path, record.target)
         scope = self._scope(owner)
-        if key in scope.seen:
+        key = (record.op, record.path, record.target)
+        # A polling loop reads the same /proc file many times in one exec; keep each read up
+        # to a per-path cap instead of collapsing them into the first one.
+        polled = record.op == "read" and record.path in PROC_READS
+        if not polled and key in scope.seen:
             return
+        if polled:
+            count = scope.polled.get(record.path, 0)
+            if count >= PROC_READ_CAP:
+                return
+            scope.polled[record.path] = count + 1
         payload = self._kernel(
             FileAccess,
             record,
@@ -1073,8 +1142,34 @@ class AuditedSandbox:
             errno=record.errno,
             partial=record.partial,
         )
-        if self._admit(owner, "files", payload):
+        if self._admit(owner, "files", payload) and not polled:
             scope.seen.add(key)
+
+    def _on_cache(self, record: Cache) -> None:
+        owner = self._owner_of(record.pid)
+        payload = self._kernel(
+            CacheProbe,
+            record,
+            owner,
+            op=record.op,
+            path=record.path,
+            partial=record.partial,
+            count=record.count,
+        )
+        self._admit(owner, "other", payload)
+
+    def _on_sync(self, record: Sync) -> None:
+        owner = self._owner_of(record.pid)
+        payload = self._kernel(
+            FileSync,
+            record,
+            owner,
+            call=record.call,
+            path=record.path,
+            partial=record.partial,
+            count=record.count,
+        )
+        self._admit(owner, "other", payload)
 
     def _on_close(self, record: Close) -> None:
         owner = self._owner_of(record.pid)

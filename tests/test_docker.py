@@ -36,7 +36,7 @@ from aims.events import (
     SandboxStarted,
     SysDenied,
 )
-from aims.sandbox import AuditedSandbox, DockerBackend, Mount, SandboxSpec
+from aims.sandbox import MASK_PROC, AuditedSandbox, DockerBackend, Mount, SandboxSpec
 from aims.sandbox import audit as audit_module
 from aims.sandbox import reader as reader_module
 from aims.sandbox.trace import STRLEN
@@ -136,6 +136,23 @@ async def test_sandbox_is_locked_down(backend: DockerBackend, store: LocalEventS
             assert result.stdout == expected, command
     finally:
         await sb.close()
+
+
+async def test_masked_proc_files_read_empty(backend: DockerBackend, store: LocalEventStore) -> None:
+    command = "for f in /proc/meminfo /proc/loadavg /proc/stat /proc/uptime; do wc -c < $f; done"
+    _, plain = await sandbox(backend, store)
+    try:
+        unmasked = await plain.exec(command, timeout_s=10)
+    finally:
+        await plain.close()
+    _, masked = await sandbox(backend, store, masked_paths=MASK_PROC)
+    try:
+        hidden = await masked.exec(command, timeout_s=10)
+    finally:
+        await masked.close()
+
+    assert all(int(x) > 0 for x in unmasked.stdout.split())
+    assert [int(x) for x in hidden.stdout.split()] == [0, 0, 0, 0]
 
 
 async def test_timeout_kills_the_process_group(
@@ -862,7 +879,8 @@ async def test_kernel_records_file_writes_and_self_probes(
     command = (
         "echo a > out && echo bb >> out && "
         "cat /proc/self/status /proc/1/cmdline /proc/self/mountinfo /proc/self/environ "
-        "/proc/meminfo /sys/fs/cgroup/cpu.max > /dev/null; "
+        "/proc/meminfo /proc/loadavg /proc/stat /proc/uptime /sys/fs/cgroup/cpu.max "
+        "> /dev/null; "
         "for i in 1 2 3; do sleep 30 & done; /.aims/busybox ps > /dev/null; kill $(jobs -p)"
     )
     run_id, sb = await sandbox(backend, store)
@@ -890,8 +908,8 @@ async def test_kernel_records_file_writes_and_self_probes(
         "/proc/1/stat",
     } <= procs
     assert "/sys/fs/cgroup/cpu.max" in reads
-    assert "/proc/meminfo" not in reads
-    assert not [p for p in procs if p.endswith("/stat") and p != "/proc/1/stat"]
+    assert {"/proc/meminfo", "/proc/loadavg", "/proc/stat", "/proc/uptime"} <= reads
+    assert not [p for p in procs if p.endswith("/stat") and p not in ("/proc/1/stat", "/proc/stat")]
 
 
 @pytest.mark.tracer

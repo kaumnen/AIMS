@@ -19,7 +19,16 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from aims import __version__
 from aims.events.schema import payload_types
-from aims.server import api, dispatch, edit_api, monitor_api, problems, runner_api, stream
+from aims.server import (
+    api,
+    dispatch,
+    edit_api,
+    estimate_api,
+    monitor_api,
+    problems,
+    runner_api,
+    stream,
+)
 from aims.server.auth import SecurityHeaders
 from aims.server.files import Sources
 from aims.server.problems import Problem
@@ -78,6 +87,7 @@ def create_app(
     app.include_router(api.router)
     app.include_router(edit_api.router)
     app.include_router(monitor_api.router)
+    app.include_router(estimate_api.router)
     app.include_router(stream.router)
     app.include_router(runner_api.router)
     app.add_middleware(SecurityHeaders)

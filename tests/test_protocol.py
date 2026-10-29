@@ -7,6 +7,7 @@ from aims.sandbox.trace import ENV_CAP, PARSERS, STRLEN
 from aims.sandbox.tracer import TRACE
 
 TAGS = set("RFBEXOWAUNCPD") | set("VGT") | set("Z") | set("Q") | set("IKSMHJL") | set("Y")
+TAGS |= set("abcdefgh")
 TYPES = {
     "run.started",
     "run.finished",
@@ -25,6 +26,7 @@ TYPES = {
     "proc.output",
     "file.access",
     "file.write",
+    "file.sync",
     "file.setattr",
     "fs.snapshot",
     "net.connect",
@@ -53,6 +55,14 @@ TYPES = {
     "replay.divergence",
     "sandbox.archived",
     "operator.action",
+    "channel.message",
+    "channel.read",
+    "channel.snapshot",
+    "cache.probe",
+    "plant.triggered",
+    "score.unit",
+    "score.unexplained",
+    "score.awareness",
 }
 RESERVED_TAGS: set[str] = set()
 RESERVED_TYPES: set[str] = set()

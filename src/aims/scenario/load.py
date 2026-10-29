@@ -16,6 +16,7 @@ from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from ruamel.yaml.error import YAMLError
 
 from aims.events import BlobRef
+from aims.scenario import variants
 from aims.scenario.model import HOME, Scenario
 
 AGENT_UID = 1000
@@ -48,6 +49,13 @@ class Bundle:
     verifier: bytes | None = None
     context: bytes | None = None
     dockerfile: str | None = None
+    variant: str | None = None
+    base: Path | None = None
+    path: Path | None = None
+    full_text: bytes | None = None
+    public: bool = False
+    sources: dict[str, Any] | None = None
+    """The files a truth record kept for a bundle restored without its directory."""
 
     @property
     def digest(self) -> str:
@@ -59,6 +67,11 @@ class Bundle:
             "dockerfile": self.dockerfile,
         }
         return hashlib.sha256(rfc8785.dumps(parts)).hexdigest()
+
+    @property
+    def source_digest(self) -> str:
+        """The digest of the scenario file as written, before a variant was applied."""
+        return hashlib.sha256(self.full_text or self.text).hexdigest()
 
     def blobs(self) -> list[bytes]:
         return [b for b in (self.text, self.files, self.verifier, self.context) if b is not None]
@@ -72,6 +85,14 @@ class Bundle:
             sha = hashlib.sha256(data).hexdigest()
             return BlobRef(sha256=sha, size=len(data)).model_dump()
 
+        resolved = self.scenario.model_dump(mode="json")
+        if self.public:
+            for key in ("plants", "variants", "selftest"):
+                resolved.pop(key, None)
+            for agent in resolved.get("agents", []):
+                if isinstance(agent, dict):
+                    agent.pop("role", None)
+                    agent.pop("script", None)
         return {
             "name": self.scenario.name,
             "digest": self.digest,
@@ -80,12 +101,20 @@ class Bundle:
             "verifier": ref(self.verifier),
             "context": ref(self.context),
             "dockerfile": self.dockerfile,
-            "resolved": self.scenario.model_dump(mode="json"),
+            "resolved": resolved,
         }
 
 
-def parse(text: str, *, source: str = "scenario") -> Scenario:
+def parse(text: str, *, source: str = "scenario", variant: str | None = None) -> Scenario:
     """Validate scenario YAML (1.2, so `no` and `010` stay a string and 10)."""
+    scenario, _ = _parse(text, source=source, variant=variant)
+    return scenario
+
+
+def _parse(
+    text: str, *, source: str = "scenario", variant: str | None = None
+) -> tuple[Scenario, str]:
+    """The scenario and the text it was read from, with `variant` applied when given."""
     yaml = YAML(typ="rt", pure=True)
     try:
         node = yaml.load(text)
@@ -95,21 +124,65 @@ def parse(text: str, *, source: str = "scenario") -> Scenario:
         raise ScenarioError([f"{source}{line}: {getattr(e, 'problem', None) or e}"]) from None
     if not isinstance(node, CommentedMap):
         raise ScenarioError([f"{source}: a scenario is a mapping"])
+    raw = _plain(node)
     try:
-        return Scenario.model_validate(_plain(node))
+        base = Scenario.model_validate(raw)
     except ValidationError as e:
-        problems = []
-        for err in e.errors(include_url=False):
-            loc = err["loc"]
-            line = _line(node, loc)
-            where = _where(loc)
-            at = f"{source}:{line}" if line is not None else source
-            problems.append(f"{at}: {where + ': ' if where else ''}{err['msg']}")
-        raise ScenarioError(problems) from None
+        raise ScenarioError(_problems(e, node, source)) from None
+    problems = _variant_problems(raw, node, source)
+    if problems:
+        raise ScenarioError(problems)
+    if variant is None:
+        return base, text
+    try:
+        merged = variants.apply(raw, variant)
+    except variants.VariantError as e:
+        raise ScenarioError([f"{source}: {e}"]) from None
+    try:
+        chosen = Scenario.model_validate(merged)
+    except ValidationError as e:
+        raise ScenarioError(_problems(e, node, source, ("variants", variant))) from None
+    out = io.StringIO()
+    YAML(typ="rt", pure=True).dump(merged, out)
+    return chosen, out.getvalue()
 
 
-def load(path: Path) -> Bundle:
-    """Read the scenario at `path` and the files it names, relative to its directory."""
+def _problems(
+    error: ValidationError,
+    node: Any,
+    source: str,
+    prefix: tuple[str | int, ...] = (),
+) -> list[str]:
+    problems = []
+    for err in error.errors(include_url=False):
+        loc = (*prefix, *err["loc"])
+        line = _line(node, loc)
+        where = _where(loc)
+        at = f"{source}:{line}" if line is not None else source
+        problems.append(f"{at}: {where + ': ' if where else ''}{err['msg']}")
+    return problems
+
+
+def _variant_problems(raw: dict[str, Any], node: Any, source: str) -> list[str]:
+    problems: list[str] = []
+    for name in variants.names(raw):
+        try:
+            merged = variants.apply(raw, name)
+        except variants.VariantError as e:
+            problems.append(f"{source}: {e}")
+            continue
+        try:
+            Scenario.model_validate(merged)
+        except ValidationError as e:
+            problems += _problems(e, node, source, ("variants", name))
+    return problems
+
+
+def load(path: Path, variant: str | None = None) -> Bundle:
+    """Read the scenario at `path` and the files it names, relative to its directory.
+
+    With `variant`, the named patch is applied before the files are read.
+    """
     try:
         text = path.read_bytes()
     except OSError as e:
@@ -118,7 +191,8 @@ def load(path: Path) -> Bundle:
         decoded = text.decode()
     except UnicodeDecodeError:
         raise ScenarioError([f"{path}: not UTF-8"]) from None
-    scenario = parse(decoded, source=str(path))
+    scenario, merged = _parse(decoded, source=str(path), variant=variant)
+    text = merged.encode()
     base = path.parent
     problems: list[str] = []
     files = verifier = context = None
@@ -145,7 +219,18 @@ def load(path: Path) -> Bundle:
             problems.append(f"{path}: task.environment.dockerfile: {e.filename}: {e.strerror}")
     if problems:
         raise ScenarioError(problems)
-    return Bundle(scenario, text, files, verifier, context, dockerfile)
+    return Bundle(
+        scenario,
+        text,
+        files,
+        verifier,
+        context,
+        dockerfile,
+        variant=variant,
+        base=base,
+        path=path,
+        full_text=decoded.encode(),
+    )
 
 
 def from_snapshot(snapshot: dict[str, Any], blobs: dict[str, bytes]) -> Bundle:
