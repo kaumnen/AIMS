@@ -8,6 +8,7 @@ from typing import Any
 
 import httpx2
 import pytest
+from pydantic import ValidationError
 from typer.testing import CliRunner
 
 from aims.cli import app
@@ -363,6 +364,22 @@ async def test_rate_limit_is_retried_after_the_wait(store: LocalEventStore) -> N
     assert events[3].status == "completed"
 
 
+async def test_a_profile_without_structured_output_refuses_a_schema(
+    store: LocalEventStore,
+) -> None:
+    run_id = await new_run(store)
+    handler, sent = scripted(lambda: stream(sse(CHAT_EVENTS)))
+    p = profile(structured_output=False)
+    schema = OutputSchema(name="v", json_schema={"type": "object"})
+    async with client(store, run_id, profile(), handler) as mc:
+        with pytest.raises(ProfileError, match="cannot answer to a schema"):
+            await mc.call(p, Prompt(items=PROMPT.items, output_schema=schema))
+    assert sent == []
+    assert await model_events(store, run_id) == []
+    with pytest.raises(ValidationError, match="role sweep needs structured output"):
+        ModelsConfig(profiles={"test": p}, roles=Roles(agent="test", sweep="test", judge="test"))
+
+
 async def test_client_errors_are_not_retried(store: LocalEventStore) -> None:
     run_id = await new_run(store)
     handler, sent = scripted(lambda: stream([b'{"error": {"message": "bad"}}'], 400))
@@ -633,6 +650,7 @@ def test_builtin_profiles() -> None:
     for p in models.profiles.values():
         assert p.effort is not None or p.backend == "chat"
     glimmer = models.get("modal-glimmer")
+    assert glimmer.weights == "meta-models/Muse-Glimmer-30B"
     with pytest.raises(ProfileError, match="AIMS_GLIMMER_URL"):
         glimmer.url({})
     assert glimmer.url({"AIMS_GLIMMER_URL": "https://x.modal.run/v1/"}) == "https://x.modal.run/v1"
@@ -720,6 +738,12 @@ def test_request_bodies() -> None:
         "type": "json_schema",
         "json_schema": {"name": "v", "schema": {"type": "object"}, "strict": True},
     }
+
+    kwarg = Chat().body(profile(effort="xhigh", effort_kwarg="reasoning_strength"), PROMPT)
+    assert kwarg["chat_template_kwargs"] == {"reasoning_strength": "xhigh"}
+    assert "reasoning_effort" not in kwarg
+    with pytest.raises(ValidationError, match="effort_kwarg is only sent by the chat backend"):
+        profile(backend="responses", effort_kwarg="reasoning_strength")
 
     r = profile(backend="responses", reasoning="summary", effort="low", stream=False)
     body = Responses().body(r, Prompt(items=PROMPT.items, output_schema=schema))

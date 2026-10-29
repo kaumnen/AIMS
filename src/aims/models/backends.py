@@ -325,7 +325,9 @@ class Chat:
                 for t in prompt.tools
             ]
             body["parallel_tool_calls"] = profile.parallel_tool_calls
-        if profile.effort is not None:
+        if profile.effort is not None and profile.effort_kwarg is not None:
+            body["chat_template_kwargs"] = {profile.effort_kwarg: profile.effort}
+        elif profile.effort is not None:
             body["reasoning_effort"] = profile.effort
         if profile.max_output_tokens is not None:
             body["max_tokens"] = profile.max_output_tokens

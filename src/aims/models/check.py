@@ -101,6 +101,8 @@ async def check_profile(client: ModelClient, profile: Profile) -> list[Check]:
         return "ok", f"{calls} call(s), round trip {r2.status}"
 
     async def structured() -> tuple[Verdict, str]:
+        if not profile.structured_output:
+            return "warn", "not tried: the profile sets structured_output = false"
         prompt = _prompt("What is 12 + 30? Fill in the answer.", output_schema=VERDICT)
         r = await call(profile, prompt)
         try:

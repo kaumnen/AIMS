@@ -128,6 +128,8 @@ class ModelClient:
         the monitor makes."""
         if isinstance(profile, str):
             profile = self.config.get(profile)
+        if prompt.output_schema is not None and not profile.structured_output:
+            raise ProfileError(f"profile {profile.name} cannot answer to a schema")
         profile = profile.apply(overrides)
         backend = BACKENDS[profile.backend]
         # Keys go out in the order the body was built: a model writes a structured answer in

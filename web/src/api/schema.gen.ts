@@ -4221,6 +4221,8 @@ export interface components {
             context_tokens?: number | null;
             /** Effort */
             effort?: ("none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max") | null;
+            /** Effort Kwarg */
+            effort_kwarg?: string | null;
             /** Extra */
             extra?: {
                 [key: string]: components["schemas"]["JsonValue"];
@@ -4250,6 +4252,11 @@ export interface components {
              * @default true
              */
             stream?: boolean;
+            /**
+             * Structured Output
+             * @default true
+             */
+            structured_output?: boolean;
             /** Summary */
             summary?: ("auto" | "concise" | "detailed") | null;
             timeouts?: components["schemas"]["Timeouts"];

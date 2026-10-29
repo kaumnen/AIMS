@@ -87,10 +87,16 @@ limits = { rpm = 100, tpm = 2000000, concurrency = 8, group = "baseten" }
 backend = "chat"
 base_url_env = "AIMS_GLIMMER_URL"
 model = "muse-glimmer"
-weights = "meta/muse-glimmer"
+weights = "meta-models/Muse-Glimmer-30B"
 api_key_env = "AIMS_GLIMMER_KEY"
 reasoning = "full"
+effort = "high"
+effort_kwarg = "reasoning_strength"
+# vLLM holds an answer to a schema only after reasoning ends, which Glimmer's parser marks
+# only at a tool call.
+structured_output = false
 max_output_tokens = 16384
+context_tokens = 131072
 sampling = { temperature = 1.0, top_p = 0.95, top_k = 64 }
 limits = { concurrency = 8, group = "modal-glimmer" }
 timeouts = { connect = 30, stall = 600, wall = 1800 }

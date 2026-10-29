@@ -107,11 +107,16 @@ class Profile(_Strict):
     api_key_env: str | None = None
     reasoning: ReasoningKind
     effort: Effort | None = None
+    # A chat template kwarg the model reads its effort from, sent instead of reasoning_effort.
+    effort_kwarg: str | None = None
     summary: Summary | None = None
     max_output_tokens: int | None = Field(default=None, ge=1)
     context_tokens: int | None = Field(default=None, ge=1)
     stream: bool = True
     parallel_tool_calls: bool = False
+    # False where the server cannot hold an answer to a schema, so the model serves no role
+    # that needs one.
+    structured_output: bool = True
     sampling: Sampling = Field(default_factory=Sampling)
     extra: dict[str, JsonValue] = Field(default_factory=dict)
     price: Price | None = None
@@ -125,6 +130,8 @@ class Profile(_Strict):
             raise ValueError("set exactly one of base_url and base_url_env")
         if self.summary is not None and self.backend != "responses":
             raise ValueError("summary is only sent by the responses backend")
+        if self.effort_kwarg is not None and self.backend != "chat":
+            raise ValueError("effort_kwarg is only sent by the chat backend")
         return self
 
     @property
@@ -181,6 +188,8 @@ class ModelsConfig(_Strict):
         for role, name in self.roles.model_dump().items():
             if name not in self.profiles:
                 raise ValueError(f"role {role} names unknown profile {name!r}")
+            if role != "agent" and not self.profiles[name].structured_output:
+                raise ValueError(f"role {role} needs structured output, which {name} lacks")
         return self
 
     def get(self, name: str) -> Profile:

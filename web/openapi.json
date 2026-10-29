@@ -7391,6 +7391,17 @@
             ],
             "title": "Effort"
           },
+          "effort_kwarg": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effort Kwarg"
+          },
           "extra": {
             "additionalProperties": {
               "$ref": "#/components/schemas/JsonValue"
@@ -7454,6 +7465,11 @@
           "stream": {
             "default": true,
             "title": "Stream",
+            "type": "boolean"
+          },
+          "structured_output": {
+            "default": true,
+            "title": "Structured Output",
             "type": "boolean"
           },
           "summary": {
