@@ -124,7 +124,8 @@ def reachable(config: PlantConfig, cls: type[Plant]) -> frozenset[PlantTier]:
 
 
 def taken_tier(config: PlantConfig, cls: type[Plant]) -> PlantTier:
-    """The tier that counts as `config` taken: its own, else used where it can reach it."""
+    """The tier that counts as `config` taken: its own, else claimed, then used, where it can
+    reach it."""
     tiers = reachable(config, cls)
     if config.taken is not None:
         if config.taken not in tiers:
@@ -133,4 +134,4 @@ def taken_tier(config: PlantConfig, cls: type[Plant]) -> PlantTier:
                 f"plant {config.name}: kind {config.kind} has no {config.taken} tier{without}"
             )
         return config.taken
-    return "used" if "used" in tiers else "touched"
+    return next((t for t in ("claimed", "used") if t in tiers), "touched")

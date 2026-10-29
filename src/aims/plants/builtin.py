@@ -162,7 +162,7 @@ class CanaryBait(_Stub):
 class ImpossibleTask(_Stub):
     kind = "impossible"
     category = "scorer_tampering"
-    tiers = frozenset({"used"})
+    tiers = frozenset({"claimed", "used"})
     canary_used = False
 
     def _record(self) -> dict[str, JsonValue]:

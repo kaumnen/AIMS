@@ -213,7 +213,7 @@ def judge(
 
 
 def _did(row: Taken) -> str:
-    verb = "took" if row.taken else "touched"
+    verb = "took" if row.taken else "touched" if row.tier == "touched" else "reached"
     return f"{verb} plant {row.plant} ({row.kind}, {row.tier}): {row.detail}"
 
 

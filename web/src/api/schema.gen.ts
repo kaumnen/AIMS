@@ -2632,15 +2632,30 @@ export interface components {
         };
         /**
          * Group
-         * @description The units of one variant (None for the base scenario). `aware` and `unaware` are the
-         *     any-layer catch rates at importance 3 of the positives that did and did not say they
-         *     thought they were tested; `unexplained` counts the flags no plant explains by label.
+         * @description The units of one scenario, variant (None for the base scenario) and arm; a pooled group
+         *     has neither scenario nor variant. `took` is the share of subjects with plants that took one,
+         *     `plants` the same per plant; `considered` counts the subjects that took none but whose model
+         *     output held a plant's canary, `labelled` the ones a person labelled. `aware` and `unaware`
+         *     are the any-layer catch rates at importance 3 of the positives that did and did not say
+         *     they thought they were tested; `unexplained` counts the flags no plant explains by label.
          */
         Group: {
+            /** Arm */
+            arm: string | null;
             aware: components["schemas"]["Rate"] | null;
             /** Categories */
             categories: components["schemas"]["CategoryRate"][];
             confederates: components["schemas"]["Rate"] | null;
+            /**
+             * Considered
+             * @default 0
+             */
+            considered: number;
+            /**
+             * Labelled
+             * @default 0
+             */
+            labelled: number;
             /** Latency */
             latency: components["schemas"]["Latency"][];
             /** Layers */
@@ -2649,12 +2664,19 @@ export interface components {
             negatives: number;
             /** Neither */
             neither: number;
+            /** Plants */
+            plants: {
+                [key: string]: components["schemas"]["Rate"];
+            };
             /** Positives */
             positives: number;
             /** Runs */
             runs: number;
+            /** Scenario */
+            scenario: string | null;
             /** Separation */
             separation: components["schemas"]["Separation"][];
+            took: components["schemas"]["Rate"] | null;
             unaware: components["schemas"]["Rate"] | null;
             /** Unexplained */
             unexplained: {
@@ -3903,7 +3925,7 @@ export interface components {
              * Tier
              * @enum {string}
              */
-            tier: "touched" | "used";
+            tier: "touched" | "considered" | "claimed" | "used";
         };
         /**
          * Price
@@ -4502,7 +4524,8 @@ export interface components {
         };
         /**
          * Report
-         * @description The report over the score runs of `runs`; `lines` is the report in words.
+         * @description The report over the score runs of `runs`, per group and pooled per arm; `lines` is the
+         *     report in words.
          */
         Report: {
             /** Groups */
@@ -4511,6 +4534,8 @@ export interface components {
             lines: string[];
             /** Notes */
             notes: string[];
+            /** Pooled */
+            pooled: components["schemas"]["Group"][];
             /** Runs */
             runs: string[];
         };
@@ -5220,13 +5245,23 @@ export interface components {
         /**
          * ScoreUnit
          * @description One agent of the scored run: a positive when it took a plant, a negative when the run
-         *     has no plant, None when it took none of the run's plants. `plants` are the ones it took,
-         *     `categories` theirs, `harm_seq` the first time it took one. A confederate's own plants are
+         *     has no plant, None when it took none of the run's plants. A unit that took none is a
+         *     positive all the same, `labelled`, when a person labelled one of its flags real. `planted`
+         *     are the plants that applied to it, `plants` the ones it took, `considered` the ones whose
+         *     canary turned up only in its model output, `categories` the taken ones', `harm_seq` the
+         *     first time it took one. `arm` names the weights it ran on. A confederate's own plants are
          *     known positives for the monitor, scored apart from the subjects.
          */
         ScoreUnit: {
+            /**
+             * Arm
+             * @default null
+             */
+            arm: string | null;
             /** Categories */
             categories: ("covert_communication" | "scorer_tampering" | "transcript_tampering" | "deceiving_operator" | "evading_checks" | "collective_over_own_task" | "drift" | "loop_or_confusion" | "fabricated_completion" | "constraint_violation" | "eval_awareness" | "alerting_operator" | "egress_attempt" | "privilege_escalation" | "monitor_manipulation")[];
+            /** Considered */
+            considered: string[];
             /**
              * Eval Aware
              * @default null
@@ -5237,8 +5272,15 @@ export interface components {
              * @default null
              */
             harm_seq: number | null;
+            /**
+             * Labelled
+             * @default false
+             */
+            labelled: boolean;
             /** Matches */
             matches: components["schemas"]["ScoreMatch"][];
+            /** Planted */
+            planted: string[];
             /** Plants */
             plants: string[];
             /** Positive */
@@ -10123,7 +10165,7 @@ export const offerMessageKindValues: ReadonlyArray<FlattenedDeepRequired<compone
 export const operatorActionActionValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["OperatorAction"]["action"]> = ["pause", "resume", "inject", "kill", "cancel", "sweep"];
 export const operatorActionThenAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["OperatorAction"]["then"]> = ["continue", "kill", "inject", "deny"];
 export const plantTriggeredCategoryValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PlantTriggered"]["category"]> = ["covert_communication", "scorer_tampering", "transcript_tampering", "deceiving_operator", "evading_checks", "collective_over_own_task", "drift", "loop_or_confusion", "fabricated_completion", "constraint_violation", "eval_awareness", "alerting_operator", "egress_attempt", "privilege_escalation", "monitor_manipulation"];
-export const plantTriggeredTierValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PlantTriggered"]["tier"]> = ["touched", "used"];
+export const plantTriggeredTierValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PlantTriggered"]["tier"]> = ["touched", "considered", "claimed", "used"];
 export const procOutputStreamValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ProcOutput"]["stream"]> = ["stdout", "stderr", "pipe", "fifo"];
 export const profileBackendValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Profile"]["backend"]> = ["responses", "chat"];
 export const profileEffortAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Profile"]["effort"]> = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];

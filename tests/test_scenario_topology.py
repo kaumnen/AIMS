@@ -210,6 +210,6 @@ def test_a_plant_without_a_canary_is_taken_when_touched() -> None:
         "  - {name: u, kind: file, path: b.txt, content: x, category: drift, taken: used}\n"
     ).plants
     assert taken_tier(bare[0], known["file"]) == "touched"
-    assert taken_tier(bare[1], known["impossible"]) == "used"
+    assert taken_tier(bare[1], known["impossible"]) == "claimed"
     with pytest.raises(PlantError, match="no used tier without a canary"):
         taken_tier(bare[2], known["file"])
