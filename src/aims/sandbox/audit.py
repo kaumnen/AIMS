@@ -13,6 +13,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+from aims.aio import settle
 from aims.events import (
     AuditLevel,
     AuditLost,
@@ -363,16 +364,16 @@ class AuditedSandbox:
             except asyncio.CancelledError:
                 elapsed = int((time.monotonic() - start) * 1000)
                 cancelled = Outcome("cancelled", None, active.root, elapsed)
-                await asyncio.shield(self._finish(call_id, active, cancelled, capture, before))
+                await settle(self._finish(call_id, active, cancelled, capture, before))
                 raise
             except Exception as e:
                 elapsed = int((time.monotonic() - start) * 1000)
                 failed = Outcome(
                     "failed", None, active.root, elapsed, error=f"{type(e).__name__}: {e}"
                 )
-                await asyncio.shield(self._finish(call_id, active, failed, capture, before))
+                await settle(self._finish(call_id, active, failed, capture, before))
                 raise
-            return await asyncio.shield(self._finish(call_id, active, outcome, capture, before))
+            return await settle(self._finish(call_id, active, outcome, capture, before))
 
     async def archive(
         self, paths: Sequence[str], *, cap: int = ARCHIVE_CAP

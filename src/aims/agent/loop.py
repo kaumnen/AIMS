@@ -3,13 +3,14 @@ import json
 import logging
 import re
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 from pydantic import ValidationError
 
 from aims.agent.gate import Gate, GateKind, GatePoint, OpenGate, Verdict
 from aims.agent.turnstile import Turnstile
+from aims.aio import settle
 from aims.events import (
     MAX_INT,
     AgentCompacted,
@@ -61,24 +62,6 @@ def is_context_error(error: str | None) -> bool:
     The patterns follow OpenAI, vLLM and Fireworks wording; what Meta returns is unverified.
     """
     return bool(error) and _CONTEXT.search(error or "") is not None
-
-
-async def settle[T](aw: Awaitable[T]) -> T:
-    """Await `aw` to its end however often the caller is cancelled meanwhile, then raise the
-    cancel. A bare shield gives up at the next cancel and leaves `aw` running unawaited."""
-    task = asyncio.ensure_future(aw)
-    cancelled = False
-    while True:
-        try:
-            value = await asyncio.shield(task)
-        except asyncio.CancelledError:
-            if task.done():
-                raise
-            cancelled = True
-            continue
-        if cancelled:
-            raise asyncio.CancelledError
-        return value
 
 
 class AgentKilled(Exception):

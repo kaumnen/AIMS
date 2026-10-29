@@ -1237,6 +1237,35 @@ async def test_a_cancelled_exec_still_logs_its_diff(store: LocalEventStore) -> N
     assert sb.runs == []
 
 
+async def test_a_second_cancel_while_an_exec_ends_still_logs_its_end(
+    store: LocalEventStore,
+) -> None:
+    sb = FakeSandbox(kernel=False)
+    sb.trees = [tree("d0"), tree("d0"), tree("d0")]
+    running = asyncio.Event()
+
+    async def hang(sb: FakeSandbox, capture: Capture, on_pid: Callable[[int], None] | None):
+        running.set()
+        await asyncio.Event().wait()
+        raise AssertionError("not reached")
+
+    sb.steps.append(hang)
+    run_id, audited = await start(store, sb)
+    task = asyncio.create_task(audited.exec("sleep 99", timeout_s=60))
+    await running.wait()
+    sb.tree_hold = asyncio.Event()
+    task.cancel()
+    await sb.tree_entered.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    sb.tree_hold.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert [e.data["end"] for e in await events(store, run_id, "exec.finished")] == ["cancelled"]
+    await audited.close()
+
+
 async def test_a_failed_start_closes_the_sandbox(
     store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
