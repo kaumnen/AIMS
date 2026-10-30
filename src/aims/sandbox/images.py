@@ -5,6 +5,7 @@ import logging
 import tarfile
 from importlib.resources import files
 from importlib.resources.abc import Traversable
+from typing import Any
 
 import aiodocker
 
@@ -42,17 +43,30 @@ def _walk(node: Traversable, prefix: str) -> list[tuple[str, bytes]]:
 async def ensure_image(docker: aiodocker.Docker, name: str) -> str:
     """Build the asset image `name` unless an image with the same content hash exists."""
     tag, data = context(name)
+    return await _build(docker, tag, fileobj=io.BytesIO(data), encoding="gzip")
+
+
+async def _exists(docker: aiodocker.Docker, tag: str) -> bool:
     try:
         await docker.images.inspect(tag)
     except aiodocker.DockerError as e:
         if e.status != 404:
             raise
-    else:
+        return False
+    return True
+
+
+async def _build(docker: aiodocker.Docker, tag: str, **kwargs: Any) -> str:
+    """Build `tag` unless it exists. Tags name their content, so when a build fails because
+    another process built the same tag at the same time, that image serves."""
+    if await _exists(docker, tag):
         return tag
     log.info("building %s", tag)
-    await docker.images.build(
-        fileobj=io.BytesIO(data), encoding="gzip", tag=tag, labels={"aims.managed": "1"}
-    )
+    try:
+        await docker.images.build(tag=tag, labels={"aims.managed": "1"}, **kwargs)
+    except aiodocker.DockerError:
+        if not await _exists(docker, tag):
+            raise
     return tag
 
 
@@ -86,19 +100,10 @@ async def ensure_built(
 ) -> str:
     """Build the tar build context `context` unless an image built from the same bytes exists."""
     tag = built_tag(context, dockerfile)
-    try:
-        await docker.images.inspect(tag)
-    except aiodocker.DockerError as e:
-        if e.status != 404:
-            raise
-    else:
-        return tag
-    log.info("building %s", tag)
-    await docker.images.build(
+    return await _build(
+        docker,
+        tag,
         fileobj=io.BytesIO(gzip.compress(context, mtime=0)),
         encoding="gzip",
         path_dockerfile=dockerfile,
-        tag=tag,
-        labels={"aims.managed": "1"},
     )
-    return tag
