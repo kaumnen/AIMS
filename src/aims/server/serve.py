@@ -7,11 +7,14 @@ import ipaddress
 import json
 import logging
 import os
+import shlex
+import shutil
 import signal
 import socket
+import subprocess
 import sys
 import webbrowser
-from collections.abc import Generator
+from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -149,7 +152,7 @@ async def serve(o: UiOptions) -> int:
         write_private(info, json.dumps({"url": local, "token": runner_token, "operator": ui_token}))
         if o.runner:
             child = await _spawn_runner(local, runner_token, o)
-        url = f"{local}/#token={ui_token}" if o.auth else local
+        url = f"{local}/#code={state.codes.issue(UI_TOKEN)}" if o.auth else local
         print(f"AIMS control plane on {local}", file=sys.stderr)
         if not o.auth:
             print(
@@ -158,10 +161,19 @@ async def serve(o: UiOptions) -> int:
                 file=sys.stderr,
             )
         print(f"open {url}", file=sys.stderr)
+        if o.auth:
+            print(
+                "the link signs in once, within 2 minutes; after that sign in with a token from"
+                " `aims token create <name> --role operator`",
+                file=sys.stderr,
+            )
         if o.open_browser:
-            launch.append(_redirect(o.data, url))
+            target = url
+            if not await asyncio.to_thread(snap_browser):
+                launch.append(_redirect(o.data, url))
+                target = launch[0].as_uri()
             with contextlib.suppress(Exception):
-                await asyncio.to_thread(webbrowser.open, launch[0].as_uri())
+                await asyncio.to_thread(webbrowser.open, target)
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()
         stops = 0
@@ -189,6 +201,7 @@ async def serve(o: UiOptions) -> int:
                 with contextlib.suppress(TimeoutError):
                     async with asyncio.timeout(180):
                         await child.wait()
+            state.stopping.set()
             server.should_exit = True
             await task
         finally:
@@ -206,8 +219,8 @@ async def serve(o: UiOptions) -> int:
 
 
 def _redirect(data: Path, url: str) -> Path:
-    """A file only this user can read that sends the browser on to `url`, so the token never
-    sits in a browser's argv where other users of the machine can read it."""
+    """A file only this user can read that sends the browser on to `url`, so even the one-shot
+    code never sits in a browser's argv where other users of the machine can read it."""
     path = data / f"open-{os.getpid()}.html"
     target = html.escape(url, quote=True)
     write_private(
@@ -216,6 +229,90 @@ def _redirect(data: Path, url: str) -> Path:
         f'<title>AIMS</title><a href="{target}">Open AIMS</a>\n',
     )
     return path
+
+
+def _ask(command: list[str]) -> str | None:
+    try:
+        done = subprocess.run(command, capture_output=True, text=True, timeout=2, check=False)
+    except OSError, subprocess.SubprocessError:
+        return None
+    return done.stdout.strip() or None
+
+
+def snap_browser(
+    env: Mapping[str, str] | None = None, ask: Callable[[list[str]], str | None] = _ask
+) -> bool:
+    """Whether the browser that would open here is a snap. Snaps cannot read files under a
+    hidden directory of $HOME, so the redirect file would not load; they get the URL itself."""
+    if sys.platform != "linux":
+        return False
+    env = os.environ if env is None else env
+    commands: list[str] = []
+    if browser := env.get("BROWSER", "").split(os.pathsep)[0].strip():
+        commands.append(browser.split()[0])
+    for query in (
+        ["xdg-settings", "get", "default-web-browser"],
+        ["xdg-mime", "query", "default", "text/html"],
+    ):
+        desktop = ask(query)
+        file = _desktop_file(desktop, env) if desktop else None
+        if file is None:
+            continue
+        if "snapd" in file.parts:
+            return True
+        if command := _exec(file):
+            commands.append(command)
+    return any(_snapped(c, env) for c in commands)
+
+
+def _desktop_file(desktop: str, env: Mapping[str, str]) -> Path | None:
+    if "/" in desktop or not desktop.endswith(".desktop"):
+        return None
+    home = env.get("XDG_DATA_HOME") or str(Path(env.get("HOME", "~")).expanduser() / ".local/share")
+    dirs = env.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share"
+    for base in [home, *dirs.split(":")]:
+        path = Path(base) / "applications" / desktop
+        if base and path.is_file():
+            return path
+    return None
+
+
+def _exec(file: Path) -> str | None:
+    """The program a desktop entry starts, past any `env VAR=value` prefix."""
+    try:
+        lines = file.read_text(errors="replace").splitlines()
+    except OSError:
+        return None
+    section = ""
+    for line in lines:
+        line = line.strip()
+        if line.startswith("["):
+            section = line
+        elif section == "[Desktop Entry]" and line.startswith("Exec="):
+            try:
+                words = shlex.split(line.removeprefix("Exec="))
+            except ValueError:
+                return None
+            if words and words[0] == "env":
+                words = words[1:]
+            words = [w for w in words if "=" not in w.partition("/")[0]]
+            return words[0] if words else None
+    return None
+
+
+def _snapped(command: str, env: Mapping[str, str]) -> bool:
+    found = shutil.which(command, path=env.get("PATH"))
+    if found is None:
+        return False
+    path = Path(found)
+    if path.parts[1:2] == ("snap",) or path.resolve().name == "snap":
+        return True
+    try:
+        with path.open("rb") as f:
+            head = f.read(65536)
+    except OSError:
+        return False
+    return head.startswith(b"#!") and b"/snap/bin/" in head
 
 
 def _port(server: uvicorn.Server, wanted: int) -> int:

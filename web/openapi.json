@@ -10705,17 +10705,35 @@
         "type": "object"
       },
       "SessionStart": {
+        "description": "A token, or a one-shot code from the link `aims ui` prints.",
         "properties": {
+          "code": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
+          },
           "token": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Token",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token"
           }
         },
-        "required": [
-          "token"
-        ],
         "title": "SessionStart",
         "type": "object"
       },
@@ -16706,7 +16724,7 @@
         ]
       },
       "post": {
-        "description": "Trade a token for a session cookie, so the browser never stores the token.",
+        "description": "Trade a token or a launch code for a session cookie, so the browser never stores the\ntoken.",
         "operationId": "start_session",
         "requestBody": {
           "content": {

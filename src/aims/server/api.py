@@ -10,11 +10,11 @@ import uuid
 from collections.abc import AsyncIterator, Iterator, Sequence
 from compression import zstd
 from pathlib import Path
-from typing import IO, Annotated, Literal
+from typing import IO, Annotated, Literal, Self
 
 from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from aims import __version__
 from aims.config import Settings
@@ -114,7 +114,16 @@ class EventPage(Out):
 
 
 class SessionStart(BaseModel):
-    token: str = Field(min_length=1, max_length=200)
+    """A token, or a one-shot code from the link `aims ui` prints."""
+
+    token: str | None = Field(default=None, min_length=1, max_length=200)
+    code: str | None = Field(default=None, min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def _one(self) -> Self:
+        if (self.token is None) == (self.code is None):
+            raise ValueError("give a token or a code")
+        return self
 
 
 class Whoami(Out):
@@ -125,13 +134,22 @@ class Whoami(Out):
 
 @router.post("/session", status_code=204, tags=["session"])
 async def start_session(body: SessionStart, request: Request, state: State) -> Response:
-    """Trade a token for a session cookie, so the browser never stores the token."""
-    token = await state.auth.token(body.token)
-    if token is None or token.role == "runner":
-        raise ProblemException(401, "Not signed in", "unknown or revoked token", code="token")
-    if token.name in {t.name for t in state.auth.ephemeral.values()}:
-        raise ProblemException(401, "Not signed in", "that token is for runners", code="token")
-    session = await state.db.create_session(token.name)
+    """Trade a token or a launch code for a session cookie, so the browser never stores the
+    token."""
+    if body.code is not None:
+        name = state.codes.redeem(body.code)
+        if name is None:
+            raise ProblemException(
+                401, "Not signed in", "unknown, used or expired code", code="code"
+            )
+    else:
+        token = await state.auth.token(body.token or "")
+        if token is None or token.role == "runner":
+            raise ProblemException(401, "Not signed in", "unknown or revoked token", code="token")
+        if token.name in {t.name for t in state.auth.ephemeral.values()}:
+            raise ProblemException(401, "Not signed in", "that token is for runners", code="token")
+        name = token.name
+    session = await state.db.create_session(name)
     response = Response(status_code=204)
     response.set_cookie(
         state.auth.cookie,

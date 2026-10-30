@@ -856,7 +856,8 @@ export interface paths {
         put?: never;
         /**
          * Start Session
-         * @description Trade a token for a session cookie, so the browser never stores the token.
+         * @description Trade a token or a launch code for a session cookie, so the browser never stores the
+         *     token.
          */
         post: operations["start_session"];
         /** End Session */
@@ -5465,10 +5466,15 @@ export interface components {
              */
             previous?: string | null;
         };
-        /** SessionStart */
+        /**
+         * SessionStart
+         * @description A token, or a one-shot code from the link `aims ui` prints.
+         */
         SessionStart: {
+            /** Code */
+            code?: string | null;
             /** Token */
-            token: string;
+            token?: string | null;
         };
         /** Shas */
         Shas: {

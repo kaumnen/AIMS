@@ -1,4 +1,5 @@
 import asyncio
+import secrets
 import time
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
@@ -10,7 +11,7 @@ from aims.models import Delta, DeltaBus, ProfileError
 from aims.monitor.config import MonitorConfigError
 from aims.prompts import TextError
 from aims.server.auth import Auth
-from aims.server.db import ServerDB
+from aims.server.db import ServerDB, hash_secret
 from aims.server.problems import ProblemException
 from aims.wire import (
     STALE_S,
@@ -24,6 +25,30 @@ from aims.wire import (
 
 INFLIGHT_CAP = 1024 * 1024
 INFLIGHT_CALLS = 1000
+CODE_TTL_S = 120.0
+
+
+class LaunchCodes:
+    """One-shot sign-in codes for the browser `aims ui` opens, so the operator token never
+    leaves server.json. A code works once, for two minutes; only its hash is kept."""
+
+    def __init__(self, ttl: float = CODE_TTL_S) -> None:
+        self.ttl = ttl
+        self._codes: dict[str, tuple[str, float]] = {}
+
+    def issue(self, token: str) -> str:
+        now = time.time()
+        self._codes = {k: v for k, v in self._codes.items() if v[1] > now}
+        code = secrets.token_urlsafe(32)
+        self._codes[hash_secret(code)] = (token, now + self.ttl)
+        return code
+
+    def redeem(self, code: str) -> str | None:
+        """The token name behind `code`, which stops working whatever the outcome."""
+        found = self._codes.pop(hash_secret(code), None)
+        if found is None or found[1] <= time.time():
+            return None
+        return found[0]
 
 
 class Changes:
@@ -187,6 +212,9 @@ class ServerState:
     wake: asyncio.Event = field(default_factory=asyncio.Event)
     runners_changed: asyncio.Event = field(default_factory=asyncio.Event)
     started: float = field(default_factory=time.time)
+    codes: LaunchCodes = field(default_factory=LaunchCodes)
+    # set as the server shuts down, so live streams end instead of holding it open
+    stopping: asyncio.Event = field(default_factory=asyncio.Event)
 
     def poke(self) -> None:
         """Ask the dispatcher to look at the queue now."""

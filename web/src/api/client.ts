@@ -13,4 +13,21 @@ export const client = createFetchClient<paths>({
   fetch: (request) => globalThis.fetch(request),
 });
 
+const unauthorized = new EventTarget();
+
+// A 401 anywhere but the session endpoint means the session ended under the page.
+client.use({
+  onResponse({ request, response }) {
+    if (response.status === 401 && new URL(request.url).pathname !== "/api/session") {
+      unauthorized.dispatchEvent(new Event("401"));
+    }
+    return undefined;
+  },
+});
+
+export function onUnauthorized(fn: () => void): () => void {
+  unauthorized.addEventListener("401", fn);
+  return () => unauthorized.removeEventListener("401", fn);
+}
+
 export const $api = createClient(client);

@@ -4,6 +4,7 @@ import io
 import json
 import os
 import tarfile
+import time
 import uuid
 from collections.abc import AsyncIterator
 from compression import zstd
@@ -223,6 +224,28 @@ async def test_a_session_cookie_needs_the_same_origin_to_act(cp: CP) -> None:
         assert r.status_code == 415
         await cp.state.db.revoke_token("op")
         assert (await c.get("/api/session")).status_code == 401
+
+
+async def test_a_launch_code_signs_in_once_and_expires(
+    cp: CP, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    code = cp.state.codes.issue("op")
+    async with cp.client() as c:
+        for body in ({}, {"token": cp.operator, "code": code}):
+            r = await c.post("/api/session", json=body)
+            assert (r.status_code, r.json()["code"]) == (422, "invalid")
+        assert (await c.post("/api/session", json={"code": "nope"})).status_code == 401
+        assert (await c.post("/api/session", json={"code": code})).status_code == 204
+        assert (await c.get("/api/session")).json()["name"] == "op"
+    async with cp.client() as c:
+        r = await c.post("/api/session", json={"code": code})
+        assert (r.status_code, r.json()["code"]) == (401, "code")
+        late = cp.state.codes.issue("op")
+        now = time.time()
+        monkeypatch.setattr(time, "time", lambda: now + 121)
+        assert (await c.post("/api/session", json={"code": late})).status_code == 401
+        monkeypatch.undo()
+        assert (await c.post("/api/session", json={"code": late})).status_code == 401
 
 
 async def test_problem_details_for_bad_input(cp: CP) -> None:
@@ -638,6 +661,17 @@ async def test_the_stream_resumes_from_its_cursor(cp: CP, local: LocalEventStore
         assert rest[-1][0] == "end" or any(k == "end" for k, _, _ in rest)
     await task
     await pusher.client.aclose()
+
+
+async def test_streams_end_when_the_server_stops(cp: CP) -> None:
+    async with (
+        cp.client(cp.viewer) as c,
+        asyncio.timeout(10),
+        c.sse("/api/stream", params={"runs": "true"}) as source,
+    ):
+        cp.state.stopping.set()
+        async for _ in source:
+            pass
 
 
 async def test_deltas_reach_the_stream_and_a_slow_one_is_told_it_lost_some(

@@ -1,1 +1,142 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+/* Dark follows the system unless the user picked a theme, which sets data-theme on <html>. */
+@custom-variant dark {
+  &:where([data-theme="dark"], [data-theme="dark"] *) {
+    @slot;
+  }
+  @media (prefers-color-scheme: dark) {
+    &:where(:root:not([data-theme="light"]), :root:not([data-theme="light"]) *) {
+      @slot;
+    }
+  }
+}
+
+@theme inline {
+  --font-sans: "Instrument Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-heading: var(--font-sans);
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --text-sm: 0.8125rem;
+  --text-sm--line-height: 1.25rem;
+  --shadow-xs: 0 0 #0000;
+  --shadow-sm: 0 0 #0000;
+  --shadow-md: 0 0 #0000;
+  --shadow-lg: 0 0 #0000;
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --color-grid: var(--grid);
+  --color-flag: var(--flag);
+  --color-pen-1: var(--pen-1);
+  --color-pen-2: var(--pen-2);
+  --color-pen-3: var(--pen-3);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+/* Chart recorder: paper, grid, blue-black ink, a red pen for flags and harm only, one pen per
+   agent. Each token holds its light and dark value; color-scheme picks one. */
+:root {
+  color-scheme: light dark;
+  --paper: #f3f5f0;
+  --ink: #1d2b3a;
+  --night: #18212d;
+  --background: light-dark(var(--paper), var(--night));
+  --foreground: light-dark(var(--ink), #e6eae2);
+  --card: light-dark(#f8f9f6, #1d2733);
+  --card-foreground: var(--foreground);
+  --popover: light-dark(#fbfcfa, #1f2a37);
+  --popover-foreground: var(--foreground);
+  --primary: var(--foreground);
+  --primary-foreground: var(--background);
+  --secondary: light-dark(#e7ece4, #243140);
+  --secondary-foreground: var(--foreground);
+  --muted: light-dark(#e7ece4, #243140);
+  --muted-foreground: light-dark(#56636f, #9aa5af);
+  --accent: light-dark(#e2e8df, #2a3847);
+  --accent-foreground: var(--foreground);
+  --destructive: var(--flag);
+  --border: light-dark(#d9e0d6, #2c3a4a);
+  --input: light-dark(#c8d1c5, #3a4a5b);
+  --ring: light-dark(#7d8a96, #6b7a89);
+  --grid: light-dark(#d9e0d6, #2c3a4a);
+  --flag: light-dark(#c62f3a, #e5535d);
+  --pen-1: light-dark(#2f5da8, #7099de);
+  --pen-2: light-dark(#2e7d5b, #5db08a);
+  --pen-3: light-dark(#6b4fa0, #a48bd4);
+  --chart-1: var(--pen-1);
+  --chart-2: var(--pen-2);
+  --chart-3: var(--pen-3);
+  --chart-4: var(--foreground);
+  --chart-5: var(--grid);
+  --radius: 0.25rem;
+  --sidebar: var(--card);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: var(--accent);
+  --sidebar-accent-foreground: var(--accent-foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    @apply font-sans;
+  }
+  body {
+    @apply bg-background text-foreground text-sm antialiased;
+  }
+  code,
+  kbd,
+  pre,
+  samp {
+    @apply font-mono;
+  }
+}

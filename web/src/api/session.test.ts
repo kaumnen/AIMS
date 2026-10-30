@@ -14,15 +14,15 @@ afterEach(() => {
   fetch.mockReset();
 });
 
-test("trades the token for a session and clears the fragment", async () => {
-  history.replaceState(null, "", "/runs?q=1#token=abc");
+test("trades the code for a session and clears the fragment", async () => {
+  history.replaceState(null, "", "/runs?q=1#code=abc");
   await handoff();
   expect(location.pathname + location.search + location.hash).toBe("/runs?q=1");
   expect(fetch).toHaveBeenCalledOnce();
   const request = fetch.mock.lastCall?.[0];
   expect(request?.method).toBe("POST");
   expect(request && new URL(request.url).pathname).toBe("/api/session");
-  expect(await request?.json()).toEqual({ token: "abc" });
+  expect(await request?.json()).toEqual({ code: "abc" });
 });
 
 test.each([
@@ -33,13 +33,13 @@ test.each([
   ],
 ])("clears the fragment when the trade is %s", async (_, fail) => {
   fail();
-  history.replaceState(null, "", "/#token=abc");
+  history.replaceState(null, "", "/#code=abc");
   await handoff();
   expect(location.hash).toBe("");
   expect(fetch).toHaveBeenCalledOnce();
 });
 
-test("sends nothing without a token", async () => {
+test("sends nothing without a code", async () => {
   history.replaceState(null, "", "/runs#other");
   await handoff();
   expect(fetch).not.toHaveBeenCalled();

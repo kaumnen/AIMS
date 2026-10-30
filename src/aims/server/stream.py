@@ -150,7 +150,7 @@ async def stream(
             for info in sorted((c.info() for c in state.runners.values()), key=lambda i: i.name):
                 runners_seen[info.name] = info.model_dump(exclude={"seen_s"})
                 yield message(RunnerHealthMessage(runner=info))
-        while True:
+        while not state.stopping.is_set():
             store_changed = state.store.changed()
             runs_changed = state.changes.event()
             runners_changed = state.runners_changed
@@ -212,7 +212,11 @@ async def stream(
                     dropped = sub.dropped
             if more:
                 continue
-            waits: list[Coroutine[Any, Any, Any]] = [store_changed.wait(), runners_changed.wait()]
+            waits: list[Coroutine[Any, Any, Any]] = [
+                store_changed.wait(),
+                runners_changed.wait(),
+                state.stopping.wait(),
+            ]
             if version is not None:
                 waits.append(runs_changed.wait())
             if sub is not None:

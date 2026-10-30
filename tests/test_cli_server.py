@@ -8,6 +8,7 @@ import stat
 import sys
 from collections.abc import AsyncGenerator, AsyncIterator
 from pathlib import Path
+from typing import Any
 
 import httpx2
 import pytest
@@ -17,7 +18,15 @@ from typer.testing import CliRunner
 from aims.cli import app
 from aims.events import Draft, LocalEventStore, RunFinished, RunStarted, ToolCall
 from aims.sandbox import DockerBackend, SandboxSpec
-from aims.server.serve import ServeError, UiOptions, _redirect, check, connect_host, server_dir
+from aims.server.serve import (
+    ServeError,
+    UiOptions,
+    _redirect,
+    check,
+    connect_host,
+    server_dir,
+    snap_browser,
+)
 
 pytestmark = pytest.mark.anyio
 ROOT = Path(__file__).parent.parent
@@ -35,14 +44,61 @@ def test_exposed_binds_need_tls_or_a_proxy() -> None:
         check(UiOptions(tls_cert=Path("c.pem")))
 
 
-def test_the_browser_opens_a_private_redirect_not_the_token(tmp_path: Path) -> None:
-    url = "http://127.0.0.1:8484/#token=aims_abc&x=<b>"
+def test_the_browser_opens_a_private_redirect_not_the_code(tmp_path: Path) -> None:
+    url = "http://127.0.0.1:8484/#code=abc&x=<b>"
     path = _redirect(tmp_path, url)
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
-    assert "token" not in path.as_uri()
+    assert "abc" not in path.as_uri()
     text = path.read_text()
-    assert "#token=aims_abc&amp;x=&lt;b&gt;" in text
+    assert "#code=abc&amp;x=&lt;b&gt;" in text
     assert "<b>" not in text
+
+
+def _desktop(base: Path, name: str, exec_line: str) -> None:
+    apps = base / "applications"
+    apps.mkdir(parents=True, exist_ok=True)
+    entry = f"[Desktop Entry]\nName=B\nExec={exec_line}\n[Desktop Action new]\nExec=x\n"
+    (apps / name).write_text(entry)
+
+
+def _program(bin_dir: Path, name: str, body: str) -> Path:
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    path = bin_dir / name
+    path.write_text(body)
+    path.chmod(0o755)
+    return path
+
+
+def test_a_snap_browser_gets_the_url_itself(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+    snapd = tmp_path / "var" / "lib" / "snapd" / "desktop"
+    share = tmp_path / "share"
+    bin_dir = tmp_path / "bin"
+    env = {"XDG_DATA_HOME": str(tmp_path / "home"), "XDG_DATA_DIRS": f"{share}:{snapd}"}
+    env["PATH"] = str(bin_dir)
+    _desktop(snapd, "firefox_firefox.desktop", "env BAMF=/x /snap/bin/firefox %u")
+    _desktop(share, "firefox.desktop", "firefox %u")
+    _desktop(share, "chromium.desktop", "env A=1 chromium --flag=1 %U")
+    _program(bin_dir, "firefox", '#!/bin/sh\nexec /snap/bin/firefox "$@"\n')
+    _program(bin_dir, "chromium", "#!/bin/sh\nexec /usr/lib/chromium/chromium\n")
+    snap = _program(tmp_path / "usr", "snap", "")
+    (bin_dir / "linked").symlink_to(snap)
+
+    def answers(default: str | None, html: str | None = None) -> Any:
+        return lambda q: default if q[0] == "xdg-settings" else html
+
+    assert snap_browser(env, answers("firefox_firefox.desktop"))
+    assert snap_browser(env, answers(None, "firefox_firefox.desktop"))
+    assert snap_browser(env, answers("firefox.desktop"))
+    assert not snap_browser(env, answers("chromium.desktop", "chromium.desktop"))
+    assert not snap_browser(env, answers(None))
+    assert not snap_browser(env, answers("../x.desktop", "missing.desktop"))
+    assert snap_browser({**env, "BROWSER": "linked %s"}, answers(None))
+    assert not snap_browser({**env, "BROWSER": "chromium"}, answers(None))
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert not snap_browser(env, answers("firefox_firefox.desktop"))
 
 
 def test_local_processes_reach_the_address_bound() -> None:
@@ -156,20 +212,21 @@ async def ui_process(
             await proc.wait()
 
 
-async def test_aims_ui_hands_the_browser_a_token_once(tmp_path: Path) -> None:
+async def test_aims_ui_hands_the_browser_a_code_not_the_token(tmp_path: Path) -> None:
     async with ui_process(tmp_path, "--no-runner") as (proc, url):
-        base, _, fragment = url.partition("/#token=")
+        base, _, code = url.partition("/#code=")
         assert base.startswith("http://127.0.0.1:")
         info = tmp_path / "server" / "server.json"
         assert stat.S_IMODE(info.stat().st_mode) == 0o600
         local = json.loads(info.read_text())
         assert local["url"] == base
-        assert local["operator"] == fragment
+        assert code
+        assert code != local["operator"]
         async with httpx2.AsyncClient(base_url=base, trust_env=False) as c:
             assert (await c.get("/api/health")).status_code == 401
             shell = await c.get("/")
             assert shell.status_code == 200
-            r = await c.post("/api/session", json={"token": fragment})
+            r = await c.post("/api/session", json={"code": code})
             assert r.status_code == 204
             assert (await c.get("/api/session")).json() == {
                 "name": "ui",
@@ -178,6 +235,10 @@ async def test_aims_ui_hands_the_browser_a_token_once(tmp_path: Path) -> None:
             }
             r = await c.post("/api/session", json={"token": local["token"]})
             assert r.status_code == 401
+        async with httpx2.AsyncClient(base_url=base, trust_env=False) as c:
+            assert (await c.post("/api/session", json={"code": code})).status_code == 401
+            r = await c.post("/api/session", json={"token": local["operator"]})
+            assert r.status_code == 204
         async with httpx2.AsyncClient(
             base_url=base, headers={"Authorization": f"Bearer {local['token']}"}, trust_env=False
         ) as rc:
@@ -188,7 +249,7 @@ async def test_aims_ui_hands_the_browser_a_token_once(tmp_path: Path) -> None:
             assert await proc.wait() == 0
         assert not info.exists()
     async with ui_process(tmp_path, "--no-runner") as (proc, second):
-        assert second.partition("/#token=")[2] != fragment
+        assert second.partition("/#code=")[2] != code
         proc.send_signal(signal.SIGTERM)
         await proc.wait()
 
@@ -212,7 +273,8 @@ async def test_aims_ui_brings_a_runner_and_stops_it(tmp_path: Path) -> None:
         except Exception as e:
             pytest.skip(f"Docker is not available: {e}")
     async with ui_process(tmp_path) as (proc, url):
-        base, _, token = url.partition("/#token=")
+        base = url.partition("/#code=")[0]
+        token = json.loads((tmp_path / "server" / "server.json").read_text())["operator"]
         async with httpx2.AsyncClient(
             base_url=base, headers={"Authorization": f"Bearer {token}"}, trust_env=False
         ) as c:
