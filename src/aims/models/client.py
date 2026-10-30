@@ -15,6 +15,7 @@ import httpx2
 import openai
 from openai import AsyncOpenAI, AsyncStream
 
+from aims.aio import settle
 from aims.events import (
     BlobRef,
     Content,
@@ -182,7 +183,7 @@ class ModelClient:
             assert outcome is not None
             last = attempt == attempts
             retry = outcome.retryable and not last and outcome.reraise is None
-            reply = await asyncio.shield(
+            reply = await settle(
                 self._finish(profile, backend, call_id, attempt, agent_id, outcome, retry)
             )
             if outcome.reraise is not None:

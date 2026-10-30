@@ -452,6 +452,36 @@ async def test_a_cancelled_call_records_what_arrived(store: LocalEventStore) -> 
     assert response.stream is not None
 
 
+async def test_a_cancel_while_the_answer_is_logged_waits_for_the_log(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = await new_run(store)
+    handler, _ = scripted(lambda: stream(sse(CHAT_EVENTS)))
+    entered, hold = asyncio.Event(), asyncio.Event()
+    append = store.append
+
+    async def slow(run: str, drafts: Any) -> Any:
+        if any(isinstance(d.payload, ModelResponse) for d in drafts):
+            entered.set()
+            await hold.wait()
+        return await append(run, drafts)
+
+    monkeypatch.setattr(store, "append", slow)
+    async with client(store, run_id, profile(), handler) as mc:
+        task = asyncio.create_task(mc.call("test", PROMPT))
+        await entered.wait()
+        task.cancel()
+        await asyncio.sleep(0.05)
+        assert not task.done()
+        hold.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert [type(p).__name__ for p in payloads(await model_events(store, run_id))][:2] == [
+        "ModelRequest",
+        "ModelResponse",
+    ]
+
+
 async def test_unstreamed_answers(store: LocalEventStore) -> None:
     run_id = await new_run(store)
     answer = {
