@@ -1057,10 +1057,10 @@ class Runner:
             return self.channels
         restored = self.options.restored or {}
         texts = {a: t.channels for a, t in self.texts.items()}
-        for config in self.scenario.channels:
+        for config in self.public_scenario.channels:
             setup = ChannelSetup(
                 config=config,
-                scenario=self.scenario,
+                scenario=self.public_scenario,
                 run_id=run_id,
                 store=self.bench.store,
                 restored=restored.get(config.name),

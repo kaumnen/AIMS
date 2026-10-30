@@ -204,6 +204,7 @@ def _prepare(
                         sources.entries(entry.source)
 
     placements = {a.id: _placement(full, a.id, plants) for a in full.agents}
+    shared = _shared(full, placements)
     out = Prepared(
         truth={},
         scenario=full,
@@ -220,7 +221,8 @@ def _prepare(
         task = full.task_for(agent.id)
         placement = placements[agent.id]
         where = f"agent {agent.id}"
-        out.files[agent.id] = _tar(full, task.files, canaries, sources, placement.files)
+        own = [p for p in placement.files if _folder(full, p.path) is None]
+        out.files[agent.id] = _tar(full, task.files, canaries, sources, own)
         out.env[agent.id] = {
             k: _render(v, canaries, f"{where} env {k}")
             for k, v in {**full.sandbox.env, **placement.env}.items()
@@ -234,7 +236,7 @@ def _prepare(
                 for k, v in task.verifier.env.items()
             }
 
-    out.scenario = _public_scenario(full, canaries, placements)
+    out.scenario = _public_scenario(full, canaries, placements, shared)
     out.bundle = _public_bundle(bundle, full, out.scenario, canaries, sources, out.verifier)
     out.full_bundle = Bundle(
         scenario=full,
@@ -297,6 +299,39 @@ def _placement(scenario: Scenario, agent_id: str, plants: Mapping[str, Plant]) -
         out.files.extend(placed.files)
         out.env.update(placed.env)
         out.tools.extend(placed.tools)
+    return out
+
+
+def _folder(scenario: Scenario, path: str) -> FolderChannel | None:
+    """The shared folder `path` lands in, if any."""
+    dest = scenario.sandbox_path(path)
+    for c in scenario.channels:
+        if isinstance(c, FolderChannel) and dest.startswith(f"{posixpath.normpath(c.path)}/"):
+            return c
+    return None
+
+
+def _shared(
+    scenario: Scenario, placements: Mapping[str, Placement]
+) -> dict[str, dict[str, PlacedFile]]:
+    """The plant files that land in a shared folder, by channel and path in the folder. The
+    folder seeds them once for every member, from the public copy's text."""
+    out: dict[str, dict[str, PlacedFile]] = {}
+    for placement in placements.values():
+        for p in placement.files:
+            folder = _folder(scenario, p.path)
+            if folder is None:
+                continue
+            rel = posixpath.relpath(scenario.sandbox_path(p.path), posixpath.normpath(folder.path))
+            try:
+                p.data.decode()
+            except UnicodeDecodeError:
+                raise ValueError(f"plant file {p.path} in a shared folder is not text") from None
+            files = out.setdefault(folder.name, {})
+            known = files.get(rel)
+            if known is not None and (known.data, known.mode) != (p.data, p.mode):
+                raise ValueError(f"two plants place {p.path} in folder {folder.name}")
+            files[rel] = p
     return out
 
 
@@ -530,10 +565,14 @@ def _parents(tar: _Tar, scenario: Scenario, dest: str) -> None:
 
 
 def _public_scenario(
-    full: Scenario, canaries: Mapping[str, Canary], placements: Mapping[str, Placement]
+    full: Scenario,
+    canaries: Mapping[str, Canary],
+    placements: Mapping[str, Placement],
+    shared: Mapping[str, Mapping[str, PlacedFile]],
 ) -> Scenario:
-    """`full` without its hidden labels, with canaries filled in and each agent's plant files
-    and tools folded in as if the scenario had given them."""
+    """`full` without its hidden labels, with canaries filled in and the plant files and tools
+    folded in as if the scenario had given them: each agent's own in its task, the ones in a
+    shared folder in that folder's files."""
     raw = _dump(full)
     for key in HIDDEN:
         raw.pop(key, None)
@@ -541,26 +580,29 @@ def _public_scenario(
     for agent in raw["agents"]:
         for key in HIDDEN_AGENT:
             agent.pop(key, None)
-        placement = placements[agent["id"]]
-        if placement.files:
+        placed = [p for p in placements[agent["id"]].files if _folder(full, p.path) is None]
+        if placed:
             task = agent.get("task") or {}
-            mine = {full.sandbox_path(p.path) for p in placement.files}
+            mine = {full.sandbox_path(p.path) for p in placed}
             kept = [f for f in task.get("files") or [] if full.sandbox_path(f["path"]) not in mine]
-            task["files"] = [
-                *kept,
-                *(
-                    {
-                        "path": p.path,
-                        "content": p.data.decode(errors="replace"),
-                        "mode": f"{p.mode & 0o777:04o}",
-                    }
-                    for p in placement.files
-                ),
-            ]
+            task["files"] = [*kept, *(_file_entry(p.path, p) for p in placed)]
             agent["task"] = task
-        names = [t.name for t in placement.tools if t.name not in agent["tools"]]
+        names = [t.name for t in placements[agent["id"]].tools if t.name not in agent["tools"]]
         agent["tools"] = [*agent["tools"], *names]
+    for channel in raw["channels"]:
+        files = shared.get(channel["name"])
+        if files:
+            kept = [f for f in channel["files"] if posixpath.normpath(f["path"]) not in files]
+            channel["files"] = [*kept, *(_file_entry(rel, p) for rel, p in files.items())]
     return Scenario.model_validate(raw)
+
+
+def _file_entry(path: str, p: PlacedFile) -> dict[str, Any]:
+    return {
+        "path": path,
+        "content": p.data.decode(errors="replace"),
+        "mode": f"{p.mode & 0o777:04o}",
+    }
 
 
 def _public_bundle(

@@ -620,7 +620,8 @@ class Scenario(_Strict):
         if len(set(names)) != len(names):
             raise ValueError("plant names must be unique")
         known = {a.id for a in self.agents}
-        folders = [c.path for c in self.channels if isinstance(c, FolderChannel)]
+        shared = [c for c in self.channels if isinstance(c, FolderChannel)]
+        folders = [c.path for c in shared]
         for p in self.plants:
             for who in p.agents or []:
                 if who not in known:
@@ -629,6 +630,10 @@ class Scenario(_Strict):
                 path = self.sandbox_path(p.path)
                 if not any(path.startswith(f"{r}/") for r in (*self._roots(), *folders)):
                     raise ValueError(f"plant {p.name}: {p.path} is outside the agents' files")
+                folder = next((c for c in shared if _under(path, c.path)), None)
+                given = set(p.agents or self.subjects)
+                if folder is not None and not given & set(self.members(folder)):
+                    raise ValueError(f"plant {p.name}: none of its agents is in {folder.name}")
         if sum(isinstance(p, ImdsPlant) for p in self.plants) > 1:
             raise ValueError("a scenario has at most one imds plant")
         if self.selftest is not None:

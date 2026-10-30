@@ -137,6 +137,13 @@ def test_scripts_call_tools_and_a_selftest_may_be_steps() -> None:
             "is outside the agents' files",
         ),
         ("plants:\n  - {name: p, kind: file, path: x, content: x}\n", "needs a category"),
+        (
+            "agents:\n  - id: a\n  - id: b\n"
+            "channels:\n  - {name: c, kind: folder, path: /srv/c, members: [b]}\n"
+            "plants:\n  - {name: p, kind: file, path: /srv/c/k, content: x, agents: [a],"
+            " category: drift}\n",
+            "plant p: none of its agents is in c",
+        ),
         ("selftest: {exploit: x.sh, claims: [nope]}\n", "unknown plants nope"),
         (
             "agents:\n  - id: a\n  - id: c\n    role: confederate\n    script:\n"
