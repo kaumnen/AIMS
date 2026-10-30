@@ -14,6 +14,7 @@ import {
 
 export type RunSummary = Schemas["RunSummary"];
 export type RunPage = Schemas["RunPage"];
+type RunDetail = Schemas["RunDetail"];
 export type RunKind = RunSummary["kind"];
 export type Category = NonNullable<(typeof categoryValues)[number]>;
 
@@ -168,6 +169,16 @@ export function applyRuns(qc: QueryClient, runs: readonly RunSummary[]): void {
         const pages = mergePages(data.pages, runs, arg as RunFilters);
         return pages ? { ...data, pages } : data;
       });
+    } else if (what === "detail") {
+      const run = runs.find((r) => r.run_id === arg);
+      const data = qc.getQueryData<RunDetail>(q.queryKey);
+      if (!run || !data || data.run === run) continue;
+      qc.setQueryData<RunDetail>(q.queryKey, { ...data, run });
+      // its start, end and verdict events only come with a fetch
+      if (data.run.status !== run.status || data.run.verdict_severity !== run.verdict_severity) {
+        void qc.invalidateQueries({ queryKey: q.queryKey, exact: true });
+        void qc.invalidateQueries({ queryKey: ["runs", "steps", run.run_id], exact: true });
+      }
     } else if (what === "reviews") {
       qc.setQueryData<RunPage>(q.queryKey, (data) => {
         if (!data) return data;

@@ -5,6 +5,7 @@ import { FakeEventSource } from "@/test/event-source";
 import { run } from "@/test/runs";
 
 import { Live } from "./live";
+import { runQuery } from "./run";
 import {
   applyRuns,
   filtersOf,
@@ -100,6 +101,28 @@ test("updates reach every loaded list and review list", () => {
   applyRuns(qc, [run("c"), run("m", { kind: "monitor", origin: "b" })]);
   expect(qc.getQueryData(list.queryKey)?.pages[0]?.items.map((r) => r.run_id)).toEqual(["c", "b"]);
   expect(qc.getQueryData(reviews.queryKey)?.items.map((r) => r.run_id)).toEqual(["m"]);
+});
+
+test("an open run takes its update and refetches when it ends", () => {
+  const qc = new QueryClient();
+  const detail = runQuery("b");
+  qc.setQueryData(detail.queryKey, {
+    run: run("b"),
+    started: null,
+    finished: null,
+    verdict: null,
+    monitor_runs: [],
+  });
+  const refetch = vi.spyOn(qc, "invalidateQueries");
+  applyRuns(qc, [run("b", { flags: 2 })]);
+  expect(qc.getQueryData(detail.queryKey)?.run.flags).toBe(2);
+  expect(refetch).not.toHaveBeenCalled();
+  applyRuns(qc, [run("b", { flags: 2, status: "completed", state: "done" })]);
+  expect(qc.getQueryData(detail.queryKey)?.run.status).toBe("completed");
+  expect(refetch.mock.calls.map(([f]) => f?.queryKey)).toEqual([
+    detail.queryKey,
+    ["runs", "steps", "b"],
+  ]);
 });
 
 test("stream updates are applied once a frame, the last one per run winning", () => {

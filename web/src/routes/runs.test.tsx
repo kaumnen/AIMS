@@ -1,11 +1,12 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import type { RunSummary } from "@/api/runs";
 import { makeRouter } from "@/router";
 import { FakeEventSource } from "@/test/event-source";
+import { stubHeight } from "@/test/layout";
 import { run } from "@/test/runs";
 
 const fetch = vi.fn<(request: Request) => Promise<Response>>();
@@ -14,17 +15,7 @@ let lists: Record<string, RunSummary[]>;
 const BEE5 = "01a18a50-bee5-7263-ad19-24385640cee1";
 const REVIEW = "01a18d3b-a156-750a-b263-958e86bdd35e";
 
-// happy-dom lays nothing out, so the virtual list would see an empty window.
-const size = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-beforeAll(() => {
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", {
-    configurable: true,
-    get: () => 600,
-  });
-});
-afterAll(() => {
-  if (size) Object.defineProperty(HTMLElement.prototype, "clientHeight", size);
-});
+stubHeight();
 
 beforeEach(() => {
   FakeEventSource.all = [];

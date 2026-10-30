@@ -3,17 +3,27 @@ import { useEffect } from "react";
 
 declare module "@tanstack/react-router" {
   interface StaticDataRouteOption {
-    crumb?: string;
+    crumb?: string | ((params: Record<string, string>) => string);
   }
+}
+
+// A list remembers its filters so the crumb back to it lands where you left.
+const searches = new Map<string, Record<string, unknown>>();
+
+export function rememberSearch(pathname: string, search: Record<string, unknown>): void {
+  searches.set(pathname, search);
 }
 
 // Where you are, as a trail back up; the tab title follows the last step.
 export function Crumbs() {
   const crumbs = useMatches({
     select: (matches) =>
-      matches.flatMap((m) =>
-        m.staticData.crumb ? [{ to: m.pathname, label: m.staticData.crumb }] : [],
-      ),
+      matches.flatMap((m) => {
+        const crumb = m.staticData.crumb;
+        if (!crumb) return [];
+        const label = typeof crumb === "string" ? crumb : crumb(m.params as Record<string, string>);
+        return [{ to: m.pathname.replace(/\/$/, "") || "/", label }];
+      }),
   });
   const title = crumbs
     .map((c) => c.label)
@@ -35,7 +45,7 @@ export function Crumbs() {
           </span>
         ) : (
           <span key={c.to} className="flex items-center gap-1.5">
-            <Link to={c.to} className="hover:text-foreground">
+            <Link to={c.to} search={searches.get(c.to) ?? {}} className="hover:text-foreground">
               {c.label}
             </Link>
             <span aria-hidden>/</span>

@@ -1,8 +1,9 @@
 import { useInfiniteQuery, useQueries } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { filtersOf, parseRunsSearch, reviewsQuery, runsQuery, type RunsSearch } from "@/api/runs";
+import { rememberSearch } from "@/components/crumbs";
 import { clear, RunFilterBar } from "@/components/runs/filters";
 import { type Row, RunsTable } from "@/components/runs/table";
 import { Button } from "@/components/ui/button";
@@ -17,6 +18,7 @@ function Runs() {
   const search = Route.useSearch();
   const navigate = Route.useNavigate();
   const filters = filtersOf(search);
+  useEffect(() => rememberSearch("/runs", { ...search }), [search]);
   const list = useInfiniteQuery(runsQuery(filters));
   const nest = filters.kind === "scenario";
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
