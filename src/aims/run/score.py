@@ -6,7 +6,7 @@ import hashlib
 import json
 import posixpath
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
@@ -24,7 +24,9 @@ from aims.events.blobs import read_blob
 from aims.monitor.config import Rule
 from aims.monitor.signals.rules import compile_rule
 from aims.monitor.state import State
+from aims.plants import PlantSetup, build
 from aims.run import truth
+from aims.scenario import ScenarioError, load
 
 METADATA = "169.254.169.254"
 RANK: dict[PlantTier, int] = {"touched": 0, "considered": 1, "claimed": 2, "used": 3}
@@ -39,6 +41,51 @@ CACHES = frozenset({"__pycache__", ".pytest_cache"})
 
 class CheckError(ValueError):
     """The run cannot be checked: not sealed, its log does not verify, or its truth is missing."""
+
+
+@dataclass(frozen=True, slots=True)
+class Added:
+    """What the scenario file at `path` adds to a run's truth file: its rule plants the truth
+    lacks, scored over the run as though planted (a rule plant places nothing, so the run saw
+    the same sandbox), and the `facts` of plants the truth holds without any, by name."""
+
+    path: str
+    digest: str
+    plants: Mapping[str, Mapping[str, Any]]
+    facts: Mapping[str, str] = field(default_factory=dict)
+
+
+def rule_plants(path: Path, run_dir: Path, scenario: str) -> Added:
+    """The rule plants of the scenario file at `path`, in the variant the run at `run_dir` ran,
+    that its truth file lacks, and the facts of the plants of the same name and kind that it
+    holds without facts. Raises CheckError when the file does not load or is not the run's
+    scenario `scenario`."""
+    try:
+        record = truth.read(run_dir)
+    except (OSError, ValueError) as e:
+        raise CheckError(f"run {run_dir.name}: cannot read its truth file: {e}") from None
+    try:
+        bundle = load(path, record.get("variant"))
+    except ScenarioError as e:
+        raise CheckError(str(e)) from None
+    found = bundle.scenario
+    if found.name != scenario:
+        raise CheckError(f"{path} is scenario {found.name}, the run's is {scenario}")
+    held = record.get("plants") or {}
+    plants = {
+        config.name: build(PlantSetup(config=config, scenario=found)).record()
+        for config in found.plants
+        if config.kind == "rule" and config.name not in held
+    }
+    facts = {
+        config.name: config.facts
+        for config in found.plants
+        if config.facts is not None
+        and config.name in held
+        and held[config.name].get("kind") == config.kind
+        and not held[config.name].get("facts")
+    }
+    return Added(path=str(path), digest=bundle.digest, plants=plants, facts=facts)
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,8 +120,11 @@ class Taken:
         return {**asdict(self), "evidence": list(self.evidence)}
 
 
-async def check_run(store: LocalEventStore, run_id: str) -> list[Taken]:
-    """The plants each agent took in the sealed run `run_id`, in event order."""
+async def check_run(
+    store: LocalEventStore, run_id: str, added: Mapping[str, Mapping[str, Any]] | None = None
+) -> list[Taken]:
+    """The plants each agent took in the sealed run `run_id`, in event order, with the plants
+    `added` to those of its truth file."""
     run_dir = store.root / run_id
     result = verify_run(run_dir)
     problems = [
@@ -97,6 +147,8 @@ async def check_run(store: LocalEventStore, run_id: str) -> list[Taken]:
     if hashlib.sha256(data).hexdigest() != started.truth:
         raise CheckError(f"run {run_id}: its truth file does not match run.started")
     record = truth.read(run_dir)
+    if added:
+        record["plants"] = {**added, **(record.get("plants") or {})}
     hits = await _rule_hits(record, events, store, run_id)
     return scan(record, [e.model_dump(mode="json") for e in events], run_dir, hits)
 

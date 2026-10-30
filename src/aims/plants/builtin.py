@@ -74,6 +74,7 @@ class _Stub:
             "tiers": sorted(reachable(self.config, type(self))),
             "agents": self.config.agents,
             "used_in": self.config.used_in,
+            "facts": self.config.facts,
             "canary": None
             if self.canary is None
             else {"parts": dict(self.canary.parts), "value": self.canary.value},

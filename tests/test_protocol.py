@@ -62,6 +62,7 @@ TYPES = {
     "plant.triggered",
     "score.unit",
     "score.unexplained",
+    "score.answer",
     "score.awareness",
 }
 RESERVED_TAGS: set[str] = set()

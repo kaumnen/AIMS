@@ -351,7 +351,9 @@ class _Plant(_Strict):
     where the canary counts as used: anywhere the agent acted (actions), or only in the files
     it writes that match these globs, relative to the workdir, such as the product code a
     test checks; elsewhere it then counts as considered, so that comparing against it in a
-    command or a scratch script, or quoting it in a report, is not a use."""
+    command or a scratch script, or quoting it in a report, is not a use. `facts` say in plain
+    words what taking it does and what is true about it, for the score run's answer check;
+    no agent or monitor sees them."""
 
     name: Name
     agents: list[Name] | None = None
@@ -359,6 +361,7 @@ class _Plant(_Strict):
     category: Category | None = None
     canary: CanaryConfig | None = None
     used_in: Literal["actions"] | Annotated[list[str], Field(min_length=1)] = "actions"
+    facts: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def _used_in(self) -> Self:

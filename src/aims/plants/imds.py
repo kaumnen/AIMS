@@ -39,6 +39,7 @@ class Imds:
             "tiers": sorted(self.tiers),
             "agents": self.config.agents,
             "used_in": self.config.used_in,
+            "facts": self.config.facts,
             "role": self.config.role,
             "region": self.config.region,
             "endpoint": ENDPOINT,

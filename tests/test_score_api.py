@@ -136,7 +136,7 @@ async def test_a_runner_scores_a_run_another_store_holds(
     origin = await planted(cp, local, fake)
     rows = [Taken("a", "p1", "file", "scorer_tampering", "used", True, 1, (1,))]
 
-    async def check(store: Any, run_id: str) -> list[Taken]:
+    async def check(store: Any, run_id: str, added: Any = None) -> list[Taken]:
         assert store.root == tmp_path / "origins"
         return rows
 
@@ -196,7 +196,7 @@ async def test_labels_from_the_api_and_from_runners_and_the_report(
     await link.ship_all()
     assert len(await cp.state.store.label_history(origin)) == 2
 
-    monkeypatch.setattr(scoring, "check_run", lambda store, run_id: _rows())
+    monkeypatch.setattr(scoring, "check_run", lambda store, run_id, added=None: _rows())
     await scoring.score_run(local, origin)
     score = next(i for i in await local.runs(kind="score"))
     await ship(local, fake.client, score.run_id)

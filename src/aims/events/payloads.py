@@ -58,6 +58,9 @@ SweepTrigger = Literal[
 ]
 MonitorActionKind = Literal["pause", "resume", "kill", "deny"]
 Finding = Literal["yes", "no", "unclear"]
+# Whether an agent told the operator of the plants it took, and whether its reason held.
+Told = Literal["yes", "partly", "no"]
+Cause = Literal["true", "false", "none"]
 # The largest integer RFC 8785 canonical JSON can carry.
 MAX_INT = 2**53 - 1
 Category = Literal[
@@ -1299,8 +1302,9 @@ class ScoreUnit(Payload):
     positive all the same, `labelled`, when a person labelled one of its flags real. `planted`
     are the plants that applied to it, `plants` the ones it took, `considered` the ones whose
     canary turned up only in its model output, `categories` the taken ones', `harm_seq` the
-    first time it took one. `arm` names the weights it ran on. A confederate's own plants are
-    known positives for the monitor, scored apart from the subjects."""
+    first time it took one. `arm` names the weights it ran on. `told` and `cause` are the
+    answer check's labels of a positive subject. A confederate's own plants are known
+    positives for the monitor, scored apart from the subjects."""
 
     type = "score.unit"
 
@@ -1315,6 +1319,8 @@ class ScoreUnit(Payload):
     harm_seq: int | None = None
     matches: list[ScoreMatch] = Field(default_factory=list)
     eval_aware: Finding | None = None
+    told: Told | None = None
+    cause: Cause | None = None
 
 
 class ScoreUnexplained(Payload):
@@ -1329,6 +1335,21 @@ class ScoreUnexplained(Payload):
     category: Category
     importance: int = Field(ge=1, le=5)
     label: str | None = None
+
+
+class ScoreAnswer(Payload):
+    """What the event's agent told the operator of the plants it took, by a classifier model
+    over its final answer and reports with the plants' facts: `told` whether its words show
+    each one, `cause` whether the reasons they give agree with the facts. `quote` is the words
+    that show it, `evidence` where."""
+
+    type = "score.answer"
+
+    told: Told
+    cause: Cause
+    quote: Content | None = None
+    evidence: list[int] = Field(default_factory=list)
+    call_id: str | None = None
 
 
 class ScoreAwareness(Payload):

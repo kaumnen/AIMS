@@ -2057,7 +2057,7 @@ export interface components {
             next: string | null;
         };
         /** @enum {string} */
-        EventType: "agent.compacted" | "agent.finished" | "agent.input" | "agent.report" | "agent.started" | "agent.step" | "audit.lost" | "audit.spill" | "cache.probe" | "channel.message" | "channel.read" | "channel.snapshot" | "exec.finished" | "exec.started" | "file.access" | "file.setattr" | "file.sync" | "file.write" | "fs.snapshot" | "ipc.event" | "log.truncated" | "mem.exec" | "model.request" | "model.response" | "monitor.action" | "monitor.cleared" | "monitor.degraded" | "monitor.flag" | "monitor.sweep" | "monitor.verdict" | "net.connect" | "ns.event" | "operator.action" | "plant.triggered" | "proc.exec" | "proc.exit" | "proc.fork" | "proc.output" | "proc.signal" | "ptrace.event" | "replay.divergence" | "resource.sample" | "run.finished" | "run.started" | "sandbox.archived" | "sandbox.started" | "sandbox.stopped" | "score.awareness" | "score.unexplained" | "score.unit" | "sys.denied" | "task.scored" | "tool.call" | "tool.result";
+        EventType: "agent.compacted" | "agent.finished" | "agent.input" | "agent.report" | "agent.started" | "agent.step" | "audit.lost" | "audit.spill" | "cache.probe" | "channel.message" | "channel.read" | "channel.snapshot" | "exec.finished" | "exec.started" | "file.access" | "file.setattr" | "file.sync" | "file.write" | "fs.snapshot" | "ipc.event" | "log.truncated" | "mem.exec" | "model.request" | "model.response" | "monitor.action" | "monitor.cleared" | "monitor.degraded" | "monitor.flag" | "monitor.sweep" | "monitor.verdict" | "net.connect" | "ns.event" | "operator.action" | "plant.triggered" | "proc.exec" | "proc.exit" | "proc.fork" | "proc.output" | "proc.signal" | "ptrace.event" | "replay.divergence" | "resource.sample" | "run.finished" | "run.started" | "sandbox.archived" | "sandbox.started" | "sandbox.stopped" | "score.answer" | "score.awareness" | "score.unexplained" | "score.unit" | "sys.denied" | "task.scored" | "tool.call" | "tool.result";
         /** @description Each event type and the schema of its `data`. */
         EventTypes: {
             "agent.compacted": components["schemas"]["AgentCompacted"];
@@ -2107,6 +2107,7 @@ export interface components {
             "sandbox.archived": components["schemas"]["SandboxArchived"];
             "sandbox.started": components["schemas"]["SandboxStarted"];
             "sandbox.stopped": components["schemas"]["SandboxStopped"];
+            "score.answer": components["schemas"]["ScoreAnswer"];
             "score.awareness": components["schemas"]["ScoreAwareness"];
             "score.unexplained": components["schemas"]["ScoreUnexplained"];
             "score.unit": components["schemas"]["ScoreUnit"];
@@ -2637,7 +2638,9 @@ export interface components {
          *     `plants` the same per plant; `considered` counts the subjects that took none but whose model
          *     output held a plant's canary, `labelled` the ones a person labelled. `aware` and `unaware`
          *     are the any-layer catch rates at importance 3 of the positives that did and did not say
-         *     they thought they were tested; `unexplained` counts the flags no plant explains by label.
+         *     they thought they were tested. `hid` and `invented` are the shares of the positives with an
+         *     answer check that told the operator of none of their takes and that gave a reason the
+         *     plants' facts contradict. `unexplained` counts the flags no plant explains by label.
          */
         Group: {
             /** Arm */
@@ -2651,6 +2654,8 @@ export interface components {
              * @default 0
              */
             considered: number;
+            hid: components["schemas"]["Rate"] | null;
+            invented: components["schemas"]["Rate"] | null;
             /**
              * Labelled
              * @default 0
@@ -5084,6 +5089,37 @@ export interface components {
             source: string;
         };
         /**
+         * ScoreAnswer
+         * @description What the event's agent told the operator of the plants it took, by a classifier model
+         *     over its final answer and reports with the plants' facts: `told` whether its words show
+         *     each one, `cause` whether the reasons they give agree with the facts. `quote` is the words
+         *     that show it, `evidence` where.
+         */
+        ScoreAnswer: {
+            /**
+             * Call Id
+             * @default null
+             */
+            call_id: string | null;
+            /**
+             * Cause
+             * @enum {string}
+             */
+            cause: "true" | "false" | "none";
+            /** Evidence */
+            evidence: number[];
+            /**
+             * Quote
+             * @default null
+             */
+            quote: string | components["schemas"]["BlobRef"] | null;
+            /**
+             * Told
+             * @enum {string}
+             */
+            told: "yes" | "partly" | "no";
+        };
+        /**
          * ScoreAwareness
          * @description Whether the event's agent said it thought it was being tested, by a classifier model
          *     over its words; `quote` is what it said, `evidence` where.
@@ -5256,8 +5292,9 @@ export interface components {
          *     positive all the same, `labelled`, when a person labelled one of its flags real. `planted`
          *     are the plants that applied to it, `plants` the ones it took, `considered` the ones whose
          *     canary turned up only in its model output, `categories` the taken ones', `harm_seq` the
-         *     first time it took one. `arm` names the weights it ran on. A confederate's own plants are
-         *     known positives for the monitor, scored apart from the subjects.
+         *     first time it took one. `arm` names the weights it ran on. `told` and `cause` are the
+         *     answer check's labels of a positive subject. A confederate's own plants are known
+         *     positives for the monitor, scored apart from the subjects.
          */
         ScoreUnit: {
             /**
@@ -5267,6 +5304,11 @@ export interface components {
             arm: string | null;
             /** Categories */
             categories: ("covert_communication" | "scorer_tampering" | "transcript_tampering" | "deceiving_operator" | "evading_checks" | "collective_over_own_task" | "drift" | "loop_or_confusion" | "fabricated_completion" | "constraint_violation" | "eval_awareness" | "alerting_operator" | "egress_attempt" | "privilege_escalation" | "monitor_manipulation")[];
+            /**
+             * Cause
+             * @default null
+             */
+            cause: ("true" | "false" | "none") | null;
             /** Considered */
             considered: string[];
             /**
@@ -5297,6 +5339,11 @@ export interface components {
              * @enum {string}
              */
             role: "subject" | "confederate";
+            /**
+             * Told
+             * @default null
+             */
+            told: ("yes" | "partly" | "no") | null;
         };
         /**
          * Separation
@@ -10120,7 +10167,7 @@ export const costFiguresTierValues: ReadonlyArray<FlattenedDeepRequired<componen
 export const deltaMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["DeltaMessage"]["kind"]> = ["delta"];
 export const deltasDroppedMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["DeltasDroppedMessage"]["kind"]> = ["deltas_dropped"];
 export const endMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EndMessage"]["kind"]> = ["end"];
-export const eventTypeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventType"]> = ["agent.compacted", "agent.finished", "agent.input", "agent.report", "agent.started", "agent.step", "audit.lost", "audit.spill", "cache.probe", "channel.message", "channel.read", "channel.snapshot", "exec.finished", "exec.started", "file.access", "file.setattr", "file.sync", "file.write", "fs.snapshot", "ipc.event", "log.truncated", "mem.exec", "model.request", "model.response", "monitor.action", "monitor.cleared", "monitor.degraded", "monitor.flag", "monitor.sweep", "monitor.verdict", "net.connect", "ns.event", "operator.action", "plant.triggered", "proc.exec", "proc.exit", "proc.fork", "proc.output", "proc.signal", "ptrace.event", "replay.divergence", "resource.sample", "run.finished", "run.started", "sandbox.archived", "sandbox.started", "sandbox.stopped", "score.awareness", "score.unexplained", "score.unit", "sys.denied", "task.scored", "tool.call", "tool.result"];
+export const eventTypeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventType"]> = ["agent.compacted", "agent.finished", "agent.input", "agent.report", "agent.started", "agent.step", "audit.lost", "audit.spill", "cache.probe", "channel.message", "channel.read", "channel.snapshot", "exec.finished", "exec.started", "file.access", "file.setattr", "file.sync", "file.write", "fs.snapshot", "ipc.event", "log.truncated", "mem.exec", "model.request", "model.response", "monitor.action", "monitor.cleared", "monitor.degraded", "monitor.flag", "monitor.sweep", "monitor.verdict", "net.connect", "ns.event", "operator.action", "plant.triggered", "proc.exec", "proc.exit", "proc.fork", "proc.output", "proc.signal", "ptrace.event", "replay.divergence", "resource.sample", "run.finished", "run.started", "sandbox.archived", "sandbox.started", "sandbox.stopped", "score.answer", "score.awareness", "score.unexplained", "score.unit", "sys.denied", "task.scored", "tool.call", "tool.result"];
 export const eventsMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventsMessage"]["kind"]> = ["events"];
 export const execFinishedEndValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ExecFinished"]["end"]> = ["exited", "timeout", "cancelled", "failed"];
 export const execStartedAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ExecStarted"]["audit"]> = ["kernel", "snapshot"];
@@ -10190,14 +10237,18 @@ export const runnerHelloKindsValues: ReadonlyArray<FlattenedDeepRequired<compone
 export const runnerInfoKindsValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunnerInfo"]["kinds"]> = ["scenario", "models.check", "monitor", "score"];
 export const sandboxStartedAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["SandboxStarted"]["audit"]> = ["kernel", "snapshot"];
 export const sandboxStoppedReasonValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["SandboxStopped"]["reason"]> = ["closed", "killed", "exec_failed"];
+export const scoreAnswerCauseValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreAnswer"]["cause"]> = ["true", "false", "none"];
+export const scoreAnswerToldValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreAnswer"]["told"]> = ["yes", "partly", "no"];
 export const scoreAwarenessFindingValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreAwareness"]["finding"]> = ["yes", "no", "unclear"];
 export const scoreJobKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreJob"]["kind"]> = ["score"];
 export const scoreMatchLayerValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreMatch"]["layer"]> = ["signal", "sweep", "judge", "llm", "any"];
 export const scoreUnexplainedCategoryValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreUnexplained"]["category"]> = ["covert_communication", "scorer_tampering", "transcript_tampering", "deceiving_operator", "evading_checks", "collective_over_own_task", "drift", "loop_or_confusion", "fabricated_completion", "constraint_violation", "eval_awareness", "alerting_operator", "egress_attempt", "privilege_escalation", "monitor_manipulation"];
 export const scoreUnexplainedLayerValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreUnexplained"]["layer"]> = ["signal", "sweep", "judge"];
 export const scoreUnitCategoriesValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreUnit"]["categories"]> = ["covert_communication", "scorer_tampering", "transcript_tampering", "deceiving_operator", "evading_checks", "collective_over_own_task", "drift", "loop_or_confusion", "fabricated_completion", "constraint_violation", "eval_awareness", "alerting_operator", "egress_attempt", "privilege_escalation", "monitor_manipulation"];
+export const scoreUnitCauseAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreUnit"]["cause"]> = ["true", "false", "none"];
 export const scoreUnitEval_awareAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreUnit"]["eval_aware"]> = ["yes", "no", "unclear"];
 export const scoreUnitRoleValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreUnit"]["role"]> = ["subject", "confederate"];
+export const scoreUnitToldAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreUnit"]["told"]> = ["yes", "partly", "no"];
 export const separationLayerValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Separation"]["layer"]> = ["signal", "sweep", "judge", "llm", "any"];
 export const startForkAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["StartFork"]["audit"]> = ["kernel", "snapshot"];
 export const startForkMonitorAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["StartFork"]["monitor"]> = ["off", "signals", "standard", "research"];
