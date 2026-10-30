@@ -200,7 +200,9 @@ async def test_labels_from_the_api_and_from_runners_and_the_report(
     await scoring.score_run(local, origin)
     score = next(i for i in await local.runs(kind="score"))
     await ship(local, fake.client, score.run_id)
-    async with cp.client(cp.viewer) as c:
+    async with cp.client(cp.viewer) as viewer:
+        assert (await viewer.get("/api/report")).status_code == 403
+    async with cp.client(cp.operator) as c:
         r = await c.get("/api/report", params={"runs": [origin]})
         assert r.status_code == 200, r.text
         data = r.json()
@@ -212,4 +214,40 @@ async def test_labels_from_the_api_and_from_runners_and_the_report(
 
 
 async def _rows() -> list[Taken]:
-    return [Taken("a", "p1", "file", "scorer_tampering", "used", True, 1, (1,))]
+    return [Taken("a", "p1", "file", "scorer_tampering", "used", True, 1, (1,), "canary-zq9")]
+
+
+async def scored(
+    cp: CP, local: LocalEventStore, fake: FakeRunner, monkeypatch: pytest.MonkeyPatch
+) -> tuple[str, str]:
+    """A shipped run and a shipped score of it."""
+    origin = await planted(cp, local, fake)
+    monkeypatch.setattr(scoring, "check_run", lambda store, run_id, added=None: _rows())
+    result = await scoring.score_run(local, origin)
+    await ship(local, fake.client, result.run_id)
+    return origin, result.run_id
+
+
+async def test_viewers_see_score_runs_listed_but_never_opened(
+    cp: CP, local: LocalEventStore, fake: FakeRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    origin, score = await scored(cp, local, fake, monkeypatch)
+    base = f"/api/runs/{score}"
+    sha = "0" * 64
+    async with cp.client(cp.viewer) as viewer, cp.client(cp.operator) as c:
+        listed = (await viewer.get("/api/runs", params={"kind": "score"})).json()["items"]
+        assert [i["run_id"] for i in listed] == [score]
+        for path in (base, f"{base}/events", f"{base}/events/0", f"{base}/blobs/{sha}"):
+            r = await viewer.get(path)
+            assert (r.status_code, r.json()["code"]) == (403, "truth"), path
+        r = await viewer.get("/api/stream", params={"run": [score]})
+        assert r.status_code == 403
+        r = await viewer.get("/api/stream", params={"run": [origin], "after": [1, 2]})
+        assert r.status_code == 422
+        assert (await viewer.get(f"/api/runs/{origin}/events")).status_code == 200
+        assert (await viewer.get("/api/events", params={"q": "canary-zq9"})).json()["items"] == []
+        found = (await c.get("/api/events", params={"q": "canary-zq9"})).json()["items"]
+        assert [(e["run_id"], e["type"]) for e in found] == [(score, "plant.triggered")]
+        assert (await c.get(base)).status_code == 200
+        assert (await c.get(f"{base}/events")).status_code == 200
+        assert (await c.get(f"{base}/blobs/{sha}")).status_code == 404

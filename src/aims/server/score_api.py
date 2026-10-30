@@ -83,7 +83,7 @@ async def score_run(run_id: str, body: StartScore, principal: Operator, state: S
 
 @router.get("/report", tags=["score"])
 async def get_report(
-    principal: Viewer,
+    principal: Operator,
     state: State,
     runs: Annotated[list[str] | None, Query()] = None,
     series: str | None = None,

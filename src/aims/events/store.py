@@ -934,11 +934,16 @@ class LocalEventStore:
         return BlobStore(run_dir / BLOBS)
 
     async def search(
-        self, query: str, *, limit: int = 100, before: int | None = None
+        self,
+        query: str,
+        *,
+        limit: int = 100,
+        before: int | None = None,
+        skip_kinds: Sequence[str] = (),
     ) -> tuple[list[Event], int | None]:
         """Events of every run whose text holds `query`, newest first, and the cursor of the
-        next page."""
-        return await self._index.search(query, limit=limit, before=before)
+        next page, leaving out runs of `skip_kinds`."""
+        return await self._index.search(query, limit=limit, before=before, skip_kinds=skip_kinds)
 
 
 def verify_run(run_dir: Path) -> Verification:

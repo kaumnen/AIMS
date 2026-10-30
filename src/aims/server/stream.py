@@ -8,12 +8,12 @@ import contextlib
 from collections.abc import AsyncIterator, Coroutine
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Header, Query
+from fastapi import APIRouter, Depends, Header, Query
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 
 from aims.events import RunCorrupt
 from aims.models import Delta
-from aims.server.api import State, Viewer, summaries
+from aims.server.api import State, Viewer, _shown, summaries
 from aims.server.problems import ProblemException
 from aims.wire import (
     DeltaMessage,
@@ -79,6 +79,24 @@ async def _first(waits: list[Coroutine[Any, Any, Any]], within: float) -> None:
                 await t
 
 
+Runs = Annotated[list[str] | None, Query(max_length=MAX_RUNS)]
+
+
+async def _asked(
+    principal: Viewer,
+    state: State,
+    run: Runs = None,
+    after: Annotated[list[int] | None, Query()] = None,
+    deltas: Runs = None,
+) -> None:
+    """Refuse a subscription before the stream opens: a stream's errors after that come too
+    late for a status."""
+    if len(after or []) > len(run or []):
+        raise ProblemException(422, "Invalid request", "one `after` per `run`")
+    for run_id in {*(run or []), *(deltas or [])}:
+        await _shown(state, principal, run_id)
+
+
 @router.get(
     "/stream",
     response_class=EventSourceResponse,
@@ -107,11 +125,12 @@ async def _first(waits: list[Coroutine[Any, Any, Any]], within: float) -> None:
 async def stream(
     principal: Viewer,
     state: State,
+    _: Annotated[None, Depends(_asked)],
     runs: bool = False,
-    run: Annotated[list[str] | None, Query(max_length=MAX_RUNS)] = None,
+    run: Runs = None,
     after: Annotated[list[int] | None, Query()] = None,
     types: Annotated[list[str] | None, Query()] = None,
-    deltas: Annotated[list[str] | None, Query(max_length=MAX_RUNS)] = None,
+    deltas: Runs = None,
     last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
 ) -> AsyncIterator[ServerSentEvent]:
     """Subscribe with `runs` (run list and runner changes), `run` with `after` (that run's
@@ -119,8 +138,6 @@ async def stream(
     message's `event` is its `kind`."""
     run = run or []
     after = after or []
-    if len(after) > len(run):
-        raise ProblemException(422, "Invalid request", "one `after` per `run`")
     cursors = {r: (after[i] if i < len(after) else -1) for i, r in enumerate(run)}
     version: int | None = state.changes.version if runs or run else None
     if last_event_id:

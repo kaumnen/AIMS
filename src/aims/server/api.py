@@ -340,6 +340,25 @@ async def list_runs(
     return RunPage(items=items, next=ids[-1] if len(ids) == limit else None)
 
 
+# Runs whose content shows a run's truth: a score names the plants, where each was taken and
+# the facts the classifier was told. Viewers see them listed, not opened.
+TRUTH_KINDS = ("score",)
+
+
+async def _shown(state: ServerState, principal: Principal, run_id: str) -> None:
+    """Raises 403 when a viewer asks for what a run of `TRUTH_KINDS` holds."""
+    if principal.role != "viewer":
+        return
+    info = await state.store.run(run_id)
+    if info is not None and info.kind in TRUTH_KINDS:
+        raise ProblemException(
+            403,
+            "Forbidden",
+            f"a {info.kind} run shows the truth of the run it scores; this needs the operator role",
+            code="truth",
+        )
+
+
 @router.get("/runs/{run_id}/truth", tags=["runs"], responses=responses(404))
 async def get_truth(run_id: str, principal: Operator, state: State) -> dict[str, JsonValue]:
     """The truth file of a sealed run: the plants, canaries, roles, scripts and variant it hid
@@ -369,6 +388,7 @@ class RunDetail(Out):
 
 @router.get("/runs/{run_id}", tags=["runs"], responses=responses(404))
 async def get_run(run_id: str, principal: Viewer, state: State) -> RunDetail:
+    await _shown(state, principal, _run_id(run_id))
     (found,) = await summaries(state, [_run_id(run_id)]) or [None]
     if found is None:
         raise ProblemException(404, "Not found", f"no run {run_id}")
@@ -804,6 +824,7 @@ async def list_events(
     """One page in seq order. With only `before`, the page is the events just before it and
     `next` pages further back. `exec` keeps the events of those execs: their start and end and
     every kernel record, spill and snapshot that names them."""
+    await _shown(state, principal, _run_id(run_id))
     items = await state.store.events(
         _run_id(run_id),
         after=after,
@@ -823,6 +844,7 @@ async def list_events(
 
 @router.get("/runs/{run_id}/events/{seq}", tags=["events"], responses=responses(404))
 async def get_event(run_id: str, seq: int, principal: Viewer, state: State) -> Event:
+    await _shown(state, principal, _run_id(run_id))
     items = await state.store.events(_run_id(run_id), after=seq - 1, limit=1)
     if not items or items[0].seq != seq:
         raise ProblemException(404, "Not found", f"run {run_id} has no event {seq}")
@@ -837,8 +859,10 @@ async def search_events(
     before: int | None = None,
     limit: Annotated[int, Query(ge=1, le=MAX_PAGE)] = 100,
 ) -> EventPage:
-    """Events of every run whose text holds `q`, newest first."""
-    items, cursor = await state.store.search(q, limit=limit, before=before)
+    """Events of every run whose text holds `q`, newest first; a viewer's leave out the runs
+    that show a run's truth."""
+    skip = TRUTH_KINDS if principal.role == "viewer" else ()
+    items, cursor = await state.store.search(q, limit=limit, before=before, skip_kinds=skip)
     return EventPage(items=items, next=None if cursor is None else str(cursor))
 
 
@@ -917,6 +941,7 @@ async def get_blob(
     if_none_match: Annotated[str | None, Header()] = None,
 ) -> Response:
     """A blob's bytes, never rendered: always an attachment of type octet-stream."""
+    await _shown(state, principal, _run_id(run_id))
     try:
         path = state.store.blob_path(_run_id(run_id), sha256)
     except KeyError, BlobError:

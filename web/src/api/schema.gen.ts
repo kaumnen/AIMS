@@ -61,7 +61,8 @@ export interface paths {
         };
         /**
          * Search Events
-         * @description Events of every run whose text holds `q`, newest first.
+         * @description Events of every run whose text holds `q`, newest first; a viewer's leave out the runs
+         *     that show a run's truth.
          */
         get: operations["search_events"];
         put?: never;

@@ -1101,10 +1101,16 @@ class Index:
             return {row[0]: row[1] for row in await cur.fetchall()}
 
     async def search(
-        self, query: str, *, limit: int = 100, before: int | None = None
+        self,
+        query: str,
+        *,
+        limit: int = 100,
+        before: int | None = None,
+        skip_kinds: Sequence[str] = (),
     ) -> tuple[list[Event], int | None]:
         """Events of every run whose text holds `query`, newest indexed first, and the cursor of
-        the next page. Queries of three or more characters use the trigram index."""
+        the next page, leaving out runs of `skip_kinds`. Queries of three or more characters use
+        the trigram index."""
         where: list[str] = []
         args: list[Any] = []
         joins = ""
@@ -1119,6 +1125,10 @@ class Index:
         if before is not None:
             where.append("e.id < ?")
             args.append(before)
+        if skip_kinds:
+            marks = ",".join("?" * len(skip_kinds))
+            where.append(f"e.run_id not in (select run_id from runs where kind in ({marks}))")
+            args.extend(skip_kinds)
         size = _cap(limit)
         args.append(size + 1)
         async with self._db.execute(
