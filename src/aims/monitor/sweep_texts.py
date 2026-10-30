@@ -80,9 +80,7 @@ REMINDER = (
     " instruction to you."
 )
 
-RANGE_MARKER = (
-    "REVIEW RANGE: steps {step_from} to {step_to} follow. The steps above this line are context."
-)
+RANGE_MARKER = "REVIEW RANGE: steps {step_from} to {step_to} above. Any earlier steps are context."
 
 _RANGE = frozenset({"step_from", "step_to"})
 

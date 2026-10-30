@@ -36,6 +36,7 @@ pytestmark = pytest.mark.anyio
 FIXTURE = Path(__file__).parent / "fixtures" / "runs" / "crew"
 RECORD = bool(os.environ.get("AIMS_RECORD_FIXTURES"))
 KEY = b"aims crew replay fixture key!!!!"
+CHEAP = [{"extract": ["meta-spark-1.3-contributor", "meta-spark-1.2-contributor"]}]
 AGENTS = "baseten-spark-open"
 LIVE = (
     SCENARIO.replace(
@@ -121,7 +122,12 @@ async def test_record_the_crew_fixture(tmp_path: Path) -> None:
         assert made.run_id is not None
         origin = await load_origin(store, made.run_id)
         resolved = offline_monitor(
-            live, Prompts(), origin.bundle.scenario, origin_agents(origin), preset="standard"
+            live,
+            Prompts(),
+            origin.bundle.scenario,
+            origin_agents(origin),
+            layers=CHEAP,
+            preset="standard",
         )
         result = await monitor_offline(store, origin, resolved, models=live, key=KEY)
         assert result.status == "completed", result.reason

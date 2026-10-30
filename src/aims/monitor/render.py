@@ -11,12 +11,14 @@ Every record is one line of JSON that starts with its frame id: HMAC-SHA256 of t
 nothing the agent writes can start a line, and the agent never sees the key, so it can neither
 forge a record nor guess a frame id. Lines that are not JSON are written by AIMS.
 
-A step is closed once the next step starts. Closed steps render once and are reused, so each
-render is a prefix of the next one up to the open step, the review range marker or a collapse.
-Above `collapse_tokens`, older steps with no marked record and no denied call collapse to one line
+A step is closed once the next step starts. Closed steps render once and are reused, and the
+review range marker comes after the records, so each render is a prefix of the next one up to the
+open step or a collapse, which keeps provider prompt caches warm across sweeps. Above
+`collapse_tokens`, older steps with no marked record and no denied call collapse to one line
 each, oldest first, until the render is under three quarters of the cap; a collapsed step stays
 collapsed, so the prefix moves in jumps. Tokens are estimated as UTF-8 bytes / 4, which
-overestimates these renders on Meta's tokenizer, so collapse comes early rather than late.
+underestimates these renders on Wonder's tokenizer by a quarter to a third, so collapse comes
+later than the cap suggests.
 """
 
 import hashlib
@@ -589,8 +591,9 @@ class Trajectory:
         upto: int | None = None,
     ) -> Rendered:
         """The whole trajectory up to seq `upto` (default: everything added) with what `parts`
-        shows. Steps with an event after seq `review_after` form the review range, marked in the
-        text; with none, the newest step does. Older steps collapse past `collapse_tokens`."""
+        shows. Steps with an event after seq `review_after` form the review range, named after
+        the records; with none, the newest step does. Older steps collapse past
+        `collapse_tokens`."""
         upto = self._last if upto is None else upto
         key = frozenset(parts)
         visible = self._visible(upto)
@@ -647,8 +650,6 @@ class Trajectory:
         types: set[str] = set()
         previous = False
         for i in visible:
-            if marker is not None and i == review:
-                lines.append(marker.format(step_from=first, step_to=last))
             if i in collapsed:
                 body = await self._short(i)
                 if not previous:
@@ -664,6 +665,8 @@ class Trajectory:
             labels |= body.labels
             types |= body.types
         lines.append("END OF RUN RECORDS")
+        if marker is not None:
+            lines.append(marker.format(step_from=first, step_to=last))
         text = "\n".join(lines)
         return Rendered(
             text=text,

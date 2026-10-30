@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import itertools
 import json
+import logging
 from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
 from typing import Any, cast
@@ -44,6 +45,7 @@ from aims.monitor.config import (
     merge,
 )
 from aims.monitor.core import Monitor
+from aims.monitor.offline import offline_monitor
 from aims.monitor.render import Trajectory, frame
 from aims.monitor.setup import ResolvedMonitor, resolve_monitor
 from aims.monitor.sweep import Sweeper, SweepResult
@@ -547,6 +549,31 @@ def test_the_extractor_is_the_first_candidate_no_agent_runs(
     assert again.channels == resolved.channels
 
 
+@pytest.mark.parametrize(
+    ("extract", "agent", "warned"),
+    [
+        (["meta-spark-1.2-contributor"], "meta/muse-spark-open", False),
+        (["meta-spark-1.2-contributor", "meta-spark-1.3-contributor"], "meta/muse-spark-1.2", True),
+        (["meta-spark-1.2-contributor"], "meta/muse-spark-1.2", True),
+        (["no-such-profile"], "meta/muse-spark-open", True),
+    ],
+)
+def test_a_skipped_first_extractor_is_warned(
+    extract: list[str], agent: str, warned: bool, caplog: pytest.LogCaptureFixture
+) -> None:
+    wonder = named("wonder", "meta/muse-wonder-1.0")
+    twelve = named("meta-spark-1.2-contributor", "meta/muse-spark-1.2")
+    thirteen = named("meta-spark-1.3-contributor", "meta/muse-spark-1.3")
+    runs = [named("agent", agent)]
+    cfg = config_of(*runs, wonder, twelve, thirteen)
+    with caplog.at_level(logging.WARNING, logger="aims.monitor"):
+        resolve_monitor(cfg, Prompts(), parse(SCENARIO), runs, layers=[{"extract": extract}])
+    found = [r.getMessage() for r in caplog.records if "monitor extract" in r.getMessage()]
+    assert bool(found) == warned
+    if warned:
+        assert extract[0] in found[0]
+
+
 def test_an_extractor_changes_the_monitor_identity() -> None:
     wonder = named("wonder", "meta/muse-wonder-1.0")
     twelve = named("meta-spark-1.2-contributor", "meta/muse-spark-1.2")
@@ -561,6 +588,17 @@ def test_an_extractor_changes_the_monitor_identity() -> None:
     assert off is not None
     assert off.extract is None
     assert on.identity != off.identity
+    thirteen = named("meta-spark-1.3-contributor", "meta/muse-spark-1.3")
+    models = config_of(agent, wonder, twelve, thirteen)
+    both = [{"extract": ["meta-spark-1.2-contributor", "meta-spark-1.3-contributor"]}]
+    first, second = (
+        offline_monitor(models, Prompts(), scenario, [named("a", w)], layers=both)
+        for w in ("meta/muse-spark-open", "meta/muse-spark-1.2")
+    )
+    assert first.extract is not None
+    assert second.extract is not None
+    assert first.extract.name != second.extract.name
+    assert first.identity != second.identity
 
 
 def test_a_run_without_channels_has_no_channel_sweep() -> None:
@@ -680,7 +718,7 @@ async def test_a_lead_makes_the_whole_trajectory_the_review_range(store: LocalEv
     first, deep = bodies
     assert "LEAD: a channel finding" not in first
     assert deep.endswith("LEAD: a channel finding")
-    assert "REVIEW RANGE: steps 0 to 2 follow" in deep
+    assert "REVIEW RANGE: steps 0 to 2 above" in deep
 
 
 # An agent's own shared folder changes.

@@ -1,5 +1,6 @@
 """The monitor of one run, resolved from the config layers, the scenario and the flags."""
 
+import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -22,6 +23,8 @@ from aims.monitor.config import (
 from aims.monitor.texts import MonitorTexts, resolve
 from aims.prompts import Prompts
 from aims.scenario import Scenario
+
+log = logging.getLogger("aims.monitor")
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,7 +209,16 @@ def resolve_monitor(
 def _extractor(
     models: ModelsConfig, config: MonitorConfig, agents: Sequence[Profile]
 ) -> Profile | None:
-    return extractor_for(models, config.extract, agents)
+    """The extractor, with a warning when the first candidate is unknown or shares weights
+    with an agent, since rows meant to share one extractor would then differ."""
+    chosen = extractor_for(models, config.extract, agents)
+    if config.extract and (chosen is None or chosen.name != config.extract[0]):
+        log.warning(
+            "monitor extract %s is unknown or an agent's model; sweeps extract with %s",
+            config.extract[0],
+            "the sweep model" if chosen is None else chosen.name,
+        )
+    return chosen
 
 
 def extractor_for(

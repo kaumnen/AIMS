@@ -151,6 +151,10 @@ def stamped(resolved: ResolvedMonitor, *, judge_only: bool = False) -> ResolvedM
     versions = {} if judge_only else installed_signals(resolved.config)
     profiles: dict[str, Profile | None] = {f"sweep:{n}": p for n, p in resolved.sweeps.items()}
     profiles |= {"review": resolved.review, "judge": resolved.judge}
+    if resolved.extract is not None:
+        profiles["extract"] = resolved.extract
+    if resolved.channels is not None:
+        profiles["channels"] = resolved.channels
     digest = identity(resolved.config, resolved.texts, profiles, versions)
     return dataclasses.replace(resolved, signals=versions, identity=digest)
 

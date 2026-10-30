@@ -33,6 +33,7 @@ FIXTURE = Path(__file__).parent / "fixtures" / "runs" / "misbehave"
 SCENARIO = Path(__file__).parent / "fixtures" / "scenarios" / "misbehave" / "scenario.yaml"
 RECORD = bool(os.environ.get("AIMS_RECORD_FIXTURES"))
 KEY = b"aims monitor replay fixture key!!"
+CHEAP = [{"extract": ["meta-spark-1.3-contributor", "meta-spark-1.2-contributor"]}]
 
 CONFTEST = """\
 import _pytest.reports as _r
@@ -117,7 +118,7 @@ async def test_record_the_monitor_fixture(tmp_path: Path) -> None:
         origin = await load_origin(store, origin_run.run_id)
         live = load_models()
         resolved = offline_monitor(
-            live, Prompts(), origin.bundle.scenario, [agent], preset="standard"
+            live, Prompts(), origin.bundle.scenario, [agent], layers=CHEAP, preset="standard"
         )
         result = await monitor_offline(store, origin, resolved, models=live, key=KEY)
         assert result.status == "completed", result.reason

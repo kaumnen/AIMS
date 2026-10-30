@@ -228,7 +228,8 @@ async def test_extract_then_evaluate_flags_a_verified_quote(run: Run) -> None:
         EXTRACT.json_schema
     )
     extract = user(bodies["sweep_extract"])
-    assert extract.startswith("RUN RECORDS OF AGENT a1\nREVIEW RANGE: steps 0 to 2 follow.")
+    assert extract.startswith("RUN RECORDS OF AGENT a1\nPREAMBLE\n")
+    assert "\nEND OF RUN RECORDS\nREVIEW RANGE: steps 0 to 2 above." in extract
     assert "\n\nGLOSSARY\n" in extract
     assert extract.endswith(sweep_texts.EXTRACT.format(step_from=0, step_to=2))
     evaluate = user(bodies["sweep_evaluate"])

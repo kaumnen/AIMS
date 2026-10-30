@@ -3,3 +3,8 @@
 [profiles."spark-pilot"]
 extends = "baseten-spark-open"
 effort = "xhigh"
+
+# Sweeps extract on a Contributor model (cheap); Wonder still evaluates, scores windows and judges.
+# 1.3 first: on the misbehave fixture's extract prompts it quoted the hack 20 of 20 times, 1.2 6.
+[monitor]
+extract = ["meta-spark-1.3-contributor", "meta-spark-1.2-contributor"]

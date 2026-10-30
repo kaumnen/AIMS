@@ -471,7 +471,7 @@ async def test_a_closed_step_renders_as_a_stable_prefix(tmp_path: Path) -> None:
         assert after.text.startswith(stable)
 
 
-async def test_the_review_range_is_marked_before_the_first_unreviewed_step(run: Run) -> None:
+async def test_the_review_range_is_named_after_the_records(run: Run) -> None:
     await run.preamble()
     for n in range(1, 4):
         await run.step(n)
@@ -479,14 +479,28 @@ async def test_the_review_range_is_marked_before_the_first_unreviewed_step(run: 
     await run.step(4)
     await run.step(5)
     r = await run.trajectory.render(FULL, texts=TEXTS, review_after=reviewed)
-    marker = "REVIEW RANGE: steps 4 to 5 follow. The steps above this line are context."
-    text = lines(r)
-    assert text.index(marker) == text.index(next(x for x in text if x.startswith("STEP 4"))) - 1
+    marker = "REVIEW RANGE: steps 4 to 5 above. Any earlier steps are context."
+    assert lines(r)[-2:] == ["END OF RUN RECORDS", marker]
     assert (r.step_from, r.step_to) == (4, 5)
     stale = await run.trajectory.render(FULL, texts=TEXTS, review_after=run.events[-1].seq)
     assert (stale.step_from, stale.step_to) == (5, 5)
     first = await run.trajectory.render(FULL, texts=TEXTS, review_after=-1)
-    assert lines(first)[1].startswith("REVIEW RANGE: steps 0 to 5")
+    assert lines(first)[-1].startswith("REVIEW RANGE: steps 0 to 5")
+
+
+async def test_each_review_extends_the_last_one_up_to_its_open_step(run: Run) -> None:
+    await run.preamble()
+    renders: list[Rendered] = []
+    reviewed = -1
+    for n in range(1, 13):
+        await run.step(n, command=f"echo {n}")
+        if n % 3 == 0:
+            r = await run.trajectory.render(FULL, texts=TEXTS, review_after=reviewed)
+            renders.append(r)
+            reviewed = r.seq_to
+    for before, after in itertools.pairwise(renders):
+        stable = before.text[: before.text.rindex("\nSTEP ")]
+        assert after.text.startswith(stable)
 
 
 async def test_older_steps_collapse_past_the_cap(run: Run) -> None:
