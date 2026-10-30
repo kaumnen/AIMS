@@ -377,13 +377,14 @@ async def get_truth(run_id: str, principal: Operator, state: State) -> dict[str,
 
 class RunDetail(Out):
     """`verdict` is the judge's `monitor.verdict`; `monitor_runs` are the monitor runs over this
-    run, queued ones too, newest first."""
+    run and `score_runs` the scores of it, queued ones too, newest first."""
 
     run: RunSummary
     started: Event | None = None
     finished: Event | None = None
     verdict: Event | None = None
     monitor_runs: list[str] = Field(default_factory=list)
+    score_runs: list[str] = Field(default_factory=list)
 
 
 @router.get("/runs/{run_id}", tags=["runs"], responses=responses(404))
@@ -397,16 +398,21 @@ async def get_run(run_id: str, principal: Viewer, state: State) -> RunDetail:
     verdict = await state.store.events(
         run_id, types=["monitor.verdict"], before=found.events, limit=1
     )
-    watched = await state.store.runs(origin=run_id, kind="monitor", limit=MAX_PAGE)
-    queued = await state.db.jobs_page(before=None, limit=MAX_PAGE, kind="monitor", origin=run_id)
-    monitors = sorted({r.run_id for r in watched} | {j.run_id for j in queued}, reverse=True)
     return RunDetail(
         run=found,
         started=first[0] if first else None,
         finished=next(iter(last), None),
         verdict=next(iter(verdict), None),
-        monitor_runs=monitors,
+        monitor_runs=await _over(state, run_id, "monitor"),
+        score_runs=await _over(state, run_id, "score"),
     )
+
+
+async def _over(state: ServerState, run_id: str, kind: Literal["monitor", "score"]) -> list[str]:
+    """The runs of `kind` over run `run_id`, queued ones too, newest first."""
+    done = await state.store.runs(origin=run_id, kind=kind, limit=MAX_PAGE)
+    queued = await state.db.jobs_page(before=None, limit=MAX_PAGE, kind=kind, origin=run_id)
+    return sorted({r.run_id for r in done} | {j.run_id for j in queued}, reverse=True)
 
 
 class ScenarioRef(BaseModel):

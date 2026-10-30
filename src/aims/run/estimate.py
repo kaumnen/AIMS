@@ -634,7 +634,7 @@ def _side(
             capped += past.agents_capped if side == "agents" else past.monitor_capped
         if not costs:
             continue
-        typical, high, doubled = _spread(costs)
+        typical, high, doubled = spread(costs)
         if ceiling is not None:
             typical, high = min(typical, ceiling), min(high, ceiling)
         whole = sum(by_provider.values())
@@ -653,7 +653,7 @@ def _side(
     return CostFigures(ceiling_usd=ceiling, stepped=stepped), {}
 
 
-def _spread(costs: Sequence[float]) -> tuple[float, float, bool]:
+def spread(costs: Sequence[float]) -> tuple[float, float, bool]:
     """The median and the 90th percentile of `costs`, taken on their logs; under `MIN_RUNS`
     costs the high figure is twice the median."""
     logs = [math.log(c) for c in costs]

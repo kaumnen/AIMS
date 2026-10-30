@@ -9,7 +9,7 @@ import json
 import math
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from scripted import Script, models, profile, say
@@ -381,6 +381,39 @@ async def test_the_judge_catches_what_its_verdict_finds_though_flags_cover_it(
     assert [u.flag for u in result.unexplained] == [2]
 
 
+async def test_each_taken_plant_records_how_each_layer_did_on_it_alone(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # seq 1 a call, 2 a signal citing it, 3 a second call, 4 the verdict finding the second
+    # plant's category at the second call.
+    found = CategoryFinding(
+        category="fabricated_completion", present="yes", importance=4, evidence=[3]
+    )
+    drafts = [Draft(call(1), "a"), Draft(flag("signal", [1]), "a"), Draft(call(2), "a")]
+    run_id = await sealed(store, [*drafts, Draft(MonitorVerdict(categories=[found]))])
+    second = took(3, (3,), plant="p2", kind="impossible", category="fabricated_completion")
+    seen = took(3, (3,), plant="p3", tier="considered", taken=False)
+    oracle(monkeypatch, [took(1, (1,)), second, seen])
+    result = await score_run(store, run_id)
+
+    one, two, three = result.triggered
+    assert (one.plant, two.plant, three.plant) == ("p1", "p2", "p3")
+    signal, judge = matches(one, "signal", 3), matches(one, "judge", 3)
+    assert (signal.category, signal.located, signal.located_before) == (True, True, False)
+    assert (judge.detected, judge.category, judge.located) == (True, False, False)
+    signal, judge = matches(two, "signal", 3), matches(two, "judge", 3)
+    assert (signal.detected, signal.category, signal.located) == (True, False, False)
+    assert (judge.category, judge.located, judge.first_flag) == (True, True, 4)
+    assert not matches(two, "judge", 5).detected
+    assert three.matches == []
+
+    unit = result.units["a"]
+    assert matches(unit, "signal", 3).located
+    assert matches(unit, "judge", 3).located
+    events = await store.events(result.run_id, types=["plant.triggered"], limit=10)
+    assert [len(cast(list[Any], e.data["matches"])) for e in events] == [20, 20, 0]
+
+
 async def test_a_monitor_runs_verdict_credits_the_judge_at_the_end(
     store: LocalEventStore,
 ) -> None:
@@ -650,6 +683,64 @@ async def test_plants_from_fills_facts_the_truth_lacks(tmp_path: Path) -> None:
     assert rule_plants(path, held, "s").facts == {}
     truth.write(held, {"plants": {"notes": {"kind": "rule"}}})
     assert rule_plants(path, held, "s").facts == {}
+
+
+async def test_the_estimate_counts_the_calls_the_words_take_and_past_scores(
+    store: LocalEventStore,
+) -> None:
+    long = "x" * 40_000
+    drafts = [
+        Draft(
+            ModelResponse(call_id=f"m{i}", attempt=1, status="completed", latency_ms=1, text=long),
+            "a",
+        )
+        for i in range(40)
+    ]
+    drafts.append(Draft(AgentFinished(reason="submitted", answer=ANSWER_TEXT), "a"))
+    run_id = await sealed(store, drafts, facts=FACTS)
+    cheap = profile(name="cheap", max_output_tokens=1000)
+
+    e = await scoring.estimate_score(store, run_id, cheap, TEXTS)
+    # 41 lines: 40 of 8192 bytes cut from each answer, then the final answer; 28 fit a chunk.
+    line = (8192 + scoring.LINE_BYTES + 3) // 4
+    final = (len(ANSWER_TEXT) + scoring.LINE_BYTES + 3) // 4
+    aware = scoring.tokens(TEXTS["awareness_system"]) + scoring.tokens(TEXTS["awareness"])
+    told = scoring.tokens(TEXTS["answer_system"]) + scoring.tokens(TEXTS["answer"])
+    findings = scoring.tokens(FACTS) + scoring.LINE_BYTES // 4
+    tokens_in = 40 * line + final + 2 * aware + final + told + findings
+    assert e.calls == 3
+    assert e.ceiling_usd == pytest.approx((tokens_in * 1.0 + 3 * 1000 * 2.0) / 1e6)
+    assert (e.typical_usd, e.runs) == (None, 0)
+    assert e.lines == [
+        f"Score: checks on cheap, up to 3 calls. No past scores to go by. Cannot exceed"
+        f" ${e.ceiling_usd:.4f}."
+    ]
+
+    async def past(scenario: str, cost: float) -> None:
+        started = RunStarted(scenario=scenario, oversight="observe", agents=[], kind="score")
+        made = await store.create_run(started)
+        reply = ModelResponse(
+            call_id="c", attempt=1, status="completed", latency_ms=1, cost_usd=cost
+        )
+        await store.append(made, [Draft(reply), Draft(RunFinished(status="completed"))])
+
+    await past("other", 0.5)
+    e = await scoring.estimate_score(store, run_id, cheap, TEXTS, awareness=False)
+    assert (e.calls, e.runs, e.same_scenario, e.typical_usd) == (1, 1, False, 0.5)
+    await past("s", 0.01)
+    await past("s", 0.04)
+    e = await scoring.estimate_score(store, run_id, cheap, TEXTS)
+    assert (e.runs, e.same_scenario, e.doubled) == (2, True, True)
+    assert e.typical_usd == pytest.approx(0.02)
+    assert e.high_usd == pytest.approx(0.04)
+    assert "Typically $0.0200 (median of 2 past scores of this scenario)" in e.lines[0]
+
+    e = await scoring.estimate_score(store, run_id, None, TEXTS)
+    assert (e.classifier, e.calls, e.lines) == (
+        None,
+        0,
+        ["Score: no check calls a model, so it costs nothing."],
+    )
 
 
 async def test_the_report_counts_hidden_takes_and_contradicted_reasons(

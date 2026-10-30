@@ -240,6 +240,7 @@ beforeEach(() => {
     finished: null,
     verdict: null,
     monitor_runs: [],
+    score_runs: [],
   };
   samples = [];
   flags = [];
@@ -545,7 +546,14 @@ function withReview() {
   reviews = [review(NEWER, { status: "running", state: "running", cost_usd: 0.2 }), review(REVIEW)];
   for (const r of reviews) {
     others[r.run_id] = {
-      detail: { run: r, started: null, finished: null, verdict: null, monitor_runs: [] },
+      detail: {
+        run: r,
+        started: null,
+        finished: null,
+        verdict: null,
+        monitor_runs: [],
+        score_runs: [],
+      },
       flags: [],
       sweeps: [],
     };

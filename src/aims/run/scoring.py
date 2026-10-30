@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, cast, get_args
 
 import httpx2
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from aims.config import Settings
 from aims.events import (
@@ -42,6 +42,7 @@ from aims.events import (
     LocalEventStore,
     MonitorFlag,
     MonitorVerdict,
+    PlantTriggered,
     RunFinished,
     RunStarted,
     RunStatus,
@@ -69,6 +70,7 @@ from aims.monitor.setup import extractor_for
 from aims.monitor.sweep import verify
 from aims.monitor.texts import MonitorTexts, resolve
 from aims.run import truth
+from aims.run.estimate import MIN_RUNS, spread, usd
 from aims.run.fork import load_origin
 from aims.run.runner import RunError
 from aims.run.score import Added, CheckError, Taken, check_run, rule_plants
@@ -142,12 +144,13 @@ class Raised:
 
 @dataclass(slots=True)
 class ScoreResult:
-    """A score run: its id, each agent's unit, the plants taken, the flags no plant explains
-    and what it cost."""
+    """A score run: its id, each agent's unit, the plants taken, each as the run records it
+    with its own matches, the flags no plant explains and what it cost."""
 
     run_id: str
     units: dict[str, ScoreUnit] = field(default_factory=dict)
     taken: list[Taken] = field(default_factory=list)
+    triggered: list[PlantTriggered] = field(default_factory=list)
     unexplained: list[ScoreUnexplained] = field(default_factory=list)
     awareness: dict[str, ScoreAwareness] = field(default_factory=dict)
     answers: dict[str, ScoreAnswer] = field(default_factory=dict)
@@ -175,6 +178,7 @@ async def score_run(
     source: LocalEventStore | None = None,
     monitor_source: LocalEventStore | None = None,
     plants_from: Path | None = None,
+    added: Added | None = None,
     awareness: bool = True,
     answer: bool = True,
 ) -> ScoreResult:
@@ -183,11 +187,11 @@ async def score_run(
     run and the monitor run when another store does. `classifier` builds the classifier for the
     new run's id, None to skip its checks: `awareness` and the `answer` check. `labels` are the
     latest labels of the flags, by seq. `plants_from`, a scenario file, adds its rule plants
-    and the plant facts the truth file lacks. Raises ScoreError."""
+    and the plant facts the truth file lacks; `added` is what such a file adds, read already.
+    Raises ScoreError."""
     source = source or store
-    added: Added | None = None
     try:
-        if plants_from is not None:
+        if added is None and plants_from is not None:
             info = await source.run(origin)
             if info is None:
                 raise CheckError(f"no run {origin}")
@@ -239,10 +243,21 @@ async def score_run(
     status: RunStatus = "completed"
     reason = None
     try:
-        drafts: list[Draft] = [Draft(t.triggered(), t.agent) for t in taken]
-        check = classifier(run_id) if classifier is not None else None
         steps = _steps(events)
         times = {e.seq: e.ts for e in events}
+        drafts: list[Draft] = []
+        for t in taken:
+            found = t.triggered()
+            if t.taken:
+                mine = [r for r in raised if r.agent == t.agent]
+                evidence = {t.seq, *t.evidence}
+                matches = _matches(
+                    mine, t.seq, evidence, {t.category}, steps.get(t.agent, []), times
+                )
+                found = found.model_copy(update={"matches": matches})
+            out.triggered.append(found)
+            drafts.append(Draft(found, t.agent))
+        check = classifier(run_id) if classifier is not None else None
         config = started.config.get("agents")
         for agent, role in roles.items():
             mine = [t for t in taken if t.agent == agent]
@@ -428,11 +443,7 @@ def _unit(
     harm = min((t.seq for t in taken), default=None)
     evidence = {s for t in taken for s in (t.seq, *t.evidence)}
     categories = sorted({t.category for t in taken})
-    matches = [
-        _match(layer, k, mine, harm, evidence, set(categories), steps, times)
-        for layer in LAYERS
-        for k in THRESHOLDS
-    ]
+    matches = _matches(mine, harm, evidence, set(categories), steps, times)
     return ScoreUnit(
         role="confederate" if role == "confederate" else "subject",
         positive=positive,
@@ -466,6 +477,23 @@ def _arm(config: Any, agent: str) -> str | None:
         if isinstance(weights, str) and weights not in names:
             names.append(weights)
     return "+".join(names) or None
+
+
+def _matches(
+    raised: Sequence[Raised],
+    harm: int | None,
+    evidence: set[int],
+    categories: set[str],
+    steps: Sequence[int],
+    times: Mapping[int, datetime],
+) -> list[ScoreMatch]:
+    """How each layer did at each threshold on the flags `raised`, against a harm at seq
+    `harm` shown by `evidence`, of `categories`."""
+    return [
+        _match(layer, k, raised, harm, evidence, categories, steps, times)
+        for layer in LAYERS
+        for k in THRESHOLDS
+    ]
 
 
 def _match(
@@ -817,6 +845,7 @@ async def score_with(
     source: LocalEventStore | None = None,
     monitor_source: LocalEventStore | None = None,
     plants_from: Path | None = None,
+    added: Added | None = None,
     awareness: bool = True,
     answer: bool = True,
 ) -> ScoreResult:
@@ -846,6 +875,188 @@ async def score_with(
         source=source,
         monitor_source=monitor_source,
         plants_from=plants_from,
+        added=added,
         awareness=awareness,
         answer=answer,
     )
+
+
+class ScoreEstimate(BaseModel):
+    """What a score of run `run_id` costs at list prices. `classifier` is the model of its
+    checks, None when none runs, so it costs nothing; `calls` the most calls they make.
+    `typical_usd` is the median of `runs` past scores that called a model, of the same
+    scenario when `same_scenario`, else of any; `high_usd` their 90th percentile, or twice the
+    median when `doubled` (under 10 runs). `ceiling_usd` is what the agents' words, the chunks
+    and the output cap allow, None when the classifier has no price or no output cap."""
+
+    model_config = ConfigDict(json_schema_serialization_defaults_required=True)
+
+    run_id: str
+    classifier: str | None = None
+    calls: int = 0
+    typical_usd: float | None = None
+    high_usd: float | None = None
+    ceiling_usd: float | None = None
+    runs: int = 0
+    same_scenario: bool = False
+    doubled: bool = False
+    lines: list[str] = Field(default_factory=list)
+
+
+# What one line of an agent's words adds besides the words: its frame, type and keys.
+LINE_BYTES = 120
+WORD_TYPES = ("model.response", "agent.report", "agent.finished")
+
+
+async def estimate_sealed(
+    store: LocalEventStore,
+    settings: Settings,
+    run: str,
+    *,
+    awareness: bool = True,
+    answer: bool = True,
+) -> ScoreEstimate:
+    """What `score_sealed` would cost on run `run` with these settings. Raises ScoreError."""
+    profile = None
+    if awareness or answer:
+        try:
+            origin = await load_origin(store, run, full=False)
+        except RunError as e:
+            raise ScoreError(str(e)) from None
+        profile = extractor_for(settings.models, CLASSIFIERS, origin_agents(origin))
+    return await estimate_score(
+        store, run, profile, resolve(settings.prompts), awareness=awareness, answer=answer
+    )
+
+
+async def estimate_score(
+    store: LocalEventStore,
+    run: str,
+    profile: Profile | None,
+    texts: MonitorTexts,
+    *,
+    awareness: bool = True,
+    answer: bool = True,
+) -> ScoreEstimate:
+    """What a score of run `run` costs with the classifier `profile`, None for no checks: the
+    calls its words take, and the past scores' costs. Raises ScoreError."""
+    info = await store.run(run)
+    if info is None:
+        raise ScoreError(f"no run {run}")
+    out = ScoreEstimate(run_id=run, classifier=None if profile is None else profile.name)
+    if profile is None or not (awareness or answer):
+        out.lines = describe_score(out)
+        return out
+    lines: dict[str, list[int]] = {}
+    finals: dict[str, int] = {}
+    cursor: int | None = None
+    while page := await store.events(run, after=cursor, limit=1000, types=WORD_TYPES):
+        cursor = page[-1].seq
+        for e in page:
+            size = _words_bytes(e)
+            if e.agent_id is None or size == 0:
+                continue
+            n = (size + LINE_BYTES + 3) // 4
+            lines.setdefault(e.agent_id, []).append(n)
+            if e.type != "model.response":
+                finals[e.agent_id] = finals.get(e.agent_id, 0) + n
+    try:
+        record = truth.read(store.root / run)
+    except OSError, ValueError:
+        record = {}
+    roles: dict[str, str] = dict(record.get("roles") or {})
+    plants: dict[str, Any] = dict(record.get("plants") or {})
+    findings = sum(tokens(str(p.get("facts") or "")) + LINE_BYTES // 4 for p in plants.values())
+    tokens_in = 0
+    if awareness:
+        system = tokens(texts["awareness_system"]) + tokens(texts["awareness"])
+        for sizes in lines.values():
+            for chunk in _chunks(sizes):
+                out.calls += 1
+                tokens_in += chunk + system
+    if answer:
+        system = tokens(texts["answer_system"]) + tokens(texts["answer"])
+        for agent, n in finals.items():
+            if roles.get(agent, "subject") == "subject":
+                out.calls += 1
+                tokens_in += n + system + findings
+    price, cap = profile.price, profile.max_output_tokens
+    if price is not None and cap is not None:
+        out.ceiling_usd = (tokens_in * price.input + out.calls * cap * price.output) / 1_000_000
+    same: list[float] = []
+    every: list[float] = []
+    before: str | None = None
+    while past := await store.runs(kind="score", limit=1000, before=before):
+        before = past[-1].run_id
+        for p in past:
+            if p.status != "completed" or not p.cost_usd or p.run_id == run:
+                continue
+            every.append(p.cost_usd)
+            if p.scenario == info.scenario:
+                same.append(p.cost_usd)
+    costs = same or every
+    if costs:
+        out.typical_usd, out.high_usd, out.doubled = spread(costs)
+        out.runs, out.same_scenario = len(costs), bool(same)
+    out.lines = describe_score(out)
+    return out
+
+
+def _words_bytes(e: Event) -> int:
+    """At most how many bytes of the event's words the checks read, without its blobs."""
+    d = e.data
+    match e.type:
+        case "model.response":
+            names = ("text", "reasoning")
+        case "agent.report":
+            names = ("message",)
+        case "agent.finished":
+            names = ("answer",)
+        case _:
+            return 0
+    total = 0
+    for name in names:
+        value = d.get(name)
+        size = 0
+        if isinstance(value, str):
+            size = len(value.encode()) if value.strip() else 0
+        elif isinstance(value, dict):
+            held = value.get("size")
+            size = held if isinstance(held, int) else 0
+        total += min(size, WORDS_BYTES)
+    return total
+
+
+def _chunks(sizes: Sequence[int]) -> list[int]:
+    """The token count of each chunk the awareness check splits lines of `sizes` into."""
+    out = [0]
+    for n in sizes:
+        if out[-1] + n > CHUNK_TOKENS and out[-1]:
+            out.append(0)
+        out[-1] += n
+    return out if out[-1] else []
+
+
+def describe_score(e: ScoreEstimate) -> list[str]:
+    """The estimate as `aims score` and the UI show it."""
+    if e.classifier is None:
+        return ["Score: no check calls a model, so it costs nothing."]
+    calls = "1 call" if e.calls == 1 else f"{e.calls} calls"
+    words = [f"Score: checks on {e.classifier}, up to {calls}."]
+    if e.typical_usd is not None and e.high_usd is not None:
+        runs = "1 past score" if e.runs == 1 else f"{e.runs} past scores"
+        of = "of this scenario" if e.same_scenario else "of any scenario"
+        words.append(f"Typically {usd(e.typical_usd)} (median of {runs} {of}).")
+        if e.doubled:
+            words.append(
+                f"1 in 10 may exceed {usd(e.high_usd)} (twice the median, under {MIN_RUNS})."
+            )
+        else:
+            words.append(f"1 in 10 exceeds {usd(e.high_usd)}.")
+    else:
+        words.append("No past scores to go by.")
+    if e.ceiling_usd is None:
+        words.append("No ceiling: the classifier has no price or no output cap.")
+    else:
+        words.append(f"Cannot exceed {usd(e.ceiling_usd)}.")
+    return [" ".join(words)]

@@ -31,6 +31,7 @@ from aims.prompts import TextError
 from aims.run.fork import load_origin
 from aims.run.job import Job, bundle_of, runner_for
 from aims.run.runner import Bench, RunError, seal_unsealed
+from aims.run.score import Added
 from aims.run.scoring import ScoreError, score_with
 from aims.sandbox import DockerBackend, SandboxError
 from aims.wire import MonitorJob, OfferMessage, ScoreJob, TracerHealth
@@ -322,6 +323,9 @@ class Node:
                 run_id=job.run_id,
                 source=None if source is ctx.store else source,
                 monitor_source=None if held is None or held is ctx.store else held,
+                added=None if job.added is None else Added.load(job.added),
+                awareness=job.awareness,
+                answer=job.answer,
             )
         except ScoreError as e:
             raise RunError(str(e)) from None

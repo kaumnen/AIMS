@@ -54,6 +54,23 @@ class Added:
     plants: Mapping[str, Mapping[str, Any]]
     facts: Mapping[str, str] = field(default_factory=dict)
 
+    def dump(self) -> dict[str, Any]:
+        return {
+            "path": self.path,
+            "digest": self.digest,
+            "plants": {name: dict(raw) for name, raw in self.plants.items()},
+            "facts": dict(self.facts),
+        }
+
+    @classmethod
+    def load(cls, raw: Mapping[str, Any]) -> Added:
+        return cls(
+            path=str(raw["path"]),
+            digest=str(raw["digest"]),
+            plants=dict(raw.get("plants") or {}),
+            facts=dict(raw.get("facts") or {}),
+        )
+
 
 def rule_plants(path: Path, run_dir: Path, scenario: str) -> Added:
     """The rule plants of the scenario file at `path`, in the variant the run at `run_dir` ran,

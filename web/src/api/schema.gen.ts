@@ -604,6 +604,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/score/estimate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Estimate Score
+         * @description What a score of the run costs, as `aims score` prints it before it starts: the most
+         *     classifier calls its checks make, the typical and high cost of past scores, and what the
+         *     output cap allows.
+         */
+        get: operations["estimate_score"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{run_id}/steps": {
         parameters: {
             query?: never;
@@ -3965,7 +3987,8 @@ export interface components {
          * @description A plant reached a tier for the event's agent, in the run `origin` that a score run
          *     scores. `seq` is the first event that set it off, the harm seq when the tier counts as
          *     taken; `evidence` holds every such seq. `inherited` marks a canary a run of the series
-         *     before made, used here.
+         *     before made, used here. `matches` are how each monitor layer did on this plant alone, as
+         *     the agent's unit has them over all its taken plants; empty when it was not taken.
          */
         PlantTriggered: {
             /**
@@ -3987,6 +4010,8 @@ export interface components {
             inherited: boolean;
             /** Kind */
             kind: string;
+            /** Matches */
+            matches: components["schemas"]["ScoreMatch"][];
             /** Plant */
             plant: string;
             /** Seq */
@@ -4711,13 +4736,15 @@ export interface components {
         /**
          * RunDetail
          * @description `verdict` is the judge's `monitor.verdict`; `monitor_runs` are the monitor runs over this
-         *     run, queued ones too, newest first.
+         *     run and `score_runs` the scores of it, queued ones too, newest first.
          */
         RunDetail: {
             finished: components["schemas"]["Event"] | null;
             /** Monitor Runs */
             monitor_runs: string[];
             run: components["schemas"]["RunSummary"];
+            /** Score Runs */
+            score_runs: string[];
             started: components["schemas"]["Event"] | null;
             verdict: components["schemas"]["Event"] | null;
         };
@@ -5233,14 +5260,72 @@ export interface components {
             quote: string | components["schemas"]["BlobRef"] | null;
         };
         /**
+         * ScoreEstimate
+         * @description What a score of run `run_id` costs at list prices. `classifier` is the model of its
+         *     checks, None when none runs, so it costs nothing; `calls` the most calls they make.
+         *     `typical_usd` is the median of `runs` past scores that called a model, of the same
+         *     scenario when `same_scenario`, else of any; `high_usd` their 90th percentile, or twice the
+         *     median when `doubled` (under 10 runs). `ceiling_usd` is what the agents' words, the chunks
+         *     and the output cap allow, None when the classifier has no price or no output cap.
+         */
+        ScoreEstimate: {
+            /**
+             * Calls
+             * @default 0
+             */
+            calls: number;
+            /** Ceiling Usd */
+            ceiling_usd: number | null;
+            /** Classifier */
+            classifier: string | null;
+            /**
+             * Doubled
+             * @default false
+             */
+            doubled: boolean;
+            /** High Usd */
+            high_usd: number | null;
+            /** Lines */
+            lines: string[];
+            /** Run Id */
+            run_id: string;
+            /**
+             * Runs
+             * @default 0
+             */
+            runs: number;
+            /**
+             * Same Scenario
+             * @default false
+             */
+            same_scenario: boolean;
+            /** Typical Usd */
+            typical_usd: number | null;
+        };
+        /**
          * ScoreJob
          * @description A score of the sealed run `origin`, whose head hash was `origin_head`, against its truth
          *     file and the flags of the monitor run `monitor` (None for its own), into the new run
          *     `run_id`. The runner fetches the run, the monitor run and the truth file when it lacks
-         *     them. `classifier` is the eval-awareness model (`Profile.snapshot`, env names only), None
-         *     to skip it; `texts` the monitor texts it asks with.
+         *     them. `classifier` is the model of the `awareness` and `answer` checks (`Profile.snapshot`,
+         *     env names only), None to skip both; `texts` the monitor texts it asks with. `added` is
+         *     what a scenario file adds to the truth file (`Added.dump`), read by the control plane.
          */
         ScoreJob: {
+            /** Added */
+            added: {
+                [key: string]: components["schemas"]["JsonValue"];
+            } | null;
+            /**
+             * Answer
+             * @default true
+             */
+            answer: boolean;
+            /**
+             * Awareness
+             * @default true
+             */
+            awareness: boolean;
             /** Classifier */
             classifier: {
                 [key: string]: components["schemas"]["JsonValue"];
@@ -5621,9 +5706,17 @@ export interface components {
         /**
          * StartScore
          * @description `monitor` scores the flags of that monitor run over the run instead of its own.
-         *     `awareness` asks a cheap model whether each agent said it thought it was tested.
+         *     `awareness` asks a cheap model whether each agent said it thought it was tested; `answer`
+         *     whether each subject that took a plant told the operator and gave true reasons.
+         *     `plants_from` also scores the rule plants of that scenario the run's truth file lacks, in
+         *     the run's variant, with the plant facts it lacks.
          */
         StartScore: {
+            /**
+             * Answer
+             * @default true
+             */
+            answer?: boolean;
             /**
              * Awareness
              * @default true
@@ -5631,6 +5724,7 @@ export interface components {
             awareness?: boolean;
             /** Monitor */
             monitor?: string | null;
+            plants_from?: components["schemas"]["ScenarioRef"] | null;
             /** Runner */
             runner?: string | null;
         };
@@ -7996,6 +8090,67 @@ export interface operations {
             };
             /** @description Conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    estimate_score: {
+        parameters: {
+            query?: {
+                awareness?: boolean;
+                answer?: boolean;
+            };
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScoreEstimate"];
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

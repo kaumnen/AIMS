@@ -1,6 +1,8 @@
 """Scoring on `/api`: queue a score of a sealed run, read the report over scored runs, and label
 monitor flags for review. The same code as `aims score`, `aims report` and `aims label`."""
 
+import asyncio
+import dataclasses
 import uuid
 from typing import Annotated
 
@@ -16,8 +18,18 @@ from aims.prompts import TextError
 from aims.run.fork import load_origin
 from aims.run.report import Report, gather
 from aims.run.runner import RunError
-from aims.run.scoring import CLASSIFIERS
-from aims.server.api import Operator, Started, State, Viewer, _queue, _run_id
+from aims.run.score import CheckError, rule_plants
+from aims.run.scoring import CLASSIFIERS, ScoreError, ScoreEstimate, estimate_sealed
+from aims.server.api import (
+    Operator,
+    ScenarioRef,
+    SourcesDep,
+    Started,
+    State,
+    Viewer,
+    _queue,
+    _run_id,
+)
 from aims.server.problems import ProblemException, responses
 from aims.wire import ScoreJob
 
@@ -26,15 +38,22 @@ router = APIRouter(prefix="/api", responses=responses(401, 403, 422))
 
 class StartScore(BaseModel):
     """`monitor` scores the flags of that monitor run over the run instead of its own.
-    `awareness` asks a cheap model whether each agent said it thought it was tested."""
+    `awareness` asks a cheap model whether each agent said it thought it was tested; `answer`
+    whether each subject that took a plant told the operator and gave true reasons.
+    `plants_from` also scores the rule plants of that scenario the run's truth file lacks, in
+    the run's variant, with the plant facts it lacks."""
 
     monitor: str | None = None
     awareness: bool = True
+    answer: bool = True
+    plants_from: ScenarioRef | None = None
     runner: str | None = None
 
 
 @router.post("/runs/{run_id}/score", status_code=202, tags=["score"], responses=responses(404, 409))
-async def score_run(run_id: str, body: StartScore, principal: Operator, state: State) -> Started:
+async def score_run(
+    run_id: str, body: StartScore, principal: Operator, state: State, sources: SourcesDep
+) -> Started:
     """Queue a score of a sealed run against its truth file. A runner fetches the run, its
     monitor run and its truth file, and writes the score to a new run of kind `score` whose
     `origin` is this run; the run itself never changes."""
@@ -59,11 +78,23 @@ async def score_run(run_id: str, body: StartScore, principal: Operator, state: S
             raise ProblemException(
                 422, "Invalid request", f"run {body.monitor} is not a monitor run of {run_id}"
             )
+    added = None
+    if body.plants_from is not None:
+        ref = body.plants_from
+        _, path = sources.scenario(ref.source, ref.name)
+        run_dir = state.store.truth_path(run_id).parent
+        try:
+            found = await asyncio.to_thread(
+                rule_plants, path / "scenario.yaml", run_dir, info.scenario
+            )
+        except CheckError as e:
+            raise ProblemException(422, "Cannot score", str(e), code="plants_from") from None
+        added = dataclasses.replace(found, path=f"{ref.source}/{ref.name}")
     settings = state.config.settings()
     try:
         origin = await load_origin(state.store, run_id, full=False)
         classifier = None
-        if body.awareness:
+        if body.awareness or body.answer:
             classifier = extractor_for(settings.models, CLASSIFIERS, origin_agents(origin))
         texts = resolve(settings.prompts)
     except (RunError, ProfileError, TextError) as e:
@@ -75,10 +106,35 @@ async def score_run(run_id: str, body: StartScore, principal: Operator, state: S
         scenario=info.scenario,
         monitor=body.monitor,
         classifier=None if classifier is None else classifier.snapshot(),
+        awareness=body.awareness,
+        answer=body.answer,
+        added=None if added is None else added.dump(),
         texts=texts.snapshot(),
         config_files=settings.layers.digests(),
     )
     return await _queue(state, principal, [job], runner=body.runner, parallel=None)
+
+
+@router.get("/runs/{run_id}/score/estimate", tags=["score"], responses=responses(404))
+async def estimate_score(
+    run_id: str,
+    principal: Operator,
+    state: State,
+    awareness: bool = True,
+    answer: bool = True,
+) -> ScoreEstimate:
+    """What a score of the run costs, as `aims score` prints it before it starts: the most
+    classifier calls its checks make, the typical and high cost of past scores, and what the
+    output cap allows."""
+    run_id = _run_id(run_id)
+    if await state.store.run(run_id) is None:
+        raise ProblemException(404, "Not found", f"no run {run_id}")
+    try:
+        return await estimate_sealed(
+            state.store, state.config.settings(), run_id, awareness=awareness, answer=answer
+        )
+    except (ScoreError, ProfileError, TextError) as e:
+        raise ProblemException(422, "Cannot estimate", str(e), code="estimate") from None
 
 
 @router.get("/report", tags=["score"])

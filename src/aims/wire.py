@@ -146,8 +146,9 @@ class ScoreJob(_Wire):
     """A score of the sealed run `origin`, whose head hash was `origin_head`, against its truth
     file and the flags of the monitor run `monitor` (None for its own), into the new run
     `run_id`. The runner fetches the run, the monitor run and the truth file when it lacks
-    them. `classifier` is the eval-awareness model (`Profile.snapshot`, env names only), None
-    to skip it; `texts` the monitor texts it asks with."""
+    them. `classifier` is the model of the `awareness` and `answer` checks (`Profile.snapshot`,
+    env names only), None to skip both; `texts` the monitor texts it asks with. `added` is
+    what a scenario file adds to the truth file (`Added.dump`), read by the control plane."""
 
     kind: Literal["score"] = "score"
     run_id: str
@@ -156,6 +157,9 @@ class ScoreJob(_Wire):
     scenario: str
     monitor: str | None = None
     classifier: dict[str, JsonValue] | None = None
+    awareness: bool = True
+    answer: bool = True
+    added: dict[str, JsonValue] | None = None
     texts: dict[str, JsonValue] = Field(default_factory=dict)
     options: JobOptions = Field(default_factory=JobOptions)
     config_files: dict[str, str | None] = Field(default_factory=dict)

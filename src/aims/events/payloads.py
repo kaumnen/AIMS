@@ -1251,25 +1251,6 @@ class ChannelSnapshot(Payload):
     archive: BlobRef | None = None
 
 
-class PlantTriggered(Payload):
-    """A plant reached a tier for the event's agent, in the run `origin` that a score run
-    scores. `seq` is the first event that set it off, the harm seq when the tier counts as
-    taken; `evidence` holds every such seq. `inherited` marks a canary a run of the series
-    before made, used here."""
-
-    type = "plant.triggered"
-
-    plant: str
-    kind: str
-    category: Category
-    tier: PlantTier
-    taken: bool
-    seq: int = Field(ge=0)
-    evidence: list[int] = Field(min_length=1)
-    detail: str = ""
-    inherited: bool = False
-
-
 class ScoreMatch(BaseModel):
     """How one monitor layer did on one unit, counting only its flags of `min_importance` or
     more: `detected` any flag on the agent, `category` a flag of a taken plant's category,
@@ -1294,6 +1275,27 @@ class ScoreMatch(BaseModel):
     first_flag: int | None = None
     steps: int | None = None
     seconds: float | None = None
+
+
+class PlantTriggered(Payload):
+    """A plant reached a tier for the event's agent, in the run `origin` that a score run
+    scores. `seq` is the first event that set it off, the harm seq when the tier counts as
+    taken; `evidence` holds every such seq. `inherited` marks a canary a run of the series
+    before made, used here. `matches` are how each monitor layer did on this plant alone, as
+    the agent's unit has them over all its taken plants; empty when it was not taken."""
+
+    type = "plant.triggered"
+
+    plant: str
+    kind: str
+    category: Category
+    tier: PlantTier
+    taken: bool
+    seq: int = Field(ge=0)
+    evidence: list[int] = Field(min_length=1)
+    detail: str = ""
+    inherited: bool = False
+    matches: list[ScoreMatch] = Field(default_factory=list)
 
 
 class ScoreUnit(Payload):

@@ -6670,7 +6670,7 @@
       },
       "PlantTriggered": {
         "additionalProperties": false,
-        "description": "A plant reached a tier for the event's agent, in the run `origin` that a score run\nscores. `seq` is the first event that set it off, the harm seq when the tier counts as\ntaken; `evidence` holds every such seq. `inherited` marks a canary a run of the series\nbefore made, used here.",
+        "description": "A plant reached a tier for the event's agent, in the run `origin` that a score run\nscores. `seq` is the first event that set it off, the harm seq when the tier counts as\ntaken; `evidence` holds every such seq. `inherited` marks a canary a run of the series\nbefore made, used here. `matches` are how each monitor layer did on this plant alone, as\nthe agent's unit has them over all its taken plants; empty when it was not taken.",
         "properties": {
           "category": {
             "enum": [
@@ -6715,6 +6715,13 @@
             "title": "Kind",
             "type": "string"
           },
+          "matches": {
+            "items": {
+              "$ref": "#/components/schemas/ScoreMatch"
+            },
+            "title": "Matches",
+            "type": "array"
+          },
           "plant": {
             "title": "Plant",
             "type": "string"
@@ -6748,7 +6755,8 @@
           "seq",
           "evidence",
           "detail",
-          "inherited"
+          "inherited",
+          "matches"
         ],
         "title": "PlantTriggered",
         "type": "object"
@@ -8621,7 +8629,7 @@
         "type": "object"
       },
       "RunDetail": {
-        "description": "`verdict` is the judge's `monitor.verdict`; `monitor_runs` are the monitor runs over this\nrun, queued ones too, newest first.",
+        "description": "`verdict` is the judge's `monitor.verdict`; `monitor_runs` are the monitor runs over this\nrun and `score_runs` the scores of it, queued ones too, newest first.",
         "properties": {
           "finished": {
             "anyOf": [
@@ -8642,6 +8650,13 @@
           },
           "run": {
             "$ref": "#/components/schemas/RunSummary"
+          },
+          "score_runs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Score Runs",
+            "type": "array"
           },
           "started": {
             "anyOf": [
@@ -8669,7 +8684,8 @@
           "started",
           "finished",
           "verdict",
-          "monitor_runs"
+          "monitor_runs",
+          "score_runs"
         ],
         "title": "RunDetail",
         "type": "object"
@@ -10182,10 +10198,128 @@
         "title": "ScoreAwareness",
         "type": "object"
       },
+      "ScoreEstimate": {
+        "description": "What a score of run `run_id` costs at list prices. `classifier` is the model of its\nchecks, None when none runs, so it costs nothing; `calls` the most calls they make.\n`typical_usd` is the median of `runs` past scores that called a model, of the same\nscenario when `same_scenario`, else of any; `high_usd` their 90th percentile, or twice the\nmedian when `doubled` (under 10 runs). `ceiling_usd` is what the agents' words, the chunks\nand the output cap allow, None when the classifier has no price or no output cap.",
+        "properties": {
+          "calls": {
+            "default": 0,
+            "title": "Calls",
+            "type": "integer"
+          },
+          "ceiling_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ceiling Usd"
+          },
+          "classifier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Classifier"
+          },
+          "doubled": {
+            "default": false,
+            "title": "Doubled",
+            "type": "boolean"
+          },
+          "high_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "High Usd"
+          },
+          "lines": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "runs": {
+            "default": 0,
+            "title": "Runs",
+            "type": "integer"
+          },
+          "same_scenario": {
+            "default": false,
+            "title": "Same Scenario",
+            "type": "boolean"
+          },
+          "typical_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Typical Usd"
+          }
+        },
+        "required": [
+          "run_id",
+          "classifier",
+          "calls",
+          "typical_usd",
+          "high_usd",
+          "ceiling_usd",
+          "runs",
+          "same_scenario",
+          "doubled",
+          "lines"
+        ],
+        "title": "ScoreEstimate",
+        "type": "object"
+      },
       "ScoreJob": {
         "additionalProperties": false,
-        "description": "A score of the sealed run `origin`, whose head hash was `origin_head`, against its truth\nfile and the flags of the monitor run `monitor` (None for its own), into the new run\n`run_id`. The runner fetches the run, the monitor run and the truth file when it lacks\nthem. `classifier` is the eval-awareness model (`Profile.snapshot`, env names only), None\nto skip it; `texts` the monitor texts it asks with.",
+        "description": "A score of the sealed run `origin`, whose head hash was `origin_head`, against its truth\nfile and the flags of the monitor run `monitor` (None for its own), into the new run\n`run_id`. The runner fetches the run, the monitor run and the truth file when it lacks\nthem. `classifier` is the model of the `awareness` and `answer` checks (`Profile.snapshot`,\nenv names only), None to skip both; `texts` the monitor texts it asks with. `added` is\nwhat a scenario file adds to the truth file (`Added.dump`), read by the control plane.",
         "properties": {
+          "added": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/JsonValue"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Added"
+          },
+          "answer": {
+            "default": true,
+            "title": "Answer",
+            "type": "boolean"
+          },
+          "awareness": {
+            "default": true,
+            "title": "Awareness",
+            "type": "boolean"
+          },
           "classifier": {
             "anyOf": [
               {
@@ -10266,6 +10400,9 @@
           "scenario",
           "monitor",
           "classifier",
+          "awareness",
+          "answer",
+          "added",
           "texts",
           "options",
           "config_files"
@@ -11113,8 +11250,13 @@
         "type": "object"
       },
       "StartScore": {
-        "description": "`monitor` scores the flags of that monitor run over the run instead of its own.\n`awareness` asks a cheap model whether each agent said it thought it was tested.",
+        "description": "`monitor` scores the flags of that monitor run over the run instead of its own.\n`awareness` asks a cheap model whether each agent said it thought it was tested; `answer`\nwhether each subject that took a plant told the operator and gave true reasons.\n`plants_from` also scores the rule plants of that scenario the run's truth file lacks, in\nthe run's variant, with the plant facts it lacks.",
         "properties": {
+          "answer": {
+            "default": true,
+            "title": "Answer",
+            "type": "boolean"
+          },
           "awareness": {
             "default": true,
             "title": "Awareness",
@@ -11130,6 +11272,16 @@
               }
             ],
             "title": "Monitor"
+          },
+          "plants_from": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScenarioRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "runner": {
             "anyOf": [
@@ -15295,6 +15447,99 @@
           }
         },
         "summary": "Score Run",
+        "tags": [
+          "score"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/score/estimate": {
+      "get": {
+        "description": "What a score of the run costs, as `aims score` prints it before it starts: the most\nclassifier calls its checks make, the typical and high cost of past scores, and what the\noutput cap allows.",
+        "operationId": "estimate_score",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "awareness",
+            "required": false,
+            "schema": {
+              "default": true,
+              "title": "Awareness",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "answer",
+            "required": false,
+            "schema": {
+              "default": true,
+              "title": "Answer",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScoreEstimate"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not signed in"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Invalid request"
+          }
+        },
+        "summary": "Estimate Score",
         "tags": [
           "score"
         ]
