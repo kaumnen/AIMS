@@ -34,6 +34,7 @@ from aims.events import (
     split_lines,
 )
 from aims.events.blobs import ZSTD_MAGIC, BlobError, BlobStore
+from aims.events.index import monitor_of
 from aims.events.schema import blob_refs
 from aims.events.store import is_run_id
 from aims.models import Profile, ProfileError
@@ -247,6 +248,7 @@ def summary(
             scenario = snap.get("name")
         else:
             scenario = snap if isinstance(snap, str) else job.payload.get("kind")
+    planned = monitor_of(job.payload) if job is not None else (None, None)
     if info is not None:
         kind, origin = info.kind, info.origin
     else:
@@ -279,6 +281,8 @@ def summary(
         cost_usd=None if info is None else info.cost_usd,
         reward=None if info is None else info.reward,
         reviews=0 if info is None else info.reviews,
+        preset=info.preset if info is not None else planned[0],
+        monitor_mode=info.monitor_mode if info is not None else planned[1],
     )
 
 

@@ -5,6 +5,7 @@ import { type ReactNode, useEffect, useRef } from "react";
 
 import type { RunSummary } from "@/api/runs";
 import { shortId } from "@/lib/format";
+import { presetText } from "@/lib/monitor";
 import { cn } from "@/lib/utils";
 
 import { Cost, Duration, Flags, Reward, Started, Status, Steps, Verdict } from "./cells";
@@ -137,6 +138,8 @@ function RunRow({
   const extra: string[] = [];
   if (run.variant) extra.push(run.variant);
   if (run.series_index !== null) extra.push(`#${run.series_index}`);
+  const preset = run.kind === "monitor" ? presetText(run) : null;
+  if (preset) extra.push(preset);
   if (run.kind === "monitor" && run.origin && !child)
     extra.push(`review of ${shortId(run.origin)}`);
   if (run.reason && run.started_at === null) extra.push(run.reason);

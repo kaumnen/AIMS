@@ -1,11 +1,13 @@
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { ChevronRight } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { type ExecActivity, execEventsQuery } from "@/api/run";
 import { Button } from "@/components/ui/button";
 import { summary } from "@/lib/event-text";
 import { cn } from "@/lib/utils";
+
+import type { Tone } from "./transcript";
 
 const opWords: Record<string, [string, string]> = {
   read: ["read", "reads"],
@@ -47,16 +49,25 @@ export function activityText(a: ExecActivity): string {
   return parts.length ? parts.join(", ") : `${a.events} kernel records`;
 }
 
+const NONE: readonly number[] = [];
+
+// Opens by itself when a chosen flag cites one of its records.
 export function KernelFold({
   runId,
   execId,
   activity,
+  focus = NONE,
+  tone = "ink",
 }: {
   runId: string;
   execId: string;
   activity: ExecActivity | undefined;
+  focus?: readonly number[];
+  tone?: Tone;
 }) {
-  const [open, setOpen] = useState(false);
+  const [asked, setAsked] = useState<boolean | null>(null);
+  const open = asked ?? focus.length > 0;
+  const setOpen = (v: boolean) => setAsked(v);
   if (!activity) return null;
   return (
     <div>
@@ -69,18 +80,42 @@ export function KernelFold({
         <ChevronRight aria-hidden className={cn("mt-0.5 size-3.5 shrink-0", open && "rotate-90")} />
         Kernel: {activityText(activity)}
       </button>
-      {open && <KernelTable runId={runId} execId={execId} />}
+      {open && <KernelTable runId={runId} execId={execId} focus={focus} tone={tone} />}
     </div>
   );
 }
 
-function KernelTable({ runId, execId }: { runId: string; execId: string }) {
+function KernelTable({
+  runId,
+  execId,
+  focus,
+  tone,
+}: {
+  runId: string;
+  execId: string;
+  focus: readonly number[];
+  tone: Tone;
+}) {
   const q = useInfiniteQuery(execEventsQuery(runId, execId));
+  const box = useRef<HTMLDivElement>(null);
+  const shown = useRef(-1);
+  const want = Math.max(-1, ...focus);
+  const reached = q.data?.pages.at(-1)?.items.at(-1)?.seq ?? -1;
+  const more = q.hasNextPage && !q.isFetchingNextPage;
+  const next = q.fetchNextPage;
+  // Page on until the cited record is loaded, then bring it into view once.
+  useEffect(() => {
+    if (want > reached && more) void next();
+    else if (want >= 0 && want <= reached && shown.current !== want) {
+      shown.current = want;
+      box.current?.querySelector("[data-evidence]")?.scrollIntoView?.({ block: "center" });
+    }
+  }, [want, reached, more, next]);
   if (q.isPending) return <p className="text-muted-foreground py-1 pl-5">Loading records</p>;
   if (q.isError) return <p className="text-muted-foreground py-1 pl-5">Records did not load.</p>;
   const events = q.data.pages.flatMap((p) => p.items);
   return (
-    <div className="mt-1 ml-5 rounded-sm border">
+    <div ref={box} className="mt-1 ml-5 rounded-sm border">
       <table className="w-full table-fixed text-xs">
         <thead className="text-muted-foreground border-b text-left">
           <tr>
@@ -91,7 +126,14 @@ function KernelTable({ runId, execId }: { runId: string; execId: string }) {
         </thead>
         <tbody className="font-mono">
           {events.map((e) => (
-            <tr key={e.seq} className="border-grid border-b last:border-0">
+            <tr
+              key={e.seq}
+              data-evidence={focus.includes(e.seq) ? "" : undefined}
+              className={cn(
+                "border-grid border-b last:border-0",
+                focus.includes(e.seq) && (tone === "red" ? "bg-flag/10" : "bg-foreground/10"),
+              )}
+            >
               <td className="text-muted-foreground px-2 py-0.5 tabular-nums">{e.seq}</td>
               <td className="text-muted-foreground truncate px-2 py-0.5">{e.type}</td>
               <td className="truncate px-2 py-0.5" title={summary(e)}>

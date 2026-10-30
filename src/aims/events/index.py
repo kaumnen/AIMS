@@ -2,7 +2,7 @@ import asyncio
 import bisect
 import json
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal
 
@@ -35,7 +35,7 @@ from aims.events.payloads import (
 )
 from aims.events.schema import SCHEMA_VERSION, BlobRef, Content, Event, Timestamp, format_ts
 
-VERSION = 6
+VERSION = 7
 MAX_TEXT = 32 * 1024
 MAX_PAGE = 1000
 
@@ -62,7 +62,9 @@ create table runs (
     run_group text,
     steps integer not null default 0,
     nano_usd integer,
-    reward real
+    reward real,
+    preset text,
+    monitor_mode text
 ) strict;
 
 create index runs_by_origin on runs (origin, run_id) where origin is not null;
@@ -217,7 +219,9 @@ class RunInfo(BaseModel):
     cleared or rejected, `verdict_severity` the judge's `max_severity`, and `severity` the
     higher of the two, 0 when there is neither. `steps` counts its agents' model calls,
     `cost_usd` sums the priced live model responses of every caller (None when there is none),
-    `reward` is the last verifier reward and `reviews` counts the monitor runs over it."""
+    `reward` is the last verifier reward and `reviews` counts the monitor runs over it.
+    `preset` is the preset of the monitor that watched it, or that a monitor run ran, and
+    `monitor_mode` a monitor run's mode."""
 
     run_id: str
     scenario: str
@@ -241,6 +245,20 @@ class RunInfo(BaseModel):
     cost_usd: float | None = None
     reward: float | None = None
     reviews: int = 0
+    preset: str | None = None
+    monitor_mode: str | None = None
+
+
+def monitor_of(config: Mapping[str, Any]) -> tuple[str | None, str | None]:
+    """The monitor preset and mode a `run.started` config or a monitor job names."""
+    monitor = config.get("monitor")
+    inner = monitor.get("config") if isinstance(monitor, dict) else None
+    preset = inner.get("preset") if isinstance(inner, dict) else None
+    mode = config.get("mode")
+    return (
+        preset if isinstance(preset, str) else None,
+        mode if isinstance(mode, str) else None,
+    )
 
 
 LabelKind = Literal["real", "false_alarm", "unclear"]
@@ -371,6 +389,8 @@ RUN_KEYS = (
     "cost_usd",
     "reward",
     "reviews",
+    "preset",
+    "monitor_mode",
     "categories",
 )
 AGGREGATE = """
@@ -591,11 +611,14 @@ class Index:
                     series = series if isinstance(series, dict) else {}
                     name, n = series.get("name"), series.get("index")
                     config = first.data.get("config")
-                    group = config.get("group") if isinstance(config, dict) else None
+                    config = config if isinstance(config, dict) else {}
+                    group = config.get("group")
+                    preset, mode = monitor_of(config)
                     await self._db.execute(
                         "insert into runs (run_id, scenario, status, started_at, ended_at,"
                         " last_seq, last_hash, log_offset, kind, origin, series, series_index,"
-                        " run_group) values (?, ?, 'running', ?, null, -1, '', 0, ?, ?, ?, ?, ?)"
+                        " run_group, preset, monitor_mode) values"
+                        " (?, ?, 'running', ?, null, -1, '', 0, ?, ?, ?, ?, ?, ?, ?)"
                         " on conflict do nothing",
                         (
                             run_id,
@@ -606,6 +629,8 @@ class Index:
                             name if isinstance(name, str) else None,
                             n if isinstance(n, int) and not isinstance(n, bool) else None,
                             group if isinstance(group, str) else None,
+                            preset,
+                            mode,
                         ),
                     )
                 async with self._db.execute(
@@ -863,7 +888,7 @@ class Index:
             "select run_id, scenario, status, started_at, ended_at, last_seq + 1, last_hash, kind,"
             " origin, flags, max_importance, verdict_severity, severity, series, series_index,"
             " variant, run_group, steps, nano_usd / 1e9, reward, (select count(*) from runs m"
-            " where m.origin = runs.run_id and m.kind = 'monitor'),"
+            " where m.origin = runs.run_id and m.kind = 'monitor'), preset, monitor_mode,"
             f" categories from runs {clause}",
             args,
         ) as cur:

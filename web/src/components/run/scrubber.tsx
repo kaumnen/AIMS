@@ -4,13 +4,12 @@ import { useEffect, useRef, useState } from "react";
 import type { Event } from "@/api/events";
 import {
   type FlagInfo,
-  flagsQuery,
   type RunDetail,
   samplesQuery,
   sandboxesQuery,
   type StepInfo,
-  sweepsQuery,
 } from "@/api/run";
+import { categoryText, flagStep, flagTone } from "@/lib/monitor";
 import {
   clocks,
   type Columns,
@@ -89,12 +88,17 @@ function useWidth(ref: React.RefObject<HTMLElement | null>): number {
 
 // The run on one time axis: a lane per agent with its CPU trace and step ticks, flags in red
 // pen, review coverage along the lane top. Click or drag picks the step under way there.
+// `flags` and `sweeps` come from the monitor chosen in the panel.
 export function Scrubber({
   runId,
   detail,
   steps,
   selected,
   onSelect,
+  flags,
+  sweeps,
+  flag,
+  onFlag,
   harm,
 }: {
   runId: string;
@@ -102,14 +106,16 @@ export function Scrubber({
   steps: readonly StepInfo[];
   selected: StepInfo;
   onSelect: (seq: number) => void;
+  flags: readonly FlagInfo[];
+  sweeps: readonly Event[];
+  flag: number | undefined;
+  onFlag: (f: FlagInfo) => void;
   harm?: number;
 }) {
   const live = detail.run.status === "running";
   const every = live ? LIVE_MS : false;
   const samples = useQuery({ ...samplesQuery(runId), refetchInterval: every });
   const sandboxes = useQuery({ ...sandboxesQuery(runId), refetchInterval: every });
-  const flags = useQuery({ ...flagsQuery(runId), refetchInterval: every });
-  const sweeps = useQuery({ ...sweepsQuery(runId), refetchInterval: every });
   const now = useNow(live, LIVE_MS);
 
   const windows = samples.data ?? [];
@@ -141,8 +147,10 @@ export function Scrubber({
       steps={steps}
       selected={selected}
       onSelect={onSelect}
-      flags={flags.data ?? []}
-      bands={bandsOf(sweeps.data ?? [])}
+      flags={flags}
+      bands={bandsOf(sweeps)}
+      flag={flag}
+      onFlag={onFlag}
       {...(harm === undefined ? {} : { harm })}
     />
   );
@@ -186,13 +194,6 @@ const bytes = (n: number) =>
         ? `${Math.round(n / (1 << 10))} KB`
         : `${n} B`;
 
-// Red only where the rubric says misbehaviour is likely (3 and up), and only while a review
-// has not set the flag aside.
-function flagTone(f: FlagInfo): { red: boolean; hollow: boolean } {
-  const aside = f.status === "cleared" || f.status === "rejected";
-  return { red: f.importance >= 3 && !aside, hollow: aside };
-}
-
 function Trace({ d, pen }: { d: { fill: string; edge: string }; pen: number }) {
   return (
     <>
@@ -215,6 +216,8 @@ export function Strip({
   onSelect,
   flags,
   bands,
+  flag,
+  onFlag,
   harm,
 }: {
   span: Span;
@@ -224,6 +227,8 @@ export function Strip({
   onSelect: (seq: number) => void;
   flags: readonly FlagInfo[];
   bands: readonly Band[];
+  flag?: number | undefined;
+  onFlag?: (f: FlagInfo) => void;
   harm?: number;
 }) {
   const box = useRef<HTMLDivElement>(null);
@@ -397,32 +402,33 @@ export function Strip({
         />
         {flags.map((f) => {
           const i = laneOf(f.agent_id);
-          const pool = f.agent_id === null ? steps : stepsOf(f.agent_id);
-          const ev = f.evidence.length > 0 ? Math.min(...f.evidence) : f.seq;
-          const step = pool.length > 0 ? stepOf(pool, ev) : undefined;
+          const step = flagStep(f, steps);
           const fx = Math.round(x(step ? ms(step.ts_to) : ms(f.ts))) + 0.5;
           const y = top(i);
           const tone = flagTone(f);
+          const on = f.seq === flag;
           return (
             <g
               key={f.seq}
               data-flag={f.seq}
               data-tone={tone.red ? "red" : "ink"}
+              aria-current={on || undefined}
               className={cn("cursor-pointer", tone.red ? "text-flag" : "text-foreground")}
               onPointerDown={(e) => {
-                if (!step) return;
                 e.stopPropagation();
-                picked.current = step.seq;
-                onSelect(step.seq);
+                if (step) picked.current = step.seq;
+                if (onFlag) onFlag(f);
+                else if (step) onSelect(step.seq);
               }}
             >
-              <title>{`${f.category.replaceAll("_", " ")}, importance ${f.importance}${tone.hollow ? `, ${f.status}` : ""}`}</title>
+              <title>{`${categoryText(f.category)}, importance ${f.importance}${tone.hollow ? `, ${f.status}` : ""}`}</title>
               <line
                 x1={fx}
                 x2={fx}
                 y1={y}
                 y2={y + laneH}
                 stroke="currentColor"
+                strokeWidth={on ? 2.5 : 1}
                 strokeDasharray={tone.hollow ? "2 2" : undefined}
               />
               <path

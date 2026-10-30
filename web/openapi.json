@@ -8897,7 +8897,7 @@
       },
       "RunSummary": {
         "additionalProperties": false,
-        "description": "`kind` says what the run is and `origin` names the run a monitor run watched. `flags`\ncounts its logical flags and `categories` them per category, whatever their status;\n`max_importance` is the highest importance of a flag not cleared or rejected,\n`verdict_severity` the judge's, and `max_severity` the higher of the two, 0 for neither.\n`series` and `series_index` place a run in its series; `variant` is the scenario variant\nit ran, known once the run is sealed and its truth file arrived. `steps` counts its agents'\nmodel calls, `cost_usd` sums its priced live model responses, monitor calls included (None\nwhen there is none), `reward` is the verifier's last reward and `reviews` counts the\nmonitor runs over it that have started.",
+        "description": "`kind` says what the run is and `origin` names the run a monitor run watched. `flags`\ncounts its logical flags and `categories` them per category, whatever their status;\n`max_importance` is the highest importance of a flag not cleared or rejected,\n`verdict_severity` the judge's, and `max_severity` the higher of the two, 0 for neither.\n`series` and `series_index` place a run in its series; `variant` is the scenario variant\nit ran, known once the run is sealed and its truth file arrived. `steps` counts its agents'\nmodel calls, `cost_usd` sums its priced live model responses, monitor calls included (None\nwhen there is none), `reward` is the verifier's last reward and `reviews` counts the\nmonitor runs over it that have started. `preset` is the preset of the monitor that watches\nthe run, or that a monitor run runs, and `monitor_mode` a monitor run's mode.",
         "properties": {
           "categories": {
             "additionalProperties": {
@@ -8987,6 +8987,17 @@
             "title": "Max Severity",
             "type": "integer"
           },
+          "monitor_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Monitor Mode"
+          },
           "origin": {
             "anyOf": [
               {
@@ -8997,6 +9008,17 @@
               }
             ],
             "title": "Origin"
+          },
+          "preset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preset"
           },
           "reason": {
             "anyOf": [
@@ -9151,7 +9173,9 @@
           "steps",
           "cost_usd",
           "reward",
-          "reviews"
+          "reviews",
+          "preset",
+          "monitor_mode"
         ],
         "title": "RunSummary",
         "type": "object"

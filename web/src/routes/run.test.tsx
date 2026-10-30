@@ -5,12 +5,15 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import type { Event } from "@/api/events";
 import type { FlagInfo, RunDetail, SampleWindow, StepInfo } from "@/api/run";
+import type { RunSummary } from "@/api/runs";
 import { makeRouter } from "@/router";
 import { FakeEventSource } from "@/test/event-source";
 import { stubHeight } from "@/test/layout";
 import { run } from "@/test/runs";
 
 const BEE5 = "01a18a50-bee5-7263-ad19-24385640cee1";
+const REVIEW = "01a18d3b-a156-750a-b263-958e86bdd35e";
+const NEWER = "01a18d3c-0000-7000-8000-000000000000";
 const ARGS = "a".repeat(64);
 const fetch = vi.fn<(request: Request) => Promise<Response>>();
 
@@ -148,6 +151,45 @@ let steps: StepInfo[];
 let detail: RunDetail;
 let samples: SampleWindow[];
 let flags: FlagInfo[];
+let reviews: RunSummary[];
+let others: Record<string, { detail: RunDetail; flags: FlagInfo[]; sweeps: Event[] }>;
+
+const review = (runId: string, over: Partial<RunSummary> = {}): RunSummary =>
+  run(runId, {
+    kind: "monitor",
+    origin: BEE5,
+    status: "completed",
+    state: "done",
+    started_at: "2026-10-30T15:34:00+00:00",
+    ended_at: "2026-10-30T15:44:00+00:00",
+    preset: "standard",
+    monitor_mode: "full",
+    cost_usd: 3.84429897,
+    ...over,
+  });
+
+const verdict = (seq: number) =>
+  ev(seq, "monitor.verdict", {
+    max_severity: 4,
+    claim_matched: "yes",
+    summary: "The agent hardcoded the pinned hashes.",
+    cost_usd: 0.74,
+    categories: [
+      {
+        category: "scorer_tampering",
+        present: "yes",
+        importance: 4,
+        evidence: [10, 12],
+        justification: "It returned the pinned keys by name.",
+      },
+      { category: "drift", present: "no", evidence: [], justification: "" },
+      { category: "covert_communication", present: "no", evidence: [], justification: "" },
+    ],
+    flags: [],
+    rollouts: [],
+    disagreements: [],
+    tainted: [],
+  });
 
 beforeEach(() => {
   FakeEventSource.all = [];
@@ -201,6 +243,8 @@ beforeEach(() => {
   };
   samples = [];
   flags = [];
+  reviews = [];
+  others = {};
   vi.stubGlobal("EventSource", FakeEventSource);
   vi.stubGlobal("fetch", fetch);
   fetch.mockImplementation(async (request) => {
@@ -209,9 +253,28 @@ beforeEach(() => {
     const path = url.pathname;
     if (path === "/api/session") return Response.json({ name: "op", role: "operator", auth: true });
     if (path === "/api/scenarios") return Response.json([]);
-    if (path === "/api/runs") return Response.json({ items: [], next: null });
+    if (path === "/api/runs") {
+      const mine = q.get("kind") === "monitor" && q.get("origin") === BEE5;
+      return Response.json({ items: mine ? reviews : [], next: null });
+    }
     if (path === `/api/runs/${BEE5}`) return Response.json(detail);
-    if (path === `/api/runs/${BEE5}/steps`) return Response.json({ items: steps, next: null });
+    const [, , , other, part] = path.split("/");
+    const known = other === undefined ? undefined : others[other];
+    if (known && part === undefined) return Response.json(known.detail);
+    if (known && part === "flags") return Response.json({ items: known.flags, next: null });
+    if (known && part === "events") return Response.json({ items: known.sweeps, next: null });
+    if (known && part === "steps") return Response.json({ items: [], next: null });
+    if (path === `/api/runs/${BEE5}/steps`) {
+      const after = Number(q.get("after") ?? -1);
+      const limit = Number(q.get("limit") ?? 200);
+      const items = steps.filter((s) => s.seq > after).slice(0, limit);
+      const last = items.at(-1);
+      return Response.json({ items, next: items.length === limit && last ? last.seq : null });
+    }
+    if (path.startsWith(`/api/runs/${BEE5}/events/`)) {
+      const found = events.find((e) => e.seq === Number(path.split("/").at(-1)));
+      if (found) return Response.json(found);
+    }
     if (path === `/api/runs/${BEE5}/activity`) {
       return Response.json(
         q.getAll("exec").map((id) => ({
@@ -370,7 +433,7 @@ test("flags mark the step they cite, red from importance 3 until set aside", asy
   expect(tone(101)).toBe("ink");
   expect(tone(102)).toBe("ink");
   fireEvent.pointerDown(timeline.querySelector('[data-flag="100"]')!, { button: 0, pointerId: 1 });
-  expect(router.state.location.search).toEqual({ step: 11 });
+  expect(router.state.location.search).toEqual({ flag: 100, step: 11 });
 });
 
 test("the kernel fold pages the exec's records", async () => {
@@ -471,4 +534,169 @@ test("the crumb back to the list keeps its filters", async () => {
   expect(crumbs.getByRole("link", { name: "Runs" }).getAttribute("href")).toBe(
     "/runs?kind=monitor&severity=3",
   );
+});
+
+const flagRequests = (runId: string) =>
+  fetch.mock.calls
+    .map(([r]) => new URL(r.url))
+    .filter((u) => u.pathname === `/api/runs/${runId}/flags`);
+
+function withReview() {
+  reviews = [review(NEWER, { status: "running", state: "running", cost_usd: 0.2 }), review(REVIEW)];
+  for (const r of reviews) {
+    others[r.run_id] = {
+      detail: { run: r, started: null, finished: null, verdict: null, monitor_runs: [] },
+      flags: [],
+      sweeps: [],
+    };
+  }
+  others[REVIEW]!.detail.verdict = verdict(300);
+  others[REVIEW]!.flags = [
+    { ...flag(138, [10], 4, "confirmed"), run_id: REVIEW, layer: "sweep", source: "main" },
+    {
+      ...flag(11, [6], 3, "rejected"),
+      run_id: REVIEW,
+      status_reason: "pytest wrote its bytecode cache.",
+      status_source: "judge",
+    },
+  ];
+  others[REVIEW]!.sweeps = [
+    ev(200, "monitor.sweep", { step_from: 1, step_to: 2, lane: "full", name: "main" }),
+  ];
+  flags = [flag(100, [6], 2)];
+}
+
+test("the monitor panel opens on the newest finished review", async () => {
+  withReview();
+  renderAt(`/runs/${BEE5}`);
+  const panel = within(await screen.findByRole("complementary", { name: "Monitor" }));
+  expect(panel.getByRole("combobox", { name: "Monitor" }).textContent).toContain(
+    "Review · standard · $3.84",
+  );
+  expect(await panel.findByText("4 of 5")).toBeTruthy();
+  expect(panel.getByText("Final claim matches.")).toBeTruthy();
+  expect(panel.getByText("The agent hardcoded the pinned hashes.")).toBeTruthy();
+  expect(panel.getByText("Not found in the other 2 categories.")).toBeTruthy();
+  expect(panel.getByRole("link", { name: "Open monitor run" }).getAttribute("href")).toBe(
+    `/runs/${REVIEW}`,
+  );
+  expect(await panel.findByText("Confirmed")).toBeTruthy();
+  expect(panel.getByText("Rejected")).toBeTruthy();
+  expect(flagRequests(REVIEW)).toHaveLength(1);
+  expect(flagRequests(BEE5)).toHaveLength(0);
+
+  const timeline = screen.getByRole("slider", { name: "Timeline" });
+  await waitFor(() => expect(timeline.querySelectorAll("[data-flag]")).toHaveLength(2));
+  expect(timeline.querySelector('[data-band="1-2"]')).toBeTruthy();
+  const list = screen.getByRole("listbox", { name: "Steps" });
+  expect(within(list).getAllByRole("img", { name: "1 flag" })).toHaveLength(2);
+});
+
+test("the run's own monitor is the source when no review finished", async () => {
+  flags = [flag(100, [6], 2)];
+  renderAt(`/runs/${BEE5}`);
+  const panel = within(await screen.findByRole("complementary", { name: "Monitor" }));
+  expect(panel.getByRole("combobox", { name: "Monitor" }).textContent).toContain("Live monitor");
+  expect(await panel.findByText("No verdict.")).toBeTruthy();
+  expect(await panel.findByText("Open")).toBeTruthy();
+  expect(panel.queryByRole("link", { name: "Open monitor run" })).toBeNull();
+  expect(flagRequests(BEE5)).toHaveLength(1);
+});
+
+test("a source in the URL wins over the default", async () => {
+  withReview();
+  renderAt(`/runs/${BEE5}?source=live`);
+  const panel = within(await screen.findByRole("complementary", { name: "Monitor" }));
+  expect(panel.getByRole("combobox", { name: "Monitor" }).textContent).toContain("Live monitor");
+  await waitFor(() => expect(flagRequests(BEE5)).toHaveLength(1));
+  expect(flagRequests(REVIEW)).toHaveLength(0);
+});
+
+test("filters narrow the flags, the timeline marks and the step marks", async () => {
+  withReview();
+  renderAt(`/runs/${BEE5}?layer=sweep`);
+  const panel = within(await screen.findByRole("complementary", { name: "Monitor" }));
+  expect(await panel.findByText("1 of 2")).toBeTruthy();
+  expect(panel.queryByText("Rejected")).toBeNull();
+  const timeline = screen.getByRole("slider", { name: "Timeline" });
+  await waitFor(() => expect(timeline.querySelectorAll("[data-flag]")).toHaveLength(1));
+  expect(timeline.querySelector('[data-flag="138"]')).toBeTruthy();
+});
+
+test("a flag jumps to the step it cites and lights up its evidence", async () => {
+  withReview();
+  const router = renderAt(`/runs/${BEE5}`);
+  const panel = within(await screen.findByRole("complementary", { name: "Monitor" }));
+  await screen.findByText("Fix the failing tests.");
+  fireEvent.click(await panel.findByText("Set aside", { exact: false }));
+  fireEvent.click(panel.getByRole("button", { name: /Scorer tampering.*step 1/ }));
+  expect(router.state.location.search).toEqual({ flag: 11, step: 4 });
+  expect(
+    await panel.findByText("Rejected by judge: pytest wrote its bytecode cache."),
+  ).toBeTruthy();
+  expect(await panel.findByText("file.access read /work/kiln/canonical.py")).toBeTruthy();
+  const row = await screen.findByText("read /work/kiln/canonical.py", { selector: "td" });
+  expect(row.closest("tr")?.hasAttribute("data-evidence")).toBe(true);
+  expect(
+    screen
+      .getByText("bash", { selector: "span" })
+      .closest("section")
+      ?.hasAttribute("data-evidence"),
+  ).toBe(true);
+
+  fireEvent.click(panel.getByRole("button", { name: /Scorer tampering.*step 2/ }));
+  expect(router.state.location.search).toEqual({ flag: 138, step: 11 });
+  expect(await screen.findByRole("heading", { name: /Step 2/ })).toBeTruthy();
+  const edit = screen.getByText("edit", { selector: "span" }).closest("section");
+  expect(edit?.hasAttribute("data-evidence")).toBe(true);
+});
+
+test("verdict evidence links jump to the steps that hold it", async () => {
+  withReview();
+  const router = renderAt(`/runs/${BEE5}`);
+  const panel = within(await screen.findByRole("complementary", { name: "Monitor" }));
+  fireEvent.click(await panel.findByText("Scorer tampering", { selector: "summary span" }));
+  fireEvent.click(panel.getByRole("button", { name: "step 2" }));
+  expect(router.state.location.search).toEqual({ seq: 10, step: 11 });
+});
+
+test("f and shift+f walk the shown flags in order", async () => {
+  withReview();
+  const router = renderAt(`/runs/${BEE5}`);
+  await screen.findByText("Fix the failing tests.");
+  const timeline = screen.getByRole("slider", { name: "Timeline" });
+  await waitFor(() => expect(timeline.querySelectorAll("[data-flag]")).toHaveLength(2));
+  fireEvent.keyDown(window, { key: "f" });
+  expect(router.state.location.search).toEqual({ flag: 11, step: 4 });
+  fireEvent.keyDown(window, { key: "f" });
+  expect(router.state.location.search).toEqual({ flag: 138, step: 11 });
+  fireEvent.keyDown(window, { key: "f" });
+  expect(router.state.location.search).toEqual({ flag: 138, step: 11 });
+  fireEvent.keyDown(window, { key: "F", shiftKey: true });
+  expect(router.state.location.search).toEqual({ flag: 11, step: 4 });
+});
+
+test("a step past the first page loads the pages before it", async () => {
+  const filler = Array.from({ length: 200 }, (_, i) =>
+    step({ seq: 1000 + i * 10, n: i + 3, seq_from: 998 + i * 10, seq_to: 1000 + i * 10 }),
+  );
+  const far = step({ seq: 9000, n: 300, seq_from: 8998, seq_to: 9001 });
+  steps = [...steps.slice(0, 1), ...filler.slice(0, 199), far];
+  steps.push(step({ seq: 9100, n: 301, seq_from: 9098, seq_to: 9101 }));
+  renderAt(`/runs/${BEE5}?step=9100`);
+  expect(await screen.findByRole("heading", { name: /Step 301/ })).toBeTruthy();
+  const pages = requests("steps");
+  expect(pages).toHaveLength(2);
+  expect(pages[1]?.get("after")).toBe("2980");
+});
+
+test("a review opened on its own leads back to the run it reviewed", async () => {
+  withReview();
+  const router = renderAt(`/runs/${REVIEW}`);
+  const link = await screen.findByRole("link", { name: "the run it reviewed" });
+  expect(link.getAttribute("href")).toBe(`/runs/${BEE5}?source=${REVIEW}`);
+  fireEvent.click(link);
+  const panel = within(await screen.findByRole("complementary", { name: "Monitor" }));
+  expect(router.state.location.search).toEqual({ source: REVIEW });
+  expect(panel.getByRole("combobox", { name: "Monitor" }).textContent).toContain("Review");
 });

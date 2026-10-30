@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useRef } from "react";
 
 import type { Event } from "@/api/events";
 import {
@@ -36,17 +36,41 @@ const noteLabels: Record<string, string> = {
 // Importance 3 to 5 is likely to clear misbehaviour, so it reads red, like the runs list.
 const loud = (e: Event) => e.type === "monitor.flag" && (num(data(e)["importance"]) ?? 0) >= 3;
 
+export type Tone = "red" | "ink";
+
+// What a chosen flag cites: events by seq, and kernel records by the exec that holds them.
+export interface Focus {
+  seqs: ReadonlySet<number>;
+  execs: ReadonlyMap<string, readonly number[]>;
+  tone: Tone;
+}
+
+const NO_FOCUS: Focus = { seqs: new Set(), execs: new Map(), tone: "ink" };
+
+export const litClass = (tone: Tone | undefined) =>
+  tone === undefined
+    ? ""
+    : cn(
+        "-mx-2 rounded-sm px-2 pb-2 ring-1",
+        tone === "red" ? "bg-flag/5 ring-flag/40" : "bg-foreground/5 ring-foreground/25",
+      );
+
 function Section({
   label,
   aside,
+  lit,
   children,
 }: {
   label: ReactNode;
   aside?: ReactNode;
+  lit?: Tone | undefined;
   children: ReactNode;
 }) {
   return (
-    <section className="flex flex-col gap-1.5 border-t pt-3">
+    <section
+      data-evidence={lit ? "" : undefined}
+      className={cn("flex flex-col gap-1.5 border-t pt-3", litClass(lit))}
+    >
       <h3 className="text-muted-foreground flex items-baseline gap-2">
         <span className="text-foreground font-medium">{label}</span>
         {aside}
@@ -64,17 +88,27 @@ export function Transcript({
   after,
   last,
   multi,
+  focus = NO_FOCUS,
 }: {
   runId: string;
   step: StepInfo;
   after: number;
   last: boolean;
   multi: boolean;
+  focus?: Focus;
 }) {
   const q = useQuery(stepEventsQuery(runId, step, after, last));
   const tools = step.tools ?? [];
   const execs = tools.flatMap((t) => t.execs ?? []).slice(0, MAX_EXECS);
   const activity = useQuery(activityQuery(runId, execs));
+  const article = useRef<HTMLElement>(null);
+  const lit = (...seqs: (number | undefined)[]) =>
+    seqs.some((n) => n !== undefined && focus.seqs.has(n)) ? focus.tone : undefined;
+  const focusKey = [...focus.seqs].join();
+  useEffect(() => {
+    if (!q.isSuccess || focusKey === "") return;
+    article.current?.querySelector("[data-evidence]")?.scrollIntoView?.({ block: "center" });
+  }, [q.isSuccess, focusKey]);
   if (q.isPending) return <p className="text-muted-foreground">Loading step {step.n}</p>;
   if (q.isError) return <p className="text-muted-foreground">Step {step.n} did not load.</p>;
   const events = q.data;
@@ -115,7 +149,7 @@ export function Transcript({
   ].filter(Boolean);
 
   return (
-    <article className="flex max-w-4xl flex-col gap-4 pb-8">
+    <article ref={article} className="flex max-w-4xl flex-col gap-4 pb-8">
       <h2 className="flex flex-wrap items-baseline gap-x-3 text-base font-medium">
         Step {step.n}
         {multi && step.agent_id && <span className="text-muted-foreground">{step.agent_id}</span>}
@@ -124,13 +158,18 @@ export function Transcript({
         </span>
       </h2>
       {inputs.map((e) => (
-        <Section key={e.seq} label={data(e)["kind"] === "instruction" ? "Task" : "Input"}>
+        <Section
+          key={e.seq}
+          label={data(e)["kind"] === "instruction" ? "Task" : "Input"}
+          lit={lit(e.seq)}
+        >
           <TextOf runId={runId} value={data(e)["text"]} mono={false} />
         </Section>
       ))}
       <Section
         label="Model"
         aside={typeof r["finish_reason"] === "string" ? r["finish_reason"] : null}
+        lit={lit(...responses.map((e) => e.seq))}
       >
         {r["reasoning"] ? (
           <details>
@@ -159,21 +198,24 @@ export function Transcript({
           started={started}
           finished={finished}
           activity={activity.data}
+          focus={focus}
         />
       ))}
       {notes.map((e) => (
         <p
           key={e.seq}
+          data-evidence={lit(e.seq) ? "" : undefined}
           className={cn(
             "border-l-2 pl-2",
             loud(e) ? "border-flag" : "border-grid text-muted-foreground",
+            lit(e.seq) && "bg-foreground/5",
           )}
         >
           <span className="font-medium">{noteLabels[e.type]}</span> {summary(e)}
         </p>
       ))}
       {answer && (
-        <Section label="Answer" aside={String(data(answer)["reason"] ?? "")}>
+        <Section label="Answer" aside={String(data(answer)["reason"] ?? "")} lit={lit(answer.seq)}>
           {repeated ? (
             <p className="text-muted-foreground">The submit call above.</p>
           ) : (
@@ -181,7 +223,7 @@ export function Transcript({
           )}
         </Section>
       )}
-      {scored && <Score event={scored} />}
+      {scored && <Score event={scored} lit={lit(scored.seq)} />}
     </article>
   );
 }
@@ -194,6 +236,7 @@ function ToolCall({
   started,
   finished,
   activity,
+  focus,
 }: {
   runId: string;
   tool: ToolInfo;
@@ -202,8 +245,18 @@ function ToolCall({
   started: Map<string, Event>;
   finished: Map<string, Event>;
   activity: Map<string, ExecActivity> | undefined;
+  focus: Focus;
 }) {
   const raw = data(call)["arguments"];
+  const ids = tool.execs ?? [];
+  const seqs = [
+    tool.seq,
+    call?.seq,
+    result?.seq,
+    ...ids.flatMap((id) => [started.get(id)?.seq, finished.get(id)?.seq]),
+  ];
+  const cites =
+    seqs.some((n) => n !== undefined && focus.seqs.has(n)) || ids.some((id) => focus.execs.has(id));
   const out = data(result);
   const marks = [
     tool.denied ? "denied" : null,
@@ -217,9 +270,10 @@ function ToolCall({
     <Section
       label={<span className="font-mono">{tool.name}</span>}
       aside={<span className={cn("tabular-nums", bad && "text-flag")}>{marks.join(" · ")}</span>}
+      lit={cites ? focus.tone : undefined}
     >
       {isBlob(raw) ? <TextOf runId={runId} value={raw} /> : <Args raw={raw} />}
-      {(tool.execs ?? []).map((id) => (
+      {ids.map((id) => (
         <Exec
           key={id}
           runId={runId}
@@ -227,6 +281,8 @@ function ToolCall({
           started={started.get(id)}
           finished={finished.get(id)}
           activity={activity?.get(id)}
+          focus={focus.execs.get(id)}
+          tone={focus.tone}
         />
       ))}
       {result ? (
@@ -286,12 +342,16 @@ function Exec({
   started,
   finished,
   activity,
+  focus,
+  tone,
 }: {
   runId: string;
   execId: string;
   started: Event | undefined;
   finished: Event | undefined;
   activity: ExecActivity | undefined;
+  focus: readonly number[] | undefined;
+  tone: Tone;
 }) {
   const s = data(started);
   const f = data(finished);
@@ -320,19 +380,25 @@ function Exec({
           ) : null}
         </div>
       </details>
-      <KernelFold runId={runId} execId={execId} activity={activity} />
+      <KernelFold
+        runId={runId}
+        execId={execId}
+        activity={activity}
+        focus={focus ?? []}
+        tone={tone}
+      />
     </div>
   );
 }
 
-function Score({ event }: { event: Event }) {
+function Score({ event, lit }: { event: Event; lit: Tone | undefined }) {
   const d = data(event);
   const metrics = (d["metrics"] ?? {}) as Data;
   const passed = num(metrics["passed"]);
   const total = num(metrics["total"]);
   const reward = num(d["reward"]);
   return (
-    <Section label="Verifier" aside={typeof d["error"] === "string" ? d["error"] : null}>
+    <Section label="Verifier" aside={typeof d["error"] === "string" ? d["error"] : null} lit={lit}>
       <p className="tabular-nums">
         {reward === undefined ? "No reward" : `Reward ${reward.toFixed(2)}`}
         {passed !== undefined && total !== undefined ? `, ${passed} of ${total} tests passed` : ""}

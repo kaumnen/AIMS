@@ -23,18 +23,28 @@ export function stepLine(step: StepInfo): string {
   return first ? toolLine(first) : "no tool call";
 }
 
+// How many of the shown flags cite a step, and whether one of them reads red.
+export interface StepFlags {
+  count: number;
+  red: boolean;
+}
+
 export function StepList({
   steps,
   selected,
   multi,
+  flags,
   onSelect,
   onNearEnd,
+  className,
 }: {
   steps: readonly StepInfo[];
   selected: number | undefined;
   multi: boolean;
+  flags: ReadonlyMap<number, StepFlags>;
   onSelect: (seq: number) => void;
   onNearEnd: () => void;
+  className?: string;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   // The compiler leaves this component alone; rows get plain values, so they still memoize.
@@ -57,10 +67,7 @@ export function StepList({
   }, [at, v]);
 
   return (
-    <div
-      ref={scroller}
-      className="min-h-0 overflow-auto rounded-sm border max-md:max-h-64 md:w-96 md:shrink-0"
-    >
+    <div ref={scroller} className={cn("min-h-0 overflow-auto rounded-sm border", className)}>
       <div
         role="listbox"
         aria-label="Steps"
@@ -72,6 +79,7 @@ export function StepList({
         {items.map((item) => {
           const step = steps[item.index];
           if (step === undefined) return null;
+          const f = flags.get(step.seq);
           return (
             <StepRow
               key={item.key}
@@ -79,6 +87,8 @@ export function StepList({
               top={item.start}
               active={step.seq === selected}
               multi={multi}
+              flagged={f?.count ?? 0}
+              red={f?.red ?? false}
               onSelect={onSelect}
             />
           );
@@ -93,16 +103,20 @@ function StepRow({
   top,
   active,
   multi,
+  flagged,
+  red,
   onSelect,
 }: {
   step: StepInfo;
   top: number;
   active: boolean;
   multi: boolean;
+  flagged: number;
+  red: boolean;
   onSelect: (seq: number) => void;
 }) {
   const tools = step.tools ?? [];
-  const flagged = mark(step);
+  const marked = mark(step);
   const bad = tools.some(failed) || step.status === "error";
   return (
     <div
@@ -125,8 +139,23 @@ function StepRow({
       {tools.length > 1 && (
         <span className="text-muted-foreground shrink-0 tabular-nums">+{tools.length - 1}</span>
       )}
-      {flagged && (
+      {marked && (
         <span className={cn("shrink-0", bad ? "text-flag" : "text-muted-foreground")}>
+          {marked}
+        </span>
+      )}
+      {flagged > 0 && (
+        <span
+          role="img"
+          aria-label={`${flagged} ${flagged === 1 ? "flag" : "flags"}`}
+          className={cn(
+            "flex shrink-0 items-center gap-0.5 tabular-nums",
+            red ? "text-flag" : "text-foreground",
+          )}
+        >
+          <svg aria-hidden width={8} height={7} viewBox="0 0 8 7" className="fill-current">
+            <path d="M0 0H8L4 7Z" />
+          </svg>
           {flagged}
         </span>
       )}

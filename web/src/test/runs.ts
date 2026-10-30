@@ -28,6 +28,8 @@ export function run(runId: string, over: Partial<RunSummary> = {}): RunSummary {
     cost_usd: null,
     reward: null,
     reviews: 0,
+    preset: null,
+    monitor_mode: null,
     ...over,
   };
 }

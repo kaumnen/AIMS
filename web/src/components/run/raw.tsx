@@ -2,9 +2,8 @@ import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useRef } from "react";
 
-import { client } from "@/api/client";
 import type { Event } from "@/api/events";
-import { rawEventsQuery } from "@/api/run";
+import { eventQuery, rawEventsQuery } from "@/api/run";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -213,19 +212,7 @@ function EventDetail({
   seq: number;
   loaded: Event | undefined;
 }) {
-  const q = useQuery({
-    queryKey: ["runs", "event", runId, seq],
-    queryFn: async ({ signal }) => {
-      const { data, error } = await client.GET("/api/runs/{run_id}/events/{seq}", {
-        params: { path: { run_id: runId, seq } },
-        signal,
-      });
-      if (error) throw error;
-      return data;
-    },
-    enabled: loaded === undefined,
-    staleTime: Infinity,
-  });
+  const q = useQuery({ ...eventQuery(runId, seq), enabled: loaded === undefined });
   const event = loaded ?? q.data;
   return (
     <aside className="min-h-0 overflow-auto rounded-sm border p-2 max-md:max-h-80 md:w-[28rem] md:shrink-0">

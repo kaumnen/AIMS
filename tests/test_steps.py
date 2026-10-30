@@ -325,6 +325,35 @@ async def test_runs_filter_by_scenario_and_count_their_reviews(store: LocalEvent
     assert await store.runs(scenario="none") == []
 
 
+async def test_a_run_keeps_its_monitor_preset_and_a_review_its_mode(
+    store: LocalEventStore,
+) -> None:
+    watched = await store.create_run(
+        RunStarted(
+            scenario="demo",
+            oversight="observe",
+            config={"monitor": {"config": {"preset": "signals"}}},
+        )
+    )
+    review = await store.create_run(
+        RunStarted(
+            scenario="demo",
+            oversight="observe",
+            kind="monitor",
+            origin=watched,
+            origin_head="0" * 64,
+            config={"mode": "judge_only", "monitor": {"config": {"preset": "standard"}}},
+        )
+    )
+    bare = await store.create_run(RunStarted(scenario="demo", oversight="observe"))
+    found = {r.run_id: (r.preset, r.monitor_mode) for r in await store.runs()}
+    assert found == {
+        watched: ("signals", None),
+        review: ("standard", "judge_only"),
+        bare: (None, None),
+    }
+
+
 async def test_the_api_serves_steps_activity_and_exec_events(
     cp: CP, store: LocalEventStore
 ) -> None:
@@ -361,6 +390,8 @@ async def test_the_api_serves_steps_activity_and_exec_events(
 
         assert await listed(scenario="demo") == [run_id]
         assert await listed(scenario="control") == [queued]
+        (planned,) = (await c.get("/api/runs", params={"scenario": "control"})).json()["items"]
+        assert (planned["preset"], planned["monitor_mode"]) == ("signals", None)
         assert await listed(scenario="none") == []
         run = (await c.get(f"/api/runs/{run_id}")).json()["run"]
         assert (run["steps"], run["cost_usd"], run["reward"], run["reviews"]) == (3, 0.1, 0.75, 0)

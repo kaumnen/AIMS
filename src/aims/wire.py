@@ -237,7 +237,8 @@ class RunSummary(_Wire):
     it ran, known once the run is sealed and its truth file arrived. `steps` counts its agents'
     model calls, `cost_usd` sums its priced live model responses, monitor calls included (None
     when there is none), `reward` is the verifier's last reward and `reviews` counts the
-    monitor runs over it that have started."""
+    monitor runs over it that have started. `preset` is the preset of the monitor that watches
+    the run, or that a monitor run runs, and `monitor_mode` a monitor run's mode."""
 
     run_id: str
     scenario: str | None
@@ -265,6 +266,8 @@ class RunSummary(_Wire):
     cost_usd: float | None = None
     reward: float | None = None
     reviews: int = 0
+    preset: str | None = None
+    monitor_mode: str | None = None
 
 
 class RunMessage(_Wire):

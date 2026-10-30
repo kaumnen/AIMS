@@ -12,6 +12,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { cn } from "@/lib/utils";
 
 const kinds: { value: RunKind | "all"; label: string }[] = [
   { value: "scenario", label: "Agent runs" },
@@ -31,18 +32,20 @@ export function categoryLabel(c: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-function Choice({
+export function Choice({
   name,
   label,
   value,
   items,
   onChange,
+  className,
 }: {
   name: string;
   label: string;
   value: string | undefined;
   items: { value: string; label: string }[];
   onChange: (value: string | undefined) => void;
+  className?: string;
 }) {
   const all = [{ value: ANY, label }, ...items];
   return (
@@ -51,7 +54,7 @@ function Choice({
       value={value ?? ANY}
       onValueChange={(v) => onChange(v === null || v === ANY ? undefined : String(v))}
     >
-      <SelectTrigger size="sm" aria-label={name} className="min-w-32">
+      <SelectTrigger size="sm" aria-label={name} className={cn("min-w-32", className)}>
         <SelectValue />
       </SelectTrigger>
       <SelectContent alignItemWithTrigger={false} align="start">

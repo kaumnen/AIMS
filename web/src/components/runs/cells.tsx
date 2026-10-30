@@ -44,7 +44,16 @@ export function Status({ run }: { run: RunSummary }) {
 // ticks are red, so the red grows with how bad it is.
 const RED_FROM = 3;
 
-export function Meter({ value, label }: { value: number; label: string }) {
+// `quiet` drops the red, for a flag a review set aside.
+export function Meter({
+  value,
+  label,
+  quiet = false,
+}: {
+  value: number;
+  label: string;
+  quiet?: boolean;
+}) {
   return (
     <span role="img" aria-label={label} title={label} className="flex items-center gap-px">
       {[1, 2, 3, 4, 5].map((i) => (
@@ -52,7 +61,13 @@ export function Meter({ value, label }: { value: number; label: string }) {
           key={i}
           className={cn(
             "h-2.5 w-[3px] rounded-[1px]",
-            i > value ? "bg-grid" : i >= RED_FROM ? "bg-flag" : "bg-foreground",
+            i > value
+              ? "bg-grid"
+              : quiet
+                ? "bg-muted-foreground"
+                : i >= RED_FROM
+                  ? "bg-flag"
+                  : "bg-foreground",
           )}
         />
       ))}

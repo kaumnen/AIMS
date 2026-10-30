@@ -258,6 +258,21 @@ export function flagsQuery(source: string) {
   });
 }
 
+export function eventQuery(runId: string, seq: number) {
+  return queryOptions({
+    queryKey: ["runs", "event", runId, seq] as const,
+    queryFn: async ({ signal }) => {
+      const { data, error } = await client.GET("/api/runs/{run_id}/events/{seq}", {
+        params: { path: { run_id: runId, seq } },
+        signal,
+      });
+      if (error) throw error;
+      return data;
+    },
+    staleTime: Infinity,
+  });
+}
+
 // Blobs never change: their name is their hash.
 export function blobQuery(runId: string, blob: BlobRef) {
   return queryOptions({

@@ -4816,7 +4816,8 @@ export interface components {
          *     it ran, known once the run is sealed and its truth file arrived. `steps` counts its agents'
          *     model calls, `cost_usd` sums its priced live model responses, monitor calls included (None
          *     when there is none), `reward` is the verifier's last reward and `reviews` counts the
-         *     monitor runs over it that have started.
+         *     monitor runs over it that have started. `preset` is the preset of the monitor that watches
+         *     the run, or that a monitor run runs, and `monitor_mode` a monitor run's mode.
          */
         RunSummary: {
             /** Categories */
@@ -4854,8 +4855,12 @@ export interface components {
              * @default 0
              */
             max_severity: number;
+            /** Monitor Mode */
+            monitor_mode: string | null;
             /** Origin */
             origin: string | null;
+            /** Preset */
+            preset: string | null;
             /** Reason */
             reason: string | null;
             /**
