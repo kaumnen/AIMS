@@ -1,18 +1,19 @@
+import asyncio
+import uuid
 from typing import Any
 
 import aiodocker
 import pytest
 
-from aims.sandbox.images import ensure_built, ensure_image
+from aims.sandbox.images import ensure_built
 
 pytestmark = pytest.mark.anyio
 
 
 class Images:
-    """Docker's image API, with another builder that finishes first."""
+    """Docker's image API, with builds that take a while."""
 
-    def __init__(self, *, rival: bool) -> None:
-        self.rival = rival
+    def __init__(self) -> None:
         self.tags: set[str] = set()
         self.builds = 0
 
@@ -23,30 +24,30 @@ class Images:
 
     async def build(self, *, tag: str, **_: Any) -> None:
         self.builds += 1
-        if self.rival:
-            self.tags.add(tag)
-            raise aiodocker.DockerError(500, f"image {tag}: already exists")
+        await asyncio.sleep(0.3)
+        self.tags.add(tag)
 
 
 class Docker:
-    def __init__(self, *, rival: bool) -> None:
-        self.images = Images(rival=rival)
+    def __init__(self) -> None:
+        self.images = Images()
 
 
-async def test_a_build_lost_to_a_rival_builder_uses_its_image() -> None:
-    docker: Any = Docker(rival=True)
-    tag = await ensure_image(docker, "tracer")
-    assert tag.startswith("aims-tracer:")
-    assert await ensure_built(docker, b"context") in docker.images.tags
-    assert docker.images.builds == 2
+async def test_builds_of_one_image_at_once_build_it_once() -> None:
+    docker: Any = Docker()
+    context = uuid.uuid4().bytes
+    tags = await asyncio.gather(*(ensure_built(docker, context) for _ in range(3)))
+    assert len(set(tags)) == 1
+    assert tags[0] in docker.images.tags
+    assert docker.images.builds == 1
 
 
-async def test_a_failed_build_with_no_image_still_raises() -> None:
-    docker: Any = Docker(rival=False)
+async def test_a_failed_build_raises() -> None:
+    docker: Any = Docker()
 
     async def broken(**_: Any) -> None:
         raise aiodocker.DockerError(500, "no space left")
 
     docker.images.build = broken
     with pytest.raises(aiodocker.DockerError):
-        await ensure_image(docker, "tracer")
+        await ensure_built(docker, uuid.uuid4().bytes)

@@ -1,10 +1,17 @@
+import asyncio
+import contextlib
+import fcntl
 import gzip
 import hashlib
 import io
 import logging
+import os
 import tarfile
+import tempfile
+from collections.abc import AsyncGenerator
 from importlib.resources import files
 from importlib.resources.abc import Traversable
+from pathlib import Path
 from typing import Any
 
 import aiodocker
@@ -57,17 +64,34 @@ async def _exists(docker: aiodocker.Docker, tag: str) -> bool:
 
 
 async def _build(docker: aiodocker.Docker, tag: str, **kwargs: Any) -> str:
-    """Build `tag` unless it exists. Tags name their content, so when a build fails because
-    another process built the same tag at the same time, that image serves."""
+    """Build `tag` unless it exists, one build of a tag at a time on this host: on Docker's
+    containerd image store a second build of a tag deletes the image the first one made."""
     if await _exists(docker, tag):
         return tag
-    log.info("building %s", tag)
-    try:
+    async with _host_lock(tag):
+        if await _exists(docker, tag):
+            return tag
+        log.info("building %s", tag)
         await docker.images.build(tag=tag, labels={"aims.managed": "1"}, **kwargs)
-    except aiodocker.DockerError:
-        if not await _exists(docker, tag):
-            raise
     return tag
+
+
+@contextlib.asynccontextmanager
+async def _host_lock(tag: str, poll: float = 0.2) -> AsyncGenerator[None]:
+    path = (
+        Path(tempfile.gettempdir()) / f"aims-build-{tag.replace(':', '-').replace('/', '-')}.lock"
+    )
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                await asyncio.sleep(poll)
+        yield
+    finally:
+        os.close(fd)
 
 
 async def ensure_pulled(docker: aiodocker.Docker, image: str) -> dict:
