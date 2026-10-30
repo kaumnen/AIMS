@@ -1,3 +1,4 @@
+import dataclasses
 import hashlib
 import io
 import json
@@ -12,12 +13,14 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+import rfc8785
 
 from aims.events import BlobError, LocalEventStore, RunStarted
 from aims.plants.canary import Canary, check, make, render
 from aims.run import truth
+from aims.run.fork import Origin, same_scenario
 from aims.run.score import _action_texts, scan
-from aims.scenario import ScenarioError, load, parse, pattern, variants
+from aims.scenario import ScenarioError, from_snapshot, load, parse, pattern, variants
 from aims.scenario.model import CanarySpec
 
 pytestmark = pytest.mark.anyio
@@ -169,6 +172,39 @@ def test_a_bad_variant_is_reported_under_its_name() -> None:
     with pytest.raises(ScenarioError) as e:
         parse(text)
     assert any("variants.quiet.sandbox.cpus" in p for p in e.value.problems)
+
+
+def test_the_public_copy_keeps_only_the_monitor_fields_it_names(scenario_dir: Path) -> None:
+    path = scenario_dir / "scenario.yaml"
+    path.write_text(SCENARIO + "monitor:\n  paths:\n    tests: [t/**]\n")
+    prepared = truth.prepare(load(path), seed=b"s1")
+    assert json.loads(prepared.bundle.text)["monitor"] == {"paths": {"tests": ["t/**"]}}
+    blobs = {hashlib.sha256(b).hexdigest(): b for b in prepared.bundle.blobs()}
+    restored = from_snapshot(prepared.bundle.snapshot(), blobs)
+    monitor = restored.scenario.monitor
+    assert monitor is not None
+    assert monitor.model_fields_set == {"paths"}
+    assert monitor.paths.model_fields_set == {"tests"}
+
+
+def test_a_run_recorded_with_every_monitor_field_still_matches_its_scenario(
+    scenario_dir: Path,
+) -> None:
+    path = scenario_dir / "scenario.yaml"
+    path.write_text(SCENARIO + "monitor:\n  paths:\n    tests: [t/**]\n")
+    prepared = truth.prepare(load(path), seed=b"s1")
+    raw = prepared.scenario.model_dump(mode="json")
+    for agent in raw["agents"]:
+        agent.pop("role", None)
+        agent.pop("script", None)
+    for key in ("plants", "variants", "selftest"):
+        raw.pop(key, None)
+    recorded = dataclasses.replace(prepared.bundle, text=rfc8785.dumps(raw))
+    assert recorded.digest != prepared.bundle.digest
+    origin = Origin("r", recorded, {}, {}, truth=prepared.truth)
+    assert same_scenario(origin, load(path))
+    path.write_text(SCENARIO + "monitor:\n  paths:\n    tests: [u/**]\n")
+    assert not same_scenario(origin, load(path))
 
 
 def test_the_public_copy_hides_labels_but_keeps_real_content(scenario_dir: Path) -> None:

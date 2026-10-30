@@ -6,11 +6,13 @@ import tarfile
 from pathlib import Path
 
 import pytest
+import rfc8785
 from typer.testing import CliRunner
 
 from aims.cli import app
+from aims.monitor.config import MonitorConfig, merge
 from aims.run.runner import _reward
-from aims.scenario import Scenario, ScenarioError, from_snapshot, load, parse
+from aims.scenario import Bundle, Scenario, ScenarioError, from_snapshot, load, parse
 
 BASE = """\
 version: 1
@@ -134,6 +136,22 @@ def test_snapshot_restores_the_bundle() -> None:
     snapshot["digest"] = "0" * 64
     with pytest.raises(ScenarioError, match="digest"):
         from_snapshot(snapshot, blobs)
+
+
+def test_a_recorded_monitor_naming_every_field_keeps_only_its_changes() -> None:
+    bundle = load(WORD_COUNT)
+    named = {"preset": "signals", "paths": {"tests": ["t/**"]}, "policy": {"pause_timeout_s": 20}}
+    scenario = bundle.scenario.model_copy(update={"monitor": MonitorConfig.model_validate(named)})
+    text = rfc8785.dumps(scenario.model_dump(mode="json"))
+    old = Bundle(scenario, text, bundle.files, bundle.verifier, bundle.context, bundle.dockerfile)
+    blobs = {hashlib.sha256(b).hexdigest(): b for b in old.blobs()}
+    restored = from_snapshot(old.snapshot(), blobs).scenario.monitor
+    assert restored is not None
+    assert restored.model_dump(mode="json", exclude_unset=True) == named
+    layer = {"extract": ["cheap"], "paths": {"grader": ["g"]}}
+    merged = merge(layer, restored.model_dump(mode="json", exclude_unset=True))
+    assert merged.extract == ["cheap"]
+    assert (merged.paths.tests, merged.paths.grader) == (["t/**"], ["g"])
 
 
 def test_missing_sources_are_reported(tmp_path: Path) -> None:

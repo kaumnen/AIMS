@@ -16,6 +16,7 @@ from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from ruamel.yaml.error import YAMLError
 
 from aims.events import BlobRef
+from aims.monitor.config import MonitorConfig
 from aims.scenario import variants
 from aims.scenario.model import HOME, Scenario
 
@@ -243,13 +244,35 @@ def from_snapshot(snapshot: dict[str, Any], blobs: dict[str, bytes]) -> Bundle:
     text = get("file")
     if text is None:
         raise ScenarioError(["the run did not record its scenario file"])
-    scenario = parse(text.decode(), source=f"recorded {snapshot.get('name')}")
+    scenario = _named(parse(text.decode(), source=f"recorded {snapshot.get('name')}"))
     bundle = Bundle(
         scenario, text, get("files"), get("verifier"), get("context"), snapshot.get("dockerfile")
     )
     if bundle.digest != snapshot.get("digest"):
         raise ScenarioError(["the recorded scenario does not match its digest"])
     return bundle
+
+
+def _named(scenario: Scenario) -> Scenario:
+    """`scenario` with a `monitor:` that names every field, as runs recorded before the public
+    copy kept only the named ones wrote it, cut back to the fields that differ from the
+    defaults, so the config layers apply under it again."""
+    monitor = scenario.monitor
+    if monitor is None or monitor.model_fields_set != set(MonitorConfig.model_fields):
+        return scenario
+    named = _changed(monitor.model_dump(mode="json"), MonitorConfig().model_dump(mode="json"))
+    return scenario.model_copy(update={"monitor": MonitorConfig.model_validate(named)})
+
+
+def _changed(value: dict[str, Any], default: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, item in value.items():
+        base = default.get(key)
+        if item == base:
+            continue
+        both = isinstance(item, dict) and isinstance(base, dict)
+        out[key] = _changed(item, base) if both else item
+    return out
 
 
 def _plain(node: Any) -> Any:

@@ -76,7 +76,7 @@ def same_scenario(origin: Origin, bundle: Bundle) -> bool:
         made = truth.prepare(bundle, origin.truth.get("variant"), origin.seed, origin.inherited)
     except ValueError, OSError:
         return False
-    return made.bundle.digest == origin.bundle.digest
+    return origin.bundle.digest in truth.digests(made)
 
 
 def _truth(store: EventStore, run_id: str, want: str) -> dict[str, Any] | None:

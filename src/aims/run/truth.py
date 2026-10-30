@@ -10,6 +10,7 @@ what the agents' sandboxes hold. The record also keeps every file the scenario n
 import base64
 import contextlib
 import copy
+import dataclasses
 import hashlib
 import io
 import json
@@ -533,7 +534,7 @@ def _public_scenario(
 ) -> Scenario:
     """`full` without its hidden labels, with canaries filled in and each agent's plant files
     and tools folded in as if the scenario had given them."""
-    raw = full.model_dump(mode="json")
+    raw = _dump(full)
     for key in HIDDEN:
         raw.pop(key, None)
     raw = _render_tree(raw, canaries)
@@ -581,8 +582,25 @@ def _public_bundle(
     )
 
 
-def _public_dump(scenario: Scenario) -> dict[str, Any]:
+def _dump(scenario: Scenario) -> dict[str, Any]:
+    """`scenario` as a mapping whose `monitor:` holds only the fields it names, so the config
+    layers still apply under it when the recorded scenario is read back."""
     raw = scenario.model_dump(mode="json")
+    if scenario.monitor is not None:
+        raw["monitor"] = scenario.monitor.model_dump(mode="json", exclude_unset=True)
+    return raw
+
+
+def digests(prepared: Prepared) -> set[str]:
+    """The digests of the public copy of `prepared`: as written now, and as runs recorded it
+    before its `monitor:` kept only the fields it names."""
+    legacy = rfc8785.dumps(_public_dump(prepared.scenario, named=False))
+    old = dataclasses.replace(prepared.bundle, text=legacy)
+    return {prepared.bundle.digest, old.digest}
+
+
+def _public_dump(scenario: Scenario, *, named: bool = True) -> dict[str, Any]:
+    raw = _dump(scenario) if named else scenario.model_dump(mode="json")
     for key in HIDDEN:
         raw.pop(key, None)
     for agent in raw["agents"]:
