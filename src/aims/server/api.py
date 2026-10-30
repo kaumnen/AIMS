@@ -373,7 +373,7 @@ async def get_run(run_id: str, principal: Viewer, state: State) -> RunDetail:
     verdict = await state.store.events(
         run_id, types=["monitor.verdict"], before=found.events, limit=1
     )
-    watched = await state.store.runs(origin=run_id, limit=MAX_PAGE)
+    watched = await state.store.runs(origin=run_id, kind="monitor", limit=MAX_PAGE)
     queued = await state.db.jobs_page(before=None, limit=MAX_PAGE, kind="monitor", origin=run_id)
     monitors = sorted({r.run_id for r in watched} | {j.run_id for j in queued}, reverse=True)
     return RunDetail(

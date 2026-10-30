@@ -538,6 +538,17 @@ async def test_a_monitor_run_lists_by_origin_and_takes_no_sweep(
         assert [(x["run_id"], x["kind"], x["max_severity"]) for x in listed] == [
             (run_id, "monitor", 3)
         ]
+        score = await local.create_run(
+            RunStarted(
+                scenario="pushed",
+                oversight="observe",
+                kind="score",
+                origin=origin,
+                origin_head=head.hash,
+            )
+        )
+        await local.append(score, [Draft(RunFinished(status="completed"))])
+        await ship(local, fake.client, score)
         assert (await c.get(f"/api/runs/{origin}")).json()["monitor_runs"] == [run_id]
 
 
