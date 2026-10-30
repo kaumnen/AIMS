@@ -2399,6 +2399,46 @@
         "title": "EventsMessage",
         "type": "object"
       },
+      "ExecActivity": {
+        "description": "What one exec left in the log: `events` in all, `types` per event type, `file_ops` per\n`file.access` op and `changes` the paths its snapshots list as changed.",
+        "properties": {
+          "changes": {
+            "title": "Changes",
+            "type": "integer"
+          },
+          "events": {
+            "title": "Events",
+            "type": "integer"
+          },
+          "exec_id": {
+            "title": "Exec Id",
+            "type": "string"
+          },
+          "file_ops": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "File Ops",
+            "type": "object"
+          },
+          "types": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Types",
+            "type": "object"
+          }
+        },
+        "required": [
+          "exec_id",
+          "events",
+          "types",
+          "file_ops",
+          "changes"
+        ],
+        "title": "ExecActivity",
+        "type": "object"
+      },
       "ExecFinished": {
         "additionalProperties": false,
         "description": "How an exec ended, measured from the host side. `end` never trusts the exit code.\n\n`procs` counts the exec's `proc.exec` records in the log. `spilled` counts its kernel records\nkept in an `audit.spill` by the time it finished; `dropped` counts those neither logged nor\nspilled.",
@@ -8857,7 +8897,7 @@
       },
       "RunSummary": {
         "additionalProperties": false,
-        "description": "`kind` says what the run is and `origin` names the run a monitor run watched. `flags`\ncounts its logical flags and `categories` them per category, whatever their status;\n`max_importance` is the highest importance of a flag not cleared or rejected,\n`verdict_severity` the judge's, and `max_severity` the higher of the two, 0 for neither.\n`series` and `series_index` place a run in its series; `variant` is the scenario variant\nit ran, known once the run is sealed and its truth file arrived.",
+        "description": "`kind` says what the run is and `origin` names the run a monitor run watched. `flags`\ncounts its logical flags and `categories` them per category, whatever their status;\n`max_importance` is the highest importance of a flag not cleared or rejected,\n`verdict_severity` the judge's, and `max_severity` the higher of the two, 0 for neither.\n`series` and `series_index` place a run in its series; `variant` is the scenario variant\nit ran, known once the run is sealed and its truth file arrived. `steps` counts its agents'\nmodel calls, `cost_usd` sums its priced live model responses, monitor calls included (None\nwhen there is none), `reward` is the verifier's last reward and `reviews` counts the\nmonitor runs over it that have started.",
         "properties": {
           "categories": {
             "additionalProperties": {
@@ -8865,6 +8905,17 @@
             },
             "title": "Categories",
             "type": "object"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
           },
           "diverged": {
             "anyOf": [
@@ -8958,6 +9009,22 @@
             ],
             "title": "Reason"
           },
+          "reviews": {
+            "default": 0,
+            "title": "Reviews",
+            "type": "integer"
+          },
+          "reward": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reward"
+          },
           "run_id": {
             "title": "Run Id",
             "type": "string"
@@ -9030,6 +9097,11 @@
             "title": "Status",
             "type": "string"
           },
+          "steps": {
+            "default": 0,
+            "title": "Steps",
+            "type": "integer"
+          },
           "variant": {
             "anyOf": [
               {
@@ -9075,7 +9147,11 @@
           "max_severity",
           "series",
           "series_index",
-          "variant"
+          "variant",
+          "steps",
+          "cost_usd",
+          "reward",
+          "reviews"
         ],
         "title": "RunSummary",
         "type": "object"
@@ -11056,6 +11132,128 @@
         "title": "Started",
         "type": "object"
       },
+      "StepInfo": {
+        "description": "Step `n` of an agent: its model call `call_id` and the tool calls it made. `seq` is the\n`agent.step` event, `seq_from` the first request of the model call and `seq_to` the step's\nlast event so far: the step, an exec's end or a tool result. `ts_from` and `ts_to` are their\ntimes.",
+        "properties": {
+          "agent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Id"
+          },
+          "call_id": {
+            "title": "Call Id",
+            "type": "string"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          },
+          "n": {
+            "title": "N",
+            "type": "integer"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "seq_from": {
+            "title": "Seq From",
+            "type": "integer"
+          },
+          "seq_to": {
+            "title": "Seq To",
+            "type": "integer"
+          },
+          "source": {
+            "default": "live",
+            "enum": [
+              "live",
+              "replay"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "completed",
+              "incomplete",
+              "error",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/ToolInfo"
+            },
+            "title": "Tools",
+            "type": "array"
+          },
+          "ts_from": {
+            "title": "Ts From",
+            "type": "string"
+          },
+          "ts_to": {
+            "title": "Ts To",
+            "type": "string"
+          }
+        },
+        "required": [
+          "seq",
+          "agent_id",
+          "n",
+          "call_id",
+          "seq_from",
+          "seq_to",
+          "ts_from",
+          "ts_to",
+          "status"
+        ],
+        "title": "StepInfo",
+        "type": "object"
+      },
+      "StepPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/StepInfo"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next"
+          }
+        },
+        "required": [
+          "items",
+          "next"
+        ],
+        "title": "StepPage",
+        "type": "object"
+      },
       "StopBody": {
         "properties": {
           "reason": {
@@ -11470,6 +11668,104 @@
           "model_call"
         ],
         "title": "ToolCall",
+        "type": "object"
+      },
+      "ToolInfo": {
+        "description": "A tool call of a step. `args` is the call's arguments as JSON (or the raw text when it is\nnot JSON) with every string cut to `PREVIEW` characters, None when they are a blob;\n`args_cut` says whether anything was cut and `args_bytes` is their full size. `execs` are\nthe sandbox commands the call ran, oldest first; `exit_code` and `end` are the last one's\nand `duration_ms` their sum. `done` says the agent got its result, which set `error` and\n`denied`.",
+        "properties": {
+          "args": {
+            "$ref": "#/components/schemas/JsonValue"
+          },
+          "args_bytes": {
+            "default": 0,
+            "title": "Args Bytes",
+            "type": "integer"
+          },
+          "args_cut": {
+            "default": false,
+            "title": "Args Cut",
+            "type": "boolean"
+          },
+          "call_id": {
+            "title": "Call Id",
+            "type": "string"
+          },
+          "denied": {
+            "default": false,
+            "title": "Denied",
+            "type": "boolean"
+          },
+          "done": {
+            "default": false,
+            "title": "Done",
+            "type": "boolean"
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
+          "end": {
+            "anyOf": [
+              {
+                "enum": [
+                  "exited",
+                  "timeout",
+                  "cancelled",
+                  "failed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End"
+          },
+          "error": {
+            "default": false,
+            "title": "Error",
+            "type": "boolean"
+          },
+          "execs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Execs",
+            "type": "array"
+          },
+          "exit_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Code"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "seq",
+          "call_id",
+          "name"
+        ],
+        "title": "ToolInfo",
         "type": "object"
       },
       "ToolResult": {
@@ -12781,7 +13077,7 @@
     },
     "/api/runs": {
       "get": {
-        "description": "Runs newest first, with jobs that have not started yet. `kind` keeps runs of that kind,\n`origin` the monitor runs of that run, `severity` runs whose `max_severity` is at least it,\n`category` runs with a flag in it, whatever its status, `series` the runs of that series\nand `variant` the sealed runs of that variant. Jobs not started yet have none of these, so\n`severity`, `category`, `series` and `variant` leave them out.",
+        "description": "Runs newest first, with jobs that have not started yet. `kind` keeps runs of that kind,\n`origin` the monitor runs of that run, `severity` runs whose `max_severity` is at least it,\n`category` runs with a flag in it, whatever its status, `series` the runs of that series,\n`variant` the sealed runs of that variant and `scenario` the runs of that scenario. Jobs\nnot started yet have none of `severity`, `category`, `series` and `variant`, so those\nleave them out.",
         "operationId": "list_runs",
         "parameters": [
           {
@@ -12931,6 +13227,22 @@
                 }
               ],
               "title": "Variant"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scenario",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scenario"
             }
           }
         ],
@@ -13202,6 +13514,85 @@
         ]
       }
     },
+    "/api/runs/{run_id}/activity": {
+      "get": {
+        "description": "What each exec left in the log, per event type and file op, in the order asked. Execs\nwith no events are left out.",
+        "operationId": "list_activity",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "exec",
+            "required": true,
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Exec",
+              "type": "array"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ExecActivity"
+                  },
+                  "title": "Response List Activity",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not signed in"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Invalid request"
+          }
+        },
+        "summary": "List Activity",
+        "tags": [
+          "events"
+        ]
+      }
+    },
     "/api/runs/{run_id}/blobs/{sha256}": {
       "get": {
         "description": "A blob's bytes, never rendered: always an attachment of type octet-stream.",
@@ -13453,7 +13844,7 @@
     },
     "/api/runs/{run_id}/events": {
       "get": {
-        "description": "One page in seq order. With only `before`, the page is the events just before it and\n`next` pages further back.",
+        "description": "One page in seq order. With only `before`, the page is the events just before it and\n`next` pages further back. `exec` keeps the events of those execs: their start and end and\nevery kernel record, spill and snapshot that names them.",
         "operationId": "list_events",
         "parameters": [
           {
@@ -13559,6 +13950,25 @@
                 }
               ],
               "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "exec",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Exec"
             }
           }
         ],
@@ -14845,6 +15255,113 @@
         "summary": "Score Run",
         "tags": [
           "score"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/steps": {
+      "get": {
+        "description": "Agent steps in seq order, one row per model call with the tool calls it made, their\ncommands' ends and results. Page on with `after=next`.",
+        "operationId": "list_steps",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "agent",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Agent"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StepPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not signed in"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Invalid request"
+          }
+        },
+        "summary": "List Steps",
+        "tags": [
+          "events"
         ]
       }
     },

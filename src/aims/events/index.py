@@ -1,4 +1,5 @@
 import asyncio
+import bisect
 import json
 import sqlite3
 from collections.abc import Sequence
@@ -6,13 +7,22 @@ from pathlib import Path
 from typing import Any, Literal
 
 import aiosqlite
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
 from aims.events.chain import Head
 from aims.events.payloads import (
+    AgentStep,
     Category,
+    ExecEnd,
+    ExecFinished,
     ExecPhase,
+    ExecStarted,
+    FileAccess,
     FlagLayer,
+    FsSnapshot,
+    ModelRequest,
+    ModelResponse,
+    ModelStatus,
     MonitorCleared,
     MonitorFlag,
     MonitorVerdict,
@@ -20,10 +30,12 @@ from aims.events.payloads import (
     RunKind,
     ScoreUnit,
     TaskScored,
+    ToolCall,
+    ToolResult,
 )
-from aims.events.schema import SCHEMA_VERSION, Content, Event, Timestamp, format_ts
+from aims.events.schema import SCHEMA_VERSION, BlobRef, Content, Event, Timestamp, format_ts
 
-VERSION = 5
+VERSION = 6
 MAX_TEXT = 32 * 1024
 MAX_PAGE = 1000
 
@@ -47,13 +59,16 @@ create table runs (
     series text,
     series_index integer,
     variant text,
-    run_group text
+    run_group text,
+    steps integer not null default 0,
+    nano_usd integer,
+    reward real
 ) strict;
 
 create index runs_by_origin on runs (origin, run_id) where origin is not null;
 create index runs_by_series on runs (series, series_index) where series is not null;
-
 create index runs_by_group on runs (run_group) where run_group is not null;
+create index runs_by_scenario on runs (scenario, run_id);
 
 create table score_units (
     run_id text not null references runs (run_id),
@@ -96,11 +111,13 @@ create table events (
     prev_hash text not null,
     hash text not null,
     text text not null,
+    exec_id text,
     unique (run_id, seq)
 ) strict;
 
 create index events_by_type on events (run_id, type, seq);
 create index events_by_agent on events (run_id, agent_id, seq);
+create index events_by_exec on events (run_id, exec_id, seq) where exec_id is not null;
 
 create virtual table events_fts using fts5 (
     text, content = 'events', content_rowid = 'id', tokenize = 'trigram'
@@ -198,7 +215,9 @@ class RunInfo(BaseModel):
     """A run as the index keeps it. `flags` counts its logical flags and `categories` them per
     category, whatever their status. `max_importance` is the highest importance of a flag not
     cleared or rejected, `verdict_severity` the judge's `max_severity`, and `severity` the
-    higher of the two, 0 when there is neither."""
+    higher of the two, 0 when there is neither. `steps` counts its agents' model calls,
+    `cost_usd` sums the priced live model responses of every caller (None when there is none),
+    `reward` is the last verifier reward and `reviews` counts the monitor runs over it."""
 
     run_id: str
     scenario: str
@@ -218,6 +237,10 @@ class RunInfo(BaseModel):
     series_index: int | None = None
     variant: str | None = None
     group: str | None = None
+    steps: int = 0
+    cost_usd: float | None = None
+    reward: float | None = None
+    reviews: int = 0
 
 
 LabelKind = Literal["real", "false_alarm", "unclear"]
@@ -344,6 +367,10 @@ RUN_KEYS = (
     "series_index",
     "variant",
     "group",
+    "steps",
+    "cost_usd",
+    "reward",
+    "reviews",
     "categories",
 )
 AGGREGATE = """
@@ -395,6 +422,68 @@ class SampleWindow(BaseModel):
 
 
 SAMPLE_FIELDS = tuple(SampleWindow.model_fields)
+PREVIEW = 300
+STEP_TYPES = (
+    ModelRequest.type,
+    ToolCall.type,
+    ExecStarted.type,
+    ExecFinished.type,
+    ToolResult.type,
+)
+
+
+class ToolInfo(BaseModel):
+    """A tool call of a step. `args` is the call's arguments as JSON (or the raw text when it is
+    not JSON) with every string cut to `PREVIEW` characters, None when they are a blob;
+    `args_cut` says whether anything was cut and `args_bytes` is their full size. `execs` are
+    the sandbox commands the call ran, oldest first; `exit_code` and `end` are the last one's
+    and `duration_ms` their sum. `done` says the agent got its result, which set `error` and
+    `denied`."""
+
+    seq: int
+    call_id: str
+    name: str
+    args: JsonValue = None
+    args_cut: bool = False
+    args_bytes: int = 0
+    execs: list[str] = Field(default_factory=list)
+    exit_code: int | None = None
+    end: ExecEnd | None = None
+    duration_ms: int | None = None
+    done: bool = False
+    error: bool = False
+    denied: bool = False
+
+
+class StepInfo(BaseModel):
+    """Step `n` of an agent: its model call `call_id` and the tool calls it made. `seq` is the
+    `agent.step` event, `seq_from` the first request of the model call and `seq_to` the step's
+    last event so far: the step, an exec's end or a tool result. `ts_from` and `ts_to` are their
+    times."""
+
+    seq: int
+    agent_id: str | None
+    n: int
+    call_id: str
+    seq_from: int
+    seq_to: int
+    ts_from: Timestamp
+    ts_to: Timestamp
+    status: ModelStatus
+    source: Literal["live", "replay"] = "live"
+    cost_usd: float | None = None
+    tools: list[ToolInfo] = Field(default_factory=list)
+
+
+class ExecActivity(BaseModel):
+    """What one exec left in the log: `events` in all, `types` per event type, `file_ops` per
+    `file.access` op and `changes` the paths its snapshots list as changed."""
+
+    exec_id: str
+    events: int
+    types: dict[str, int]
+    file_ops: dict[str, int]
+    changes: int
 
 
 class Index:
@@ -486,12 +575,12 @@ class Index:
                 e.prev_hash,
                 e.hash,
                 e.search_text()[:MAX_TEXT],
+                exec_id if isinstance(exec_id := e.data.get("exec_id"), str) else None,
             )
             for e in events
         ]
         windows = [w for e in events if e.type == ResourceSample.type if (w := _window(e))]
         finished = next((e for e in events if e.type == "run.finished"), None)
-        monitor = [e for e in events if e.type in MONITOR_TYPES]
         async with self._lock:
             await self._db.execute("begin immediate")
             try:
@@ -519,14 +608,20 @@ class Index:
                             group if isinstance(group, str) else None,
                         ),
                     )
-                if monitor:
-                    await self._monitor(run_id, monitor)
+                async with self._db.execute(
+                    "select last_seq from runs where run_id = ?", (run_id,)
+                ) as cur:
+                    row = await cur.fetchone()
+                if row is not None:
+                    fresh = [e for e in events if e.seq > row[0]]
+                    await self._monitor(run_id, [e for e in fresh if e.type in MONITOR_TYPES])
+                    await self._totals(run_id, fresh)
                 units = [e for e in events if e.type == ScoreUnit.type]
                 if units:
                     await self._units(run_id, events, units)
                 await self._db.executemany(
                     "insert into events (run_id, seq, ts, agent_id, type, data, prev_hash, hash,"
-                    " text) values (?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict do nothing",
+                    " text, exec_id) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict do nothing",
                     rows,
                 )
                 if windows:
@@ -554,14 +649,34 @@ class Index:
                 raise
             await self._db.execute("commit")
 
-    async def _monitor(self, run_id: str, events: Sequence[Event]) -> None:
-        """Index the flags and flag statuses of events not indexed yet, then the run's flag
-        aggregates. Runs inside `add`'s transaction, before the head moves."""
-        async with self._db.execute("select last_seq from runs where run_id = ?", (run_id,)) as cur:
-            row = await cur.fetchone()
-        if row is None:
-            return
-        fresh = [e for e in events if e.seq > row[0]]
+    async def _totals(self, run_id: str, fresh: Sequence[Event]) -> None:
+        """Add the steps, cost and reward of events not indexed yet to the run's row. Cost adds
+        up in whole nano-dollars, so any batching of the same events gives the same total."""
+        steps, nanos, priced, scored, reward = 0, 0, False, False, None
+        for e in fresh:
+            if e.type == AgentStep.type:
+                steps += 1
+            elif e.type == ModelResponse.type and e.data.get("source", "live") == "live":
+                value = e.data.get("cost_usd")
+                if isinstance(value, int | float) and not isinstance(value, bool):
+                    nanos += round(value * 1e9)
+                    priced = True
+            elif e.type == TaskScored.type:
+                value = e.data.get("reward")
+                scored = True
+                is_number = isinstance(value, int | float) and not isinstance(value, bool)
+                reward = value if is_number else None
+        if steps or priced or scored:
+            await self._db.execute(
+                "update runs set steps = steps + ?,"
+                " nano_usd = case when ? then coalesce(nano_usd, 0) + ? else nano_usd end,"
+                " reward = case when ? then ? else reward end where run_id = ?",
+                (steps, priced, nanos, scored, reward, run_id),
+            )
+
+    async def _monitor(self, run_id: str, fresh: Sequence[Event]) -> None:
+        """Index the flags and flag statuses of monitor events not indexed yet, then the run's
+        flag aggregates. Runs inside `add`'s transaction, before the head moves."""
         touched = False
         for e in fresh:
             try:
@@ -702,13 +817,17 @@ class Index:
         series: str | None = None,
         variant: str | None = None,
         group: str | None = None,
+        scenario: str | None = None,
     ) -> list[RunInfo]:
         """Runs newest first. `severity` keeps runs whose `severity` is at least it, `category`
         those with a flag in it, whatever its status, `origin` the monitor runs of that run,
-        `series` the runs of that series, `variant` the sealed runs of that variant and `group`
-        the samples of that group."""
+        `series` the runs of that series, `variant` the sealed runs of that variant, `group`
+        the samples of that group and `scenario` the runs of that scenario."""
         where: list[str] = []
         args: list[Any] = []
+        if scenario is not None:
+            where.append("scenario = ?")
+            args.append(scenario)
         if group is not None:
             where.append("run_group = ?")
             args.append(group)
@@ -743,7 +862,9 @@ class Index:
         async with self._db.execute(
             "select run_id, scenario, status, started_at, ended_at, last_seq + 1, last_hash, kind,"
             " origin, flags, max_importance, verdict_severity, severity, series, series_index,"
-            f" variant, run_group, categories from runs {clause}",
+            " variant, run_group, steps, nano_usd / 1e9, reward, (select count(*) from runs m"
+            " where m.origin = runs.run_id and m.kind = 'monitor'),"
+            f" categories from runs {clause}",
             args,
         ) as cur:
             rows = await cur.fetchall()
@@ -996,11 +1117,16 @@ class Index:
         types: Sequence[str] = (),
         agent_id: str | None = None,
         query: str | None = None,
+        execs: Sequence[str] = (),
     ) -> list[Event]:
-        """One page in seq order. With only `before` set, the page is the last events before it."""
+        """One page in seq order. With only `before` set, the page is the last events before it.
+        `execs` keeps the events that name one of those execs."""
         joins = ""
         where = ["e.run_id = ?"]
         args: list[Any] = [run_id]
+        if execs:
+            where.append(f"e.exec_id in ({', '.join('?' * len(execs))})")
+            args.extend(execs)
         if after is not None:
             where.append("e.seq > ?")
             args.append(after)
@@ -1063,6 +1189,207 @@ class Index:
         ) as cur:
             rows = await cur.fetchall()
         return [SampleWindow.model_validate(dict(zip(SAMPLE_FIELDS, r, strict=True))) for r in rows]
+
+    async def steps(
+        self,
+        run_id: str,
+        *,
+        after: int | None = None,
+        limit: int = 100,
+        agent_id: str | None = None,
+    ) -> list[StepInfo]:
+        """A page of agent steps in seq order, after seq `after`, each with its tool calls."""
+        where = ["run_id = ?", "type = ?"]
+        args: list[Any] = [run_id, AgentStep.type]
+        if after is not None:
+            where.append("seq > ?")
+            args.append(after)
+        if agent_id is not None:
+            where.append("agent_id = ?")
+            args.append(agent_id)
+        args.append(_cap(limit))
+        async with self._db.execute(
+            f"select seq, ts, agent_id, data from events where {' and '.join(where)}"
+            " order by seq limit ?",
+            args,
+        ) as cur:
+            page = list(await cur.fetchall())
+        if not page:
+            return []
+        lo, hi = await self._span(run_id, page)
+        where = ["run_id = ?", f"type in ({', '.join('?' * len(STEP_TYPES))})", "seq > ?"]
+        args = [run_id, *STEP_TYPES, lo]
+        if hi is not None:
+            where.append("seq < ?")
+            args.append(hi)
+        if agent_id is not None:
+            where.append("agent_id = ?")
+            args.append(agent_id)
+        async with self._db.execute(
+            "select seq, ts, agent_id, type, json_extract(data, '$.call_id'),"
+            " json_extract(data, '$.role'),"
+            " json_extract(data, '$.model_call'), json_extract(data, '$.exec_id'),"
+            " case when type = 'tool.call' then json_extract(data, '$.name') end,"
+            " case when type = 'tool.call' then json_type(data, '$.arguments') end,"
+            " case when type = 'tool.call' then json_extract(data, '$.arguments') end,"
+            " case when type = 'exec.finished' then json_extract(data, '$.exit_code') end,"
+            " case when type = 'exec.finished' then json_extract(data, '$.end') end,"
+            " case when type = 'exec.finished' then json_extract(data, '$.duration_ms') end,"
+            " case when type = 'tool.result' then json_extract(data, '$.error') end,"
+            " case when type = 'tool.result' then json_extract(data, '$.denied') end"
+            f" from events where {' and '.join(where)} order by seq",
+            args,
+        ) as cur:
+            rows = list(await cur.fetchall())
+        return _steps(page, rows)
+
+    async def _span(self, run_id: str, page: Sequence[Sequence[Any]]) -> tuple[int, int | None]:
+        """Seqs that bound every event of the steps in `page`: each agent's step before its first
+        one in the page and after its last, None when an agent has no later step yet."""
+        agents: dict[str | None, tuple[int, int]] = {}
+        for seq, _, agent, _ in page:
+            agents[agent] = (agents.get(agent, (seq, seq))[0], seq)
+        lows: list[int] = []
+        hi, open_ended = -1, False
+        for agent, (first, last) in agents.items():
+            for op, seq, order in (("<", first, "desc"), (">", last, "asc")):
+                async with self._db.execute(
+                    f"select seq from events where run_id = ? and type = ? and seq {op} ?"
+                    f" and agent_id is ? order by seq {order} limit 1",
+                    (run_id, AgentStep.type, seq, agent),
+                ) as cur:
+                    row = await cur.fetchone()
+                if op == "<":
+                    lows.append(-1 if row is None else row[0])
+                elif row is None:
+                    open_ended = True
+                else:
+                    hi = max(hi, row[0])
+        return min(lows), None if open_ended else hi
+
+    async def activity(self, run_id: str, execs: Sequence[str]) -> list[ExecActivity]:
+        """What each of `execs` left in the log, in the order asked; execs with no events are
+        left out."""
+        if not execs:
+            return []
+        async with self._db.execute(
+            "select exec_id, type,"
+            " case when type = 'file.access' then json_extract(data, '$.op') end as op,"
+            " count(*),"
+            f" sum(case when type = '{FsSnapshot.type}' then json_extract(data, '$.total') end)"
+            f" from events where run_id = ? and exec_id in ({', '.join('?' * len(execs))})"
+            " group by exec_id, type, op",
+            (run_id, *execs),
+        ) as cur:
+            rows = await cur.fetchall()
+        found: dict[str, ExecActivity] = {}
+        for exec_id, type_, op, n, changes in rows:
+            a = found.setdefault(
+                exec_id,
+                ExecActivity(exec_id=exec_id, events=0, types={}, file_ops={}, changes=0),
+            )
+            a.events += n
+            a.types[type_] = a.types.get(type_, 0) + n
+            if type_ == FileAccess.type and isinstance(op, str):
+                a.file_ops[op] = a.file_ops.get(op, 0) + n
+            a.changes += changes or 0
+        return [found[x] for x in dict.fromkeys(execs) if x in found]
+
+
+def _steps(page: Sequence[Sequence[Any]], rows: Sequence[Sequence[Any]]) -> list[StepInfo]:
+    """Assemble step rows from their `agent.step` events and the request, tool call, exec and
+    result rows around them. Events of a tool call belong to the agent's latest `tool.call`
+    before them with its id, since providers may reuse ids across steps."""
+    wanted = {json.loads(data)["call_id"] for _, _, _, data in page}
+    requests: dict[str, tuple[int, str]] = {}
+    calls: dict[tuple[str | None, str], tuple[int, str, str | None, Any]] = {}
+    call_seqs: dict[tuple[str | None, str], list[int]] = {}
+    later: list[Sequence[Any]] = []
+    for row in rows:
+        seq, ts, agent, type_, call_id, role, model_call, _, name, args_type, args = row[:11]
+        if type_ == ModelRequest.type:
+            if role is None and call_id in wanted and call_id not in requests:
+                requests[call_id] = (seq, ts)
+        elif type_ == ToolCall.type:
+            calls[(model_call, call_id)] = (seq, name, args_type, args)
+            call_seqs.setdefault((agent, call_id), []).append(seq)
+        else:
+            later.append(row)
+    tools: dict[int, ToolInfo] = {}
+    ends: dict[int, tuple[int, str]] = {}
+    for (_, call_id), (seq, name, args_type, args) in calls.items():
+        tools[seq] = ToolInfo(seq=seq, call_id=call_id, name=name or "", **_args(args_type, args))
+    for row in later:
+        seq, ts, agent, type_, call_id, _, _, exec_id, _, _, _, code, end, ms, error, denied = row
+        owners = call_seqs.get((agent, call_id))
+        if not owners:
+            continue
+        i = bisect.bisect_right(owners, seq) - 1
+        if i < 0:
+            continue
+        tool = tools[owners[i]]
+        ends[tool.seq] = max(ends.get(tool.seq, (seq, ts)), (seq, ts))
+        if type_ == ExecStarted.type and isinstance(exec_id, str):
+            tool.execs.append(exec_id)
+        elif type_ == ExecFinished.type:
+            tool.exit_code = code
+            tool.end = end
+            tool.duration_ms = (tool.duration_ms or 0) + (ms or 0)
+        elif type_ == ToolResult.type:
+            tool.done = True
+            tool.error = bool(error)
+            tool.denied = bool(denied)
+    out: list[StepInfo] = []
+    for seq, ts, agent, data in page:
+        d = json.loads(data)
+        keys = [(d["call_id"], c) for c in d.get("tool_calls", [])]
+        own = [calls[k][0] for k in keys if k in calls]
+        first = requests.get(d["call_id"], (seq, ts))
+        last = max([(seq, ts), *(ends[t] for t in own if t in ends)])
+        out.append(
+            StepInfo(
+                seq=seq,
+                agent_id=agent,
+                n=d["n"],
+                call_id=d["call_id"],
+                seq_from=first[0],
+                seq_to=last[0],
+                ts_from=first[1],
+                ts_to=last[1],
+                status=d["status"],
+                source=d.get("source", "live"),
+                cost_usd=d.get("cost_usd"),
+                tools=[tools[t] for t in own],
+            )
+        )
+    return out
+
+
+def _args(kind: str | None, value: Any) -> dict[str, Any]:
+    """The preview fields of a tool call's arguments as `json_type` and `json_extract` give
+    them: a string of JSON, or a blob reference."""
+    if kind == "object":
+        ref = BlobRef.model_validate_json(value)
+        return {"args": None, "args_bytes": ref.size}
+    text = value if isinstance(value, str) else ""
+    try:
+        parsed: Any = json.loads(text)
+    except ValueError:
+        parsed = text
+    cut = False
+
+    def clip(v: Any) -> Any:
+        nonlocal cut
+        if isinstance(v, str) and len(v) > PREVIEW:
+            cut = True
+            return v[:PREVIEW]
+        if isinstance(v, list):
+            return [clip(x) for x in v]
+        if isinstance(v, dict):
+            return {k: clip(x) for k, x in v.items()}
+        return v
+
+    return {"args": clip(parsed), "args_cut": cut, "args_bytes": len(text.encode())}
 
 
 def _event(r: Sequence[Any]) -> Event:

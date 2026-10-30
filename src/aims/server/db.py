@@ -410,11 +410,18 @@ class ServerDB:
         limit: int,
         kind: str | None = None,
         origin: str | None = None,
+        scenario: str | None = None,
     ) -> list[Job]:
         """Jobs of every state, newest run id first; with `kind` only jobs of that kind, with
-        `origin` only monitor jobs over that run."""
+        `origin` only monitor jobs over that run, with `scenario` only jobs of that scenario."""
         where: list[str] = []
         args: list[Any] = []
+        if scenario is not None:
+            where.append(
+                "coalesce(json_extract(payload, '$.scenario.name'),"
+                " json_extract(payload, '$.scenario')) = ?"
+            )
+            args.append(scenario)
         if before:
             where.append("run_id < ?")
             args.append(before)

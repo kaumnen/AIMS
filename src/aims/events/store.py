@@ -15,12 +15,14 @@ from aims.events.blobs import BlobStore, BlobWriter, read_blob, stored_size
 from aims.events.chain import ChainError, Head, follow, seal
 from aims.events.index import (
     MAX_PAGE,
+    ExecActivity,
     FlagInfo,
     Index,
     Label,
     LabelKind,
     RunInfo,
     SampleWindow,
+    StepInfo,
     UnitRow,
 )
 from aims.events.log import LogFile, checkpoint_ok, read_events, read_lines, tail_only
@@ -697,9 +699,11 @@ class LocalEventStore:
         series: str | None = None,
         variant: str | None = None,
         group: str | None = None,
+        scenario: str | None = None,
     ) -> list[RunInfo]:
         """Runs newest first, filtered as `Index.runs` describes."""
         return await self._index.runs(
+            scenario=scenario,
             group=group,
             limit=limit,
             before=before,
@@ -747,6 +751,7 @@ class LocalEventStore:
         types: Sequence[str] = (),
         agent_id: str | None = None,
         query: str | None = None,
+        execs: Sequence[str] = (),
     ) -> list[Event]:
         return await self._index.events(
             run_id,
@@ -756,7 +761,23 @@ class LocalEventStore:
             types=types,
             agent_id=agent_id,
             query=query,
+            execs=execs,
         )
+
+    async def steps(
+        self,
+        run_id: str,
+        *,
+        after: int | None = None,
+        limit: int = 100,
+        agent_id: str | None = None,
+    ) -> list[StepInfo]:
+        """A page of a run's agent steps with their tool calls, in seq order."""
+        return await self._index.steps(run_id, after=after, limit=limit, agent_id=agent_id)
+
+    async def activity(self, run_id: str, execs: Sequence[str]) -> list[ExecActivity]:
+        """What each exec left in the log, counted per event type and file op."""
+        return await self._index.activity(run_id, execs)
 
     async def every(self, run_id: str, *, types: Sequence[str] = ()) -> list[Event]:
         """Every event of a run in seq order, read page by page past the index's page cap."""

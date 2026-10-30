@@ -1,6 +1,15 @@
 from aims.events.blobs import BlobError, BlobStore
 from aims.events.chain import ChainError, Head
-from aims.events.index import Label, LabelKind, RunInfo, SampleWindow, UnitRow
+from aims.events.index import (
+    ExecActivity,
+    Label,
+    LabelKind,
+    RunInfo,
+    SampleWindow,
+    StepInfo,
+    ToolInfo,
+    UnitRow,
+)
 from aims.events.log import RunLocked
 from aims.events.payloads import (
     MAX_INT,
@@ -150,6 +159,7 @@ __all__ = [
     "Draft",
     "Event",
     "EventStore",
+    "ExecActivity",
     "ExecEnd",
     "ExecFinished",
     "ExecPhase",
@@ -235,12 +245,14 @@ __all__ = [
     "ScoreUnexplained",
     "ScoreUnit",
     "Series",
+    "StepInfo",
     "SweepPart",
     "SweepTrigger",
     "SysDenied",
     "TaskScored",
     "Told",
     "ToolCall",
+    "ToolInfo",
     "ToolResult",
     "UnitRow",
     "Verification",

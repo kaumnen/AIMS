@@ -22,6 +22,7 @@ from aims.events import (
     AuditLevel,
     Category,
     Event,
+    ExecActivity,
     IngestError,
     MissingBlobs,
     ResumeThen,
@@ -29,6 +30,7 @@ from aims.events import (
     RunInfo,
     RunKind,
     SampleWindow,
+    StepInfo,
     split_lines,
 )
 from aims.events.blobs import ZSTD_MAGIC, BlobError, BlobStore
@@ -72,6 +74,8 @@ Uploader = Annotated[
 ]
 MAX_PAGE = 1000
 MAX_SAMPLES = 100
+MAX_STEPS = 500
+MAX_EXECS = 100
 IMPORT_LIMIT = 4 * 1024**3
 
 
@@ -253,6 +257,10 @@ def summary(
         series=None if info is None else info.series,
         series_index=None if info is None else info.series_index,
         variant=None if info is None else info.variant,
+        steps=0 if info is None else info.steps,
+        cost_usd=None if info is None else info.cost_usd,
+        reward=None if info is None else info.reward,
+        reviews=0 if info is None else info.reviews,
     )
 
 
@@ -280,13 +288,16 @@ async def list_runs(
     category: Category | None = None,
     series: str | None = None,
     variant: str | None = None,
+    scenario: str | None = None,
 ) -> RunPage:
     """Runs newest first, with jobs that have not started yet. `kind` keeps runs of that kind,
     `origin` the monitor runs of that run, `severity` runs whose `max_severity` is at least it,
-    `category` runs with a flag in it, whatever its status, `series` the runs of that series
-    and `variant` the sealed runs of that variant. Jobs not started yet have none of these, so
-    `severity`, `category`, `series` and `variant` leave them out."""
+    `category` runs with a flag in it, whatever its status, `series` the runs of that series,
+    `variant` the sealed runs of that variant and `scenario` the runs of that scenario. Jobs
+    not started yet have none of `severity`, `category`, `series` and `variant`, so those
+    leave them out."""
     infos = await state.store.runs(
+        scenario=scenario,
         limit=limit,
         before=before,
         kind=kind,
@@ -297,7 +308,9 @@ async def list_runs(
         variant=variant,
     )
     if severity is None and category is None and series is None and variant is None:
-        jobs = await state.db.jobs_page(before=before, limit=limit, kind=kind, origin=origin)
+        jobs = await state.db.jobs_page(
+            before=before, limit=limit, kind=kind, origin=origin, scenario=scenario
+        )
     else:
         jobs = []
     ids = sorted({i.run_id for i in infos} | {j.run_id for j in jobs}, reverse=True)[:limit]
@@ -764,9 +777,11 @@ async def list_events(
     types: Annotated[list[str] | None, Query()] = None,
     agent: str | None = None,
     q: Annotated[str | None, Query(max_length=500)] = None,
+    execs: Annotated[list[str] | None, Query(alias="exec")] = None,
 ) -> EventPage:
     """One page in seq order. With only `before`, the page is the events just before it and
-    `next` pages further back."""
+    `next` pages further back. `exec` keeps the events of those execs: their start and end and
+    every kernel record, spill and snapshot that names them."""
     items = await state.store.events(
         _run_id(run_id),
         after=after,
@@ -775,6 +790,7 @@ async def list_events(
         types=types or (),
         agent_id=agent,
         query=q,
+        execs=_execs(execs),
     )
     nxt = None
     if len(items) == limit:
@@ -802,6 +818,44 @@ async def search_events(
     """Events of every run whose text holds `q`, newest first."""
     items, cursor = await state.store.search(q, limit=limit, before=before)
     return EventPage(items=items, next=None if cursor is None else str(cursor))
+
+
+def _execs(execs: list[str] | None) -> list[str]:
+    if execs is not None and len(execs) > MAX_EXECS:
+        raise ProblemException(422, "Invalid request", f"at most {MAX_EXECS} execs at a time")
+    return execs or []
+
+
+class StepPage(Out):
+    items: list[StepInfo]
+    next: int | None = None
+
+
+@router.get("/runs/{run_id}/steps", tags=["events"])
+async def list_steps(
+    run_id: str,
+    principal: Viewer,
+    state: State,
+    after: int | None = None,
+    limit: Annotated[int, Query(ge=1, le=MAX_STEPS)] = 200,
+    agent: str | None = None,
+) -> StepPage:
+    """Agent steps in seq order, one row per model call with the tool calls it made, their
+    commands' ends and results. Page on with `after=next`."""
+    items = await state.store.steps(_run_id(run_id), after=after, limit=limit, agent_id=agent)
+    return StepPage(items=items, next=items[-1].seq if len(items) == limit else None)
+
+
+@router.get("/runs/{run_id}/activity", tags=["events"])
+async def list_activity(
+    run_id: str,
+    principal: Viewer,
+    state: State,
+    execs: Annotated[list[str], Query(alias="exec")],
+) -> list[ExecActivity]:
+    """What each exec left in the log, per event type and file op, in the order asked. Execs
+    with no events are left out."""
+    return await state.store.activity(_run_id(run_id), _execs(execs))
 
 
 class SamplePage(Out):

@@ -198,9 +198,10 @@ export interface paths {
          * List Runs
          * @description Runs newest first, with jobs that have not started yet. `kind` keeps runs of that kind,
          *     `origin` the monitor runs of that run, `severity` runs whose `max_severity` is at least it,
-         *     `category` runs with a flag in it, whatever its status, `series` the runs of that series
-         *     and `variant` the sealed runs of that variant. Jobs not started yet have none of these, so
-         *     `severity`, `category`, `series` and `variant` leave them out.
+         *     `category` runs with a flag in it, whatever its status, `series` the runs of that series,
+         *     `variant` the sealed runs of that variant and `scenario` the runs of that scenario. Jobs
+         *     not started yet have none of `severity`, `category`, `series` and `variant`, so those
+         *     leave them out.
          */
         get: operations["list_runs"];
         put?: never;
@@ -245,6 +246,27 @@ export interface paths {
         };
         /** Get Run */
         get: operations["get_run"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}/activity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Activity
+         * @description What each exec left in the log, per event type and file op, in the order asked. Execs
+         *     with no events are left out.
+         */
+        get: operations["list_activity"];
         put?: never;
         post?: never;
         delete?: never;
@@ -320,7 +342,8 @@ export interface paths {
         /**
          * List Events
          * @description One page in seq order. With only `before`, the page is the events just before it and
-         *     `next` pages further back.
+         *     `next` pages further back. `exec` keeps the events of those execs: their start and end and
+         *     every kernel record, spill and snapshot that names them.
          */
         get: operations["list_events"];
         put?: never;
@@ -574,6 +597,27 @@ export interface paths {
          *     `origin` is this run; the run itself never changes.
          */
         post: operations["score_run"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}/steps": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Steps
+         * @description Agent steps in seq order, one row per model call with the tool calls it made, their
+         *     commands' ends and results. Page on with `after=next`.
+         */
+        get: operations["list_steps"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2130,6 +2174,27 @@ export interface components {
             kind: "events";
             /** Run Id */
             run_id: string;
+        };
+        /**
+         * ExecActivity
+         * @description What one exec left in the log: `events` in all, `types` per event type, `file_ops` per
+         *     `file.access` op and `changes` the paths its snapshots list as changed.
+         */
+        ExecActivity: {
+            /** Changes */
+            changes: number;
+            /** Events */
+            events: number;
+            /** Exec Id */
+            exec_id: string;
+            /** File Ops */
+            file_ops: {
+                [key: string]: number;
+            };
+            /** Types */
+            types: {
+                [key: string]: number;
+            };
         };
         /**
          * ExecFinished
@@ -4747,13 +4812,18 @@ export interface components {
          *     `max_importance` is the highest importance of a flag not cleared or rejected,
          *     `verdict_severity` the judge's, and `max_severity` the higher of the two, 0 for neither.
          *     `series` and `series_index` place a run in its series; `variant` is the scenario variant
-         *     it ran, known once the run is sealed and its truth file arrived.
+         *     it ran, known once the run is sealed and its truth file arrived. `steps` counts its agents'
+         *     model calls, `cost_usd` sums its priced live model responses, monitor calls included (None
+         *     when there is none), `reward` is the verifier's last reward and `reviews` counts the
+         *     monitor runs over it that have started.
          */
         RunSummary: {
             /** Categories */
             categories: {
                 [key: string]: number;
             };
+            /** Cost Usd */
+            cost_usd: number | null;
             /** Diverged */
             diverged: string | null;
             /** Ended At */
@@ -4787,6 +4857,13 @@ export interface components {
             origin: string | null;
             /** Reason */
             reason: string | null;
+            /**
+             * Reviews
+             * @default 0
+             */
+            reviews: number;
+            /** Reward */
+            reward: number | null;
             /** Run Id */
             run_id: string;
             /** Runner */
@@ -4808,6 +4885,11 @@ export interface components {
             state: string;
             /** Status */
             status: string;
+            /**
+             * Steps
+             * @default 0
+             */
+            steps: number;
             /** Variant */
             variant: string | null;
             /** Verdict Severity */
@@ -5547,6 +5629,53 @@ export interface components {
             /** Run Ids */
             run_ids: string[];
         };
+        /**
+         * StepInfo
+         * @description Step `n` of an agent: its model call `call_id` and the tool calls it made. `seq` is the
+         *     `agent.step` event, `seq_from` the first request of the model call and `seq_to` the step's
+         *     last event so far: the step, an exec's end or a tool result. `ts_from` and `ts_to` are their
+         *     times.
+         */
+        StepInfo: {
+            /** Agent Id */
+            agent_id: string | null;
+            /** Call Id */
+            call_id: string;
+            /** Cost Usd */
+            cost_usd?: number | null;
+            /** N */
+            n: number;
+            /** Seq */
+            seq: number;
+            /** Seq From */
+            seq_from: number;
+            /** Seq To */
+            seq_to: number;
+            /**
+             * Source
+             * @default live
+             * @enum {string}
+             */
+            source?: "live" | "replay";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "completed" | "incomplete" | "error" | "cancelled";
+            /** Tools */
+            tools?: components["schemas"]["ToolInfo"][];
+            /** Ts From */
+            ts_from: string;
+            /** Ts To */
+            ts_to: string;
+        };
+        /** StepPage */
+        StepPage: {
+            /** Items */
+            items: components["schemas"]["StepInfo"][];
+            /** Next */
+            next: number | null;
+        };
         /** StopBody */
         StopBody: {
             /** Reason */
@@ -5705,6 +5834,57 @@ export interface components {
             model_call: string | null;
             /** Name */
             name: string;
+        };
+        /**
+         * ToolInfo
+         * @description A tool call of a step. `args` is the call's arguments as JSON (or the raw text when it is
+         *     not JSON) with every string cut to `PREVIEW` characters, None when they are a blob;
+         *     `args_cut` says whether anything was cut and `args_bytes` is their full size. `execs` are
+         *     the sandbox commands the call ran, oldest first; `exit_code` and `end` are the last one's
+         *     and `duration_ms` their sum. `done` says the agent got its result, which set `error` and
+         *     `denied`.
+         */
+        ToolInfo: {
+            args?: components["schemas"]["JsonValue"];
+            /**
+             * Args Bytes
+             * @default 0
+             */
+            args_bytes?: number;
+            /**
+             * Args Cut
+             * @default false
+             */
+            args_cut?: boolean;
+            /** Call Id */
+            call_id: string;
+            /**
+             * Denied
+             * @default false
+             */
+            denied?: boolean;
+            /**
+             * Done
+             * @default false
+             */
+            done?: boolean;
+            /** Duration Ms */
+            duration_ms?: number | null;
+            /** End */
+            end?: ("exited" | "timeout" | "cancelled" | "failed") | null;
+            /**
+             * Error
+             * @default false
+             */
+            error?: boolean;
+            /** Execs */
+            execs?: string[];
+            /** Exit Code */
+            exit_code?: number | null;
+            /** Name */
+            name: string;
+            /** Seq */
+            seq: number;
         };
         /**
          * ToolResult
@@ -6534,6 +6714,7 @@ export interface operations {
                 category?: ("covert_communication" | "scorer_tampering" | "transcript_tampering" | "deceiving_operator" | "evading_checks" | "collective_over_own_task" | "drift" | "loop_or_confusion" | "fabricated_completion" | "constraint_violation" | "eval_awareness" | "alerting_operator" | "egress_attempt" | "privilege_escalation" | "monitor_manipulation") | null;
                 series?: string | null;
                 variant?: string | null;
+                scenario?: string | null;
             };
             header?: never;
             path?: never;
@@ -6766,6 +6947,57 @@ export interface operations {
             };
         };
     };
+    list_activity: {
+        parameters: {
+            query: {
+                exec: string[];
+            };
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecActivity"][];
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     get_blob: {
         parameters: {
             query?: never;
@@ -6939,6 +7171,7 @@ export interface operations {
                 types?: string[] | null;
                 agent?: string | null;
                 q?: string | null;
+                exec?: string[] | null;
             };
             header?: never;
             path: {
@@ -7751,6 +7984,59 @@ export interface operations {
             };
             /** @description Conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_steps: {
+        parameters: {
+            query?: {
+                after?: number | null;
+                limit?: number;
+                agent?: string | null;
+            };
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StepPage"];
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -10258,9 +10544,12 @@ export const startForkMonitorAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<c
 export const startMonitorPresetAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["StartMonitor"]["preset"]> = ["signals", "standard", "research"];
 export const startRunAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["StartRun"]["audit"]> = ["kernel", "snapshot"];
 export const startRunMonitorAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["StartRun"]["monitor"]> = ["off", "signals", "standard", "research"];
+export const stepInfoSourceValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["StepInfo"]["source"]> = ["live", "replay"];
+export const stepInfoStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["StepInfo"]["status"]> = ["completed", "incomplete", "error", "cancelled"];
 export const taskScoredEndAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["TaskScored"]["end"]> = ["exited", "timeout", "cancelled", "failed"];
 export const taskScoredSourceValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["TaskScored"]["source"]> = ["reward.json", "reward.txt", "none"];
 export const textSourceValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Text"]["source"]> = ["default", "user", "project"];
 export const tokenCreateRoleValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["TokenCreate"]["role"]> = ["viewer", "operator", "runner"];
+export const toolInfoEndAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ToolInfo"]["end"]> = ["exited", "timeout", "cancelled", "failed"];
 export const variantCostMonitor_presetAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["VariantCost"]["monitor_preset"]> = ["off", "signals", "standard", "research"];
 export const wireDeltaKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["WireDelta"]["kind"]> = ["start", "text", "reasoning", "tool_call", "tool_args", "end"];

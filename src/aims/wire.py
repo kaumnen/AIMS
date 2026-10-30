@@ -234,7 +234,10 @@ class RunSummary(_Wire):
     `max_importance` is the highest importance of a flag not cleared or rejected,
     `verdict_severity` the judge's, and `max_severity` the higher of the two, 0 for neither.
     `series` and `series_index` place a run in its series; `variant` is the scenario variant
-    it ran, known once the run is sealed and its truth file arrived."""
+    it ran, known once the run is sealed and its truth file arrived. `steps` counts its agents'
+    model calls, `cost_usd` sums its priced live model responses, monitor calls included (None
+    when there is none), `reward` is the verifier's last reward and `reviews` counts the
+    monitor runs over it that have started."""
 
     run_id: str
     scenario: str | None
@@ -258,6 +261,10 @@ class RunSummary(_Wire):
     series: str | None = None
     series_index: int | None = None
     variant: str | None = None
+    steps: int = 0
+    cost_usd: float | None = None
+    reward: float | None = None
+    reviews: int = 0
 
 
 class RunMessage(_Wire):
