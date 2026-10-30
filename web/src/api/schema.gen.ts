@@ -5458,9 +5458,12 @@ export interface components {
          * @description `preset` replaces the preset the config files and the run's scenario name. `signals_only`
          *     runs the signals alone, `judge_only` the judge alone. `profile` replaces the model of every
          *     sweep, the review and the judge. `config` is one more `[monitor]` layer, laid over the
-         *     config files and the scenario.
+         *     config files and the scenario. `budget_usd` replaces the spend cap of each monitor run that
+         *     the scenario's limits or the preset give.
          */
         StartMonitor: {
+            /** Budget Usd */
+            budget_usd?: number | null;
             /** Config */
             config?: {
                 [key: string]: components["schemas"]["JsonValue"];

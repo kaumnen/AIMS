@@ -10810,8 +10810,20 @@
         "type": "object"
       },
       "StartMonitor": {
-        "description": "`preset` replaces the preset the config files and the run's scenario name. `signals_only`\nruns the signals alone, `judge_only` the judge alone. `profile` replaces the model of every\nsweep, the review and the judge. `config` is one more `[monitor]` layer, laid over the\nconfig files and the scenario.",
+        "description": "`preset` replaces the preset the config files and the run's scenario name. `signals_only`\nruns the signals alone, `judge_only` the judge alone. `profile` replaces the model of every\nsweep, the review and the judge. `config` is one more `[monitor]` layer, laid over the\nconfig files and the scenario. `budget_usd` replaces the spend cap of each monitor run that\nthe scenario's limits or the preset give.",
         "properties": {
+          "budget_usd": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Budget Usd"
+          },
           "config": {
             "anyOf": [
               {

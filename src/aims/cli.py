@@ -1273,6 +1273,15 @@ def monitor_cmd(
         int, typer.Option(min=1, help="Monitor runs per run; their model layers differ.")
     ] = 1,
     parallel: Annotated[int, typer.Option(min=1, help="Monitor runs at once.")] = 1,
+    budget_usd: Annotated[
+        float | None,
+        typer.Option(
+            "--budget-usd",
+            min=0,
+            help="Spend cap of each monitor run, in USD, instead of the scenario's"
+            " limits.monitor_cost_usd or the preset's.",
+        ),
+    ] = None,
     quiet: Annotated[bool, typer.Option(help="One line per monitor run.")] = False,
     json_out: Annotated[
         bool,
@@ -1307,6 +1316,7 @@ def monitor_cmd(
             judge_only=judge_only,
             samples=samples,
             parallel=parallel,
+            budget_usd=budget_usd,
             quiet=quiet,
             json_out=json_out,
             link=link,
@@ -1385,6 +1395,7 @@ async def _monitor_runs(**o: Any) -> int:
                     judge_only=o["judge_only"],
                     profile=o["profile"],
                     samples=o["samples"],
+                    budget_usd=o["budget_usd"],
                 )
                 for p in monitor_profiles(resolved).values():
                     p.url()

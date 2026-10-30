@@ -69,13 +69,15 @@ class StartMonitor(BaseModel):
     """`preset` replaces the preset the config files and the run's scenario name. `signals_only`
     runs the signals alone, `judge_only` the judge alone. `profile` replaces the model of every
     sweep, the review and the judge. `config` is one more `[monitor]` layer, laid over the
-    config files and the scenario."""
+    config files and the scenario. `budget_usd` replaces the spend cap of each monitor run that
+    the scenario's limits or the preset give."""
 
     preset: Literal["signals", "standard", "research"] | None = None
     signals_only: bool = False
     judge_only: bool = False
     profile: str | None = None
     config: dict[str, JsonValue] | None = None
+    budget_usd: float | None = Field(default=None, ge=0)
     samples: int = Field(default=1, ge=1, le=100)
     parallel: int | None = Field(default=None, ge=1)
     runner: str | None = None
@@ -113,6 +115,7 @@ def monitor_jobs(
         judge_only=body.judge_only,
         profile=body.profile,
         samples=body.samples,
+        budget_usd=body.budget_usd,
     )
     scenario = origin.bundle.scenario
     mode: MonitorMode = (

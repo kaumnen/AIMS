@@ -291,6 +291,8 @@ async def test_monitor_runs_queue_for_runners_that_take_them(
             assert (r.status_code, r.json()["code"]) == (422, "monitor")
             r = await c.post(url, json={"preset": "signals", "judge_only": True})
             assert (r.status_code, r.json()["code"]) == (422, "monitor")
+            r = await c.post(url, json={"signals_only": True, "budget_usd": -1})
+            assert r.status_code == 422
 
             r = await c.post(url, json={"signals_only": True})
             assert r.status_code == 202, r.text

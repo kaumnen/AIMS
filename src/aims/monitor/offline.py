@@ -111,10 +111,12 @@ def offline_monitor(
     judge_only: bool = False,
     profile: str | None = None,
     samples: int = 1,
+    budget_usd: float | None = None,
 ) -> ResolvedMonitor:
     """The monitor of an offline run over a run of `scenario` whose agents used `agents`,
-    resolved as `offline_config` says, with the signals installed here. Raises
-    MonitorConfigError, ProfileError or TextError."""
+    resolved as `offline_config` says, with the signals installed here. `budget_usd` replaces
+    the spend cap the scenario's limits or the preset give. Raises MonitorConfigError,
+    ProfileError or TextError."""
     merged = offline_config(
         layers,
         scenario,
@@ -131,6 +133,8 @@ def offline_monitor(
     )
     if resolved is None:
         raise MonitorConfigError("the monitor is off; name a preset")
+    if budget_usd is not None:
+        resolved = dataclasses.replace(resolved, budget_usd=budget_usd)
     if samples > 1:
         resolved = varied(resolved)
     return stamped(resolved, judge_only=judge_only)

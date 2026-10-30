@@ -40,6 +40,7 @@ from aims.monitor.offline import (
     offline_monitor,
     origin_agents,
 )
+from aims.monitor.setup import ResolvedMonitor
 from aims.prompts import Prompts
 from aims.run.job import JobOptions, monitor_for
 from aims.run.runner import RunError, resolve_texts
@@ -310,6 +311,19 @@ def test_the_resolution_order_and_the_mode_checks(tmp_path: Path) -> None:
         offline_config([], scenario, m, signals_only=True, judge_only=True)
     with pytest.raises(MonitorConfigError, match="off"):
         offline_config([], scenario, m, preset="off")
+
+
+def test_a_budget_replaces_the_preset_cap(tmp_path: Path) -> None:
+    bundle = synthetic(tmp_path)
+    m = models(WATCHER)
+    agents = [profile()]
+    default = offline_monitor(m, Prompts(), bundle.scenario, agents, preset="standard")
+    raised = offline_monitor(
+        m, Prompts(), bundle.scenario, agents, preset="standard", budget_usd=12.5
+    )
+    assert (default.budget_usd, raised.budget_usd) == (5.0, 12.5)
+    assert raised.judge_reserve_usd == default.judge_reserve_usd
+    assert ResolvedMonitor.restore(raised.snapshot()).budget_usd == 12.5
 
 
 async def test_writes_aimed_at_the_origin_land_in_the_monitor_run(tmp_path: Path) -> None:
