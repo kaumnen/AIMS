@@ -8,11 +8,15 @@ export type StepInfo = Schemas["StepInfo"];
 export type ToolInfo = Schemas["ToolInfo"];
 export type ExecActivity = Schemas["ExecActivity"];
 export type BlobRef = Schemas["BlobRef"];
+export type SampleWindow = Schemas["SampleWindow"];
+export type FlagInfo = Schemas["FlagInfo"];
 
 const STEP_PAGE = 200;
 const EXEC_PAGE = 200;
 const RAW_PAGE = 200;
 const MAX_EVENTS = 1000;
+// The scrubber reads a whole run; this caps it at 50 pages of each kind.
+const MAX_PAGES = 50;
 
 // What a step's transcript shows; kernel records stay behind each exec's fold.
 export const stepTypes = [
@@ -163,6 +167,93 @@ export function rawEventsQuery(runId: string, filters: RawFilters) {
     },
     initialPageParam: null as number | null,
     getNextPageParam: (last) => (last.next === null ? null : Number(last.next)),
+    staleTime: Infinity,
+  });
+}
+
+// Pages follow one another: each starts where the last one ended.
+async function everyPage<T>(
+  get: (cursor: number | undefined) => Promise<{ items: T[]; next?: number | string | null }>,
+): Promise<T[]> {
+  const out: T[] = [];
+  let cursor: number | undefined;
+  for (let page = 0; page < MAX_PAGES; page++) {
+    // oxlint-disable-next-line no-await-in-loop
+    const { items, next } = await get(cursor);
+    out.push(...items);
+    if (next === null || next === undefined) break;
+    cursor = Number(next);
+  }
+  return out;
+}
+
+// The resource timeline, every window: the scrubber spans the whole run.
+export function samplesQuery(runId: string) {
+  return queryOptions({
+    queryKey: ["runs", "samples", runId] as const,
+    queryFn: ({ signal }) =>
+      everyPage(async (from) => {
+        const { data, error } = await client.GET("/api/runs/{run_id}/samples", {
+          params: {
+            ...path(runId),
+            query: { limit: MAX_EVENTS, ...(from === undefined ? {} : { ts_from: from }) },
+          },
+          signal,
+        });
+        if (error) throw error;
+        return data;
+      }),
+    staleTime: Infinity,
+  });
+}
+
+function everyEvent(runId: string, types: string[], signal: AbortSignal): Promise<Event[]> {
+  return everyPage(async (after) => {
+    const { data, error } = await client.GET("/api/runs/{run_id}/events", {
+      params: {
+        ...path(runId),
+        query: { types, limit: MAX_EVENTS, ...(after === undefined ? {} : { after }) },
+      },
+      signal,
+    });
+    if (error) throw error;
+    return data;
+  });
+}
+
+// Where each sandbox's boot clock sits on the wall clock.
+export function sandboxesQuery(runId: string) {
+  return queryOptions({
+    queryKey: ["runs", "sandboxes", runId] as const,
+    queryFn: ({ signal }) => everyEvent(runId, ["sandbox.started"], signal),
+    staleTime: Infinity,
+  });
+}
+
+// A run's sweeps: the review ranges a monitor covered. `source` is the run that monitored.
+export function sweepsQuery(source: string) {
+  return queryOptions({
+    queryKey: ["runs", "sweeps", source] as const,
+    queryFn: ({ signal }) => everyEvent(source, ["monitor.sweep"], signal),
+    staleTime: Infinity,
+  });
+}
+
+export function flagsQuery(source: string) {
+  return queryOptions({
+    queryKey: ["runs", "flags", source] as const,
+    queryFn: ({ signal }) =>
+      everyPage(async (after) => {
+        const { data, error } = await client.GET("/api/runs/{run_id}/flags", {
+          params: {
+            ...path(source),
+            query: { limit: MAX_EVENTS, ...(after === undefined ? {} : { after }) },
+          },
+          signal,
+        });
+        if (error) throw error;
+        return data;
+      }),
     staleTime: Infinity,
   });
 }

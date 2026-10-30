@@ -1,10 +1,10 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import type { Event } from "@/api/events";
-import type { RunDetail, StepInfo } from "@/api/run";
+import type { FlagInfo, RunDetail, SampleWindow, StepInfo } from "@/api/run";
 import { makeRouter } from "@/router";
 import { FakeEventSource } from "@/test/event-source";
 import { stubHeight } from "@/test/layout";
@@ -76,9 +76,78 @@ const step = (over: Partial<StepInfo> & Pick<StepInfo, "seq" | "n">): StepInfo =
   ...over,
 });
 
+const BOOT = 5_000_000_000;
+const T0 = Date.parse("2026-10-30T10:00:00Z") * 1000;
+
+const sample = (i: number): SampleWindow => ({
+  agent_id: "agent",
+  count: 50,
+  cpu_full_usec: null,
+  cpu_some_usec: null,
+  cpu_system_usec: null,
+  cpu_throttled: null,
+  cpu_throttled_usec: null,
+  cpu_usec: i * 200_000,
+  cpu_user_usec: null,
+  hz: 50,
+  io_full_usec: null,
+  io_rbytes: 0,
+  io_rios: null,
+  io_some_usec: null,
+  io_wbytes: 0,
+  io_wios: null,
+  memory_bytes: 50 << 20,
+  memory_full_usec: null,
+  memory_some_usec: null,
+  pids: 3,
+  run_id: BEE5,
+  sandbox_id: "s1",
+  seq: 1000 + i,
+  ts_from: BOOT + i * 1_000_000,
+  ts_to: BOOT + i * 1_000_000 + 999_999,
+});
+
+const flag = (
+  seq: number,
+  evidence: number[],
+  importance: number,
+  status: FlagInfo["status"] = "open",
+): FlagInfo => ({
+  agent_id: "agent",
+  category: "scorer_tampering",
+  count: 1,
+  evidence,
+  final: false,
+  first_seq: null,
+  importance,
+  justification: "",
+  key: null,
+  lane: null,
+  last_seq: null,
+  latest: seq,
+  layer: "signal",
+  phase: null,
+  quote: null,
+  quote_verified: null,
+  reflags: 0,
+  run_id: BEE5,
+  seq,
+  source: "fs",
+  status,
+  status_reason: null,
+  status_seq: null,
+  status_source: null,
+  subcategory: null,
+  suspicion: null,
+  tainted: false,
+  ts: "2026-10-30T10:06:31Z",
+});
+
 let events: Event[];
 let steps: StepInfo[];
 let detail: RunDetail;
+let samples: SampleWindow[];
+let flags: FlagInfo[];
 
 beforeEach(() => {
   FakeEventSource.all = [];
@@ -109,6 +178,8 @@ beforeEach(() => {
       n: 2,
       seq_from: 9,
       seq_to: 12,
+      ts_from: "2026-10-30T10:06:00Z",
+      ts_to: "2026-10-30T10:06:30Z",
       tools: [{ seq: 10, call_id: "c2", name: "edit", args: null, args_bytes: 1200, done: true }],
     }),
   ];
@@ -128,6 +199,8 @@ beforeEach(() => {
     verdict: null,
     monitor_runs: [],
   };
+  samples = [];
+  flags = [];
   vi.stubGlobal("EventSource", FakeEventSource);
   vi.stubGlobal("fetch", fetch);
   fetch.mockImplementation(async (request) => {
@@ -152,6 +225,20 @@ beforeEach(() => {
     }
     if (path === `/api/runs/${BEE5}/blobs/${ARGS}`) {
       return new Response('{"command": "create", "path": "/work/kiln/canonical.py"}');
+    }
+    if (path === `/api/runs/${BEE5}/samples`) {
+      const limit = Number(q.get("limit") ?? 1000);
+      const items = samples.filter((w) => w.ts_to >= Number(q.get("ts_from") ?? 0)).slice(0, limit);
+      const last = items.at(-1);
+      return Response.json({ items, next: items.length === limit && last ? last.ts_to + 1 : null });
+    }
+    if (path === `/api/runs/${BEE5}/flags`) return Response.json({ items: flags, next: null });
+    if (path === `/api/runs/${BEE5}/events` && q.getAll("types").join() === "sandbox.started") {
+      const started = ev(0, "sandbox.started", {
+        sandbox_id: "s1",
+        config: { kernel_clock: { boot_us: BOOT, tai_us: T0 } },
+      });
+      return Response.json({ items: [{ ...started, ts: "2026-10-30T10:00:00Z" }], next: null });
     }
     if (path === `/api/runs/${BEE5}/events`) {
       const types = q.getAll("types");
@@ -190,10 +277,19 @@ function renderAt(path: string) {
   return router;
 }
 
+// The timeline's own reads (sandbox starts, sweeps) are left out.
+const TIMELINE = new Set(["sandbox.started", "monitor.sweep"]);
 const eventQueries = () =>
   fetch.mock.calls
     .map(([r]) => new URL(r.url))
     .filter((u) => u.pathname === `/api/runs/${BEE5}/events`)
+    .map((u) => u.searchParams)
+    .filter((q) => !q.getAll("types").some((t) => TIMELINE.has(t)));
+
+const requests = (suffix: string) =>
+  fetch.mock.calls
+    .map(([r]) => new URL(r.url))
+    .filter((u) => u.pathname === `/api/runs/${BEE5}/${suffix}`)
     .map((u) => u.searchParams);
 
 test("a run opens on its first step", async () => {
@@ -230,6 +326,51 @@ test("a run opens on its first step", async () => {
   expect(query?.get("agent")).toBe("agent");
   expect(query?.getAll("types")).toContain("tool.call");
   expect(query?.getAll("types")).not.toContain("file.access");
+});
+
+test("the timeline pages the samples and draws the agent's activity", async () => {
+  samples = Array.from({ length: 1200 }, (_, i) => sample(i));
+  renderAt(`/runs/${BEE5}`);
+  const timeline = await screen.findByRole("slider", { name: "Timeline" });
+  await waitFor(() => expect(requests("samples")).toHaveLength(2));
+  expect(requests("samples")[1]?.get("ts_from")).toBe(String(BOOT + 999 * 1_000_000 + 999_999 + 1));
+  const lane = timeline.querySelector('[data-lane="agent"]');
+  await waitFor(() =>
+    expect(lane?.querySelector('[data-trace="fill"]')?.getAttribute("d")).toMatch(/^M/),
+  );
+  expect(lane?.querySelector('[data-trace="edge"]')?.getAttribute("d")).toMatch(/^M/);
+  expect(timeline.getAttribute("aria-valuetext")).toBe("Step 1 at 0:00");
+});
+
+test("a click, a drag or the arrow keys on the timeline pick a step", async () => {
+  const router = renderAt(`/runs/${BEE5}`);
+  const timeline = await screen.findByRole("slider", { name: "Timeline" });
+  await screen.findByText("Fix the failing tests.");
+  const svg = timeline.querySelector("svg")!;
+  fireEvent.pointerDown(svg, { clientX: 600, clientY: 30, button: 0, pointerId: 1 });
+  expect(router.state.location.search).toEqual({ step: 11 });
+  fireEvent.pointerMove(svg, { clientX: 100, clientY: 30, pointerId: 1, buttons: 1 });
+  expect(router.state.location.search).toEqual({ step: 4 });
+  fireEvent.pointerUp(svg, { pointerId: 1 });
+  fireEvent.keyDown(timeline, { key: "ArrowRight" });
+  expect(router.state.location.search).toEqual({ step: 11 });
+  await waitFor(() => expect(timeline.getAttribute("aria-valuenow")).toBe("2"));
+  fireEvent.keyDown(timeline, { key: "Home" });
+  expect(router.state.location.search).toEqual({ step: 4 });
+});
+
+test("flags mark the step they cite, red from importance 3 until set aside", async () => {
+  flags = [flag(100, [10], 4), flag(101, [3], 2), flag(102, [6], 5, "cleared")];
+  const router = renderAt(`/runs/${BEE5}`);
+  const timeline = await screen.findByRole("slider", { name: "Timeline" });
+  await waitFor(() => expect(timeline.querySelectorAll("[data-flag]")).toHaveLength(3));
+  const tone = (seq: number) =>
+    timeline.querySelector(`[data-flag="${seq}"]`)?.getAttribute("data-tone");
+  expect(tone(100)).toBe("red");
+  expect(tone(101)).toBe("ink");
+  expect(tone(102)).toBe("ink");
+  fireEvent.pointerDown(timeline.querySelector('[data-flag="100"]')!, { button: 0, pointerId: 1 });
+  expect(router.state.location.search).toEqual({ step: 11 });
 });
 
 test("the kernel fold pages the exec's records", async () => {
@@ -304,7 +445,7 @@ test("/ opens the raw tab with its search focused", async () => {
   fireEvent.keyDown(window, { key: "/" });
   const search = await screen.findByRole("textbox", { name: "Search events" });
   expect(router.state.location.search).toEqual({ tab: "raw" });
-  await vi.waitFor(() => expect(document.activeElement).toBe(search));
+  await waitFor(() => expect(document.activeElement).toBe(search));
 });
 
 test("a run without agent steps points at its raw events", async () => {

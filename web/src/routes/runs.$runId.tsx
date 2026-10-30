@@ -6,6 +6,7 @@ import { type RunDetail, runQuery, stepsQuery } from "@/api/run";
 import { isProblem } from "@/api/session";
 import { RunHeader } from "@/components/run/header";
 import { RAW_SEARCH_ID, RawEvents, type RawSearch } from "@/components/run/raw";
+import { Scrubber } from "@/components/run/scrubber";
 import { StepList } from "@/components/run/step-list";
 import { Transcript } from "@/components/run/transcript";
 import { Button } from "@/components/ui/button";
@@ -176,25 +177,28 @@ function Steps({
   const agents = detail.started?.data["agents"];
   const multi = Array.isArray(agents) && agents.length > 1;
   return (
-    <div className="flex min-h-0 flex-1 gap-4 max-md:flex-col">
-      <StepList
-        steps={steps}
-        selected={current.seq}
-        multi={multi}
-        onSelect={select}
-        onNearEnd={() => {
-          if (q.hasNextPage && !q.isFetchingNextPage) void q.fetchNextPage();
-        }}
-      />
-      <div className="min-h-0 flex-1 overflow-auto">
-        <Transcript
-          key={current.seq}
-          runId={runId}
-          step={current}
-          after={prev ? prev.seq_to : -1}
-          last={at === steps.length - 1 && !q.hasNextPage}
+    <div className="flex min-h-0 flex-1 flex-col">
+      <Scrubber runId={runId} detail={detail} steps={steps} selected={current} onSelect={select} />
+      <div className="flex min-h-0 flex-1 gap-4 max-md:flex-col">
+        <StepList
+          steps={steps}
+          selected={current.seq}
           multi={multi}
+          onSelect={select}
+          onNearEnd={() => {
+            if (q.hasNextPage && !q.isFetchingNextPage) void q.fetchNextPage();
+          }}
         />
+        <div className="min-h-0 flex-1 overflow-auto">
+          <Transcript
+            key={current.seq}
+            runId={runId}
+            step={current}
+            after={prev ? prev.seq_to : -1}
+            last={at === steps.length - 1 && !q.hasNextPage}
+            multi={multi}
+          />
+        </div>
       </div>
     </div>
   );
