@@ -17,6 +17,7 @@ import {
   runsQuery,
   syncRuns,
 } from "./runs";
+import { scoresQuery } from "./score";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -89,7 +90,7 @@ test("a run below the loaded pages waits for its page unless none is left", () =
   expect(ids(mergePages([{ items: [], next: null }], [run("a")], {}))).toEqual([["a"]]);
 });
 
-test("updates reach every loaded list and review list", () => {
+test("updates reach every loaded list, review list and score list", () => {
   const qc = new QueryClient();
   const list = runsQuery({ kind: "scenario" });
   qc.setQueryData<InfiniteData<RunPage, string | null>>(list.queryKey, {
@@ -98,9 +99,16 @@ test("updates reach every loaded list and review list", () => {
   });
   const reviews = reviewsQuery("b");
   qc.setQueryData(reviews.queryKey, { items: [], next: null });
-  applyRuns(qc, [run("c"), run("m", { kind: "monitor", origin: "b" })]);
+  const scores = scoresQuery("b");
+  qc.setQueryData(scores.queryKey, { items: [], next: null });
+  applyRuns(qc, [
+    run("c"),
+    run("m", { kind: "monitor", origin: "b" }),
+    run("s", { kind: "score", origin: "b" }),
+  ]);
   expect(qc.getQueryData(list.queryKey)?.pages[0]?.items.map((r) => r.run_id)).toEqual(["c", "b"]);
   expect(qc.getQueryData(reviews.queryKey)?.items.map((r) => r.run_id)).toEqual(["m"]);
+  expect(qc.getQueryData(scores.queryKey)?.items.map((r) => r.run_id)).toEqual(["s"]);
 });
 
 test("an open run takes its update and refetches when it ends", () => {

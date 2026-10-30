@@ -179,10 +179,11 @@ export function applyRuns(qc: QueryClient, runs: readonly RunSummary[]): void {
         void qc.invalidateQueries({ queryKey: q.queryKey, exact: true });
         void qc.invalidateQueries({ queryKey: ["runs", "steps", run.run_id], exact: true });
       }
-    } else if (what === "reviews") {
+    } else if (what === "reviews" || what === "scores") {
+      const kind = what === "reviews" ? "monitor" : "score";
       qc.setQueryData<RunPage>(q.queryKey, (data) => {
         if (!data) return data;
-        const pages = mergePages([data], runs, { kind: "monitor", origin: arg as string });
+        const pages = mergePages([data], runs, { kind, origin: arg as string });
         return pages?.[0] ?? data;
       });
     }

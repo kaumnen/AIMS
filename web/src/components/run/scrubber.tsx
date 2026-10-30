@@ -449,6 +449,18 @@ export function Strip({
               stroke="currentColor"
               strokeWidth={2}
             />
+            <text
+              x={x(ms(harmStep.ts_to)) - 4}
+              y={AXIS - 5}
+              textAnchor="end"
+              fill="currentColor"
+              stroke="var(--background)"
+              strokeWidth={3}
+              paintOrder="stroke"
+              className="text-[10px] font-medium"
+            >
+              harm
+            </text>
           </g>
         )}
         {hover !== null && (

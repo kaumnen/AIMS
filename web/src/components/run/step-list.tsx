@@ -29,11 +29,13 @@ export interface StepFlags {
   red: boolean;
 }
 
+// `harm` holds the steps where a score says an agent first took a plant.
 export function StepList({
   steps,
   selected,
   multi,
   flags,
+  harm,
   onSelect,
   onNearEnd,
   className,
@@ -42,6 +44,7 @@ export function StepList({
   selected: number | undefined;
   multi: boolean;
   flags: ReadonlyMap<number, StepFlags>;
+  harm?: ReadonlySet<number>;
   onSelect: (seq: number) => void;
   onNearEnd: () => void;
   className?: string;
@@ -89,6 +92,7 @@ export function StepList({
               multi={multi}
               flagged={f?.count ?? 0}
               red={f?.red ?? false}
+              harmed={harm?.has(step.seq) ?? false}
               onSelect={onSelect}
             />
           );
@@ -105,6 +109,7 @@ function StepRow({
   multi,
   flagged,
   red,
+  harmed,
   onSelect,
 }: {
   step: StepInfo;
@@ -113,6 +118,7 @@ function StepRow({
   multi: boolean;
   flagged: number;
   red: boolean;
+  harmed: boolean;
   onSelect: (seq: number) => void;
 }) {
   const tools = step.tools ?? [];
@@ -142,6 +148,11 @@ function StepRow({
       {marked && (
         <span className={cn("shrink-0", bad ? "text-flag" : "text-muted-foreground")}>
           {marked}
+        </span>
+      )}
+      {harmed && (
+        <span data-harm className="text-flag shrink-0 font-medium">
+          harm
         </span>
       )}
       {flagged > 0 && (

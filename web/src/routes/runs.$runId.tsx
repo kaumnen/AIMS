@@ -18,6 +18,7 @@ import { isProblem } from "@/api/session";
 import { RunHeader } from "@/components/run/header";
 import { defaultSource, LIVE, MonitorPanel, useSources } from "@/components/run/monitor";
 import { RAW_SEARCH_ID, RawEvents, type RawSearch } from "@/components/run/raw";
+import { ScoreTab, type StepsLink, useHarm } from "@/components/run/score";
 import { Scrubber } from "@/components/run/scrubber";
 import { type StepFlags, StepList } from "@/components/run/step-list";
 import { type Focus, Transcript } from "@/components/run/transcript";
@@ -37,7 +38,8 @@ import {
 import { stepOf } from "@/lib/timeline";
 
 interface RunSearch extends RawSearch {
-  tab?: "raw";
+  tab?: "raw" | "score";
+  score?: string;
   step?: number;
   source?: string;
   flag?: number;
@@ -56,7 +58,8 @@ const int = (v: unknown) => {
 
 function parseSearch(raw: Record<string, unknown>): RunSearch {
   const out: RunSearch = {};
-  if (raw["tab"] === "raw") out.tab = "raw";
+  if (raw["tab"] === "raw" || raw["tab"] === "score") out.tab = raw["tab"];
+  if (typeof raw["score"] === "string" && raw["score"]) out.score = raw["score"];
   const step = int(raw["step"]);
   if (step !== undefined) out.step = step;
   const seq = int(raw["seq"]);
@@ -119,7 +122,18 @@ function Run() {
 
   if (detail.isPending) return <p className="text-muted-foreground">Loading run</p>;
   if (detail.isError) {
-    const missing = isProblem(detail.error) && detail.error.status === 404;
+    const status = isProblem(detail.error) ? detail.error.status : 0;
+    const missing = status === 404;
+    if (status === 403) {
+      return (
+        <p className="text-muted-foreground flex items-center gap-1">
+          Only operators can open this run: it shows the truth of the run it scores.
+          <Button variant="link" size="sm" render={<Link to="/runs" />}>
+            Back to runs
+          </Button>
+        </p>
+      );
+    }
     return (
       <p className="text-muted-foreground flex items-center gap-1">
         {missing ? `No run ${runId}.` : "The run did not load."}
@@ -136,6 +150,9 @@ function Run() {
     );
   }
   const tab = search.tab ?? "steps";
+  const scored = detail.data.run.kind === "scenario";
+  const toSteps = (to: StepsLink) =>
+    change((prev) => ({ ...without(prev, "tab", "flag", "seq", "step"), ...to }));
   return (
     <div className="flex h-full flex-col">
       <RunHeader detail={detail.data} />
@@ -144,23 +161,62 @@ function Run() {
         onValueChange={(v) =>
           change((prev) => {
             const { tab: _, ...rest } = prev;
-            return v === "raw" ? { ...rest, tab: "raw" } : rest;
+            return v === "raw" || v === "score" ? { ...rest, tab: v } : rest;
           })
         }
         className="min-h-0 flex-1"
       >
         <TabsList variant="line" className="border-b">
           <TabsTrigger value="steps">Steps</TabsTrigger>
+          {scored && <TabsTrigger value="score">Score</TabsTrigger>}
           <TabsTrigger value="raw">Raw events</TabsTrigger>
         </TabsList>
         <TabsContent value="steps" className="flex min-h-0 flex-col pt-1">
           <Steps runId={runId} detail={detail.data} search={search} onChange={change} />
         </TabsContent>
+        {scored && (
+          <TabsContent value="score" className="flex min-h-0 flex-col pt-1">
+            <Score
+              runId={runId}
+              detail={detail.data}
+              search={search}
+              onChange={change}
+              toSteps={toSteps}
+            />
+          </TabsContent>
+        )}
         <TabsContent value="raw" className="flex min-h-0 flex-col pt-1">
           <RawEvents runId={runId} search={search} onChange={change} />
         </TabsContent>
       </Tabs>
     </div>
+  );
+}
+
+function Score({
+  runId,
+  detail,
+  search,
+  onChange,
+  toSteps,
+}: {
+  runId: string;
+  detail: RunDetail;
+  search: RunSearch;
+  onChange: (update: (prev: RunSearch) => RunSearch) => void;
+  toSteps: (to: StepsLink) => void;
+}) {
+  const { sources, ready } = useSources(runId, detail);
+  const monitor = search.source ?? (ready ? defaultSource(sources) : LIVE);
+  return (
+    <ScoreTab
+      runId={runId}
+      detail={detail}
+      scoreId={search.score}
+      onScore={(id) => onChange((prev) => ({ ...prev, score: id }))}
+      monitor={monitor}
+      onSteps={toSteps}
+    />
   );
 }
 
@@ -184,6 +240,7 @@ function Steps({
   const q = useInfiniteQuery(stepsQuery(runId));
   const steps = q.data?.pages.flatMap((p) => p.items) ?? [];
   const more = q.hasNextPage;
+  const harms = useHarm(runId);
 
   // The monitor whose flags and sweeps the panel, the timeline and the list show.
   const { sources, ready } = useSources(runId, detail);
@@ -335,6 +392,11 @@ function Steps({
     current === undefined
       ? undefined
       : steps.slice(0, at).findLast((s) => s.agent_id === current.agent_id);
+  const harmed = new Set<number>();
+  for (const h of harms) {
+    const step = reaches(steps, h.seq, more) ? stepFor(steps, h.seq, h.agent) : undefined;
+    if (step) harmed.add(step.seq);
+  }
   const marks = new Map<number, StepFlags>();
   for (const f of shown) {
     if (!reaches(steps, cited(f), more)) continue;
@@ -356,6 +418,7 @@ function Steps({
           sweeps={sweepsQ.data ?? []}
           flag={search.flag}
           onFlag={pickFlag}
+          {...(harms[0] ? { harm: harms[0].seq } : {})}
         />
       )}
       <div className="flex min-h-0 flex-1 flex-col gap-4 md:grid md:grid-cols-[20rem_minmax(0,1fr)] md:grid-rows-2 xl:grid-cols-[22rem_minmax(0,1fr)_22rem] xl:grid-rows-1">
@@ -364,6 +427,7 @@ function Steps({
           selected={current?.seq}
           multi={multi}
           flags={marks}
+          harm={harmed}
           onSelect={select}
           onNearEnd={() => {
             if (more && !fetching) void q.fetchNextPage();
