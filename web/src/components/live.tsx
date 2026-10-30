@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 import {
   createContext,
   type ReactNode,
@@ -8,6 +9,7 @@ import {
 } from "react";
 
 import { Live, type LiveState } from "@/api/live";
+import { syncRuns } from "@/api/runs";
 
 const LiveContext = createContext<Live | null>(null);
 
@@ -18,11 +20,16 @@ export function LiveProvider({
   onClosed: () => void;
   children: ReactNode;
 }) {
+  const queryClient = useQueryClient();
   const [live] = useState(() => new Live({ runs: true }, onClosed));
   useEffect(() => {
+    const unsync = syncRuns(live, queryClient);
     live.start();
-    return () => live.stop();
-  }, [live]);
+    return () => {
+      live.stop();
+      unsync();
+    };
+  }, [live, queryClient]);
   return <LiveContext value={live}>{children}</LiveContext>;
 }
 

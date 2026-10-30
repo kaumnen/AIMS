@@ -593,8 +593,13 @@ class LocalEventStore:
                     await signal.wait()
 
     async def _indexed(self, run_id: str, events: Sequence[Event], head: Head) -> None:
-        """Index `events`; once the run seals, name its variant from its truth file."""
+        """Index `events`; once the run seals, name its variant from its truth file. A review's
+        first batch also notifies the run it reviews, whose `reviews` count just changed."""
         await self._index.add(events, head)
+        first = events[0] if events else None
+        if first is not None and first.seq == 0 and isinstance(o := first.data.get("origin"), str):
+            for listener in self.listeners:
+                listener(o)
         if head.finished and any(e.type == RunFinished.type for e in events):
             truth = await asyncio.to_thread(_read_truth, self._dir(run_id))
             if truth is not None:

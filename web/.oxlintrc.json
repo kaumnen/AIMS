@@ -9,6 +9,7 @@
   "ignorePatterns": ["src/routeTree.gen.ts", "src/api/schema.gen.ts"],
   "rules": {
     "react/react-in-jsx-scope": "off",
+    "react/jsx-no-constructed-context-values": "off",
     "import/no-unassigned-import": [
       "error",
       {

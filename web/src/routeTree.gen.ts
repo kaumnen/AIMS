@@ -13,6 +13,8 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as RunsRouteImport } from './routes/runs'
 import { Route as ScenariosRouteImport } from './routes/scenarios'
 import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as RunsIndexRouteImport } from './routes/runs.index'
+import { Route as RunsRunIdRouteImport } from './routes/runs.$runId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -34,37 +36,60 @@ const SettingsRoute = SettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => rootRouteImport,
 } as any)
+const RunsIndexRoute = RunsIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => RunsRoute,
+} as any)
+const RunsRunIdRoute = RunsRunIdRouteImport.update({
+  id: '/$runId',
+  path: '/$runId',
+  getParentRoute: () => RunsRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/runs': typeof RunsRoute
+  '/runs': typeof RunsRouteWithChildren
   '/scenarios': typeof ScenariosRoute
   '/settings': typeof SettingsRoute
+  '/runs/$runId': typeof RunsRunIdRoute
+  '/runs/': typeof RunsIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/runs': typeof RunsRoute
   '/scenarios': typeof ScenariosRoute
   '/settings': typeof SettingsRoute
+  '/runs/$runId': typeof RunsRunIdRoute
+  '/runs': typeof RunsIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/runs': typeof RunsRoute
+  '/runs': typeof RunsRouteWithChildren
   '/scenarios': typeof ScenariosRoute
   '/settings': typeof SettingsRoute
+  '/runs/$runId': typeof RunsRunIdRoute
+  '/runs/': typeof RunsIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/runs' | '/scenarios' | '/settings'
+  fullPaths:
+    '/' | '/runs' | '/scenarios' | '/settings' | '/runs/$runId' | '/runs/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/runs' | '/scenarios' | '/settings'
-  id: '__root__' | '/' | '/runs' | '/scenarios' | '/settings'
+  to: '/' | '/scenarios' | '/settings' | '/runs/$runId' | '/runs'
+  id:
+    | '__root__'
+    | '/'
+    | '/runs'
+    | '/scenarios'
+    | '/settings'
+    | '/runs/$runId'
+    | '/runs/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  RunsRoute: typeof RunsRoute
+  RunsRoute: typeof RunsRouteWithChildren
   ScenariosRoute: typeof ScenariosRoute
   SettingsRoute: typeof SettingsRoute
 }
@@ -99,12 +124,38 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/runs/': {
+      id: '/runs/'
+      path: '/'
+      fullPath: '/runs/'
+      preLoaderRoute: typeof RunsIndexRouteImport
+      parentRoute: typeof RunsRoute
+    }
+    '/runs/$runId': {
+      id: '/runs/$runId'
+      path: '/$runId'
+      fullPath: '/runs/$runId'
+      preLoaderRoute: typeof RunsRunIdRouteImport
+      parentRoute: typeof RunsRoute
+    }
   }
 }
 
+interface RunsRouteChildren {
+  RunsRunIdRoute: typeof RunsRunIdRoute
+  RunsIndexRoute: typeof RunsIndexRoute
+}
+
+const RunsRouteChildren: RunsRouteChildren = {
+  RunsRunIdRoute: RunsRunIdRoute,
+  RunsIndexRoute: RunsIndexRoute,
+}
+
+const RunsRouteWithChildren = RunsRoute._addFileChildren(RunsRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  RunsRoute: RunsRoute,
+  RunsRoute: RunsRouteWithChildren,
   ScenariosRoute: ScenariosRoute,
   SettingsRoute: SettingsRoute,
 }

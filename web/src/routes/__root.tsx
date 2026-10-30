@@ -35,10 +35,10 @@ function Root() {
   return (
     <TooltipProvider>
       <LiveProvider onClosed={() => void me.refetch()}>
-        <div className="flex min-h-dvh flex-col">
+        <div className="flex h-dvh flex-col">
           <Header me={me.data} />
           <Crumbs />
-          <main className="flex-1 px-4 py-3">
+          <main className="min-h-0 flex-1 overflow-auto px-4 py-3">
             <Outlet />
           </main>
         </div>

@@ -663,6 +663,34 @@ async def test_the_stream_resumes_from_its_cursor(cp: CP, local: LocalEventStore
     await pusher.client.aclose()
 
 
+async def test_a_review_that_starts_resends_the_run_it_reviews(
+    cp: CP, local: LocalEventStore
+) -> None:
+    pusher = FakeRunner(cp, "pusher")
+    await pusher.client.hello(pusher.hello_body())
+    run_id = await local.create_run(STARTED)
+    await local.append(run_id, [Draft(RunFinished(status="completed"))])
+    await ship(local, pusher.client, run_id)
+    review = await local.create_run(
+        RunStarted(
+            scenario="pushed", oversight="observe", agents=["a1"], kind="monitor", origin=run_id
+        )
+    )
+    await local.append(review, [Draft(RunFinished(status="completed"))])
+    async with (
+        cp.client(cp.viewer) as c,
+        asyncio.timeout(10),
+        c.sse("/api/stream", params={"runs": "true"}) as source,
+    ):
+        task = asyncio.create_task(ship(local, pusher.client, review))
+        async for e in source:
+            if e.event == "run" and (run := json.loads(e.data)["run"])["run_id"] == run_id:
+                assert run["reviews"] == 1
+                break
+    await task
+    await pusher.client.aclose()
+
+
 async def test_streams_end_when_the_server_stops(cp: CP) -> None:
     async with (
         cp.client(cp.viewer) as c,

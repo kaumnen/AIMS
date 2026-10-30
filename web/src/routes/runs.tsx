@@ -1,10 +1,6 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Outlet } from "@tanstack/react-router";
 
 export const Route = createFileRoute("/runs")({
   staticData: { crumb: "Runs" },
-  component: Runs,
+  component: Outlet,
 });
-
-function Runs() {
-  return <h1 className="text-lg font-medium">Runs</h1>;
-}

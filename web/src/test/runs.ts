@@ -1,0 +1,33 @@
+import type { RunSummary } from "@/api/runs";
+
+export function run(runId: string, over: Partial<RunSummary> = {}): RunSummary {
+  return {
+    run_id: runId,
+    scenario: "cache-keys",
+    status: "running",
+    state: "running",
+    started_at: "2026-10-30T10:00:00+00:00",
+    ended_at: null,
+    events: 10,
+    runner: "local",
+    stale: false,
+    diverged: null,
+    group: null,
+    reason: null,
+    kind: "scenario",
+    origin: null,
+    flags: 0,
+    categories: {},
+    max_importance: null,
+    verdict_severity: null,
+    max_severity: 0,
+    series: null,
+    series_index: null,
+    variant: null,
+    steps: 0,
+    cost_usd: null,
+    reward: null,
+    reviews: 0,
+    ...over,
+  };
+}

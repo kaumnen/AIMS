@@ -37,6 +37,8 @@ beforeEach(() => {
     }
     if (!signedIn) return unauthorized();
     if (path === "/api/session") return Response.json(me);
+    if (path === "/api/runs") return Response.json({ items: [], next: null });
+    if (path === "/api/scenarios") return Response.json([]);
     return Response.json({});
   });
 });
