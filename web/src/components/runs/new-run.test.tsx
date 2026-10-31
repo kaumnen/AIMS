@@ -8,6 +8,7 @@ import type { ScenarioInfo } from "@/api/scenarios";
 import { makeRouter } from "@/router";
 import { FakeEventSource, runnerInfo } from "@/test/event-source";
 import { stubHeight } from "@/test/layout";
+import { pick } from "@/test/pick";
 import { run } from "@/test/runs";
 
 const fetch = vi.fn<(request: Request) => Promise<Response>>();
@@ -170,15 +171,6 @@ async function openForm() {
   const dialog = await screen.findByRole("dialog");
   await within(dialog).findByText("Total: cannot exceed $9.00.");
   return within(dialog);
-}
-
-async function pick(form: ReturnType<typeof within>, name: string, option: string | RegExp) {
-  fireEvent.click(form.getByRole("combobox", { name }));
-  const item = await screen.findByRole("option", { name: option });
-  fireEvent.pointerDown(item, { pointerType: "mouse" });
-  fireEvent.pointerUp(item, { pointerType: "mouse" });
-  fireEvent.click(item);
-  await waitFor(() => expect(form.getByRole("combobox", { name }).textContent).toMatch(option));
 }
 
 test("viewers get no new run button", async () => {

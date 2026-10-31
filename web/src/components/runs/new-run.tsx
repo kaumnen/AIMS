@@ -14,6 +14,7 @@ import {
 } from "@/api/launch";
 import { type ScenarioInfo, scenariosQuery } from "@/api/scenarios";
 import { isProblem, whoami } from "@/api/session";
+import { DEFAULT, Field, Pick, problemText } from "@/components/form";
 import { up, useRunners } from "@/components/health";
 import { useLive } from "@/components/live";
 import { Button } from "@/components/ui/button";
@@ -27,18 +28,10 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { started } from "@/lib/format";
 import { checkProblem, checkState, confirmWhy, oversightNote } from "@/lib/launch";
 import { cn } from "@/lib/utils";
 
-const DEFAULT = "";
 const MAX_SAMPLES = 100;
 
 export function NewRun() {
@@ -52,50 +45,6 @@ export function NewRun() {
         {open && <NewRunForm onDone={() => setOpen(false)} />}
       </DialogContent>
     </Dialog>
-  );
-}
-
-function Field({
-  label,
-  children,
-  className,
-}: {
-  label: string;
-  children: React.ReactNode;
-  className?: string;
-}) {
-  return (
-    <label className={cn("flex flex-col gap-1", className)}>
-      <span className="text-muted-foreground">{label}</span>
-      {children}
-    </label>
-  );
-}
-
-function Pick({
-  label,
-  value,
-  items,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  items: { value: string; label: string }[];
-  onChange: (value: string) => void;
-}) {
-  return (
-    <Select items={items} value={value} onValueChange={(v) => onChange(String(v ?? DEFAULT))}>
-      <SelectTrigger size="sm" aria-label={label} className="w-full">
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent alignItemWithTrigger={false} align="start">
-        {items.map((i) => (
-          <SelectItem key={i.value || "default"} value={i.value}>
-            {i.label}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
   );
 }
 
@@ -377,11 +326,6 @@ function NewRunForm({ onDone }: { onDone: () => void }) {
       </DialogFooter>
     </>
   );
-}
-
-function problemText(p: { title: string; detail?: string | null; errors?: { msg: string }[] }) {
-  const errors = (p.errors ?? []).map((e) => e.msg);
-  return [p.detail ?? p.title, ...errors].join(" ");
 }
 
 function ProfileField({

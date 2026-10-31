@@ -23,8 +23,11 @@ export function checkProblem(check: ProfileCheck | null | undefined): string | n
   return bad ? `${bad.name}: ${bad.detail}` : null;
 }
 
-// Mirrors the server's guard: why the runs need a yes before they start, null when they do not.
-export function confirmWhy(e: Estimate): string | null {
+// Mirrors the server's guard: why runs or reviews need a yes before they start, null when they
+// do not.
+export function confirmWhy(
+  e: Pick<Estimate, "confirm" | "confirm_above_usd" | "total">,
+): string | null {
   if (!e.confirm) return null;
   const limit = usd(e.confirm_above_usd);
   if (e.total.high_usd != null) {

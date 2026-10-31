@@ -10,6 +10,7 @@ import type { Label } from "@/api/score";
 import { makeRouter } from "@/router";
 import { FakeEventSource } from "@/test/event-source";
 import { stubHeight } from "@/test/layout";
+import { pick } from "@/test/pick";
 import { run } from "@/test/runs";
 
 const BEE5 = "01a18a50-bee5-7263-ad19-24385640cee1";
@@ -176,6 +177,36 @@ const review = (runId: string, over: Partial<RunSummary> = {}): RunSummary =>
     ...over,
   });
 
+const NEW_REVIEW = "01a19100-0000-7000-8000-000000000000";
+
+// The review estimate as the server words it, the cap past $20 asking for a yes.
+const reviewEstimate = (q: URLSearchParams) => {
+  const count = Number(q.get("samples") ?? 1);
+  const preset = q.get("signals_only") ? "signals" : (q.get("preset") ?? "standard");
+  const ceiling = 5 * count;
+  return {
+    run_id: BEE5,
+    preset,
+    mode: q.get("signals_only") ? "signals_only" : q.get("judge_only") ? "judge_only" : "full",
+    samples: count,
+    steps: 72,
+    total: { typical_usd: null, high_usd: null, ceiling_usd: ceiling },
+    typical_usd: null,
+    high_usd: null,
+    ceiling_usd: 5,
+    priced: true,
+    runs: 0,
+    same_scenario: false,
+    doubled: false,
+    confirm_above_usd: 20,
+    confirm: ceiling > 20,
+    lines: [
+      `Review: ${preset} monitor, over 72 agent steps. No past reviews to go by. Stops at $5.00, its spend cap.`,
+      ...(count > 1 ? [`${count} reviews: at most $${ceiling}.00.`] : []),
+    ],
+  };
+};
+
 const verdict = (seq: number) =>
   ev(seq, "monitor.verdict", {
     max_severity: 4,
@@ -288,6 +319,22 @@ beforeEach(() => {
       posted.push({ path, body: (await request.json()) as Record<string, unknown> });
       scores = [score(QUEUED, { status: "queued", state: "queued", started_at: null })];
       return Response.json({ run_ids: [QUEUED], group: null }, { status: 202 });
+    }
+    if (path === `/api/runs/${BEE5}/monitor/estimate`) return Response.json(reviewEstimate(q));
+    if (path === `/api/runs/${BEE5}/monitor` && request.method === "POST") {
+      posted.push({ path, body: (await request.json()) as Record<string, unknown> });
+      reviews = [
+        review(NEW_REVIEW, {
+          status: "queued",
+          state: "queued",
+          started_at: null,
+          ended_at: null,
+          cost_usd: null,
+          reason: "no runner is connected",
+        }),
+        ...reviews,
+      ];
+      return Response.json({ run_ids: [NEW_REVIEW], group: null }, { status: 202 });
     }
     if (path.endsWith("/labels")) {
       const holder = path.split("/")[3] ?? "";
@@ -1006,12 +1053,61 @@ test("a score starts on the monitor the panel shows, after its estimate", async 
   expect(await screen.findByText("Queued: waiting for a runner that scores.")).toBeTruthy();
 });
 
+test("a review starts from the monitor panel after its estimate, and the panel shows it", async () => {
+  const router = renderAt(`/runs/${BEE5}`);
+  const panel = within(await screen.findByRole("complementary", { name: "Monitor" }));
+  fireEvent.click(await panel.findByRole("button", { name: "Review" }));
+  const form = within(await screen.findByRole("dialog"));
+  expect(await form.findByText(/Review: standard monitor, over 72 agent steps/)).toBeTruthy();
+  expect(form.getByRole("combobox", { name: "Monitor" }).textContent).toContain(
+    "From config (standard)",
+  );
+  expect(form.getByPlaceholderText("From config, $5.00")).toBeTruthy();
+  await pick(form, "Monitor", "research");
+  fireEvent.change(form.getByRole("spinbutton", { name: "Samples" }), { target: { value: "5" } });
+  const yes = await form.findByRole("checkbox", {
+    name: "The caps allow $25.00, above the $20.00 limit. Start anyway.",
+  });
+  const start = form.getByRole("button", { name: "Start 5 reviews" });
+  expect(start.hasAttribute("disabled")).toBe(true);
+  fireEvent.click(yes);
+  await waitFor(() => expect(start.hasAttribute("disabled")).toBe(false));
+  fireEvent.click(start);
+  await waitFor(() => expect(router.state.location.search).toEqual({ source: NEW_REVIEW }));
+  expect(posted).toEqual([
+    {
+      path: `/api/runs/${BEE5}/monitor`,
+      body: { samples: 5, preset: "research", confirm: true },
+    },
+  ]);
+  expect(await panel.findByText("Waiting to start: no runner is connected.")).toBeTruthy();
+  expect(panel.getByRole("combobox", { name: "Monitor" }).textContent).toContain(
+    "Review · standard",
+  );
+  expect(flagRequests(NEW_REVIEW)).toHaveLength(0);
+});
+
+test("a signals-only review asks for no model, cap or confirm", async () => {
+  renderAt(`/runs/${BEE5}`);
+  const panel = within(await screen.findByRole("complementary", { name: "Monitor" }));
+  fireEvent.click(await panel.findByRole("button", { name: "Review" }));
+  const form = within(await screen.findByRole("dialog"));
+  await pick(form, "Layers", "Signals only, no model");
+  expect(await form.findByText(/Review: signals monitor/)).toBeTruthy();
+  expect(form.queryByRole("combobox", { name: "Profile" })).toBeNull();
+  expect(form.queryByRole("spinbutton", { name: /Spend cap/ })).toBeNull();
+  fireEvent.click(form.getByRole("button", { name: "Start review" }));
+  await waitFor(() => expect(posted).toHaveLength(1));
+  expect(posted[0]?.body).toEqual({ samples: 1, signals_only: true, confirm: false });
+});
+
 test("a viewer sees no score and no harm", async () => {
   withScore();
   role = "viewer";
   renderAt(`/runs/${BEE5}`);
   const list = await screen.findByRole("listbox", { name: "Steps" });
   await screen.findByText("Fix the failing tests.");
+  expect(screen.queryByRole("button", { name: "Review" })).toBeNull();
   fireEvent.click(screen.getByRole("tab", { name: "Score" }));
   expect(await screen.findByText(/only operators see it/)).toBeTruthy();
   expect(list.textContent).not.toContain("harm");

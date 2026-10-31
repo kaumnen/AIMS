@@ -272,7 +272,12 @@ function Steps({
   const sourceId = search.source ?? (ready ? defaultSource(sources) : undefined);
   const source =
     sources.find((s) => s.id === sourceId) ?? (ready || sourceId === LIVE ? sources[0] : undefined);
-  const watcher = source === undefined ? undefined : source.review ? source.run.run_id : runId;
+  const watcher =
+    source === undefined || source.run.started_at === null
+      ? undefined
+      : source.review
+        ? source.run.run_id
+        : runId;
   const every = source?.run.status === "running" ? LIVE_MS : false;
   const flagsQ = useQuery({
     ...flagsQuery(watcher ?? ""),
@@ -489,7 +494,7 @@ function Steps({
               onChange((p) => ({ ...without(p, "flag", "seq", "layer", "category"), source: id }))
             }
             flags={flags}
-            loading={flagsQ.isPending}
+            loading={flagsQ.isLoading}
             shown={shown}
             filters={filters}
             onFilters={(f) =>

@@ -32,6 +32,7 @@ import {
 import { stepOf } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 
+import { NewReview } from "./review";
 import { TextOf } from "./text-of";
 
 export const LIVE = "live";
@@ -71,6 +72,13 @@ function sourceLabel(s: Source): string {
   ]
     .filter(Boolean)
     .join(" · ");
+}
+
+// A review that has not started: why it waits, or that it ended first.
+function waitText(run: RunSummary): string {
+  if (run.state === "done")
+    return run.reason ? `Ended before it started: ${run.reason}.` : "Ended before it started.";
+  return run.reason ? `Waiting to start: ${run.reason}.` : "Waiting for a runner to start it.";
 }
 
 type Data = Record<string, unknown>;
@@ -376,6 +384,8 @@ export function MonitorPanel({
   const items = sources.map((s) => ({ value: s.id, label: sourceLabel(s) }));
   const categories = [...new Set(flags.map((f) => f.category))].toSorted();
   const none = sources.length === 1 && source.run.preset === null && !loading && flags.length === 0;
+  const own = sources.find((s) => !s.review);
+  const waiting = source.review && source.run.started_at === null;
   const box = useRef<HTMLElement>(null);
   useEffect(() => {
     if (selected === undefined || loading) return;
@@ -390,18 +400,23 @@ export function MonitorPanel({
       className={cn("flex min-h-0 flex-col gap-3 overflow-auto rounded-sm border p-2", className)}
     >
       <div className="flex flex-col gap-1">
-        <Select items={items} value={source.id} onValueChange={(v) => v && onSource(String(v))}>
-          <SelectTrigger size="sm" aria-label="Monitor" className="w-full">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent alignItemWithTrigger={false} align="start">
-            {items.map((i) => (
-              <SelectItem key={i.value} value={i.value}>
-                {i.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <div className="flex items-center gap-2">
+          <div className="min-w-0 flex-1">
+            <Select items={items} value={source.id} onValueChange={(v) => v && onSource(String(v))}>
+              <SelectTrigger size="sm" aria-label="Monitor" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent alignItemWithTrigger={false} align="start">
+                {items.map((i) => (
+                  <SelectItem key={i.value} value={i.value}>
+                    {i.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          {own && <NewReview run={own.run} onStarted={onSource} />}
+        </div>
         {source.review && (
           <Link
             to="/runs/$runId"
@@ -412,7 +427,9 @@ export function MonitorPanel({
           </Link>
         )}
       </div>
-      {none ? (
+      {waiting ? (
+        <p className="text-muted-foreground">{waitText(source.run)}</p>
+      ) : none ? (
         <p className="text-muted-foreground">No monitor watched this run.</p>
       ) : (
         <>
