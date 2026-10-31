@@ -3,7 +3,7 @@ import { useSyncExternalStore } from "react";
 import type { Schemas } from "@/api/client";
 import { cn } from "@/lib/utils";
 
-import { useLive, useLiveState } from "./live";
+import { useLive, useLiveSharing, useLiveState } from "./live";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 type RunnerInfo = Schemas["RunnerInfo"];
@@ -28,6 +28,7 @@ function describe(r: RunnerInfo): string {
 // Runner and kernel tracer state from the live stream, so a dead tracer is never a surprise.
 export function Health() {
   const state = useLiveState();
+  const sharing = useLiveSharing();
   const runners = useRunners();
   if (state === "connecting") return null;
   const live = runners.filter(up);
@@ -67,6 +68,11 @@ export function Health() {
         ) : (
           runners.map((r) => <span key={r.name}>{describe(r)}</span>)
         )}
+        <span className="text-muted-foreground">
+          {sharing === null
+            ? "This tab has its own live connection"
+            : `One live connection for ${sharing} ${sharing === 1 ? "tab" : "tabs"}`}
+        </span>
       </TooltipContent>
     </Tooltip>
   );

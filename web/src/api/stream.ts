@@ -3,6 +3,7 @@ import type { components } from "./schema.gen";
 
 export type StreamMessage = components["schemas"]["StreamMessage"];
 export type StreamKind = StreamMessage["kind"];
+export type LiveState = "connecting" | "open" | "retrying";
 
 // Each SSE event is named by its kind, so EventSource needs a listener per kind.
 const kindSet: Record<StreamKind, null> = {
@@ -23,7 +24,8 @@ export interface Subscriptions {
   deltas?: readonly string[];
 }
 
-export function streamUrl(s: Subscriptions): string {
+// `last` resumes the run list from an id a stream sent before
+export function streamUrl(s: Subscriptions, last?: string): string {
   const q = new URLSearchParams();
   if (s.runs) q.set("runs", "true");
   // the server pairs run and after by position
@@ -33,6 +35,7 @@ export function streamUrl(s: Subscriptions): string {
   }
   for (const t of s.types ?? []) q.append("types", t);
   for (const id of s.deltas ?? []) q.append("deltas", id);
+  if (last) q.set("last_event_id", last);
   const query = q.toString();
   return query ? `/api/stream?${query}` : "/api/stream";
 }

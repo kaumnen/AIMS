@@ -43,3 +43,9 @@ export function useLiveState(): LiveState {
   const live = useLive();
   return useSyncExternalStore(live.watch, () => live.state);
 }
+
+// tabs on the shared connection, null when this tab holds its own
+export function useLiveSharing(): number | null {
+  const live = useLive();
+  return useSyncExternalStore(live.watch, () => live.sharing);
+}
