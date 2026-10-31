@@ -171,4 +171,4 @@ async def monitor_run(
         jobs = monitor_jobs(origin, settings, head.hash, body)
     except (RunError, ProfileError, MonitorConfigError, TextError) as e:
         raise ProblemException(422, "Cannot monitor", str(e), code="monitor") from None
-    return await _queue(state, principal, jobs, runner=body.runner, parallel=body.parallel)
+    return await _queue(state, principal.name, jobs, runner=body.runner, parallel=body.parallel)

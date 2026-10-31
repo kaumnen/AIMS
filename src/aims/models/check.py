@@ -5,7 +5,7 @@ from typing import Literal
 
 import httpx2
 
-from aims.events import Draft, EventStore, RunFinished, RunStarted, RunStatus
+from aims.events import Draft, EventStore, ModelChecked, RunFinished, RunStarted, RunStatus
 from aims.models.client import ModelCallError, ModelClient
 from aims.models.profiles import ModelsConfig, Overrides, Profile
 from aims.models.types import Message, OutputSchema, Prompt, Reply, ToolOutput, ToolSpec
@@ -149,7 +149,19 @@ async def record_check(
     try:
         async with ModelClient(store, run_id, models, transport=transport) as client:
             for profile in chosen:
-                for c in await check_profile(client, profile):
+                found = await check_profile(client, profile)
+                await store.append(
+                    run_id,
+                    [
+                        Draft(
+                            ModelChecked(
+                                profile=c.profile, name=c.name, verdict=c.verdict, detail=c.detail
+                            )
+                        )
+                        for c in found
+                    ],
+                )
+                for c in found:
                     checks.append(c)
                     if on_check is not None:
                         on_check(c)

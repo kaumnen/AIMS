@@ -1209,6 +1209,34 @@
         "title": "ChannelSnapshot",
         "type": "object"
       },
+      "CheckLine": {
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "verdict": {
+            "enum": [
+              "ok",
+              "warn",
+              "fail"
+            ],
+            "title": "Verdict",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "verdict",
+          "detail"
+        ],
+        "title": "CheckLine",
+        "type": "object"
+      },
       "CheckResult": {
         "properties": {
           "errors": {
@@ -2105,6 +2133,7 @@
           "ipc.event",
           "log.truncated",
           "mem.exec",
+          "model.checked",
           "model.request",
           "model.response",
           "monitor.action",
@@ -2209,6 +2238,9 @@
           },
           "mem.exec": {
             "$ref": "#/components/schemas/MemExec"
+          },
+          "model.checked": {
+            "$ref": "#/components/schemas/ModelChecked"
           },
           "model.request": {
             "$ref": "#/components/schemas/ModelRequest"
@@ -2333,6 +2365,7 @@
           "ipc.event",
           "log.truncated",
           "mem.exec",
+          "model.checked",
           "model.request",
           "model.response",
           "monitor.action",
@@ -4507,6 +4540,11 @@
             "minimum": 1.0,
             "title": "Samples",
             "type": "integer"
+          },
+          "score": {
+            "default": false,
+            "title": "Score",
+            "type": "boolean"
           }
         },
         "title": "JobOptions",
@@ -5026,6 +5064,42 @@
           "partial"
         ],
         "title": "MemExec",
+        "type": "object"
+      },
+      "ModelChecked": {
+        "additionalProperties": false,
+        "description": "One smoke test of a model check: `name` says which (plain, unstreamed, tools,\nstructured), `verdict` how it went and `detail` what was seen.",
+        "properties": {
+          "detail": {
+            "default": "",
+            "title": "Detail",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
+          "verdict": {
+            "enum": [
+              "ok",
+              "warn",
+              "fail"
+            ],
+            "title": "Verdict",
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile",
+          "name",
+          "verdict",
+          "detail"
+        ],
+        "title": "ModelChecked",
         "type": "object"
       },
       "ModelParams": {
@@ -7581,11 +7655,53 @@
         "title": "Profile",
         "type": "object"
       },
+      "ProfileCheck": {
+        "description": "The newest model check of a profile: its run, when it started, the run's status and\neach smoke test; `checks` is empty while it runs.",
+        "properties": {
+          "checks": {
+            "items": {
+              "$ref": "#/components/schemas/CheckLine"
+            },
+            "title": "Checks",
+            "type": "array"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "started_at": {
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "started_at",
+          "status",
+          "checks"
+        ],
+        "title": "ProfileCheck",
+        "type": "object"
+      },
       "ProfileInfo": {
         "properties": {
           "backend": {
             "title": "Backend",
             "type": "string"
+          },
+          "check": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProfileCheck"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "envs": {
             "items": {
@@ -7633,7 +7749,8 @@
           "reasoning",
           "roles",
           "envs",
-          "runners"
+          "runners",
+          "check"
         ],
         "title": "ProfileInfo",
         "type": "object"
@@ -10010,7 +10127,19 @@
         "type": "object"
       },
       "ScenarioInfo": {
+        "description": "`oversight` is what the scenario lets its monitor do, `agents` how many agents it has,\n`profiles` the profiles they run unless a run picks one, and `variants` the names of its\nvariants; all are missing when it does not load.",
         "properties": {
+          "agents": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agents"
+          },
           "error": {
             "anyOf": [
               {
@@ -10025,6 +10154,29 @@
           "name": {
             "title": "Name",
             "type": "string"
+          },
+          "oversight": {
+            "anyOf": [
+              {
+                "enum": [
+                  "observe",
+                  "autonomous",
+                  "human"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oversight"
+          },
+          "profiles": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Profiles",
+            "type": "array"
           },
           "source": {
             "title": "Source",
@@ -10041,6 +10193,13 @@
             ],
             "title": "Title"
           },
+          "variants": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Variants",
+            "type": "array"
+          },
           "writable": {
             "title": "Writable",
             "type": "boolean"
@@ -10051,7 +10210,11 @@
           "name",
           "title",
           "writable",
-          "error"
+          "error",
+          "oversight",
+          "agents",
+          "profiles",
+          "variants"
         ],
         "title": "ScenarioInfo",
         "type": "object"
@@ -11165,7 +11328,7 @@
         "type": "object"
       },
       "StartRun": {
-        "description": "`monitor` picks the monitor's preset over the config files and the scenario; None keeps\nwhat they say, else `standard`.",
+        "description": "`monitor` picks the monitor's preset over the config files and the scenario; None keeps\nwhat they say, else `standard`. `variant` applies a named variant of the scenario. When the\nestimate is above `confirm_above_usd`, or nothing bounds the cost, the runs start only with\n`confirm`, like `aims run --yes`. `score` scores each run against its truth file once the\nfile arrives, as `aims run --score` does.",
         "properties": {
           "audit": {
             "default": "kernel",
@@ -11175,6 +11338,11 @@
             ],
             "title": "Audit",
             "type": "string"
+          },
+          "confirm": {
+            "default": false,
+            "title": "Confirm",
+            "type": "boolean"
           },
           "keep": {
             "default": false,
@@ -11241,6 +11409,22 @@
           },
           "scenario": {
             "$ref": "#/components/schemas/ScenarioRef"
+          },
+          "score": {
+            "default": false,
+            "title": "Score",
+            "type": "boolean"
+          },
+          "variant": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Variant"
           }
         },
         "required": [
@@ -12945,7 +13129,7 @@
     },
     "/api/models": {
       "get": {
-        "description": "Profiles, their roles, and which runners have the variables each one reads.",
+        "description": "Profiles, their roles, which runners have the variables each one reads, and each\nprofile's newest model check.",
         "operationId": "list_models",
         "responses": {
           "200": {

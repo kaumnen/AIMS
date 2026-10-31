@@ -904,19 +904,25 @@ def spend_lines(credits: Sequence[ProviderCredit]) -> list[str]:
 # Before the run starts
 
 
-def guard(e: Estimate, *, yes: bool, tty: bool, ask: Callable[[str], bool]) -> str | None:
-    """None when the run may start: the estimate is under the threshold, `yes` was given, or
-    the person at the terminal agreed through `ask`. Otherwise why it may not."""
-    if yes or not e.confirm:
+def needs_confirm(e: Estimate) -> str | None:
+    """Why the runs need a person's yes before they start, None when they do not."""
+    if not e.confirm:
         return None
     t = e.total
     limit = usd(e.confirm_above_usd)
     if t.high_usd is not None:
-        why = f"the high estimate {usd(t.high_usd)} is above confirm_above_usd {limit}"
-    elif t.ceiling_usd is not None:
-        why = f"the caps allow {usd(t.ceiling_usd)}, above confirm_above_usd {limit}"
-    else:
-        why = "no cap bounds the cost and no past runs give an estimate"
+        return f"the high estimate {usd(t.high_usd)} is above confirm_above_usd {limit}"
+    if t.ceiling_usd is not None:
+        return f"the caps allow {usd(t.ceiling_usd)}, above confirm_above_usd {limit}"
+    return "no cap bounds the cost and no past runs give an estimate"
+
+
+def guard(e: Estimate, *, yes: bool, tty: bool, ask: Callable[[str], bool]) -> str | None:
+    """None when the run may start: the estimate is under the threshold, `yes` was given, or
+    the person at the terminal agreed through `ask`. Otherwise why it may not."""
+    why = None if yes else needs_confirm(e)
+    if why is None:
+        return None
     if not tty:
         return f"{why}; pass --yes to start anyway"
     return None if ask(f"{why[0].upper()}{why[1:]}. Start anyway?") else "not started"

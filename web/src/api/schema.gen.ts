@@ -99,7 +99,8 @@ export interface paths {
         };
         /**
          * List Models
-         * @description Profiles, their roles, and which runners have the variables each one reads.
+         * @description Profiles, their roles, which runners have the variables each one reads, and each
+         *     profile's newest model check.
          */
         get: operations["list_models"];
         put?: never;
@@ -1770,6 +1771,18 @@ export interface components {
              */
             truncated: boolean;
         };
+        /** CheckLine */
+        CheckLine: {
+            /** Detail */
+            detail: string;
+            /** Name */
+            name: string;
+            /**
+             * Verdict
+             * @enum {string}
+             */
+            verdict: "ok" | "warn" | "fail";
+        };
         /** CheckResult */
         CheckResult: {
             /** Errors */
@@ -2125,7 +2138,7 @@ export interface components {
             next: string | null;
         };
         /** @enum {string} */
-        EventType: "agent.compacted" | "agent.finished" | "agent.input" | "agent.report" | "agent.started" | "agent.step" | "audit.lost" | "audit.spill" | "cache.probe" | "channel.message" | "channel.read" | "channel.snapshot" | "exec.finished" | "exec.started" | "file.access" | "file.setattr" | "file.sync" | "file.write" | "fs.snapshot" | "ipc.event" | "log.truncated" | "mem.exec" | "model.request" | "model.response" | "monitor.action" | "monitor.cleared" | "monitor.degraded" | "monitor.flag" | "monitor.sweep" | "monitor.verdict" | "net.connect" | "ns.event" | "operator.action" | "plant.triggered" | "proc.exec" | "proc.exit" | "proc.fork" | "proc.output" | "proc.signal" | "ptrace.event" | "replay.divergence" | "resource.sample" | "run.finished" | "run.started" | "sandbox.archived" | "sandbox.started" | "sandbox.stopped" | "score.answer" | "score.awareness" | "score.unexplained" | "score.unit" | "sys.denied" | "task.scored" | "tool.call" | "tool.result";
+        EventType: "agent.compacted" | "agent.finished" | "agent.input" | "agent.report" | "agent.started" | "agent.step" | "audit.lost" | "audit.spill" | "cache.probe" | "channel.message" | "channel.read" | "channel.snapshot" | "exec.finished" | "exec.started" | "file.access" | "file.setattr" | "file.sync" | "file.write" | "fs.snapshot" | "ipc.event" | "log.truncated" | "mem.exec" | "model.checked" | "model.request" | "model.response" | "monitor.action" | "monitor.cleared" | "monitor.degraded" | "monitor.flag" | "monitor.sweep" | "monitor.verdict" | "net.connect" | "ns.event" | "operator.action" | "plant.triggered" | "proc.exec" | "proc.exit" | "proc.fork" | "proc.output" | "proc.signal" | "ptrace.event" | "replay.divergence" | "resource.sample" | "run.finished" | "run.started" | "sandbox.archived" | "sandbox.started" | "sandbox.stopped" | "score.answer" | "score.awareness" | "score.unexplained" | "score.unit" | "sys.denied" | "task.scored" | "tool.call" | "tool.result";
         /** @description Each event type and the schema of its `data`. */
         EventTypes: {
             "agent.compacted": components["schemas"]["AgentCompacted"];
@@ -2150,6 +2163,7 @@ export interface components {
             "ipc.event": components["schemas"]["IpcEvent"];
             "log.truncated": components["schemas"]["LogTruncated"];
             "mem.exec": components["schemas"]["MemExec"];
+            "model.checked": components["schemas"]["ModelChecked"];
             "model.request": components["schemas"]["ModelRequest"];
             "model.response": components["schemas"]["ModelResponse"];
             "monitor.action": components["schemas"]["MonitorAction"];
@@ -3020,6 +3034,11 @@ export interface components {
              * @default 1
              */
             samples?: number;
+            /**
+             * Score
+             * @default false
+             */
+            score?: boolean;
         };
         JsonValue: unknown;
         /**
@@ -3255,6 +3274,27 @@ export interface components {
             prot: number | null;
             /** Ts Kernel */
             ts_kernel: number;
+        };
+        /**
+         * ModelChecked
+         * @description One smoke test of a model check: `name` says which (plain, unstreamed, tools,
+         *     structured), `verdict` how it went and `detail` what was seen.
+         */
+        ModelChecked: {
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+            /** Name */
+            name: string;
+            /** Profile */
+            profile: string;
+            /**
+             * Verdict
+             * @enum {string}
+             */
+            verdict: "ok" | "warn" | "fail";
         };
         /**
          * ModelParams
@@ -4360,10 +4400,26 @@ export interface components {
             /** Weights */
             weights: string;
         };
+        /**
+         * ProfileCheck
+         * @description The newest model check of a profile: its run, when it started, the run's status and
+         *     each smoke test; `checks` is empty while it runs.
+         */
+        ProfileCheck: {
+            /** Checks */
+            checks: components["schemas"]["CheckLine"][];
+            /** Run Id */
+            run_id: string;
+            /** Started At */
+            started_at: string;
+            /** Status */
+            status: string;
+        };
         /** ProfileInfo */
         ProfileInfo: {
             /** Backend */
             backend: string;
+            check: components["schemas"]["ProfileCheck"] | null;
             /** Envs */
             envs: string[];
             /** Model */
@@ -5184,16 +5240,29 @@ export interface components {
             /** Text */
             text: string;
         };
-        /** ScenarioInfo */
+        /**
+         * ScenarioInfo
+         * @description `oversight` is what the scenario lets its monitor do, `agents` how many agents it has,
+         *     `profiles` the profiles they run unless a run picks one, and `variants` the names of its
+         *     variants; all are missing when it does not load.
+         */
         ScenarioInfo: {
+            /** Agents */
+            agents: number | null;
             /** Error */
             error: string | null;
             /** Name */
             name: string;
+            /** Oversight */
+            oversight: ("observe" | "autonomous" | "human") | null;
+            /** Profiles */
+            profiles: string[];
             /** Source */
             source: string;
             /** Title */
             title: string | null;
+            /** Variants */
+            variants: string[];
             /** Writable */
             writable: boolean;
         };
@@ -5674,7 +5743,10 @@ export interface components {
         /**
          * StartRun
          * @description `monitor` picks the monitor's preset over the config files and the scenario; None keeps
-         *     what they say, else `standard`.
+         *     what they say, else `standard`. `variant` applies a named variant of the scenario. When the
+         *     estimate is above `confirm_above_usd`, or nothing bounds the cost, the runs start only with
+         *     `confirm`, like `aims run --yes`. `score` scores each run against its truth file once the
+         *     file arrives, as `aims run --score` does.
          */
         StartRun: {
             /**
@@ -5683,6 +5755,11 @@ export interface components {
              * @enum {string}
              */
             audit?: "kernel" | "snapshot";
+            /**
+             * Confirm
+             * @default false
+             */
+            confirm?: boolean;
             /**
              * Keep
              * @default false
@@ -5702,6 +5779,13 @@ export interface components {
              */
             samples?: number;
             scenario: components["schemas"]["ScenarioRef"];
+            /**
+             * Score
+             * @default false
+             */
+            score?: boolean;
+            /** Variant */
+            variant?: string | null;
         };
         /**
          * StartScore
@@ -10615,6 +10699,7 @@ export const categoryRateCategoryValues: ReadonlyArray<FlattenedDeepRequired<com
 export const channelChangeChangeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ChannelChange"]["change"]> = ["added", "modified", "meta", "removed", "kind"];
 export const channelChangeKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ChannelChange"]["kind"]> = ["file", "dir", "symlink", "fifo", "socket", "other"];
 export const channelInfoLifetimeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ChannelInfo"]["lifetime"]> = ["run", "series"];
+export const checkLineVerdictValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CheckLine"]["verdict"]> = ["ok", "warn", "fail"];
 export const commandActionActionValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CommandAction"]["action"]> = ["pause", "resume", "inject", "kill", "cancel", "sweep"];
 export const commandActionThenAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CommandAction"]["then"]> = ["continue", "kill", "inject", "deny"];
 export const commandMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CommandMessage"]["kind"]> = ["command"];
@@ -10623,7 +10708,7 @@ export const costFiguresTierValues: ReadonlyArray<FlattenedDeepRequired<componen
 export const deltaMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["DeltaMessage"]["kind"]> = ["delta"];
 export const deltasDroppedMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["DeltasDroppedMessage"]["kind"]> = ["deltas_dropped"];
 export const endMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EndMessage"]["kind"]> = ["end"];
-export const eventTypeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventType"]> = ["agent.compacted", "agent.finished", "agent.input", "agent.report", "agent.started", "agent.step", "audit.lost", "audit.spill", "cache.probe", "channel.message", "channel.read", "channel.snapshot", "exec.finished", "exec.started", "file.access", "file.setattr", "file.sync", "file.write", "fs.snapshot", "ipc.event", "log.truncated", "mem.exec", "model.request", "model.response", "monitor.action", "monitor.cleared", "monitor.degraded", "monitor.flag", "monitor.sweep", "monitor.verdict", "net.connect", "ns.event", "operator.action", "plant.triggered", "proc.exec", "proc.exit", "proc.fork", "proc.output", "proc.signal", "ptrace.event", "replay.divergence", "resource.sample", "run.finished", "run.started", "sandbox.archived", "sandbox.started", "sandbox.stopped", "score.answer", "score.awareness", "score.unexplained", "score.unit", "sys.denied", "task.scored", "tool.call", "tool.result"];
+export const eventTypeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventType"]> = ["agent.compacted", "agent.finished", "agent.input", "agent.report", "agent.started", "agent.step", "audit.lost", "audit.spill", "cache.probe", "channel.message", "channel.read", "channel.snapshot", "exec.finished", "exec.started", "file.access", "file.setattr", "file.sync", "file.write", "fs.snapshot", "ipc.event", "log.truncated", "mem.exec", "model.checked", "model.request", "model.response", "monitor.action", "monitor.cleared", "monitor.degraded", "monitor.flag", "monitor.sweep", "monitor.verdict", "net.connect", "ns.event", "operator.action", "plant.triggered", "proc.exec", "proc.exit", "proc.fork", "proc.output", "proc.signal", "ptrace.event", "replay.divergence", "resource.sample", "run.finished", "run.started", "sandbox.archived", "sandbox.started", "sandbox.stopped", "score.answer", "score.awareness", "score.unexplained", "score.unit", "sys.denied", "task.scored", "tool.call", "tool.result"];
 export const eventsMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventsMessage"]["kind"]> = ["events"];
 export const execFinishedEndValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ExecFinished"]["end"]> = ["exited", "timeout", "cancelled", "failed"];
 export const execStartedAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ExecStarted"]["audit"]> = ["kernel", "snapshot"];
@@ -10650,6 +10735,7 @@ export const latencyLayerValues: ReadonlyArray<FlattenedDeepRequired<components>
 export const layerInfoLayerValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["LayerInfo"]["layer"]> = ["user", "project"];
 export const layerRatesLayerValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["LayerRates"]["layer"]> = ["signal", "sweep", "judge", "llm", "any"];
 export const memExecKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["MemExec"]["kind"]> = ["exec", "mmap"];
+export const modelCheckedVerdictValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelChecked"]["verdict"]> = ["ok", "warn", "fail"];
 export const modelRequestBackendValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelRequest"]["backend"]> = ["responses", "chat"];
 export const modelRequestRoleAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelRequest"]["role"]> = ["sweep", "judge", "review", "score"];
 export const modelResponseError_kindAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelResponse"]["error_kind"]> = ["http", "redirect", "connect", "timeout", "stall", "wall", "read", "protocol", "provider", "replay"];
@@ -10693,6 +10779,7 @@ export const runnerHelloKindsValues: ReadonlyArray<FlattenedDeepRequired<compone
 export const runnerInfoKindsValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunnerInfo"]["kinds"]> = ["scenario", "models.check", "monitor", "score"];
 export const sandboxStartedAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["SandboxStarted"]["audit"]> = ["kernel", "snapshot"];
 export const sandboxStoppedReasonValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["SandboxStopped"]["reason"]> = ["closed", "killed", "exec_failed"];
+export const scenarioInfoOversightAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScenarioInfo"]["oversight"]> = ["observe", "autonomous", "human"];
 export const scoreAnswerCauseValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreAnswer"]["cause"]> = ["true", "false", "none"];
 export const scoreAnswerToldValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreAnswer"]["told"]> = ["yes", "partly", "no"];
 export const scoreAwarenessFindingValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreAwareness"]["finding"]> = ["yes", "no", "unclear"];

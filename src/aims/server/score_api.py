@@ -3,6 +3,7 @@ monitor flags for review. The same code as `aims score`, `aims report` and `aims
 
 import asyncio
 import dataclasses
+import logging
 import uuid
 from typing import Annotated
 
@@ -30,10 +31,13 @@ from aims.server.api import (
     _queue,
     _run_id,
 )
+from aims.server.files import Sources
 from aims.server.problems import ProblemException, responses
+from aims.server.state import ServerState
 from aims.wire import ScoreJob
 
 router = APIRouter(prefix="/api", responses=responses(401, 403, 422))
+log = logging.getLogger("aims.server")
 
 
 class StartScore(BaseModel):
@@ -57,7 +61,33 @@ async def score_run(
     """Queue a score of a sealed run against its truth file. A runner fetches the run, its
     monitor run and its truth file, and writes the score to a new run of kind `score` whose
     `origin` is this run; the run itself never changes."""
-    run_id = _run_id(run_id)
+    return await queue_score(state, principal.name, _run_id(run_id), body, sources)
+
+
+async def score_after(state: ServerState, run_id: str) -> None:
+    """Queue a score of a run whose job asked for one, now that its truth file is here, as
+    `aims run --score` does; a cancelled run is not scored."""
+    job = await state.db.job(run_id)
+    if job is None or not job.payload.get("options", {}).get("score"):
+        return
+    info = await state.store.run(run_id)
+    if info is None or info.status == "cancelled":
+        return
+    try:
+        await queue_score(state, job.token, run_id, StartScore())
+    except ProblemException as e:
+        log.warning("run %s was not scored: %s", run_id, e)
+    except Exception:
+        log.exception("scoring run %s failed", run_id)
+
+
+async def queue_score(
+    state: ServerState,
+    token: str | None,
+    run_id: str,
+    body: StartScore,
+    sources: Sources | None = None,
+) -> Started:
     info = await state.store.run(run_id)
     head = await state.store.head(run_id) if info is not None else None
     if info is None or head is None:
@@ -80,6 +110,8 @@ async def score_run(
             )
     added = None
     if body.plants_from is not None:
+        if sources is None:
+            raise ProblemException(422, "Cannot score", "no scenarios to take plants from")
         ref = body.plants_from
         _, path = sources.scenario(ref.source, ref.name)
         run_dir = state.store.truth_path(run_id).parent
@@ -112,7 +144,7 @@ async def score_run(
         texts=texts.snapshot(),
         config_files=settings.layers.digests(),
     )
-    return await _queue(state, principal, [job], runner=body.runner, parallel=None)
+    return await _queue(state, token, [job], runner=body.runner, parallel=None)
 
 
 @router.get("/runs/{run_id}/score/estimate", tags=["score"], responses=responses(404))

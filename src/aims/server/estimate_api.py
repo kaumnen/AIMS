@@ -11,11 +11,9 @@ from aims.monitor.config import MonitorConfigError, Preset
 from aims.prompts import TextError
 from aims.run.estimate import (
     Estimate,
-    History,
     Projection,
     ProviderCredit,
     estimate_runs,
-    history,
     projection,
     spend,
 )
@@ -23,21 +21,8 @@ from aims.run.estimate import spend_lines as describe_spend
 from aims.scenario import ScenarioError, load
 from aims.server.api import Out, SourcesDep, State, Viewer, _run_id, scenario_problems
 from aims.server.problems import ProblemException, responses
-from aims.server.state import ServerState
 
 router = APIRouter(prefix="/api", responses=responses(401, 403, 422))
-_cache: dict[int, tuple[float, int, History]] = {}
-
-
-async def _history(state: ServerState) -> History:
-    """The runs' history, read again once a run changed."""
-    stamp = (state.started, state.changes.version)
-    kept = _cache.get(id(state))
-    if kept is not None and kept[:2] == stamp:
-        return kept[2]
-    found = await history(state.store)
-    _cache[id(state)] = (*stamp, found)
-    return found
 
 
 @router.get("/scenarios/{source}/{name}/estimate", tags=["scenarios"], responses=responses(404))
@@ -73,7 +58,7 @@ async def estimate_scenario(
         ) from None
     try:
         return estimate_runs(
-            await _history(state),
+            await state.history(),
             settings,
             bundles,
             profile=profile,
@@ -94,14 +79,14 @@ class Spend(Out):
 
 @router.get("/spend", tags=["runs"])
 async def get_spend(principal: Viewer, state: State) -> Spend:
-    credits = spend(await _history(state), state.config.settings().credits)
+    credits = spend(await state.history(), state.config.settings().credits)
     return Spend(providers=credits, lines=describe_spend(credits))
 
 
 @router.get("/runs/{run_id}/projection", tags=["runs"], responses=responses(404))
 async def get_projection(run_id: str, principal: Viewer, state: State) -> Projection:
     """What the run has cost so far and is on track to cost, as `aims run` shows it live."""
-    found = await projection(state.store, _run_id(run_id), await _history(state))
+    found = await projection(state.store, _run_id(run_id), await state.history())
     if found is None:
         raise ProblemException(404, "Not found", f"no run {run_id}")
     return found

@@ -309,6 +309,18 @@ class ModelResponse(Payload):
         )
 
 
+class ModelChecked(Payload):
+    """One smoke test of a model check: `name` says which (plain, unstreamed, tools,
+    structured), `verdict` how it went and `detail` what was seen."""
+
+    type = "model.checked"
+
+    profile: str
+    name: str
+    verdict: Literal["ok", "warn", "fail"]
+    detail: str = ""
+
+
 class Proc(BaseModel):
     """A process as the Docker host lists it."""
 

@@ -52,6 +52,8 @@ class JobOptions(_Strict):
     group: str | None = None
     sample: int | None = None
     samples: int = Field(default=1, ge=1)
+    # the control plane scores the run once its truth file arrives
+    score: bool = False
 
 
 class Job(_Strict):
@@ -159,6 +161,7 @@ def scenario_jobs(
     audit: AuditLevel = "kernel",
     config_files: dict[str, str | None] | None = None,
     monitor: ResolvedMonitor | None = None,
+    score: bool = False,
 ) -> list[Job]:
     """One job per sample of a scenario, resolved with these layers, watched by `monitor`.
     Raises ProfileError, TextError or UnknownTool."""
@@ -179,6 +182,7 @@ def scenario_jobs(
                 group=group,
                 sample=i if group else None,
                 samples=samples,
+                score=score,
             ),
             audit=audit,
             config_files=dict(config_files or {}),

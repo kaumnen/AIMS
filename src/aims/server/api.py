@@ -10,7 +10,7 @@ import uuid
 from collections.abc import AsyncIterator, Iterator, Sequence
 from compression import zstd
 from pathlib import Path
-from typing import IO, Annotated, Literal, Self
+from typing import IO, Annotated, Literal, Self, cast
 
 from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
@@ -25,6 +25,7 @@ from aims.events import (
     ExecActivity,
     IngestError,
     MissingBlobs,
+    Oversight,
     ResumeThen,
     RunCorrupt,
     RunInfo,
@@ -38,11 +39,13 @@ from aims.events.index import monitor_of
 from aims.events.schema import blob_refs
 from aims.events.store import is_run_id
 from aims.models import Profile, ProfileError
+from aims.models.check import Verdict
 from aims.monitor import texts as monitor_texts
 from aims.monitor.config import MonitorConfigError, Preset
 from aims.monitor.offline import origin_agents
 from aims.monitor.setup import ResolvedMonitor
 from aims.prompts import Prompts, TextError, load_prompts
+from aims.run.estimate import estimate_runs, needs_confirm
 from aims.run.fork import CutAt, check_fork, cut_at, live_profiles, load_origin
 from aims.run.job import Job, fork_jobs, monitor_for, scenario_jobs
 from aims.run.runner import RunError, agent_profile, check
@@ -422,9 +425,15 @@ class ScenarioRef(BaseModel):
 
 class StartRun(BaseModel):
     """`monitor` picks the monitor's preset over the config files and the scenario; None keeps
-    what they say, else `standard`."""
+    what they say, else `standard`. `variant` applies a named variant of the scenario. When the
+    estimate is above `confirm_above_usd`, or nothing bounds the cost, the runs start only with
+    `confirm`, like `aims run --yes`. `score` scores each run against its truth file once the
+    file arrives, as `aims run --score` does."""
 
     scenario: ScenarioRef
+    variant: str | None = None
+    confirm: bool = False
+    score: bool = False
     samples: int = Field(default=1, ge=1, le=100)
     parallel: int | None = Field(default=None, ge=1)
     profile: str | None = None
@@ -484,7 +493,7 @@ def _check_runner(
 
 async def _queue(
     state: ServerState,
-    principal: Principal,
+    token: str | None,
     jobs: Sequence[Job | MonitorJob | ScoreJob],
     *,
     runner: str | None,
@@ -514,7 +523,7 @@ async def _queue(
             runner=None,
             offered_at=None,
             tried=[],
-            token=principal.name,
+            token=token,
             created=now,
             updated=now,
             reason=None,
@@ -554,7 +563,7 @@ async def start_runs(
     _, path = sources.scenario(body.scenario.source, body.scenario.name)
     settings = state.config.settings()
     try:
-        bundle = load(path / "scenario.yaml")
+        bundle = load(path / "scenario.yaml", body.variant)
     except ScenarioError as e:
         raise ProblemException(
             422, "Scenario does not load", code="scenario", errors=scenario_problems(e)
@@ -580,12 +589,30 @@ async def start_runs(
             audit=body.audit,
             config_files=settings.layers.digests(),
             monitor=monitor,
+            score=body.score,
         )
     except (ProfileError, UnknownTool, ValueError) as e:
         raise ProblemException(422, "Scenario cannot run", str(e), code="scenario") from None
+    if not body.confirm:
+        try:
+            cost = estimate_runs(
+                await state.history(),
+                settings,
+                [bundle],
+                profile=body.profile,
+                preset=body.monitor,
+                samples=body.samples,
+            )
+        except ProfileError, MonitorConfigError, TextError:
+            cost = None
+        why = None if cost is None else needs_confirm(cost)
+        if why is not None:
+            raise ProblemException(
+                409, "Confirm the cost", f"{why}; set confirm to start anyway", code="confirm"
+            )
     blobs = {hashlib.sha256(b).hexdigest(): b for b in bundle.blobs()}
     return await _queue(
-        state, principal, jobs, runner=body.runner, parallel=body.parallel, blobs=blobs
+        state, principal.name, jobs, runner=body.runner, parallel=body.parallel, blobs=blobs
     )
 
 
@@ -639,7 +666,7 @@ async def fork_run(run_id: str, body: StartFork, principal: Operator, state: Sta
     except (RunError, ProfileError, KeyError) as e:
         raise ProblemException(422, "Cannot fork", str(e), code="fork") from None
     return await _queue(
-        state, principal, jobs, runner=body.runner, parallel=body.parallel, copy_from=run_id
+        state, principal.name, jobs, runner=body.runner, parallel=body.parallel, copy_from=run_id
     )
 
 
@@ -1115,6 +1142,22 @@ def _tar_blobs(file: IO[bytes], blobs: BlobStore, wanted: set[str]) -> None:
 # Models, prompts, runners
 
 
+class CheckLine(Out):
+    name: str
+    verdict: Verdict
+    detail: str
+
+
+class ProfileCheck(Out):
+    """The newest model check of a profile: its run, when it started, the run's status and
+    each smoke test; `checks` is empty while it runs."""
+
+    run_id: str
+    started_at: str
+    status: str
+    checks: list[CheckLine]
+
+
 class ProfileInfo(Out):
     name: str
     backend: str
@@ -1124,6 +1167,7 @@ class ProfileInfo(Out):
     roles: list[str]
     envs: list[str]
     runners: list[str]
+    check: ProfileCheck | None = None
 
 
 class ModelsInfo(Out):
@@ -1133,11 +1177,13 @@ class ModelsInfo(Out):
 
 @router.get("/models", tags=["models"])
 async def list_models(principal: Viewer, state: State) -> ModelsInfo:
-    """Profiles, their roles, and which runners have the variables each one reads."""
+    """Profiles, their roles, which runners have the variables each one reads, and each
+    profile's newest model check."""
     models = state.config.settings().models
     roles: dict[str, list[str]] = {}
     for role, name in models.roles.model_dump().items():
         roles.setdefault(name, []).append(role)
+    checks = await _checks(state, set(models.profiles))
     out = []
     for name, p in sorted(models.profiles.items()):
         envs = [e for e in (p.api_key_env, p.base_url_env) if e]
@@ -1152,9 +1198,46 @@ async def list_models(principal: Viewer, state: State) -> ModelsInfo:
                 roles=roles.get(name, []),
                 envs=envs,
                 runners=sorted(ready),
+                check=checks.get(name),
             )
         )
     return ModelsInfo(profiles=out, roles=models.roles.model_dump())
+
+
+CHECK_RUNS = 100
+
+
+async def _checks(state: ServerState, wanted: set[str]) -> dict[str, ProfileCheck]:
+    """The newest check of each profile in `wanted`, among the last CHECK_RUNS model checks."""
+    found: dict[str, ProfileCheck] = {}
+    for run in await state.store.runs(kind="models.check", limit=CHECK_RUNS):
+        if not wanted - found.keys():
+            break
+        events = await state.store.events(
+            run.run_id, types=["run.started", "model.checked"], limit=1000
+        )
+        if not events or events[0].type != "run.started":
+            continue
+        config = events[0].data.get("config")
+        profiles = config.get("models") if isinstance(config, dict) else None
+        for name in profiles if isinstance(profiles, dict) else ():
+            if name not in wanted or name in found:
+                continue
+            found[name] = ProfileCheck(
+                run_id=run.run_id,
+                started_at=run.started_at.isoformat(),
+                status=run.status,
+                checks=[
+                    CheckLine(
+                        name=str(e.data["name"]),
+                        verdict=cast(Verdict, e.data["verdict"]),
+                        detail=str(e.data.get("detail", "")),
+                    )
+                    for e in events
+                    if e.type == "model.checked" and e.data.get("profile") == name
+                ],
+            )
+    return found
 
 
 class ModelsCheck(BaseModel):
@@ -1176,7 +1259,7 @@ async def check_models(body: ModelsCheck, principal: Operator, state: State) -> 
         models={p.name: p for p in chosen},
         check=[p.name for p in chosen],
     )
-    return await _queue(state, principal, [job], runner=body.runner, parallel=None, blobs={})
+    return await _queue(state, principal.name, [job], runner=body.runner, parallel=None, blobs={})
 
 
 class Text(Out):
@@ -1271,15 +1354,26 @@ async def list_runners(principal: Viewer, state: State) -> list[RunnerInfo]:
 
 
 class ScenarioInfo(Out):
+    """`oversight` is what the scenario lets its monitor do, `agents` how many agents it has,
+    `profiles` the profiles they run unless a run picks one, and `variants` the names of its
+    variants; all are missing when it does not load."""
+
     source: str
     name: str
     title: str | None = None
     writable: bool
     error: str | None = None
+    oversight: Oversight | None = None
+    agents: int | None = None
+    profiles: list[str] = Field(default_factory=list)
+    variants: list[str] = Field(default_factory=list)
 
 
 @router.get("/scenarios", tags=["scenarios"])
-async def list_scenarios(principal: Viewer, sources: SourcesDep) -> list[ScenarioInfo]:
+async def list_scenarios(
+    principal: Viewer, state: State, sources: SourcesDep
+) -> list[ScenarioInfo]:
+    default = state.config.settings().models.roles.agent
     out = []
     for s in sources.all():
         if not s.root.is_dir():
@@ -1287,16 +1381,18 @@ async def list_scenarios(principal: Viewer, sources: SourcesDep) -> list[Scenari
         for d in sorted(s.root.iterdir()):
             if not (d / "scenario.yaml").is_file():
                 continue
-            title = error = None
+            info = ScenarioInfo(source=s.id, name=d.name, writable=s.writable)
             try:
-                title = parse((d / "scenario.yaml").read_text(), source=d.name).name
+                sc = parse((d / "scenario.yaml").read_text(), source=d.name)
             except (ScenarioError, OSError, UnicodeDecodeError) as e:
-                error = str(e).splitlines()[0]
-            out.append(
-                ScenarioInfo(
-                    source=s.id, name=d.name, title=title, writable=s.writable, error=error
-                )
-            )
+                info.error = str(e).splitlines()[0]
+            else:
+                info.title = sc.name
+                info.oversight = sc.oversight
+                info.agents = len(sc.agents)
+                info.profiles = sorted({a.profile or default for a in sc.agents})
+                info.variants = list(sc.variants)
+            out.append(info)
     return out
 
 

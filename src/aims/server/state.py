@@ -2,6 +2,7 @@ import asyncio
 import secrets
 import time
 from collections import OrderedDict, deque
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from aims.events import LocalEventStore
 from aims.models import Delta, DeltaBus, ProfileError
 from aims.monitor.config import MonitorConfigError
 from aims.prompts import TextError
+from aims.run.estimate import History, history
 from aims.server.auth import Auth
 from aims.server.db import ServerDB, hash_secret
 from aims.server.problems import ProblemException
@@ -215,6 +217,16 @@ class ServerState:
     codes: LaunchCodes = field(default_factory=LaunchCodes)
     # set as the server shuts down, so live streams end instead of holding it open
     stopping: asyncio.Event = field(default_factory=asyncio.Event)
+    _history: tuple[int, History] | None = None
+    # called with a run's id once its truth file is kept here
+    on_truth: Callable[[str], Awaitable[None]] | None = None
+
+    async def history(self) -> History:
+        """The runs' history the estimates read, read again once a run changed."""
+        version = self.changes.version
+        if self._history is None or self._history[0] != version:
+            self._history = (version, await history(self.store))
+        return self._history[1]
 
     def poke(self) -> None:
         """Ask the dispatcher to look at the queue now."""

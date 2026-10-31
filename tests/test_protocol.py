@@ -16,6 +16,7 @@ TYPES = {
     "tool.result",
     "model.request",
     "model.response",
+    "model.checked",
     "sandbox.started",
     "sandbox.stopped",
     "exec.started",

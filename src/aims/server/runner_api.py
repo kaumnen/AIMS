@@ -392,9 +392,11 @@ async def put_truth(
             raise ProblemException(413, "Too large", f"a truth file is at most {TRUTH_LIMIT} bytes")
         chunks.append(chunk)
     try:
-        await state.store.put_truth(run_id, b"".join(chunks))
+        kept = await state.store.put_truth(run_id, b"".join(chunks))
     except TruthRefused as e:
         raise ProblemException(e.status, "Truth refused", str(e), code="truth") from None
+    if kept and state.on_truth is not None:
+        await state.on_truth(run_id)
 
 
 @router.get(
