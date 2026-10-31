@@ -6665,6 +6665,11 @@ export interface components {
             revoked: number | null;
             /** Role */
             role: string;
+            /**
+             * Ui
+             * @description The token `aims ui` rotates at each start.
+             */
+            ui: boolean;
         };
         /**
          * ToolCall

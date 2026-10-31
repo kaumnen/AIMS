@@ -20,6 +20,7 @@ import { Route as SettingsIndexRouteImport } from './routes/settings.index'
 import { Route as SettingsModelsRouteImport } from './routes/settings.models'
 import { Route as SettingsRunnersRouteImport } from './routes/settings.runners'
 import { Route as SettingsSpendRouteImport } from './routes/settings.spend'
+import { Route as SettingsTokensRouteImport } from './routes/settings.tokens'
 import { Route as ScenariosSourceNameRouteImport } from './routes/scenarios.$source.$name'
 
 const IndexRoute = IndexRouteImport.update({
@@ -77,6 +78,11 @@ const SettingsSpendRoute = SettingsSpendRouteImport.update({
   path: '/spend',
   getParentRoute: () => SettingsRoute,
 } as any)
+const SettingsTokensRoute = SettingsTokensRouteImport.update({
+  id: '/tokens',
+  path: '/tokens',
+  getParentRoute: () => SettingsRoute,
+} as any)
 const ScenariosSourceNameRoute = ScenariosSourceNameRouteImport.update({
   id: '/$source/$name',
   path: '/$source/$name',
@@ -92,6 +98,7 @@ export interface FileRoutesByFullPath {
   '/settings/models': typeof SettingsModelsRoute
   '/settings/runners': typeof SettingsRunnersRoute
   '/settings/spend': typeof SettingsSpendRoute
+  '/settings/tokens': typeof SettingsTokensRoute
   '/runs/': typeof RunsIndexRoute
   '/scenarios/': typeof ScenariosIndexRoute
   '/settings/': typeof SettingsIndexRoute
@@ -103,6 +110,7 @@ export interface FileRoutesByTo {
   '/settings/models': typeof SettingsModelsRoute
   '/settings/runners': typeof SettingsRunnersRoute
   '/settings/spend': typeof SettingsSpendRoute
+  '/settings/tokens': typeof SettingsTokensRoute
   '/runs': typeof RunsIndexRoute
   '/scenarios': typeof ScenariosIndexRoute
   '/settings': typeof SettingsIndexRoute
@@ -118,6 +126,7 @@ export interface FileRoutesById {
   '/settings/models': typeof SettingsModelsRoute
   '/settings/runners': typeof SettingsRunnersRoute
   '/settings/spend': typeof SettingsSpendRoute
+  '/settings/tokens': typeof SettingsTokensRoute
   '/runs/': typeof RunsIndexRoute
   '/scenarios/': typeof ScenariosIndexRoute
   '/settings/': typeof SettingsIndexRoute
@@ -134,6 +143,7 @@ export interface FileRouteTypes {
     | '/settings/models'
     | '/settings/runners'
     | '/settings/spend'
+    | '/settings/tokens'
     | '/runs/'
     | '/scenarios/'
     | '/settings/'
@@ -145,6 +155,7 @@ export interface FileRouteTypes {
     | '/settings/models'
     | '/settings/runners'
     | '/settings/spend'
+    | '/settings/tokens'
     | '/runs'
     | '/scenarios'
     | '/settings'
@@ -159,6 +170,7 @@ export interface FileRouteTypes {
     | '/settings/models'
     | '/settings/runners'
     | '/settings/spend'
+    | '/settings/tokens'
     | '/runs/'
     | '/scenarios/'
     | '/settings/'
@@ -251,6 +263,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsSpendRouteImport
       parentRoute: typeof SettingsRoute
     }
+    '/settings/tokens': {
+      id: '/settings/tokens'
+      path: '/tokens'
+      fullPath: '/settings/tokens'
+      preLoaderRoute: typeof SettingsTokensRouteImport
+      parentRoute: typeof SettingsRoute
+    }
     '/scenarios/$source/$name': {
       id: '/scenarios/$source/$name'
       path: '/$source/$name'
@@ -291,6 +310,7 @@ interface SettingsRouteChildren {
   SettingsModelsRoute: typeof SettingsModelsRoute
   SettingsRunnersRoute: typeof SettingsRunnersRoute
   SettingsSpendRoute: typeof SettingsSpendRoute
+  SettingsTokensRoute: typeof SettingsTokensRoute
   SettingsIndexRoute: typeof SettingsIndexRoute
 }
 
@@ -298,6 +318,7 @@ const SettingsRouteChildren: SettingsRouteChildren = {
   SettingsModelsRoute: SettingsModelsRoute,
   SettingsRunnersRoute: SettingsRunnersRoute,
   SettingsSpendRoute: SettingsSpendRoute,
+  SettingsTokensRoute: SettingsTokensRoute,
   SettingsIndexRoute: SettingsIndexRoute,
 }
 

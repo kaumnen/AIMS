@@ -38,6 +38,7 @@ from aims.run.job import Job
 from aims.run.runner import resolve_texts
 from aims.scenario import load
 from aims.server import dispatch
+from aims.server.db import UI_TOKEN
 from aims.server.state import InFlight
 from aims.wire import (
     Ack,
@@ -227,6 +228,22 @@ async def test_a_session_cookie_needs_the_same_origin_to_act(cp: CP) -> None:
         assert r.status_code == 415
         await cp.state.db.revoke_token("op")
         assert (await c.get("/api/session")).status_code == 401
+
+
+async def test_tokens_list_marks_the_ui_token_and_names_stay_taken(cp: CP) -> None:
+    await cp.state.db.rotate_token(UI_TOKEN, "operator")
+    async with cp.client(cp.operator) as c:
+        r = await c.post("/api/tokens", json={"name": "gone", "role": "viewer"})
+        assert r.status_code == 201
+        assert (await c.delete("/api/tokens/gone")).status_code == 204
+        assert (await c.delete("/api/tokens/gone")).status_code == 404
+        r = await c.post("/api/tokens", json={"name": "gone", "role": "runner"})
+        assert r.status_code == 409
+        listed = {t["name"]: t for t in (await c.get("/api/tokens")).json()}
+        assert listed[UI_TOKEN]["ui"] is True
+        assert listed["op"]["ui"] is False
+        assert listed["gone"]["revoked"] is not None
+        assert listed["gone"]["role"] == "viewer"
 
 
 async def test_a_launch_code_signs_in_once_and_expires(

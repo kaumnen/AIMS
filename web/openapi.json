@@ -13490,13 +13490,19 @@
           "role": {
             "title": "Role",
             "type": "string"
+          },
+          "ui": {
+            "description": "The token `aims ui` rotates at each start.",
+            "title": "Ui",
+            "type": "boolean"
           }
         },
         "required": [
           "name",
           "role",
           "created",
-          "revoked"
+          "revoked",
+          "ui"
         ],
         "title": "TokenInfo",
         "type": "object"

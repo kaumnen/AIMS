@@ -21,7 +21,7 @@ from pathlib import Path
 import uvicorn
 
 from aims.server.app import create_app
-from aims.server.db import Token, new_token
+from aims.server.db import UI_TOKEN, Token, new_token
 from aims.server.state import close_state, open_state
 
 log = logging.getLogger("aims.server")
@@ -29,7 +29,6 @@ log = logging.getLogger("aims.server")
 PORT = 8484
 SERVER_JSON = "server.json"
 LOCAL_RUNNER = "local"
-UI_TOKEN = "ui"
 
 
 def server_dir(env: dict[str, str] | None = None) -> Path:

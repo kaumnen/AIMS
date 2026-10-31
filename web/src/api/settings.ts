@@ -4,6 +4,8 @@ import { client, type Schemas } from "./client";
 
 export type RunnerInfo = Schemas["RunnerInfo"];
 export type ProviderCredit = Schemas["ProviderCredit"];
+export type TokenInfo = Schemas["TokenInfo"];
+export type TokenRole = Schemas["TokenCreate"]["role"];
 
 // Every runner the control plane has seen, connected or not; the live stream updates it.
 export const runnersQuery = queryOptions({
@@ -25,6 +27,28 @@ export const spendQuery = queryOptions({
   },
   staleTime: 10_000,
 });
+
+// Operators only: the list answers 403 to anyone else.
+export const tokensQuery = queryOptions({
+  queryKey: ["tokens"] as const,
+  queryFn: async ({ signal }) => {
+    const { data, error } = await client.GET("/api/tokens", { signal });
+    if (error) throw error;
+    return data;
+  },
+});
+
+// Its value comes back this once.
+export async function createToken(name: string, role: TokenRole): Promise<string> {
+  const { data, error } = await client.POST("/api/tokens", { body: { name, role } });
+  if (error) throw error;
+  return data.token;
+}
+
+export async function revokeToken(name: string): Promise<void> {
+  const { error } = await client.DELETE("/api/tokens/{name}", { params: { path: { name } } });
+  if (error) throw error;
+}
 
 // The live copy of a runner wins over the listed one; runners only the list knows stay.
 export function mergeRunners(

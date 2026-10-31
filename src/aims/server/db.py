@@ -22,6 +22,8 @@ TOKEN_PREFIX = "aims_"
 Role = Literal["viewer", "operator", "runner"]
 JobState = Literal["waiting", "queued", "offered", "claimed", "running", "done", "cancelled"]
 ROLES: tuple[Role, ...] = ("viewer", "operator", "runner")
+# The operator token `aims ui` rotates at each start, for its launch link and local commands.
+UI_TOKEN = "ui"
 OPEN_STATES: tuple[JobState, ...] = ("waiting", "queued", "offered", "claimed", "running")
 
 SCHEMA = """

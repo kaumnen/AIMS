@@ -1749,6 +1749,7 @@ class TokenInfo(Out):
     role: str
     created: float
     revoked: float | None
+    ui: bool = Field(description="The token `aims ui` rotates at each start.")
 
 
 class TokenCreate(BaseModel):
@@ -1765,7 +1766,13 @@ class TokenCreated(Out):
 @router.get("/tokens", tags=["tokens"])
 async def list_tokens(principal: Operator, state: State) -> list[TokenInfo]:
     return [
-        TokenInfo(name=t.name, role=t.role, created=t.created, revoked=t.revoked)
+        TokenInfo(
+            name=t.name,
+            role=t.role,
+            created=t.created,
+            revoked=t.revoked,
+            ui=t.name == sdb.UI_TOKEN,
+        )
         for t in await state.db.tokens()
     ]
 
