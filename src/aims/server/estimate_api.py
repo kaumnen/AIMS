@@ -18,8 +18,20 @@ from aims.run.estimate import (
     spend,
 )
 from aims.run.estimate import spend_lines as describe_spend
+from aims.run.runner import RunError
 from aims.scenario import ScenarioError, load
-from aims.server.api import Out, SourcesDep, State, Viewer, _run_id, scenario_problems
+from aims.server.api import (
+    Operator,
+    Out,
+    SourcesDep,
+    StartFork,
+    State,
+    Viewer,
+    _run_id,
+    fork_estimate,
+    fork_point,
+    scenario_problems,
+)
 from aims.server.problems import ProblemException, responses
 
 router = APIRouter(prefix="/api", responses=responses(401, 403, 422))
@@ -66,6 +78,36 @@ async def estimate_scenario(
             samples=samples,
         )
     except (ProfileError, MonitorConfigError, TextError) as e:
+        raise ProblemException(422, "Cannot estimate", str(e), code="estimate") from None
+
+
+@router.get("/runs/{run_id}/forks/estimate", tags=["runs"], responses=responses(404))
+async def estimate_forks(
+    run_id: str,
+    principal: Operator,
+    state: State,
+    step: Annotated[int | None, Query(ge=0)] = None,
+    at: str | None = None,
+    keep_others: bool = False,
+    samples: Annotated[int, Query(ge=1, le=100)] = 1,
+    profile: str | None = None,
+    monitor: Preset | None = None,
+) -> Estimate:
+    """What forks of a run cost, as `aims run --replay` prints it before they start: the
+    agents only for the steps after the cut, the monitor for every step. Takes the fields of
+    the request that starts them that change the cost."""
+    body = StartFork(
+        step=step,
+        at=at,
+        keep_others=keep_others,
+        samples=samples,
+        profile=profile,
+        monitor=monitor,
+    )
+    point = await fork_point(state, _run_id(run_id), body)
+    try:
+        return fork_estimate(state.config.settings(), await state.history(), point, body)
+    except (RunError, ProfileError, KeyError, MonitorConfigError, TextError) as e:
         raise ProblemException(422, "Cannot estimate", str(e), code="estimate") from None
 
 

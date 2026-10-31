@@ -9,6 +9,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Iterator, Sequence
 from compression import zstd
+from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Annotated, Literal, Self, cast
 
@@ -45,8 +46,8 @@ from aims.monitor.config import MonitorConfigError, Preset
 from aims.monitor.offline import origin_agents
 from aims.monitor.setup import ResolvedMonitor
 from aims.prompts import Prompts, TextError, load_prompts
-from aims.run.estimate import estimate_runs, needs_confirm
-from aims.run.fork import CutAt, check_fork, cut_at, live_profiles, load_origin
+from aims.run.estimate import Estimate, History, estimate_fork, estimate_runs, needs_confirm
+from aims.run.fork import CutAt, Origin, check_fork, cut_at, live_profiles, load_origin
 from aims.run.job import Job, fork_jobs, monitor_for, scenario_jobs
 from aims.run.runner import RunError, agent_profile, check
 from aims.scenario import Bundle, Scenario, ScenarioError, folder_tar, load, parse
@@ -453,11 +454,13 @@ class StartFork(BaseModel):
     """`monitor` picks the fork's monitor preset over the config files and the scenario. `at`
     cuts a run of several agents: `agent:N` after that agent's step N, or `@seq` after an
     event; with `keep_others` the other agents keep their recorded answers until their own
-    inputs change. `step` is the last step replayed of a run of one agent."""
+    inputs change. `step` is the last step replayed of a run of one agent. `confirm` as in
+    StartRun; the estimate counts only the steps after the cut."""
 
     step: int | None = Field(default=None, ge=0)
     at: str | None = None
     keep_others: bool = False
+    confirm: bool = False
     samples: int = Field(default=1, ge=1, le=100)
     parallel: int | None = Field(default=None, ge=1)
     profile: str | None = None
@@ -467,6 +470,15 @@ class StartFork(BaseModel):
     audit: AuditLevel = "kernel"
     runner: str | None = None
     monitor: Preset | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ForkPoint:
+    """Where a fork cuts its origin: after `step`, or at `cut` in a run of several agents."""
+
+    origin: Origin
+    step: int
+    cut: CutAt | None = None
 
 
 class Started(Out):
@@ -616,14 +628,55 @@ async def start_runs(
             )
         except ProfileError, MonitorConfigError, TextError:
             cost = None
-        why = None if cost is None else needs_confirm(cost)
-        if why is not None:
-            raise ProblemException(
-                409, "Confirm the cost", f"{why}; set confirm to start anyway", code="confirm"
-            )
+        _confirm(cost)
     blobs = {hashlib.sha256(b).hexdigest(): b for b in [*bundle.blobs(), folder]}
     return await _queue(
         state, principal.name, jobs, runner=body.runner, parallel=body.parallel, blobs=blobs
+    )
+
+
+def _confirm(cost: Estimate | None) -> None:
+    why = None if cost is None else needs_confirm(cost)
+    if why is not None:
+        raise ProblemException(
+            409, "Confirm the cost", f"{why}; set confirm to start anyway", code="confirm"
+        )
+
+
+async def fork_point(state: ServerState, run_id: str, body: StartFork) -> ForkPoint:
+    """Where `body` forks run `run_id`, checked as `aims run --replay` checks it."""
+    if body.at is not None and body.step is not None:
+        raise ProblemException(422, "Invalid request", "give step or at, not both")
+    if body.keep_others and (body.at is None or ":" not in body.at):
+        raise ProblemException(422, "Invalid request", "keep_others needs at agent:N")
+    try:
+        origin = await load_origin(state.store, run_id)
+        if body.at is None and len(origin.bundle.scenario.agents) > 1:
+            raise RunError("a run of several agents forks at agent:N or @seq")
+        found = cut_at(origin, body.at) if body.at is not None else None
+        if isinstance(found, CutAt):
+            return ForkPoint(origin, min(found.steps.values(), default=0), found)
+        step = body.step if found is None else found
+        if step is None:
+            step = min(origin.steps.values(), default=0)
+        check_fork(origin, step)
+    except (RunError, ProfileError, KeyError) as e:
+        raise ProblemException(422, "Cannot fork", str(e), code="fork") from None
+    return ForkPoint(origin, step)
+
+
+def fork_estimate(settings: Settings, history: History, at: ForkPoint, body: StartFork) -> Estimate:
+    """What the forks `body` asks for cost. Raises RunError, ProfileError, KeyError,
+    MonitorConfigError or TextError."""
+    return estimate_fork(
+        history,
+        settings,
+        at.origin,
+        at.step,
+        cut=at.cut,
+        profile=body.profile,
+        preset=body.monitor,
+        samples=body.samples,
     )
 
 
@@ -632,24 +685,9 @@ async def fork_run(run_id: str, body: StartFork, principal: Operator, state: Sta
     """Replay a recorded run up to a step and go on live from there."""
     run_id = _run_id(run_id)
     settings = state.config.settings()
-    if body.at is not None and body.step is not None:
-        raise ProblemException(422, "Invalid request", "give step or at, not both")
-    if body.keep_others and (body.at is None or ":" not in body.at):
-        raise ProblemException(422, "Invalid request", "keep_others needs at agent:N")
-    cut = None
+    at = await fork_point(state, run_id, body)
+    origin, step = at.origin, at.step
     try:
-        origin = await load_origin(state.store, run_id)
-        if body.at is None and len(origin.bundle.scenario.agents) > 1:
-            raise RunError("a run of several agents forks at agent:N or @seq")
-        found = cut_at(origin, body.at) if body.at is not None else None
-        if isinstance(found, CutAt):
-            cut = found
-            step = min(found.steps.values(), default=0)
-        else:
-            step = body.step if found is None else found
-            if step is None:
-                step = min(origin.steps.values(), default=0)
-            check_fork(origin, step)
         if body.profile is not None:
             live = [settings.models.get(body.profile)]
         else:
@@ -671,11 +709,17 @@ async def fork_run(run_id: str, body: StartFork, principal: Operator, state: Sta
             audit=body.audit,
             config_files=settings.layers.digests(),
             monitor=monitor,
-            cut=cut,
+            cut=at.cut,
             keep_others=body.keep_others,
         )
     except (RunError, ProfileError, KeyError) as e:
         raise ProblemException(422, "Cannot fork", str(e), code="fork") from None
+    if not body.confirm:
+        try:
+            cost = fork_estimate(settings, await state.history(), at, body)
+        except RunError, ProfileError, KeyError, MonitorConfigError, TextError:
+            cost = None
+        _confirm(cost)
     return await _queue(
         state, principal.name, jobs, runner=body.runner, parallel=body.parallel, copy_from=run_id
     )

@@ -73,6 +73,7 @@ function estimate(samples: number): Estimate {
         monitor: null,
         monitor_preset: "standard",
         steps: {},
+        replayed: {},
       },
     ],
     rates: [],

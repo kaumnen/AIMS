@@ -11415,7 +11415,7 @@
         "type": "object"
       },
       "StartFork": {
-        "description": "`monitor` picks the fork's monitor preset over the config files and the scenario. `at`\ncuts a run of several agents: `agent:N` after that agent's step N, or `@seq` after an\nevent; with `keep_others` the other agents keep their recorded answers until their own\ninputs change. `step` is the last step replayed of a run of one agent.",
+        "description": "`monitor` picks the fork's monitor preset over the config files and the scenario. `at`\ncuts a run of several agents: `agent:N` after that agent's step N, or `@seq` after an\nevent; with `keep_others` the other agents keep their recorded answers until their own\ninputs change. `step` is the last step replayed of a run of one agent. `confirm` as in\nStartRun; the estimate counts only the steps after the cut.",
         "properties": {
           "at": {
             "anyOf": [
@@ -11436,6 +11436,11 @@
             ],
             "title": "Audit",
             "type": "string"
+          },
+          "confirm": {
+            "default": false,
+            "title": "Confirm",
+            "type": "boolean"
           },
           "inject": {
             "anyOf": [
@@ -12621,7 +12626,7 @@
         "type": "object"
       },
       "VariantCost": {
-        "description": "One run of one variant. `monitor` is None when the monitor is off; `steps` is the median\nnumber of steps each agent took in past runs of the same scenario.",
+        "description": "One run of one variant. `monitor` is None when the monitor is off; `steps` is the median\nnumber of steps each agent took in past runs of the same scenario. `replayed` is the steps\neach agent of a fork replays before it goes live: the agents' figures count only the steps\nafter them.",
         "properties": {
           "agents": {
             "$ref": "#/components/schemas/CostFigures"
@@ -12653,6 +12658,13 @@
             ],
             "title": "Monitor Preset"
           },
+          "replayed": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Replayed",
+            "type": "object"
+          },
           "steps": {
             "additionalProperties": {
               "type": "number"
@@ -12677,7 +12689,8 @@
           "agents",
           "monitor",
           "monitor_preset",
-          "steps"
+          "steps",
+          "replayed"
         ],
         "title": "VariantCost",
         "type": "object"
@@ -15114,6 +15127,172 @@
           }
         },
         "summary": "Fork Run",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/forks/estimate": {
+      "get": {
+        "description": "What forks of a run cost, as `aims run --replay` prints it before they start: the\nagents only for the steps after the cut, the monitor for every step. Takes the fields of\nthe request that starts them that change the cost.",
+        "operationId": "estimate_forks",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "step",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Step"
+            }
+          },
+          {
+            "in": "query",
+            "name": "at",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "At"
+            }
+          },
+          {
+            "in": "query",
+            "name": "keep_others",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Keep Others",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "samples",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Samples",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "profile",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Profile"
+            }
+          },
+          {
+            "in": "query",
+            "name": "monitor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "off",
+                    "signals",
+                    "standard",
+                    "research"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Monitor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Estimate"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not signed in"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Invalid request"
+          }
+        },
+        "summary": "Estimate Forks",
         "tags": [
           "runs"
         ]

@@ -635,7 +635,7 @@ async def _run(**o: Any) -> int:
     from aims.node.client import ControlClient
     from aims.node.link import Link
     from aims.run import truth
-    from aims.run.estimate import estimate_runs, guard, history
+    from aims.run.estimate import estimate_fork, estimate_runs, guard, history
     from aims.run.fork import (
         CutAt,
         check_fork,
@@ -738,15 +738,27 @@ async def _run(**o: Any) -> int:
                     )
         cost = None
         try:
-            cost = estimate_runs(
-                await history(store),
-                settings,
-                [bundle],
-                profile=o["profile"],
-                preset=o["monitor"],
-                samples=o["samples"] * o.get("runs", 1),
-            )
-        except (MonitorConfigError, ProfileError, TextError) as e:
+            if origin is not None:
+                cost = estimate_fork(
+                    await history(store),
+                    settings,
+                    origin,
+                    step,
+                    cut=cut,
+                    profile=o["profile"],
+                    preset=o["monitor"],
+                    samples=o["samples"],
+                )
+            else:
+                cost = estimate_runs(
+                    await history(store),
+                    settings,
+                    [bundle],
+                    profile=o["profile"],
+                    preset=o["monitor"],
+                    samples=o["samples"] * o.get("runs", 1),
+                )
+        except (MonitorConfigError, ProfileError, TextError, RunError, KeyError) as e:
             err.print(f"[yellow]no cost estimate:[/] {escape(str(e))}")
         if cost is not None:
             if o["json_out"]:

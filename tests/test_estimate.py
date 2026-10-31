@@ -3,6 +3,7 @@ import json
 import math
 import statistics
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,8 @@ from aims.run.estimate import (
     Estimate,
     History,
     Progress,
+    estimate,
+    estimate_fork,
     estimate_review,
     estimate_runs,
     guard,
@@ -52,6 +55,7 @@ from aims.run.estimate import (
     spend,
     spend_lines,
 )
+from aims.run.fork import Origin
 from aims.run.view import LiveView, _Run
 from aims.scenario import Bundle
 from aims.scenario import load as load_scenario
@@ -482,6 +486,63 @@ async def test_the_monitor_estimate_matches_the_same_monitor(
     assert e.total.typical_usd == pytest.approx(0.1 + math.sqrt(0.08))
     signals = one(settings, found, bundle, preset="signals")
     assert signals.parts[0].monitor_preset == "signals"
+
+
+@pytest.mark.anyio
+async def test_a_fork_pays_for_the_steps_after_its_cut_and_the_monitor_for_every_step(
+    tmp_path: Path, store: LocalEventStore
+) -> None:
+    settings, path = write(tmp_path, preset="standard", budget="{steps: 10, cost_usd: 50}")
+    bundle = load_scenario(path)
+    for _ in range(3):
+        await record(store, settings, bundle, 0.4, taken=10, monitor_cost=0.5)
+    found = await history(store)
+    whole = one(settings, found, bundle)
+    base = plan(settings, bundle)
+    half = estimate(found, [replace(base, done={"a": 5})])
+    agents, monitor = half.parts[0].agents, half.parts[0].monitor
+    # later steps carry more context: the last half of the steps is 1 - (5/10)^2 of the cost
+    assert agents.typical_usd == pytest.approx(0.4 * 0.75)
+    assert agents.ceiling_usd == pytest.approx(5 * STEP)
+    assert monitor == whole.parts[0].monitor
+    assert half.parts[0].replayed == {"a": 5}
+    assert half.lines[1] == (
+        "A fork after step 5: the agents pay only for the steps after it; the monitor reviews"
+        " every step, replayed too."
+    )
+    assert whole.lines[1].startswith("Agents:")
+    end = estimate(found, [replace(base, done={"a": 12})])
+    assert end.parts[0].agents.typical_usd == pytest.approx(0.4 * (1 - 0.9**2))
+    assert end.parts[0].agents.ceiling_usd == pytest.approx(STEP)
+
+
+@pytest.mark.anyio
+async def test_a_fork_matches_past_runs_of_its_origin_s_variant(
+    tmp_path: Path, store: LocalEventStore
+) -> None:
+    settings, path = write(
+        tmp_path,
+        budget="{steps: 10, cost_usd: 50}",
+        extra="variants: {hinted: {task: {instruction: Hint.}}}\n",
+    )
+    hinted = load_scenario(path, "hinted")
+    for _ in range(3):
+        await record(store, settings, hinted, 0.4, variant="hinted", taken=10)
+    await record(store, settings, load_scenario(path), 0.01, taken=10)
+    agent = settings.models.get("agent")
+    # the public copy of the origin a fork loads names no variant; its full bundle does
+    origin = Origin(
+        run_id="origin",
+        bundle=load_scenario(path),
+        schedules={"a": [(None, agent)]},
+        texts={},
+        steps={"a": 10},
+        full_bundle=hinted,
+    )
+    e = estimate_fork(await history(store), settings, origin, 5)
+    agents = e.parts[0].agents
+    assert (e.parts[0].variant, agents.tier, agents.runs) == ("hinted", "scenario", 3)
+    assert agents.typical_usd == pytest.approx(0.4 * 0.75)
 
 
 # Offline monitor runs

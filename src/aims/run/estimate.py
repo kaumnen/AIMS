@@ -31,7 +31,9 @@ from aims.events.store import TRUTH
 from aims.models import Profile, ProfileError
 from aims.models.profiles import Price
 from aims.monitor.config import Preset
+from aims.monitor.offline import origin_agents
 from aims.monitor.setup import ResolvedMonitor
+from aims.run.fork import CutAt, Origin, next_profiles
 from aims.run.job import monitor_for
 from aims.run.runner import agent_profile
 from aims.scenario import AgentConfig, Bundle, Scenario
@@ -77,13 +79,16 @@ class CostFigures(_Out):
 
 class VariantCost(_Out):
     """One run of one variant. `monitor` is None when the monitor is off; `steps` is the median
-    number of steps each agent took in past runs of the same scenario."""
+    number of steps each agent took in past runs of the same scenario. `replayed` is the steps
+    each agent of a fork replays before it goes live: the agents' figures count only the steps
+    after them."""
 
     variant: str | None = None
     agents: CostFigures
     monitor: CostFigures | None = None
     monitor_preset: Preset | None = None
     steps: dict[str, float] = Field(default_factory=dict)
+    replayed: dict[str, int] = Field(default_factory=dict)
 
 
 class CostTotal(_Out):
@@ -203,12 +208,14 @@ class History:
 @dataclass(frozen=True, slots=True)
 class Plan:
     """One run to estimate: the scenario with its variant applied, each agent's profile by
-    agent id and the resolved monitor, None when it is off."""
+    agent id and the resolved monitor, None when it is off. `done` is the steps each agent of a
+    fork replays, which cost nothing; the monitor watches them all the same."""
 
     scenario: Scenario
     profiles: Mapping[str, Profile]
     monitor: ResolvedMonitor | None = None
     variant: str | None = None
+    done: Mapping[str, int] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -398,6 +405,38 @@ def plan(
     return Plan(scenario, profiles, monitor, bundle.variant)
 
 
+def plan_fork(
+    settings: Settings,
+    origin: Origin,
+    step: int,
+    *,
+    cut: CutAt | None = None,
+    profile: str | None = None,
+    preset: Preset | None = None,
+) -> Plan:
+    """The plan of a fork of `origin` after `step`, or at `cut`, its monitor resolved as the
+    fork resolves it. Raises RunError, ProfileError, MonitorConfigError or TextError."""
+    bundle = origin.full_bundle or origin.bundle
+    scenario = bundle.scenario
+    steps = dict(cut.steps) if cut is not None else {a.id: step for a in scenario.agents}
+    if profile is not None:
+        chosen = settings.models.get(profile)
+        profiles = {a.id: chosen for a in scenario.agents}
+    else:
+        profiles = next_profiles(settings.models, origin, steps)
+    monitor = monitor_for(
+        settings.models,
+        settings.prompts,
+        scenario,
+        [*profiles.values(), *origin_agents(origin)],
+        layers=settings.monitor,
+        preset=preset,
+    )
+    model = {a.id for a in scenario.agents if not a.scripted}
+    done = {a: n for a, n in steps.items() if a in model}
+    return Plan(scenario, profiles, monitor, bundle.variant, done)
+
+
 def estimate_runs(
     found: History,
     settings: Settings,
@@ -413,6 +452,28 @@ def estimate_runs(
     return estimate(
         found,
         plans,
+        samples=samples,
+        credits=settings.credits,
+        confirm_above_usd=settings.confirm_above_usd,
+    )
+
+
+def estimate_fork(
+    found: History,
+    settings: Settings,
+    origin: Origin,
+    step: int,
+    *,
+    cut: CutAt | None = None,
+    profile: str | None = None,
+    preset: Preset | None = None,
+    samples: int = 1,
+) -> Estimate:
+    """The estimate of `samples` forks of `origin`: what `aims run --replay` and the UI's fork
+    dialog show. Raises RunError, ProfileError, MonitorConfigError or TextError."""
+    return estimate(
+        found,
+        [plan_fork(settings, origin, step, cut=cut, profile=profile, preset=preset)],
         samples=samples,
         credits=settings.credits,
         confirm_above_usd=settings.confirm_above_usd,
@@ -574,7 +635,7 @@ def _part(found: History, p: Plan) -> tuple[VariantCost, tuple[dict[str, float],
         agents, agent_shares = CostFigures(priced=False), {}
     else:
         agents, agent_shares = _side(
-            found, tiers, budget, prices, names, "agents", ceiling, stepped
+            found, tiers, budget, prices, names, "agents", ceiling, stepped, p.done
         )
     steps: dict[str, float] = {}
     same = [past for past in found.runs if first(past)]
@@ -602,7 +663,12 @@ def _part(found: History, p: Plan) -> tuple[VariantCost, tuple[dict[str, float],
                 found, wtiers, budget, wprices, wnames, "watch", p.monitor.budget_usd, False
             )
     part = VariantCost(
-        variant=p.variant, agents=agents, monitor=monitor, monitor_preset=preset, steps=steps
+        variant=p.variant,
+        agents=agents,
+        monitor=monitor,
+        monitor_preset=preset,
+        steps=steps,
+        replayed=dict(p.done),
     )
     return part, (agent_shares, watch_shares)
 
@@ -616,6 +682,7 @@ def _side(
     side: Literal["agents", "watch"],
     ceiling: float | None,
     stepped: bool,
+    done: Mapping[str, int] | None = None,
 ) -> tuple[CostFigures, dict[str, float]]:
     for tier, test in tiers:
         matched = [past for past in found.runs if test(past)]
@@ -625,7 +692,8 @@ def _side(
         for past in matched:
             scale = 1.0 if tier == "scenario" else _scale(budget, past.budget)
             calls = past.agents if side == "agents" else past.watch
-            each = {m: t.priced(prices.get(m), found.share(m)) * scale for m, t in calls.items()}
+            share = scale * _left(done or {}, past, tier, scale)
+            each = {m: t.priced(prices.get(m), found.share(m)) * share for m, t in calls.items()}
             cost = sum(each.values())
             if cost <= 0:
                 continue
@@ -668,6 +736,22 @@ def _scale(budget: int | None, past: int | None) -> float:
     return budget / past if budget is not None and past else 1.0
 
 
+def _left(done: Mapping[str, int], past: Past, tier: Tier, scale: float) -> float:
+    """The share of a past run's agent cost that a fork replaying `done` steps still pays: its
+    steps after the cut, each weighted by its place in the run since the context grows with
+    it, and at least its last step. A run of other agents counts all its steps, scaled."""
+    if not done:
+        return 1.0
+    if tier == "scenario":
+        taken = float(sum(past.steps.get(a, 0) for a in done))
+    else:
+        taken = sum(past.steps.values()) * scale
+    if taken <= 1:
+        return 1.0
+    replayed = min(float(sum(done.values())), taken - 1)
+    return 1 - (replayed / taken) ** 2
+
+
 def _step_budget(resolved: Mapping[str, Any], skip: Iterable[str] = ()) -> int | None:
     """The steps the agents that call a model may take together: the sum of their step caps,
     lowered by the run's own cap. None when an agent has no cap and the run has none."""
@@ -699,9 +783,10 @@ def step_usd(p: Profile) -> float | None:
     return (p.context_tokens * p.price.input + p.max_output_tokens * p.price.output) / MILLION
 
 
-def _agent_ceiling(agent: AgentConfig, p: Profile) -> tuple[float | None, bool]:
+def _agent_ceiling(agent: AgentConfig, p: Profile, done: int = 0) -> tuple[float | None, bool]:
     """What the agent's caps let it spend, and whether that counts one last step past its cost
-    cap. The step cap bounds the cost only when a call's cost is bounded."""
+    cap. The step cap bounds the cost only when a call's cost is bounded; a fork's agent has
+    the steps it did not replay left, at least one."""
     step = step_usd(p)
     b = agent.budget
     caps: list[tuple[float, bool]] = []
@@ -709,7 +794,7 @@ def _agent_ceiling(agent: AgentConfig, p: Profile) -> tuple[float | None, bool]:
         caps.append((b.cost_usd + (step or 0.0), step is not None))
     if b.steps is not None and step is not None:
         summary = agent.compaction is not None and agent.compaction.strategy == "summary"
-        caps.append((b.steps * (2 if summary else 1) * step, False))
+        caps.append((max(b.steps - done, 1) * (2 if summary else 1) * step, False))
     if not caps:
         return None, False
     value, stepped = min(caps)
@@ -723,7 +808,7 @@ def _ceiling(p: Plan) -> tuple[float | None, bool]:
     if not priced:
         return 0.0, False
     options: list[tuple[float, bool]] = []
-    each = [_agent_ceiling(a, p.profiles[a.id]) for a in priced]
+    each = [_agent_ceiling(a, p.profiles[a.id], p.done.get(a.id, 0)) for a in priced]
     if all(value is not None for value, _ in each):
         options.append((sum(v for v, _ in each if v is not None), any(s for _, s in each)))
     steps = [step_usd(p.profiles[a.id]) for a in priced]
@@ -732,7 +817,8 @@ def _ceiling(p: Plan) -> tuple[float | None, bool]:
     if limits.cost_usd is not None:
         options.append((limits.cost_usd + sum(known), bool(known)))
     if limits.steps is not None and len(known) == len(priced):
-        options.append(((limits.steps + len(priced) - 1) * max(known), False))
+        left = max(limits.steps - sum(p.done.values()), 1)
+        options.append(((left + len(priced) - 1) * max(known), False))
     if not options:
         return None, False
     return min(options)
@@ -801,6 +887,8 @@ def describe(e: Estimate) -> list[str]:
     count = len(e.parts) * e.samples
     runs = "one run" if count == 1 else f"{count} runs"
     lines = [f"Cost estimate for {e.scenario}, {runs}, at list prices."]
+    if e.parts[0].replayed:
+        lines.append(_replayed_line(e.parts[0]))
     several = len(e.parts) > 1 or e.parts[0].variant is not None
     for part in e.parts:
         indent = ""
@@ -831,6 +919,16 @@ def describe(e: Estimate) -> list[str]:
     ]
     lines += [f"warning: {w}" for w in e.warnings]
     return lines
+
+
+def _replayed_line(part: VariantCost) -> str:
+    steps = part.replayed
+    if len(steps) == 1:
+        where = f"step {next(iter(steps.values()))}"
+    else:
+        where = ", ".join(f"{a} step {n}" for a, n in steps.items())
+    watched = "" if part.monitor is None else "; the monitor reviews every step, replayed too"
+    return f"A fork after {where}: the agents pay only for the steps after it{watched}."
 
 
 def _history(part: VariantCost) -> bool:

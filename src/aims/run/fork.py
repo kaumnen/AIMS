@@ -3,6 +3,7 @@ import json
 import logging
 from bisect import bisect_right
 from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -348,11 +349,17 @@ def configured(models: ModelsConfig, recorded: Profile) -> Profile:
 
 def live_profiles(models: ModelsConfig, origin: Origin, step: int) -> dict[str, Profile]:
     """The profiles the origin's agents used right after `step`, checked against `models`."""
-    out: dict[str, Profile] = {}
-    for agent in origin.bundle.scenario.agents:
-        p = configured(models, _at(origin.schedules[agent.id], step + 1))
-        out[p.name] = p
-    return out
+    agents = origin.bundle.scenario.agents
+    found = next_profiles(models, origin, {a.id: step for a in agents})
+    return {p.name: p for p in found.values()}
+
+
+def next_profiles(
+    models: ModelsConfig, origin: Origin, steps: Mapping[str, int]
+) -> dict[str, Profile]:
+    """The profile each agent of the origin used right after its step in `steps`, checked
+    against `models`, by agent id."""
+    return {a: configured(models, _at(origin.schedules[a], step + 1)) for a, step in steps.items()}
 
 
 def fork_profiles(bench: Bench, origin: Origin, fork: Fork) -> dict[str, Profile]:

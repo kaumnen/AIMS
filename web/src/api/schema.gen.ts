@@ -414,6 +414,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/forks/estimate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Estimate Forks
+         * @description What forks of a run cost, as `aims run --replay` prints it before they start: the
+         *     agents only for the steps after the cut, the monitor for every step. Takes the fields of
+         *     the request that starts them that change the cost.
+         */
+        get: operations["estimate_forks"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{run_id}/inject": {
         parameters: {
             query?: never;
@@ -5813,7 +5835,8 @@ export interface components {
          * @description `monitor` picks the fork's monitor preset over the config files and the scenario. `at`
          *     cuts a run of several agents: `agent:N` after that agent's step N, or `@seq` after an
          *     event; with `keep_others` the other agents keep their recorded answers until their own
-         *     inputs change. `step` is the last step replayed of a run of one agent.
+         *     inputs change. `step` is the last step replayed of a run of one agent. `confirm` as in
+         *     StartRun; the estimate counts only the steps after the cut.
          */
         StartFork: {
             /** At */
@@ -5824,6 +5847,11 @@ export interface components {
              * @enum {string}
              */
             audit?: "kernel" | "snapshot";
+            /**
+             * Confirm
+             * @default false
+             */
+            confirm?: boolean;
             /** Inject */
             inject?: string | null;
             /**
@@ -6319,13 +6347,19 @@ export interface components {
         /**
          * VariantCost
          * @description One run of one variant. `monitor` is None when the monitor is off; `steps` is the median
-         *     number of steps each agent took in past runs of the same scenario.
+         *     number of steps each agent took in past runs of the same scenario. `replayed` is the steps
+         *     each agent of a fork replays before it goes live: the agents' figures count only the steps
+         *     after them.
          */
         VariantCost: {
             agents: components["schemas"]["CostFigures"];
             monitor: components["schemas"]["CostFigures"] | null;
             /** Monitor Preset */
             monitor_preset: ("off" | "signals" | "standard" | "research") | null;
+            /** Replayed */
+            replayed: {
+                [key: string]: number;
+            };
             /** Steps */
             steps: {
                 [key: string]: number;
@@ -7750,6 +7784,71 @@ export interface operations {
             };
             /** @description Conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    estimate_forks: {
+        parameters: {
+            query?: {
+                step?: number | null;
+                at?: string | null;
+                keep_others?: boolean;
+                samples?: number;
+                profile?: string | null;
+                monitor?: ("off" | "signals" | "standard" | "research") | null;
+            };
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Estimate"];
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -10921,6 +11020,7 @@ export const pathsApiRunsGetParametersQueryCategoryAnyOf0Values: ReadonlyArray<F
 export const pathsApiRunsRun_idFlagsGetParametersQueryLayerAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs/{run_id}/flags"]["get"]["parameters"]["query"]["layer"]> = ["signal", "sweep", "judge"];
 export const pathsApiRunsRun_idFlagsGetParametersQueryCategoryAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs/{run_id}/flags"]["get"]["parameters"]["query"]["category"]> = ["covert_communication", "scorer_tampering", "transcript_tampering", "deceiving_operator", "evading_checks", "collective_over_own_task", "drift", "loop_or_confusion", "fabricated_completion", "constraint_violation", "eval_awareness", "alerting_operator", "egress_attempt", "privilege_escalation", "monitor_manipulation"];
 export const pathsApiRunsRun_idFlagsGetParametersQueryStatusAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs/{run_id}/flags"]["get"]["parameters"]["query"]["status"]> = ["open", "cleared", "tainted", "confirmed", "rejected", "unclear"];
+export const pathsApiRunsRun_idForksEstimateGetParametersQueryMonitorAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs/{run_id}/forks/estimate"]["get"]["parameters"]["query"]["monitor"]> = ["off", "signals", "standard", "research"];
 export const pathsApiRunsRun_idMonitorEstimateGetParametersQueryPresetAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs/{run_id}/monitor/estimate"]["get"]["parameters"]["query"]["preset"]> = ["signals", "standard", "research"];
 export const pathsApiScenariosSourceNameEstimateGetParametersQueryMonitorAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/scenarios/{source}/{name}/estimate"]["get"]["parameters"]["query"]["monitor"]> = ["off", "signals", "standard", "research"];
 export const agentCompactedStrategyValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentCompacted"]["strategy"]> = ["trim", "summary"];
