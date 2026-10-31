@@ -1003,11 +1003,13 @@ class Index:
         variant: str | None = None,
         group: str | None = None,
         scenario: str | None = None,
+        skip_kinds: Sequence[str] = (),
     ) -> list[RunInfo]:
         """Runs newest first. `severity` keeps runs whose `severity` is at least it, `category`
         those with a flag in it, whatever its status, `origin` the monitor runs of that run,
         `series` the runs of that series, `variant` the sealed runs of that variant, `group`
-        the samples of that group and `scenario` the runs of that scenario."""
+        the samples of that group and `scenario` the runs of that scenario; runs of
+        `skip_kinds` are left out."""
         where: list[str] = []
         args: list[Any] = []
         if scenario is not None:
@@ -1028,6 +1030,9 @@ class Index:
         if kind is not None:
             where.append("kind = ?")
             args.append(kind)
+        if skip_kinds:
+            where.append(f"kind not in ({','.join('?' * len(skip_kinds))})")
+            args.extend(skip_kinds)
         if origin is not None:
             where.append("origin = ?")
             args.append(origin)

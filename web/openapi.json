@@ -11348,7 +11348,7 @@
         "type": "object"
       },
       "ScenarioInfo": {
-        "description": "`oversight` is what the scenario lets its monitor do, `agents` how many agents it has,\n`profiles` the profiles they run unless a run picks one, `variants` the names of its\nvariants and `selftest` whether it has a self-test to run; all are missing when it does not\nload.",
+        "description": "`oversight` is what the scenario lets its monitor do, `agents` how many agents it has,\n`profiles` the profiles they run unless a run picks one, `variants` the names of its\nvariants and `selftest` whether it has a self-test to run, always false for viewers; all\nare missing when it does not load.",
         "properties": {
           "agents": {
             "anyOf": [
@@ -15218,7 +15218,7 @@
     },
     "/api/runs": {
       "get": {
-        "description": "Runs newest first, with jobs that have not started yet. `kind` keeps runs of that kind,\n`origin` the monitor runs of that run, `severity` runs whose `max_severity` is at least it,\n`category` runs with a flag in it, whatever its status, `series` the runs of that series,\n`variant` the sealed runs of that variant and `scenario` the runs of that scenario. Jobs\nnot started yet have none of `severity`, `category` and `variant`, so those leave them\nout; a job of a series knows its series.",
+        "description": "Runs newest first, with jobs that have not started yet. `kind` keeps runs of that kind,\n`origin` the monitor runs of that run, `severity` runs whose `max_severity` is at least it,\n`category` runs with a flag in it, whatever its status, `series` the runs of that series,\n`variant` the sealed runs of that variant and `scenario` the runs of that scenario. Jobs\nnot started yet have none of `severity`, `category` and `variant`, so those leave them\nout; a job of a series knows its series. Viewers get no runs of `TRUTH_KINDS`.",
         "operationId": "list_runs",
         "parameters": [
           {

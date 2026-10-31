@@ -2,14 +2,17 @@
 needs, scoring a run held by another store, labels from the API and from runners, and the
 report endpoint."""
 
+import asyncio
+import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
+import httpx2
 import pytest
 from cp import CP, control_plane
 from test_monitor_api import call, claim, flag, started
-from test_server import FakeRunner, ship
+from test_server import FakeRunner, ship, sse
 
 from aims.events import Draft, LocalEventStore, RunFinished
 from aims.events.chain import Head as LogHead
@@ -289,17 +292,24 @@ async def scored(
     return origin, result.run_id
 
 
-async def test_viewers_see_score_runs_listed_but_never_opened(
+async def test_viewers_never_see_score_runs(
     cp: CP, local: LocalEventStore, fake: FakeRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     origin, score = await scored(cp, local, fake, monkeypatch)
     base = f"/api/runs/{score}"
     sha = "0" * 64
     async with cp.client(cp.viewer) as viewer, cp.client(cp.operator) as c:
-        listed = (await viewer.get("/api/runs", params={"kind": "score"})).json()["items"]
+        for params in ({"kind": "score"}, {"origin": origin}, {}):
+            listed = (await viewer.get("/api/runs", params=params)).json()["items"]
+            assert score not in [i["run_id"] for i in listed], params
+        page = (await viewer.get("/api/runs", params={"limit": 1})).json()
+        assert ([i["run_id"] for i in page["items"]], page["next"]) == ([origin], origin)
+        listed = (await c.get("/api/runs", params={"kind": "score"})).json()["items"]
         assert [i["run_id"] for i in listed] == [score]
-        for path in (base, f"{base}/events", f"{base}/events/0", f"{base}/blobs/{sha}"):
-            r = await viewer.get(path)
+        paths = ("", "/events", "/events/0", f"/blobs/{sha}", "/projection", "/labels")
+        paths += ("/steps", "/activity?exec=x", "/samples", "/verification", "/flags")
+        for path in (*paths, "/commands"):
+            r = await viewer.get(base + path)
             assert (r.status_code, r.json()["code"]) == (403, "truth"), path
         r = await viewer.get("/api/stream", params={"run": [score]})
         assert r.status_code == 403
@@ -314,12 +324,37 @@ async def test_viewers_see_score_runs_listed_but_never_opened(
         assert (await c.get(f"{base}/blobs/{sha}")).status_code == 404
 
 
+async def test_a_viewers_stream_leaves_out_score_runs(
+    cp: CP, local: LocalEventStore, fake: FakeRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with cp.client(cp.viewer) as viewer, cp.client(cp.operator) as c:
+        [(_, _, mark)] = await sse(viewer, {"runs": "true"}, want=1)
+        origin, score = await scored(cp, local, fake, monkeypatch)
+        last = await planted(cp, local, fake, record=None)
+
+        async def seen(client: httpx2.AsyncClient) -> list[str]:
+            got: list[str] = []
+            params = {"runs": "true", "last_event_id": mark}
+            async with asyncio.timeout(10), client.sse("/api/stream", params=params) as source:
+                async for e in source:
+                    if e.event == "run":
+                        got.append(json.loads(e.data)["run"]["run_id"])
+                        if got[-1] == last:
+                            break
+            return got
+
+        assert {origin, score} <= set(await seen(c))
+        got = await seen(viewer)
+        assert origin in got
+        assert score not in got
+
+
 async def test_a_runs_detail_lists_its_scores_and_an_operator_gets_an_estimate(
     cp: CP, local: LocalEventStore, fake: FakeRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     origin, score = await scored(cp, local, fake, monkeypatch)
     async with cp.client(cp.viewer) as viewer, cp.client(cp.operator) as c:
-        assert (await viewer.get(f"/api/runs/{origin}")).json()["score_runs"] == [score]
+        assert (await viewer.get(f"/api/runs/{origin}")).json()["score_runs"] == []
         scorer = ScoreRunner(cp, "scorer", envs=["MODEL_API_KEY"])
         await scorer.connect()
         try:
@@ -331,6 +366,12 @@ async def test_a_runs_detail_lists_its_scores_and_an_operator_gets_an_estimate(
         detail = (await c.get(f"/api/runs/{origin}")).json()
         assert detail["score_runs"] == [queued, score]
         assert detail["monitor_runs"] == []
+        assert (await viewer.get(f"/api/runs/{origin}")).json()["score_runs"] == []
+        r = await viewer.get(f"/api/runs/{queued}")
+        assert (r.status_code, r.json()["code"]) == (403, "truth")
+        assert (await viewer.get("/api/stream", params={"run": [queued]})).status_code == 403
+        listed = (await viewer.get("/api/runs")).json()["items"]
+        assert [i["run_id"] for i in listed] == [origin]
 
         url = f"/api/runs/{origin}/score/estimate"
         assert (await viewer.get(url)).status_code == 403

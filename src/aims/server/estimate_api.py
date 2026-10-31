@@ -29,6 +29,7 @@ from aims.server.api import (
     State,
     Viewer,
     _run_id,
+    _shown,
     fork_estimate,
     fork_point,
     scenario_problems,
@@ -149,7 +150,8 @@ async def get_spend(principal: Viewer, state: State) -> Spend:
 @router.get("/runs/{run_id}/projection", tags=["runs"], responses=responses(404))
 async def get_projection(run_id: str, principal: Viewer, state: State) -> Projection:
     """What the run has cost so far and is on track to cost, as `aims run` shows it live."""
-    found = await projection(state.store, _run_id(run_id), await state.history())
+    await _shown(state, principal, _run_id(run_id))
+    found = await projection(state.store, run_id, await state.history())
     if found is None:
         raise ProblemException(404, "Not found", f"no run {run_id}")
     return found

@@ -30,6 +30,7 @@ from aims.server.api import (
     Viewer,
     _queue,
     _run_id,
+    _shown,
 )
 from aims.server.files import Sources
 from aims.server.problems import ProblemException, responses
@@ -202,7 +203,8 @@ class LabelBody(BaseModel):
 @router.get("/runs/{run_id}/labels", tags=["score"], responses=responses(404))
 async def get_labels(run_id: str, principal: Viewer, state: State) -> list[Label]:
     """The latest label of each labelled flag of the run, by flag seq."""
-    if await state.store.run(_run_id(run_id)) is None:
+    await _shown(state, principal, _run_id(run_id))
+    if await state.store.run(run_id) is None:
         raise ProblemException(404, "Not found", f"no run {run_id}")
     return list((await state.store.labels(run_id)).values())
 

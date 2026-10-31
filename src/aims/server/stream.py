@@ -14,7 +14,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 
 from aims.events import RunCorrupt
 from aims.models import Delta
-from aims.server.api import State, Viewer, _shown, summaries
+from aims.server.api import State, Viewer, _shown, hidden, summaries
 from aims.server.problems import ProblemException
 from aims.wire import (
     DeltaMessage,
@@ -155,6 +155,7 @@ async def stream(
         if resumed_version is not None and version is not None:
             version = resumed_version
     wanted = set(deltas or [])
+    skip = hidden(principal)
     sub = state.bus.subscribe() if wanted else None
     ended: set[str] = set()
     runners_seen: dict[str, dict[str, object]] = {}
@@ -215,11 +216,11 @@ async def stream(
                 ids = set(changed) if changed is not None else None
                 if runs or ids:
                     if ids is None:
-                        listed = await state.store.runs(limit=MAX_RUNS)
+                        listed = await state.store.runs(limit=MAX_RUNS, skip_kinds=skip)
                         pick = [i.run_id for i in listed] + list(cursors)
                     else:
                         pick = sorted(ids if runs else ids & set(cursors))
-                    for summary in await summaries(state, pick):
+                    for summary in await summaries(state, pick, skip):
                         yield message(RunMessage(run=summary), with_id=True)
             if runs:
                 for conn in state.runners.values():

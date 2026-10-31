@@ -18,7 +18,17 @@ from aims.run.estimate import ReviewEstimate, estimate_review, reviews_confirm
 from aims.run.fork import Origin, load_origin
 from aims.run.job import JobOptions
 from aims.run.runner import RunError
-from aims.server.api import MAX_PAGE, Operator, Out, Started, State, Viewer, _queue, _run_id
+from aims.server.api import (
+    MAX_PAGE,
+    Operator,
+    Out,
+    Started,
+    State,
+    Viewer,
+    _queue,
+    _run_id,
+    _shown,
+)
 from aims.server.problems import ProblemException, responses
 from aims.server.state import ServerState
 from aims.wire import MonitorJob, MonitorMode
@@ -50,7 +60,8 @@ async def list_flags(
 ) -> FlagPage:
     """A run's flags in seq order, re-flags of a key folded into its first flag, each with the
     status later events gave it. Page on with `after=next`."""
-    info = await state.store.run(_run_id(run_id))
+    await _shown(state, principal, _run_id(run_id))
+    info = await state.store.run(run_id)
     if info is None:
         raise ProblemException(404, "Not found", f"no run {run_id}")
     items = await state.store.flags(

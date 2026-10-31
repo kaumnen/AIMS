@@ -306,7 +306,10 @@ def summary(
     )
 
 
-async def summaries(state: ServerState, run_ids: list[str]) -> list[RunSummary]:
+async def summaries(
+    state: ServerState, run_ids: list[str], skip: Sequence[str] = ()
+) -> list[RunSummary]:
+    """The runs and jobs of `run_ids` that exist, in that order, none of a kind in `skip`."""
     jobs = await state.db.jobs_of(run_ids)
     metas = await state.db.runs_meta(run_ids)
     reviews = await state.db.review_jobs(run_ids)
@@ -317,6 +320,8 @@ async def summaries(state: ServerState, run_ids: list[str]) -> list[RunSummary]:
         if info is None and run_id not in jobs:
             continue
         found = summary(state, run_id, info, jobs.get(run_id), metas.get(run_id))
+        if found.kind in skip:
+            continue
         found.commands, found.commands_waiting = sent.get(run_id, (0, 0))
         for review in reviews.get(run_id, ()):
             if await state.store.run(review) is None:
@@ -344,7 +349,8 @@ async def list_runs(
     `category` runs with a flag in it, whatever its status, `series` the runs of that series,
     `variant` the sealed runs of that variant and `scenario` the runs of that scenario. Jobs
     not started yet have none of `severity`, `category` and `variant`, so those leave them
-    out; a job of a series knows its series."""
+    out; a job of a series knows its series. Viewers get no runs of `TRUTH_KINDS`."""
+    skip = hidden(principal)
     infos = await state.store.runs(
         scenario=scenario,
         limit=limit,
@@ -355,15 +361,22 @@ async def list_runs(
         category=category,
         series=series,
         variant=variant,
+        skip_kinds=skip,
     )
     if severity is None and category is None and variant is None:
         jobs = await state.db.jobs_page(
-            before=before, limit=limit, kind=kind, origin=origin, scenario=scenario, series=series
+            before=before,
+            limit=limit,
+            kind=kind,
+            origin=origin,
+            scenario=scenario,
+            series=series,
+            skip_kinds=skip,
         )
     else:
         jobs = []
     ids = sorted({i.run_id for i in infos} | {j.run_id for j in jobs}, reverse=True)[:limit]
-    items = await summaries(state, ids)
+    items = await summaries(state, ids, skip)
     return RunPage(items=items, next=ids[-1] if len(ids) == limit else None)
 
 
@@ -385,7 +398,8 @@ async def get_series(name: str, principal: Viewer, state: State) -> SeriesInfo:
     place = await sseries.where(state, name)
     infos = await state.store.runs(series=name, kind="scenario", limit=sseries.MAX_RUNS)
     jobs = await sseries.series_jobs(state, name)
-    items = await summaries(state, sorted({i.run_id for i in infos} | {j.run_id for j in jobs}))
+    ids = sorted({i.run_id for i in infos} | {j.run_id for j in jobs})
+    items = await summaries(state, ids, hidden(principal))
     items.sort(key=lambda r: (r.series_index if r.series_index is not None else -1, r.run_id))
     return SeriesInfo(
         name=name,
@@ -398,20 +412,30 @@ async def get_series(name: str, principal: Viewer, state: State) -> SeriesInfo:
 
 # Runs whose content shows a scenario's truth: a score names the plants, where each was taken
 # and the facts the classifier was told; a self-test and its cases run the exploit and say
-# which plants it took. Viewers see them listed, not opened.
+# which plants it took. Viewers neither see them listed nor open them.
 TRUTH_KINDS = ("score", "selftest", "selftest.case")
 
 
+def hidden(principal: Principal) -> tuple[str, ...]:
+    """The run kinds `principal` does not see."""
+    return TRUTH_KINDS if principal.role == "viewer" else ()
+
+
 async def _shown(state: ServerState, principal: Principal, run_id: str) -> None:
-    """Raises 403 when a viewer asks for what a run of `TRUTH_KINDS` holds."""
+    """Raises 403 when a viewer asks for a run of `TRUTH_KINDS`, started or still a job."""
     if principal.role != "viewer":
         return
     info = await state.store.run(run_id)
-    if info is not None and info.kind in TRUTH_KINDS:
+    if info is not None:
+        kind = info.kind
+    else:
+        job = await state.db.job(run_id)
+        kind = None if job is None else job.payload.get("kind")
+    if kind in TRUTH_KINDS:
         raise ProblemException(
             403,
             "Forbidden",
-            f"a {info.kind} run shows what a scenario hides; this needs the operator role",
+            f"a {kind} run shows what a scenario hides; this needs the operator role",
             code="truth",
         )
 
@@ -480,7 +504,7 @@ async def get_run(run_id: str, principal: Viewer, state: State) -> RunDetail:
         finished=next(iter(last), None),
         verdict=next(iter(verdict), None),
         monitor_runs=await _over(state, run_id, "monitor"),
-        score_runs=await _over(state, run_id, "score"),
+        score_runs=[] if "score" in hidden(principal) else await _over(state, run_id, "score"),
     )
 
 
@@ -1077,7 +1101,8 @@ async def cancel_run(run_id: str, body: StopBody, principal: Operator, state: St
 async def list_commands(run_id: str, principal: Viewer, state: State) -> list[CommandInfo]:
     """The commands sent to a run through the control plane, oldest first, with the runner's
     answers. Answers given at a terminal reach the run's log only, as `operator.action`."""
-    return [command_info(c) for c in await state.db.commands_of(_run_id(run_id))]
+    await _shown(state, principal, _run_id(run_id))
+    return [command_info(c) for c in await state.db.commands_of(run_id)]
 
 
 # Events, samples, blobs, verification
@@ -1163,7 +1188,8 @@ async def list_steps(
 ) -> StepPage:
     """Agent steps in seq order, one row per model call with the tool calls it made, their
     commands' ends and results. Page on with `after=next`."""
-    items = await state.store.steps(_run_id(run_id), after=after, limit=limit, agent_id=agent)
+    await _shown(state, principal, _run_id(run_id))
+    items = await state.store.steps(run_id, after=after, limit=limit, agent_id=agent)
     return StepPage(items=items, next=items[-1].seq if len(items) == limit else None)
 
 
@@ -1176,7 +1202,8 @@ async def list_activity(
 ) -> list[ExecActivity]:
     """What each exec left in the log, per event type and file op, in the order asked. Execs
     with no events are left out."""
-    return await state.store.activity(_run_id(run_id), _execs(execs))
+    await _shown(state, principal, _run_id(run_id))
+    return await state.store.activity(run_id, _execs(execs))
 
 
 class SamplePage(Out):
@@ -1195,8 +1222,9 @@ async def list_samples(
     limit: Annotated[int, Query(ge=1, le=MAX_PAGE)] = MAX_PAGE,
 ) -> SamplePage:
     """The resource timeline, one window per sandbox second. Page on with `ts_from=next`."""
+    await _shown(state, principal, _run_id(run_id))
     items = await state.store.samples(
-        _run_id(run_id), agent_id=agent, ts_from=ts_from, ts_to=ts_to, limit=limit
+        run_id, agent_id=agent, ts_from=ts_from, ts_to=ts_to, limit=limit
     )
     return SamplePage(items=items, next=items[-1].ts_to + 1 if len(items) == limit else None)
 
@@ -1285,7 +1313,8 @@ class VerificationOut(Out):
 @router.get("/runs/{run_id}/verification", tags=["events"], responses=responses(404))
 async def verify_run(run_id: str, principal: Viewer, state: State) -> VerificationOut:
     """Check the hash chain of the control plane's copy and every blob it references."""
-    if await state.store.run(_run_id(run_id)) is None:
+    await _shown(state, principal, _run_id(run_id))
+    if await state.store.run(run_id) is None:
         raise ProblemException(404, "Not found", f"no run {run_id}")
     v = await state.store.verify(run_id)
     return VerificationOut(
@@ -1616,8 +1645,8 @@ async def list_runners(principal: Viewer, state: State) -> list[RunnerInfo]:
 class ScenarioInfo(Out):
     """`oversight` is what the scenario lets its monitor do, `agents` how many agents it has,
     `profiles` the profiles they run unless a run picks one, `variants` the names of its
-    variants and `selftest` whether it has a self-test to run; all are missing when it does not
-    load."""
+    variants and `selftest` whether it has a self-test to run, always false for viewers; all
+    are missing when it does not load."""
 
     source: str
     name: str
@@ -1654,7 +1683,7 @@ async def list_scenarios(
                 info.agents = len(sc.agents)
                 info.profiles = sorted({a.profile or default for a in sc.agents})
                 info.variants = list(sc.variants)
-                info.selftest = selftest.wanted(sc)
+                info.selftest = principal.role != "viewer" and selftest.wanted(sc)
             out.append(info)
     return out
 

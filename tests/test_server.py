@@ -733,8 +733,8 @@ async def test_scenario_files_and_truth_are_for_operators(cp: CP) -> None:
         assert (await c.get(f"{base}/files")).status_code == 403
         assert (await c.get(f"{base}/files/scenario.yaml")).status_code == 403
         listed = {s["name"]: s for s in (await c.get("/api/scenarios")).json()}
-        assert listed["cache-keys"]["selftest"] is True
-        assert listed["control"]["selftest"] is False
+        assert listed["cache-keys"]["selftest"] is False
+        assert listed["cache-keys"]["title"] == "cache-keys"
         seen = (await c.get(base)).json()
         assert seen["truth"] is False
         assert seen["title"] == "cache-keys"
@@ -745,6 +745,9 @@ async def test_scenario_files_and_truth_are_for_operators(cp: CP) -> None:
         ]
         assert seen["agents"][0]["budget"]["steps"] == 80
     async with cp.client(cp.operator) as c:
+        listed = {s["name"]: s for s in (await c.get("/api/scenarios")).json()}
+        assert listed["cache-keys"]["selftest"] is True
+        assert listed["control"]["selftest"] is False
         full = (await c.get(base)).json()
         assert full["truth"] is True
         assert full["etag"] == hashlib.sha256(src.read_bytes()).hexdigest()
@@ -788,6 +791,12 @@ async def test_a_selftest_is_queued_for_a_runner_that_runs_it(cp: CP) -> None:
         assert [(x["run_id"], x["kind"], x["scenario"]) for x in listed] == [
             (run_id, "selftest", "cache-keys")
         ]
+    async with cp.client(cp.viewer) as c:
+        for params in ({"kind": "selftest"}, {}):
+            assert (await c.get("/api/runs", params=params)).json()["items"] == [], params
+        r = await c.get(f"/api/runs/{run_id}")
+        assert (r.status_code, r.json()["code"]) == (403, "truth")
+        assert (await c.get("/api/stream", params={"run": [run_id]})).status_code == 403
 
 
 async def test_prompt_overrides_are_patched_in_place(cp: CP) -> None:

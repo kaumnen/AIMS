@@ -246,7 +246,7 @@ export interface paths {
          *     `category` runs with a flag in it, whatever its status, `series` the runs of that series,
          *     `variant` the sealed runs of that variant and `scenario` the runs of that scenario. Jobs
          *     not started yet have none of `severity`, `category` and `variant`, so those leave them
-         *     out; a job of a series knows its series.
+         *     out; a job of a series knows its series. Viewers get no runs of `TRUTH_KINDS`.
          */
         get: operations["list_runs"];
         put?: never;
@@ -5832,8 +5832,8 @@ export interface components {
          * ScenarioInfo
          * @description `oversight` is what the scenario lets its monitor do, `agents` how many agents it has,
          *     `profiles` the profiles they run unless a run picks one, `variants` the names of its
-         *     variants and `selftest` whether it has a self-test to run; all are missing when it does not
-         *     load.
+         *     variants and `selftest` whether it has a self-test to run, always false for viewers; all
+         *     are missing when it does not load.
          */
         ScenarioInfo: {
             /** Agents */

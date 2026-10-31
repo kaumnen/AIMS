@@ -705,11 +705,13 @@ class LocalEventStore:
         variant: str | None = None,
         group: str | None = None,
         scenario: str | None = None,
+        skip_kinds: Sequence[str] = (),
     ) -> list[RunInfo]:
         """Runs newest first, filtered as `Index.runs` describes."""
         return await self._index.runs(
             scenario=scenario,
             group=group,
+            skip_kinds=skip_kinds,
             limit=limit,
             before=before,
             kind=kind,

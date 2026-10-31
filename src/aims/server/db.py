@@ -430,10 +430,11 @@ class ServerDB:
         origin: str | None = None,
         scenario: str | None = None,
         series: str | None = None,
+        skip_kinds: Sequence[str] = (),
     ) -> list[Job]:
         """Jobs of every state, newest run id first; with `kind` only jobs of that kind, with
         `origin` only monitor jobs over that run, with `scenario` only jobs of that scenario,
-        with `series` only runs of that series."""
+        with `series` only runs of that series, and none of `skip_kinds`."""
         where: list[str] = []
         args: list[Any] = []
         if series is not None:
@@ -451,6 +452,10 @@ class ServerDB:
         if kind is not None:
             where.append("coalesce(json_extract(payload, '$.kind'), 'scenario') = ?")
             args.append(kind)
+        if skip_kinds:
+            marks = ",".join("?" * len(skip_kinds))
+            where.append(f"coalesce(json_extract(payload, '$.kind'), 'scenario') not in ({marks})")
+            args.extend(skip_kinds)
         if origin is not None:
             where.append("json_extract(payload, '$.origin') = ?")
             args.append(origin)
