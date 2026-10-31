@@ -2,9 +2,14 @@
 come resolved, so a runner needs no config file; the scenario's inputs are blob refs it fetches;
 API keys and base URLs come from the runner's own environment."""
 
+import contextlib
 import dataclasses
+import io
+import tarfile
+import tempfile
 import uuid
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Generator, Iterable, Mapping, Sequence
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
@@ -19,7 +24,7 @@ from aims.prompts import Prompts
 from aims.run.fork import CutAt, Origin, fork_profiles, fork_schedules, live_profiles, planner
 from aims.run.runner import Bench, Fork, Options, RunError, Runner, Texts, agent_profile
 from aims.run.runner import resolve_texts as texts_of
-from aims.scenario import Bundle, Scenario, ScenarioError, from_snapshot
+from aims.scenario import Bundle, Scenario, ScenarioError, from_snapshot, load
 
 JobKind = Literal["scenario", "models.check"]
 INPUTS = ("file", "files", "verifier", "context")
@@ -54,6 +59,7 @@ class JobOptions(_Strict):
     samples: int = Field(default=1, ge=1)
     # the control plane scores the run once its truth file arrives
     score: bool = False
+    variant: str | None = None
 
 
 class Job(_Strict):
@@ -72,6 +78,8 @@ class Job(_Strict):
     config_files: dict[str, str | None] = Field(default_factory=dict)
     check: list[str] = Field(default_factory=list)
     monitor: dict[str, JsonValue] | None = None
+    # sha256 of the scenario's folder as a tar, which the runner loads the scenario from
+    folder: str | None = None
 
     def blobs(self) -> list[str]:
         """The sha256 of each scenario input the runner must hold before it starts."""
@@ -82,6 +90,8 @@ class Job(_Strict):
             ref = self.scenario.get(name)
             if isinstance(ref, dict) and isinstance(ref.get("sha256"), str):
                 out.append(str(ref["sha256"]))
+        if self.folder is not None:
+            out.append(self.folder)
         return out
 
     def envs(self) -> list[str]:
@@ -162,9 +172,11 @@ def scenario_jobs(
     config_files: dict[str, str | None] | None = None,
     monitor: ResolvedMonitor | None = None,
     score: bool = False,
+    folder: str | None = None,
 ) -> list[Job]:
     """One job per sample of a scenario, resolved with these layers, watched by `monitor`.
-    Raises ProfileError, TextError or UnknownTool."""
+    `folder` is the sha256 of the scenario folder's tar, when the runner gets it. Raises
+    ProfileError, TextError or UnknownTool."""
     profiles = {a.id: agent_profile(models, a, profile) for a in bundle.scenario.agents}
     texts = {a.id: texts_of(prompts, a, bundle.scenario).snapshot() for a in bundle.scenario.agents}
     group = uuid.uuid4().hex[:12] if samples > 1 else None
@@ -183,9 +195,11 @@ def scenario_jobs(
                 sample=i if group else None,
                 samples=samples,
                 score=score,
+                variant=bundle.variant,
             ),
             audit=audit,
             config_files=dict(config_files or {}),
+            folder=folder,
         )
         for i in range(samples)
     ]
@@ -259,6 +273,29 @@ def bundle_of(job: Job, blobs: dict[str, bytes]) -> Bundle:
         raise RunError(f"the job's scenario does not load: {e}") from None
 
 
+@contextlib.contextmanager
+def job_bundle(job: Job, blobs: dict[str, bytes]) -> Generator[Bundle]:
+    """The job's scenario. A job that carries its scenario's folder is loaded from a copy of
+    it, as `aims run` loads the scenario, so the plants read their files and the variant keeps
+    its name; the copy lasts until the block ends."""
+    if job.folder is None:
+        yield bundle_of(job, blobs)
+        return
+    if job.scenario is None:
+        raise RunError("the job has no scenario")
+    with tempfile.TemporaryDirectory(prefix="aims-scenario-") as tmp:
+        root = Path(tmp)
+        try:
+            with tarfile.open(fileobj=io.BytesIO(blobs[job.folder]), mode="r:") as tar:
+                tar.extractall(root, filter="data")
+            bundle = load(root / "scenario.yaml", job.options.variant)
+        except (ScenarioError, KeyError, tarfile.TarError, OSError) as e:
+            raise RunError(f"the job's scenario folder does not load: {e}") from None
+        if bundle.digest != job.scenario.get("digest"):
+            raise RunError("the job's scenario folder does not match its scenario")
+        yield bundle
+
+
 def runner_for(
     bench: Bench,
     job: Job,
@@ -278,7 +315,12 @@ def runner_for(
     monitor = job.watch()
     o = job.options
     options = Options(
-        profile=o.profile, keep=o.keep, group=o.group, sample=o.sample, samples=o.samples
+        profile=o.profile,
+        keep=o.keep,
+        group=o.group,
+        sample=o.sample,
+        samples=o.samples,
+        variant=o.variant,
     )
     if job.fork is None:
         try:

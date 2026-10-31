@@ -421,6 +421,12 @@ def _walk(root: Path) -> Iterator[tuple[Path, str]]:
             yield here / f, posixpath.join(rel, f) if rel != "." else f
 
 
+def folder_tar(path: Path) -> bytes:
+    """The folder of the scenario file `path` as a tar, timestamps kept, for a runner that
+    loads it as `aims run` would."""
+    return _dir_tar(path.parent, "", deterministic=False)
+
+
 def _dir_tar(root: Path, prefix: str, *, deterministic: bool) -> bytes:
     if not root.is_dir():
         raise NotADirectoryError(20, "Not a directory", str(root))

@@ -49,7 +49,7 @@ from aims.run.estimate import estimate_runs, needs_confirm
 from aims.run.fork import CutAt, check_fork, cut_at, live_profiles, load_origin
 from aims.run.job import Job, fork_jobs, monitor_for, scenario_jobs
 from aims.run.runner import RunError, agent_profile, check
-from aims.scenario import Bundle, Scenario, ScenarioError, load, parse
+from aims.scenario import Bundle, Scenario, ScenarioError, folder_tar, load, parse
 from aims.server import db as sdb
 from aims.server.auth import Principal, require
 from aims.server.files import Sources
@@ -579,6 +579,10 @@ async def start_runs(
     agents = [agent_profile(settings.models, a, body.profile) for a in bundle.scenario.agents]
     monitor = _monitor(settings, bundle.scenario, agents, body.monitor)
     try:
+        folder = await asyncio.to_thread(folder_tar, path / "scenario.yaml")
+    except OSError as e:
+        raise ProblemException(422, "Scenario cannot run", str(e), code="scenario") from None
+    try:
         jobs = scenario_jobs(
             bundle,
             settings.models,
@@ -590,6 +594,7 @@ async def start_runs(
             config_files=settings.layers.digests(),
             monitor=monitor,
             score=body.score,
+            folder=hashlib.sha256(folder).hexdigest(),
         )
     except (ProfileError, UnknownTool, ValueError) as e:
         raise ProblemException(422, "Scenario cannot run", str(e), code="scenario") from None
@@ -610,7 +615,7 @@ async def start_runs(
             raise ProblemException(
                 409, "Confirm the cost", f"{why}; set confirm to start anyway", code="confirm"
             )
-    blobs = {hashlib.sha256(b).hexdigest(): b for b in bundle.blobs()}
+    blobs = {hashlib.sha256(b).hexdigest(): b for b in [*bundle.blobs(), folder]}
     return await _queue(
         state, principal.name, jobs, runner=body.runner, parallel=body.parallel, blobs=blobs
     )

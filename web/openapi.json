@@ -4304,6 +4304,17 @@
             "title": "Config Files",
             "type": "object"
           },
+          "folder": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Folder"
+          },
           "fork": {
             "anyOf": [
               {
@@ -4545,6 +4556,17 @@
             "default": false,
             "title": "Score",
             "type": "boolean"
+          },
+          "variant": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Variant"
           }
         },
         "title": "JobOptions",

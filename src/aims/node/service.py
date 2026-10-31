@@ -29,7 +29,7 @@ from aims.node.link import Link
 from aims.node.shipper import Backoff
 from aims.prompts import TextError
 from aims.run.fork import load_origin
-from aims.run.job import Job, bundle_of, runner_for
+from aims.run.job import Job, job_bundle, runner_for
 from aims.run.runner import Bench, RunError, seal_unsealed
 from aims.run.score import Added
 from aims.run.scoring import ScoreError, score_with
@@ -233,22 +233,22 @@ class Node:
                     transport=self.options.model_transport,
                 )
                 return
-            bundle = bundle_of(job, blobs)
-            origin = source = None
-            if job.fork is not None:
-                source = await self._origin(job.fork.origin)
-                origin = await load_origin(source, job.fork.origin)
-            runner = runner_for(
-                ctx.bench,
-                job,
-                bundle,
-                origin=origin,
-                origins=None if source is store else source,
-            )
-            link.track(runner)
-            if self.stopping:
-                runner.cancel()
-            await runner.run()
+            with job_bundle(job, blobs) as bundle:
+                origin = source = None
+                if job.fork is not None:
+                    source = await self._origin(job.fork.origin)
+                    origin = await load_origin(source, job.fork.origin)
+                runner = runner_for(
+                    ctx.bench,
+                    job,
+                    bundle,
+                    origin=origin,
+                    origins=None if source is store else source,
+                )
+                link.track(runner)
+                if self.stopping:
+                    runner.cancel()
+                await runner.run()
         except asyncio.CancelledError:
             raise
         except Exception as e:

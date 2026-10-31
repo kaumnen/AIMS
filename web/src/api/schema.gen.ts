@@ -2944,6 +2944,8 @@ export interface components {
             config_files?: {
                 [key: string]: string | null;
             };
+            /** Folder */
+            folder?: string | null;
             fork?: components["schemas"]["JobFork"] | null;
             /**
              * @description discriminator enum property added by openapi-typescript
@@ -3039,6 +3041,8 @@ export interface components {
              * @default false
              */
             score?: boolean;
+            /** Variant */
+            variant?: string | null;
         };
         JsonValue: unknown;
         /**
