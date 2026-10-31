@@ -17,6 +17,7 @@ import { Route as RunsIndexRouteImport } from './routes/runs.index'
 import { Route as RunsRunIdRouteImport } from './routes/runs.$runId'
 import { Route as ScenariosIndexRouteImport } from './routes/scenarios.index'
 import { Route as SettingsIndexRouteImport } from './routes/settings.index'
+import { Route as SettingsConfigRouteImport } from './routes/settings.config'
 import { Route as SettingsModelsRouteImport } from './routes/settings.models'
 import { Route as SettingsPromptsRouteImport } from './routes/settings.prompts'
 import { Route as SettingsRunnersRouteImport } from './routes/settings.runners'
@@ -64,6 +65,11 @@ const SettingsIndexRoute = SettingsIndexRouteImport.update({
   path: '/',
   getParentRoute: () => SettingsRoute,
 } as any)
+const SettingsConfigRoute = SettingsConfigRouteImport.update({
+  id: '/config',
+  path: '/config',
+  getParentRoute: () => SettingsRoute,
+} as any)
 const SettingsModelsRoute = SettingsModelsRouteImport.update({
   id: '/models',
   path: '/models',
@@ -101,6 +107,7 @@ export interface FileRoutesByFullPath {
   '/scenarios': typeof ScenariosRouteWithChildren
   '/settings': typeof SettingsRouteWithChildren
   '/runs/$runId': typeof RunsRunIdRoute
+  '/settings/config': typeof SettingsConfigRoute
   '/settings/models': typeof SettingsModelsRoute
   '/settings/prompts': typeof SettingsPromptsRoute
   '/settings/runners': typeof SettingsRunnersRoute
@@ -114,6 +121,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/runs/$runId': typeof RunsRunIdRoute
+  '/settings/config': typeof SettingsConfigRoute
   '/settings/models': typeof SettingsModelsRoute
   '/settings/prompts': typeof SettingsPromptsRoute
   '/settings/runners': typeof SettingsRunnersRoute
@@ -131,6 +139,7 @@ export interface FileRoutesById {
   '/scenarios': typeof ScenariosRouteWithChildren
   '/settings': typeof SettingsRouteWithChildren
   '/runs/$runId': typeof RunsRunIdRoute
+  '/settings/config': typeof SettingsConfigRoute
   '/settings/models': typeof SettingsModelsRoute
   '/settings/prompts': typeof SettingsPromptsRoute
   '/settings/runners': typeof SettingsRunnersRoute
@@ -149,6 +158,7 @@ export interface FileRouteTypes {
     | '/scenarios'
     | '/settings'
     | '/runs/$runId'
+    | '/settings/config'
     | '/settings/models'
     | '/settings/prompts'
     | '/settings/runners'
@@ -162,6 +172,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/runs/$runId'
+    | '/settings/config'
     | '/settings/models'
     | '/settings/prompts'
     | '/settings/runners'
@@ -178,6 +189,7 @@ export interface FileRouteTypes {
     | '/scenarios'
     | '/settings'
     | '/runs/$runId'
+    | '/settings/config'
     | '/settings/models'
     | '/settings/prompts'
     | '/settings/runners'
@@ -254,6 +266,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsIndexRouteImport
       parentRoute: typeof SettingsRoute
     }
+    '/settings/config': {
+      id: '/settings/config'
+      path: '/config'
+      fullPath: '/settings/config'
+      preLoaderRoute: typeof SettingsConfigRouteImport
+      parentRoute: typeof SettingsRoute
+    }
     '/settings/models': {
       id: '/settings/models'
       path: '/models'
@@ -326,6 +345,7 @@ const ScenariosRouteWithChildren = ScenariosRoute._addFileChildren(
 )
 
 interface SettingsRouteChildren {
+  SettingsConfigRoute: typeof SettingsConfigRoute
   SettingsModelsRoute: typeof SettingsModelsRoute
   SettingsPromptsRoute: typeof SettingsPromptsRoute
   SettingsRunnersRoute: typeof SettingsRunnersRoute
@@ -335,6 +355,7 @@ interface SettingsRouteChildren {
 }
 
 const SettingsRouteChildren: SettingsRouteChildren = {
+  SettingsConfigRoute: SettingsConfigRoute,
   SettingsModelsRoute: SettingsModelsRoute,
   SettingsPromptsRoute: SettingsPromptsRoute,
   SettingsRunnersRoute: SettingsRunnersRoute,

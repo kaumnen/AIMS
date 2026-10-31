@@ -6,7 +6,8 @@ export type RunnerInfo = Schemas["RunnerInfo"];
 export type ProviderCredit = Schemas["ProviderCredit"];
 export type TokenInfo = Schemas["TokenInfo"];
 export type TokenRole = Schemas["TokenCreate"]["role"];
-export type Layer = Schemas["LayerInfo"]["layer"];
+export type LayerInfo = Schemas["LayerInfo"];
+export type Layer = LayerInfo["layer"];
 export type ConfigFile = Schemas["ConfigFile"];
 export type ConfigPatch = Schemas["ConfigPatch"];
 
@@ -106,3 +107,45 @@ export async function patchConfig(
   if (error) throw error;
   return data;
 }
+
+// Every layer merged, as TOML naming where each value comes from.
+export const mergedQuery = queryOptions({
+  queryKey: ["config", "merged"] as const,
+  queryFn: async ({ signal }) => {
+    const { data, error } = await client.GET("/api/config/merged", { signal });
+    if (error) throw error;
+    return data.text;
+  },
+  staleTime: 0,
+});
+
+// Whether the layers would load with `text` in place of `layer`'s file.
+export async function checkConfig(layer: Layer, text: string, signal: AbortSignal) {
+  const { data, error } = await client.POST("/api/config/{layer}/check", {
+    params: { path: { layer } },
+    body: { text },
+    signal,
+  });
+  if (error) throw error;
+  return data;
+}
+
+// Replace a layer's text. `etag` as in patchConfig.
+export async function saveConfig(
+  layer: Layer,
+  text: string,
+  etag: string | null,
+): Promise<ConfigFile> {
+  const { data, error } = await client.PUT("/api/config/{layer}", {
+    params: {
+      path: { layer },
+      header: etag === null ? { "If-None-Match": "*" } : { "If-Match": `"${etag}"` },
+    },
+    body: { text },
+  });
+  if (error) throw error;
+  return data;
+}
+
+// What a change to the config files can change.
+export const CONFIG_DEPENDENT = [["config"], ["prompts"], ["models"], ["spend"], ["scenarios"]];

@@ -1,7 +1,8 @@
+import { EditorView } from "@codemirror/view";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 
 import type { ProfileInfo } from "@/api/launch";
 import type { PromptText } from "@/api/scenario-files";
@@ -18,7 +19,7 @@ let credits: ProviderCredit[];
 let tokens: TokenInfo[];
 // config layers as dotted key -> text, with each file's version
 let layers: Record<"user" | "project", { values: Record<string, string>; etag: string }>;
-const PATHS = { user: "/home/me/.config/aims/aims.toml", project: "/work/aims.toml" };
+const PATHS = { user: "/home/me/.config/aims/config.toml", project: "/work/aims.toml" };
 const DEFAULTS: Record<string, [string, string[] | null]> = {
   "prompts.system": ["Work on the task.", null],
   "prompts.denied": ["Denied.", null],
@@ -28,6 +29,10 @@ const DEFAULTS: Record<string, [string, string[] | null]> = {
   "prompts.monitor.categories.drift": ["Off the task.", null],
 };
 const CHECK = "01a19200-0000-7000-8000-000000000001";
+// the config files' texts; a project file can be missing
+let texts: Record<"user" | "project", string>;
+let projectExists: boolean;
+let saves: { layer: string; text: string; ifMatch: string | null; ifNoneMatch: string | null }[];
 
 const profile = (over: Partial<ProfileInfo>): ProfileInfo => ({
   name: "spark",
@@ -92,6 +97,49 @@ const promptsInfo = () => ({
   categories: under("prompts.monitor.categories."),
 });
 
+async function putLayer(layer: "user" | "project", request: Request) {
+  const file = layers[layer];
+  const exists = layer === "user" || projectExists;
+  const ifMatch = request.headers.get("If-Match");
+  const ifNoneMatch = request.headers.get("If-None-Match");
+  const { text } = (await request.clone().json()) as { text: string };
+  saves.push({ layer, text, ifMatch, ifNoneMatch });
+  if (exists ? ifMatch?.replaceAll('"', "") !== file.etag : ifNoneMatch !== "*") {
+    return problem(412, "the file changed since it was read");
+  }
+  if (text.includes("nonsense")) {
+    const msg = `${PATHS[layer]}: unknown table(s) nonsense`;
+    return Response.json(
+      {
+        status: 422,
+        title: "Config does not load",
+        detail: msg,
+        code: "config",
+        errors: [{ loc: [], msg, line: null }],
+      },
+      { status: 422 },
+    );
+  }
+  texts[layer] = text;
+  if (layer === "project") projectExists = true;
+  file.etag = `${file.etag}+`;
+  return Response.json({ layer, path: PATHS[layer], exists: true, text, etag: file.etag });
+}
+
+async function checkLayer(request: Request) {
+  const { text } = (await request.clone().json()) as { text: string };
+  const line = text.split("\n").findIndex((l) => l.endsWith("= "));
+  return Response.json(
+    line < 0
+      ? { ok: true, errors: [], warnings: [] }
+      : {
+          ok: false,
+          errors: [{ loc: [], msg: "Invalid value (column 9)", line: line + 1 }],
+          warnings: [],
+        },
+  );
+}
+
 async function patchLayer(layer: "user" | "project", request: Request) {
   const file = layers[layer];
   if (request.headers.get("If-Match")?.replaceAll('"', "") !== file.etag) {
@@ -138,6 +186,9 @@ beforeEach(() => {
       etag: "p1",
     },
   };
+  texts = { user: "", project: "[credits]\nmeta = 150\n" };
+  projectExists = true;
+  saves = [];
   FakeEventSource.all = [];
   vi.stubGlobal("EventSource", FakeEventSource);
   vi.stubGlobal("fetch", fetch);
@@ -173,21 +224,27 @@ beforeEach(() => {
         layers: (["user", "project"] as const).map((layer) => ({
           layer,
           path: PATHS[layer],
-          exists: true,
-          etag: layers[layer].etag,
+          exists: layer === "user" || projectExists,
+          etag: layer === "user" || projectExists ? layers[layer].etag : null,
         })),
         error: null,
       });
+    if (url.pathname === "/api/config/merged")
+      return Response.json({ text: "meta = 150.0  # this project\n" });
+    if (/^\/api\/config\/(user|project)\/check$/.test(url.pathname)) return checkLayer(request);
     const layer = /^\/api\/config\/(user|project)$/.exec(url.pathname)?.[1] as
       "user" | "project" | undefined;
-    if (layer && request.method === "GET")
+    if (layer && request.method === "GET") {
+      const exists = layer === "user" || projectExists;
       return Response.json({
         layer,
         path: PATHS[layer],
-        exists: true,
-        text: "",
-        etag: layers[layer].etag,
+        exists,
+        text: exists ? texts[layer] : "# AIMS settings\n",
+        etag: exists ? layers[layer].etag : null,
       });
+    }
+    if (layer && request.method === "PUT") return putLayer(layer, request);
     if (layer && request.method === "PATCH") return patchLayer(layer, request);
     if (url.pathname === "/api/tokens" && request.method === "GET") {
       if (role !== "operator") return problem(403, "operators only");
@@ -208,6 +265,13 @@ beforeEach(() => {
   });
 });
 
+beforeAll(() => {
+  // the DOM here lays nothing out; CodeMirror measures text ranges
+  const rect = { x: 0, y: 0, top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 };
+  Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
+  Range.prototype.getBoundingClientRect = () => ({ ...rect, toJSON: () => rect }) as DOMRect;
+});
+
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
@@ -224,10 +288,9 @@ function renderAt(path: string) {
   return router;
 }
 
-test("settings open on the model profiles and a check follows its run", async () => {
-  const router = renderAt("/settings");
+test("a check of a model profile follows its run", async () => {
+  renderAt("/settings/models");
   const table = await screen.findByRole("table");
-  expect(router.state.location.pathname).toBe("/settings/models");
   const spark = within(table).getByText("spark").closest("tr") as HTMLElement;
   expect(within(spark).getByText("agent")).toBeTruthy();
   expect(within(spark).getByText("set on local")).toBeTruthy();
@@ -487,4 +550,85 @@ test("viewers read the texts without a layer or edits", async () => {
   expect(screen.queryByRole("button", { name: /^Edit / })).toBeNull();
   expect(screen.queryByRole("group", { name: "Layer" })).toBeNull();
   expect(calls("GET", "/api/config")).toEqual([]);
+});
+
+async function configEditor(name: string): Promise<EditorView> {
+  const view = EditorView.findFromDOM(await screen.findByLabelText(name));
+  if (!view) throw new Error("no editor");
+  return view;
+}
+
+function retype(view: EditorView, from: string, to: string) {
+  const at = view.state.doc.toString().indexOf(from);
+  act(() => view.dispatch({ changes: { from: at, to: at + from.length, insert: to } }));
+}
+
+test("settings open on the project's config, checked by line as you type", async () => {
+  const router = renderAt("/settings");
+  const view = await configEditor("Contents of aims.toml");
+  expect(router.state.location.pathname).toBe("/settings/config");
+  expect(screen.getByText("Saves to")).toBeTruthy();
+  expect(view.state.doc.toString()).toBe(texts.project);
+  retype(view, "150", "");
+  const found = await screen.findByText("Invalid value (column 9)", {}, { timeout: 3000 });
+  expect(found.closest("button")?.textContent).toBe("line 2: Invalid value (column 9)");
+  expect(screen.getByText("1 error")).toBeTruthy();
+  retype(view, "= \n", "= 151\n");
+  await waitFor(() => expect(screen.queryByText("1 error")).toBeNull(), { timeout: 3000 });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await screen.findByText("Saved");
+  expect(saves).toEqual([
+    { layer: "project", text: "[credits]\nmeta = 151\n", ifMatch: '"p1"', ifNoneMatch: null },
+  ]);
+  expect(texts.project).toBe("[credits]\nmeta = 151\n");
+});
+
+test("a save that does not load says why, and a changed file offers both ways", async () => {
+  renderAt("/settings/config");
+  const view = await configEditor("Contents of aims.toml");
+  retype(view, "[credits]", "[nonsense]");
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  expect(await screen.findByText("Not saved: it does not load.")).toBeTruthy();
+  expect(screen.getByText("/work/aims.toml: unknown table(s) nonsense")).toBeTruthy();
+  expect(texts.project).toBe("[credits]\nmeta = 150\n");
+
+  retype(view, "[nonsense]", "[credits]\nfireworks = 5");
+  layers.project.etag = "p9";
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("changed on disk");
+  fireEvent.click(screen.getByRole("button", { name: "Keep mine, overwrite" }));
+  await screen.findByText("Saved");
+  expect(saves.at(-1)?.ifMatch).toBe('"p9"');
+  expect(texts.project).toBe("[credits]\nfireworks = 5\nmeta = 150\n");
+});
+
+test("without a project file, saving This project creates one", async () => {
+  projectExists = false;
+  renderAt("/settings/config");
+  await configEditor("Contents of config.toml");
+  expect(screen.getByText("Saves to")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "This project" }));
+  await configEditor("Contents of aims.toml");
+  expect(screen.getByText("Saving creates")).toBeTruthy();
+  expect(screen.getByText("not created yet")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Create" }));
+  await screen.findByText("Created");
+  expect(saves).toEqual([
+    { layer: "project", text: "# AIMS settings\n", ifMatch: null, ifNoneMatch: "*" },
+  ]);
+});
+
+test("viewers read the files and the settings in use, without checks", async () => {
+  role = "viewer";
+  renderAt("/settings/config?view=merged");
+  const merged = await configEditor("The settings in use");
+  expect(merged.state.doc.toString()).toBe("meta = 150.0  # this project\n");
+  expect(merged.state.readOnly).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "This project" }));
+  const view = await configEditor("Contents of aims.toml");
+  expect(view.state.readOnly).toBe(true);
+  expect(screen.getByText("read only")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+  await act(() => new Promise((r) => setTimeout(r, 500)));
+  expect(posts()).toHaveLength(0);
 });

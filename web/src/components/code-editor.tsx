@@ -10,8 +10,10 @@ import {
   bracketMatching,
   HighlightStyle,
   indentOnInput,
+  StreamLanguage,
   syntaxHighlighting,
 } from "@codemirror/language";
+import { toml } from "@codemirror/legacy-modes/mode/toml";
 import { type Diagnostic, setDiagnostics } from "@codemirror/lint";
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
 import { Compartment, EditorState, type Extension } from "@codemirror/state";
@@ -28,6 +30,7 @@ import { tags } from "@lezer/highlight";
 import { useEffect, useLayoutEffect, useRef } from "react";
 
 import { reflow } from "@/lib/scenario";
+import { cn } from "@/lib/utils";
 import { hoverAt, keyOptions, placeAt, type Schema, valueOptions } from "@/lib/yaml-schema";
 
 // Problems found in the text, by line (1-based); a line of null marks the whole file.
@@ -147,11 +150,15 @@ function toDiagnostics(state: EditorState, problems: readonly LineProblem[]): Di
     });
 }
 
-// A CodeMirror editor over `text`. YAML files get highlighting and, with `schema`, completion
-// and hover docs. Mod-s calls `onSave`.
+export type Language = "yaml" | "toml" | null;
+
+const tomlLanguage = StreamLanguage.define(toml);
+
+// A CodeMirror editor over `text`, highlighted for `language`. YAML gets completion and hover
+// docs from `schema` when given. Mod-s calls `onSave`.
 export function CodeEditor({
   text,
-  yamlFile,
+  language: lang,
   schema,
   readOnly,
   problems,
@@ -161,12 +168,12 @@ export function CodeEditor({
   goto,
 }: {
   text: string;
-  yamlFile: boolean;
-  schema: Schema | undefined;
+  language: Language;
+  schema?: Schema | undefined;
   readOnly: boolean;
   problems: readonly LineProblem[];
-  onChange: (text: string) => void;
-  onSave: () => void;
+  onChange?: (text: string) => void;
+  onSave?: () => void;
   label: string;
   // a line to show and put the cursor on; a new object each time it is asked
   goto?: { line: number } | null;
@@ -200,7 +207,7 @@ export function CodeEditor({
         {
           key: "Mod-s",
           run: () => {
-            handlers.current.onSave();
+            handlers.current.onSave?.();
             return true;
           },
         },
@@ -211,7 +218,7 @@ export function CodeEditor({
       ]),
       EditorView.contentAttributes.of({ "aria-label": first.current.label }),
       EditorView.updateListener.of((u) => {
-        if (u.docChanged) handlers.current.onChange(u.state.doc.toString());
+        if (u.docChanged) handlers.current.onChange?.(u.state.doc.toString());
       }),
       language.current.of([]),
       editable.current.of([]),
@@ -235,12 +242,12 @@ export function CodeEditor({
   useEffect(() => {
     const v = view.current;
     if (!v) return;
-    const lang: Extension[] = yamlFile ? [yaml()] : [];
-    if (yamlFile && schema) {
-      lang.push(autocompletion({ override: [completions(schema)] }), hover(schema));
+    const found: Extension[] = lang === "yaml" ? [yaml()] : lang === "toml" ? [tomlLanguage] : [];
+    if (lang === "yaml" && schema) {
+      found.push(autocompletion({ override: [completions(schema)] }), hover(schema));
     }
-    v.dispatch({ effects: language.current.reconfigure(lang) });
-  }, [yamlFile, schema]);
+    v.dispatch({ effects: language.current.reconfigure(found) });
+  }, [lang, schema]);
 
   useEffect(() => {
     view.current?.dispatch({
@@ -266,4 +273,40 @@ export function CodeEditor({
   }, [goto]);
 
   return <div ref={host} className="h-full min-h-0 overflow-hidden" />;
+}
+
+// The problems in a text, those with a line as buttons that move the editor there.
+export function Problems({
+  problems,
+  onGoto,
+}: {
+  problems: readonly LineProblem[];
+  onGoto: (line: number) => void;
+}) {
+  if (problems.length === 0) return null;
+  return (
+    <ul aria-label="Problems" className="flex flex-col gap-0.5">
+      {problems.map((p) => (
+        <li key={`${p.severity}:${p.line}:${p.msg}`} className="flex gap-2">
+          <span
+            className={cn("w-16 shrink-0", p.severity === "warning" && "text-muted-foreground")}
+          >
+            {p.severity}
+          </span>
+          {p.line !== null ? (
+            <button
+              type="button"
+              className="text-left hover:underline"
+              onClick={() => onGoto(p.line ?? 1)}
+            >
+              <span className="text-muted-foreground">line {p.line}: </span>
+              {p.msg}
+            </button>
+          ) : (
+            <span className="min-w-0 break-words">{p.msg}</span>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
 }

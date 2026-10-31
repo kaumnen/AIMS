@@ -15,14 +15,13 @@ import {
 } from "@/api/scenario-files";
 import type { ScenarioDetail } from "@/api/scenarios";
 import { isProblem } from "@/api/session";
+import { CodeEditor, type LineProblem, Problems } from "@/components/code-editor";
 import { problemText } from "@/components/form";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { fileTree, type TreeNode } from "@/lib/scenario";
 import { useDebounced } from "@/lib/use-debounced";
 import { cn } from "@/lib/utils";
-
-import { CodeEditor, type LineProblem } from "./editor";
 
 const CHECK_MS = 400;
 const lineOf = (p: { line?: number | null }) => p.line ?? null;
@@ -101,6 +100,7 @@ export default function FilesTab({
   const edit = (t: string) => {
     if (draft === null) setFrom(base?.etag ?? null);
     setDraft(t);
+    setStatus(null);
   };
 
   const save = async (etag: string | null = from ?? base?.etag ?? null) => {
@@ -212,9 +212,12 @@ export default function FilesTab({
           <span className="text-muted-foreground" aria-live="polite">
             {!writable
               ? "read only"
-              : dirty
-                ? "unsaved changes"
-                : (status ?? (base ? `${base.size.toLocaleString("en-US")} bytes` : ""))}
+              : (status ??
+                (dirty
+                  ? "unsaved changes"
+                  : base
+                    ? `${base.size.toLocaleString("en-US")} bytes`
+                    : ""))}
           </span>
           {isScenario && (errors > 0 || warnings > 0) && (
             <span className={cn(errors > 0 && "font-medium")}>
@@ -269,7 +272,7 @@ export default function FilesTab({
             <CodeEditor
               key={file}
               text={text}
-              yamlFile={/\.ya?ml$/.test(file)}
+              language={/\.ya?ml$/.test(file) ? "yaml" : null}
               schema={isScenario ? schema.data : undefined}
               readOnly={!writable}
               problems={isScenario ? problems : []}
@@ -280,34 +283,7 @@ export default function FilesTab({
             />
           )}
         </div>
-        {isScenario && problems.length > 0 && (
-          <ul aria-label="Problems" className="flex flex-col gap-0.5">
-            {problems.map((p) => (
-              <li key={`${p.severity}:${p.line}:${p.msg}`} className="flex gap-2">
-                <span
-                  className={cn(
-                    "w-16 shrink-0",
-                    p.severity === "warning" && "text-muted-foreground",
-                  )}
-                >
-                  {p.severity}
-                </span>
-                {p.line !== null ? (
-                  <button
-                    type="button"
-                    className="text-left hover:underline"
-                    onClick={() => setGoto({ line: p.line ?? 1 })}
-                  >
-                    <span className="text-muted-foreground">line {p.line}: </span>
-                    {p.msg}
-                  </button>
-                ) : (
-                  <span>{p.msg}</span>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
+        {isScenario && <Problems problems={problems} onGoto={(line) => setGoto({ line })} />}
       </section>
     </div>
   );

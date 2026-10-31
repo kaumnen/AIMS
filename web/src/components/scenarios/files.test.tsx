@@ -41,6 +41,9 @@ beforeEach(() => {
       const body = await request.text();
       const ifMatch = request.headers.get("If-Match");
       puts.push({ body, ifMatch });
+      if (putStatus === 500) {
+        return Response.json({ status: 500, title: "Error", detail: "disk full" }, { status: 500 });
+      }
       if (putStatus === 412 || ifMatch !== onDisk.etag) {
         return Response.json(
           { status: 412, title: "Precondition failed", detail: "the file changed" },
@@ -129,6 +132,17 @@ test("a save names the version it replaces", async () => {
   fireEvent.click(save);
   await screen.findByText("Saved");
   expect(puts).toEqual([{ body: TEXT.replace("demo", "demo2"), ifMatch: '"e1"' }]);
+});
+
+test("a save that fails says so over the unsaved changes", async () => {
+  renderTab();
+  const view = await editor();
+  type(view, "demo", "mine");
+  putStatus = 500;
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  expect(await screen.findByText("Not saved: disk full")).toBeTruthy();
+  type(view, "mine", "mine2");
+  expect(await screen.findByText("unsaved changes")).toBeTruthy();
 });
 
 test("a file changed on disk is not overwritten unless you say so", async () => {
