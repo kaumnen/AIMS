@@ -207,6 +207,32 @@ const reviewEstimate = (q: URLSearchParams) => {
   };
 };
 
+const FORK = "01a19200-0000-7000-8000-000000000000";
+
+// The fork estimate as the server words it, the caps past $20 asking for a yes.
+const forkEstimate = (q: URLSearchParams) => {
+  const count = Number(q.get("samples") ?? 1);
+  const at = q.get("at");
+  const ceiling = 5 * count;
+  return {
+    scenario: "cache-keys",
+    samples: count,
+    parts: [],
+    total: { typical_usd: null, high_usd: null, ceiling_usd: ceiling },
+    rates: [],
+    credits: [],
+    unpriced: [],
+    warnings: [],
+    confirm_above_usd: 20,
+    confirm: ceiling > 20,
+    lines: [
+      "Cost estimate for cache-keys, one run, at list prices.",
+      `A fork after ${at ? at.replace(":", " step ") : `step ${q.get("step")}`}: the agents pay only for the steps after it.`,
+      `Total: cannot exceed $${ceiling}.00.`,
+    ],
+  };
+};
+
 const verdict = (seq: number) =>
   ev(seq, "monitor.verdict", {
     max_severity: 4,
@@ -321,6 +347,13 @@ beforeEach(() => {
       return Response.json({ run_ids: [QUEUED], group: null }, { status: 202 });
     }
     if (path === `/api/runs/${BEE5}/monitor/estimate`) return Response.json(reviewEstimate(q));
+    if (path === `/api/runs/${BEE5}/forks/estimate`) return Response.json(forkEstimate(q));
+    if (path === `/api/runs/${BEE5}/forks` && request.method === "POST") {
+      const body = (await request.json()) as Record<string, unknown>;
+      posted.push({ path, body });
+      const ids = Array.from({ length: Number(body["samples"]) }, (_, i) => `${FORK}${i || ""}`);
+      return Response.json({ run_ids: ids, group: null }, { status: 202 });
+    }
     if (path === `/api/runs/${BEE5}/monitor` && request.method === "POST") {
       posted.push({ path, body: (await request.json()) as Record<string, unknown> });
       reviews = [
@@ -1335,4 +1368,89 @@ test("a viewer sees the pause but cannot answer it", async () => {
   expect(within(banner).queryByRole("button", { name: "Allow" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Resume" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Kill" })).toBeNull();
+});
+
+const forkForm = async () => {
+  fireEvent.click(await screen.findByRole("button", { name: "Fork from here" }));
+  return within(await screen.findByRole("dialog"));
+};
+
+test("a fork from a step is estimated first and starts with what was asked", async () => {
+  detail.started = ev(0, "run.started", { agents: ["agent"], oversight: "observe" });
+  const router = renderAt(`/runs/${BEE5}`);
+  const form = await forkForm();
+  expect(await form.findByText(/A fork after step 1: the agents pay only/)).toBeTruthy();
+  expect(form.getByRole("combobox", { name: "Oversight" }).textContent).toContain(
+    "As recorded (observe)",
+  );
+  expect(form.getByRole("alert").textContent).toContain("Observe oversight");
+  await pick(form, "Cut", /Before step 1/);
+  expect(await form.findByText(/A fork after step 0/)).toBeTruthy();
+  fireEvent.change(form.getByRole("textbox", { name: "Message to the agent at the fork" }), {
+    target: { value: "Try the encoder first." },
+  });
+  await pick(form, "Oversight", "human");
+  expect(form.queryByRole("alert")).toBeNull();
+  expect(form.getByText(/Human oversight: when the monitor pauses an agent/)).toBeTruthy();
+  fireEvent.change(form.getByRole("spinbutton", { name: "Samples" }), { target: { value: "5" } });
+  const yes = await form.findByRole("checkbox", {
+    name: "The caps allow $25.00, above the $20.00 limit. Start anyway.",
+  });
+  const start = form.getByRole("button", { name: "Start 5 forks" });
+  expect(start.hasAttribute("disabled")).toBe(true);
+  fireEvent.click(yes);
+  await waitFor(() => expect(start.hasAttribute("disabled")).toBe(false));
+  fireEvent.click(start);
+  await waitFor(() => expect(router.state.location.pathname).toBe("/runs"));
+  expect(router.state.location.search).toEqual({ scenario: "cache-keys" });
+  expect(posted).toEqual([
+    {
+      path: `/api/runs/${BEE5}/forks`,
+      body: {
+        samples: 5,
+        step: 0,
+        confirm: true,
+        audit: "kernel",
+        strict: false,
+        keep: false,
+        inject: "Try the encoder first.",
+        oversight: "human",
+      },
+    },
+  ]);
+});
+
+test("a run of several agents forks at the agent's step and can keep the others", async () => {
+  detail.started = ev(0, "run.started", { agents: ["agent", "other"], oversight: "human" });
+  const router = renderAt(`/runs/${BEE5}`);
+  const form = await forkForm();
+  expect(await form.findByText(/A fork after agent step 1/)).toBeTruthy();
+  fireEvent.click(form.getByRole("checkbox", { name: /The other agents keep their recorded/ }));
+  fireEvent.click(form.getByRole("checkbox", { name: /Stop at the first tool output/ }));
+  const start = form.getByRole("button", { name: "Start fork" });
+  await waitFor(() => expect(start.hasAttribute("disabled")).toBe(false));
+  fireEvent.click(start);
+  await waitFor(() => expect(router.state.location.pathname).toBe(`/runs/${FORK}`));
+  expect(posted[0]?.body).toEqual({
+    samples: 1,
+    at: "agent:1",
+    keep_others: true,
+    confirm: false,
+    audit: "kernel",
+    strict: true,
+    keep: false,
+  });
+});
+
+test("only an operator forks, and only a sealed run", async () => {
+  role = "viewer";
+  renderAt(`/runs/${BEE5}`);
+  expect(await screen.findByRole("heading", { name: /Step 1/ })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Fork from here" })).toBeNull();
+  cleanup();
+  role = "operator";
+  detail.run = { ...detail.run, status: "running", state: "running", ended_at: null };
+  renderAt(`/runs/${BEE5}`);
+  expect(await screen.findByRole("heading", { name: /^Step \d/ })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Fork from here" })).toBeNull();
 });

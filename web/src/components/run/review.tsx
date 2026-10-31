@@ -40,8 +40,8 @@ const modes: { value: ReviewMode; label: string }[] = [
   { value: "judge_only", label: "Judge only" },
 ];
 
-// A sealed scenario run, which the monitor can watch again.
-export function reviewable(run: RunSummary): boolean {
+// A sealed scenario run, which the monitor can watch again and a fork can replay.
+export function sealedScenario(run: RunSummary): boolean {
   return run.kind === "scenario" && run.started_at !== null && run.status !== "running";
 }
 
@@ -54,7 +54,7 @@ export function NewReview({
 }) {
   const operator = useOperator();
   const [open, setOpen] = useState(false);
-  if (!operator || !reviewable(run)) return null;
+  if (!operator || !sealedScenario(run)) return null;
   const done = (id?: string) => {
     setOpen(false);
     if (id) onStarted(id);

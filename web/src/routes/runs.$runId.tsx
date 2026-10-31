@@ -16,6 +16,7 @@ import {
 } from "@/api/run";
 import { isProblem } from "@/api/session";
 import type { InFlight } from "@/api/tail";
+import { ForkHere } from "@/components/run/fork";
 import { RunHeader } from "@/components/run/header";
 import { HoldBanner } from "@/components/run/hold";
 import { InFlightStep, useRunTail } from "@/components/run/live-tail";
@@ -524,6 +525,7 @@ function Steps({
               last={at === steps.length - 1 && !more}
               multi={multi}
               focus={focus}
+              actions={<ForkHere detail={detail} step={current} />}
             >
               {drafting.map((w) => (
                 <InFlightStep key={w.draft.call} draft={w.draft} n={w.n} />

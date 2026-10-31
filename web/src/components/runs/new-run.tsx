@@ -1,8 +1,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { TriangleAlert } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import { type Oversight, oversights } from "@/api/fork";
 import {
   checkModels,
   modelsQuery,
@@ -17,6 +17,7 @@ import { isProblem, whoami } from "@/api/session";
 import { DEFAULT, Field, Pick, problemText } from "@/components/form";
 import { up, useRunners } from "@/components/health";
 import { useLive } from "@/components/live";
+import { OversightNote } from "@/components/oversight-note";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -59,6 +60,7 @@ function NewRunForm({ onDone }: { onDone: () => void }) {
   const [variant, setVariant] = useState(DEFAULT);
   const [profile, setProfile] = useState(DEFAULT);
   const [monitor, setMonitor] = useState(DEFAULT);
+  const [oversight, setOversight] = useState(DEFAULT);
   const [samples, setSamples] = useState(1);
   const [parallel, setParallel] = useState<number | null>(null);
   const [runner, setRunner] = useState(DEFAULT);
@@ -94,7 +96,10 @@ function NewRunForm({ onDone }: { onDone: () => void }) {
   }
 
   const effective = monitor || estimate.data?.parts[0]?.monitor_preset || undefined;
-  const note = oversightNote(scenario.oversight, effective ?? undefined);
+  const note = oversightNote(
+    (oversight || scenario.oversight) as Oversight | null,
+    effective ?? undefined,
+  );
   const why = estimate.data ? confirmWhy(estimate.data) : null;
   const needsYes = why !== null && !confirm;
 
@@ -117,6 +122,7 @@ function NewRunForm({ onDone }: { onDone: () => void }) {
         ...(variant ? { variant } : {}),
         ...(profile ? { profile } : {}),
         ...(monitor ? { monitor: monitor as Preset } : {}),
+        ...(oversight ? { oversight: oversight as Oversight } : {}),
         ...(runner ? { runner } : {}),
         ...(parallel && samples > 1 ? { parallel } : {}),
       });
@@ -159,20 +165,7 @@ function NewRunForm({ onDone }: { onDone: () => void }) {
               ` · ${scenario.variants.length} ${scenario.variants.length === 1 ? "variant" : "variants"}`}
           </span>
         </Field>
-        {note && (
-          <p
-            role={note.loud ? "alert" : undefined}
-            className={cn(
-              "flex items-start gap-2 sm:col-span-2",
-              note.loud
-                ? "border-foreground rounded-sm border px-2 py-1.5 font-medium"
-                : "text-muted-foreground",
-            )}
-          >
-            {note.loud && <TriangleAlert aria-hidden className="mt-0.5 size-4 shrink-0" />}
-            {note.text}
-          </p>
-        )}
+        {note && <OversightNote note={note} className="sm:col-span-2" />}
         {scenario.variants.length > 0 && (
           <Field label="Variant">
             <Pick
@@ -201,6 +194,22 @@ function NewRunForm({ onDone }: { onDone: () => void }) {
               ...presets.map((p) => ({ value: p, label: p })),
             ]}
             onChange={setMonitor}
+          />
+        </Field>
+        <Field label="Oversight">
+          <Pick
+            label="Oversight"
+            value={oversight}
+            items={[
+              {
+                value: DEFAULT,
+                label: scenario.oversight
+                  ? `From the scenario (${scenario.oversight})`
+                  : "From the scenario",
+              },
+              ...oversights.map((o) => ({ value: o, label: o })),
+            ]}
+            onChange={setOversight}
           />
         </Field>
         <Field label="Runner">

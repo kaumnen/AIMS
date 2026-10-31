@@ -90,6 +90,7 @@ export function Transcript({
   last,
   multi,
   focus = NO_FOCUS,
+  actions,
   children,
 }: {
   runId: string;
@@ -98,6 +99,8 @@ export function Transcript({
   last: boolean;
   multi: boolean;
   focus?: Focus;
+  // what an operator can do from this step, at the end of its heading
+  actions?: ReactNode;
   // what follows the step, such as the agent's next step while it is written
   children?: ReactNode;
 }) {
@@ -154,13 +157,16 @@ export function Transcript({
 
   return (
     <article ref={article} className="flex max-w-4xl flex-col gap-4 pb-8">
-      <h2 className="flex flex-wrap items-baseline gap-x-3 text-base font-medium">
-        Step {step.n}
-        {multi && step.agent_id && <span className="text-muted-foreground">{step.agent_id}</span>}
-        <span className="text-muted-foreground text-sm font-normal tabular-nums">
-          {facts.join(" · ")}
-        </span>
-      </h2>
+      <div className="flex items-baseline gap-3">
+        <h2 className="flex flex-wrap items-baseline gap-x-3 text-base font-medium">
+          Step {step.n}
+          {multi && step.agent_id && <span className="text-muted-foreground">{step.agent_id}</span>}
+          <span className="text-muted-foreground text-sm font-normal tabular-nums">
+            {facts.join(" · ")}
+          </span>
+        </h2>
+        {actions}
+      </div>
       {inputs.map((e) => (
         <Section
           key={e.seq}

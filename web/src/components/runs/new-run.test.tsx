@@ -206,6 +206,19 @@ test("the form shows the scenario, its oversight, profile checks and the estimat
   expect(form.getByText("No connected runner has OTHER_KEY.")).toBeTruthy();
 });
 
+test("an oversight over the scenario's changes the warning and goes with the run", async () => {
+  renderAt("/runs");
+  const form = await openForm();
+  expect(form.getByRole("combobox", { name: "Oversight" }).textContent).toContain(
+    "From the scenario (human)",
+  );
+  await pick(form, "Oversight", "autonomous");
+  expect(form.getByRole("alert").textContent).toContain("Autonomous oversight");
+  fireEvent.click(form.getByRole("button", { name: "Start run" }));
+  await waitFor(() => expect(posted).toHaveLength(1));
+  expect(posted[0]).toMatchObject({ oversight: "autonomous" });
+});
+
 test("a model check runs on demand and reads the result once it ends", async () => {
   renderAt("/runs");
   const form = await openForm();
