@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 
 import { RunCommands } from "./commands";
 import { agentsOf, RunControls } from "./controls";
+import { useSource } from "./monitor";
 import { SeriesPrevious, SeriesStrip } from "./series";
 
 function Fact({ label, children }: { label: string; children: React.ReactNode }) {
@@ -20,10 +21,39 @@ function Fact({ label, children }: { label: string; children: React.ReactNode })
   );
 }
 
-// What run this is and how it went, at a glance.
-export function RunHeader({ detail }: { detail: RunDetail }) {
+const record = (v: unknown): Record<string, unknown> | undefined =>
+  typeof v === "object" && v !== null && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : undefined;
+
+// Where a fork cut its origin, as its start recorded it: after a step of each agent, or after
+// an event of the origin for a run of several agents.
+export function forkOf(detail: RunDetail): { origin: string; seq?: number; text: string } | null {
+  const fork = record(record(detail.started?.data["config"])?.["fork"]);
+  const origin = fork?.["origin"];
+  if (!fork || typeof origin !== "string") return null;
+  const cut = fork["cut"];
+  if (typeof cut !== "number") return { origin, text: `after step ${String(fork["step"])}` };
+  const agent = fork["agent"];
+  const n = typeof agent === "string" ? record(fork["steps"])?.[agent] : undefined;
+  const at = typeof n === "number" ? `, at step ${n} of ${String(agent)}` : "";
+  return { origin, seq: cut, text: `after event ${cut}${at}` };
+}
+
+// What run this is and how it went, at a glance. A scenario run's flags and verdict are those
+// of the monitor the panel shows, its own or a review.
+export function RunHeader({
+  detail,
+  source: asked,
+}: {
+  detail: RunDetail;
+  source?: string | undefined;
+}) {
   const run = detail.run;
   const now = useNow(run.status === "running");
+  const { source } = useSource(run.run_id, detail, asked);
+  const watch = run.kind === "scenario" ? source : { run, review: false };
+  const fork = forkOf(detail);
   const titles: Partial<Record<string, string>> = {
     monitor: "Review",
     score: "Score",
@@ -64,6 +94,20 @@ export function RunHeader({ detail }: { detail: RunDetail }) {
               run {shortId(run.origin)}
             </Link>
           )}
+          {fork && (
+            <span>
+              fork of{" "}
+              <Link
+                to="/runs/$runId"
+                params={{ runId: fork.origin }}
+                search={fork.seq === undefined ? {} : { seq: fork.seq }}
+                className="hover:text-foreground underline underline-offset-2"
+              >
+                run {shortId(fork.origin)}
+              </Link>{" "}
+              {fork.text}
+            </span>
+          )}
           {run.series !== null && detail.series_previous && (
             <SeriesPrevious name={run.series} previous={detail.series_previous} />
           )}
@@ -88,14 +132,14 @@ export function RunHeader({ detail }: { detail: RunDetail }) {
         {run.kind === "scenario" && <Fact label="Steps">{run.steps}</Fact>}
         {run.cost_usd !== null && <Fact label="Cost">{usd(run.cost_usd)}</Fact>}
         {run.reward !== null && <Fact label="Reward">{run.reward.toFixed(2)}</Fact>}
-        {run.flags > 0 && (
-          <Fact label="Flags">
-            <Flags run={run} />
+        {watch && watch.run.flags > 0 && (
+          <Fact label={watch.review ? "Review flags" : "Flags"}>
+            <Flags run={watch.run} />
           </Fact>
         )}
-        {run.verdict_severity !== null && (
-          <Fact label="Verdict">
-            <Verdict run={run} />
+        {watch && watch.run.verdict_severity !== null && (
+          <Fact label={watch.review ? "Review verdict" : "Verdict"}>
+            <Verdict run={watch.run} />
           </Fact>
         )}
         {budget && <Fact label="Budget">{budget}</Fact>}

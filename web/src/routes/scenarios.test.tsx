@@ -139,8 +139,19 @@ test("the overview shows what the scenario sets up and its cost", async () => {
   renderAt("/scenarios/project/cache-keys");
   expect(await screen.findByText("Fix the cache keys.")).toBeTruthy();
   const agents = screen.getByRole("region", { name: "Agents" });
-  expect(within(agents).getByText("80 steps, $4, wall 30m, warns at 80%")).toBeTruthy();
-  expect(within(agents).getByText("nudge")).toBeTruthy();
+  const budget = within(agents).getByRole("columnheader", { name: "Budget" });
+  const cells = within(agents).getAllByRole("cell");
+  expect(cells[4]?.textContent).toBe("80 steps, $4, wall 30m, warns at 80%");
+  expect(cells[5]?.textContent).toBe("nudge");
+  // a narrow screen drops tools, budget and prompts and shows them under the agent
+  expect(budget.className).toContain("max-sm:hidden");
+  expect(cells[4]?.className).toContain("max-sm:hidden");
+  expect(cells[0]?.textContent).toBe(
+    "agentTools bash submitBudget 80 steps, $4, wall 30m, warns at 80%Prompts nudge",
+  );
+  expect(within(agents).getByRole("columnheader", { name: "Profile" }).className).not.toContain(
+    "hidden",
+  );
   const plants = screen.getByRole("region", { name: "Plants" });
   expect(within(plants).getByText("scorer_tampering")).toBeTruthy();
   expect(screen.getByText("reference; exploit taking golden-keys")).toBeTruthy();

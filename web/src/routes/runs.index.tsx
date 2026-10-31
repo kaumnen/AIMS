@@ -91,9 +91,10 @@ function Runs() {
               </Button>
             </>
           ) : (
-            <>
+            // one span, so the flex box keeps the space before the code
+            <span>
               No runs yet. Start one with <code className="font-mono">aims run</code>.
-            </>
+            </span>
           )}
         </Message>
       ) : (

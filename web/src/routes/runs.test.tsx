@@ -110,6 +110,15 @@ test("agent runs list with their numbers", async () => {
   expect(runQueries()).toEqual(["kind=scenario&limit=100"]);
 });
 
+test("an empty list says how to start a run, its words and command in one line box", async () => {
+  lists = {};
+  renderAt("/runs");
+  // a flex box would make the text its own item and drop the space before the code
+  const hint = await screen.findByText(/No runs yet/);
+  expect(hint.tagName).toBe("SPAN");
+  expect(hint.textContent).toBe("No runs yet. Start one with aims run.");
+});
+
 test("filters live in the URL and reach the server", async () => {
   const router = renderAt("/runs");
   await screen.findAllByRole("link", { name: "cache-keys" });

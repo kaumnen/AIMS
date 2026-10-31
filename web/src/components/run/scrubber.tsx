@@ -38,6 +38,14 @@ const FILLS = ["fill-pen-1/20", "fill-pen-2/20", "fill-pen-3/20"];
 const STROKES = ["stroke-pen-1", "stroke-pen-2", "stroke-pen-3"];
 const TEXTS = ["fill-pen-1", "fill-pen-2", "fill-pen-3"];
 
+// Where the score found an agent's harm: the event and the agent that did it.
+export interface Harm {
+  seq: number;
+  agent: string;
+}
+
+const NO_HARMS: readonly Harm[] = [];
+
 // A review range a monitor covered, in one agent's step numbers.
 export interface Band {
   agent: string;
@@ -99,7 +107,7 @@ export function Scrubber({
   sweeps,
   flag,
   onFlag,
-  harm,
+  harms,
 }: {
   runId: string;
   detail: RunDetail;
@@ -110,7 +118,7 @@ export function Scrubber({
   sweeps: readonly Event[];
   flag: number | undefined;
   onFlag: (f: FlagInfo) => void;
-  harm?: number;
+  harms: readonly Harm[];
 }) {
   const live = detail.run.status === "running";
   const every = live ? LIVE_MS : false;
@@ -151,7 +159,7 @@ export function Scrubber({
       bands={bandsOf(sweeps)}
       flag={flag}
       onFlag={onFlag}
-      {...(harm === undefined ? {} : { harm })}
+      harms={harms}
     />
   );
 }
@@ -218,7 +226,7 @@ export function Strip({
   bands,
   flag,
   onFlag,
-  harm,
+  harms = NO_HARMS,
 }: {
   span: Span;
   lanes: readonly LaneInput[];
@@ -229,7 +237,7 @@ export function Strip({
   bands: readonly Band[];
   flag?: number | undefined;
   onFlag?: (f: FlagInfo) => void;
-  harm?: number;
+  harms?: readonly Harm[];
 }) {
   const box = useRef<HTMLDivElement>(null);
   const width = useWidth(box);
@@ -273,7 +281,6 @@ export function Strip({
   const sx1 = Math.max(sx0 + 2, x(ms(selected.ts_to)));
   const hoverStep = hover === null ? undefined : stepAt(steps, tAt(hover));
   const hoverCol = hover === null ? -1 : Math.min(width - 1, Math.floor(hover));
-  const harmStep = harm === undefined ? undefined : stepOf(steps, harm);
 
   return (
     <div
@@ -439,30 +446,38 @@ export function Strip({
             </g>
           );
         })}
-        {harmStep && (
-          <g data-harm={harm} className="text-flag">
-            <line
-              x1={x(ms(harmStep.ts_to))}
-              x2={x(ms(harmStep.ts_to))}
-              y1={0}
-              y2={height}
-              stroke="currentColor"
-              strokeWidth={2}
-            />
-            <text
-              x={x(ms(harmStep.ts_to)) - 4}
-              y={AXIS - 5}
-              textAnchor="end"
-              fill="currentColor"
-              stroke="var(--background)"
-              strokeWidth={3}
-              paintOrder="stroke"
-              className="text-[10px] font-medium"
-            >
-              harm
-            </text>
-          </g>
-        )}
+        {harms.map((h) => {
+          // in its agent's lane, at the end of that agent's step holding it
+          const own = stepsOf(h.agent);
+          const step = stepOf(own.length > 0 ? own : steps, h.seq);
+          if (!step) return null;
+          const hx = x(ms(step.ts_to));
+          const y = multi ? top(laneOf(h.agent)) : 0;
+          return (
+            <g key={`${h.agent}-${h.seq}`} data-harm={h.seq} className="text-flag">
+              <line
+                x1={hx}
+                x2={hx}
+                y1={y}
+                y2={multi ? y + laneH : height}
+                stroke="currentColor"
+                strokeWidth={2}
+              />
+              <text
+                x={hx - 4}
+                y={multi ? y + 11 : AXIS - 5}
+                textAnchor="end"
+                fill="currentColor"
+                stroke="var(--background)"
+                strokeWidth={3}
+                paintOrder="stroke"
+                className="text-[10px] font-medium"
+              >
+                harm
+              </text>
+            </g>
+          );
+        })}
         {hover !== null && (
           <line
             x1={hover}

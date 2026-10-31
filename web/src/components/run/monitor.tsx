@@ -60,6 +60,15 @@ export function defaultSource(sources: readonly Source[]): string {
   return sources.find((s) => s.review && s.run.status === "completed")?.id ?? LIVE;
 }
 
+// The monitor the panel shows: the one asked for, else the default once the reviews are known.
+export function useSource(runId: string, detail: RunDetail, asked: string | undefined) {
+  const { sources, ready } = useSources(runId, detail);
+  const id = asked ?? (ready ? defaultSource(sources) : undefined);
+  const source =
+    sources.find((s) => s.id === id) ?? (ready || id === LIVE ? sources[0] : undefined);
+  return { sources, ready, source };
+}
+
 function sourceLabel(s: Source): string {
   const preset = presetText(s.run);
   if (!s.review) return preset ? `Live monitor, ${preset}` : "Live monitor";

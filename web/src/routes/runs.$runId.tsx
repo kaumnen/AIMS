@@ -14,13 +14,14 @@ import {
   stepTypes,
   sweepsQuery,
 } from "@/api/run";
+import { reviewsQuery } from "@/api/runs";
 import { isProblem } from "@/api/session";
 import type { InFlight } from "@/api/tail";
 import { ForkHere } from "@/components/run/fork";
 import { RunHeader } from "@/components/run/header";
 import { HoldBanner } from "@/components/run/hold";
 import { InFlightStep, useRunTail } from "@/components/run/live-tail";
-import { defaultSource, LIVE, MonitorPanel, useSources } from "@/components/run/monitor";
+import { defaultSource, LIVE, MonitorPanel, useSource, useSources } from "@/components/run/monitor";
 import { RAW_SEARCH_ID, RawEvents, type RawSearch } from "@/components/run/raw";
 import { ScoreTab, type StepsLink, useHarm } from "@/components/run/score";
 import { Scrubber } from "@/components/run/scrubber";
@@ -91,6 +92,7 @@ export const Route = createFileRoute("/runs/$runId")({
   validateSearch: parseSearch,
   loader: ({ context, params }) => {
     void context.queryClient.prefetchQuery(runQuery(params.runId));
+    void context.queryClient.prefetchQuery(reviewsQuery(params.runId));
   },
   component: Run,
 });
@@ -115,6 +117,9 @@ function Run() {
   const change = (update: (prev: RunSearch) => RunSearch) =>
     void navigate({ search: update, replace: true });
   const run = detail.data?.run;
+  // An open run shows its latest step until someone picks one, on every tab of this visit.
+  const [follow, setFollow] = useState<{ runId: string; on: boolean }>();
+  if (run !== undefined && follow?.runId !== runId) setFollow({ runId, on: run.state !== "done" });
   const inflight = useRunTail(
     runId,
     run !== undefined && run.state !== "done",
@@ -172,7 +177,7 @@ function Run() {
     change((prev) => ({ ...without(prev, "tab", "flag", "seq", "step"), ...to }));
   return (
     <div className="flex h-full flex-col">
-      <RunHeader detail={detail.data} />
+      <RunHeader detail={detail.data} source={search.source} />
       <HoldBanner
         detail={detail.data}
         onFlag={(seq) =>
@@ -206,6 +211,7 @@ function Run() {
               search={search}
               onChange={change}
               inflight={inflight}
+              follow={follow?.on ?? false}
             />
           )}
         </TabsContent>
@@ -267,25 +273,22 @@ function Steps({
   search,
   onChange,
   inflight,
+  follow,
 }: {
   runId: string;
   detail: RunDetail;
   search: RunSearch;
   onChange: (update: (prev: RunSearch) => RunSearch) => void;
   inflight: readonly InFlight[];
+  follow: boolean;
 }) {
   const q = useInfiniteQuery(stepsQuery(runId));
   const steps = q.data?.pages.flatMap((p) => p.items) ?? [];
   const more = q.hasNextPage;
   const harms = useHarm(runId);
-  // An open run shows its latest step until someone picks one.
-  const [follow] = useState(() => detail.run.state !== "done");
 
   // The monitor whose flags and sweeps the panel, the timeline and the list show.
-  const { sources, ready } = useSources(runId, detail);
-  const sourceId = search.source ?? (ready ? defaultSource(sources) : undefined);
-  const source =
-    sources.find((s) => s.id === sourceId) ?? (ready || sourceId === LIVE ? sources[0] : undefined);
+  const { sources, source } = useSource(runId, detail, search.source);
   const watcher =
     source === undefined || source.run.started_at === null
       ? undefined
@@ -330,16 +333,18 @@ function Steps({
     tone: flag && flagTone(flag).red ? "red" : "ink",
   };
 
-  // A step, an event or a flag past the loaded pages: page on until it is in.
+  // Every page loads, so the timeline has each step; a step, an event or a flag past the
+  // loaded pages waits until its page is in. A failed page waits for the list's end to retry.
   const target =
     search.step ??
     search.seq ??
     (flag ? cited(flag) : follow ? Number.POSITIVE_INFINITY : undefined);
   const loading = target !== undefined && !reaches(steps, target, more);
   const fetching = q.isFetchingNextPage;
+  const failed = q.isFetchNextPageError;
   useEffect(() => {
-    if (loading && !fetching) void q.fetchNextPage();
-  }, [loading, fetching, q]);
+    if (more && !fetching && !failed) void q.fetchNextPage();
+  }, [more, fetching, failed, q]);
 
   let current: StepInfo | undefined;
   if (search.step !== undefined) current = steps.find((s) => s.seq === search.step);
@@ -483,7 +488,7 @@ function Steps({
           sweeps={sweepsQ.data ?? []}
           flag={search.flag}
           onFlag={pickFlag}
-          {...(harms[0] ? { harm: harms[0].seq } : {})}
+          harms={harms}
         />
       )}
       <div className="flex min-h-0 flex-1 flex-col gap-4 md:grid md:grid-cols-[20rem_minmax(0,1fr)] md:grid-rows-2 xl:grid-cols-[22rem_minmax(0,1fr)_22rem] xl:grid-rows-1">

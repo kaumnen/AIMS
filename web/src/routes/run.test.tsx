@@ -813,6 +813,25 @@ test("a source in the URL wins over the default", async () => {
   expect(flagRequests(REVIEW)).toHaveLength(0);
 });
 
+const fact = (label: string) => screen.queryByText(label, { selector: "dt" });
+
+test("the header's flags and verdict are those of the monitor the panel shows", async () => {
+  withReview();
+  detail.run = { ...detail.run, flags: 3, max_importance: 2 };
+  reviews = reviews.map((r) =>
+    r.run_id === REVIEW ? { ...r, flags: 16, max_importance: 4, verdict_severity: 4 } : r,
+  );
+  const router = renderAt(`/runs/${BEE5}`);
+  await waitFor(() => expect(fact("Review flags")?.nextElementSibling?.textContent).toBe("16"));
+  expect(fact("Review verdict")?.nextElementSibling?.textContent).toBe("4");
+  expect(fact("Flags")).toBeNull();
+
+  await act(() => router.navigate({ to: ".", search: { source: "live" } }));
+  await waitFor(() => expect(fact("Flags")?.nextElementSibling?.textContent).toBe("3"));
+  expect(fact("Review flags")).toBeNull();
+  expect(fact("Verdict")).toBeNull();
+});
+
 test("filters narrow the flags, the timeline marks and the step marks", async () => {
   withReview();
   renderAt(`/runs/${BEE5}?layer=sweep`);
@@ -889,6 +908,19 @@ test("a step past the first page loads the pages before it", async () => {
   const pages = requests("steps");
   expect(pages).toHaveLength(2);
   expect(pages[1]?.get("after")).toBe("2980");
+});
+
+test("the timeline ticks every step, past the pages the list has shown", async () => {
+  steps = Array.from({ length: 401 }, (_, i) =>
+    step({ seq: 10 + i * 10, n: i + 1, seq_from: 8 + i * 10, seq_to: 10 + i * 10 }),
+  );
+  renderAt(`/runs/${BEE5}`);
+  const timeline = await screen.findByRole("slider", { name: "Timeline" });
+  await waitFor(() =>
+    expect(timeline.querySelectorAll('[data-lane="agent"] > line')).toHaveLength(401),
+  );
+  expect(requests("steps").map((q) => q.get("after"))).toEqual([null, "2000", "4000"]);
+  expect(timeline.getAttribute("aria-valuetext")).toMatch(/^Step 1 /);
 });
 
 test("a review opened on its own leads back to the run it reviewed", async () => {
@@ -1295,6 +1327,25 @@ test("an open run follows its latest step and shows the next one as it is writte
   expect(tails).toHaveLength(1);
 });
 
+const chosenStep = () =>
+  within(screen.getByRole("listbox", { name: "Steps" })).getByRole("option", { selected: true })
+    .textContent;
+
+test("an open run that ends stays on its latest step across tabs", async () => {
+  detail = { ...detail, run: run(BEE5, { status: "running", state: "running", events: 15 }) };
+  const router = renderAt(`/runs/${BEE5}`);
+  await screen.findByRole("listbox", { name: "Steps" });
+  await waitFor(() => expect(chosenStep()).toContain("edit"));
+
+  fireEvent.click(screen.getByRole("tab", { name: "Raw events" }));
+  await screen.findByRole("textbox", { name: /Search/ });
+  const done = { ...detail, run: { ...detail.run, status: "completed", state: "done" } } as const;
+  act(() => router.options.context.queryClient.setQueryData(["runs", "detail", BEE5], done));
+  fireEvent.click(screen.getByRole("tab", { name: "Steps" }));
+  await screen.findByRole("listbox", { name: "Steps" });
+  await waitFor(() => expect(chosenStep()).toContain("edit"));
+});
+
 const resumed = (agent: string | null, next: string, text: string | null, reason: string | null) =>
   // oxlint-disable-next-line unicorn/no-thenable
   ({ agent, reason, then: next, text });
@@ -1374,7 +1425,11 @@ test("a pause under human oversight waits for an answer like the terminal's", as
   flags = [flag(20, [3], 4)];
   const router = renderAt(`/runs/${BEE5}`);
   const banner = await screen.findByRole("region", { name: "Monitor pause of agent" });
-  expect(within(banner).getByText(/waits for an answer/)).toBeTruthy();
+  expect(within(banner).getByRole("heading").textContent).toBe(
+    "The monitor paused agent and waits for an answer.",
+  );
+  const ids = within(banner).getAllByText("agent");
+  expect(ids.map((el) => el.className)).toEqual(["font-mono", "font-mono"]);
   expect(within(banner).getByText(/With no answer the run is killed/)).toBeTruthy();
   expect(await within(banner).findByText("bash python -m pytest -q")).toBeTruthy();
   expect(screen.getByText("Held")).toBeTruthy();
@@ -1433,6 +1488,28 @@ const forkForm = async () => {
   fireEvent.click(await screen.findByRole("button", { name: "Fork from here" }));
   return within(await screen.findByRole("dialog"));
 };
+
+const ORIGIN = "01a19000-0000-7000-8000-000000000000";
+
+test("a fork says which run it forked and where", async () => {
+  const fork = { origin: ORIGIN, step: 2, steps: null, cut: null, agent: null };
+  detail.started = ev(0, "run.started", { agents: ["agent"], config: { fork } });
+  renderAt(`/runs/${BEE5}`);
+  const link = await screen.findByRole("link", { name: "run 01a19000-0000" });
+  expect(link.getAttribute("href")).toBe(`/runs/${ORIGIN}`);
+  expect(link.parentElement?.textContent).toBe("fork of run 01a19000-0000 after step 2");
+});
+
+test("a fork of several agents links to the event it cut after", async () => {
+  const fork = { origin: ORIGIN, step: 0, steps: { a: 3, b: 2 }, cut: 37, agent: "a" };
+  detail.started = ev(0, "run.started", { agents: ["a", "b"], config: { fork } });
+  renderAt(`/runs/${BEE5}`);
+  const link = await screen.findByRole("link", { name: "run 01a19000-0000" });
+  expect(link.getAttribute("href")).toBe(`/runs/${ORIGIN}?seq=37`);
+  expect(link.parentElement?.textContent).toBe(
+    "fork of run 01a19000-0000 after event 37, at step 3 of a",
+  );
+});
 
 test("a fork from a step is estimated first and starts with what was asked", async () => {
   detail.started = ev(0, "run.started", { agents: ["agent"], oversight: "observe" });

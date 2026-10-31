@@ -1,5 +1,5 @@
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { Fragment, useState } from "react";
 
 import type { Hold } from "@/api/control";
 import { flagsQuery, type RunDetail, stepsQuery } from "@/api/run";
@@ -103,9 +103,14 @@ function Pause({
     >
       <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-0.5">
         <h2 className="font-medium">
-          {human
-            ? `The monitor paused ${names} and waits for an answer.`
-            : `The monitor paused ${names} and reviews why.`}
+          The monitor paused{" "}
+          {holds.map((h, i) => (
+            <Fragment key={h.agent}>
+              {i > 0 && ", "}
+              <span className="font-mono">{h.agent}</span>
+            </Fragment>
+          ))}{" "}
+          {human ? "and waits for an answer." : "and reviews why."}
         </h2>
         {left !== null && first.until && (
           <p className="text-muted-foreground tabular-nums">
@@ -136,7 +141,7 @@ function Pause({
           const tool = h.call ? tools.get(h.call) : undefined;
           return (
             <li key={h.agent}>
-              {h.agent} {where(h)}
+              <span className="font-mono">{h.agent}</span> {where(h)}
               {tool && <span className="font-mono text-xs"> {toolLine(tool)}</span>}
             </li>
           );

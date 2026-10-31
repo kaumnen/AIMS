@@ -29,24 +29,39 @@ function Section({
   );
 }
 
-function Head({ cells }: { cells: (string | false)[] }) {
+// A narrow screen drops the columns from `keep` on; Folded shows them under the first cell.
+function Head({ cells, keep }: { cells: (string | false)[]; keep: number }) {
+  const shown = cells.filter((c) => c !== false);
   return (
     <thead className="text-muted-foreground text-left">
       <tr className="border-b">
-        {cells.map(
-          (c, i) =>
-            c !== false && (
-              <th key={c} className={cn("py-1 font-normal", i < cells.length - 1 && "pr-4")}>
-                {c}
-              </th>
-            ),
-        )}
+        {shown.map((c, i) => (
+          <th
+            key={c}
+            className={cn("py-1 font-normal", i < shown.length - 1 && "pr-4", i >= keep && wide)}
+          >
+            {c}
+          </th>
+        ))}
       </tr>
     </thead>
   );
 }
 
+function Folded({ facts }: { facts: [string, React.ReactNode][] }) {
+  return (
+    <div className="text-muted-foreground flex flex-wrap gap-x-3 font-sans sm:hidden">
+      {facts.map(([label, value]) => (
+        <span key={label}>
+          {label} <span className="text-foreground">{value}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
 const td = "py-1.5 pr-4 align-top";
+const wide = "max-sm:hidden";
 
 // What the scenario sets up, read from its file. Operators also see what it hides: roles,
 // scripts, prompt overrides, plants and the self-test.
@@ -77,6 +92,7 @@ export function Overview({ detail }: { detail: ScenarioDetail }) {
             <table className="w-full">
               <Head
                 cells={["Agent", truth && "Role", "Profile", "Tools", "Budget", truth && "Prompts"]}
+                keep={truth ? 3 : 2}
               />
               <tbody>
                 {detail.agents.map((a) => (
@@ -90,14 +106,19 @@ export function Overview({ detail }: { detail: ScenarioDetail }) {
           <Section title="Channels">
             <div className="overflow-x-auto">
               <table className="w-full">
-                <Head cells={["Channel", "Kind", "Members", "Read only"]} />
+                <Head cells={["Channel", "Kind", "Members", "Read only"]} keep={3} />
                 <tbody>
                   {detail.channels.map((c) => (
                     <tr key={c.name} className="border-b last:border-0">
-                      <td className={cn(td, "font-mono")}>{c.name}</td>
+                      <td className={cn(td, "font-mono")}>
+                        {c.name}
+                        {c.read_only.length > 0 && (
+                          <Folded facts={[["Read only", c.read_only.join(", ")]]} />
+                        )}
+                      </td>
                       <td className={td}>{c.kind}</td>
                       <td className={td}>{c.members ? c.members.join(", ") : "every agent"}</td>
-                      <td className="py-1.5 align-top">{c.read_only.join(", ")}</td>
+                      <td className={cn("py-1.5 align-top", wide)}>{c.read_only.join(", ")}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -109,22 +130,32 @@ export function Overview({ detail }: { detail: ScenarioDetail }) {
           <Section title="Plants" note="hidden from the agents and the monitor">
             <div className="overflow-x-auto">
               <table className="w-full">
-                <Head cells={["Plant", "Kind", "Category", "Taken at", "Agents"]} />
+                <Head cells={["Plant", "Kind", "Category", "Taken at", "Agents"]} keep={3} />
                 <tbody>
-                  {detail.plants.map((p) => (
-                    <tr key={p.name} className="border-b last:border-0">
-                      <td className={cn(td, "font-mono")}>{p.name}</td>
-                      <td className={td}>
-                        {p.kind}
-                        {p.canary && <span className="text-muted-foreground"> with canary</span>}
-                      </td>
-                      <td className={td}>{p.category ?? "unknown"}</td>
-                      <td className={td}>{p.taken ?? "unknown"}</td>
-                      <td className="py-1.5 align-top">
-                        {p.agents ? p.agents.join(", ") : "every subject"}
-                      </td>
-                    </tr>
-                  ))}
+                  {detail.plants.map((p) => {
+                    const taken = p.taken ?? "unknown";
+                    const agents = p.agents ? p.agents.join(", ") : "every subject";
+                    return (
+                      <tr key={p.name} className="border-b last:border-0">
+                        <td className={cn(td, "font-mono")}>
+                          {p.name}
+                          <Folded
+                            facts={[
+                              ["Taken at", taken],
+                              ["Agents", agents],
+                            ]}
+                          />
+                        </td>
+                        <td className={td}>
+                          {p.kind}
+                          {p.canary && <span className="text-muted-foreground"> with canary</span>}
+                        </td>
+                        <td className={td}>{p.category ?? "unknown"}</td>
+                        <td className={cn(td, wide)}>{taken}</td>
+                        <td className={cn("py-1.5 align-top", wide)}>{agents}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -158,9 +189,25 @@ export function Overview({ detail }: { detail: ScenarioDetail }) {
 
 function AgentRow({ a, truth }: { a: Agent; truth: boolean }) {
   const overrides = overrideKeys(a.prompts as Record<string, unknown> | null);
+  const tools = <span className="font-mono">{a.tools.join(" ")}</span>;
+  const prompts =
+    overrides.length > 0 ? (
+      <span className="font-mono">{overrides.join(" ")}</span>
+    ) : (
+      <span className="text-muted-foreground">defaults</span>
+    );
   return (
     <tr className="border-b last:border-0">
-      <td className={cn(td, "font-mono")}>{a.id}</td>
+      <td className={cn(td, "font-mono")}>
+        {a.id}
+        <Folded
+          facts={[
+            ["Tools", tools],
+            ["Budget", capsText(a.budget)],
+            ...(truth ? [["Prompts", prompts] as [string, React.ReactNode]] : []),
+          ]}
+        />
+      </td>
       {truth && (
         <td className={td}>
           {a.role}
@@ -168,17 +215,9 @@ function AgentRow({ a, truth }: { a: Agent; truth: boolean }) {
         </td>
       )}
       <td className={td}>{a.profile}</td>
-      <td className={cn(td, "font-mono")}>{a.tools.join(" ")}</td>
-      <td className={td}>{capsText(a.budget)}</td>
-      {truth && (
-        <td className="py-1.5 align-top">
-          {overrides.length > 0 ? (
-            <span className="font-mono">{overrides.join(" ")}</span>
-          ) : (
-            <span className="text-muted-foreground">defaults</span>
-          )}
-        </td>
-      )}
+      <td className={cn(td, wide)}>{tools}</td>
+      <td className={cn(td, wide)}>{capsText(a.budget)}</td>
+      {truth && <td className={cn("py-1.5 align-top", wide)}>{prompts}</td>}
     </tr>
   );
 }
