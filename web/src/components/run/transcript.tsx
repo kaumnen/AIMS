@@ -89,6 +89,7 @@ export function Transcript({
   last,
   multi,
   focus = NO_FOCUS,
+  children,
 }: {
   runId: string;
   step: StepInfo;
@@ -96,6 +97,8 @@ export function Transcript({
   last: boolean;
   multi: boolean;
   focus?: Focus;
+  // what follows the step, such as the agent's next step while it is written
+  children?: ReactNode;
 }) {
   const q = useQuery(stepEventsQuery(runId, step, after, last));
   const tools = step.tools ?? [];
@@ -224,6 +227,7 @@ export function Transcript({
         </Section>
       )}
       {scored && <Score event={scored} lit={lit(scored.seq)} />}
+      {children}
     </article>
   );
 }

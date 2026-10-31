@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { failed, toolLine } from "./tool-text";
 
 const ROW = 28;
+const NO_PENDING: readonly { agent: string | null; n: number }[] = [];
 
 function mark(step: StepInfo): string | null {
   const tools = step.tools ?? [];
@@ -36,6 +37,7 @@ export function StepList({
   multi,
   flags,
   harm,
+  pending = NO_PENDING,
   onSelect,
   onNearEnd,
   className,
@@ -45,6 +47,8 @@ export function StepList({
   multi: boolean;
   flags: ReadonlyMap<number, StepFlags>;
   harm?: ReadonlySet<number>;
+  // steps whose model is still writing them
+  pending?: readonly { agent: string | null; n: number }[];
   onSelect: (seq: number) => void;
   onNearEnd: () => void;
   className?: string;
@@ -53,11 +57,11 @@ export function StepList({
   // The compiler leaves this component alone; rows get plain values, so they still memoize.
   // oxlint-disable-next-line react/incompatible-library
   const v = useVirtualizer({
-    count: steps.length,
+    count: steps.length + pending.length,
     getScrollElement: () => scroller.current,
     estimateSize: () => ROW,
     overscan: 16,
-    getItemKey: (i) => steps[i]?.seq ?? i,
+    getItemKey: (i) => steps[i]?.seq ?? `pending-${i}`,
   });
   const items = v.getVirtualItems();
   const last = items.at(-1)?.index ?? -1;
@@ -81,7 +85,12 @@ export function StepList({
       >
         {items.map((item) => {
           const step = steps[item.index];
-          if (step === undefined) return null;
+          if (step === undefined) {
+            const p = pending[item.index - steps.length];
+            return p === undefined ? null : (
+              <PendingRow key={item.key} n={p.n} agent={p.agent} top={item.start} multi={multi} />
+            );
+          }
           const f = flags.get(step.seq);
           return (
             <StepRow
@@ -170,6 +179,32 @@ function StepRow({
           {flagged}
         </span>
       )}
+    </div>
+  );
+}
+
+function PendingRow({
+  n,
+  agent,
+  top,
+  multi,
+}: {
+  n: number;
+  agent: string | null;
+  top: number;
+  multi: boolean;
+}) {
+  return (
+    <div
+      role="option"
+      aria-selected={false}
+      aria-disabled
+      className="text-muted-foreground absolute inset-x-0 top-0 flex h-7 items-center gap-2 px-2"
+      style={{ transform: `translateY(${top}px)` }}
+    >
+      <span className="w-8 shrink-0 text-right tabular-nums">{n}</span>
+      {multi && agent && <span className="max-w-20 shrink-0 truncate">{agent}</span>}
+      <span className="min-w-0 flex-1 truncate">writing</span>
     </div>
   );
 }

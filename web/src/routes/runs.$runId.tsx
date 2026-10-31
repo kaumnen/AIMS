@@ -1,6 +1,6 @@
 import { useInfiniteQuery, useQueries, useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 import type { Event } from "@/api/events";
 import {
@@ -15,7 +15,9 @@ import {
   sweepsQuery,
 } from "@/api/run";
 import { isProblem } from "@/api/session";
+import type { InFlight } from "@/api/tail";
 import { RunHeader } from "@/components/run/header";
+import { InFlightStep, useRunTail } from "@/components/run/live-tail";
 import { defaultSource, LIVE, MonitorPanel, useSources } from "@/components/run/monitor";
 import { RAW_SEARCH_ID, RawEvents, type RawSearch } from "@/components/run/raw";
 import { ScoreTab, type StepsLink, useHarm } from "@/components/run/score";
@@ -107,6 +109,12 @@ function Run() {
   const detail = useQuery(runQuery(runId));
   const change = (update: (prev: RunSearch) => RunSearch) =>
     void navigate({ search: update, replace: true });
+  const run = detail.data?.run;
+  const inflight = useRunTail(
+    runId,
+    run !== undefined && run.state !== "done",
+    (run?.events ?? 0) - 1,
+  );
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -172,7 +180,13 @@ function Run() {
           <TabsTrigger value="raw">Raw events</TabsTrigger>
         </TabsList>
         <TabsContent value="steps" className="flex min-h-0 flex-col pt-1">
-          <Steps runId={runId} detail={detail.data} search={search} onChange={change} />
+          <Steps
+            runId={runId}
+            detail={detail.data}
+            search={search}
+            onChange={change}
+            inflight={inflight}
+          />
         </TabsContent>
         {scored && (
           <TabsContent value="score" className="flex min-h-0 flex-col pt-1">
@@ -231,16 +245,20 @@ function Steps({
   detail,
   search,
   onChange,
+  inflight,
 }: {
   runId: string;
   detail: RunDetail;
   search: RunSearch;
   onChange: (update: (prev: RunSearch) => RunSearch) => void;
+  inflight: readonly InFlight[];
 }) {
   const q = useInfiniteQuery(stepsQuery(runId));
   const steps = q.data?.pages.flatMap((p) => p.items) ?? [];
   const more = q.hasNextPage;
   const harms = useHarm(runId);
+  // An open run shows its latest step until someone picks one.
+  const [follow] = useState(() => detail.run.state !== "done");
 
   // The monitor whose flags and sweeps the panel, the timeline and the list show.
   const { sources, ready } = useSources(runId, detail);
@@ -287,7 +305,10 @@ function Steps({
   };
 
   // A step, an event or a flag past the loaded pages: page on until it is in.
-  const target = search.step ?? search.seq ?? (flag ? cited(flag) : undefined);
+  const target =
+    search.step ??
+    search.seq ??
+    (flag ? cited(flag) : follow ? Number.POSITIVE_INFINITY : undefined);
   const loading = target !== undefined && !reaches(steps, target, more);
   const fetching = q.isFetchingNextPage;
   useEffect(() => {
@@ -299,6 +320,7 @@ function Steps({
   else if (search.seq !== undefined && !loading)
     current = stepFor(steps, search.seq, evidence.get(search.seq)?.agent_id);
   else if (flag && !loading) current = flagStep(flag, steps);
+  else if (follow && !loading) current = steps.at(-1);
   if (current === undefined && !loading) current = steps[0];
   const at = current === undefined ? -1 : steps.indexOf(current);
 
@@ -392,6 +414,18 @@ function Steps({
     current === undefined
       ? undefined
       : steps.slice(0, at).findLast((s) => s.agent_id === current.agent_id);
+  // Each agent's next step while its model writes it, under that agent's latest step.
+  const latest = new Map<string, StepInfo>();
+  for (const s of steps) latest.set(s.agent_id ?? "", s);
+  const writing = more
+    ? []
+    : inflight
+        .filter((d) => d.agent !== null)
+        .map((d) => ({ draft: d, n: (latest.get(d.agent ?? "")?.n ?? 0) + 1 }));
+  const drafting =
+    current !== undefined && latest.get(current.agent_id ?? "")?.seq === current.seq
+      ? writing.filter((w) => w.draft.agent === current.agent_id)
+      : [];
   const harmed = new Set<number>();
   for (const h of harms) {
     const step = reaches(steps, h.seq, more) ? stepFor(steps, h.seq, h.agent) : undefined;
@@ -428,6 +462,7 @@ function Steps({
           multi={multi}
           flags={marks}
           harm={harmed}
+          pending={writing.map((w) => ({ agent: w.draft.agent, n: w.n }))}
           onSelect={select}
           onNearEnd={() => {
             if (more && !fetching) void q.fetchNextPage();
@@ -472,7 +507,11 @@ function Steps({
               last={at === steps.length - 1 && !more}
               multi={multi}
               focus={focus}
-            />
+            >
+              {drafting.map((w) => (
+                <InFlightStep key={w.draft.call} draft={w.draft} n={w.n} />
+              ))}
+            </Transcript>
           ) : (
             <p className="text-muted-foreground">Loading step</p>
           )}

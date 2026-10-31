@@ -1040,3 +1040,52 @@ test("a score that failed before it started gives its reason", async () => {
   renderAt(`/runs/${BEE5}?tab=score`);
   expect(await screen.findByText("Failed: no runner")).toBeTruthy();
 });
+
+const runStream = () => FakeEventSource.all.find((s) => s.url.includes("run="));
+
+test("a sealed run opens no stream of its own", async () => {
+  renderAt(`/runs/${BEE5}`);
+  await screen.findByRole("listbox", { name: "Steps" });
+  expect(runStream()).toBeUndefined();
+});
+
+test("an open run follows its latest step and shows the next one as it is written", async () => {
+  detail = { ...detail, run: run(BEE5, { status: "running", state: "running", events: 15 }) };
+  renderAt(`/runs/${BEE5}`);
+  const list = await screen.findByRole("listbox", { name: "Steps" });
+  const chosen = () => within(list).getByRole("option", { selected: true }).textContent;
+  await waitFor(() => expect(chosen()).toContain("edit"));
+  const tail = await waitFor(() => {
+    const s = runStream();
+    if (!s) throw new Error("no run stream");
+    return s;
+  });
+  expect(tail.url).toBe(`/api/stream?run=${BEE5}&after=14&deltas=${BEE5}`);
+
+  const delta = { run_id: BEE5, agent_id: "agent", call_id: "m3", attempt: 1, index: null, ms: 0 };
+  act(() =>
+    tail.send({
+      kind: "delta",
+      deltas: [
+        { ...delta, kind: "start", text: "" },
+        { ...delta, kind: "text", text: "Running the tests again." },
+      ],
+    }),
+  );
+  const writing = await screen.findByRole("region", { name: "Step 3, in flight" });
+  expect(within(writing).getByText("Running the tests again.")).toBeTruthy();
+  expect(within(list).getByText("writing")).toBeTruthy();
+
+  const landed = [
+    ev(15, "model.response", { call_id: "m3", text: "Running the tests again." }),
+    ev(16, "agent.step", { n: 3, call_id: "m3", status: "completed" }),
+  ];
+  events.push(...landed);
+  steps.push(step({ seq: 16, n: 3, seq_from: 15, seq_to: 16 }));
+  act(() => tail.send({ kind: "events", run_id: BEE5, events: landed }));
+  await waitFor(() => expect(chosen()).toContain("no tool call"));
+  expect(within(list).queryByText("writing")).toBeNull();
+  expect(screen.queryByRole("region", { name: "Step 3, in flight" })).toBeNull();
+  const tails = requests("steps").filter((q) => q.get("after") === "4");
+  expect(tails).toHaveLength(1);
+});
