@@ -552,6 +552,11 @@ async def test_config_edits_take_the_monitor_tables(cp: CP) -> None:
         assert "no_such_text" in r.json()["detail"]
         r = await patch(c, "user", [(["prompts", "monitor", "categories", "nope"], "x")])
         assert (r.status_code, r.json()["code"]) == (422, "config")
+        r = await patch(c, "user", [(["prompts", "budget_steps"], "{bad} steps")])
+        assert (r.status_code, r.json()["code"]) == (422, "config")
+        assert "unknown placeholder bad" in r.json()["detail"]
+        r = await patch(c, "user", [(["prompts", "tools", "bash", "timeout"], "{bad}")])
+        assert (r.status_code, r.json()["code"]) == (422, "config")
         r = await patch(c, "user", [(["monitor", "preset"], "loud")])
         assert (r.status_code, r.json()["code"]) == (422, "config")
         r = await patch(c, "project", [(["monitor", "judge", "rollouts"], 1)])

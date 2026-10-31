@@ -27,6 +27,7 @@ from aims.models import ModelsConfig, load_models
 from aims.monitor.config import MonitorConfigError, layer, merge
 from aims.monitor.texts import resolve
 from aims.prompts import Prompts, load_prompts
+from aims.tools import registry
 
 PROJECT = "aims.toml"
 USER = "config.toml"
@@ -99,6 +100,18 @@ def load(config: Path | None = None, env: Mapping[str, str] = os.environ) -> Set
     return load_layers(layers(config, env))
 
 
+def _check_texts(prompts: Prompts) -> None:
+    """Refuse texts a run would refuse at its start: the agent's, the monitor's and those of the
+    tools AIMS knows. Texts of other tools, such as a scenario's channels, wait for the run.
+    Raises TextError."""
+    prompts.agent_texts()
+    known = registry()
+    for name, texts in prompts.tools.items():
+        if name in known:
+            known[name](texts)
+    resolve(prompts)
+
+
 def load_layers(found: Layers) -> Settings:
     files = found.files()
     paths: list[Path] = []
@@ -123,7 +136,7 @@ def load_layers(found: Layers) -> Settings:
             except MonitorConfigError as e:
                 raise ConfigError(str(e)) from None
     prompts = load_prompts(*files)
-    resolve(prompts)
+    _check_texts(prompts)
     try:
         merge(*monitor)
     except ValidationError as e:
