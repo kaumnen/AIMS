@@ -15,6 +15,8 @@ import { Route as ScenariosRouteImport } from './routes/scenarios'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as RunsIndexRouteImport } from './routes/runs.index'
 import { Route as RunsRunIdRouteImport } from './routes/runs.$runId'
+import { Route as ScenariosIndexRouteImport } from './routes/scenarios.index'
+import { Route as ScenariosSourceNameRouteImport } from './routes/scenarios.$source.$name'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -46,37 +48,65 @@ const RunsRunIdRoute = RunsRunIdRouteImport.update({
   path: '/$runId',
   getParentRoute: () => RunsRoute,
 } as any)
+const ScenariosIndexRoute = ScenariosIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => ScenariosRoute,
+} as any)
+const ScenariosSourceNameRoute = ScenariosSourceNameRouteImport.update({
+  id: '/$source/$name',
+  path: '/$source/$name',
+  getParentRoute: () => ScenariosRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/runs': typeof RunsRouteWithChildren
-  '/scenarios': typeof ScenariosRoute
+  '/scenarios': typeof ScenariosRouteWithChildren
   '/settings': typeof SettingsRoute
   '/runs/$runId': typeof RunsRunIdRoute
   '/runs/': typeof RunsIndexRoute
+  '/scenarios/': typeof ScenariosIndexRoute
+  '/scenarios/$source/$name': typeof ScenariosSourceNameRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/scenarios': typeof ScenariosRoute
   '/settings': typeof SettingsRoute
   '/runs/$runId': typeof RunsRunIdRoute
   '/runs': typeof RunsIndexRoute
+  '/scenarios': typeof ScenariosIndexRoute
+  '/scenarios/$source/$name': typeof ScenariosSourceNameRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/runs': typeof RunsRouteWithChildren
-  '/scenarios': typeof ScenariosRoute
+  '/scenarios': typeof ScenariosRouteWithChildren
   '/settings': typeof SettingsRoute
   '/runs/$runId': typeof RunsRunIdRoute
   '/runs/': typeof RunsIndexRoute
+  '/scenarios/': typeof ScenariosIndexRoute
+  '/scenarios/$source/$name': typeof ScenariosSourceNameRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    '/' | '/runs' | '/scenarios' | '/settings' | '/runs/$runId' | '/runs/'
+    | '/'
+    | '/runs'
+    | '/scenarios'
+    | '/settings'
+    | '/runs/$runId'
+    | '/runs/'
+    | '/scenarios/'
+    | '/scenarios/$source/$name'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/scenarios' | '/settings' | '/runs/$runId' | '/runs'
+  to:
+    | '/'
+    | '/settings'
+    | '/runs/$runId'
+    | '/runs'
+    | '/scenarios'
+    | '/scenarios/$source/$name'
   id:
     | '__root__'
     | '/'
@@ -85,12 +115,14 @@ export interface FileRouteTypes {
     | '/settings'
     | '/runs/$runId'
     | '/runs/'
+    | '/scenarios/'
+    | '/scenarios/$source/$name'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   RunsRoute: typeof RunsRouteWithChildren
-  ScenariosRoute: typeof ScenariosRoute
+  ScenariosRoute: typeof ScenariosRouteWithChildren
   SettingsRoute: typeof SettingsRoute
 }
 
@@ -138,6 +170,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof RunsRunIdRouteImport
       parentRoute: typeof RunsRoute
     }
+    '/scenarios/': {
+      id: '/scenarios/'
+      path: '/'
+      fullPath: '/scenarios/'
+      preLoaderRoute: typeof ScenariosIndexRouteImport
+      parentRoute: typeof ScenariosRoute
+    }
+    '/scenarios/$source/$name': {
+      id: '/scenarios/$source/$name'
+      path: '/$source/$name'
+      fullPath: '/scenarios/$source/$name'
+      preLoaderRoute: typeof ScenariosSourceNameRouteImport
+      parentRoute: typeof ScenariosRoute
+    }
   }
 }
 
@@ -153,10 +199,24 @@ const RunsRouteChildren: RunsRouteChildren = {
 
 const RunsRouteWithChildren = RunsRoute._addFileChildren(RunsRouteChildren)
 
+interface ScenariosRouteChildren {
+  ScenariosIndexRoute: typeof ScenariosIndexRoute
+  ScenariosSourceNameRoute: typeof ScenariosSourceNameRoute
+}
+
+const ScenariosRouteChildren: ScenariosRouteChildren = {
+  ScenariosIndexRoute: ScenariosIndexRoute,
+  ScenariosSourceNameRoute: ScenariosSourceNameRoute,
+}
+
+const ScenariosRouteWithChildren = ScenariosRoute._addFileChildren(
+  ScenariosRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   RunsRoute: RunsRouteWithChildren,
-  ScenariosRoute: ScenariosRoute,
+  ScenariosRoute: ScenariosRouteWithChildren,
   SettingsRoute: SettingsRoute,
 }
 export const routeTree = rootRouteImport

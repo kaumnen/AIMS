@@ -424,6 +424,20 @@ async def duplicate_scenario(
 # The scenario overview
 
 
+class SourceInfo(Out):
+    """A directory of scenarios: `label` says where it is, `writable` whether new scenarios and
+    edits can go there."""
+
+    id: str
+    label: str
+    writable: bool
+
+
+@router.get("/scenarios/sources", tags=["scenarios"])
+async def scenario_sources(principal: Viewer, sources: SourcesDep) -> list[SourceInfo]:
+    return [SourceInfo(id=s.id, label=s.label, writable=s.writable) for s in sources.all()]
+
+
 class AgentOverview(Out):
     """`profile` is the one it runs unless a run picks another. `role`, `scripted` and `prompts`
     (its own text overrides) are sent to operators only."""
@@ -529,7 +543,7 @@ def _overview(out: ScenarioDetail, sc: Scenario, default: str) -> ScenarioDetail
     out.title = sc.name
     out.oversight = sc.oversight
     out.instruction = sc.task.instruction
-    out.environment = env.image or (f"{env.dockerfile} (Dockerfile)" if env.dockerfile else None)
+    out.environment = env.image or (f"built from {env.dockerfile}" if env.dockerfile else None)
     out.limits = sc.limits.model_dump(mode="json", exclude_none=True)
     out.variants = list(sc.variants)
     for a in sc.agents:

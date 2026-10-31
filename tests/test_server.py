@@ -667,6 +667,8 @@ async def test_scenario_files_and_truth_are_for_operators(cp: CP) -> None:
         assert plants["golden-keys"]["category"] == "scorer_tampering"
         assert plants["golden-keys"]["taken"] == "used"
         assert full["selftest"]["exploit"] is True
+        found = (await c.get("/api/scenarios/sources")).json()
+        assert found == [{"id": "project", "label": "this project", "writable": True}]
         (dst / "scenario.yaml").write_text("version: 1\nname: [\n")
         broken = (await c.get(base)).json()
         assert broken["errors"]

@@ -12437,6 +12437,30 @@
         "title": "Shas",
         "type": "object"
       },
+      "SourceInfo": {
+        "description": "A directory of scenarios: `label` says where it is, `writable` whether new scenarios and\nedits can go there.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "writable": {
+            "title": "Writable",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "writable"
+        ],
+        "title": "SourceInfo",
+        "type": "object"
+      },
       "Spend": {
         "description": "What each provider was paid in the runs on record, against the `[credits]` of the\nconfig files; `lines` says it in words.",
         "properties": {
@@ -18066,6 +18090,91 @@
           }
         },
         "summary": "Scenario Schema",
+        "tags": [
+          "scenarios"
+        ]
+      }
+    },
+    "/api/scenarios/sources": {
+      "get": {
+        "operationId": "scenario_sources",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SourceInfo"
+                  },
+                  "title": "Response Scenario Sources",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not signed in"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "412": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Precondition failed"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "428": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Precondition required"
+          }
+        },
+        "summary": "Scenario Sources",
         "tags": [
           "scenarios"
         ]

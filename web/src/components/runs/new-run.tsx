@@ -40,27 +40,39 @@ import { cn } from "@/lib/utils";
 
 const MAX_SAMPLES = 100;
 
-export function NewRun() {
+// `scenario` picks the scenario the form opens on, as the scenario page's Run button does.
+export function NewRun({
+  scenario,
+  label = "New run",
+}: {
+  scenario?: { source: string; name: string };
+  label?: string;
+}) {
   const me = useQuery(whoami);
   const [open, setOpen] = useState(false);
   if (me.data?.role !== "operator") return null;
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger render={<Button size="sm" />}>New run</DialogTrigger>
+      <DialogTrigger render={<Button size="sm" />}>{label}</DialogTrigger>
       <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-xl">
-        {open && <NewRunForm onDone={() => setOpen(false)} />}
+        {open && (
+          <NewRunForm
+            onDone={() => setOpen(false)}
+            initial={scenario ? keyOf(scenario) : DEFAULT}
+          />
+        )}
       </DialogContent>
     </Dialog>
   );
 }
 
-const keyOf = (s: ScenarioInfo) => `${s.source}/${s.name}`;
+const keyOf = (s: { source: string; name: string }) => `${s.source}/${s.name}`;
 
-function NewRunForm({ onDone }: { onDone: () => void }) {
+function NewRunForm({ onDone, initial }: { onDone: () => void; initial: string }) {
   const navigate = useNavigate();
   const scenarios = useQuery(scenariosQuery);
   const runnable = (scenarios.data ?? []).filter((s) => !s.error);
-  const [chosen, setChosen] = useState(DEFAULT);
+  const [chosen, setChosen] = useState(initial);
   const scenario = runnable.find((s) => keyOf(s) === chosen) ?? runnable[0];
   const [variant, setVariant] = useState(DEFAULT);
   const [profile, setProfile] = useState(DEFAULT);
