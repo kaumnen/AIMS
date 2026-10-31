@@ -1,4 +1,4 @@
-import { type InfiniteData, QueryClient } from "@tanstack/react-query";
+import { type InfiniteData, InfiniteQueryObserver, QueryClient } from "@tanstack/react-query";
 import { afterEach, expect, test, vi } from "vitest";
 
 import { FakeEventSource } from "@/test/event-source";
@@ -152,6 +152,53 @@ test("stream updates are applied once a frame, the last one per run winning", ()
   expect(frames).toHaveLength(1);
   frames[0]?.();
   expect(qc.getQueryData(list.queryKey)?.pages[0]?.items[0]?.steps).toBe(2);
+  stop();
+  live.stop();
+});
+
+test("an update made while a page loads survives the page landing", async () => {
+  const qc = new QueryClient();
+  const list = runsQuery({});
+  qc.setQueryData<InfiniteData<RunPage, string | null>>(list.queryKey, {
+    pages: [{ items: [run("c"), run("b")], next: "b" }],
+    pageParams: [null],
+  });
+  const answer = Promise.withResolvers<Response>();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() => answer.promise),
+  );
+  vi.stubGlobal("EventSource", FakeEventSource);
+  const frames: (() => void)[] = [];
+  const live = new Live({ runs: true });
+  const stop = syncRuns(live, qc, (fn) => frames.push(fn));
+  live.start();
+  // a second list, of the same scenario, loads its next page at the same time
+  const other = runsQuery({ scenario: "cache-keys" });
+  qc.setQueryData<InfiniteData<RunPage, string | null>>(other.queryKey, {
+    pages: [{ items: [run("c")], next: "c" }],
+    pageParams: [null],
+  });
+  const observer = new InfiniteQueryObserver(qc, list);
+  const unsubscribe = observer.subscribe(() => undefined);
+  const otherObserver = new InfiniteQueryObserver(qc, other);
+  const unsubscribeOther = otherObserver.subscribe(() => undefined);
+  const paging = Promise.all([observer.fetchNextPage(), otherObserver.fetchNextPage()]);
+  FakeEventSource.all.at(-1)?.send({ kind: "run", run: run("c", { events: 20, steps: 5 }) });
+  frames.shift()?.();
+  answer.resolve(Response.json({ items: [run("a")], next: null }));
+  await paging;
+  await Promise.resolve();
+  const pages = qc.getQueryData(list.queryKey)?.pages;
+  expect(ids(pages ?? null)).toEqual([["c", "b"], ["a"]]);
+  expect(pages?.[0]?.items[0]?.steps).toBe(5);
+  expect(qc.getQueryData(other.queryKey)?.pages[0]?.items[0]?.steps).toBe(5);
+  unsubscribeOther();
+  // an older message never undoes newer data
+  FakeEventSource.all.at(-1)?.send({ kind: "run", run: run("c", { events: 15, steps: 3 }) });
+  frames.shift()?.();
+  expect(qc.getQueryData(list.queryKey)?.pages[0]?.items[0]?.steps).toBe(5);
+  unsubscribe();
   stop();
   live.stop();
 });

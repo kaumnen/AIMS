@@ -2,6 +2,7 @@ import {
   type InfiniteData,
   infiniteQueryOptions,
   type QueryClient,
+  type QueryKey,
   queryOptions,
 } from "@tanstack/react-query";
 
@@ -134,7 +135,9 @@ export function mergePages(
     if (at !== undefined) {
       const items = out[at]?.items ?? [];
       const i = items.findIndex((r) => r.run_id === run.run_id);
-      if (i >= 0 && items[i] !== run) {
+      // a message older than a page read after it would undo the page
+      const older = (items[i]?.events ?? 0) > run.events;
+      if (i >= 0 && items[i] !== run && !older) {
         items[i] = run;
         changed = true;
       }
@@ -159,16 +162,27 @@ export function mergePages(
   return changed ? out : null;
 }
 
+function applyList(qc: QueryClient, key: QueryKey, runs: readonly RunSummary[]): void {
+  const filters = key[2] as RunFilters;
+  qc.setQueryData<InfiniteData<RunPage, string | null>>(key, (data) => {
+    if (!data) return data;
+    const pages = mergePages(data.pages, runs, filters);
+    return pages ? { ...data, pages } : data;
+  });
+}
+
+const listFetching = (qc: QueryClient) =>
+  qc
+    .getQueryCache()
+    .findAll({ queryKey: ["runs", "list"] })
+    .some((q) => q.state.fetchStatus === "fetching");
+
 export function applyRuns(qc: QueryClient, runs: readonly RunSummary[]): void {
   if (runs.length === 0) return;
   for (const q of qc.getQueryCache().findAll({ queryKey: ["runs"] })) {
     const [, what, arg] = q.queryKey as readonly [string, string, unknown];
     if (what === "list") {
-      qc.setQueryData<InfiniteData<RunPage, string | null>>(q.queryKey, (data) => {
-        if (!data) return data;
-        const pages = mergePages(data.pages, runs, arg as RunFilters);
-        return pages ? { ...data, pages } : data;
-      });
+      applyList(qc, q.queryKey, runs);
     } else if (what === "detail") {
       const run = runs.find((r) => r.run_id === arg);
       const data = qc.getQueryData<RunDetail>(q.queryKey);
@@ -197,6 +211,9 @@ export function syncRuns(
   frame: (fn: () => void) => void = requestAnimationFrame,
 ): () => void {
   let pending = new Map<string, RunSummary>();
+  // A page that lands writes the pages as they were when its fetch began, so updates made
+  // meanwhile are held and made again on top of it.
+  let held = new Map<string, RunSummary>();
   let scheduled = false;
   let stopped = false;
   const flush = () => {
@@ -205,7 +222,19 @@ export function syncRuns(
     const runs = [...pending.values()];
     pending = new Map();
     applyRuns(qc, runs);
+    if (listFetching(qc)) for (const r of runs) held.set(r.run_id, r);
   };
+  const unwatch = qc.getQueryCache().subscribe((event) => {
+    if (held.size === 0 || event.type !== "updated" || event.action.type !== "success") return;
+    if (event.action.manual) return;
+    const key = event.query.queryKey;
+    if (key[0] !== "runs" || key[1] !== "list") return;
+    const runs = [...held.values()];
+    if (!listFetching(qc)) held = new Map();
+    queueMicrotask(() => {
+      if (!stopped) applyList(qc, key, runs);
+    });
+  });
   const off = live.on("run", ({ run }) => {
     pending.set(run.run_id, run);
     if (!scheduled) {
@@ -216,5 +245,6 @@ export function syncRuns(
   return () => {
     stopped = true;
     off();
+    unwatch();
   };
 }
