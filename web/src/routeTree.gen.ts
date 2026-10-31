@@ -18,6 +18,7 @@ import { Route as RunsRunIdRouteImport } from './routes/runs.$runId'
 import { Route as ScenariosIndexRouteImport } from './routes/scenarios.index'
 import { Route as SettingsIndexRouteImport } from './routes/settings.index'
 import { Route as SettingsModelsRouteImport } from './routes/settings.models'
+import { Route as SettingsPromptsRouteImport } from './routes/settings.prompts'
 import { Route as SettingsRunnersRouteImport } from './routes/settings.runners'
 import { Route as SettingsSpendRouteImport } from './routes/settings.spend'
 import { Route as SettingsTokensRouteImport } from './routes/settings.tokens'
@@ -68,6 +69,11 @@ const SettingsModelsRoute = SettingsModelsRouteImport.update({
   path: '/models',
   getParentRoute: () => SettingsRoute,
 } as any)
+const SettingsPromptsRoute = SettingsPromptsRouteImport.update({
+  id: '/prompts',
+  path: '/prompts',
+  getParentRoute: () => SettingsRoute,
+} as any)
 const SettingsRunnersRoute = SettingsRunnersRouteImport.update({
   id: '/runners',
   path: '/runners',
@@ -96,6 +102,7 @@ export interface FileRoutesByFullPath {
   '/settings': typeof SettingsRouteWithChildren
   '/runs/$runId': typeof RunsRunIdRoute
   '/settings/models': typeof SettingsModelsRoute
+  '/settings/prompts': typeof SettingsPromptsRoute
   '/settings/runners': typeof SettingsRunnersRoute
   '/settings/spend': typeof SettingsSpendRoute
   '/settings/tokens': typeof SettingsTokensRoute
@@ -108,6 +115,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/runs/$runId': typeof RunsRunIdRoute
   '/settings/models': typeof SettingsModelsRoute
+  '/settings/prompts': typeof SettingsPromptsRoute
   '/settings/runners': typeof SettingsRunnersRoute
   '/settings/spend': typeof SettingsSpendRoute
   '/settings/tokens': typeof SettingsTokensRoute
@@ -124,6 +132,7 @@ export interface FileRoutesById {
   '/settings': typeof SettingsRouteWithChildren
   '/runs/$runId': typeof RunsRunIdRoute
   '/settings/models': typeof SettingsModelsRoute
+  '/settings/prompts': typeof SettingsPromptsRoute
   '/settings/runners': typeof SettingsRunnersRoute
   '/settings/spend': typeof SettingsSpendRoute
   '/settings/tokens': typeof SettingsTokensRoute
@@ -141,6 +150,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/runs/$runId'
     | '/settings/models'
+    | '/settings/prompts'
     | '/settings/runners'
     | '/settings/spend'
     | '/settings/tokens'
@@ -153,6 +163,7 @@ export interface FileRouteTypes {
     | '/'
     | '/runs/$runId'
     | '/settings/models'
+    | '/settings/prompts'
     | '/settings/runners'
     | '/settings/spend'
     | '/settings/tokens'
@@ -168,6 +179,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/runs/$runId'
     | '/settings/models'
+    | '/settings/prompts'
     | '/settings/runners'
     | '/settings/spend'
     | '/settings/tokens'
@@ -249,6 +261,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsModelsRouteImport
       parentRoute: typeof SettingsRoute
     }
+    '/settings/prompts': {
+      id: '/settings/prompts'
+      path: '/prompts'
+      fullPath: '/settings/prompts'
+      preLoaderRoute: typeof SettingsPromptsRouteImport
+      parentRoute: typeof SettingsRoute
+    }
     '/settings/runners': {
       id: '/settings/runners'
       path: '/runners'
@@ -308,6 +327,7 @@ const ScenariosRouteWithChildren = ScenariosRoute._addFileChildren(
 
 interface SettingsRouteChildren {
   SettingsModelsRoute: typeof SettingsModelsRoute
+  SettingsPromptsRoute: typeof SettingsPromptsRoute
   SettingsRunnersRoute: typeof SettingsRunnersRoute
   SettingsSpendRoute: typeof SettingsSpendRoute
   SettingsTokensRoute: typeof SettingsTokensRoute
@@ -316,6 +336,7 @@ interface SettingsRouteChildren {
 
 const SettingsRouteChildren: SettingsRouteChildren = {
   SettingsModelsRoute: SettingsModelsRoute,
+  SettingsPromptsRoute: SettingsPromptsRoute,
   SettingsRunnersRoute: SettingsRunnersRoute,
   SettingsSpendRoute: SettingsSpendRoute,
   SettingsTokensRoute: SettingsTokensRoute,

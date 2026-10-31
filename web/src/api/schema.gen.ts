@@ -140,7 +140,8 @@ export interface paths {
         };
         /**
          * List Prompts
-         * @description Every text AIMS writes for the agent or its monitor, and the layer it comes from.
+         * @description Every text AIMS writes for the agent or its monitor, what each layer sets and which one
+         *     is in use.
          */
         get: operations["list_prompts"];
         put?: never;
@@ -6602,8 +6603,19 @@ export interface components {
             /** Tainted */
             tainted: number[];
         };
-        /** Text */
+        /**
+         * Text
+         * @description `text` is the one in use and `source` the layer it comes from. `default` is the built-in
+         *     text, `user` and `project` what each config file sets, if anything. `placeholders` are the
+         *     names the text may use in braces; null when it is sent as written.
+         */
         Text: {
+            /** Default */
+            default: string;
+            /** Placeholders */
+            placeholders: string[] | null;
+            /** Project */
+            project: string | null;
             /**
              * Source
              * @enum {string}
@@ -6611,6 +6623,8 @@ export interface components {
             source: "default" | "user" | "project";
             /** Text */
             text: string;
+            /** User */
+            user: string | null;
         };
         /**
          * Timeouts

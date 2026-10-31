@@ -42,11 +42,12 @@ from aims.events.schema import blob_refs
 from aims.events.store import is_run_id
 from aims.models import Profile, ProfileError
 from aims.models.check import Verdict
+from aims.monitor import sweep_texts
 from aims.monitor import texts as monitor_texts
 from aims.monitor.config import MonitorConfigError, Preset
 from aims.monitor.offline import origin_agents
 from aims.monitor.setup import ResolvedMonitor
-from aims.prompts import Prompts, TextError, load_prompts
+from aims.prompts import PLACEHOLDERS, AgentTexts, Prompts, TextError, load_prompts
 from aims.run import selftest
 from aims.run.estimate import Estimate, History, estimate_fork, estimate_runs, needs_confirm
 from aims.run.fork import CutAt, Origin, check_fork, cut_at, live_profiles, load_origin
@@ -1503,8 +1504,16 @@ async def check_models(body: ModelsCheck, principal: Operator, state: State) -> 
 
 
 class Text(Out):
+    """`text` is the one in use and `source` the layer it comes from. `default` is the built-in
+    text, `user` and `project` what each config file sets, if anything. `placeholders` are the
+    names the text may use in braces; null when it is sent as written."""
+
     text: str
     source: Literal["default", "user", "project"]
+    default: str
+    user: str | None = None
+    project: str | None = None
+    placeholders: list[str] | None = None
 
 
 class PromptsInfo(Out):
@@ -1518,58 +1527,68 @@ class PromptsInfo(Out):
     categories: dict[str, Text]
 
 
-def _monitor_source(
-    user: Prompts, project: Prompts, name: str, category: str | None = None
-) -> Literal["default", "user", "project"]:
-    for layer, label in ((project, "project"), (user, "user")):
-        value = layer.monitor.get(name)
-        if category is None and isinstance(value, str):
-            return label
-        if category is not None and isinstance(value, dict) and category in value:
-            return label
-    return "default"
+def _text(
+    text: str,
+    default: str,
+    user: object,
+    project: object,
+    placeholders: frozenset[str] | None = None,
+) -> Text:
+    mine = project if isinstance(project, str) else None
+    theirs = user if isinstance(user, str) else None
+    return Text(
+        text=text,
+        source="project" if mine is not None else "user" if theirs is not None else "default",
+        default=default,
+        user=theirs,
+        project=mine,
+        placeholders=None if placeholders is None else sorted(placeholders),
+    )
+
+
+def _categories(prompts: Prompts) -> dict[str, str]:
+    value = prompts.monitor.get("categories")
+    return value if isinstance(value, dict) else {}
 
 
 @router.get("/prompts", tags=["prompts"])
 async def list_prompts(principal: Viewer, state: State) -> PromptsInfo:
-    """Every text AIMS writes for the agent or its monitor, and the layer it comes from."""
+    """Every text AIMS writes for the agent or its monitor, what each layer sets and which one
+    is in use."""
     settings = state.config.settings()
     found = settings.layers
     user = load_prompts(found.user)
     project = load_prompts(found.project) if found.project is not None else Prompts()
     agent = settings.prompts.agent_texts().model_dump()
+    builtin = AgentTexts().model_dump()
     resolved = monitor_texts.resolve(settings.prompts)
-
-    def source(key: str) -> Literal["default", "user", "project"]:
-        if getattr(project, key) is not None:
-            return "project"
-        if getattr(user, key) is not None:
-            return "user"
-        return "default"
+    known = monitor_texts.defaults()
 
     tools: dict[str, dict[str, Text]] = {}
     for name, cls in sorted(registry().items()):
         texts = cls(settings.prompts.tools.get(name)).text
+        mine, theirs = project.tools.get(name, {}), user.tools.get(name, {})
         tools[name] = {
-            k: Text(
-                text=v,
-                source="project"
-                if k in project.tools.get(name, {})
-                else "user"
-                if k in user.tools.get(name, {})
-                else "default",
-            )
+            k: _text(v, cls.texts[k], theirs.get(k), mine.get(k), cls.placeholders.get(k))
             for k, v in texts.items()
         }
     return PromptsInfo(
-        agent={k: Text(text=v, source=source(k)) for k, v in agent.items()},
+        agent={
+            k: _text(v, builtin[k], getattr(user, k), getattr(project, k), PLACEHOLDERS.get(k))
+            for k, v in agent.items()
+        },
         tools=tools,
         monitor={
-            k: Text(text=v, source=_monitor_source(user, project, k))
+            k: _text(v, known[k][0], user.monitor.get(k), project.monitor.get(k), known[k][1])
             for k, v in sorted(resolved.texts.items())
         },
         categories={
-            str(c): Text(text=v, source=_monitor_source(user, project, "categories", str(c)))
+            str(c): _text(
+                v,
+                sweep_texts.CATEGORIES[c],
+                _categories(user).get(c),
+                _categories(project).get(c),
+            )
             for c, v in resolved.categories.items()
         },
     )

@@ -1,7 +1,13 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { patchPrompt, type PromptKey, promptsQuery } from "@/api/scenario-files";
+import {
+  patchPrompt,
+  PROMPT_SOURCES,
+  type PromptKey,
+  promptsQuery,
+  type PromptText,
+} from "@/api/scenario-files";
 import type { ScenarioDetail } from "@/api/scenarios";
 import { isProblem } from "@/api/session";
 import { problemText } from "@/components/form";
@@ -19,12 +25,6 @@ interface Row {
   // where the text comes from: this scenario, or the config layer below it
   source: string;
 }
-
-const SOURCES: Record<string, string> = {
-  default: "built in",
-  user: "this machine",
-  project: "this project",
-};
 
 function override(agent: Agent, key: PromptKey): string | undefined {
   let node: unknown = agent.prompts ?? {};
@@ -45,10 +45,10 @@ export function PromptsTab({ detail }: { detail: ScenarioDetail }) {
   if (prompts.isError || !agent) {
     return <p className="text-muted-foreground">The texts did not load.</p>;
   }
-  const row = (key: PromptKey, label: string, layer: { text: string; source: string }): Row => {
+  const row = (key: PromptKey, label: string, layer: PromptText): Row => {
     const own = override(agent, key);
     return own === undefined
-      ? { key, label, text: layer.text, source: SOURCES[layer.source] ?? layer.source }
+      ? { key, label, text: layer.text, source: PROMPT_SOURCES[layer.source] }
       : { key, label, text: own, source: "this scenario" };
   };
   const agentRows = Object.entries(prompts.data.agent).map(([k, t]) => row([k], k, t));

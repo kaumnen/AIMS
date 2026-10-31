@@ -13369,7 +13369,37 @@
         "type": "object"
       },
       "Text": {
+        "description": "`text` is the one in use and `source` the layer it comes from. `default` is the built-in\ntext, `user` and `project` what each config file sets, if anything. `placeholders` are the\nnames the text may use in braces; null when it is sent as written.",
         "properties": {
+          "default": {
+            "title": "Default",
+            "type": "string"
+          },
+          "placeholders": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Placeholders"
+          },
+          "project": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project"
+          },
           "source": {
             "enum": [
               "default",
@@ -13382,11 +13412,26 @@
           "text": {
             "title": "Text",
             "type": "string"
+          },
+          "user": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User"
           }
         },
         "required": [
           "text",
-          "source"
+          "source",
+          "default",
+          "user",
+          "project",
+          "placeholders"
         ],
         "title": "Text",
         "type": "object"
@@ -14759,7 +14804,7 @@
     },
     "/api/prompts": {
       "get": {
-        "description": "Every text AIMS writes for the agent or its monitor, and the layer it comes from.",
+        "description": "Every text AIMS writes for the agent or its monitor, what each layer sets and which one\nis in use.",
         "operationId": "list_prompts",
         "responses": {
           "200": {

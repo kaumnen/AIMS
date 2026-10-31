@@ -31,6 +31,13 @@ BUDGET_STEPS = "You have used {used} of your {limit} steps."
 BUDGET_OUTPUT_TOKENS = "You have used {used} of your {limit} output tokens."
 BUDGET_COST_USD = "You have spent {used:.2f} of your {limit:.2f} USD."
 BUDGET = frozenset({"used", "limit"})
+# The agent texts filled in with str.format, and the names each may use; the rest are sent as
+# written.
+PLACEHOLDERS = {
+    "budget_steps": BUDGET,
+    "budget_output_tokens": BUDGET,
+    "budget_cost_usd": BUDGET,
+}
 DENIED = "This action was not permitted."
 NOTIFY_ON_RESUME = ""
 
@@ -75,8 +82,8 @@ class AgentTexts(_Strict):
 
     @model_validator(mode="after")
     def _placeholders(self) -> Self:
-        for name in ("budget_steps", "budget_output_tokens", "budget_cost_usd"):
-            check_format(getattr(self, name), BUDGET, name)
+        for name, allowed in PLACEHOLDERS.items():
+            check_format(getattr(self, name), allowed, name)
         return self
 
     def budget(self, dimension: str) -> str:

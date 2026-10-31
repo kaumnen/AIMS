@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import type { ProfileInfo } from "@/api/launch";
+import type { PromptText } from "@/api/scenario-files";
 import type { ProviderCredit, TokenInfo } from "@/api/settings";
 import { makeRouter } from "@/router";
 import { FakeEventSource, runnerInfo } from "@/test/event-source";
@@ -15,6 +16,17 @@ let role: "operator" | "viewer";
 let checked: ProfileInfo["check"];
 let credits: ProviderCredit[];
 let tokens: TokenInfo[];
+// config layers as dotted key -> text, with each file's version
+let layers: Record<"user" | "project", { values: Record<string, string>; etag: string }>;
+const PATHS = { user: "/home/me/.config/aims/aims.toml", project: "/work/aims.toml" };
+const DEFAULTS: Record<string, [string, string[] | null]> = {
+  "prompts.system": ["Work on the task.", null],
+  "prompts.denied": ["Denied.", null],
+  "prompts.budget_steps": ["You have used {used} of {limit} steps.", ["limit", "used"]],
+  "prompts.tools.bash.timeout": ["Timed out after {timeout_s} s.", ["timeout_s"]],
+  "prompts.monitor.judge_system": ["Judge the run.", []],
+  "prompts.monitor.categories.drift": ["Off the task.", null],
+};
 const CHECK = "01a19200-0000-7000-8000-000000000001";
 
 const profile = (over: Partial<ProfileInfo>): ProfileInfo => ({
@@ -52,6 +64,52 @@ const token = (over: Partial<TokenInfo>): TokenInfo => ({
 const problem = (status: number, detail: string) =>
   Response.json({ status, title: "Conflict", detail }, { status });
 
+function promptText(key: string): PromptText {
+  const [fallback, placeholders] = DEFAULTS[key] ?? ["", null];
+  const user = layers.user.values[key] ?? null;
+  const project = layers.project.values[key] ?? null;
+  return {
+    text: project ?? user ?? fallback,
+    source: project !== null ? "project" : user !== null ? "user" : "default",
+    default: fallback,
+    user,
+    project,
+    placeholders,
+  };
+}
+
+const under = (prefix: string) =>
+  Object.fromEntries(
+    Object.keys(DEFAULTS)
+      .filter((k) => k.startsWith(prefix) && !k.slice(prefix.length).includes("."))
+      .map((k) => [k.slice(prefix.length), promptText(k)]),
+  );
+
+const promptsInfo = () => ({
+  agent: under("prompts."),
+  tools: { bash: under("prompts.tools.bash.") },
+  monitor: under("prompts.monitor."),
+  categories: under("prompts.monitor.categories."),
+});
+
+async function patchLayer(layer: "user" | "project", request: Request) {
+  const file = layers[layer];
+  if (request.headers.get("If-Match")?.replaceAll('"', "") !== file.etag) {
+    return problem(412, "the file changed since it was read");
+  }
+  const body = (await request.clone().json()) as {
+    set: { key: string[]; value: string }[];
+    unset: string[][];
+  };
+  for (const { key, value } of body.set) {
+    if (value.includes("{bad}")) return problem(422, "unknown placeholder bad; known: {limit}");
+    file.values[key.join(".")] = value;
+  }
+  for (const key of body.unset) delete file.values[key.join(".")];
+  file.etag = `${file.etag}+`;
+  return Response.json({ layer, path: PATHS[layer], exists: true, text: "", etag: file.etag });
+}
+
 const calls = (method: string, path: string) =>
   fetch.mock.calls
     .map(([r]) => r)
@@ -73,6 +131,13 @@ beforeEach(() => {
     token({ name: "me" }),
     token({ name: "ui", ui: true }),
   ];
+  layers = {
+    user: { values: { "prompts.denied": "No." }, etag: "u1" },
+    project: {
+      values: { "prompts.system": "Work here.", "prompts.denied": "Not allowed." },
+      etag: "p1",
+    },
+  };
   FakeEventSource.all = [];
   vi.stubGlobal("EventSource", FakeEventSource);
   vi.stubGlobal("fetch", fetch);
@@ -102,6 +167,28 @@ beforeEach(() => {
         runnerInfo({ name: "local", connected: false, stale: true }),
       ]);
     if (url.pathname === "/api/spend") return Response.json({ providers: credits, lines: [] });
+    if (url.pathname === "/api/prompts") return Response.json(promptsInfo());
+    if (url.pathname === "/api/config")
+      return Response.json({
+        layers: (["user", "project"] as const).map((layer) => ({
+          layer,
+          path: PATHS[layer],
+          exists: true,
+          etag: layers[layer].etag,
+        })),
+        error: null,
+      });
+    const layer = /^\/api\/config\/(user|project)$/.exec(url.pathname)?.[1] as
+      "user" | "project" | undefined;
+    if (layer && request.method === "GET")
+      return Response.json({
+        layer,
+        path: PATHS[layer],
+        exists: true,
+        text: "",
+        etag: layers[layer].etag,
+      });
+    if (layer && request.method === "PATCH") return patchLayer(layer, request);
     if (url.pathname === "/api/tokens" && request.method === "GET") {
       if (role !== "operator") return problem(403, "operators only");
       return Response.json(tokens);
@@ -312,4 +399,92 @@ test("viewers have no tokens page", async () => {
   expect(within(nav).queryByText("Tokens")).toBeNull();
   expect(within(nav).getByText("Spend")).toBeTruthy();
   expect(calls("GET", "/api/tokens")).toHaveLength(0);
+});
+
+const textRow = (name: string) =>
+  screen.getByText(name, { selector: "li > span" }).closest("li") as HTMLElement;
+
+test("prompts list every text with where it comes from and save into the project", async () => {
+  renderAt("/settings/prompts");
+  expect(await screen.findByText("Saves to")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "This project" }).getAttribute("aria-pressed")).toBe(
+    "true",
+  );
+  expect(screen.getByText(PATHS.project)).toBeTruthy();
+  for (const title of ["Agent texts", "Tool texts", "Monitor texts", "Monitor categories"]) {
+    expect(screen.getByRole("region", { name: title })).toBeTruthy();
+  }
+  expect(within(textRow("system")).getByText("this project")).toBeTruthy();
+  expect(within(textRow("budget_steps")).getByText("built in")).toBeTruthy();
+  expect(within(textRow("bash.timeout")).getByText("Timed out after {timeout_s} s.")).toBeTruthy();
+
+  fireEvent.change(screen.getByRole("textbox", { name: "Filter texts" }), {
+    target: { value: "judge" },
+  });
+  expect(screen.queryByRole("region", { name: "Agent texts" })).toBeNull();
+  expect(screen.getByRole("region", { name: "Monitor texts" })).toBeTruthy();
+  fireEvent.change(screen.getByRole("textbox", { name: "Filter texts" }), {
+    target: { value: "" },
+  });
+
+  fireEvent.click(screen.getByRole("button", { name: "Edit system" }));
+  const box = await screen.findByRole("textbox", { name: "Text of system" });
+  expect((box as HTMLTextAreaElement).value).toBe("Work here.");
+  expect(screen.getByRole("button", { name: "Use the built-in text" })).toBeTruthy();
+  fireEvent.change(box, { target: { value: "Work there." } });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  expect(await within(textRow("system")).findByText("Work there.")).toBeTruthy();
+  const sent = calls("PATCH", "/api/config/project")[0];
+  expect(sent?.headers.get("If-Match")).toBe('"p1"');
+  expect(await sent?.json()).toEqual({
+    set: [{ key: ["prompts", "system"], value: "Work there." }],
+    unset: [],
+  });
+});
+
+test("on this machine an edit starts from its own text and can drop it", async () => {
+  renderAt("/settings/prompts");
+  fireEvent.click(await screen.findByRole("button", { name: "This machine" }));
+  expect(await screen.findByText(PATHS.user)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Edit denied" }));
+  const box = await screen.findByRole("textbox", { name: "Text of denied" });
+  expect((box as HTMLTextAreaElement).value).toBe("No.");
+  expect(screen.getByText(/This project's text wins here/)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Use the built-in text" }));
+  await waitFor(() => expect(screen.queryByRole("textbox", { name: "Text of denied" })).toBeNull());
+  const sent = calls("PATCH", "/api/config/user")[0];
+  expect(sent?.headers.get("If-Match")).toBe('"u1"');
+  expect(await sent?.json()).toEqual({ set: [], unset: [["prompts", "denied"]] });
+  expect(layers.user.values).toEqual({});
+});
+
+test("a bad placeholder shows under the row and a changed file offers both ways", async () => {
+  renderAt("/settings/prompts");
+  fireEvent.click(await screen.findByRole("button", { name: "Edit budget_steps" }));
+  const box = await screen.findByRole("textbox", { name: "Text of budget_steps" });
+  expect(
+    screen.getByText("Placeholders: {limit} {used}. Write a literal brace as {{ or }}."),
+  ).toBeTruthy();
+  fireEvent.change(box, { target: { value: "{bad} steps" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  expect(await screen.findByText("unknown placeholder bad; known: {limit}")).toBeTruthy();
+
+  layers.project.etag = "p9";
+  fireEvent.change(box, { target: { value: "{used} of {limit}" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  const alert = await screen.findByRole("alert");
+  expect(within(alert).getByRole("button", { name: "Load theirs, drop mine" })).toBeTruthy();
+  fireEvent.click(within(alert).getByRole("button", { name: "Keep mine" }));
+  expect(await within(textRow("budget_steps")).findByText("{used} of {limit}")).toBeTruthy();
+  expect(calls("PATCH", "/api/config/project").at(-1)?.headers.get("If-Match")).toBe('"p9"');
+  expect(layers.project.values["prompts.budget_steps"]).toBe("{used} of {limit}");
+});
+
+test("viewers read the texts without a layer or edits", async () => {
+  role = "viewer";
+  renderAt("/settings/prompts");
+  expect(await screen.findByText("Read only: operators edit these texts.")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: /^Edit / })).toBeNull();
+  expect(screen.queryByRole("group", { name: "Layer" })).toBeNull();
+  expect(calls("GET", "/api/config")).toEqual([]);
 });

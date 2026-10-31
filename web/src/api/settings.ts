@@ -6,6 +6,9 @@ export type RunnerInfo = Schemas["RunnerInfo"];
 export type ProviderCredit = Schemas["ProviderCredit"];
 export type TokenInfo = Schemas["TokenInfo"];
 export type TokenRole = Schemas["TokenCreate"]["role"];
+export type Layer = Schemas["LayerInfo"]["layer"];
+export type ConfigFile = Schemas["ConfigFile"];
+export type ConfigPatch = Schemas["ConfigPatch"];
 
 // Every runner the control plane has seen, connected or not; the live stream updates it.
 export const runnersQuery = queryOptions({
@@ -58,4 +61,48 @@ export function mergeRunners(
   const byName = new Map(listed.map((r) => [r.name, r]));
   for (const r of live) byName.set(r.name, r);
   return [...byName.values()].toSorted((a, b) => a.name.localeCompare(b.name));
+}
+
+// The config files read, lowest layer first, and whether they load together.
+export const configQuery = queryOptions({
+  queryKey: ["config"] as const,
+  queryFn: async ({ signal }) => {
+    const { data, error } = await client.GET("/api/config", { signal });
+    if (error) throw error;
+    return data;
+  },
+  staleTime: 10_000,
+});
+
+export function layerQuery(layer: Layer) {
+  return queryOptions({
+    queryKey: ["config", layer] as const,
+    queryFn: async ({ signal }) => {
+      const { data, error } = await client.GET("/api/config/{layer}", {
+        params: { path: { layer } },
+        signal,
+      });
+      if (error) throw error;
+      return data;
+    },
+    staleTime: 0,
+  });
+}
+
+// Set or unset keys in a layer. `etag` names the version the change is made against, null for
+// a file that does not exist yet.
+export async function patchConfig(
+  layer: Layer,
+  change: Partial<ConfigPatch>,
+  etag: string | null,
+): Promise<ConfigFile> {
+  const { data, error } = await client.PATCH("/api/config/{layer}", {
+    params: {
+      path: { layer },
+      header: etag === null ? { "If-None-Match": "*" } : { "If-Match": `"${etag}"` },
+    },
+    body: { set: [], unset: [], ...change },
+  });
+  if (error) throw error;
+  return data;
 }

@@ -14,7 +14,7 @@ from aims.events import Draft, LocalEventStore, RunFinished, RunStarted, ToolCal
 from aims.events.payloads import FlagReview, MonitorFlag, MonitorVerdict
 from aims.monitor.texts import defaults
 from aims.node.shipper import Shipper
-from aims.prompts import Prompts
+from aims.prompts import DENIED, Prompts
 from aims.run.runner import resolve_texts
 from aims.scenario import load
 from aims.wire import CommandMessage, MonitorJob, OfferMessage, RunnerHello
@@ -506,15 +506,49 @@ async def test_prompts_list_monitor_texts_with_their_layer(cp: CP) -> None:
         + f'\n[prompts.monitor]\n{name} = "Project {name}."\n'
         + '\n[prompts.monitor.categories]\ndrift = "Wandering off the task."\n'
     )
+    user = cp.state.config.layers().user
+    assert not user.exists()
+    user.parent.mkdir(parents=True, exist_ok=True)
+    user.write_text('[prompts]\ndenied = "No."\nnudge = "Go on."\n')
     async with cp.client(cp.viewer) as c:
         info = (await c.get("/api/prompts")).json()
-    assert info["agent"]["denied"] == {"text": "Not allowed.", "source": "project"}
+    denied = info["agent"]["denied"]
+    assert (denied["text"], denied["source"]) == ("Not allowed.", "project")
+    assert (denied["user"], denied["project"], denied["default"]) == (
+        "No.",
+        "Not allowed.",
+        DENIED,
+    )
+    nudge = info["agent"]["nudge"]
+    assert (nudge["text"], nudge["source"], nudge["user"], nudge["project"]) == (
+        "Go on.",
+        "user",
+        "Go on.",
+        None,
+    )
     assert info["agent"]["notify_on_resume"]["source"] == "default"
-    assert info["monitor"][name] == {"text": f"Project {name}.", "source": "project"}
+    assert denied["placeholders"] is None
+    assert info["agent"]["budget_steps"]["placeholders"] == ["limit", "used"]
+    mine = info["monitor"][name]
+    assert (mine["text"], mine["source"], mine["default"]) == (
+        f"Project {name}.",
+        "project",
+        defaults()[name][0],
+    )
+    assert mine["placeholders"] == sorted(defaults()[name][1])
     assert {v["source"] for k, v in info["monitor"].items() if k != name} == {"default"}
     assert set(info["monitor"]) == set(names)
-    assert info["categories"]["drift"] == {"text": "Wandering off the task.", "source": "project"}
+    drift = info["categories"]["drift"]
+    assert (drift["text"], drift["source"], drift["project"]) == (
+        "Wandering off the task.",
+        "project",
+        "Wandering off the task.",
+    )
+    assert drift["placeholders"] is None
     assert info["categories"]["scorer_tampering"]["source"] == "default"
+    bash = info["tools"]["bash"]
+    assert all(t["source"] == "default" and t["text"] == t["default"] for t in bash.values())
+    assert bash["timeout"]["placeholders"] == ["timeout_s"]
 
 
 async def test_config_edits_take_the_monitor_tables(cp: CP) -> None:

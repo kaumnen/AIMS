@@ -133,6 +133,13 @@ export async function duplicateScenario(
 
 export type PromptsInfo = Schemas["PromptsInfo"];
 export type PromptKey = string[];
+export type PromptText = PromptsInfo["agent"][string];
+
+export const PROMPT_SOURCES: Record<PromptText["source"], string> = {
+  default: "built in",
+  user: "this machine",
+  project: "this project",
+};
 
 export const promptsQuery = queryOptions({
   queryKey: ["prompts"] as const,

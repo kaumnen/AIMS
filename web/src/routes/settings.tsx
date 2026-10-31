@@ -8,6 +8,7 @@ export const Route = createFileRoute("/settings")({
 });
 
 const pages = [
+  { to: "/settings/prompts", label: "Prompts", operator: false },
   { to: "/settings/models", label: "Models", operator: false },
   { to: "/settings/runners", label: "Runners", operator: false },
   { to: "/settings/tokens", label: "Tokens", operator: true },
