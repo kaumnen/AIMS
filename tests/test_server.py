@@ -84,10 +84,8 @@ class FakeRunner:
         self.task: asyncio.Task[None] | None = None
         self.last_id: str | None = None
 
-    def hello_body(
-        self, jobs: list[str] | None = None, kinds: list[Any] | None = None
-    ) -> RunnerHello:
-        body = RunnerHello(
+    def hello_body(self, jobs: list[str] | None = None) -> RunnerHello:
+        return RunnerHello(
             name=self.name,
             version=__version__,
             arch="arm64",
@@ -96,7 +94,6 @@ class FakeRunner:
             slots=2,
             jobs=jobs or [],
         )
-        return body if kinds is None else body.model_copy(update={"kinds": kinds})
 
     async def connect(self) -> None:
         await self.client.hello(self.hello_body())
@@ -690,7 +687,8 @@ async def test_a_selftest_is_queued_for_a_runner_that_runs_it(cp: CP) -> None:
         assert (r.status_code, r.json()["code"]) == (422, "selftest")
         r = await c.post(url, json={})
         assert (r.status_code, r.json()["code"]) == (422, "kind")
-        await runner.client.hello(runner.hello_body(kinds=["scenario", "selftest"]))
+        able = runner.hello_body().model_copy(update={"kinds": ["scenario", "selftest"]})
+        await runner.client.hello(able)
         r = await c.post(url, json={})
         assert r.status_code == 202, r.text
         (run_id,) = r.json()["run_ids"]
