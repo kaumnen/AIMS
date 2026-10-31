@@ -676,6 +676,63 @@ async def test_the_stream_resumes_from_its_cursor(cp: CP, local: LocalEventStore
     await pusher.client.aclose()
 
 
+async def test_a_new_stream_resumes_from_the_cursor_in_its_query(
+    cp: CP, local: LocalEventStore
+) -> None:
+    pusher = FakeRunner(cp, "pusher")
+    await pusher.client.hello(pusher.hello_body())
+    run_id = await local.create_run(STARTED)
+    await local.append(run_id, [call(n) for n in range(5)])
+    await local.append(run_id, [Draft(RunFinished(status="completed"))])
+    await ship(local, pusher.client, run_id)
+
+    def first_seq(got: list[Any]) -> int:
+        return next(d["events"][0]["seq"] for k, d, _ in got if k == "events")
+
+    async with cp.client(cp.viewer) as c:
+        params = {"run": run_id, "after": -1, "last_event_id": f"{run_id}:2"}
+        assert first_seq(await sse(c, params, want=1)) == 3
+        # the header a reconnecting browser sends is newer than its URL
+        got = await sse(c, params, want=1, last=f"{run_id}:3")
+        assert first_seq(got) == 4
+    await pusher.client.aclose()
+
+
+async def test_a_new_stream_hears_of_runs_that_changed_since_its_cursor(
+    cp: CP, local: LocalEventStore
+) -> None:
+    pusher = FakeRunner(cp, "pusher")
+    await pusher.client.hello(pusher.hello_body())
+    async with cp.client(cp.viewer) as c:
+        [(kind, _, mark)] = await sse(c, {"runs": "true"}, want=1)
+        assert kind == "runner"
+        assert mark.startswith("@")
+        run_id = await local.create_run(STARTED)
+        await local.append(run_id, [Draft(RunFinished(status="completed"))])
+        await ship(local, pusher.client, run_id)
+        params = {"runs": "true", "last_event_id": mark}
+        async with asyncio.timeout(10), c.sse("/api/stream", params=params) as source:
+            async for e in source:
+                if e.event == "run" and json.loads(e.data)["run"]["run_id"] == run_id:
+                    break
+    await pusher.client.aclose()
+
+
+async def test_health_counts_the_open_streams(cp: CP) -> None:
+    async def streams(c: httpx2.AsyncClient, want: int) -> None:
+        async with asyncio.timeout(10):
+            while True:
+                if (await c.get("/api/health")).json()["streams"] == want:
+                    return
+                await asyncio.sleep(0.05)
+
+    async with cp.client(cp.viewer) as c, cp.client(cp.viewer) as reader:
+        await streams(c, 0)
+        async with reader.sse("/api/stream", params={"runs": "true"}):
+            await streams(c, 1)
+        await streams(c, 0)
+
+
 async def test_a_review_that_starts_resends_the_run_it_reviews(
     cp: CP, local: LocalEventStore
 ) -> None:

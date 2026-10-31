@@ -968,7 +968,9 @@ export interface paths {
          * Stream
          * @description Subscribe with `runs` (run list and runner changes), `run` with `after` (that run's
          *     events past a seq, `types` to filter) and `deltas` (live model output of runs). Each
-         *     message's `event` is its `kind`.
+         *     message's `event` is its `kind`. `last_event_id` resumes like the Last-Event-ID header,
+         *     for a client that opens a new stream with other subscriptions; the header wins, since a
+         *     browser that reconnects sends a newer one than its URL holds.
          */
         get: operations["stream"];
         put?: never;
@@ -3020,6 +3022,8 @@ export interface components {
             ok: boolean;
             /** Runners */
             runners: number;
+            /** Streams */
+            streams: number;
             /** Tracer */
             tracer: boolean;
             /** Uptime S */
@@ -9858,6 +9862,7 @@ export interface operations {
                 after?: number[] | null;
                 types?: string[] | null;
                 deltas?: string[] | null;
+                last_event_id?: string | null;
             };
             header?: {
                 "Last-Event-ID"?: string | null;

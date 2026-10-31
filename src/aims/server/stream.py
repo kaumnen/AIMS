@@ -131,17 +131,21 @@ async def stream(
     after: Annotated[list[int] | None, Query()] = None,
     types: Annotated[list[str] | None, Query()] = None,
     deltas: Runs = None,
-    last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
+    last_event_id: str | None = None,
+    header_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
 ) -> AsyncIterator[ServerSentEvent]:
     """Subscribe with `runs` (run list and runner changes), `run` with `after` (that run's
     events past a seq, `types` to filter) and `deltas` (live model output of runs). Each
-    message's `event` is its `kind`."""
+    message's `event` is its `kind`. `last_event_id` resumes like the Last-Event-ID header,
+    for a client that opens a new stream with other subscriptions; the header wins, since a
+    browser that reconnects sends a newer one than its URL holds."""
     run = run or []
     after = after or []
     cursors = {r: (after[i] if i < len(after) else -1) for i, r in enumerate(run)}
     version: int | None = state.changes.version if runs or run else None
-    if last_event_id:
-        resumed_version, resumed = parse_id(last_event_id)
+    resume = header_id or last_event_id
+    if resume:
+        resumed_version, resumed = parse_id(resume)
         cursors.update({r: s for r, s in resumed.items() if r in cursors})
         if resumed_version is not None and version is not None:
             version = resumed_version
@@ -157,6 +161,7 @@ async def stream(
             data=m, event=m.kind, id=cursor_id(version, cursors) if with_id else None
         )
 
+    state.streams += 1
     try:
         yield ServerSentEvent(comment="connected", retry=2000)
         if wanted:
@@ -166,7 +171,7 @@ async def stream(
         if runs:
             for info in sorted((c.info() for c in state.runners.values()), key=lambda i: i.name):
                 runners_seen[info.name] = info.model_dump(exclude={"seen_s"})
-                yield message(RunnerHealthMessage(runner=info))
+                yield message(RunnerHealthMessage(runner=info), with_id=True)
         while not state.stopping.is_set():
             store_changed = state.store.changed()
             runs_changed = state.changes.event()
@@ -211,7 +216,7 @@ async def stream(
                     key = info.model_dump(exclude={"seen_s"})
                     if runners_seen.get(info.name) != key:
                         runners_seen[info.name] = key
-                        yield message(RunnerHealthMessage(runner=info))
+                        yield message(RunnerHealthMessage(runner=info), with_id=True)
             if sub is not None:
                 while len(pending) < DELTA_BATCH:
                     try:
@@ -241,6 +246,7 @@ async def stream(
             await _first(waits, WAKE_S)
             await asyncio.sleep(COALESCE_S)
     finally:
+        state.streams -= 1
         if sub is not None:
             sub.close()
 

@@ -4474,6 +4474,10 @@
             "title": "Runners",
             "type": "integer"
           },
+          "streams": {
+            "title": "Streams",
+            "type": "integer"
+          },
           "tracer": {
             "title": "Tracer",
             "type": "boolean"
@@ -4492,7 +4496,8 @@
           "version",
           "uptime_s",
           "runners",
-          "tracer"
+          "tracer",
+          "streams"
         ],
         "title": "Health",
         "type": "object"
@@ -18492,7 +18497,7 @@
     },
     "/api/stream": {
       "get": {
-        "description": "Subscribe with `runs` (run list and runner changes), `run` with `after` (that run's\nevents past a seq, `types` to filter) and `deltas` (live model output of runs). Each\nmessage's `event` is its `kind`.",
+        "description": "Subscribe with `runs` (run list and runner changes), `run` with `after` (that run's\nevents past a seq, `types` to filter) and `deltas` (live model output of runs). Each\nmessage's `event` is its `kind`. `last_event_id` resumes like the Last-Event-ID header,\nfor a client that opens a new stream with other subscriptions; the header wins, since a\nbrowser that reconnects sends a newer one than its URL holds.",
         "operationId": "stream",
         "parameters": [
           {
@@ -18581,6 +18586,22 @@
                 }
               ],
               "title": "Deltas"
+            }
+          },
+          {
+            "in": "query",
+            "name": "last_event_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Last Event Id"
             }
           },
           {

@@ -191,6 +191,8 @@ class Health(Out):
     uptime_s: float
     runners: int
     tracer: bool
+    # live UI streams open, one per browser when tabs share theirs
+    streams: int
 
 
 @router.get("/health", tags=["health"])
@@ -202,6 +204,7 @@ async def health(principal: Viewer, state: State) -> Health:
         uptime_s=round(time.time() - state.started, 1),
         runners=len(live),
         tracer=any(c.tracer_alive for c in live),
+        streams=state.streams,
     )
 
 

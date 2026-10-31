@@ -226,6 +226,8 @@ class ServerState:
     wake: asyncio.Event = field(default_factory=asyncio.Event)
     runners_changed: asyncio.Event = field(default_factory=asyncio.Event)
     started: float = field(default_factory=time.time)
+    # live UI streams open now
+    streams: int = 0
     codes: LaunchCodes = field(default_factory=LaunchCodes)
     # set as the server shuts down, so live streams end instead of holding it open
     stopping: asyncio.Event = field(default_factory=asyncio.Event)
