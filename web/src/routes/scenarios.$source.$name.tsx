@@ -1,14 +1,37 @@
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { lazy, Suspense } from "react";
 
+import { SCENARIO_FILE } from "@/api/scenario-files";
 import { scenarioQuery, sourceLabel, sourcesQuery } from "@/api/scenarios";
 import { isProblem } from "@/api/session";
+import { useOperator } from "@/components/run/controls";
 import { NewRun } from "@/components/runs/new-run";
+import { NewScenario } from "@/components/scenarios/new-scenario";
 import { Overview } from "@/components/scenarios/overview";
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+
+// The editor is the heaviest part of the app; it loads when the Files tab opens.
+const FilesTab = lazy(() => import("@/components/scenarios/files"));
+
+interface ScenarioSearch {
+  tab?: "files";
+  file?: string;
+}
+
+function without(search: ScenarioSearch, key: keyof ScenarioSearch): ScenarioSearch {
+  const out = { ...search };
+  delete out[key];
+  return out;
+}
 
 export const Route = createFileRoute("/scenarios/$source/$name")({
   staticData: { crumb: (p) => p["name"] ?? "" },
+  validateSearch: (raw: Record<string, unknown>): ScenarioSearch => ({
+    ...(raw["tab"] === "files" ? { tab: "files" as const } : {}),
+    ...(typeof raw["file"] === "string" && raw["file"] ? { file: raw["file"] } : {}),
+  }),
   loader: ({ context, params }) => {
     void context.queryClient.prefetchQuery(scenarioQuery(params.source, params.name));
   },
@@ -17,6 +40,9 @@ export const Route = createFileRoute("/scenarios/$source/$name")({
 
 function ScenarioPage() {
   const { source, name } = Route.useParams();
+  const search = Route.useSearch();
+  const navigate = Route.useNavigate();
+  const operator = useOperator();
   const detail = useQuery(scenarioQuery(source, name));
   const sources = useQuery(sourcesQuery);
   if (detail.isPending) return <p className="text-muted-foreground">Loading scenario</p>;
@@ -32,8 +58,9 @@ function ScenarioPage() {
     );
   }
   const d = detail.data;
+  const tab = operator && search.tab === "files" ? "files" : "overview";
   return (
-    <div className="flex max-w-6xl flex-col gap-4">
+    <div className="flex max-w-7xl flex-col gap-3">
       <header className="flex flex-wrap items-end gap-x-8 gap-y-2">
         <div className="min-w-0">
           <h1 className="flex items-baseline gap-2 text-lg font-medium">
@@ -55,12 +82,48 @@ function ScenarioPage() {
           >
             Runs
           </Button>
+          <NewScenario from={{ source: d.source, name: d.name }} />
           {d.errors.length === 0 && (
             <NewRun scenario={{ source: d.source, name: d.name }} label="Run" />
           )}
         </div>
       </header>
-      <Overview detail={d} />
+      <Tabs
+        value={tab}
+        onValueChange={(v) =>
+          void navigate({
+            search: (prev) =>
+              v === "files" ? { ...prev, tab: "files" as const } : without(prev, "tab"),
+            replace: true,
+          })
+        }
+      >
+        {operator && (
+          <TabsList variant="line" className="border-b">
+            <TabsTrigger value="overview">Overview</TabsTrigger>
+            <TabsTrigger value="files">Files</TabsTrigger>
+          </TabsList>
+        )}
+        <TabsContent value="overview" className="pt-3">
+          <Overview detail={d} />
+        </TabsContent>
+        {operator && (
+          <TabsContent value="files" className="pt-3">
+            <Suspense fallback={<p className="text-muted-foreground">Loading the editor</p>}>
+              <FilesTab
+                detail={d}
+                file={search.file ?? SCENARIO_FILE}
+                onFile={(file) =>
+                  void navigate({
+                    search: (prev) =>
+                      file === SCENARIO_FILE ? without(prev, "file") : { ...prev, file },
+                  })
+                }
+              />
+            </Suspense>
+          </TabsContent>
+        )}
+      </Tabs>
     </div>
   );
 }

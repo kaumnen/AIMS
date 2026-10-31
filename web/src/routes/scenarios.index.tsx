@@ -3,6 +3,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 
 import { type ScenarioInfo, scenariosQuery, sourceLabel, sourcesQuery } from "@/api/scenarios";
 import { useOperator } from "@/components/run/controls";
+import { NewScenario } from "@/components/scenarios/new-scenario";
 import { Button } from "@/components/ui/button";
 
 export const Route = createFileRoute("/scenarios/")({
@@ -28,7 +29,15 @@ function Scenarios() {
   for (const s of list.data) groups.set(s.source, [...(groups.get(s.source) ?? []), s]);
   return (
     <div className="flex max-w-5xl flex-col gap-6">
-      <h1 className="sr-only">Scenarios</h1>
+      <div className="flex items-center gap-2">
+        <h1 className="sr-only">Scenarios</h1>
+        <span className="text-muted-foreground">
+          {list.data.length} {list.data.length === 1 ? "scenario" : "scenarios"}
+        </span>
+        <div className="ml-auto">
+          <NewScenario />
+        </div>
+      </div>
       {groups.size === 0 && (
         <p className="text-muted-foreground rounded-sm border px-3 py-6">
           No scenarios yet. A scenario is a folder with a scenario.yaml under a scenario source.

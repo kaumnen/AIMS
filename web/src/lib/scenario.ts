@@ -53,3 +53,34 @@ export function overrideKeys(prompts: Record<string, unknown> | null | undefined
   }
   return out;
 }
+
+export interface TreeNode {
+  name: string;
+  // the file's path, null for a folder
+  path: string | null;
+  children: TreeNode[];
+}
+
+// Paths as folders and files: scenario.yaml first, then folders, then files, each by name.
+export function fileTree(paths: readonly string[]): TreeNode[] {
+  const root: TreeNode = { name: "", path: null, children: [] };
+  for (const path of paths) {
+    const parts = path.split("/");
+    let node = root;
+    for (const [i, part] of parts.entries()) {
+      const leaf = i === parts.length - 1;
+      let next = node.children.find((c) => c.name === part && (c.path === null) === !leaf);
+      if (!next) {
+        next = { name: part, path: leaf ? path : null, children: [] };
+        node.children.push(next);
+      }
+      node = next;
+    }
+  }
+  const rank = (n: TreeNode) => (n.path === "scenario.yaml" ? 0 : n.path === null ? 1 : 2);
+  const sort = (nodes: TreeNode[]): TreeNode[] =>
+    nodes
+      .map((n) => ({ ...n, children: sort(n.children) }))
+      .toSorted((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+  return sort(root.children);
+}
