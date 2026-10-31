@@ -59,6 +59,8 @@ from aims.run.fork import Origin
 from aims.run.view import LiveView, _Run
 from aims.scenario import Bundle
 from aims.scenario import load as load_scenario
+from aims.scenario.budget import BudgetOverride
+from aims.scenario.budget import parse as parse_budget
 from aims.wire import MonitorMode
 
 CONFIG = """\
@@ -161,6 +163,7 @@ async def record(
     monitor_capped: bool = False,
     fork: bool = False,
     profile: str | None = None,
+    budget: BudgetOverride | None = None,
 ) -> str:
     """A sealed run of `bundle` as the runner writes it: run.started with the agents' profiles,
     the resolved scenario and monitor, one agent call costing `cost`, the end of each agent."""
@@ -171,6 +174,7 @@ async def record(
         "scenario": {"resolved": bundle.scenario.model_dump(mode="json")},
         "monitor": None if p.monitor is None else p.monitor.snapshot(),
         "fork": {"origin": "x", "step": 1} if fork else None,
+        "budget": None if budget is None else budget.dump(),
     }
     started = RunStarted(scenario=bundle.scenario.name, oversight="observe", agents=["a"])
     run_id = await store.create_run(started.model_copy(update={"config": config}))
@@ -285,6 +289,27 @@ def test_no_cap_set_is_said_with_a_warning(tmp_path: Path) -> None:
     assert e.confirm
 
 
+def test_a_budget_override_moves_the_caps_the_ceiling_and_the_guard(tmp_path: Path) -> None:
+    settings, path = write(tmp_path, budget="{steps: 10}", extra="limits: {wall_s: 60}\n")
+    bundle = load_scenario(path)
+    e = one(settings, History(), bundle, budget=parse_budget("steps=20, run.wall_s=none"))
+    assert e.parts[0].agents.ceiling_usd == pytest.approx(20 * STEP)
+    caps = e.parts[0].caps
+    assert caps.agents["a"].model_dump() == {
+        "steps": 20,
+        "output_tokens": None,
+        "cost_usd": 5.0,
+        "wall_s": 3600.0,
+    }
+    assert (caps.run.steps, caps.run.wall_s) == (None, None)
+    plain = one(settings, History(), bundle)
+    assert plain.parts[0].agents.ceiling_usd == pytest.approx(10 * STEP)
+    assert (plain.parts[0].caps.agents["a"].steps, plain.parts[0].caps.run.wall_s) == (10, 60)
+    lifted = one(settings, History(), bundle, budget=parse_budget("steps=none, cost_usd=none"))
+    assert lifted.parts[0].agents.ceiling_usd is None
+    assert lifted.confirm
+
+
 def test_the_monitor_budget_is_its_ceiling(tmp_path: Path) -> None:
     settings, path = write(tmp_path, preset="standard", extra="limits: {monitor_cost_usd: 2}\n")
     e = one(settings, History(), load_scenario(path))
@@ -357,6 +382,29 @@ async def test_past_runs_match_on_scenario_variant_models_and_effort(
     base_estimate = one(settings, found, base)
     assert base_estimate.parts[0].agents.runs == 1
     assert base_estimate.parts[0].agents.typical_usd == pytest.approx(0.01)
+
+
+@pytest.mark.anyio
+async def test_past_runs_of_the_scenario_match_only_under_the_same_step_caps(
+    tmp_path: Path, store: LocalEventStore
+) -> None:
+    settings, path = write(tmp_path, budget="{steps: 10, cost_usd: 50}")
+    bundle = load_scenario(path)
+    raised = parse_budget("steps=40")
+    for cost in (0.1, 0.1, 0.2):
+        await record(store, settings, bundle, cost)
+    for cost in (0.8, 1.0, 1.2):
+        await record(store, settings, bundle, cost, budget=raised)
+    found = await history(store)
+    assert sorted(p.budget or 0 for p in found.runs) == [10, 10, 10, 40, 40, 40]
+    agents = one(settings, found, bundle, budget=raised).parts[0].agents
+    assert (agents.tier, agents.runs) == ("scenario", 3)
+    assert agents.typical_usd == pytest.approx(1.0)
+    agents = one(settings, found, bundle).parts[0].agents
+    assert (agents.tier, agents.runs) == ("scenario", 3)
+    assert agents.typical_usd == pytest.approx(0.1)
+    agents = one(settings, found, bundle, budget=parse_budget("steps=20")).parts[0].agents
+    assert (agents.tier, agents.runs) == ("models", 6)
 
 
 @pytest.mark.anyio

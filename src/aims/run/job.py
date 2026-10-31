@@ -25,6 +25,7 @@ from aims.run.fork import CutAt, Origin, fork_profiles, fork_schedules, live_pro
 from aims.run.runner import Bench, Fork, Options, RunError, Runner, Texts, agent_profile
 from aims.run.runner import resolve_texts as texts_of
 from aims.scenario import Bundle, Scenario, ScenarioError, from_snapshot, load
+from aims.scenario.budget import BudgetOverride
 
 JobKind = Literal["scenario", "models.check"]
 INPUTS = ("file", "files", "verifier", "context")
@@ -62,6 +63,8 @@ class JobOptions(_Strict):
     variant: str | None = None
     # over the scenario's oversight
     oversight: Oversight | None = None
+    # over the scenario's caps; a fork's is already laid over its origin's
+    budget: BudgetOverride | None = None
 
 
 class Job(_Strict):
@@ -176,10 +179,13 @@ def scenario_jobs(
     score: bool = False,
     folder: str | None = None,
     oversight: Oversight | None = None,
+    budget: BudgetOverride | None = None,
 ) -> list[Job]:
     """One job per sample of a scenario, resolved with these layers, watched by `monitor`.
     `folder` is the sha256 of the scenario folder's tar, when the runner gets it. Raises
-    ProfileError, TextError or UnknownTool."""
+    ProfileError, TextError, UnknownTool or BudgetError."""
+    if budget is not None:
+        budget.check(a.id for a in bundle.scenario.agents)
     profiles = {a.id: agent_profile(models, a, profile) for a in bundle.scenario.agents}
     texts = {a.id: texts_of(prompts, a, bundle.scenario).snapshot() for a in bundle.scenario.agents}
     group = uuid.uuid4().hex[:12] if samples > 1 else None
@@ -200,6 +206,7 @@ def scenario_jobs(
                 score=score,
                 variant=bundle.variant,
                 oversight=oversight,
+                budget=None if budget is None or budget.empty else budget,
             ),
             audit=audit,
             config_files=dict(config_files or {}),
@@ -225,12 +232,14 @@ def fork_jobs(
     cut: CutAt | None = None,
     keep_others: bool = False,
     oversight: Oversight | None = None,
+    budget: BudgetOverride | None = None,
 ) -> list[Job]:
     """Jobs that fork the run `origin` at `step`, or at `cut` for a run of several agents,
     watched by `monitor`. The runner loads the
     origin itself. Without `profile`, the live steps use the origin's profiles, and only if
-    `models` has them with the same endpoint and key variable. Raises RunError or
-    ProfileError."""
+    `models` has them with the same endpoint and key variable. `budget` goes over the
+    origin's override. Raises RunError, ProfileError or BudgetError."""
+    budget = origin.fork_budget(budget)
     if profile is None:
         named = live_profiles(models, origin, step)
     else:
@@ -249,6 +258,7 @@ def fork_jobs(
                 sample=i if group else None,
                 samples=samples,
                 oversight=oversight,
+                budget=budget,
             ),
             fork=JobFork(
                 origin=origin.run_id,
@@ -328,6 +338,7 @@ def runner_for(
         samples=o.samples,
         variant=o.variant,
         oversight=o.oversight,
+        budget=o.budget,
     )
     if job.fork is None:
         try:

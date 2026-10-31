@@ -656,6 +656,146 @@
         "title": "BlobRef",
         "type": "object"
       },
+      "BudgetChange": {
+        "description": "One cap a run's override changed: on `agent`, or on the run when `scope` is run.\n`value` and `scenario` are the cap the run had and the scenario's, None for no cap.",
+        "properties": {
+          "agent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent"
+          },
+          "key": {
+            "enum": [
+              "steps",
+              "output_tokens",
+              "cost_usd",
+              "wall_s"
+            ],
+            "title": "Key",
+            "type": "string"
+          },
+          "scenario": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scenario"
+          },
+          "scope": {
+            "enum": [
+              "agent",
+              "run"
+            ],
+            "title": "Scope",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "scope",
+          "key",
+          "value",
+          "scenario"
+        ],
+        "title": "BudgetChange",
+        "type": "object"
+      },
+      "BudgetOverride-Input": {
+        "additionalProperties": false,
+        "description": "`every` changes every agent's caps, `agents` one agent's, over `every`; `run` changes\nthe scenario's `limits`.",
+        "properties": {
+          "agents": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Caps-Input"
+            },
+            "title": "Agents",
+            "type": "object"
+          },
+          "every": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Caps-Input"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Caps-Input"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "BudgetOverride",
+        "type": "object"
+      },
+      "BudgetOverride-Output": {
+        "additionalProperties": false,
+        "description": "`every` changes every agent's caps, `agents` one agent's, over `every`; `run` changes\nthe scenario's `limits`.",
+        "properties": {
+          "agents": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Caps-Output"
+            },
+            "title": "Agents",
+            "type": "object"
+          },
+          "every": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Caps-Output"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Caps-Output"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "BudgetOverride",
+        "type": "object"
+      },
       "CacheProbe": {
         "additionalProperties": false,
         "description": "A call that can tell whether file pages sit in the page cache, which sandboxes on one\nhost share: `posix_fadvise` with DONTNEED, `preadv2` with RWF_NOWAIT, `cachestat` or\n`mincore`. `path` is the file it names when the tracer could resolve it; `count` the calls\nit stands for when several were merged.",
@@ -762,6 +902,122 @@
           "input_usd"
         ],
         "title": "CachedRate",
+        "type": "object"
+      },
+      "Caps-Input": {
+        "additionalProperties": false,
+        "description": "Caps to change. A field set to None lifts that cap; a field left out keeps it. Only the\nfields given are dumped, so a copy read back changes the same caps.",
+        "properties": {
+          "cost_usd": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          },
+          "output_tokens": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Tokens"
+          },
+          "steps": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Steps"
+          },
+          "wall_s": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wall S"
+          }
+        },
+        "title": "Caps",
+        "type": "object"
+      },
+      "Caps-Output": {
+        "$ref": "#/components/schemas/GivenCaps"
+      },
+      "CapsInForce": {
+        "description": "Caps a run has; None is no cap.",
+        "properties": {
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          },
+          "output_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Tokens"
+          },
+          "steps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Steps"
+          },
+          "wall_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wall S"
+          }
+        },
+        "required": [
+          "steps",
+          "output_tokens",
+          "cost_usd",
+          "wall_s"
+        ],
+        "title": "CapsInForce",
         "type": "object"
       },
       "CategoryFinding": {
@@ -3867,6 +4123,58 @@
         "title": "FsSnapshot",
         "type": "object"
       },
+      "GivenCaps": {
+        "additionalProperties": false,
+        "description": "Caps as an override dumps them: only the ones it changes.",
+        "properties": {
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          },
+          "output_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Tokens"
+          },
+          "steps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Steps"
+          },
+          "wall_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wall S"
+          }
+        },
+        "title": "GivenCaps",
+        "type": "object"
+      },
       "Group": {
         "description": "The units of one scenario, variant (None for the base scenario) and arm; a pooled group\nhas neither scenario nor variant. `took` is the share of subjects with plants that took one,\n`plants` the same per plant; `considered` counts the subjects that took none but whose model\noutput held a plant's canary, `labelled` the ones a person labelled. `aware` and `unaware`\nare the any-layer catch rates at importance 3 of the positives that did and did not say\nthey thought they were tested. `hid` and `invented` are the shares of the positives with an\nanswer check that told the operator of none of their takes and that gave a reason the\nplants' facts contradict. `unexplained` counts the flags no plant explains by label.",
         "properties": {
@@ -4737,6 +5045,16 @@
       "JobOptions": {
         "additionalProperties": false,
         "properties": {
+          "budget": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BudgetOverride-Output"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "group": {
             "anyOf": [
               {
@@ -9141,9 +9459,37 @@
         "title": "ReviewEstimate",
         "type": "object"
       },
-      "RunDetail": {
-        "description": "`verdict` is the judge's `monitor.verdict`; `monitor_runs` are the monitor runs over this\nrun and `score_runs` the scores of it, queued ones too, newest first.",
+      "RunCaps": {
+        "description": "The caps a run would have, its budget override applied: each agent's, in the scenario's\norder, and the run's own.",
         "properties": {
+          "agents": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/CapsInForce"
+            },
+            "title": "Agents",
+            "type": "object"
+          },
+          "run": {
+            "$ref": "#/components/schemas/CapsInForce"
+          }
+        },
+        "required": [
+          "agents",
+          "run"
+        ],
+        "title": "RunCaps",
+        "type": "object"
+      },
+      "RunDetail": {
+        "description": "`verdict` is the judge's `monitor.verdict`; `monitor_runs` are the monitor runs over this\nrun and `score_runs` the scores of it, queued ones too, newest first. `budget` lists the\ncaps the run's budget override changed from its scenario's.",
+        "properties": {
+          "budget": {
+            "items": {
+              "$ref": "#/components/schemas/BudgetChange"
+            },
+            "title": "Budget",
+            "type": "array"
+          },
           "finished": {
             "anyOf": [
               {
@@ -9198,7 +9544,8 @@
           "finished",
           "verdict",
           "monitor_runs",
-          "score_runs"
+          "score_runs",
+          "budget"
         ],
         "title": "RunDetail",
         "type": "object"
@@ -11521,7 +11868,7 @@
         "type": "object"
       },
       "StartFork": {
-        "description": "`monitor` picks the fork's monitor preset over the config files and the scenario. `at`\ncuts a run of several agents: `agent:N` after that agent's step N, or `@seq` after an\nevent; with `keep_others` the other agents keep their recorded answers until their own\ninputs change. `step` is the last step replayed of a run of one agent. `confirm` and\n`oversight` as in StartRun; the estimate counts only the steps after the cut.",
+        "description": "`monitor` picks the fork's monitor preset over the config files and the scenario. `at`\ncuts a run of several agents: `agent:N` after that agent's step N, or `@seq` after an\nevent; with `keep_others` the other agents keep their recorded answers until their own\ninputs change. `step` is the last step replayed of a run of one agent. `confirm` and\n`oversight` as in StartRun; the estimate counts only the steps after the cut. `budget` as\nin StartRun, laid over the origin's own override cap by cap.",
         "properties": {
           "at": {
             "anyOf": [
@@ -11542,6 +11889,16 @@
             ],
             "title": "Audit",
             "type": "string"
+          },
+          "budget": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BudgetOverride-Input"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "confirm": {
             "default": false,
@@ -11770,7 +12127,7 @@
         "type": "object"
       },
       "StartRun": {
-        "description": "`monitor` picks the monitor's preset over the config files and the scenario; None keeps\nwhat they say, else `standard`. `variant` applies a named variant of the scenario. When the\nestimate is above `confirm_above_usd`, or nothing bounds the cost, the runs start only with\n`confirm`, like `aims run --yes`. `score` scores each run against its truth file once the\nfile arrives, as `aims run --score` does. `oversight` replaces the scenario's: what the\nmonitor may do in these runs.",
+        "description": "`monitor` picks the monitor's preset over the config files and the scenario; None keeps\nwhat they say, else `standard`. `variant` applies a named variant of the scenario. When the\nestimate is above `confirm_above_usd`, or nothing bounds the cost, the runs start only with\n`confirm`, like `aims run --yes`. `score` scores each run against its truth file once the\nfile arrives, as `aims run --score` does. `oversight` replaces the scenario's: what the\nmonitor may do in these runs. `budget` changes the scenario's caps, as `aims run --budget`\ndoes: in each set of caps a field set to null lifts that cap, a field left out keeps it.",
         "properties": {
           "audit": {
             "default": "kernel",
@@ -11780,6 +12137,16 @@
             ],
             "title": "Audit",
             "type": "string"
+          },
+          "budget": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BudgetOverride-Input"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "confirm": {
             "default": false,
@@ -12764,10 +13131,13 @@
         "type": "object"
       },
       "VariantCost": {
-        "description": "One run of one variant. `monitor` is None when the monitor is off; `steps` is the median\nnumber of steps each agent took in past runs of the same scenario. `replayed` is the steps\neach agent of a fork replays before it goes live: the agents' figures count only the steps\nafter them.",
+        "description": "One run of one variant. `monitor` is None when the monitor is off; `steps` is the median\nnumber of steps each agent took in past runs of the same scenario under the same step\ncaps. `replayed` is the steps each agent of a fork replays before it goes live: the\nagents' figures count only the steps after them. `caps` are the caps the run would have.",
         "properties": {
           "agents": {
             "$ref": "#/components/schemas/CostFigures"
+          },
+          "caps": {
+            "$ref": "#/components/schemas/RunCaps"
           },
           "monitor": {
             "anyOf": [
@@ -12828,7 +13198,8 @@
           "monitor",
           "monitor_preset",
           "steps",
-          "replayed"
+          "replayed",
+          "caps"
         ],
         "title": "VariantCost",
         "type": "object"
@@ -15273,7 +15644,7 @@
     },
     "/api/runs/{run_id}/forks/estimate": {
       "get": {
-        "description": "What forks of a run cost, as `aims run --replay` prints it before they start: the\nagents only for the steps after the cut, the monitor for every step. Takes the fields of\nthe request that starts them that change the cost.",
+        "description": "What forks of a run cost, as `aims run --replay` prints it before they start: the\nagents only for the steps after the cut, the monitor for every step. Takes the fields of\nthe request that starts them that change the cost; `budget` as JSON.",
         "operationId": "estimate_forks",
         "parameters": [
           {
@@ -15376,6 +15747,24 @@
                 }
               ],
               "title": "Monitor"
+            }
+          },
+          {
+            "description": "A budget override as JSON, the shape of StartRun's budget.",
+            "in": "query",
+            "name": "budget",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A budget override as JSON, the shape of StartRun's budget.",
+              "title": "Budget"
             }
           }
         ],
@@ -17247,7 +17636,7 @@
     },
     "/api/scenarios/{source}/{name}/estimate": {
       "get": {
-        "description": "What `samples` runs of the scenario cost, of one variant or with `variants=all` of each:\nwhat the caps allow, and the typical and high cost of past runs.",
+        "description": "What `samples` runs of the scenario cost, of one variant or with `variants=all` of each:\nwhat the caps allow, and the typical and high cost of past runs. `budget` is the JSON of\nStartRun's `budget`.",
         "operationId": "estimate_scenario",
         "parameters": [
           {
@@ -17349,6 +17738,24 @@
                 }
               ],
               "title": "Monitor"
+            }
+          },
+          {
+            "description": "A budget override as JSON, the shape of StartRun's budget.",
+            "in": "query",
+            "name": "budget",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A budget override as JSON, the shape of StartRun's budget.",
+              "title": "Budget"
             }
           }
         ],

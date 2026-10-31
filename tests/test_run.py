@@ -3,6 +3,7 @@ import os
 import tarfile
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from scripted import Script, call, models, profile
@@ -22,6 +23,7 @@ from aims.run.fork import check_fork, fork_profiles, fork_schedules, load_origin
 from aims.run.runner import Bench, Fork, Options, Runner
 from aims.sandbox import DockerBackend
 from aims.scenario import load
+from aims.scenario.budget import parse as parse_budget
 
 pytestmark = [pytest.mark.anyio, pytest.mark.docker]
 
@@ -177,6 +179,91 @@ async def test_setup_failure_fails_the_run_without_an_agent(
     assert result.run_id is not None
     assert not await events(store, result.run_id, "agent.started")
     assert (await store.verify(result.run_id)).ok
+
+
+async def test_a_budget_override_caps_the_run_and_its_forks_keep_or_raise_it(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    script = Script(call("bash", command="true"), call("bash", command="true"))
+    bench = Bench(store, backend, models(profile()), transport=script.transport())
+    options = Options(budget=parse_budget("steps=2, run.wall_s=600"))
+    result = await Runner(bench, load(SCENARIO), options).run()
+
+    assert result.status == "completed", result.reason
+    assert result.run_id is not None
+    run_id = result.run_id
+    assert (result.agents["agent"].reason, result.agents["agent"].steps) == ("budget_steps", 2)
+    (started,) = await events(store, run_id, "run.started")
+    config: Any = started.data["config"]
+    assert config["budget"] == {"every": {"steps": 2}, "run": {"wall_s": 600.0}}
+    assert config["scenario"]["resolved"]["agents"][0]["budget"]["steps"] == 30
+    (agent,) = await events(store, run_id, "agent.started")
+    caps: Any = agent.data["budget"]
+    assert (caps["steps"], caps["cost_usd"]) == (2, 0.5)
+
+    origin = await load_origin(store, run_id)
+    assert origin.budget is not None
+    for top, steps in ((None, 2), (parse_budget("steps=3"), 3)):
+        fork = Fork(origin=run_id, step=1)
+        live = Script(*[call("bash", command="echo live")] * (steps - 1))
+        bench = Bench(store, backend, models(profile()), transport=live.transport())
+        forked = await Runner(
+            bench,
+            origin.bundle,
+            Options(fork=fork, budget=origin.fork_budget(top)),
+            profiles=fork_profiles(bench, origin, fork),
+            schedules=fork_schedules(origin, fork),
+            texts=origin.texts,
+            replay=planner(bench, origin, fork),
+        ).run()
+        assert forked.status == "completed", forked.reason
+        done = forked.agents["agent"]
+        assert (done.reason, done.steps, len(live.requests)) == ("budget_steps", steps, steps - 1)
+
+
+async def test_a_fork_replays_under_its_origin_s_caps_and_goes_live_under_its_own(
+    backend: DockerBackend, store: LocalEventStore, tmp_path: Path
+) -> None:
+    """The origin is told of its budget at step 3 of 5; a fork with 10 steps replays that
+    warning, so its replayed requests match, and warns again at its own threshold."""
+    path = tmp_path / "warned.yaml"
+    path.write_text(
+        "version: 1\nname: warned\noversight: observe\ntask:\n  instruction: x\n"
+        "  environment: {image: python:3.13-slim}\n"
+        "agents:\n  - id: agent\n    budget: {steps: 5, warn_at: 0.6}\n"
+    )
+    script = Script(*[call("bash", command="true")] * 4, call("submit", answer="done"))
+    bench = Bench(store, backend, models(profile()), transport=script.transport())
+    result = await Runner(bench, load(path), Options()).run()
+    assert result.run_id is not None
+    assert (result.agents["agent"].reason, result.agents["agent"].steps) == ("submitted", 5)
+
+    origin = await load_origin(store, result.run_id)
+    fork = Fork(origin=result.run_id, step=4)
+    live = Script(*[call("bash", command="true")] * 4, call("submit", answer="later"))
+    bench = Bench(store, backend, models(profile()), transport=live.transport())
+    forked = await Runner(
+        bench,
+        origin.bundle,
+        Options(fork=fork, budget=origin.fork_budget(parse_budget("steps=10"))),
+        profiles=fork_profiles(bench, origin, fork),
+        schedules=fork_schedules(origin, fork),
+        texts=origin.texts,
+        replay=planner(bench, origin, fork),
+    ).run()
+    assert forked.run_id is not None
+    assert not await events(store, forked.run_id, "replay.divergence")
+    done = forked.agents["agent"]
+    assert (done.reason, done.steps, len(live.requests)) == ("submitted", 9, 5)
+    told = [
+        (e.data["step"], e.data["text"])
+        for e in await events(store, forked.run_id, "agent.input")
+        if e.data["kind"] == "budget_warning"
+    ]
+    assert told == [
+        (3, "You have used 3 of your 5 steps."),
+        (6, "You have used 6 of your 10 steps."),
+    ]
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "runs" / "word-count"

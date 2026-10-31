@@ -66,6 +66,8 @@ from aims.sandbox import (
 )
 from aims.sandbox.base import RUNNER_DIR, TOOLBOX, Mount
 from aims.scenario import AgentConfig, Bundle, Scenario
+from aims.scenario import budget as budgets
+from aims.scenario.budget import BudgetError, BudgetOverride
 from aims.scenario.model import HOME, ScriptStep
 from aims.tools import Tool, UnknownTool, load_tools
 
@@ -140,6 +142,9 @@ class Options:
     """A tar laid over each named agent's sandbox at / once its setup commands ran."""
     oversight: Oversight | None = None
     """What the monitor may do in this run, over the scenario's `oversight`."""
+    budget: BudgetOverride | None = None
+    """Caps over the scenario's agent budgets and run limits; a fork's is already laid over
+    its origin's."""
 
 
 @dataclass(slots=True)
@@ -272,9 +277,12 @@ class Runner:
         self.bench = bench
         self.wanted_id = run_id
         self.bundle = bundle
-        self.scenario = bundle.scenario
+        try:
+            self.scenario = budgets.apply(bundle.scenario, options.budget)
+        except BudgetError as e:
+            raise RunError(f"budget: {e}") from None
         self.public_bundle = bundle
-        self.public_scenario = bundle.scenario
+        self.public_scenario = self.scenario
         self.prepared: truth.Prepared | None = None
         self.options = options
         self.given_profiles = profiles
@@ -490,7 +498,7 @@ class Runner:
         except Exception as e:
             raise RunError(f"the run cannot prepare its plants: {type(e).__name__}: {e}") from None
         self.prepared = prepared
-        self.public_scenario = prepared.scenario
+        self.public_scenario = budgets.apply(prepared.scenario, self.options.budget)
         self.public_bundle = prepared.bundle
         oversight = self.options.oversight or (
             self.public_scenario.oversight if watch is None else watch.oversight
@@ -653,6 +661,7 @@ class Runner:
             "fork": fork,
             "monitor": None if self.watch is None else self.watch.snapshot(),
             "oversight": o.oversight,
+            "budget": None if o.budget is None else o.budget.dump(),
         }
 
     async def _phases(self, profiles: dict[str, Profile], result: Result) -> None:

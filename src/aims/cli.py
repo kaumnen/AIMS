@@ -374,9 +374,10 @@ def _echo_estimate(
     preset: Any = None,
     samples: int = 1,
     json_out: bool = False,
+    budget: Any = None,
 ) -> None:
-    """Print the cost estimate of `samples` runs of each bundle, from the runs under
-    `runs_dir`."""
+    """Print the cost estimate of `samples` runs of each bundle under `budget`, from the runs
+    under `runs_dir`."""
     import asyncio
     import json
 
@@ -384,13 +385,20 @@ def _echo_estimate(
     from aims.monitor.config import MonitorConfigError
     from aims.prompts import TextError
     from aims.run.estimate import estimate_runs, load_history
+    from aims.scenario.budget import BudgetError
 
     try:
         found = asyncio.run(load_history(runs_dir))
         cost = estimate_runs(
-            found, settings, bundles, profile=profile, preset=preset, samples=samples
+            found,
+            settings,
+            bundles,
+            profile=profile,
+            preset=preset,
+            samples=samples,
+            budget=budget,
         )
-    except (MonitorConfigError, ProfileError, TextError) as e:
+    except (MonitorConfigError, ProfileError, TextError, BudgetError) as e:
         typer.echo(f"no cost estimate: {e}", err=True)
         raise typer.Exit(EXIT_FAILED) from None
     if json_out:
@@ -521,6 +529,7 @@ def run(
             " or human."
         ),
     ] = None,
+    budget: BudgetOption = None,
 ) -> None:
     """Run a scenario, or fork a recorded run at a step.
 
@@ -543,6 +552,7 @@ def run(
         raise typer.BadParameter(f"use {', '.join(oversights)}", param_hint="--oversight")
     if scenario is None and replay is None:
         raise typer.BadParameter("give a scenario file or --replay", param_hint="SCENARIO")
+    caps = _budget(budget)
     if replay is None and (fork_at is not None or strict_env or inject is not None or keep_others):
         raise typer.BadParameter(
             "needs --replay", param_hint="--fork-at/--strict-env/--inject/--keep-others"
@@ -589,9 +599,40 @@ def run(
             yes=yes,
             score=score,
             oversight=oversight,
+            budget=caps,
         )
     )
     raise typer.Exit(code)
+
+
+BudgetOption = Annotated[
+    str | None,
+    typer.Option(
+        "--budget",
+        help="Caps over the scenario's, such as steps=200,cost_usd=10: steps, output_tokens,"
+        " cost_usd and wall_s set every agent, AGENT.steps one agent and run.steps the run's"
+        " limits; none lifts a cap. A fork keeps its origin's and lays these over them.",
+    ),
+]
+
+
+def _budget(value: str | None) -> Any:
+    from aims.scenario.budget import BudgetError, parse
+
+    if value is None:
+        return None
+    try:
+        found = parse(value)
+    except BudgetError as e:
+        raise typer.BadParameter(str(e), param_hint="--budget") from None
+    return None if found.empty else found
+
+
+def _budget_line(scenario: Any, budget: Any) -> str | None:
+    from aims.scenario import budget as budgets
+
+    found = budgets.changes(scenario.model_dump(mode="json"), budget)
+    return budgets.describe(found, agents=len(scenario.agents))
 
 
 MonitorPresetOption = Annotated[
@@ -668,6 +709,7 @@ async def _run(**o: Any) -> int:
     from aims.run.view import HumanPrompt, JsonLines, LiveView, digest, result_json, summary
     from aims.sandbox import DockerBackend, SandboxError
     from aims.scenario import ScenarioError, load
+    from aims.scenario.budget import BudgetError
     from aims.wire import TracerHealth
 
     err = Console(stderr=True)
@@ -712,6 +754,14 @@ async def _run(**o: Any) -> int:
                 fork_profile = o["profile"]
                 if fork_profile is not None:
                     models.get(fork_profile)
+                budget = origin.fork_budget(o["budget"])
+                replayed = (
+                    dict(cut.steps)
+                    if cut is not None
+                    else {a.id: step for a in origin.bundle.scenario.agents}
+                )
+                origin.check_budget(o["budget"], replayed)
+                base = origin.bundle.scenario
             else:
                 bundle = load(o["scenario"], o["variant"])
                 problems = check(bundle, models, o["profile"], prompts)
@@ -719,8 +769,16 @@ async def _run(**o: Any) -> int:
                     for problem in problems:
                         err.print(f"[red]error:[/] {problem}")
                     return EXIT_FAILED
+                budget = o["budget"]
+                if budget is not None:
+                    budget.check(a.id for a in bundle.scenario.agents)
+                base = bundle.scenario
         except (ScenarioError, RunError, ProfileError) as e:
             return fail(str(e))
+        except BudgetError as e:
+            return fail(escape(f"--budget: {e}"))
+        if (line := _budget_line(base, budget)) is not None:
+            err.print(escape(line), highlight=False)
         try:
             if origin is not None and o["profile"] is None:
                 agents = list(live_profiles(models, origin, step).values())
@@ -765,6 +823,7 @@ async def _run(**o: Any) -> int:
                     profile=o["profile"],
                     preset=o["monitor"],
                     samples=o["samples"],
+                    budget=o["budget"],
                 )
             else:
                 cost = estimate_runs(
@@ -774,6 +833,7 @@ async def _run(**o: Any) -> int:
                     profile=o["profile"],
                     preset=o["monitor"],
                     samples=o["samples"] * o.get("runs", 1),
+                    budget=budget,
                 )
         except (MonitorConfigError, ProfileError, TextError, RunError, KeyError) as e:
             err.print(f"[yellow]no cost estimate:[/] {escape(str(e))}")
@@ -841,6 +901,7 @@ async def _run(**o: Any) -> int:
                     samples=o["samples"] if series_run is None else 1,
                     variant=o["variant"],
                     oversight=o["oversight"],
+                    budget=budget,
                 )
                 kwargs: dict[str, Any] = {}
                 if series_run is not None:
@@ -2113,12 +2174,14 @@ def estimate_cmd(
     ] = None,
     monitor: MonitorPresetOption = None,
     json_out: Annotated[bool, typer.Option("--json", help="Print JSON.")] = False,
+    budget: BudgetOption = None,
 ) -> None:
     """Estimate what runs of a scenario cost: what the caps allow, and the typical and high
     cost of past runs of the same scenario or models."""
     from aims.scenario import ScenarioError, load
 
     _preset(monitor)
+    caps = _budget(budget)
     if variant is not None and variants is not None:
         raise typer.BadParameter("use --variant or --variants", param_hint="--variants")
     settings = _settings(config)
@@ -2142,6 +2205,7 @@ def estimate_cmd(
         preset=monitor,
         samples=samples,
         json_out=json_out,
+        budget=caps,
     )
 
 

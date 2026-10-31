@@ -20,6 +20,7 @@ from aims.run.estimate import (
 from aims.run.estimate import spend_lines as describe_spend
 from aims.run.runner import RunError
 from aims.scenario import ScenarioError, load
+from aims.scenario.budget import BudgetError, BudgetOverride, read_json
 from aims.server.api import (
     Operator,
     Out,
@@ -37,6 +38,18 @@ from aims.server.problems import ProblemException, responses
 router = APIRouter(prefix="/api", responses=responses(401, 403, 422))
 
 
+BudgetQuery = Annotated[
+    str | None, Query(description="A budget override as JSON, the shape of StartRun's budget.")
+]
+
+
+def _budget(text: str | None) -> BudgetOverride | None:
+    try:
+        return None if text is None else read_json(text)
+    except BudgetError as e:
+        raise ProblemException(422, "Invalid budget", str(e), code="budget") from None
+
+
 @router.get("/scenarios/{source}/{name}/estimate", tags=["scenarios"], responses=responses(404))
 async def estimate_scenario(
     source: str,
@@ -49,9 +62,12 @@ async def estimate_scenario(
     samples: Annotated[int, Query(ge=1, le=100)] = 1,
     profile: str | None = None,
     monitor: Preset | None = None,
+    budget: BudgetQuery = None,
 ) -> Estimate:
     """What `samples` runs of the scenario cost, of one variant or with `variants=all` of each:
-    what the caps allow, and the typical and high cost of past runs."""
+    what the caps allow, and the typical and high cost of past runs. `budget` is the JSON of
+    StartRun's `budget`."""
+    caps = _budget(budget)
     if variant is not None and variants is not None:
         raise ProblemException(422, "Invalid request", "give variant or variants, not both")
     _, path = sources.scenario(source, name)
@@ -76,7 +92,10 @@ async def estimate_scenario(
             profile=profile,
             preset=monitor,
             samples=samples,
+            budget=caps,
         )
+    except BudgetError as e:
+        raise ProblemException(422, "Invalid budget", str(e), code="budget") from None
     except (ProfileError, MonitorConfigError, TextError) as e:
         raise ProblemException(422, "Cannot estimate", str(e), code="estimate") from None
 
@@ -92,10 +111,11 @@ async def estimate_forks(
     samples: Annotated[int, Query(ge=1, le=100)] = 1,
     profile: str | None = None,
     monitor: Preset | None = None,
+    budget: BudgetQuery = None,
 ) -> Estimate:
     """What forks of a run cost, as `aims run --replay` prints it before they start: the
     agents only for the steps after the cut, the monitor for every step. Takes the fields of
-    the request that starts them that change the cost."""
+    the request that starts them that change the cost; `budget` as JSON."""
     body = StartFork(
         step=step,
         at=at,
@@ -103,6 +123,7 @@ async def estimate_forks(
         samples=samples,
         profile=profile,
         monitor=monitor,
+        budget=_budget(budget),
     )
     point = await fork_point(state, _run_id(run_id), body)
     try:

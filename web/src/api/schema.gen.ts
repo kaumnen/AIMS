@@ -429,7 +429,7 @@ export interface paths {
          * Estimate Forks
          * @description What forks of a run cost, as `aims run --replay` prints it before they start: the
          *     agents only for the steps after the cut, the monitor for every step. Takes the fields of
-         *     the request that starts them that change the cost.
+         *     the request that starts them that change the cost; `budget` as JSON.
          */
         get: operations["estimate_forks"];
         put?: never;
@@ -863,7 +863,8 @@ export interface paths {
         /**
          * Estimate Scenario
          * @description What `samples` runs of the scenario cost, of one variant or with `variants=all` of each:
-         *     what the caps allow, and the typical and high cost of past runs.
+         *     what the caps allow, and the typical and high cost of past runs. `budget` is the JSON of
+         *     StartRun's `budget`.
          */
         get: operations["estimate_scenario"];
         put?: never;
@@ -1591,6 +1592,55 @@ export interface components {
             size: number;
         };
         /**
+         * BudgetChange
+         * @description One cap a run's override changed: on `agent`, or on the run when `scope` is run.
+         *     `value` and `scenario` are the cap the run had and the scenario's, None for no cap.
+         */
+        BudgetChange: {
+            /** Agent */
+            agent?: string | null;
+            /**
+             * Key
+             * @enum {string}
+             */
+            key: "steps" | "output_tokens" | "cost_usd" | "wall_s";
+            /** Scenario */
+            scenario: number | null;
+            /**
+             * Scope
+             * @enum {string}
+             */
+            scope: "agent" | "run";
+            /** Value */
+            value: number | null;
+        };
+        /**
+         * BudgetOverride
+         * @description `every` changes every agent's caps, `agents` one agent's, over `every`; `run` changes
+         *     the scenario's `limits`.
+         */
+        "BudgetOverride-Input": {
+            /** Agents */
+            agents?: {
+                [key: string]: components["schemas"]["Caps-Input"];
+            };
+            every?: components["schemas"]["Caps-Input"] | null;
+            run?: components["schemas"]["Caps-Input"] | null;
+        };
+        /**
+         * BudgetOverride
+         * @description `every` changes every agent's caps, `agents` one agent's, over `every`; `run` changes
+         *     the scenario's `limits`.
+         */
+        "BudgetOverride-Output": {
+            /** Agents */
+            agents?: {
+                [key: string]: components["schemas"]["Caps-Output"];
+            };
+            every?: components["schemas"]["Caps-Output"] | null;
+            run?: components["schemas"]["Caps-Output"] | null;
+        };
+        /**
          * CacheProbe
          * @description A call that can tell whether file pages sit in the page cache, which sandboxes on one
          *     host share: `posix_fadvise` with DONTNEED, `preadv2` with RWF_NOWAIT, `cachestat` or
@@ -1643,6 +1693,36 @@ export interface components {
             input_usd: number;
             /** Model */
             model: string;
+        };
+        /**
+         * Caps
+         * @description Caps to change. A field set to None lifts that cap; a field left out keeps it. Only the
+         *     fields given are dumped, so a copy read back changes the same caps.
+         */
+        "Caps-Input": {
+            /** Cost Usd */
+            cost_usd?: number | null;
+            /** Output Tokens */
+            output_tokens?: number | null;
+            /** Steps */
+            steps?: number | null;
+            /** Wall S */
+            wall_s?: number | null;
+        };
+        "Caps-Output": components["schemas"]["GivenCaps"];
+        /**
+         * CapsInForce
+         * @description Caps a run has; None is no cap.
+         */
+        CapsInForce: {
+            /** Cost Usd */
+            cost_usd: number | null;
+            /** Output Tokens */
+            output_tokens: number | null;
+            /** Steps */
+            steps: number | null;
+            /** Wall S */
+            wall_s: number | null;
         };
         /** CategoryFinding */
         CategoryFinding: {
@@ -2829,6 +2909,20 @@ export interface components {
             unhashed: number;
         };
         /**
+         * GivenCaps
+         * @description Caps as an override dumps them: only the ones it changes.
+         */
+        GivenCaps: {
+            /** Cost Usd */
+            cost_usd?: number | null;
+            /** Output Tokens */
+            output_tokens?: number | null;
+            /** Steps */
+            steps?: number | null;
+            /** Wall S */
+            wall_s?: number | null;
+        };
+        /**
          * Group
          * @description The units of one scenario, variant (None for the base scenario) and arm; a pooled group
          *     has neither scenario nor variant. `took` is the share of subjects with plants that took one,
@@ -3147,6 +3241,7 @@ export interface components {
         };
         /** JobOptions */
         JobOptions: {
+            budget?: components["schemas"]["BudgetOverride-Output"] | null;
             /** Group */
             group?: string | null;
             /**
@@ -4991,11 +5086,26 @@ export interface components {
             typical_usd: number | null;
         };
         /**
+         * RunCaps
+         * @description The caps a run would have, its budget override applied: each agent's, in the scenario's
+         *     order, and the run's own.
+         */
+        RunCaps: {
+            /** Agents */
+            agents: {
+                [key: string]: components["schemas"]["CapsInForce"];
+            };
+            run: components["schemas"]["CapsInForce"];
+        };
+        /**
          * RunDetail
          * @description `verdict` is the judge's `monitor.verdict`; `monitor_runs` are the monitor runs over this
-         *     run and `score_runs` the scores of it, queued ones too, newest first.
+         *     run and `score_runs` the scores of it, queued ones too, newest first. `budget` lists the
+         *     caps the run's budget override changed from its scenario's.
          */
         RunDetail: {
+            /** Budget */
+            budget: components["schemas"]["BudgetChange"][];
             finished: components["schemas"]["Event"] | null;
             /** Monitor Runs */
             monitor_runs: string[];
@@ -5874,7 +5984,8 @@ export interface components {
          *     cuts a run of several agents: `agent:N` after that agent's step N, or `@seq` after an
          *     event; with `keep_others` the other agents keep their recorded answers until their own
          *     inputs change. `step` is the last step replayed of a run of one agent. `confirm` and
-         *     `oversight` as in StartRun; the estimate counts only the steps after the cut.
+         *     `oversight` as in StartRun; the estimate counts only the steps after the cut. `budget` as
+         *     in StartRun, laid over the origin's own override cap by cap.
          */
         StartFork: {
             /** At */
@@ -5885,6 +5996,7 @@ export interface components {
              * @enum {string}
              */
             audit?: "kernel" | "snapshot";
+            budget?: components["schemas"]["BudgetOverride-Input"] | null;
             /**
              * Confirm
              * @default false
@@ -5977,7 +6089,8 @@ export interface components {
          *     estimate is above `confirm_above_usd`, or nothing bounds the cost, the runs start only with
          *     `confirm`, like `aims run --yes`. `score` scores each run against its truth file once the
          *     file arrives, as `aims run --score` does. `oversight` replaces the scenario's: what the
-         *     monitor may do in these runs.
+         *     monitor may do in these runs. `budget` changes the scenario's caps, as `aims run --budget`
+         *     does: in each set of caps a field set to null lifts that cap, a field left out keeps it.
          */
         StartRun: {
             /**
@@ -5986,6 +6099,7 @@ export interface components {
              * @enum {string}
              */
             audit?: "kernel" | "snapshot";
+            budget?: components["schemas"]["BudgetOverride-Input"] | null;
             /**
              * Confirm
              * @default false
@@ -6390,12 +6504,13 @@ export interface components {
         /**
          * VariantCost
          * @description One run of one variant. `monitor` is None when the monitor is off; `steps` is the median
-         *     number of steps each agent took in past runs of the same scenario. `replayed` is the steps
-         *     each agent of a fork replays before it goes live: the agents' figures count only the steps
-         *     after them.
+         *     number of steps each agent took in past runs of the same scenario under the same step
+         *     caps. `replayed` is the steps each agent of a fork replays before it goes live: the
+         *     agents' figures count only the steps after them. `caps` are the caps the run would have.
          */
         VariantCost: {
             agents: components["schemas"]["CostFigures"];
+            caps: components["schemas"]["RunCaps"];
             monitor: components["schemas"]["CostFigures"] | null;
             /** Monitor Preset */
             monitor_preset: ("off" | "signals" | "standard" | "research") | null;
@@ -7854,6 +7969,8 @@ export interface operations {
                 samples?: number;
                 profile?: string | null;
                 monitor?: ("off" | "signals" | "standard" | "research") | null;
+                /** @description A budget override as JSON, the shape of StartRun's budget. */
+                budget?: string | null;
             };
             header?: never;
             path: {
@@ -9168,6 +9285,8 @@ export interface operations {
                 samples?: number;
                 profile?: string | null;
                 monitor?: ("off" | "signals" | "standard" | "research") | null;
+                /** @description A budget override as JSON, the shape of StartRun's budget. */
+                budget?: string | null;
             };
             header?: never;
             path: {
@@ -11073,6 +11192,8 @@ export const agentInputKindValues: ReadonlyArray<FlattenedDeepRequired<component
 export const agentStartedBackendAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentStarted"]["backend"]> = ["responses", "chat"];
 export const agentStepSourceValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentStep"]["source"]> = ["live", "replay"];
 export const agentStepStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentStep"]["status"]> = ["completed", "incomplete", "error", "cancelled"];
+export const budgetChangeKeyValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["BudgetChange"]["key"]> = ["steps", "output_tokens", "cost_usd", "wall_s"];
+export const budgetChangeScopeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["BudgetChange"]["scope"]> = ["agent", "run"];
 export const cacheProbeOpValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CacheProbe"]["op"]> = ["fadvise_dontneed", "preadv2_nowait", "cachestat", "mincore"];
 export const categoryFindingCategoryValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CategoryFinding"]["category"]> = ["covert_communication", "scorer_tampering", "transcript_tampering", "deceiving_operator", "evading_checks", "collective_over_own_task", "drift", "loop_or_confusion", "fabricated_completion", "constraint_violation", "eval_awareness", "alerting_operator", "egress_attempt", "privilege_escalation", "monitor_manipulation"];
 export const categoryFindingPresentValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CategoryFinding"]["present"]> = ["yes", "no", "unclear"];

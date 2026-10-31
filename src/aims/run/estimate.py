@@ -37,6 +37,8 @@ from aims.run.fork import CutAt, Origin, next_profiles
 from aims.run.job import monitor_for
 from aims.run.runner import agent_profile
 from aims.scenario import AgentConfig, Bundle, Scenario
+from aims.scenario import budget as budgets
+from aims.scenario.budget import BudgetOverride
 from aims.wire import MonitorMode
 
 Tier = Literal["scenario", "models", "cap"]
@@ -77,11 +79,28 @@ class CostFigures(_Out):
     priced: bool = True
 
 
+class CapsInForce(_Out):
+    """Caps a run has; None is no cap."""
+
+    steps: int | None = None
+    output_tokens: int | None = None
+    cost_usd: float | None = None
+    wall_s: float | None = None
+
+
+class RunCaps(_Out):
+    """The caps a run would have, its budget override applied: each agent's, in the scenario's
+    order, and the run's own."""
+
+    agents: dict[str, CapsInForce] = Field(default_factory=dict)
+    run: CapsInForce = Field(default_factory=CapsInForce)
+
+
 class VariantCost(_Out):
     """One run of one variant. `monitor` is None when the monitor is off; `steps` is the median
-    number of steps each agent took in past runs of the same scenario. `replayed` is the steps
-    each agent of a fork replays before it goes live: the agents' figures count only the steps
-    after them."""
+    number of steps each agent took in past runs of the same scenario under the same step
+    caps. `replayed` is the steps each agent of a fork replays before it goes live: the
+    agents' figures count only the steps after them. `caps` are the caps the run would have."""
 
     variant: str | None = None
     agents: CostFigures
@@ -89,6 +108,7 @@ class VariantCost(_Out):
     monitor_preset: Preset | None = None
     steps: dict[str, float] = Field(default_factory=dict)
     replayed: dict[str, int] = Field(default_factory=dict)
+    caps: RunCaps = Field(default_factory=RunCaps)
 
 
 class CostTotal(_Out):
@@ -358,7 +378,9 @@ async def _read(store: LocalEventStore, info: RunInfo) -> _Run:
     truth = _truth(store.root / info.run_id)
     variant = truth.get("variant")
     scripted = set(_dict(truth.get("scripts")))
-    resolved = _dict(_dict(config.get("scenario")).get("resolved"))
+    resolved = budgets.apply_resolved(
+        _dict(_dict(config.get("scenario")).get("resolved")), budgets.load(config.get("budget"))
+    )
     out.past = Past(
         run_id=info.run_id,
         scenario=info.scenario,
@@ -389,10 +411,12 @@ def plan(
     *,
     profile: str | None = None,
     preset: Preset | None = None,
+    budget: BudgetOverride | None = None,
 ) -> Plan:
-    """The plan of one run of `bundle` with these settings, the monitor resolved as `aims run`
-    resolves it. Raises ProfileError, MonitorConfigError or TextError."""
-    scenario = bundle.scenario
+    """The plan of one run of `bundle` with these settings and caps, the monitor resolved as
+    `aims run` resolves it. Raises ProfileError, MonitorConfigError, TextError or
+    BudgetError."""
+    scenario = budgets.apply(bundle.scenario, budget)
     profiles = {a.id: agent_profile(settings.models, a, profile) for a in scenario.agents}
     monitor = monitor_for(
         settings.models,
@@ -413,11 +437,13 @@ def plan_fork(
     cut: CutAt | None = None,
     profile: str | None = None,
     preset: Preset | None = None,
+    budget: BudgetOverride | None = None,
 ) -> Plan:
     """The plan of a fork of `origin` after `step`, or at `cut`, its monitor resolved as the
-    fork resolves it. Raises RunError, ProfileError, MonitorConfigError or TextError."""
+    fork resolves it, `budget` laid over the origin's. Raises RunError, ProfileError,
+    MonitorConfigError, TextError or BudgetError."""
     bundle = origin.full_bundle or origin.bundle
-    scenario = bundle.scenario
+    scenario = budgets.apply(bundle.scenario, origin.fork_budget(budget))
     steps = dict(cut.steps) if cut is not None else {a.id: step for a in scenario.agents}
     if profile is not None:
         chosen = settings.models.get(profile)
@@ -445,10 +471,11 @@ def estimate_runs(
     profile: str | None = None,
     preset: Preset | None = None,
     samples: int = 1,
+    budget: BudgetOverride | None = None,
 ) -> Estimate:
-    """The estimate of `samples` runs of each bundle, one bundle per variant: what `aims run`,
-    `aims estimate`, `aims scenario check` and the UI's run launcher show."""
-    plans = [plan(settings, b, profile=profile, preset=preset) for b in bundles]
+    """The estimate of `samples` runs of each bundle, one bundle per variant, under `budget`:
+    what `aims run`, `aims estimate`, `aims scenario check` and the UI's run launcher show."""
+    plans = [plan(settings, b, profile=profile, preset=preset, budget=budget) for b in bundles]
     return estimate(
         found,
         plans,
@@ -468,12 +495,14 @@ def estimate_fork(
     profile: str | None = None,
     preset: Preset | None = None,
     samples: int = 1,
+    budget: BudgetOverride | None = None,
 ) -> Estimate:
-    """The estimate of `samples` forks of `origin`: what `aims run --replay` and the UI's fork
-    dialog show. Raises RunError, ProfileError, MonitorConfigError or TextError."""
+    """The estimate of `samples` forks of `origin`, `budget` over the origin's: what `aims run
+    --replay` and the UI's fork dialog show. Raises RunError, ProfileError,
+    MonitorConfigError, TextError or BudgetError."""
     return estimate(
         found,
-        [plan_fork(settings, origin, step, cut=cut, profile=profile, preset=preset)],
+        [plan_fork(settings, origin, step, cut=cut, profile=profile, preset=preset, budget=budget)],
         samples=samples,
         credits=settings.credits,
         confirm_above_usd=settings.confirm_above_usd,
@@ -624,7 +653,12 @@ def _part(found: History, p: Plan) -> tuple[VariantCost, tuple[dict[str, float],
     names = {prof.model: profile_provider(prof) for prof in agent_profiles}
 
     def first(past: Past) -> bool:
-        return past.scenario == s.name and past.variant == p.variant and past.models == models
+        return (
+            past.scenario == s.name
+            and past.variant == p.variant
+            and past.models == models
+            and past.budget == budget
+        )
 
     def second(past: Past) -> bool:
         return set(past.models) == set(models)
@@ -669,8 +703,16 @@ def _part(found: History, p: Plan) -> tuple[VariantCost, tuple[dict[str, float],
         monitor_preset=preset,
         steps=steps,
         replayed=dict(p.done),
+        caps=_caps(s),
     )
     return part, (agent_shares, watch_shares)
+
+
+def _caps(s: Scenario) -> RunCaps:
+    def of(caps: object) -> CapsInForce:
+        return CapsInForce(**{k: getattr(caps, k) for k in budgets.KEYS})
+
+    return RunCaps(agents={a.id: of(a.budget) for a in s.agents}, run=of(s.limits))
 
 
 def _side(
@@ -1320,9 +1362,11 @@ async def projection(store: LocalEventStore, run_id: str, found: History) -> Pro
                 case "run.started":
                     scenario = _str(d.get("scenario"))
                     config = _dict(d.get("config"))
-                    limits = _dict(
-                        _dict(_dict(config.get("scenario")).get("resolved")).get("limits")
+                    resolved = budgets.apply_resolved(
+                        _dict(_dict(config.get("scenario")).get("resolved")),
+                        budgets.load(config.get("budget")),
                     )
+                    limits = _dict(resolved.get("limits"))
                     cost_cap = _cap(limits.get("cost_usd"))
                     monitor_cap = _cap(_dict(config.get("monitor")).get("budget_usd"))
                     profiles = _dict(config.get("agents")).values()

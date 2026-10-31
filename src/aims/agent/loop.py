@@ -43,7 +43,7 @@ from aims.models import (
 )
 from aims.prompts import AgentTexts
 from aims.sandbox import AuditedSandbox
-from aims.scenario import AgentConfig, Limits, SandboxConfig
+from aims.scenario import AgentConfig, Budget, Limits, SandboxConfig
 from aims.tools import Tool, ToolContext, ToolOutcome, cap
 
 log = logging.getLogger("aims.agent")
@@ -214,11 +214,6 @@ class RunBudget:
         for _, fn, _ in list(self._agents.values()):
             fn()
 
-    def exceeded(self) -> tuple[AgentEnd, str] | None:
-        return _over(
-            self.totals, self.limits.steps, self.limits.output_tokens, self.limits.cost_usd, "run"
-        )
-
 
 def _over(
     t: Totals, steps: int | None, tokens: int | None, cost: float | None, scope: str
@@ -264,7 +259,9 @@ class ReplayPlan:
     order: each waits at `turnstile` for its seq in `order`, and what it met of the channels is
     checked against `versions`. With `keep`, the agent goes on with recorded answers after
     `fork_at` until a request of its own is not in the recording, then goes live. `actions`
-    are the origin seqs of a scripted agent's steps."""
+    are the origin seqs of a scripted agent's steps. `budget` and `limits` are the caps the
+    origin ran under, which hold while its steps replay so the replayed requests match; the
+    fork's own caps hold from the cut."""
 
     def profile_for(self, step: int) -> Profile:
         for until, profile in self.schedule:
@@ -284,6 +281,8 @@ class ReplayPlan:
     versions: dict[str, ChannelVersions] = field(default_factory=dict)
     keep: bool = False
     actions: list[int] = field(default_factory=list)
+    budget: Budget | None = None
+    limits: Limits | None = None
 
 
 class Agent:
@@ -328,7 +327,9 @@ class Agent:
         self.marks: dict[int, int] = {}
         self.compacted_through = 0
         self.last_tokens: int | None = None
-        self.warned: set[str] = set()
+        self.warned: dict[str, float] = {}
+        """The limit each cap was warned at: a fork whose caps differ from its origin's warns
+        again at the new limit."""
         self.pending: list[tuple[InputKind, str]] = []
         self.answer: str | None = None
         self._left_recording = False
@@ -579,11 +580,24 @@ class Agent:
         )
         return reply
 
+    def _budget(self) -> Budget:
+        """The agent's caps now: the origin's while its steps replay, else its own."""
+        r = self.replay
+        if r is not None and r.budget is not None and (self._replaying() or self._kept()):
+            return r.budget
+        return self.config.budget
+
+    def _limits(self) -> Limits:
+        r = self.replay
+        if r is not None and r.limits is not None and (self._replaying() or self._kept()):
+            return r.limits
+        return self.run_budget.limits
+
     def _charge(self, reply: Reply, *, step: bool) -> None:
         self.totals.add(reply, step=step)
         self.run_budget.totals.add(reply, step=step)
         if reply.cost_usd is None and not self._cost_warned:
-            caps = self.config.budget.cost_usd or self.run_budget.limits.cost_usd
+            caps = self._budget().cost_usd or self._limits().cost_usd
             if caps is not None:
                 self._cost_warned = True
                 log.warning(
@@ -593,12 +607,16 @@ class Agent:
                 )
 
     def _over_budget(self) -> tuple[AgentEnd, str] | None:
-        b = self.config.budget
+        b = self._budget()
         own = _over(self.totals, b.steps, b.output_tokens, b.cost_usd, "agent")
-        return own or self.run_budget.exceeded()
+        limits = self._limits()
+        run = _over(
+            self.run_budget.totals, limits.steps, limits.output_tokens, limits.cost_usd, "run"
+        )
+        return own or run
 
     def _warn_budget(self) -> None:
-        b = self.config.budget
+        b = self._budget()
         if b.warn_at is None:
             return
         used = {
@@ -607,9 +625,9 @@ class Agent:
             "cost_usd": (self.totals.cost_usd, b.cost_usd),
         }
         for name, (value, limit) in used.items():
-            if limit is None or name in self.warned or value < b.warn_at * limit:
+            if limit is None or self.warned.get(name) == limit or value < b.warn_at * limit:
                 continue
-            self.warned.add(name)
+            self.warned[name] = limit
             text = self.texts.budget(name).format(used=value, limit=limit)
             self.pending.append(("budget_warning", text))
 

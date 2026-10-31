@@ -16,6 +16,9 @@ let role: string;
 let posted: Record<string, unknown>[];
 let checks: string[][];
 
+const CAPS = { steps: 80, output_tokens: null, cost_usd: 4, wall_s: 1800 };
+const NO_CAPS = { steps: null, output_tokens: null, cost_usd: null, wall_s: null };
+
 const NEW = "01a19000-0000-7000-8000-000000000001";
 
 stubHeight();
@@ -74,6 +77,7 @@ function estimate(samples: number): Estimate {
         monitor_preset: "standard",
         steps: {},
         replayed: {},
+        caps: { agents: { agent: CAPS }, run: NO_CAPS },
       },
     ],
     rates: [],

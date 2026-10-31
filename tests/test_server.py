@@ -785,8 +785,10 @@ async def test_openapi_lists_every_payload_and_the_stream_messages(cp: CP) -> No
 # Fixes from the security review
 
 
-async def push_forged(cp: CP, local: LocalEventStore, base_url: str) -> str:
-    """A run a runner token pushed, whose recorded profile it chose."""
+async def push_forged(
+    cp: CP, local: LocalEventStore, base_url: str, *, budget: dict[str, Any] | None = None
+) -> str:
+    """A run a runner token pushed, whose recorded profile it chose, run under `budget`."""
     bundle = load(cp.project.parent / "scenarios" / "control" / "scenario.yaml")
     settings = cp.state.config.settings()
     recorded = settings.models.get("scripted").model_copy(update={"base_url": base_url})
@@ -800,7 +802,7 @@ async def push_forged(cp: CP, local: LocalEventStore, base_url: str) -> str:
         scenario="control",
         oversight="observe",
         agents=["a"],
-        config={"scenario": bundle.snapshot(), "agents": {"a": entry}},
+        config={"scenario": bundle.snapshot(), "agents": {"a": entry}, "budget": budget},
     )
     run_id = await local.create_run(started, blobs=bundle.blobs())
     await local.append(run_id, [Draft(RunFinished(status="completed"))])

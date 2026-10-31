@@ -307,6 +307,7 @@ beforeEach(() => {
     verdict: null,
     monitor_runs: [],
     score_runs: [],
+    budget: [],
   };
   samples = [];
   flags = [];
@@ -701,6 +702,7 @@ function withReview() {
         verdict: null,
         monitor_runs: [],
         score_runs: [],
+        budget: [],
       },
       flags: [],
       sweeps: [],

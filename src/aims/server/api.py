@@ -51,6 +51,8 @@ from aims.run.fork import CutAt, Origin, check_fork, cut_at, live_profiles, load
 from aims.run.job import Job, fork_jobs, monitor_for, scenario_jobs
 from aims.run.runner import RunError, agent_profile, check
 from aims.scenario import Bundle, Scenario, ScenarioError, folder_tar, load, parse
+from aims.scenario import budget as budgets
+from aims.scenario.budget import BudgetError, BudgetOverride
 from aims.server import db as sdb
 from aims.server.auth import Principal, require
 from aims.server.files import Sources
@@ -389,7 +391,8 @@ async def get_truth(run_id: str, principal: Operator, state: State) -> dict[str,
 
 class RunDetail(Out):
     """`verdict` is the judge's `monitor.verdict`; `monitor_runs` are the monitor runs over this
-    run and `score_runs` the scores of it, queued ones too, newest first."""
+    run and `score_runs` the scores of it, queued ones too, newest first. `budget` lists the
+    caps the run's budget override changed from its scenario's."""
 
     run: RunSummary
     started: Event | None = None
@@ -397,6 +400,19 @@ class RunDetail(Out):
     verdict: Event | None = None
     monitor_runs: list[str] = Field(default_factory=list)
     score_runs: list[str] = Field(default_factory=list)
+    budget: list[budgets.BudgetChange] = Field(default_factory=list)
+
+
+def budget_changes(started: dict[str, JsonValue]) -> list[budgets.BudgetChange]:
+    """The caps a run's override changed, from its `run.started` data."""
+    config = started.get("config")
+    if not isinstance(config, dict):
+        return []
+    scenario = config.get("scenario")
+    resolved = scenario.get("resolved") if isinstance(scenario, dict) else None
+    if not isinstance(resolved, dict):
+        return []
+    return budgets.changes(resolved, budgets.load(config.get("budget")))
 
 
 @router.get("/runs/{run_id}", tags=["runs"], responses=responses(404))
@@ -410,8 +426,10 @@ async def get_run(run_id: str, principal: Viewer, state: State) -> RunDetail:
     verdict = await state.store.events(
         run_id, types=["monitor.verdict"], before=found.events, limit=1
     )
+    started = first[0] if first and first[0].type == "run.started" else None
     return RunDetail(
         run=found,
+        budget=[] if started is None else budget_changes(started.data),
         started=first[0] if first else None,
         finished=next(iter(last), None),
         verdict=next(iter(verdict), None),
@@ -438,13 +456,15 @@ class StartRun(BaseModel):
     estimate is above `confirm_above_usd`, or nothing bounds the cost, the runs start only with
     `confirm`, like `aims run --yes`. `score` scores each run against its truth file once the
     file arrives, as `aims run --score` does. `oversight` replaces the scenario's: what the
-    monitor may do in these runs."""
+    monitor may do in these runs. `budget` changes the scenario's caps, as `aims run --budget`
+    does: in each set of caps a field set to null lifts that cap, a field left out keeps it."""
 
     scenario: ScenarioRef
     variant: str | None = None
     confirm: bool = False
     score: bool = False
     oversight: Oversight | None = None
+    budget: BudgetOverride | None = None
     samples: int = Field(default=1, ge=1, le=100)
     parallel: int | None = Field(default=None, ge=1)
     profile: str | None = None
@@ -459,13 +479,15 @@ class StartFork(BaseModel):
     cuts a run of several agents: `agent:N` after that agent's step N, or `@seq` after an
     event; with `keep_others` the other agents keep their recorded answers until their own
     inputs change. `step` is the last step replayed of a run of one agent. `confirm` and
-    `oversight` as in StartRun; the estimate counts only the steps after the cut."""
+    `oversight` as in StartRun; the estimate counts only the steps after the cut. `budget` as
+    in StartRun, laid over the origin's own override cap by cap."""
 
     step: int | None = Field(default=None, ge=0)
     at: str | None = None
     keep_others: bool = False
     confirm: bool = False
     oversight: Oversight | None = None
+    budget: BudgetOverride | None = None
     samples: int = Field(default=1, ge=1, le=100)
     parallel: int | None = Field(default=None, ge=1)
     profile: str | None = None
@@ -599,6 +621,11 @@ async def start_runs(
             code="scenario",
             errors=[ProblemError(msg=p) for p in problems],
         )
+    if body.budget is not None:
+        try:
+            body.budget.check(a.id for a in bundle.scenario.agents)
+        except BudgetError as e:
+            raise ProblemException(422, "Invalid budget", str(e), code="budget") from None
     agents = [agent_profile(settings.models, a, body.profile) for a in bundle.scenario.agents]
     monitor = _monitor(settings, bundle.scenario, agents, body.monitor)
     try:
@@ -619,6 +646,7 @@ async def start_runs(
             score=body.score,
             folder=hashlib.sha256(folder).hexdigest(),
             oversight=body.oversight,
+            budget=body.budget,
         )
     except (ProfileError, UnknownTool, ValueError) as e:
         raise ProblemException(422, "Scenario cannot run", str(e), code="scenario") from None
@@ -631,6 +659,7 @@ async def start_runs(
                 profile=body.profile,
                 preset=body.monitor,
                 samples=body.samples,
+                budget=body.budget,
             )
         except ProfileError, MonitorConfigError, TextError:
             cost = None
@@ -659,13 +688,19 @@ async def fork_point(state: ServerState, run_id: str, body: StartFork) -> ForkPo
         origin = await load_origin(state.store, run_id)
         if body.at is None and len(origin.bundle.scenario.agents) > 1:
             raise RunError("a run of several agents forks at agent:N or @seq")
+        if body.budget is not None:
+            body.budget.check(a.id for a in origin.bundle.scenario.agents)
         found = cut_at(origin, body.at) if body.at is not None else None
         if isinstance(found, CutAt):
+            origin.check_budget(body.budget, found.steps)
             return ForkPoint(origin, min(found.steps.values(), default=0), found)
         step = body.step if found is None else found
         if step is None:
             step = min(origin.steps.values(), default=0)
         check_fork(origin, step)
+        origin.check_budget(body.budget, {a.id: step for a in origin.bundle.scenario.agents})
+    except BudgetError as e:
+        raise ProblemException(422, "Invalid budget", str(e), code="budget") from None
     except (RunError, ProfileError, KeyError) as e:
         raise ProblemException(422, "Cannot fork", str(e), code="fork") from None
     return ForkPoint(origin, step)
@@ -683,6 +718,7 @@ def fork_estimate(settings: Settings, history: History, at: ForkPoint, body: Sta
         profile=body.profile,
         preset=body.monitor,
         samples=body.samples,
+        budget=body.budget,
     )
 
 
@@ -718,6 +754,7 @@ async def fork_run(run_id: str, body: StartFork, principal: Operator, state: Sta
             cut=at.cut,
             keep_others=body.keep_others,
             oversight=body.oversight,
+            budget=body.budget,
         )
     except (RunError, ProfileError, KeyError) as e:
         raise ProblemException(422, "Cannot fork", str(e), code="fork") from None

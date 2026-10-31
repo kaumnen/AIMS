@@ -41,6 +41,7 @@ from aims.run.fork import Origin, load_origin
 from aims.run.job import JobOptions
 from aims.run.runner import RunError
 from aims.scenario import Scenario
+from aims.scenario import budget as budgets
 from aims.wire import MonitorMode
 
 log = logging.getLogger("aims.monitor")
@@ -240,7 +241,7 @@ async def monitor_offline(
     if origin_head is not None and info.head != origin_head:
         raise RunError(f"run {origin.run_id} changed since the monitor run was asked for")
     o = options or JobOptions()
-    scenario = origin.bundle.scenario
+    scenario = budgets.apply(origin.bundle.scenario, origin.budget)
     config: dict[str, JsonValue] = {
         "aims": __version__,
         "mode": mode,

@@ -23,6 +23,8 @@ from aims.models import ModelClient, ModelsConfig, Profile, ProfileError, Record
 from aims.run import truth
 from aims.run.runner import Bench, Fork, RunError, Texts
 from aims.scenario import Bundle, ScenarioError, from_snapshot
+from aims.scenario import budget as budgets
+from aims.scenario.budget import BudgetError, BudgetOverride
 
 PAGE = 1000
 
@@ -51,6 +53,8 @@ class Origin:
     versions: dict[str, ChannelVersions] = field(default_factory=dict)
     restored: dict[str, bytes] = field(default_factory=dict)
     last_seq: int = -1
+    budget: BudgetOverride | None = None
+    """The caps the origin ran under over its scenario's, which its forks keep."""
 
     @property
     def seed(self) -> bytes | None:
@@ -60,6 +64,38 @@ class Origin:
     @property
     def inherited(self) -> list[dict[str, Any]] | None:
         return None if self.truth is None else self.truth.get("inherited")
+
+    def check_budget(self, budget: BudgetOverride | None, steps: Mapping[str, int]) -> None:
+        """Raises BudgetError when a step cap `budget` sets would end an agent, or the run,
+        before the first live step after the cut: the cap must be above the steps replayed.
+        `steps` is the steps each agent replays."""
+        if budget is None or budget.empty:
+            return
+        merged = budgets.apply((self.full_bundle or self.bundle).scenario, self.fork_budget(budget))
+        model = [a for a in merged.agents if not a.scripted]
+        for a in model:
+            n = steps.get(a.id, 0)
+            cap = a.budget.steps
+            if "steps" in budget.agent_caps(a.id) and cap is not None and cap <= n:
+                raise BudgetError(
+                    f"agent {a.id} replays {n} steps, so a cap of {cap} steps ends it before"
+                    f" it goes live; give it more than {n}"
+                )
+        total = sum(steps.get(a.id, 0) for a in model)
+        cap = merged.limits.steps
+        if "steps" in budget.run_caps() and cap is not None and cap <= total:
+            raise BudgetError(
+                f"the agents replay {total} steps, so a run cap of {cap} steps ends the run"
+                f" before it goes live; give it more than {total}"
+            )
+
+    def fork_budget(self, budget: BudgetOverride | None) -> BudgetOverride | None:
+        """A fork's override: `budget` laid over the origin's, cap by cap. Raises BudgetError
+        when `budget` names an agent the origin lacks."""
+        ids = [a.id for a in self.bundle.scenario.agents]
+        if budget is not None:
+            budget.check(ids)
+        return budgets.over(self.budget, budget, ids)
 
 
 async def _text(store: EventStore, run_id: str, content: Content) -> str:
@@ -139,7 +175,15 @@ async def load_origin(store: EventStore, run_id: str, *, full: bool = True) -> O
             raise RunError(
                 f"run {run_id}: agent {agent_id} recorded no usable texts: {e}"
             ) from None
-    origin = Origin(run_id, bundle, schedules, texts, full_bundle=restored, truth=record)
+    origin = Origin(
+        run_id,
+        bundle,
+        schedules,
+        texts,
+        full_bundle=restored,
+        truth=record,
+        budget=budgets.load(config.get("budget")),
+    )
     steps: dict[str, int] = defaultdict(int)
     outputs: dict[str, dict[str, RecordedOutput]] = defaultdict(dict)
     injects: dict[str, dict[int, list[str]]] = defaultdict(lambda: defaultdict(list))
@@ -432,6 +476,8 @@ def planner(bench: Bench, origin: Origin, fork: Fork, *, source: EventStore | No
         if fork.cut is not None:
             seqs = [s for order in orders.values() for s in order.values()]
             turnstile = Turnstile([*seqs, *(s for a in actions.values() for s in a)])
+        ran = budgets.apply(origin.bundle.scenario, origin.budget)
+        caps = {a.id: a.budget for a in ran.agents}
         out: dict[str, ReplayPlan] = {}
         for agent in origin.bundle.scenario.agents:
             step = fork.at(agent.id)
@@ -450,6 +496,8 @@ def planner(bench: Bench, origin: Origin, fork: Fork, *, source: EventStore | No
                 versions={c: v for c, v in origin.versions.items() if c in order},
                 keep=fork.keep_others and agent.id != fork.agent,
                 actions=actions.get(agent.id, []),
+                budget=caps[agent.id],
+                limits=ran.limits,
             )
         return out
 
