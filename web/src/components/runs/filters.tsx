@@ -12,13 +12,15 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { useOperator } from "@/lib/use-operator";
 import { cn } from "@/lib/utils";
 
-const kinds: { value: RunKind | "all"; label: string }[] = [
+// operator kinds show a scenario's truth; the server does not list them for viewers
+const kinds: { value: RunKind | "all"; label: string; operator?: boolean }[] = [
   { value: "scenario", label: "Agent runs" },
   { value: "monitor", label: "Reviews" },
-  { value: "score", label: "Scores" },
-  { value: "selftest", label: "Self-tests" },
+  { value: "score", label: "Scores", operator: true },
+  { value: "selftest", label: "Self-tests", operator: true },
   { value: "models.check", label: "Model checks" },
   { value: "all", label: "All" },
 ];
@@ -109,6 +111,7 @@ export function RunFilterBar({
   count: string;
   children?: React.ReactNode;
 }) {
+  const operator = useOperator();
   const scenarios = useQuery(scenariosQuery);
   const names = new Set((scenarios.data ?? []).map((s) => s.title ?? s.name));
   if (search.scenario) names.add(search.scenario);
@@ -134,11 +137,13 @@ export function RunFilterBar({
           if (kind !== undefined) set("kind", kind === "scenario" ? undefined : kind);
         }}
       >
-        {kinds.map((k) => (
-          <ToggleGroupItem key={k.value} value={k.value}>
-            {k.label}
-          </ToggleGroupItem>
-        ))}
+        {kinds
+          .filter((k) => operator || !k.operator)
+          .map((k) => (
+            <ToggleGroupItem key={k.value} value={k.value}>
+              {k.label}
+            </ToggleGroupItem>
+          ))}
       </ToggleGroup>
       <Choice
         name="Scenario"

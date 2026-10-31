@@ -11,6 +11,7 @@ import { run } from "@/test/runs";
 
 const fetch = vi.fn<(request: Request) => Promise<Response>>();
 let lists: Record<string, RunSummary[]>;
+let role: "operator" | "viewer";
 
 const BEE5 = "01a18a50-bee5-7263-ad19-24385640cee1";
 const REVIEW = "01a18d3b-a156-750a-b263-958e86bdd35e";
@@ -19,6 +20,7 @@ stubHeight();
 
 beforeEach(() => {
   FakeEventSource.all = [];
+  role = "operator";
   lists = {
     "kind=scenario": [
       run(BEE5, {
@@ -47,8 +49,7 @@ beforeEach(() => {
   vi.stubGlobal("fetch", fetch);
   fetch.mockImplementation(async (request) => {
     const url = new URL(request.url);
-    if (url.pathname === "/api/session")
-      return Response.json({ name: "op", role: "operator", auth: true });
+    if (url.pathname === "/api/session") return Response.json({ name: "op", role, auth: true });
     if (url.pathname === "/api/scenarios") return Response.json([]);
     if (url.pathname === "/api/runs") {
       const q = new URLSearchParams(url.search);
@@ -186,4 +187,19 @@ test("a waiting run of a series says what it waits for and its index opens the s
   await screen.findByText("1 run");
   expect(router.state.location.search).toEqual({ series: "nightly" });
   expect(runQueries()).toContain("kind=scenario&limit=100&series=nightly");
+});
+
+test("only operators can list the runs that show a scenario's truth", async () => {
+  renderAt("/runs");
+  const kinds = within(await screen.findByRole("group", { name: "Kind" }));
+  expect(await kinds.findByRole("button", { name: "Scores" })).toBeTruthy();
+  expect(kinds.getByRole("button", { name: "Self-tests" })).toBeTruthy();
+  cleanup();
+  role = "viewer";
+  renderAt("/runs");
+  await screen.findAllByRole("link", { name: "cache-keys" });
+  const seen = within(screen.getByRole("group", { name: "Kind" }));
+  expect(seen.getByRole("button", { name: "Reviews" })).toBeTruthy();
+  expect(seen.queryByRole("button", { name: "Scores" })).toBeNull();
+  expect(seen.queryByRole("button", { name: "Self-tests" })).toBeNull();
 });

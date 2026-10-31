@@ -1196,12 +1196,12 @@ test("a signals-only review asks for no model, cap or confirm", async () => {
 test("a viewer sees no score and no harm", async () => {
   withScore();
   role = "viewer";
-  renderAt(`/runs/${BEE5}`);
+  renderAt(`/runs/${BEE5}?tab=score`);
   const list = await screen.findByRole("listbox", { name: "Steps" });
   await screen.findByText("Fix the failing tests.");
   expect(screen.queryByRole("button", { name: "Review" })).toBeNull();
-  fireEvent.click(screen.getByRole("tab", { name: "Score" }));
-  expect(await screen.findByText(/only operators see it/)).toBeTruthy();
+  expect(screen.queryByRole("tab", { name: "Score" })).toBeNull();
+  expect(screen.getByRole("tab", { name: "Steps" }).getAttribute("aria-selected")).toBe("true");
   expect(list.textContent).not.toContain("harm");
   const asked = fetch.mock.calls
     .map(([r]) => new URL(r.url))

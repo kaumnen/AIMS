@@ -41,6 +41,7 @@ import {
   reaches,
 } from "@/lib/monitor";
 import { stepOf } from "@/lib/timeline";
+import { useOperator } from "@/lib/use-operator";
 
 interface RunSearch extends RawSearch {
   tab?: "raw" | "score";
@@ -110,6 +111,7 @@ function Run() {
   const search = Route.useSearch();
   const navigate = Route.useNavigate();
   const detail = useQuery(runQuery(runId));
+  const operator = useOperator();
   const change = (update: (prev: RunSearch) => RunSearch) =>
     void navigate({ search: update, replace: true });
   const run = detail.data?.run;
@@ -163,8 +165,9 @@ function Run() {
   const kind = detail.data.run.kind;
   // a case of a self-test is scripted: no model steps, its record is the raw log
   const stepped = kind !== "selftest.case";
-  const tab = search.tab ?? (stepped ? "steps" : "raw");
-  const scored = kind === "scenario";
+  const scored = kind === "scenario" && operator;
+  const asked = search.tab === "score" && !scored ? undefined : search.tab;
+  const tab = asked ?? (stepped ? "steps" : "raw");
   const toSteps = (to: StepsLink) =>
     change((prev) => ({ ...without(prev, "tab", "flag", "seq", "step"), ...to }));
   return (
