@@ -96,6 +96,15 @@ export function runsQuery(filters: RunFilters) {
   });
 }
 
+// The case runs of a self-test run.
+export function casesQuery(origin: string) {
+  return queryOptions({
+    queryKey: ["runs", "cases", origin] as const,
+    queryFn: ({ signal }) => page({ kind: "selftest.case", origin }, null, MAX_REVIEWS, signal),
+    staleTime: Infinity,
+  });
+}
+
 export function reviewsQuery(origin: string) {
   return queryOptions({
     queryKey: ["runs", "reviews", origin] as const,
@@ -202,8 +211,8 @@ export function applyRuns(qc: QueryClient, runs: readonly RunSummary[]): void {
       }
     } else if (what === "series") {
       applySeries(qc, q.queryKey, runs);
-    } else if (what === "reviews" || what === "scores") {
-      const kind = what === "reviews" ? "monitor" : "score";
+    } else if (what === "reviews" || what === "scores" || what === "cases") {
+      const kind = what === "reviews" ? "monitor" : what === "scores" ? "score" : "selftest.case";
       qc.setQueryData<RunPage>(q.queryKey, (data) => {
         if (!data) return data;
         const pages = mergePages([data], runs, { kind, origin: arg as string });

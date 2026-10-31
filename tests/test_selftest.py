@@ -259,7 +259,8 @@ def test_an_impossible_check_needs_a_failing_reward_and_no_trigger(tmp_path: Pat
 
 def test_a_selftest_job_needs_the_tracer_and_a_runner_that_runs_it(tmp_path: Path) -> None:
     bundle = load(write(tmp_path / "s"))
-    job = selftest_job(bundle, models(profile()), Prompts(), folder="f" * 64, profile="scripted")
+    keyed = profile(api_key_env="AIMS_TEST_KEY_THAT_IS_NOT_SET")
+    job = selftest_job(bundle, models(keyed), Prompts(), folder="f" * 64, profile="scripted")
     assert job.kind == "selftest"
     assert job.needs() == {"envs": [], "kernel": True, "kind": "selftest"}
     assert set(job.profiles) == {"agent"}

@@ -100,6 +100,8 @@ export function RunControls({ detail }: { detail: RunDetail }) {
   const agents = agentsOf(detail);
   const held = [...new Set(run.held.map((h) => h.agent))];
   const free = agents.filter((a) => !held.includes(a));
+  // a self-test's agents follow scripts: there is nothing to pause or tell them
+  const steered = live && run.kind !== "selftest" && run.kind !== "selftest.case";
   const pausable = agents.length === 0 ? held.length === 0 : free.length > 0;
   const close = () => setDialog(null);
   const act = (c: Command) => {
@@ -110,7 +112,7 @@ export function RunControls({ detail }: { detail: RunDetail }) {
   return (
     <div className="flex flex-col items-end gap-1">
       <div className="flex flex-wrap items-center gap-1.5">
-        {live && pausable && (
+        {steered && pausable && (
           <Each
             label="Pause"
             agents={agents.length > 1 ? free : []}
@@ -120,7 +122,7 @@ export function RunControls({ detail }: { detail: RunDetail }) {
             }
           />
         )}
-        {live && held.length > 0 && (
+        {steered && held.length > 0 && (
           <Each
             label="Resume"
             agents={agents.length > 1 ? held : []}
@@ -130,7 +132,7 @@ export function RunControls({ detail }: { detail: RunDetail }) {
             }
           />
         )}
-        {live && (
+        {steered && (
           <Button variant="outline" size="sm" disabled={busy} onClick={() => setDialog("inject")}>
             Inject
           </Button>

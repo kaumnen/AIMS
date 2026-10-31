@@ -156,7 +156,14 @@ function RunRow({
   if (run.kind === "monitor" && run.origin && !child)
     extra.push(["origin", `review of ${shortId(run.origin)}`]);
   if (run.reason && run.started_at === null) extra.push(["reason", run.reason]);
-  const name = child ? "Review" : (run.scenario ?? run.kind);
+  const name = child
+    ? run.kind === "selftest.case"
+      ? "Case"
+      : "Review"
+    : run.kind === "selftest"
+      ? `Self-test of ${run.scenario ?? "a scenario"}`
+      : (run.scenario ?? run.kind);
+  const holds = run.kind === "selftest" ? "cases" : run.reviews === 1 ? "review" : "reviews";
   return (
     <div
       role="row"
@@ -170,16 +177,16 @@ function RunRow({
       style={{ transform: `translateY(${top}px)` }}
     >
       <span role="cell" className="relative z-10 flex">
-        {run.reviews > 0 && !child && (
+        {(run.reviews > 0 || run.kind === "selftest") && !child && (
           <button
             type="button"
             onClick={() => onToggle(run.run_id)}
             aria-expanded={open}
-            aria-label={`${run.reviews} ${run.reviews === 1 ? "review" : "reviews"}`}
+            aria-label={run.kind === "selftest" ? "Cases" : `${run.reviews} ${holds}`}
             className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 flex items-center gap-0.5 rounded-sm tabular-nums outline-none focus-visible:ring-2"
           >
             <ChevronRight aria-hidden className={cn("size-3.5", open && "rotate-90")} />
-            {run.reviews}
+            {run.kind !== "selftest" && run.reviews}
           </button>
         )}
       </span>

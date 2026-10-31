@@ -102,7 +102,10 @@ class Job(_Strict):
         return out
 
     def envs(self) -> list[str]:
-        """The environment variables its profiles read, which the runner must have set."""
+        """The environment variables its profiles read, which the runner must have set. A
+        self-test calls no model: every agent in it is scripted."""
+        if self.kind == "selftest":
+            return []
         names: set[str] = set()
         for p in (*self.profiles.values(), *self.models.values()):
             names.update(e for e in (p.api_key_env, p.base_url_env) if e)

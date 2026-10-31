@@ -24,8 +24,13 @@ function Fact({ label, children }: { label: string; children: React.ReactNode })
 export function RunHeader({ detail }: { detail: RunDetail }) {
   const run = detail.run;
   const now = useNow(run.status === "running");
-  const title =
-    run.kind === "monitor" ? "Review" : run.kind === "score" ? "Score" : (run.scenario ?? run.kind);
+  const titles: Partial<Record<string, string>> = {
+    monitor: "Review",
+    score: "Score",
+    selftest: "Self-test",
+    "selftest.case": "Self-test case",
+  };
+  const title = titles[run.kind] ?? run.scenario ?? run.kind;
   const budget = changesText(detail.budget, agentsOf(detail).length > 1);
   return (
     <header className="flex flex-wrap items-end gap-x-8 gap-y-2 pb-3">

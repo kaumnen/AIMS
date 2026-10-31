@@ -24,6 +24,7 @@ import { defaultSource, LIVE, MonitorPanel, useSources } from "@/components/run/
 import { RAW_SEARCH_ID, RawEvents, type RawSearch } from "@/components/run/raw";
 import { ScoreTab, type StepsLink, useHarm } from "@/components/run/score";
 import { Scrubber } from "@/components/run/scrubber";
+import { SelfTestCases } from "@/components/run/selftest";
 import { type StepFlags, StepList } from "@/components/run/step-list";
 import { type Focus, Transcript } from "@/components/run/transcript";
 import { Button } from "@/components/ui/button";
@@ -159,8 +160,11 @@ function Run() {
       </p>
     );
   }
-  const tab = search.tab ?? "steps";
-  const scored = detail.data.run.kind === "scenario";
+  const kind = detail.data.run.kind;
+  // a case of a self-test is scripted: no model steps, its record is the raw log
+  const stepped = kind !== "selftest.case";
+  const tab = search.tab ?? (stepped ? "steps" : "raw");
+  const scored = kind === "scenario";
   const toSteps = (to: StepsLink) =>
     change((prev) => ({ ...without(prev, "tab", "flag", "seq", "step"), ...to }));
   return (
@@ -183,18 +187,24 @@ function Run() {
         className="min-h-0 flex-1"
       >
         <TabsList variant="line" className="border-b">
-          <TabsTrigger value="steps">Steps</TabsTrigger>
+          {stepped && (
+            <TabsTrigger value="steps">{kind === "selftest" ? "Cases" : "Steps"}</TabsTrigger>
+          )}
           {scored && <TabsTrigger value="score">Score</TabsTrigger>}
           <TabsTrigger value="raw">Raw events</TabsTrigger>
         </TabsList>
         <TabsContent value="steps" className="flex min-h-0 flex-col pt-1">
-          <Steps
-            runId={runId}
-            detail={detail.data}
-            search={search}
-            onChange={change}
-            inflight={inflight}
-          />
+          {kind === "selftest" ? (
+            <SelfTestCases runId={runId} detail={detail.data} />
+          ) : (
+            <Steps
+              runId={runId}
+              detail={detail.data}
+              search={search}
+              onChange={change}
+              inflight={inflight}
+            />
+          )}
         </TabsContent>
         {scored && (
           <TabsContent value="score" className="flex min-h-0 flex-col pt-1">

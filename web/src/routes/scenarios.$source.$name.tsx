@@ -10,6 +10,7 @@ import { NewRun } from "@/components/runs/new-run";
 import { NewScenario } from "@/components/scenarios/new-scenario";
 import { Overview } from "@/components/scenarios/overview";
 import { PromptsTab } from "@/components/scenarios/prompts";
+import { SelfTestButton } from "@/components/scenarios/selftest-button";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
@@ -85,6 +86,7 @@ function ScenarioPage() {
           >
             Runs
           </Button>
+          {operator && d.selftest && <SelfTestButton source={d.source} name={d.name} />}
           <NewScenario from={{ source: d.source, name: d.name }} />
           {d.errors.length === 0 && (
             <NewRun scenario={{ source: d.source, name: d.name }} label="Run" />

@@ -222,6 +222,15 @@ function everyEvent(runId: string, types: string[], signal: AbortSignal): Promis
   });
 }
 
+// What a self-test run recorded of each case that ended, in order.
+export function selftestCasesQuery(runId: string) {
+  return queryOptions({
+    queryKey: ["runs", "selftest", runId] as const,
+    queryFn: ({ signal }) => everyEvent(runId, ["selftest.case"], signal),
+    staleTime: Infinity,
+  });
+}
+
 // Where each sandbox's boot clock sits on the wall clock.
 export function sandboxesQuery(runId: string) {
   return queryOptions({

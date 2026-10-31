@@ -2,7 +2,14 @@ import { useInfiniteQuery, useQueries } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 
-import { filtersOf, parseRunsSearch, reviewsQuery, runsQuery, type RunsSearch } from "@/api/runs";
+import {
+  casesQuery,
+  filtersOf,
+  parseRunsSearch,
+  reviewsQuery,
+  runsQuery,
+  type RunsSearch,
+} from "@/api/runs";
 import { rememberSearch } from "@/components/crumbs";
 import { clear, RunFilterBar } from "@/components/runs/filters";
 import { NewRun } from "@/components/runs/new-run";
@@ -21,10 +28,13 @@ function Runs() {
   const filters = filtersOf(search);
   useEffect(() => rememberSearch("/runs", { ...search }), [search]);
   const list = useInfiniteQuery(runsQuery(filters));
-  const nest = filters.kind === "scenario";
+  // agent runs hold their reviews, self-tests their cases
+  const nest = filters.kind === "scenario" || filters.kind === "selftest";
+  const children = filters.kind === "selftest" ? casesQuery : reviewsQuery;
+  const what = filters.kind === "selftest" ? "cases" : "reviews";
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const open = nest ? [...expanded] : [];
-  const reviews = useQueries({ queries: open.map((id) => reviewsQuery(id)) });
+  const reviews = useQueries({ queries: open.map((id) => children(id)) });
 
   const runs = list.data?.pages.flatMap((p) => p.items) ?? [];
   const rows: Row[] = [];
@@ -34,9 +44,9 @@ function Runs() {
     if (at < 0) continue;
     const q = reviews[at];
     if (q === undefined || q.isPending) {
-      rows.push({ kind: "note", key: `${run.run_id}:note`, text: "Loading reviews" });
+      rows.push({ kind: "note", key: `${run.run_id}:note`, text: `Loading ${what}` });
     } else if (q.isError) {
-      rows.push({ kind: "note", key: `${run.run_id}:note`, text: "Reviews did not load" });
+      rows.push({ kind: "note", key: `${run.run_id}:note`, text: `The ${what} did not load` });
     } else {
       for (const r of q.data.items) rows.push({ kind: "run", run: r, child: true });
     }

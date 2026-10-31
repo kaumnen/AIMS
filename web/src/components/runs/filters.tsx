@@ -18,6 +18,7 @@ const kinds: { value: RunKind | "all"; label: string }[] = [
   { value: "scenario", label: "Agent runs" },
   { value: "monitor", label: "Reviews" },
   { value: "score", label: "Scores" },
+  { value: "selftest", label: "Self-tests" },
   { value: "models.check", label: "Model checks" },
   { value: "all", label: "All" },
 ];
