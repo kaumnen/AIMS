@@ -6,6 +6,7 @@ import { shortId, usd } from "@/lib/format";
 import { useNow } from "@/lib/use-now";
 import { cn } from "@/lib/utils";
 
+import { RunCommands } from "./commands";
 import { RunControls } from "./controls";
 
 function Fact({ label, children }: { label: string; children: React.ReactNode }) {
@@ -78,8 +79,9 @@ export function RunHeader({ detail }: { detail: RunDetail }) {
         )}
         {run.runner && <Fact label="Runner">{run.runner}</Fact>}
       </dl>
-      <div className="ml-auto">
+      <div className="ml-auto flex items-start gap-1.5">
         <RunControls detail={detail} />
+        <RunCommands run={run} />
       </div>
     </header>
   );

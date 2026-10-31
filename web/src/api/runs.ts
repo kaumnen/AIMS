@@ -188,6 +188,12 @@ export function applyRuns(qc: QueryClient, runs: readonly RunSummary[]): void {
       const data = qc.getQueryData<RunDetail>(q.queryKey);
       if (!run || !data || data.run === run) continue;
       qc.setQueryData<RunDetail>(q.queryKey, { ...data, run });
+      if (
+        data.run.commands !== run.commands ||
+        data.run.commands_waiting !== run.commands_waiting
+      ) {
+        void qc.invalidateQueries({ queryKey: ["runs", "commands", run.run_id], exact: true });
+      }
       // its start, end and verdict events only come with a fetch
       if (data.run.status !== run.status || data.run.verdict_severity !== run.verdict_severity) {
         void qc.invalidateQueries({ queryKey: q.queryKey, exact: true });

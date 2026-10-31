@@ -3,6 +3,7 @@ import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
+import type { CommandInfo } from "@/api/commands";
 import type { Event } from "@/api/events";
 import type { FlagInfo, RunDetail, SampleWindow, StepInfo } from "@/api/run";
 import type { RunSummary } from "@/api/runs";
@@ -160,7 +161,7 @@ let scores: RunSummary[];
 let scoreEvents: Record<string, Event[]>;
 let labelsOf: Record<string, Label[]>;
 let posted: { path: string; body: Record<string, unknown> }[];
-let commands: { id: string; acked: number | null; outcome: string | null }[];
+let commands: (Partial<CommandInfo> & Pick<CommandInfo, "id" | "acked" | "outcome">)[];
 let outcome: string;
 
 const review = (runId: string, over: Partial<RunSummary> = {}): RunSummary =>
@@ -333,7 +334,20 @@ beforeEach(() => {
     }
     if (path === `/api/runs/${BEE5}/commands`) {
       return Response.json(
-        commands.map((c) => ({ ...c, run_id: BEE5, runner: "local", action: "x", created: 0 })),
+        commands.map((c) => ({
+          run_id: BEE5,
+          runner: "local",
+          action: "x",
+          agent: null,
+          // oxlint-disable-next-line unicorn/no-thenable
+          then: null,
+          text: null,
+          reason: null,
+          by: "op",
+          created: 0,
+          state: c.acked === null ? "waiting" : "done",
+          ...c,
+        })),
       );
     }
     if (path === "/api/scenarios") return Response.json([]);
@@ -1453,4 +1467,61 @@ test("only an operator forks, and only a sealed run", async () => {
   renderAt(`/runs/${BEE5}`);
   expect(await screen.findByRole("heading", { name: /^Step \d/ })).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Fork from here" })).toBeNull();
+});
+
+const listStream = () => FakeEventSource.all.find((s) => s.url.includes("runs=true"));
+
+test("the commands drawer shows what was sent, newest first, and the runner's answers", async () => {
+  role = "viewer";
+  detail = open({ commands: 3, commands_waiting: 1 });
+  const sent = { action: "inject", agent: "agent", text: "Stop editing the tests." } as const;
+  commands = [
+    { id: "c1", action: "pause", reason: "look", created: 100, acked: 100.4, outcome: "done" },
+    {
+      id: "c2",
+      action: "resume",
+      // oxlint-disable-next-line unicorn/no-thenable
+      then: "deny",
+      created: 200,
+      acked: 200.2,
+      outcome: "failed: no paused agent waits before a tool call to deny",
+      state: "failed",
+    },
+    { id: "c3", ...sent, created: 300, acked: null, outcome: null },
+  ];
+  renderAt(`/runs/${BEE5}`);
+  fireEvent.click(await screen.findByRole("button", { name: "Commands 1 waiting" }));
+  const drawer = await screen.findByRole("dialog", { name: "Commands" });
+  const rows = async () => {
+    const all = await within(drawer).findAllByRole("row");
+    return all.slice(1).map((r) => r.textContent);
+  };
+  await waitFor(async () => expect(await rows()).toHaveLength(3));
+  const [inject, deny, pause] = await rows();
+  expect(inject).toContain("Inject agent");
+  expect(inject).toContain("Stop editing the tests.");
+  expect(inject).toContain("Waiting");
+  expect(deny).toContain("Deny");
+  expect(deny).toContain("Refused: no paused agent waits before a tool call to deny");
+  expect(pause).toContain("Reason: look");
+  expect(pause).toContain("Donein 400 ms");
+
+  commands[2] = { ...commands[2], id: "c3", acked: 301.5, outcome: "done", state: "done" };
+  const source = listStream();
+  if (!source) throw new Error("no list stream");
+  act(() => source.send({ kind: "run", run: { ...detail.run, commands_waiting: 0 } }));
+  await waitFor(async () => expect((await rows())[0]).toContain("Donein 1.5 s"));
+  expect(screen.getByRole("button", { name: "Commands", hidden: true })).toBeTruthy();
+});
+
+test("a sealed run without commands shows no commands button, an open one says what is not here", async () => {
+  renderAt(`/runs/${BEE5}`);
+  expect(await screen.findByRole("heading", { name: /Step 1/ })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: /^Commands/ })).toBeNull();
+  cleanup();
+  detail = open();
+  renderAt(`/runs/${BEE5}`);
+  fireEvent.click(await screen.findByRole("button", { name: "Commands" }));
+  const drawer = await screen.findByRole("dialog", { name: "Commands" });
+  expect(await within(drawer).findByText(/No commands sent yet/)).toBeTruthy();
 });
