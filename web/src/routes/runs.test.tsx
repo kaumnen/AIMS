@@ -7,6 +7,7 @@ import type { RunSummary } from "@/api/runs";
 import { makeRouter } from "@/router";
 import { FakeEventSource } from "@/test/event-source";
 import { stubHeight } from "@/test/layout";
+import { preloadRoutes } from "@/test/routes";
 import { run } from "@/test/runs";
 
 const fetch = vi.fn<(request: Request) => Promise<Response>>();
@@ -16,6 +17,7 @@ let role: "operator" | "viewer";
 const BEE5 = "01a18a50-bee5-7263-ad19-24385640cee1";
 const REVIEW = "01a18d3b-a156-750a-b263-958e86bdd35e";
 
+preloadRoutes();
 stubHeight();
 
 beforeEach(() => {

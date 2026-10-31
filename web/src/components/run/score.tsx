@@ -65,7 +65,8 @@ export function defaultScore(scores: readonly RunSummary[]): RunSummary | undefi
   return scores.find((s) => s.status === "completed") ?? scores[0];
 }
 
-// The scores of a run: what each agent took, and what each monitor layer caught of it.
+// The scores of a run: what each agent took, and what each monitor layer caught of it. The
+// run page shows it to operators only.
 export function ScoreTab({
   runId,
   detail,
@@ -81,9 +82,7 @@ export function ScoreTab({
   monitor: string;
   onSteps: (to: StepsLink) => void;
 }) {
-  const me = useQuery(whoami);
-  const operator = me.data?.role === "operator";
-  const scoresQ = useQuery({ ...scoresQuery(runId), enabled: operator });
+  const scoresQ = useQuery(scoresQuery(runId));
   const reviews = useQuery(reviewsQuery(runId));
   const scores = scoresQ.data?.items ?? [];
   const reads = useQueries({
@@ -98,14 +97,6 @@ export function ScoreTab({
   });
   const [asking, setAsking] = useState(false);
 
-  if (me.isPending) return null;
-  if (!operator) {
-    return (
-      <p className="text-muted-foreground">
-        A score shows what the run hid from its agents and its monitor, so only operators see it.
-      </p>
-    );
-  }
   if (scoresQ.isPending) return <p className="text-muted-foreground">Loading scores</p>;
   if (scoresQ.isError) return <p className="text-muted-foreground">Scores did not load.</p>;
   const current = scores.find((s) => s.run_id === scoreId) ?? defaultScore(scores);

@@ -10,6 +10,7 @@ import { makeRouter } from "@/router";
 import { FakeEventSource, runnerInfo } from "@/test/event-source";
 import { stubHeight } from "@/test/layout";
 import { pick } from "@/test/pick";
+import { preloadRoutes } from "@/test/routes";
 import { run } from "@/test/runs";
 
 const fetch = vi.fn<(request: Request) => Promise<Response>>();
@@ -26,6 +27,7 @@ const NO_CAPS = { steps: null, output_tokens: null, cost_usd: null, wall_s: null
 
 const NEW = "01a19000-0000-7000-8000-000000000001";
 
+preloadRoutes();
 stubHeight();
 
 const scenarios: ScenarioInfo[] = [

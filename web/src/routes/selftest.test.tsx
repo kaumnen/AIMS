@@ -8,6 +8,7 @@ import type { RunSummary } from "@/api/runs";
 import { makeRouter } from "@/router";
 import { FakeEventSource } from "@/test/event-source";
 import { stubHeight } from "@/test/layout";
+import { preloadRoutes } from "@/test/routes";
 import { run } from "@/test/runs";
 
 const fetch = vi.fn<(request: Request) => Promise<Response>>();
@@ -18,6 +19,7 @@ let parent: RunSummary;
 let ended: Record<string, unknown>[];
 let posted: string[];
 
+preloadRoutes();
 stubHeight();
 
 const event = (seq: number, type: string, data: Record<string, unknown>) => ({

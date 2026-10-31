@@ -33,7 +33,11 @@ function themeBoot(): Plugin {
 export default defineConfig({
   plugins: [
     themeBoot(),
-    tanstackRouter({ target: "react", autoCodeSplitting: true }),
+    tanstackRouter({
+      target: "react",
+      autoCodeSplitting: true,
+      routeFileIgnorePattern: "\\.test\\.tsx?$",
+    }),
     react(),
     babel({ presets: [reactCompilerPreset()] }),
     tailwindcss(),

@@ -12,6 +12,7 @@ import { makeRouter } from "@/router";
 import { FakeEventSource } from "@/test/event-source";
 import { stubHeight } from "@/test/layout";
 import { pick } from "@/test/pick";
+import { preloadRoutes } from "@/test/routes";
 import { run } from "@/test/runs";
 
 const BEE5 = "01a18a50-bee5-7263-ad19-24385640cee1";
@@ -20,6 +21,7 @@ const NEWER = "01a18d3c-0000-7000-8000-000000000000";
 const ARGS = "a".repeat(64);
 const fetch = vi.fn<(request: Request) => Promise<Response>>();
 
+preloadRoutes();
 stubHeight();
 
 const ev = (seq: number, type: string, data: Record<string, unknown>): Event =>

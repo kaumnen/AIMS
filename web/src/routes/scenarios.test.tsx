@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { ScenarioDetail, ScenarioInfo } from "@/api/scenarios";
 import { makeRouter } from "@/router";
 import { FakeEventSource } from "@/test/event-source";
+import { preloadRoutes } from "@/test/routes";
 
 const fetch = vi.fn<(request: Request) => Promise<Response>>();
 let role: "operator" | "viewer";
@@ -70,6 +71,7 @@ function detail(): ScenarioDetail {
   };
 }
 
+preloadRoutes();
 beforeEach(() => {
   role = "operator";
   FakeEventSource.all = [];

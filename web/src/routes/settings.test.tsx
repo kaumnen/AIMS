@@ -10,6 +10,7 @@ import type { ProviderCredit, TokenInfo } from "@/api/settings";
 import { makeRouter } from "@/router";
 import { FakeEventSource, runnerInfo } from "@/test/event-source";
 import { pick } from "@/test/pick";
+import { preloadRoutes } from "@/test/routes";
 import { run } from "@/test/runs";
 
 const fetch = vi.fn<(request: Request) => Promise<Response>>();
@@ -166,6 +167,7 @@ const calls = (method: string, path: string) =>
 const posts = () =>
   fetch.mock.calls.map(([r]) => r).filter((r) => r.method === "POST" && r.url.includes("/check"));
 
+preloadRoutes();
 beforeEach(() => {
   role = "operator";
   checked = null;

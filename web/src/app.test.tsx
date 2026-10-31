@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { client } from "./api/client";
 import { makeRouter } from "./router";
 import { FakeEventSource, runnerInfo } from "./test/event-source";
+import { preloadRoutes } from "./test/routes";
 
 let me = { name: "op", role: "operator", auth: true };
 const fetch = vi.fn<(request: Request) => Promise<Response>>();
@@ -17,6 +18,7 @@ const unauthorized = () =>
     { status: 401, headers: { "content-type": "application/problem+json" } },
   );
 
+preloadRoutes();
 beforeEach(() => {
   signedIn = true;
   me = { name: "op", role: "operator", auth: true };
