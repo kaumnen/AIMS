@@ -1067,6 +1067,8 @@ test("an open run follows its latest step and shows the next one as it is writte
     tail.send({
       kind: "delta",
       deltas: [
+        // the end of step 2's call, logged before the stream opened
+        { ...delta, call_id: "m2", kind: "end", text: "completed" },
         { ...delta, kind: "start", text: "" },
         { ...delta, kind: "text", text: "Running the tests again." },
       ],
@@ -1074,7 +1076,7 @@ test("an open run follows its latest step and shows the next one as it is writte
   );
   const writing = await screen.findByRole("region", { name: "Step 3, in flight" });
   expect(within(writing).getByText("Running the tests again.")).toBeTruthy();
-  expect(within(list).getByText("writing")).toBeTruthy();
+  expect(within(list).getAllByText("writing")).toHaveLength(1);
 
   const landed = [
     ev(15, "model.response", { call_id: "m3", text: "Running the tests again." }),

@@ -55,6 +55,8 @@ const NONE: readonly InFlight[] = [];
 export class RunTail {
   #live: Live | null = null;
   #drafts = new Map<string, Draft>();
+  // calls whose answer is logged; deltas of theirs that come late are dropped
+  #done = new Set<string>();
   #snapshot: readonly InFlight[] = NONE;
   #watchers = new Set<() => void>();
   #pending: Event[] = [];
@@ -136,6 +138,11 @@ export class RunTail {
     this.#pending = [];
     this.#deltas = [];
     let changed = false;
+    for (const e of events) {
+      const data = e.data as Record<string, unknown>;
+      if (e.type === "model.response" && data["retry"] !== true)
+        this.#done.add(String(data["call_id"]));
+    }
     for (const d of deltas) {
       if (d !== "dropped") changed = this.#delta(d) || changed;
       else {
@@ -159,6 +166,7 @@ export class RunTail {
   }
 
   #delta(d: WireDelta): boolean {
+    if (this.#done.has(d.call_id)) return false;
     const key = `${d.agent_id ?? ""}|${d.call_id}`;
     let draft = this.#drafts.get(key);
     if (draft !== undefined && d.attempt < draft.attempt) return false;

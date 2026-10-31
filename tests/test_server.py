@@ -9,7 +9,7 @@ import uuid
 from collections.abc import AsyncIterator
 from compression import zstd
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx2
 import pytest
@@ -36,6 +36,7 @@ from aims.run.job import Job
 from aims.run.runner import resolve_texts
 from aims.scenario import load
 from aims.server import dispatch
+from aims.server.state import InFlight
 from aims.wire import (
     Ack,
     CommandMessage,
@@ -724,6 +725,22 @@ async def test_deltas_reach_the_stream_and_a_slow_one_is_told_it_lost_some(
     late = await sse_inflight(cp, run_id)
     assert late[0][0] == "delta"
     assert [d["text"] for d in late[0][1]["deltas"]][:3] == ["0", "1", "2"]
+
+
+def test_a_finished_call_keeps_no_deltas_that_come_after_its_response() -> None:
+    inflight = InFlight()
+
+    def d(call: str, kind: Literal["start", "text", "end"], attempt: int = 1) -> WireDelta:
+        return WireDelta(run_id="r", agent_id="a", call_id=call, attempt=attempt, kind=kind)
+
+    inflight.add([d("m1", "start"), d("m1", "text"), d("m2", "start")])
+    inflight.drop("r", "m1")
+    inflight.add([d("m1", "end")])
+    assert [x.call_id for x in inflight.of({"r"})] == ["m2"]
+    # a failed attempt that is retried streams again under the same call
+    inflight.drop("r", "m2", final=False)
+    inflight.add([d("m2", "start", attempt=2)])
+    assert [(x.call_id, x.attempt) for x in inflight.of({"r"})] == [("m2", 2)]
 
 
 async def sse_inflight(cp: CP, run_id: str) -> list[Any]:

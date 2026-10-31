@@ -417,10 +417,12 @@ function Steps({
   // Each agent's next step while its model writes it, under that agent's latest step.
   const latest = new Map<string, StepInfo>();
   for (const s of steps) latest.set(s.agent_id ?? "", s);
+  // a call that already has its step row was logged before the stream opened
+  const logged = new Set(steps.map((s) => s.call_id));
   const writing = more
     ? []
     : inflight
-        .filter((d) => d.agent !== null)
+        .filter((d) => d.agent !== null && !logged.has(d.call))
         .map((d) => ({ draft: d, n: (latest.get(d.agent ?? "")?.n ?? 0) + 1 }));
   const drafting =
     current !== undefined && latest.get(current.agent_id ?? "")?.seq === current.seq

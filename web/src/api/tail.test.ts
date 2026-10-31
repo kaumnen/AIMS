@@ -126,6 +126,10 @@ test("model output builds up per call, a retry starts over and the logged answer
   });
   flush();
   expect(tail.inflight.map((d) => d.call)).toEqual(["c9"]);
+  // the end of a logged call that comes after its answer starts no new draft
+  source.send({ kind: "delta", deltas: [delta({ kind: "end", text: "completed" })] });
+  flush();
+  expect(tail.inflight.map((d) => d.call)).toEqual(["c9"]);
   tail.stop();
 });
 

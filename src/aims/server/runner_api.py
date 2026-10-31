@@ -507,7 +507,7 @@ async def ingest_events(
     for event in await store.events(run_id, after=after, types=["model.response"], limit=1000):
         call_id = event.data.get("call_id")
         if isinstance(call_id, str):
-            state.inflight.drop(run_id, call_id)
+            state.inflight.drop(run_id, call_id, final=event.data.get("retry") is not True)
     if head.finished:
         info = await store.run(run_id)
         if job is not None:

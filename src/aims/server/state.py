@@ -27,6 +27,7 @@ from aims.wire import (
 
 INFLIGHT_CAP = 1024 * 1024
 INFLIGHT_CALLS = 1000
+INFLIGHT_DONE = 10_000
 CODE_TTL_S = 120.0
 
 
@@ -81,14 +82,18 @@ class Changes:
 
 class InFlight:
     """Deltas of model calls still streaming, so a viewer who opens a run mid-answer sees the
-    answer so far. Each call keeps up to 1 MB; its deltas go once its response is logged."""
+    answer so far. Each call keeps up to 1 MB; its deltas go once its response is logged, and
+    deltas of that call that arrive later, such as its end, are not kept."""
 
     def __init__(self) -> None:
         self._calls: OrderedDict[tuple[str, str], tuple[list[WireDelta], int]] = OrderedDict()
+        self._done: OrderedDict[tuple[str, str], None] = OrderedDict()
 
     def add(self, deltas: list[WireDelta]) -> None:
         for d in deltas:
             key = (d.run_id, d.call_id)
+            if key in self._done:
+                continue
             kept, size = self._calls.get(key, ([], 0))
             if size + len(d.text) > INFLIGHT_CAP:
                 continue
@@ -98,8 +103,15 @@ class InFlight:
         while len(self._calls) > INFLIGHT_CALLS:
             self._calls.popitem(last=False)
 
-    def drop(self, run_id: str, call_id: str) -> None:
+    def drop(self, run_id: str, call_id: str, *, final: bool = True) -> None:
+        """Forget the call's deltas; `final` unless the response failed and is retried, whose
+        next attempt streams under the same call."""
         self._calls.pop((run_id, call_id), None)
+        if not final:
+            return
+        self._done[(run_id, call_id)] = None
+        while len(self._done) > INFLIGHT_DONE:
+            self._done.popitem(last=False)
 
     def of(self, run_ids: set[str]) -> list[WireDelta]:
         return [d for (run, _), (kept, _) in self._calls.items() if run in run_ids for d in kept]
