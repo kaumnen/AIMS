@@ -509,7 +509,12 @@ async def test_aims_control_sends_commands_and_reports_the_ack(
 
     nobody = await control(cp, run_id, "pause", token=None)
     assert nobody.exit_code == 1
-    assert "aims token create" in nobody.stderr
+    assert "give an operator token" in nobody.stderr
+    assert "`aims token create <name> --role operator`" in nobody.stderr
+    nobody = await control(cp, run_id, "list", token=None)
+    assert nobody.exit_code == 1
+    assert "give a token" in nobody.stderr
+    assert "`aims token create <name>`" in nobody.stderr
     runner = await control(cp, run_id, "pause", token=cp.runner)
     assert runner.exit_code == 1
     assert "operator role" in runner.stderr

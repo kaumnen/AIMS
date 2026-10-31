@@ -6,15 +6,16 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx2
 import pytest
 from cp import CP, control_plane
+from test_cli_monitor import node
 from test_monitor_api import call, claim, flag, started
 from test_server import FakeRunner, ship, sse
 
-from aims.events import Draft, LocalEventStore, RunFinished
+from aims.events import Draft, LocalEventStore, RunFinished, RunInfo, RunStarted
 from aims.events.chain import Head as LogHead
 from aims.models import DeltaBus
 from aims.monitor.texts import resolve
@@ -23,6 +24,7 @@ from aims.prompts import Prompts
 from aims.run import scoring, truth
 from aims.run.score import Added, Taken
 from aims.run.scoring import score_with
+from aims.server.db import OPEN_STATES
 from aims.wire import OfferMessage, RunnerHello, ScoreJob
 
 pytestmark = pytest.mark.anyio
@@ -279,6 +281,86 @@ async def test_a_score_job_carries_its_checks_and_the_plants_a_scenario_adds(
             assert (r.status_code, r.json()["code"]) == (422, "plants_from")
     finally:
         await scorer.close()
+
+
+async def test_a_runner_scores_a_job_with_the_checks_and_plants_it_carries(
+    cp: CP,
+    local: LocalEventStore,
+    fake: FakeRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record = {"roles": {"a": "subject"}, "plants": {"p1": {"kind": "file"}}, "variant": None}
+    origin = await planted(cp, local, fake, record=record)
+    (cp.project.parent / "scenarios" / "ruled").mkdir()
+    (cp.project.parent / "scenarios" / "ruled" / "scenario.yaml").write_text(RULED)
+    checked: list[list[str]] = []
+    asked: list[str] = []
+
+    async def check(store: Any, run_id: str, added: Any = None) -> list[Taken]:
+        checked.append(sorted(added or {}))
+        return await _rows()
+
+    async def awareness(*args: Any) -> tuple[None, float]:
+        asked.append("awareness")
+        return None, 0.0
+
+    async def answer(*args: Any) -> tuple[None, float]:
+        asked.append("answer")
+        return None, 0.0
+
+    monkeypatch.setattr(scoring, "check_run", check)
+    monkeypatch.setattr(scoring, "_awareness", awareness)
+    monkeypatch.setattr(scoring, "_answer", answer)
+    models = cp.state.config.settings().models
+    for name in scoring.CLASSIFIERS:
+        keyed = models.get(name)
+        for env in (keyed.api_key_env, keyed.base_url_env):
+            if env:
+                monkeypatch.setenv(env, "set")
+
+    async def scored_by(run_id: str) -> RunInfo:
+        async with asyncio.timeout(30):
+            while True:
+                info = await cp.state.store.run(run_id)
+                job = await cp.state.db.job(run_id)
+                ran = info is not None and info.status != "running"
+                if ran and job is not None and job.state not in OPEN_STATES:
+                    assert info is not None
+                    return info
+                await asyncio.sleep(0.1)
+
+    async with node(cp, tmp_path / "node") as n:
+        ref = {"source": "project", "name": "ruled"}
+        async with cp.client(cp.operator) as c:
+            r = await c.post(
+                f"/api/runs/{origin}/score",
+                json={"awareness": False, "plants_from": ref, "runner": "n1"},
+            )
+            assert r.status_code == 202, r.text
+            (first,) = r.json()["run_ids"]
+        info = await scored_by(first)
+        assert info.status == "completed"
+        assert (checked, asked) == ([["deploy-call"]], ["answer"])
+        assert await n.ctx.store.run(origin) is None
+        assert await n.ctx.origins.run(origin) is not None
+        assert n.ctx.origins.truth_path(origin).is_file()
+
+        async with cp.client(cp.operator) as c:
+            r = await c.post(f"/api/runs/{origin}/score", json={"answer": False, "runner": "n1"})
+            assert r.status_code == 202, r.text
+            (second,) = r.json()["run_ids"]
+        assert (await scored_by(second)).status == "completed"
+        assert (checked, asked) == ([["deploy-call"], []], ["answer", "awareness"])
+    begun = [(await cp.state.store.events(r, limit=1))[0].payload() for r in (first, second)]
+    assert all(isinstance(b, RunStarted) for b in begun)
+    one, two = cast(list[RunStarted], begun)
+    assert (one.kind, one.origin, two.origin) == ("score", origin, origin)
+    added = one.config["added"]
+    assert isinstance(added, dict)
+    assert (added["from"], added["plants"]) == ("project/ruled", ["deploy-call"])
+    assert two.config["added"] is None
+    assert (await cp.state.store.verify(first)).ok
 
 
 async def scored(

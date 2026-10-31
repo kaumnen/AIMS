@@ -1719,7 +1719,7 @@ def control(
         for given, hint in ((agent, "--agent"), (text, "--text"), (reason, "--reason")):
             if given is not None:
                 raise typer.BadParameter("list takes no options but --server", param_hint=hint)
-        url, token = _operator(server, token_file)
+        url, token = _operator(server, token_file, reads=True)
         raise typer.Exit(asyncio.run(_commands(url, token, run)))
     if action not in CONTROL_ACTIONS:
         raise typer.BadParameter(f"use {', '.join(CONTROL_ACTIONS)} or list", param_hint="ACTION")
@@ -1846,9 +1846,12 @@ def _problem(r: Any) -> int:
     return EXIT_FAILED
 
 
-def _operator(server: str | None, token_file: Path | None) -> tuple[str, str]:
+def _operator(
+    server: str | None, token_file: Path | None, *, reads: bool = False
+) -> tuple[str, str]:
     """The control plane and an operator token: --server, else the local `aims ui`; the token
-    from --token-file or AIMS_TOKEN, else the local ui's own operator token if it wrote one."""
+    from --token-file or AIMS_TOKEN, else the local ui's own operator token if it wrote one.
+    With `reads`, any token does."""
     import json
     import os
 
@@ -1871,9 +1874,10 @@ def _operator(server: str | None, token_file: Path | None) -> tuple[str, str]:
         url = str(data["url"])
         token = token or data.get("operator")
     if not token:
+        need, role = ("a token", "") if reads else ("an operator token", " --role operator")
         typer.echo(
-            "error: give an operator token in AIMS_TOKEN or --token-file; make one with"
-            " `aims token create <name> --role operator`",
+            f"error: give {need} in AIMS_TOKEN or --token-file; make one with"
+            f" `aims token create <name>{role}`",
             err=True,
         )
         raise typer.Exit(EXIT_FAILED)

@@ -88,11 +88,12 @@ class Link:
         )
 
     def status(self) -> RunnerStatus:
+        held = self._held()
         return RunnerStatus(
             tracer=self.tracer(),
             envs=set_envs(self.wanted),
-            free=max(0, self.slots - len(self._held())),
-            running=sorted(self.runners),
+            free=max(0, self.slots - len(held)),
+            running=held,
             jobs=sorted(self.jobs()),
         )
 

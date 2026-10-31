@@ -261,6 +261,65 @@ async def test_a_selftest_from_the_api_records_each_case_under_its_run(
         assert (await c.get(f"/api/runs/{nested[0]['run_id']}")).status_code == 403
 
 
+async def test_a_cancel_sent_to_a_selftest_stops_the_case_running(
+    cp: CP, backend: DockerBackend, tmp_path: Path
+) -> None:
+    if backend.tracer is None:
+        pytest.skip("the self-test needs the kernel tracer")
+    folder = cp.project.parent / "scenarios" / "tested"
+    folder.mkdir(parents=True)
+    slow = "reference: [{run: sleep 60}, {run: echo 6 > answer.txt}]"
+    (folder / "scenario.yaml").write_text(
+        TESTED.replace("reference: [{run: echo 6 > answer.txt}]", slow)
+    )
+    async with running_node(cp, backend, tmp_path / "node", None) as node:
+        (run_id,) = (await post(cp, "/api/scenarios/project/tested/selftest"))["run_ids"]
+        async with cp.client(cp.operator) as c:
+
+            async def summary(of: str) -> dict[str, Any]:
+                return (await c.get(f"/api/runs/{of}")).json()["run"]
+
+            async def cases() -> list[str]:
+                params = {"kind": "selftest.case", "origin": run_id}
+                return [
+                    r["run_id"] for r in (await c.get("/api/runs", params=params)).json()["items"]
+                ]
+
+            await until(cases, 120)
+            (case_id,) = await cases()
+
+            async def execs() -> bool:
+                params = {"types": "exec.started", "limit": 1}
+                r = await c.get(f"/api/runs/{case_id}/events", params=params)
+                return bool(r.json()["items"])
+
+            async def ended() -> bool:
+                return (await summary(run_id))["status"] != "running"
+
+            await until(execs, 120)
+            r = await c.post(f"/api/runs/{run_id}/cancel", json={"reason": "enough"})
+            assert r.status_code == 202, r.text
+            assert r.json()["delivered"]
+            await until(ended, 120)
+            params = {"types": "run.finished"}
+            (end,) = (await c.get(f"/api/runs/{run_id}/events", params=params)).json()["items"]
+            assert (end["data"]["status"], end["data"]["reason"]) == (
+                "cancelled",
+                "reference was cancelled",
+            )
+            assert (await summary(run_id))["status"] == "cancelled"
+            nested = await summary(case_id)
+            assert nested["status"] == "cancelled"
+            commands = (await c.get(f"/api/runs/{run_id}/commands")).json()
+            assert [x["outcome"] for x in commands] == ["done"]
+            params = {"types": "selftest.case"}
+            cases = (await c.get(f"/api/runs/{run_id}/events", params=params)).json()["items"]
+            assert [(e["data"]["case"], e["data"]["run_id"]) for e in cases] == [
+                ("reference", case_id)
+            ]
+        assert run_id not in node.ctx.link.runners
+
+
 SERIAL = """\
 version: 1
 name: serial

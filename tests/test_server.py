@@ -1323,7 +1323,7 @@ async def test_a_self_test_takes_one_slot_while_its_case_runs(local: LocalEventS
     link.runners["selftest"] = link.runners["case-1"] = case
     try:
         assert (link.status().free, link.hello().jobs) == (1, ["selftest"])
-        assert link.status().running == ["case-1", "selftest"]
+        assert link.status().running == ["selftest"]
         held.append("scenario")
         link.runners["scenario"] = other
         assert (link.status().free, link.hello().jobs) == (0, ["scenario", "selftest"])
