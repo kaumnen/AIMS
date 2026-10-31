@@ -1,3 +1,4 @@
+import asyncio
 import io
 import os
 import tarfile
@@ -8,7 +9,14 @@ from typing import Any
 import pytest
 
 from aims.events import ExecStarted, LocalEventStore, RunStarted, SandboxArchived
-from aims.sandbox import AGENT_UID, RUNNER_UID, AuditedSandbox, DockerBackend, SandboxSpec
+from aims.sandbox import (
+    AGENT_UID,
+    RUNNER_UID,
+    AuditedSandbox,
+    DockerBackend,
+    DockerSandbox,
+    SandboxSpec,
+)
 from aims.sandbox.base import RUNNER_DIR
 
 pytestmark = [pytest.mark.anyio, pytest.mark.docker]
@@ -73,6 +81,22 @@ async def test_stdin_reaches_the_command(backend: DockerBackend, store: LocalEve
     assert started[0].stdin_bytes == 5
     assert started[1].stdin_bytes == len(big)
     assert (await store.verify(run_id)).ok
+
+
+async def test_two_pauses_at_once_freeze_once(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    _, sb = await sandbox(backend, store)
+    inner = sb.sandbox
+    assert isinstance(inner, DockerSandbox)
+    try:
+        await asyncio.gather(inner.pause(), inner.pause())
+        assert inner.paused
+        await asyncio.gather(inner.resume(), inner.resume())
+        assert not inner.paused
+        assert (await sb.exec("echo ok", timeout_s=10)).stdout == b"ok\n"
+    finally:
+        await sb.close()
 
 
 async def test_runner_dir_and_exec_identity(backend: DockerBackend, store: LocalEventStore) -> None:

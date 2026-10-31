@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import secrets
 import time
 from collections import OrderedDict, deque
@@ -280,11 +281,15 @@ async def open_state(
         data=data,
         store=store,
         db=db,
-        auth=Auth(db, enabled=auth, tls=tls),
+        auth=Auth(db, enabled=auth, tls=tls, scope=cookie_scope(data)),
         config=ConfigCache(project),
     )
     store.listeners.append(state.changes.touch)
     return state
+
+
+def cookie_scope(data: Path) -> str:
+    return hashlib.sha256(str(data.resolve()).encode()).hexdigest()[:8]
 
 
 async def close_state(state: ServerState) -> None:

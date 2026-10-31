@@ -231,6 +231,21 @@ async def test_a_session_cookie_needs_the_same_origin_to_act(cp: CP) -> None:
         assert (await c.get("/api/session")).status_code == 401
 
 
+async def test_two_control_planes_on_one_host_keep_their_own_sessions(
+    cp: CP, tmp_path: Path
+) -> None:
+    # a browser sends a host's cookies to every port of it
+    async with (
+        control_plane(tmp_path / "other") as other,
+        httpx2.AsyncClient(timeout=30, trust_env=False) as c,
+    ):
+        for plane in (cp, other):
+            r = await c.post(f"{plane.url}/api/session", json={"token": plane.viewer})
+            assert r.status_code == 204
+        for plane in (cp, other):
+            assert (await c.get(f"{plane.url}/api/session")).status_code == 200
+
+
 async def test_tokens_list_marks_the_ui_token_and_names_stay_taken(cp: CP) -> None:
     await cp.state.db.rotate_token(UI_TOKEN, "operator")
     async with cp.client(cp.operator) as c:
@@ -938,6 +953,43 @@ async def test_streams_end_when_the_server_stops(cp: CP) -> None:
         c.sse("/api/stream", params={"runs": "true"}) as source,
     ):
         cp.state.stopping.set()
+        async for _ in source:
+            pass
+
+
+async def test_a_stream_ends_when_its_session_does(cp: CP) -> None:
+    async with cp.client() as c:
+        assert (await c.post("/api/session", json={"token": cp.viewer})).status_code == 204
+        async with asyncio.timeout(10), c.sse("/api/stream", params={"runs": "true"}) as source:
+            r = await c.delete("/api/session", headers={"Sec-Fetch-Site": "same-origin"})
+            assert r.status_code == 204
+            async for _ in source:
+                pass
+
+
+async def test_a_stream_ends_when_its_token_is_revoked(
+    cp: CP, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with cp.client(cp.operator) as op:
+        made = await op.post("/api/tokens", json={"name": "gone", "role": "viewer"})
+        lapsed = await op.post("/api/tokens", json={"name": "lapsed", "role": "viewer"})
+        async with (
+            cp.client(made.json()["token"]) as c,
+            asyncio.timeout(10),
+            c.sse("/api/stream", params={"runs": "true"}) as source,
+        ):
+            assert (await op.delete("/api/tokens/gone")).status_code == 204
+            async for _ in source:
+                pass
+    # a revoke by `aims token revoke` touches only the database; the stream sees it on its
+    # next check
+    monkeypatch.setattr("aims.server.stream.RECHECK_S", 0.1)
+    async with (
+        cp.client(lapsed.json()["token"]) as c,
+        asyncio.timeout(10),
+        c.sse("/api/stream", params={"runs": "true"}) as source,
+    ):
+        assert await cp.state.db.revoke_token("lapsed")
         async for _ in source:
             pass
 

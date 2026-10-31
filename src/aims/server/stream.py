@@ -5,10 +5,11 @@ Last-Event-ID resumes exactly."""
 
 import asyncio
 import contextlib
+import time
 from collections.abc import AsyncIterator, Coroutine
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Header, Query
+from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 
 from aims.events import RunCorrupt
@@ -30,6 +31,9 @@ router = APIRouter(prefix="/api", tags=["stream"])
 BATCH = 1000
 COALESCE_S = 0.05
 WAKE_S = 5.0
+# how often a stream checks that its session or token still holds; ending one through this
+# server wakes every stream at once
+RECHECK_S = 30.0
 MAX_RUNS = 50
 DELTA_BATCH = 5000
 
@@ -123,6 +127,7 @@ async def _asked(
     },
 )
 async def stream(
+    request: Request,
     principal: Viewer,
     state: State,
     _: Annotated[None, Depends(_asked)],
@@ -161,6 +166,8 @@ async def stream(
             data=m, event=m.kind, id=cursor_id(version, cursors) if with_id else None
         )
 
+    revoked = state.auth.revoked
+    checked = time.monotonic()
     state.streams += 1
     try:
         yield ServerSentEvent(comment="connected", retry=2000)
@@ -173,6 +180,10 @@ async def stream(
                 runners_seen[info.name] = info.model_dump(exclude={"seen_s"})
                 yield message(RunnerHealthMessage(runner=info), with_id=True)
         while not state.stopping.is_set():
+            if revoked.is_set() or time.monotonic() - checked > RECHECK_S:
+                revoked, checked = state.auth.revoked, time.monotonic()
+                if not await state.auth.still(request, principal):
+                    return
             store_changed = state.store.changed()
             runs_changed = state.changes.event()
             runners_changed = state.runners_changed
@@ -238,6 +249,7 @@ async def stream(
                 store_changed.wait(),
                 runners_changed.wait(),
                 state.stopping.wait(),
+                revoked.wait(),
             ]
             if version is not None:
                 waits.append(runs_changed.wait())

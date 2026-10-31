@@ -179,6 +179,7 @@ async def end_session(request: Request, principal: Viewer, state: State) -> Resp
     session = request.cookies.get(state.auth.cookie)
     if session:
         await state.db.end_session(session)
+        state.auth.revoke()
     response = Response(status_code=204)
     response.delete_cookie(state.auth.cookie, path="/")
     return response
@@ -1811,3 +1812,4 @@ async def revoke_token(name: str, principal: Operator, state: State) -> None:
     """Revoke a token and end every session made with it."""
     if not await state.db.revoke_token(name):
         raise ProblemException(404, "Not found", f"no live token {name}")
+    state.auth.revoke()

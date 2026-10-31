@@ -2,6 +2,7 @@
 also act, runners only use `/runner/v1`. A browser trades a token for a session cookie once;
 cookie requests that change state must come from the same origin."""
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Literal
@@ -13,7 +14,6 @@ from aims.server.db import Role, ServerDB, Token
 from aims.server.problems import ProblemException
 
 COOKIE = "aims_session"
-SECURE_COOKIE = "__Host-aims_session"
 SAFE = frozenset({"GET", "HEAD", "OPTIONS"})
 RANK: dict[Role, int] = {"viewer": 1, "operator": 2, "runner": 0}
 CSP = (
@@ -40,19 +40,37 @@ class Principal:
 
 
 class Auth:
-    def __init__(self, db: ServerDB, *, enabled: bool = True, tls: bool = False) -> None:
+    def __init__(
+        self, db: ServerDB, *, enabled: bool = True, tls: bool = False, scope: str = ""
+    ) -> None:
+        """`scope` tells this control plane's cookie from another's on the same host: cookies
+        ignore the port, so two of them would sign each other out."""
         self.db = db
         self.enabled = enabled
         self.tls = tls
+        self.scope = scope
         self.ephemeral: dict[str, Token] = {}
+        # set and replaced when a session ends or a token is revoked, so open streams check
+        # that their caller may still read
+        self.revoked = asyncio.Event()
 
     @property
     def cookie(self) -> str:
-        return SECURE_COOKIE if self.tls else COOKIE
+        name = f"{COOKIE}_{self.scope}" if self.scope else COOKIE
+        return f"__Host-{name}" if self.tls else name
 
     async def token(self, secret: str) -> Token | None:
         token = self.ephemeral.get(secret)
         return token if token is not None else await self.db.token_for(secret)
+
+    def revoke(self) -> None:
+        event, self.revoked = self.revoked, asyncio.Event()
+        event.set()
+
+    async def still(self, request: Request, principal: Principal) -> bool:
+        """Whether the credentials of `request` still admit `principal`."""
+        now = await self.principal(request)
+        return now is not None and (now.name, now.role) == (principal.name, principal.role)
 
     async def principal(self, request: Request) -> Principal | None:
         header = request.headers.get("authorization", "")
