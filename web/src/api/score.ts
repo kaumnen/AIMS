@@ -7,7 +7,6 @@ export type Label = Schemas["Label-Output"];
 export type LabelKind = Label["label"];
 export type ScoreEstimate = Schemas["ScoreEstimate"];
 export type StartScore = Schemas["StartScore"];
-export type ScenarioInfo = Schemas["ScenarioInfo"];
 
 const MAX_SCORES = 1000;
 
@@ -86,16 +85,6 @@ export function scoreEstimateQuery(runId: string, awareness: boolean, answer: bo
     staleTime: 60_000,
   });
 }
-
-export const scenariosQuery = queryOptions({
-  queryKey: ["scenarios"] as const,
-  queryFn: async ({ signal }) => {
-    const { data, error } = await client.GET("/api/scenarios", { signal });
-    if (error) throw error;
-    return data;
-  },
-  staleTime: 60_000,
-});
 
 export async function startScore(runId: string, body: StartScore): Promise<string[]> {
   const { data, error } = await client.POST("/api/runs/{run_id}/score", {

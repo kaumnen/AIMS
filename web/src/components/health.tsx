@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 
 import type { Schemas } from "@/api/client";
 import { cn } from "@/lib/utils";
@@ -8,20 +8,12 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 type RunnerInfo = Schemas["RunnerInfo"];
 
-function useRunners(): RunnerInfo[] {
+export function useRunners(): readonly RunnerInfo[] {
   const live = useLive();
-  const [runners, setRunners] = useState<ReadonlyMap<string, RunnerInfo>>(new Map());
-  useEffect(
-    () =>
-      live.on("runner", ({ runner }) =>
-        setRunners((prev) => new Map(prev).set(runner.name, runner)),
-      ),
-    [live],
-  );
-  return [...runners.values()];
+  return useSyncExternalStore(live.watch, () => live.runners);
 }
 
-const up = (r: RunnerInfo) => r.connected && !r.stale;
+export const up = (r: RunnerInfo) => r.connected && !r.stale;
 
 function describe(r: RunnerInfo): string {
   const parts = [r.name];

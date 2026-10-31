@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 
-import { $api } from "@/api/client";
 import { categories, type Category, type RunKind, type RunsSearch } from "@/api/runs";
+import { scenariosQuery } from "@/api/scenarios";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -101,12 +101,14 @@ export function RunFilterBar({
   search,
   onChange,
   count,
+  children,
 }: {
   search: RunsSearch;
   onChange: (update: (prev: RunsSearch) => RunsSearch) => void;
   count: string;
+  children?: React.ReactNode;
 }) {
-  const scenarios = useQuery($api.queryOptions("get", "/api/scenarios"));
+  const scenarios = useQuery(scenariosQuery);
   const names = new Set((scenarios.data ?? []).map((s) => s.title ?? s.name));
   if (search.scenario) names.add(search.scenario);
   const set = <K extends keyof RunsSearch>(key: K, value: RunsSearch[K] | undefined) =>
@@ -169,6 +171,7 @@ export function RunFilterBar({
         </Button>
       )}
       <span className="text-muted-foreground ml-auto tabular-nums">{count}</span>
+      {children}
     </div>
   );
 }

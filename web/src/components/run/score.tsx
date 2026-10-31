@@ -3,12 +3,12 @@ import { useState } from "react";
 
 import { flagsQuery, type RunDetail, type StepInfo, stepsQuery } from "@/api/run";
 import { reviewsQuery, type RunSummary } from "@/api/runs";
+import { scenariosQuery } from "@/api/scenarios";
 import {
   type Label,
   type LabelKind,
   labelsQuery,
   postLabel,
-  scenariosQuery,
   scoreEstimateQuery,
   scoreQuery,
   scoresQuery,

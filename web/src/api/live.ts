@@ -8,6 +8,7 @@ import {
 import type { Subscriptions } from "./stream";
 
 export type MessageOf<K extends StreamKind> = Extract<StreamMessage, { kind: K }>;
+export type RunnerInfo = MessageOf<"runner">["runner"];
 type Listener = (message: StreamMessage) => void;
 export type LiveState = "connecting" | "open" | "retrying";
 
@@ -18,6 +19,9 @@ export class Live {
   #listeners = new Map<StreamKind, Set<Listener>>();
   #watchers = new Set<() => void>();
   #state: LiveState = "connecting";
+  // the server sends every runner once a stream opens, then changes; parts mounted later read
+  // them here
+  #runners: readonly RunnerInfo[] = [];
 
   constructor(
     readonly subscriptions: Subscriptions,
@@ -27,6 +31,10 @@ export class Live {
 
   get state(): LiveState {
     return this.#state;
+  }
+
+  get runners(): readonly RunnerInfo[] {
+    return this.#runners;
   }
 
   start(): void {
@@ -66,6 +74,13 @@ export class Live {
   };
 
   #emit(message: StreamMessage): void {
+    if (message.kind === "runner") {
+      const { runner } = message;
+      this.#runners = [...this.#runners.filter((r) => r.name !== runner.name), runner].toSorted(
+        (a, b) => a.name.localeCompare(b.name),
+      );
+      for (const fn of this.#watchers) fn();
+    }
     for (const fn of this.#listeners.get(message.kind) ?? []) fn(message);
   }
 

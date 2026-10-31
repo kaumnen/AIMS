@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { filtersOf, parseRunsSearch, reviewsQuery, runsQuery, type RunsSearch } from "@/api/runs";
 import { rememberSearch } from "@/components/crumbs";
 import { clear, RunFilterBar } from "@/components/runs/filters";
+import { NewRun } from "@/components/runs/new-run";
 import { type Row, RunsTable } from "@/components/runs/table";
 import { Button } from "@/components/ui/button";
 import { useNow } from "@/lib/use-now";
@@ -60,7 +61,9 @@ function Runs() {
   return (
     <div className="flex h-full flex-col">
       <h1 className="sr-only">Runs</h1>
-      <RunFilterBar search={search} onChange={change} count={count} />
+      <RunFilterBar search={search} onChange={change} count={count}>
+        <NewRun />
+      </RunFilterBar>
       {list.isError ? (
         <Message>
           Runs did not load.{" "}
