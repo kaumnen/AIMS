@@ -30,7 +30,10 @@ export function RunHeader({ detail }: { detail: RunDetail }) {
     selftest: "Self-test",
     "selftest.case": "Self-test case",
   };
-  const title = titles[run.kind] ?? run.scenario ?? run.kind;
+  const title =
+    run.kind === "selftest.case" && run.case
+      ? `Self-test case ${run.case}`
+      : (titles[run.kind] ?? run.scenario ?? run.kind);
   const budget = changesText(detail.budget, agentsOf(detail).length > 1);
   return (
     <header className="flex flex-wrap items-end gap-x-8 gap-y-2 pb-3">

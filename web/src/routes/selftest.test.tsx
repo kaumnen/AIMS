@@ -78,7 +78,8 @@ beforeEach(() => {
     if (url.pathname === "/api/runs" && q.get("kind") === "selftest.case") {
       return Response.json({
         items: [
-          run(EXPLOIT, { kind: "selftest.case", origin: PARENT }),
+          run(EXPLOIT, { kind: "selftest.case", origin: PARENT, case: "exploit" }),
+          // a case run made before runs kept their case
           run(REF, { kind: "selftest.case", origin: PARENT, status: "completed", state: "done" }),
         ],
         next: null,
@@ -175,7 +176,8 @@ test("a failed case says why", async () => {
 test("self-tests list their cases nested", async () => {
   renderAt("/runs?kind=selftest");
   fireEvent.click(await screen.findByRole("button", { name: "Cases" }));
-  expect((await screen.findAllByRole("link", { name: "Case" })).length).toBe(2);
+  expect(await screen.findByRole("link", { name: "Case exploit" })).toBeTruthy();
+  expect(screen.getByRole("link", { name: "Case" })).toBeTruthy();
   expect(screen.getByRole("link", { name: "Self-test of cache-keys" })).toBeTruthy();
 });
 

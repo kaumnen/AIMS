@@ -158,7 +158,9 @@ function RunRow({
   if (run.reason && run.started_at === null) extra.push(["reason", run.reason]);
   const name = child
     ? run.kind === "selftest.case"
-      ? "Case"
+      ? run.case
+        ? `Case ${run.case}`
+        : "Case"
       : "Review"
     : run.kind === "selftest"
       ? `Self-test of ${run.scenario ?? "a scenario"}`
