@@ -28,9 +28,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { usd } from "@/lib/format";
 import { confirmWhy } from "@/lib/launch";
+import { useOperator } from "@/lib/use-operator";
 import { cn } from "@/lib/utils";
-
-import { useOperator } from "./controls";
 
 const MAX_SAMPLES = 100;
 

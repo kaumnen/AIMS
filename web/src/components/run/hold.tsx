@@ -9,8 +9,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { duration, started } from "@/lib/format";
 import { categoryText } from "@/lib/monitor";
 import { useNow } from "@/lib/use-now";
+import { useOperator } from "@/lib/use-operator";
 
-import { CommandAnswer, StopForm, useCommand, useOperator } from "./controls";
+import { CommandAnswer, StopForm, useCommand } from "./controls";
 import { toolLine } from "./tool-text";
 
 const REASON = "answered in the UI";

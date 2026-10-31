@@ -2,9 +2,9 @@ import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 
 import { type ScenarioInfo, scenariosQuery, sourceLabel, sourcesQuery } from "@/api/scenarios";
-import { useOperator } from "@/components/run/controls";
 import { NewScenario } from "@/components/scenarios/new-scenario";
 import { Button } from "@/components/ui/button";
+import { useOperator } from "@/lib/use-operator";
 
 export const Route = createFileRoute("/scenarios/")({
   component: Scenarios,

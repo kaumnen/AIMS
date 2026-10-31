@@ -1,6 +1,6 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { client } from "./api/client";
@@ -39,6 +39,7 @@ beforeEach(() => {
     if (path === "/api/session") return Response.json(me);
     if (path === "/api/runs") return Response.json({ items: [], next: null });
     if (path === "/api/scenarios") return Response.json([]);
+    if (path === "/api/models") return Response.json({ profiles: [], roles: {} });
     return Response.json({});
   });
 });
@@ -69,7 +70,8 @@ test("root redirects to runs", async () => {
 test.each(["Scenarios", "Settings"])("%s route renders", async (name) => {
   await renderAt(`/${name.toLowerCase()}`);
   expect(await screen.findByRole("heading", { name })).toBeTruthy();
-  expect(screen.getByRole("link", { name }).dataset["status"]).toBe("active");
+  const nav = within(screen.getByRole("banner"));
+  expect(nav.getByRole("link", { name }).dataset["status"]).toBe("active");
 });
 
 test("signed out shows the sign-in form, which keeps the page", async () => {

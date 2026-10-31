@@ -5,7 +5,6 @@ import { lazy, Suspense } from "react";
 import { SCENARIO_FILE } from "@/api/scenario-files";
 import { scenarioQuery, sourceLabel, sourcesQuery } from "@/api/scenarios";
 import { isProblem } from "@/api/session";
-import { useOperator } from "@/components/run/controls";
 import { NewRun } from "@/components/runs/new-run";
 import { NewScenario } from "@/components/scenarios/new-scenario";
 import { Overview } from "@/components/scenarios/overview";
@@ -13,6 +12,7 @@ import { PromptsTab } from "@/components/scenarios/prompts";
 import { SelfTestButton } from "@/components/scenarios/selftest-button";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useOperator } from "@/lib/use-operator";
 
 // The editor is the heaviest part of the app; it loads when the Files tab opens.
 const FilesTab = lazy(() => import("@/components/scenarios/files"));

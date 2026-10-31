@@ -31,9 +31,10 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { changesText, draftText, EMPTY_DRAFT, readDraft } from "@/lib/budget";
 import { confirmWhy, oversightNote } from "@/lib/launch";
+import { useOperator } from "@/lib/use-operator";
 import { cn } from "@/lib/utils";
 
-import { agentsOf, useOperator } from "./controls";
+import { agentsOf } from "./controls";
 import { sealedScenario } from "./review";
 
 const MAX_SAMPLES = 100;

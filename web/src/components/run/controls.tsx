@@ -1,10 +1,9 @@
-import { useQuery } from "@tanstack/react-query";
 import { ChevronDown } from "lucide-react";
 import { useState } from "react";
 
 import { type Answer, type Command, send } from "@/api/control";
 import type { RunDetail } from "@/api/run";
-import { isProblem, whoami } from "@/api/session";
+import { isProblem } from "@/api/session";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -30,6 +29,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { useOperator } from "@/lib/use-operator";
 import { cn } from "@/lib/utils";
 
 const DONE: Record<Command["action"], string> = {
@@ -74,11 +74,6 @@ export function CommandAnswer({ answer }: { answer: Answer | null }) {
       {answer.state === "failed" ? `Not done: ${answer.text}` : answer.text}
     </p>
   );
-}
-
-export function useOperator(): boolean {
-  const me = useQuery(whoami);
-  return me.data?.role === "operator";
 }
 
 export const agentsOf = (detail: RunDetail): string[] => {

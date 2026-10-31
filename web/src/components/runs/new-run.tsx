@@ -1,10 +1,9 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import { type Oversight, oversights } from "@/api/fork";
 import {
-  checkModels,
   modelsQuery,
   type Preset,
   presets,
@@ -18,7 +17,7 @@ import { isProblem, whoami } from "@/api/session";
 import { BudgetSection } from "@/components/budget";
 import { DEFAULT, Field, Pick, problemText } from "@/components/form";
 import { up, useRunners } from "@/components/health";
-import { useLive } from "@/components/live";
+import { CHECK_TEXT, useModelCheck } from "@/components/model-check";
 import { OversightNote } from "@/components/oversight-note";
 import { NO_SERIES, SeriesSection } from "@/components/runs/series-fold";
 import { Button } from "@/components/ui/button";
@@ -431,36 +430,9 @@ function ProfileField({
   );
 }
 
-const STATE_TEXT = {
-  ok: "ok",
-  warn: "works with warnings",
-  fail: "failed",
-  running: "checking",
-  none: "never checked",
-} as const;
-
 function ProfileChecks({ profiles }: { profiles: ProfileInfo[] }) {
-  const qc = useQueryClient();
-  const live = useLive();
-  const [checking, setChecking] = useState<string | null>(null);
-  const [problem, setProblem] = useState<string | null>(null);
-  useEffect(() => {
-    if (checking === null) return;
-    return live.on("run", ({ run }) => {
-      if (run.run_id !== checking || run.state !== "done") return;
-      setChecking(null);
-      void qc.invalidateQueries({ queryKey: modelsQuery.queryKey });
-    });
-  }, [live, qc, checking]);
+  const { checking, problem, check } = useModelCheck();
   if (profiles.length === 0) return null;
-  const check = async () => {
-    setProblem(null);
-    try {
-      setChecking(await checkModels(profiles.map((p) => p.name)));
-    } catch (e) {
-      setProblem(isProblem(e) ? (e.detail ?? e.title) : "The check did not start.");
-    }
-  };
   return (
     <div className="text-muted-foreground flex flex-col gap-0.5">
       {profiles.map((p) => {
@@ -469,7 +441,7 @@ function ProfileChecks({ profiles }: { profiles: ProfileInfo[] }) {
         return (
           <p key={p.name}>
             <span className={cn(state === "fail" && "text-foreground font-medium")}>
-              {p.name}: {STATE_TEXT[state]}
+              {p.name}: {CHECK_TEXT[state]}
             </span>
             {p.check && !checking && ` · ${started(p.check.started_at)}`}
             {bad && (
@@ -490,7 +462,7 @@ function ProfileChecks({ profiles }: { profiles: ProfileInfo[] }) {
           variant="outline"
           size="xs"
           disabled={checking !== null}
-          onClick={() => void check()}
+          onClick={() => void check(profiles.map((p) => p.name))}
         >
           Check
         </Button>

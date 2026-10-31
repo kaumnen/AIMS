@@ -6,7 +6,6 @@ import { createScenario, duplicateScenario } from "@/api/scenario-files";
 import { sourceLabel, sourcesQuery } from "@/api/scenarios";
 import { isProblem } from "@/api/session";
 import { Field, Pick, problemText } from "@/components/form";
-import { useOperator } from "@/components/run/controls";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -18,6 +17,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { useOperator } from "@/lib/use-operator";
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 
