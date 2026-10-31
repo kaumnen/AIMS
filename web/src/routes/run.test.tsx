@@ -159,6 +159,8 @@ let scores: RunSummary[];
 let scoreEvents: Record<string, Event[]>;
 let labelsOf: Record<string, Label[]>;
 let posted: { path: string; body: Record<string, unknown> }[];
+let commands: { id: string; acked: number | null; outcome: string | null }[];
+let outcome: string;
 
 const review = (runId: string, over: Partial<RunSummary> = {}): RunSummary =>
   run(runId, {
@@ -257,6 +259,8 @@ beforeEach(() => {
   scoreEvents = {};
   labelsOf = {};
   posted = [];
+  commands = [];
+  outcome = "done";
   vi.stubGlobal("EventSource", FakeEventSource);
   vi.stubGlobal("fetch", fetch);
   fetch.mockImplementation(async (request) => {
@@ -264,6 +268,17 @@ beforeEach(() => {
     const q = url.searchParams;
     const path = url.pathname;
     if (path === "/api/session") return Response.json({ name: "op", role, auth: true });
+    if (request.method === "POST" && /\/(pause|resume|inject|kill|cancel)$/.test(path)) {
+      posted.push({ path, body: (await request.json()) as Record<string, unknown> });
+      const id = `k${commands.length + 1}`;
+      commands.push({ id, acked: 1, outcome });
+      return Response.json({ command_id: id, delivered: true, state: "sent" }, { status: 202 });
+    }
+    if (path === `/api/runs/${BEE5}/commands`) {
+      return Response.json(
+        commands.map((c) => ({ ...c, run_id: BEE5, runner: "local", action: "x", created: 0 })),
+      );
+    }
     if (path === "/api/scenarios") return Response.json([]);
     if (path === "/api/runs" && q.get("kind") === "score") {
       return Response.json({ items: q.get("origin") === BEE5 ? scores : [], next: null });
@@ -1090,4 +1105,138 @@ test("an open run follows its latest step and shows the next one as it is writte
   expect(screen.queryByRole("region", { name: "Step 3, in flight" })).toBeNull();
   const tails = requests("steps").filter((q) => q.get("after") === "4");
   expect(tails).toHaveLength(1);
+});
+
+const resumed = (agent: string | null, next: string, text: string | null, reason: string | null) =>
+  // oxlint-disable-next-line unicorn/no-thenable
+  ({ agent, reason, then: next, text });
+
+const open = (over: Partial<RunSummary> = {}): RunDetail => ({
+  ...detail,
+  run: run(BEE5, { status: "running", state: "running", events: 15, ...over }),
+  started: ev(0, "run.started", { agents: ["agent"] }),
+});
+
+const hold = (over: Partial<RunSummary["held"][number]> = {}): RunSummary["held"][number] => ({
+  agent: "agent",
+  by: "monitor",
+  reason: "scorer_tampering 4 >= 3",
+  seq: 20,
+  since: "2026-10-30T10:06:31Z",
+  flags: [20],
+  mode: "human",
+  until: new Date(Date.now() + 3_600_000).toISOString(),
+  at: "before_tool",
+  call: "c1",
+  ...over,
+});
+
+test("an operator pauses an open run and sees the runner's answer", async () => {
+  detail = open();
+  renderAt(`/runs/${BEE5}`);
+  fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
+  expect(await screen.findByText("Paused.")).toBeTruthy();
+  expect(posted).toEqual([
+    { path: `/api/runs/${BEE5}/pause`, body: { agent: null, reason: null } },
+  ]);
+  expect(screen.queryByRole("button", { name: "Resume" })).toBeNull();
+});
+
+test("a paused run offers resume, and a refusal says why", async () => {
+  detail = open({ held: [hold({ by: "operator", mode: null, flags: [], until: null })] });
+  outcome = "failed: the run is not running here";
+  renderAt(`/runs/${BEE5}`);
+  expect(await screen.findByText("Paused")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
+  expect(screen.queryByRole("region", { name: /Monitor pause/ })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+  expect(await screen.findByText("Not done: the run is not running here")).toBeTruthy();
+  expect(posted[0]?.body).toEqual(resumed(null, "continue", null, null));
+});
+
+test("kill and inject ask first", async () => {
+  detail = open();
+  renderAt(`/runs/${BEE5}`);
+  fireEvent.click(await screen.findByRole("button", { name: "Kill" }));
+  const kill = await screen.findByRole("dialog", { name: "Kill the run" });
+  fireEvent.change(within(kill).getByRole("textbox", { name: "Reason" }), {
+    target: { value: "enough" },
+  });
+  fireEvent.click(within(kill).getByRole("button", { name: "Kill run" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(posted.at(-1)).toEqual({ path: `/api/runs/${BEE5}/kill`, body: { reason: "enough" } });
+
+  fireEvent.click(screen.getByRole("button", { name: "Inject" }));
+  const inject = await screen.findByRole("dialog", { name: "Inject a message" });
+  const send = within(inject).getByRole("button", { name: "Send" });
+  expect((send as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.change(within(inject).getByRole("textbox", { name: "Message" }), {
+    target: { value: "Run the tests again." },
+  });
+  fireEvent.click(send);
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(posted.at(-1)).toEqual({
+    path: `/api/runs/${BEE5}/inject`,
+    body: { agent: null, text: "Run the tests again." },
+  });
+});
+
+test("a pause under human oversight waits for an answer like the terminal's", async () => {
+  detail = open({ held: [hold()] });
+  flags = [flag(20, [3], 4)];
+  const router = renderAt(`/runs/${BEE5}`);
+  const banner = await screen.findByRole("region", { name: "Monitor pause of agent" });
+  expect(within(banner).getByText(/waits for an answer/)).toBeTruthy();
+  expect(within(banner).getByText(/With no answer the run is killed/)).toBeTruthy();
+  expect(await within(banner).findByText("bash python -m pytest -q")).toBeTruthy();
+  expect(screen.getByText("Held")).toBeTruthy();
+
+  fireEvent.click(await within(banner).findByRole("button", { name: /#20 scorer tampering/ }));
+  await waitFor(() => expect(router.state.location.search).toMatchObject({ flag: 20 }));
+
+  fireEvent.click(within(banner).getByRole("button", { name: "Deny the call" }));
+  await within(banner).findByText("Resumed.");
+  expect(posted.at(-1)).toEqual({
+    path: `/api/runs/${BEE5}/resume`,
+    body: resumed("agent", "deny", null, "answered in the UI"),
+  });
+
+  fireEvent.click(within(banner).getByRole("button", { name: "Inject" }));
+  fireEvent.change(within(banner).getByRole("textbox", { name: "Message for the agent" }), {
+    target: { value: "Leave the tests alone." },
+  });
+  fireEvent.click(within(banner).getByRole("button", { name: "Send and allow" }));
+  await waitFor(() => expect(posted).toHaveLength(2));
+  expect(posted[1]?.body).toEqual(
+    resumed("agent", "inject", "Leave the tests alone.", "answered in the UI"),
+  );
+});
+
+test("a pause mid-call offers no deny, and an autonomous one no answers", async () => {
+  detail = open({ held: [hold({ at: null, call: null })] });
+  renderAt(`/runs/${BEE5}`);
+  const banner = await screen.findByRole("region", { name: "Monitor pause of agent" });
+  expect(within(banner).getByText(/is frozen while a tool call runs/)).toBeTruthy();
+  expect(within(banner).getByRole("button", { name: "Allow" })).toBeTruthy();
+  expect(within(banner).queryByRole("button", { name: "Deny the call" })).toBeNull();
+  cleanup();
+
+  detail = open({ held: [hold({ mode: "autonomous" })] });
+  renderAt(`/runs/${BEE5}`);
+  const reviewing = await screen.findByRole("region", { name: "Monitor pause of agent" });
+  expect(within(reviewing).getByText(/reviews why/)).toBeTruthy();
+  expect(within(reviewing).getByText(/Unless the review clears it/)).toBeTruthy();
+  expect(within(reviewing).queryByRole("button", { name: "Allow" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Resume" })).toBeTruthy();
+});
+
+test("a viewer sees the pause but cannot answer it", async () => {
+  role = "viewer";
+  detail = open({ held: [hold()] });
+  renderAt(`/runs/${BEE5}`);
+  const banner = await screen.findByRole("region", { name: "Monitor pause of agent" });
+  expect(await within(banner).findByText("Only operators can answer.")).toBeTruthy();
+  expect(within(banner).queryByRole("button", { name: "Allow" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Resume" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Kill" })).toBeNull();
 });

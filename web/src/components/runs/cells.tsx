@@ -11,10 +11,14 @@ const labels: Record<string, string> = {
   queued: "Queued",
   offered: "Starting",
   claimed: "Starting",
+  done: "Not started",
 };
 
 export function statusLabel(run: RunSummary): string {
   if (run.status === "running" && run.stale) return "Runner offline";
+  if (run.status === "running" && run.held.length > 0) {
+    return run.held.some((h) => h.by === "monitor") ? "Held" : "Paused";
+  }
   return labels[run.status] ?? run.status;
 }
 

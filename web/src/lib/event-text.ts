@@ -62,6 +62,26 @@ export function summary(e: Event): string {
       return `step ${num(d["n"])} ${str(d["status"])}`;
     case "agent.input":
       return `${str(d["kind"])}: ${firstLine(str(d["text"]) ?? "")}`;
+    case "agent.held":
+      return heldText(str(d["kind"]));
+    case "monitor.action": {
+      const agents = Array.isArray(d["agents"]) ? d["agents"].join(", ") : "";
+      const simulated = d["simulated"] === true ? " (simulated)" : "";
+      return `${str(d["action"])} ${agents}${simulated}: ${str(d["reason"]) ?? ""}`;
+    }
+    case "operator.action": {
+      const then = str(d["then"]);
+      const reason = str(d["reason"]);
+      return [
+        str(d["action"]),
+        then && then !== "continue" ? `then ${then}` : "",
+        str(d["token"]) ? `by ${str(d["token"])}` : "",
+        reason ? `: ${reason}` : "",
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .replace(" :", ":");
+    }
     case "monitor.flag":
       return `${str(d["category"])} importance ${num(d["importance"])}: ${str(d["justification"]) ?? ""}`;
     default:
@@ -70,6 +90,19 @@ export function summary(e: Event): string {
         .slice(0, 4)
         .map(([k, v]) => `${k}=${String(v)}`)
         .join(" ");
+  }
+}
+
+function heldText(kind: string | undefined): string {
+  switch (kind) {
+    case "before_tool":
+      return "waits before a tool call runs";
+    case "after_tool":
+      return "waits after a tool call";
+    case "after_reply":
+      return "waits after its model's reply";
+    default:
+      return "waits before its next model call";
   }
 }
 

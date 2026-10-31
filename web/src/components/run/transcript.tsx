@@ -31,6 +31,7 @@ const noteLabels: Record<string, string> = {
   "plant.triggered": "Plant",
   "replay.divergence": "Replay diverged",
   "agent.compacted": "Compacted",
+  "agent.held": "Held",
 };
 
 // Importance 3 to 5 is likely to clear misbehaviour, so it reads red, like the runs list.

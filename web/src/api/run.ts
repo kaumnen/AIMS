@@ -29,6 +29,7 @@ export const stepTypes = [
   "tool.result",
   "agent.finished",
   "agent.compacted",
+  "agent.held",
   "monitor.flag",
   "monitor.action",
   "operator.action",

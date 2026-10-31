@@ -17,6 +17,7 @@ import {
 import { isProblem } from "@/api/session";
 import type { InFlight } from "@/api/tail";
 import { RunHeader } from "@/components/run/header";
+import { HoldBanner } from "@/components/run/hold";
 import { InFlightStep, useRunTail } from "@/components/run/live-tail";
 import { defaultSource, LIVE, MonitorPanel, useSources } from "@/components/run/monitor";
 import { RAW_SEARCH_ID, RawEvents, type RawSearch } from "@/components/run/raw";
@@ -164,6 +165,12 @@ function Run() {
   return (
     <div className="flex h-full flex-col">
       <RunHeader detail={detail.data} />
+      <HoldBanner
+        detail={detail.data}
+        onFlag={(seq) =>
+          change((prev) => ({ ...without(prev, "tab", "seq", "step"), flag: seq, source: LIVE }))
+        }
+      />
       <Tabs
         value={tab}
         onValueChange={(v) =>
@@ -375,6 +382,9 @@ function Steps({
 
   if (q.isPending) return <p className="text-muted-foreground">Loading steps</p>;
   if (q.isError) return <p className="text-muted-foreground">Steps did not load.</p>;
+  if (steps.length === 0 && detail.run.state !== "done" && detail.run.kind === "scenario") {
+    return <p className="text-muted-foreground">No steps yet.</p>;
+  }
   if (steps.length === 0) {
     const origin = detail.run.kind === "monitor" ? detail.run.origin : null;
     return (
