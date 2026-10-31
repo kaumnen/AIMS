@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from typing import Any, cast
 
 import aiodocker
@@ -1049,3 +1050,41 @@ async def test_pmu_probe_failure_leaves_the_tracer_running(
     tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
     await tracer._probe_pmu(cast(Any, container))
     assert tracer.pmu is None
+
+
+ADDRSPACE = [
+    "/tmp/trace.bt:519:100-102: WARNING: Addrspace mismatch",
+    "tracepoint:syscalls:sys_enter_fadvise64_64 /@sandbox[cgroup] && (int64)args.advice == 4/ {",
+    "                                                                ~~",
+    "/tmp/trace.bt:521:46-47: WARNING: Addrspace mismatch",
+    "  if ((int64)args.fd >= 0 && (uint64)args.fd < (uint64)$fdt->max_fds) {",
+    "                                              ~",
+]
+
+
+@pytest.mark.anyio
+async def test_known_compile_warnings_stay_out_of_the_terminal(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    with caplog.at_level(logging.DEBUG, logger="aims.sandbox"):
+        for text in [*ADDRSPACE, "/tmp/trace.bt:9:1-2: WARNING: something new", "x", "~", "else"]:
+            tracer._handle(text)
+    loud = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    quiet = [r.getMessage() for r in caplog.records if r.levelno == logging.DEBUG]
+    assert loud == [
+        "tracer: /tmp/trace.bt:9:1-2: WARNING: something new",
+        "tracer: x",
+        "tracer: ~",
+        "tracer: else",
+    ]
+    assert quiet == [f"tracer: {t}" for t in ADDRSPACE]
+
+
+@pytest.mark.anyio
+async def test_a_known_warning_does_not_hide_an_error_after_it() -> None:
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    tracer._handle(ADDRSPACE[0])
+    tracer._handle("/tmp/trace.bt:7:1-2: ERROR: unknown function")
+    with pytest.raises(tracer_module.TracerError, match="unknown function"):
+        await tracer._ready

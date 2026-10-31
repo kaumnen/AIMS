@@ -1064,6 +1064,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/session/code": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Launch Code
+         * @description A code that signs a browser in once, as the caller, within `ttl_s` seconds, for the link
+         *     `aims open` opens. It takes the token itself, not a session.
+         */
+        post: operations["launch_code"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/spend": {
         parameters: {
             query?: never;
@@ -3564,6 +3585,16 @@ export interface components {
             /** Steps */
             steps: number | null;
         };
+        /**
+         * LaunchCode
+         * @description `code` is None when the control plane runs without auth: its plain URL signs in.
+         */
+        LaunchCode: {
+            /** Code */
+            code: string | null;
+            /** Ttl S */
+            ttl_s: number;
+        };
         /** LayerInfo */
         LayerInfo: {
             /** Etag */
@@ -5433,12 +5464,15 @@ export interface components {
          *     model calls, `cost_usd` sums its priced live model responses, monitor calls included (None
          *     when there is none), `reward` is the verifier's last reward and `reviews` counts the
          *     monitor runs over it, queued ones too. `preset` is the preset of the monitor that watches
-         *     the run, or that a monitor run runs, and `monitor_mode` a monitor run's mode. `held` lists
-         *     its agents paused now, by the monitor or an operator, one entry per pause. `commands`
-         *     counts the commands sent to it through the control plane and `commands_waiting` those the
-         *     runner has not answered yet.
+         *     the run, or that a monitor run runs, and `monitor_mode` a monitor run's mode. `case` names
+         *     the self-test case the run plays (None for case runs made before it was kept). `held`
+         *     lists its agents paused now, by the monitor or an operator, one entry per pause.
+         *     `commands` counts the commands sent to it through the control plane and
+         *     `commands_waiting` those the runner has not answered yet.
          */
         RunSummary: {
+            /** Case */
+            case: string | null;
             /** Categories */
             categories: {
                 [key: string]: number;
@@ -10659,6 +10693,53 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    launch_code: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LaunchCode"];
+                };
             };
             /** @description Not signed in */
             401: {

@@ -1213,6 +1213,60 @@ def ui(
     raise typer.Exit(code)
 
 
+@app.command("open")
+def open_cmd(
+    server: ServerOption = None,
+    token_file: TokenFileOption = None,
+    open_browser: Annotated[
+        bool, typer.Option("--open/--no-open", help="Open the link, not only print it.")
+    ] = True,
+) -> None:
+    """Print a new sign-in link to the control plane and open it in a browser.
+
+    The link works once, within 2 minutes. It signs in as the local `aims ui`'s
+    operator, or with --server as the token in AIMS_TOKEN or --token-file.
+    """
+    import asyncio
+
+    url, token = _operator(server, token_file)
+    raise typer.Exit(asyncio.run(_open(url, token, open_browser)))
+
+
+async def _open(url: str, token: str, open_browser: bool) -> int:
+    import asyncio
+    import contextlib
+
+    import httpx2
+
+    from aims import __version__
+    from aims.server.serve import open_link, server_dir
+
+    headers = {"Authorization": f"Bearer {token}", "User-Agent": f"aims/{__version__}"}
+    async with httpx2.AsyncClient(
+        base_url=url.rstrip("/"), headers=headers, timeout=30, trust_env=False
+    ) as c:
+        try:
+            r = await c.post("/api/session/code")
+        except httpx2.TransportError as e:
+            typer.echo(f"error: cannot reach the control plane at {url}: {e}", err=True)
+            return EXIT_FAILED
+    if r.status_code >= 400:
+        return _problem(r)
+    code = r.json()["code"]
+    link = url.rstrip("/") if code is None else f"{url.rstrip('/')}/#code={code}"
+    typer.echo(link)
+    if code is None:
+        typer.echo("the control plane runs without auth: the link needs no code", err=True)
+    else:
+        typer.echo(f"the link signs in once, within {r.json()['ttl_s']:g} s", err=True)
+    if open_browser:
+        folder = server_dir()
+        with contextlib.suppress(OSError):
+            folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+            await asyncio.to_thread(open_link, folder, link)
+    return 0
+
+
 @app.command("runner")
 def runner_cmd(
     server: ServerOption = None,

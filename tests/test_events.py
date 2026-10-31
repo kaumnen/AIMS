@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import hashlib
 import json
 import sqlite3
@@ -489,3 +490,29 @@ async def test_blobs_are_compressed_on_disk(store: LocalEventStore) -> None:
         await store.append(run_id, [Draft(ToolCall(call_id="o", name="shell", arguments=old))])
     await store.append(run_id, [Draft(ToolCall(call_id="c", name="shell", arguments=ref)), call(2)])
     assert verify_run(store.root / run_id).ok
+
+
+async def test_a_self_test_case_keeps_its_name_through_a_reindex(tmp_path: Path) -> None:
+    root = tmp_path / "runs"
+    started = RunStarted(
+        scenario="demo",
+        oversight="observe",
+        kind="selftest.case",
+        origin="parent",
+        config={"case": "exploit"},
+    )
+    async with await LocalEventStore.open(root) as store:
+        run_id = await store.create_run(started)
+        plain = await store.create_run(STARTED)
+        assert [(r.run_id, r.case) for r in await store.runs()] == [
+            (plain, None),
+            (run_id, "exploit"),
+        ]
+    # an index an older AIMS wrote is rebuilt from the logs
+    with contextlib.closing(sqlite3.connect(root / "index.sqlite")) as db:
+        db.execute("pragma user_version = 1")
+        db.commit()
+    async with await LocalEventStore.open(root) as store:
+        info = await store.run(run_id)
+        assert info is not None
+        assert info.case == "exploit"

@@ -190,6 +190,24 @@ async def whoami(principal: Viewer, state: State) -> Whoami:
     return Whoami(name=principal.name, role=principal.role, auth=state.auth.enabled)
 
 
+class LaunchCode(Out):
+    """`code` is None when the control plane runs without auth: its plain URL signs in."""
+
+    code: str | None
+    ttl_s: float
+
+
+@router.post("/session/code", tags=["session"], responses=responses(403))
+async def launch_code(principal: Operator, state: State) -> LaunchCode:
+    """A code that signs a browser in once, as the caller, within `ttl_s` seconds, for the link
+    `aims open` opens. It takes the token itself, not a session."""
+    if principal.via != "bearer":
+        raise ProblemException(403, "Forbidden", "send the token itself", code="bearer")
+    if not state.auth.enabled:
+        return LaunchCode(code=None, ttl_s=0)
+    return LaunchCode(code=state.codes.issue(principal.name), ttl_s=state.codes.ttl)
+
+
 class Health(Out):
     ok: bool
     version: str
@@ -302,6 +320,7 @@ def summary(
         reviews=0 if info is None else info.reviews,
         preset=info.preset if info is not None else planned[0],
         monitor_mode=info.monitor_mode if info is not None else planned[1],
+        case=None if info is None else info.case,
         held=[] if info is None else info.held,
     )
 

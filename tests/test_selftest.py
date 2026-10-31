@@ -294,7 +294,7 @@ async def test_a_cancelled_case_ends_the_selftest_and_cases_nest_under_their_run
         ("reference", "reference", "cancelled")
     ]
     assert seen == ["reference"]
-    assert [(o.kind, o.origin) for o in ran] == [("selftest.case", "parent")]
+    assert [(o.kind, o.origin, o.case) for o in ran] == [("selftest.case", "parent", "reference")]
 
 
 def test_check_without_the_selftest_needs_no_docker(tmp_path: Path) -> None:

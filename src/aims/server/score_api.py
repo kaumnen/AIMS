@@ -4,6 +4,7 @@ monitor flags for review. The same code as `aims score`, `aims report` and `aims
 import asyncio
 import dataclasses
 import logging
+import time
 import uuid
 from typing import Annotated
 
@@ -21,6 +22,7 @@ from aims.run.report import Report, gather
 from aims.run.runner import RunError
 from aims.run.score import CheckError, rule_plants
 from aims.run.scoring import CLASSIFIERS, ScoreError, ScoreEstimate, estimate_sealed
+from aims.server import db as sdb
 from aims.server.api import (
     Operator,
     ScenarioRef,
@@ -67,7 +69,8 @@ async def score_run(
 
 async def score_after(state: ServerState, run_id: str) -> None:
     """Queue a score of a run whose job asked for one, now that its truth file is here, as
-    `aims run --score` does; a cancelled run is not scored."""
+    `aims run --score` does; a cancelled run is not scored. A score that cannot queue is kept
+    as a score job that ended before it started, with the reason."""
     job = await state.db.job(run_id)
     if job is None or not job.payload.get("options", {}).get("score"):
         return
@@ -78,6 +81,25 @@ async def score_after(state: ServerState, run_id: str) -> None:
         await queue_score(state, job.token, run_id, StartScore())
     except ProblemException as e:
         log.warning("run %s was not scored: %s", run_id, e)
+        now = time.time()
+        row = sdb.Job(
+            run_id=str(uuid.uuid7()),
+            group=None,
+            parallel=None,
+            state="done",
+            payload={"kind": "score", "origin": run_id, "scenario": info.scenario},
+            needs={},
+            target=None,
+            runner=None,
+            offered_at=None,
+            tried=[],
+            token=job.token,
+            created=now,
+            updated=now,
+            reason=str(e),
+        )
+        await state.db.add_jobs([row])
+        state.touch_job(row)
     except Exception:
         log.exception("scoring run %s failed", run_id)
 

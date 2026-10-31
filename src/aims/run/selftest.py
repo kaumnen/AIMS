@@ -153,6 +153,7 @@ async def run(
             overlays=case.overlays or None,
             kind="scenario" if origin is None else "selftest.case",
             origin=origin,
+            case=case.name,
         )
         try:
             made = Runner(bench, bundle, options) if runner is None else runner(options)

@@ -232,6 +232,40 @@ async def test_a_model_check_records_each_smoke_test(
     assert info.status == "failed"
 
 
+async def test_a_run_that_cannot_be_scored_says_why(cp: CP, local: LocalEventStore) -> None:
+    # no runner has the classifier's key
+    fake = ScoreRunner(cp, "scorer")
+    await fake.connect()
+    try:
+        async with cp.client(cp.operator) as c:
+            (run_id,) = (await c.post("/api/runs", json=body(score=True))).json()["run_ids"]
+        offer = await fake.next(OfferMessage)
+        assert await fake.client.claim(offer.run_id) is not None
+        first, blobs = started(cp)
+        first = first.model_copy(update={"truth": truth.digest(RECORD)})
+        await local.create_run(first, blobs=blobs, run_id=run_id)
+        truth.write(local.root / run_id, RECORD)
+        await local.append(run_id, [call(1), Draft(RunFinished(status="completed"))])
+        await ship(local, fake.client, run_id)
+        async with cp.client(cp.operator) as c:
+            (score,) = (await c.get(f"/api/runs/{run_id}")).json()["score_runs"]
+            run = (await c.get(f"/api/runs/{score}")).json()["run"]
+            listed = (await c.get("/api/runs", params={"kind": "score"})).json()["items"]
+        assert (run["kind"], run["origin"], run["state"], run["started_at"]) == (
+            "score",
+            run_id,
+            "done",
+            None,
+        )
+        assert run["reason"] == "no runner has MODEL_API_KEY set"
+        assert [r["run_id"] for r in listed] == [score]
+        async with cp.client(cp.viewer) as c:
+            assert (await c.get(f"/api/runs/{score}")).status_code == 403
+            assert (await c.get(f"/api/runs/{run_id}")).json()["score_runs"] == []
+    finally:
+        await fake.close()
+
+
 async def test_a_score_that_fails_to_queue_keeps_the_truth_file(
     cp: CP, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:

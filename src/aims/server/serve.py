@@ -13,6 +13,7 @@ import signal
 import socket
 import subprocess
 import sys
+import time
 import webbrowser
 from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass, field
@@ -22,7 +23,7 @@ import uvicorn
 
 from aims.server.app import create_app
 from aims.server.db import UI_TOKEN, Token, new_token
-from aims.server.state import close_state, open_state
+from aims.server.state import CODE_TTL_S, close_state, open_state
 
 log = logging.getLogger("aims.server")
 
@@ -118,7 +119,6 @@ async def serve(o: UiOptions) -> int:
     state = await open_state(o.data, project=o.project, auth=o.auth, tls=tls)
     child: asyncio.subprocess.Process | None = None
     info = o.data / SERVER_JSON
-    launch: list[Path] = []
     try:
         runner_token = new_token()
         state.auth.ephemeral[runner_token] = Token(LOCAL_RUNNER, "runner", 0.0)
@@ -162,17 +162,12 @@ async def serve(o: UiOptions) -> int:
         print(f"open {url}", file=sys.stderr)
         if o.auth:
             print(
-                "the link signs in once, within 2 minutes; after that sign in with a token from"
-                " `aims token create <name> --role operator`",
+                "the link signs in once, within 2 minutes; `aims open` gives a new one, or sign"
+                " in with a token from `aims token create <name> --role operator`",
                 file=sys.stderr,
             )
         if o.open_browser:
-            target = url
-            if not await asyncio.to_thread(snap_browser):
-                launch.append(_redirect(o.data, url))
-                target = launch[0].as_uri()
-            with contextlib.suppress(Exception):
-                await asyncio.to_thread(webbrowser.open, target)
+            await asyncio.to_thread(open_link, o.data, url)
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()
         stops = 0
@@ -211,10 +206,35 @@ async def serve(o: UiOptions) -> int:
             child.kill()
             await child.wait()
         info.unlink(missing_ok=True)
-        for path in launch:
-            path.unlink(missing_ok=True)
+        # the codes in them die with this server
+        _prune(o.data, None)
         await close_state(state)
     return 0
+
+
+def open_link(
+    folder: Path,
+    url: str,
+    *,
+    snap: Callable[[], bool] | None = None,
+    browser: Callable[[str], object] = webbrowser.open,
+) -> Path | None:
+    """Open `url` in a browser through a redirect file in `folder`, or as it is for a snap
+    browser, which cannot read the file. Returns the file, if one was written; files of
+    codes that expired are removed."""
+    _prune(folder, time.time() - CODE_TTL_S)
+    path = None if (snap or snap_browser)() else _redirect(folder, url)
+    with contextlib.suppress(Exception):
+        browser(url if path is None else path.as_uri())
+    return path
+
+
+def _prune(folder: Path, before: float | None) -> None:
+    """Remove the redirect files in `folder` made before `before`, or all of them."""
+    for path in folder.glob("open-*.html"):
+        with contextlib.suppress(OSError):
+            if before is None or path.stat().st_mtime < before:
+                path.unlink()
 
 
 def _redirect(data: Path, url: str) -> Path:

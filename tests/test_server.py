@@ -40,7 +40,7 @@ from aims.run.runner import resolve_texts
 from aims.scenario import load
 from aims.server import dispatch
 from aims.server.db import UI_TOKEN
-from aims.server.state import InFlight
+from aims.server.state import CODES, InFlight, LaunchCodes
 from aims.wire import (
     Ack,
     CommandMessage,
@@ -1297,3 +1297,68 @@ async def test_requeue_only_gives_back_its_own_offers(cp: CP) -> None:
     assert await cp.state.db.offer(row.run_id, "b")
     assert not await cp.state.db.requeue(row.run_id, runner="a")
     assert await cp.state.db.requeue(row.run_id, runner="b")
+
+
+async def test_the_ui_serves_the_assets_of_a_build_made_while_it_runs(
+    cp: CP, tmp_path: Path
+) -> None:
+    assets = tmp_path / "ui" / "assets"
+    async with cp.client() as c:
+        assert (await c.get("/assets/a.js")).status_code == 200
+        (assets / "a.js").unlink()
+        (assets / "b.js").write_text("export const b = 1;\n")
+        r = await c.get("/assets/b.js")
+        assert (r.status_code, r.text) == (200, "export const b = 1;\n")
+        assert (await c.get("/assets/a.js")).status_code == 404
+        assert (await c.get("/assets/..%2Findex.html")).status_code == 404
+
+
+async def test_a_self_test_takes_one_slot_while_its_case_runs(local: LocalEventStore) -> None:
+    client = ControlClient("http://127.0.0.1:9", "t", runner="x")
+    held = ["selftest"]
+    link = Link(client, local, DeltaBus(), slots=2, jobs=lambda: list(held))
+    # commands to the self-test's run go to the case running
+    case: Any = object()
+    other: Any = object()
+    link.runners["selftest"] = link.runners["case-1"] = case
+    try:
+        assert (link.status().free, link.hello().jobs) == (1, ["selftest"])
+        assert link.status().running == ["case-1", "selftest"]
+        held.append("scenario")
+        link.runners["scenario"] = other
+        assert (link.status().free, link.hello().jobs) == (0, ["scenario", "selftest"])
+    finally:
+        await client.aclose()
+
+
+async def test_an_operator_token_gets_a_code_that_signs_a_browser_in_once(cp: CP) -> None:
+    async with cp.client(cp.operator) as c:
+        r = await c.post("/api/session/code")
+        assert r.status_code == 200, r.text
+        code = r.json()["code"]
+        assert r.json()["ttl_s"] == 120
+    for token in (cp.viewer, cp.runner):
+        async with cp.client(token) as c:
+            assert (await c.post("/api/session/code")).status_code == 403
+    async with cp.client() as browser:
+        assert (await browser.post("/api/session/code")).status_code == 401
+        assert (await browser.post("/api/session", json={"code": code})).status_code == 204
+        assert (await browser.get("/api/session")).json()["name"] == "op"
+        # a session makes no codes of its own
+        r = await browser.post("/api/session/code", headers={"Origin": cp.url})
+        assert (r.status_code, r.json()["code"]) == (403, "bearer")
+    async with cp.client() as other:
+        assert (await other.post("/api/session", json={"code": code})).status_code == 401
+
+
+async def test_without_auth_the_link_needs_no_code(tmp_path: Path) -> None:
+    async with control_plane(tmp_path, auth=False) as cp, cp.client(cp.operator) as c:
+        assert (await c.post("/api/session/code")).json() == {"code": None, "ttl_s": 0}
+
+
+def test_only_the_newest_launch_codes_work() -> None:
+    codes = LaunchCodes()
+    issued = [codes.issue("op") for _ in range(CODES + 8)]
+    assert codes.redeem(issued[0]) is None
+    assert codes.redeem(issued[-CODES]) == "op"
+    assert codes.redeem(issued[-1]) == "op"

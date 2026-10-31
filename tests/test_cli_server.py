@@ -24,6 +24,7 @@ from aims.server.serve import (
     _redirect,
     check,
     connect_host,
+    open_link,
     server_dir,
     snap_browser,
 )
@@ -52,6 +53,26 @@ def test_the_browser_opens_a_private_redirect_not_the_code(tmp_path: Path) -> No
     text = path.read_text()
     assert "#code=abc&amp;x=&lt;b&gt;" in text
     assert "<b>" not in text
+
+
+def test_a_link_opens_through_a_redirect_and_old_ones_go(tmp_path: Path) -> None:
+    stale = tmp_path / "open-1.html"
+    stale.write_text("old")
+    os.utime(stale, (0, 0))
+    kept = tmp_path / "other.html"
+    kept.write_text("x")
+    os.utime(kept, (0, 0))
+    opened: list[str] = []
+    path = open_link(
+        tmp_path, "http://127.0.0.1:1/#code=abc", snap=lambda: False, browser=opened.append
+    )
+    assert path is not None
+    assert opened == [path.as_uri()]
+    assert "#code=abc" in path.read_text()
+    assert not stale.exists()
+    assert kept.exists()
+    assert open_link(tmp_path, "http://x/#code=d", snap=lambda: True, browser=opened.append) is None
+    assert opened[-1] == "http://x/#code=d"
 
 
 def _desktop(base: Path, name: str, exec_line: str) -> None:
@@ -252,6 +273,37 @@ async def test_aims_ui_hands_the_browser_a_code_not_the_token(tmp_path: Path) ->
         assert second.partition("/#code=")[2] != code
         proc.send_signal(signal.SIGTERM)
         await proc.wait()
+
+
+async def test_aims_open_gives_a_new_link_while_aims_ui_runs(tmp_path: Path) -> None:
+    async with ui_process(tmp_path, "--no-runner") as (proc, first):
+        base = first.partition("/#code=")[0]
+        env = {**os.environ, "AIMS_SERVER_DIR": str(tmp_path / "server")}
+        env.pop("AIMS_TOKEN", None)
+        done = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "aims",
+            "open",
+            "--no-open",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+        out, err = await done.communicate()
+        assert done.returncode == 0, err
+        link = out.decode().strip()
+        assert link.startswith(f"{base}/#code=")
+        assert link != first
+        assert "within 120 s" in err.decode()
+        async with httpx2.AsyncClient(base_url=base, trust_env=False) as c:
+            code = link.partition("/#code=")[2]
+            assert (await c.post("/api/session", json={"code": code})).status_code == 204
+            assert (await c.get("/api/session")).json()["name"] == "ui"
+        proc.send_signal(signal.SIGTERM)
+        async with asyncio.timeout(30):
+            assert await proc.wait() == 0
+    assert list((tmp_path / "server").glob("open-*.html")) == []
 
 
 async def test_aims_ui_answers_on_the_address_it_binds(tmp_path: Path) -> None:

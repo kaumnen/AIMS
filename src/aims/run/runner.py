@@ -150,6 +150,8 @@ class Options:
     origin: str | None = None
     """What the run is and the run it belongs to: a self-test case is a `selftest.case` run
     under the `selftest` run that records the self-test."""
+    case: str | None = None
+    """The self-test case the run plays."""
 
 
 @dataclass(slots=True)
@@ -669,6 +671,7 @@ class Runner:
             "monitor": None if self.watch is None else self.watch.snapshot(),
             "oversight": o.oversight,
             "budget": None if o.budget is None else o.budget.dump(),
+            **({} if o.case is None else {"case": o.case}),
         }
 
     async def _phases(self, profiles: dict[str, Profile], result: Result) -> None:

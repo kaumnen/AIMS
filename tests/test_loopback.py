@@ -254,6 +254,8 @@ async def test_a_selftest_from_the_api_records_each_case_under_its_run(
             params = {"kind": "selftest.case", "origin": run_id}
             nested = (await c.get("/api/runs", params=params)).json()["items"]
             assert sorted(r["run_id"] for r in nested) == sorted(e["data"]["run_id"] for e in cases)
+            names = {e["data"]["run_id"]: e["data"]["case"] for e in cases}
+            assert {r["run_id"]: r["case"] for r in nested} == names
     async with cp.client(cp.viewer) as c:
         assert (await c.get(f"/api/runs/{run_id}")).status_code == 403
         assert (await c.get(f"/api/runs/{nested[0]['run_id']}")).status_code == 403

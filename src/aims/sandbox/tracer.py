@@ -3,6 +3,7 @@ import contextlib
 import dataclasses
 import logging
 import posixpath
+import re
 from collections import OrderedDict, deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -77,6 +78,11 @@ RIPE_US = 4_500_000
 GONE_US = 10_000_000
 EXIT_GRACE_S = 0.05
 UNKNOWN = "kernel records of an unknown process"
+# Compile warnings bpftrace gives for this script on every start, each followed by the source
+# line and a marker line under it; they say nothing about a run.
+KNOWN_WARNINGS = frozenset({"Addrspace mismatch"})
+DIAGNOSTIC = re.compile(r"\S+:\d+:\d+(?:-\d+)?: (WARNING|ERROR): (.*)")
+MARKER = re.compile(r"\s*[~^]+\s*")
 # Kernels from 6.15 split pipe_write into anon_pipe_write and fifo_pipe_write, 7.0 renamed
 # do_filp_open to do_file_open, and FMODE_BACKING is bit 24 from 6.14 and bit 25 before.
 TRACE = (
@@ -214,6 +220,8 @@ class Tracer:
         self.located = 0
         self.unlocated = 0
         self.pmu: dict[str, JsonValue] | None = None
+        # lines still to come of a known compile warning
+        self._quiet = 0
 
     async def start(self) -> None:
         image = await ensure_image(self._docker, "tracer")
@@ -342,6 +350,19 @@ class Tracer:
             for route in self._routes.values():
                 route.put(Lost(None, "tracer stopped"))
 
+    def _note(self, text: str) -> None:
+        """Log what bpftrace says; known compile warnings and their source lines at debug."""
+        found = DIAGNOSTIC.fullmatch(text)
+        if found is not None:
+            self._quiet = 2 if found[1] == "WARNING" and found[2] in KNOWN_WARNINGS else 0
+            quiet = self._quiet > 0
+        else:
+            quiet = self._quiet > 0
+            self._quiet = 0 if MARKER.fullmatch(text) else max(0, self._quiet - 1)
+        log.log(logging.DEBUG if quiet else logging.WARNING, "tracer: %s", text)
+        if not self._ready.done() and "ERROR" in text:
+            self._ready.set_exception(TracerError(text))
+
     def settle(self) -> None:
         """Report holes older than a second, then loss the kernel counted that no hole explains.
 
@@ -382,9 +403,7 @@ class Tracer:
             case Tick():
                 self.settle()
             case Note(text):
-                log.warning("tracer: %s", text)
-                if not self._ready.done() and "ERROR" in text:
-                    self._ready.set_exception(TracerError(text))
+                self._note(text)
             case Dropped(count):
                 self.kernel_lost += count
                 self._drops.append((self._sequence.latest, self.kernel_lost))

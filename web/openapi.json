@@ -5545,6 +5545,32 @@
         "title": "Latency",
         "type": "object"
       },
+      "LaunchCode": {
+        "description": "`code` is None when the control plane runs without auth: its plain URL signs in.",
+        "properties": {
+          "code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
+          },
+          "ttl_s": {
+            "title": "Ttl S",
+            "type": "number"
+          }
+        },
+        "required": [
+          "code",
+          "ttl_s"
+        ],
+        "title": "LaunchCode",
+        "type": "object"
+      },
       "LayerInfo": {
         "properties": {
           "etag": {
@@ -10079,8 +10105,19 @@
       },
       "RunSummary": {
         "additionalProperties": false,
-        "description": "`kind` says what the run is and `origin` names the run a monitor run watched. `flags`\ncounts its logical flags and `categories` them per category, whatever their status;\n`max_importance` is the highest importance of a flag not cleared or rejected,\n`verdict_severity` the judge's, and `max_severity` the higher of the two, 0 for neither.\n`series` and `series_index` place a run in its series; `variant` is the scenario variant\nit ran, known once the run is sealed and its truth file arrived. `steps` counts its agents'\nmodel calls, `cost_usd` sums its priced live model responses, monitor calls included (None\nwhen there is none), `reward` is the verifier's last reward and `reviews` counts the\nmonitor runs over it, queued ones too. `preset` is the preset of the monitor that watches\nthe run, or that a monitor run runs, and `monitor_mode` a monitor run's mode. `held` lists\nits agents paused now, by the monitor or an operator, one entry per pause. `commands`\ncounts the commands sent to it through the control plane and `commands_waiting` those the\nrunner has not answered yet.",
+        "description": "`kind` says what the run is and `origin` names the run a monitor run watched. `flags`\ncounts its logical flags and `categories` them per category, whatever their status;\n`max_importance` is the highest importance of a flag not cleared or rejected,\n`verdict_severity` the judge's, and `max_severity` the higher of the two, 0 for neither.\n`series` and `series_index` place a run in its series; `variant` is the scenario variant\nit ran, known once the run is sealed and its truth file arrived. `steps` counts its agents'\nmodel calls, `cost_usd` sums its priced live model responses, monitor calls included (None\nwhen there is none), `reward` is the verifier's last reward and `reviews` counts the\nmonitor runs over it, queued ones too. `preset` is the preset of the monitor that watches\nthe run, or that a monitor run runs, and `monitor_mode` a monitor run's mode. `case` names\nthe self-test case the run plays (None for case runs made before it was kept). `held`\nlists its agents paused now, by the monitor or an operator, one entry per pause.\n`commands` counts the commands sent to it through the control plane and\n`commands_waiting` those the runner has not answered yet.",
         "properties": {
+          "case": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Case"
+          },
           "categories": {
             "additionalProperties": {
               "type": "integer"
@@ -10377,6 +10414,7 @@
           "reviews",
           "preset",
           "monitor_mode",
+          "case",
           "held",
           "commands",
           "commands_waiting"
@@ -19839,6 +19877,58 @@
           }
         },
         "summary": "Start Session",
+        "tags": [
+          "session"
+        ]
+      }
+    },
+    "/api/session/code": {
+      "post": {
+        "description": "A code that signs a browser in once, as the caller, within `ttl_s` seconds, for the link\n`aims open` opens. It takes the token itself, not a session.",
+        "operationId": "launch_code",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LaunchCode"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not signed in"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Invalid request"
+          }
+        },
+        "summary": "Launch Code",
         "tags": [
           "session"
         ]

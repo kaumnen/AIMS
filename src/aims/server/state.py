@@ -30,11 +30,13 @@ INFLIGHT_CAP = 1024 * 1024
 INFLIGHT_CALLS = 1000
 INFLIGHT_DONE = 10_000
 CODE_TTL_S = 120.0
+CODES = 32
 
 
 class LaunchCodes:
-    """One-shot sign-in codes for the browser `aims ui` opens, so the operator token never
-    leaves server.json. A code works once, for two minutes; only its hash is kept."""
+    """One-shot sign-in codes for the browser `aims ui` and `aims open` open, so a token never
+    reaches the browser. A code works once, for two minutes; only its hash is kept, and only
+    the newest `CODES` of them."""
 
     def __init__(self, ttl: float = CODE_TTL_S) -> None:
         self.ttl = ttl
@@ -42,7 +44,8 @@ class LaunchCodes:
 
     def issue(self, token: str) -> str:
         now = time.time()
-        self._codes = {k: v for k, v in self._codes.items() if v[1] > now}
+        live = [(k, v) for k, v in self._codes.items() if v[1] > now]
+        self._codes = dict(live[-(CODES - 1) :])
         code = secrets.token_urlsafe(32)
         self._codes[hash_secret(code)] = (token, now + self.ttl)
         return code

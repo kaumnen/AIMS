@@ -83,19 +83,25 @@ class Link:
             tracer=self.tracer(),
             envs=set_envs(self.wanted),
             slots=self.slots,
-            jobs=sorted({*self.jobs(), *self.runners}),
+            jobs=self._held(),
             kinds=list(self.kinds),
         )
 
     def status(self) -> RunnerStatus:
-        running = sorted(self.runners)
         return RunnerStatus(
             tracer=self.tracer(),
             envs=set_envs(self.wanted),
-            free=max(0, self.slots - len(set(self.jobs()) | set(running))),
-            running=running,
+            free=max(0, self.slots - len(self._held())),
+            running=sorted(self.runners),
             jobs=sorted(self.jobs()),
         )
+
+    def _held(self) -> list[str]:
+        """What takes a slot: each job, and each run of no job. A self-test's case run is its
+        job's runner under a second id, so it shares the job's slot."""
+        jobs = set(self.jobs())
+        inside = {id(r) for run_id, r in self.runners.items() if run_id in jobs}
+        return sorted(jobs | {run_id for run_id, r in self.runners.items() if id(r) not in inside})
 
     async def start(self) -> None:
         self._loops = [

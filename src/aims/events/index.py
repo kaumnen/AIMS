@@ -43,7 +43,7 @@ from aims.events.payloads import (
 )
 from aims.events.schema import SCHEMA_VERSION, BlobRef, Content, Event, Timestamp, format_ts
 
-VERSION = 8
+VERSION = 9
 MAX_TEXT = 32 * 1024
 MAX_PAGE = 1000
 
@@ -73,6 +73,7 @@ create table runs (
     reward real,
     preset text,
     monitor_mode text,
+    selftest_case text,
     held text not null default '{}'
 ) strict;
 
@@ -258,7 +259,8 @@ class RunInfo(BaseModel):
     `cost_usd` sums the priced live model responses of every caller (None when there is none),
     `reward` is the last verifier reward and `reviews` counts the monitor runs over it.
     `preset` is the preset of the monitor that watched it, or that a monitor run ran,
-    `monitor_mode` a monitor run's mode and `held` its agents paused now."""
+    `monitor_mode` a monitor run's mode, `case` the self-test case it plays and `held` its
+    agents paused now."""
 
     run_id: str
     scenario: str
@@ -284,6 +286,7 @@ class RunInfo(BaseModel):
     reviews: int = 0
     preset: str | None = None
     monitor_mode: str | None = None
+    case: str | None = None
     held: list[HoldInfo] = Field(default_factory=list)
 
 
@@ -429,6 +432,7 @@ RUN_KEYS = (
     "reviews",
     "preset",
     "monitor_mode",
+    "case",
     "categories",
     "held",
 )
@@ -653,11 +657,12 @@ class Index:
                     config = config if isinstance(config, dict) else {}
                     group = config.get("group")
                     preset, mode = monitor_of(config)
+                    case = config.get("case")
                     await self._db.execute(
                         "insert into runs (run_id, scenario, status, started_at, ended_at,"
                         " last_seq, last_hash, log_offset, kind, origin, series, series_index,"
-                        " run_group, preset, monitor_mode) values"
-                        " (?, ?, 'running', ?, null, -1, '', 0, ?, ?, ?, ?, ?, ?, ?)"
+                        " run_group, preset, monitor_mode, selftest_case) values"
+                        " (?, ?, 'running', ?, null, -1, '', 0, ?, ?, ?, ?, ?, ?, ?, ?)"
                         " on conflict do nothing",
                         (
                             run_id,
@@ -670,6 +675,7 @@ class Index:
                             group if isinstance(group, str) else None,
                             preset,
                             mode,
+                            case if isinstance(case, str) else None,
                         ),
                     )
                 async with self._db.execute(
@@ -1054,7 +1060,7 @@ class Index:
             " origin, flags, max_importance, verdict_severity, severity, series, series_index,"
             " variant, run_group, steps, nano_usd / 1e9, reward, (select count(*) from runs m"
             " where m.origin = runs.run_id and m.kind = 'monitor'), preset, monitor_mode,"
-            f" categories, held from runs {clause}",
+            f" selftest_case, categories, held from runs {clause}",
             args,
         ) as cur:
             rows = await cur.fetchall()
