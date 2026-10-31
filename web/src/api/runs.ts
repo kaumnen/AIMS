@@ -12,6 +12,7 @@ import {
   pathsApiRunsGetParametersQueryCategoryAnyOf0Values as categoryValues,
   runSummaryKindValues,
 } from "./schema.gen";
+import type { SeriesInfo } from "./series";
 
 export type RunSummary = Schemas["RunSummary"];
 export type RunPage = Schemas["RunPage"];
@@ -199,6 +200,8 @@ export function applyRuns(qc: QueryClient, runs: readonly RunSummary[]): void {
         void qc.invalidateQueries({ queryKey: q.queryKey, exact: true });
         void qc.invalidateQueries({ queryKey: ["runs", "steps", run.run_id], exact: true });
       }
+    } else if (what === "series") {
+      applySeries(qc, q.queryKey, runs);
     } else if (what === "reviews" || what === "scores") {
       const kind = what === "reviews" ? "monitor" : "score";
       qc.setQueryData<RunPage>(q.queryKey, (data) => {
@@ -208,6 +211,24 @@ export function applyRuns(qc: QueryClient, runs: readonly RunSummary[]): void {
       });
     }
   }
+}
+
+// A run of the series that is new or changed status moves where the series goes on, so the
+// series is read again; other changes land in place.
+function applySeries(qc: QueryClient, key: QueryKey, runs: readonly RunSummary[]): void {
+  const data = qc.getQueryData<SeriesInfo>(key);
+  const mine = runs.filter((r) => r.series === key[2]);
+  if (!data || mine.length === 0) return;
+  const known = new Map(data.runs.map((r) => [r.run_id, r]));
+  if (mine.some((r) => known.get(r.run_id)?.status !== r.status)) {
+    void qc.invalidateQueries({ queryKey: key, exact: true });
+    return;
+  }
+  const fresh = new Map(mine.map((r) => [r.run_id, r]));
+  qc.setQueryData<SeriesInfo>(key, {
+    ...data,
+    runs: data.runs.map((r) => fresh.get(r.run_id) ?? r),
+  });
 }
 
 // Run updates from the stream, applied at most once a frame.

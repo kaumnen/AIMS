@@ -18,6 +18,7 @@ import {
   syncRuns,
 } from "./runs";
 import { scoresQuery } from "./score";
+import { type SeriesInfo, seriesQuery } from "./series";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -203,4 +204,29 @@ test("an update made while a page loads survives the page landing", async () => 
   unsubscribe();
   stop();
   live.stop();
+});
+
+test("a series takes updates of its runs in place and is read again when one moves on", () => {
+  const qc = new QueryClient();
+  const key = seriesQuery("nightly").queryKey;
+  const first = run("a", { series: "nightly", series_index: 0 });
+  const info: SeriesInfo = {
+    name: "nightly",
+    next_index: 1,
+    previous: null,
+    busy: "a",
+    runs: [first],
+  };
+  qc.setQueryData(key, info);
+  const invalidate = vi.spyOn(qc, "invalidateQueries");
+  applyRuns(qc, [run("b", { series: "other" })]);
+  expect(qc.getQueryData(key)).toBe(info);
+  applyRuns(qc, [{ ...first, steps: 9 }]);
+  expect(qc.getQueryData<SeriesInfo>(key)?.runs[0]?.steps).toBe(9);
+  expect(invalidate).not.toHaveBeenCalled();
+  applyRuns(qc, [{ ...first, status: "completed" }]);
+  expect(invalidate).toHaveBeenCalledWith({ queryKey: key, exact: true });
+  invalidate.mockClear();
+  applyRuns(qc, [run("c", { series: "nightly", series_index: 1 })]);
+  expect(invalidate).toHaveBeenCalledWith({ queryKey: key, exact: true });
 });

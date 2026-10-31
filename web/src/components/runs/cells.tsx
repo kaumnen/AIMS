@@ -8,6 +8,7 @@ const labels: Record<string, string> = {
   failed: "Failed",
   killed: "Killed",
   cancelled: "Cancelled",
+  waiting: "Waiting",
   queued: "Queued",
   offered: "Starting",
   claimed: "Starting",
@@ -24,7 +25,7 @@ export function statusLabel(run: RunSummary): string {
 
 export function Status({ run }: { run: RunSummary }) {
   const live = run.status === "running" && !run.stale;
-  const waiting = run.state === "queued" || run.state === "offered" || run.state === "claimed";
+  const waiting = ["waiting", "queued", "offered", "claimed"].includes(run.state);
   const ended = run.status === "completed" || run.status === "cancelled";
   return (
     <span

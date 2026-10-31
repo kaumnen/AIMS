@@ -13,12 +13,14 @@ import {
   startRuns,
 } from "@/api/launch";
 import { type ScenarioInfo, scenariosQuery } from "@/api/scenarios";
+import { seriesQuery } from "@/api/series";
 import { isProblem, whoami } from "@/api/session";
 import { BudgetSection } from "@/components/budget";
 import { DEFAULT, Field, Pick, problemText } from "@/components/form";
 import { up, useRunners } from "@/components/health";
 import { useLive } from "@/components/live";
 import { OversightNote } from "@/components/oversight-note";
+import { NO_SERIES, SeriesSection } from "@/components/runs/series-fold";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -33,6 +35,7 @@ import { Input } from "@/components/ui/input";
 import { draftText, EMPTY_DRAFT, readDraft } from "@/lib/budget";
 import { started } from "@/lib/format";
 import { checkProblem, checkState, confirmWhy, oversightNote } from "@/lib/launch";
+import { useDebounced } from "@/lib/use-debounced";
 import { cn } from "@/lib/utils";
 
 const MAX_SAMPLES = 100;
@@ -71,17 +74,23 @@ function NewRunForm({ onDone }: { onDone: () => void }) {
   const [keep, setKeep] = useState(false);
   const [confirm, setConfirm] = useState(false);
   const [draft, setDraft] = useState(EMPTY_DRAFT);
+  const [plan, setPlan] = useState(NO_SERIES);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const runners = useRunners().filter((r) => up(r) && r.kinds.includes("scenario"));
   const { budget, problems } = readDraft(draft);
+  const series = plan.name.trim() || null;
+  const settled = useDebounced(series, 300);
+  const found = useQuery({ ...seriesQuery(settled ?? ""), enabled: settled !== null });
+  const place = series !== null && settled === series ? found.data : undefined;
+  const count = series === null ? samples : plan.runs;
 
   const estimate = useQuery({
     ...runEstimateQuery({
       source: scenario?.source ?? "",
       name: scenario?.name ?? "",
       variant: variant || undefined,
-      samples,
+      samples: count,
       profile: profile || undefined,
       monitor: (monitor || undefined) as Preset | undefined,
       budget,
@@ -110,6 +119,9 @@ function NewRunForm({ onDone }: { onDone: () => void }) {
   const caps = estimate.data?.parts[0]?.caps;
   const several = Object.keys(caps?.agents ?? {}).length > 1;
   const unread = Object.keys(problems).length > 0;
+  // a series that cannot be read is left to the server to check at start
+  const unknown = series !== null && settled === series && found.isError;
+  const waits = series !== null && !unknown && (place === undefined || place.busy !== null);
 
   const pickScenario = (key: string) => {
     setChosen(key);
@@ -123,7 +135,7 @@ function NewRunForm({ onDone }: { onDone: () => void }) {
     try {
       const out = await startRuns({
         scenario: { source: scenario.source, name: scenario.name },
-        samples,
+        samples: series === null ? samples : 1,
         audit,
         keep,
         score,
@@ -133,13 +145,18 @@ function NewRunForm({ onDone }: { onDone: () => void }) {
         ...(monitor ? { monitor: monitor as Preset } : {}),
         ...(oversight ? { oversight: oversight as Oversight } : {}),
         ...(runner ? { runner } : {}),
-        ...(parallel && samples > 1 ? { parallel } : {}),
+        ...(parallel && samples > 1 && series === null ? { parallel } : {}),
         ...(budget ? { budget } : {}),
+        ...(series === null
+          ? {}
+          : { series, runs: plan.runs, ...(plan.restart ? { restart: true } : {}) }),
       });
       onDone();
       const [first] = out.run_ids;
       if (out.run_ids.length === 1 && first) {
         void navigate({ to: "/runs/$runId", params: { runId: first } });
+      } else if (series !== null) {
+        void navigate({ to: "/runs", search: { series } });
       } else {
         void navigate({ to: "/runs", search: { scenario: scenario.title ?? scenario.name } });
       }
@@ -242,7 +259,8 @@ function NewRunForm({ onDone }: { onDone: () => void }) {
               type="number"
               min={1}
               max={MAX_SAMPLES}
-              value={samples}
+              value={series === null ? samples : 1}
+              disabled={series !== null}
               className="h-7 md:text-sm"
               onChange={(e) => {
                 const n = Math.round(Number(e.currentTarget.value));
@@ -257,7 +275,7 @@ function NewRunForm({ onDone }: { onDone: () => void }) {
               min={1}
               placeholder="All"
               value={parallel ?? ""}
-              disabled={samples === 1}
+              disabled={samples === 1 || series !== null}
               className="h-7 md:text-sm"
               onChange={(e) => {
                 const n = Math.round(Number(e.currentTarget.value));
@@ -277,6 +295,15 @@ function NewRunForm({ onDone }: { onDone: () => void }) {
             onChange={(v) => setAudit(v === "snapshot" ? "snapshot" : "kernel")}
           />
         </Field>
+        <SeriesSection
+          draft={plan}
+          found={place}
+          unknown={unknown}
+          onChange={(p) => {
+            setPlan(p);
+            setConfirm(false);
+          }}
+        />
         <BudgetSection
           caps={caps}
           draft={draft}
@@ -349,8 +376,12 @@ function NewRunForm({ onDone }: { onDone: () => void }) {
         <Button variant="ghost" size="sm" onClick={onDone}>
           Cancel
         </Button>
-        <Button size="sm" disabled={busy || needsYes || unread} onClick={() => void submit()}>
-          {samples === 1 ? "Start run" : `Start ${samples} runs`}
+        <Button
+          size="sm"
+          disabled={busy || needsYes || unread || waits}
+          onClick={() => void submit()}
+        >
+          {count === 1 ? "Start run" : `Start ${count} runs`}
         </Button>
       </DialogFooter>
     </>

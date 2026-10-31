@@ -162,3 +162,28 @@ test("the stream updates rows and adds new runs", async () => {
   expect(screen.getByText("3 runs")).toBeTruthy();
   expect(runQueries()).toHaveLength(1);
 });
+
+test("a waiting run of a series says what it waits for and its index opens the series", async () => {
+  const waiting = "01a19100-0000-7000-8000-000000000003";
+  const reason = `waits for #1 (run ${BEE5})`;
+  lists["kind=scenario"] = [
+    run(waiting, {
+      status: "waiting",
+      state: "waiting",
+      started_at: null,
+      series: "nightly",
+      series_index: 2,
+      reason,
+    }),
+  ];
+  lists["kind=scenario&series=nightly"] = lists["kind=scenario"];
+  const router = renderAt("/runs");
+  await screen.findByRole("link", { name: "cache-keys" });
+  const row = rowOf("cache-keys");
+  expect(row.getByText("Waiting").getAttribute("title")).toBe(reason);
+  expect(row.getByText(reason, { exact: false })).toBeTruthy();
+  fireEvent.click(row.getByRole("link", { name: "#2" }));
+  await screen.findByText("1 run");
+  expect(router.state.location.search).toEqual({ series: "nightly" });
+  expect(runQueries()).toContain("kind=scenario&limit=100&series=nightly");
+});

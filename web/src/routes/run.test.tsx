@@ -163,6 +163,7 @@ let labelsOf: Record<string, Label[]>;
 let posted: { path: string; body: Record<string, unknown> }[];
 let commands: (Partial<CommandInfo> & Pick<CommandInfo, "id" | "acked" | "outcome">)[];
 let outcome: string;
+let seriesRuns: RunSummary[];
 
 const review = (runId: string, over: Partial<RunSummary> = {}): RunSummary =>
   run(runId, {
@@ -351,6 +352,7 @@ beforeEach(() => {
   posted = [];
   commands = [];
   outcome = "done";
+  seriesRuns = [];
   vi.stubGlobal("EventSource", FakeEventSource);
   vi.stubGlobal("fetch", fetch);
   fetch.mockImplementation(async (request) => {
@@ -439,6 +441,15 @@ beforeEach(() => {
       return Response.json({ items: mine ? reviews : [], next: null });
     }
     if (path === `/api/runs/${BEE5}`) return Response.json(detail);
+    if (path === "/api/series/nightly") {
+      return Response.json({
+        name: "nightly",
+        next_index: seriesRuns.length,
+        previous: null,
+        busy: null,
+        runs: seriesRuns,
+      });
+    }
     const [, , , other, part] = path.split("/");
     const known = other === undefined ? undefined : others[other];
     if (known && part === undefined) return Response.json(known.detail);
@@ -1588,4 +1599,45 @@ test("a sealed run without commands shows no commands button, an open one says w
   fireEvent.click(await screen.findByRole("button", { name: "Commands" }));
   const drawer = await screen.findByRole("dialog", { name: "Commands" });
   expect(await within(drawer).findByText(/No commands sent yet/)).toBeTruthy();
+});
+
+const seriesId = (i: number) => `01a19100-0000-7000-8000-00000000000${i}`;
+const seriesRun = (i: number, over: Partial<RunSummary> = {}) =>
+  run(seriesId(i), {
+    series: "nightly",
+    series_index: i,
+    status: "completed",
+    state: "done",
+    ...over,
+  });
+
+test("a run of a series links its series, the run before it and every run of it", async () => {
+  seriesRuns = [seriesRun(0), seriesRun(1), { ...detail.run, series: "nightly", series_index: 2 }];
+  seriesRuns.push(seriesRun(3, { status: "waiting", state: "waiting", started_at: null }));
+  detail = {
+    ...detail,
+    run: { ...detail.run, series: "nightly", series_index: 2 },
+    series_previous: seriesId(1),
+  };
+  renderAt(`/runs/${BEE5}`);
+  const link = await screen.findByRole("link", { name: "nightly #2" });
+  expect(link.getAttribute("href")).toBe("/runs?series=nightly");
+  const after = await screen.findByRole("link", { name: "after #1" });
+  expect(after.getAttribute("href")).toBe(`/runs/${seriesId(1)}`);
+  const strip = screen.getByRole("navigation", { name: "Series nightly" });
+  const chips = within(strip).getAllByRole("link");
+  expect(chips.map((c) => c.textContent)).toEqual([
+    "#0Completed",
+    "#1Completed",
+    "#2Completed",
+    "#3Waiting",
+  ]);
+  expect(chips[2]?.getAttribute("aria-current")).toBe("page");
+
+  const moved = seriesRun(3, { status: "running", state: "running" });
+  seriesRuns[3] = moved;
+  const source = listStream();
+  if (!source) throw new Error("no list stream");
+  act(() => source.send({ kind: "run", run: moved }));
+  await waitFor(() => expect(within(strip).getAllByRole("link")[3]?.textContent).toBe("#3Running"));
 });

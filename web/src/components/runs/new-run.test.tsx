@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import type { Estimate } from "@/api/launch";
 import type { ScenarioInfo } from "@/api/scenarios";
+import type { SeriesInfo } from "@/api/series";
 import { makeRouter } from "@/router";
 import { FakeEventSource, runnerInfo } from "@/test/event-source";
 import { stubHeight } from "@/test/layout";
@@ -16,6 +17,9 @@ let role: string;
 let posted: Record<string, unknown>[];
 let checks: string[][];
 let budgets: (string | null)[];
+let samplesAsked: number[];
+let seriesFound: Record<string, SeriesInfo>;
+let seriesPost: Response | null;
 
 const CAPS = { steps: 80, output_tokens: null, cost_usd: 4, wall_s: 1800 };
 const NO_CAPS = { steps: null, output_tokens: null, cost_usd: null, wall_s: null };
@@ -94,6 +98,9 @@ beforeEach(() => {
   posted = [];
   checks = [];
   budgets = [];
+  samplesAsked = [];
+  seriesFound = {};
+  seriesPost = null;
   vi.stubGlobal("EventSource", FakeEventSource);
   vi.stubGlobal("fetch", fetch);
   fetch.mockImplementation(async (request) => {
@@ -138,16 +145,37 @@ beforeEach(() => {
     if (path.endsWith("/estimate")) {
       const budget = url.searchParams.get("budget");
       budgets.push(budget);
+      samplesAsked.push(Number(url.searchParams.get("samples") ?? 1));
       return Response.json(estimate(Number(url.searchParams.get("samples") ?? 1), budget));
     }
     if (path === "/api/models/check" && request.method === "POST") {
       checks.push(((await request.json()) as { profiles: string[] }).profiles);
       return Response.json({ run_ids: ["c2"], group: null }, { status: 202 });
     }
+    if (path.startsWith("/api/series/")) {
+      const name = decodeURIComponent(path.slice("/api/series/".length));
+      if (name === "broken") {
+        return Response.json(
+          {
+            type: "about:blank",
+            title: "Invalid request",
+            status: 422,
+            code: "invalid",
+            errors: [],
+          },
+          { status: 422, headers: { "content-type": "application/problem+json" } },
+        );
+      }
+      return Response.json(
+        seriesFound[name] ?? { name, next_index: 0, previous: null, busy: null, runs: [] },
+      );
+    }
     if (path === "/api/runs" && request.method === "POST") {
       const body = (await request.json()) as Record<string, unknown>;
       posted.push(body);
-      const ids = Array.from({ length: Number(body["samples"]) }, (_, i) => `${NEW}${i || ""}`);
+      if (seriesPost) return seriesPost;
+      const count = Number(body["series"] ? body["runs"] : body["samples"]);
+      const ids = Array.from({ length: count }, (_, i) => `${NEW}${i || ""}`);
       return Response.json({ run_ids: ids, group: ids.length > 1 ? "g" : null }, { status: 202 });
     }
     if (path === "/api/runs") return Response.json({ items: [], next: null });
@@ -325,4 +353,92 @@ test("a budget over the scenario's caps is estimated and goes with the run", asy
   expect(posted[0]).toMatchObject({
     budget: { every: { steps: 200, wall_s: 7200 }, run: { cost_usd: null } },
   });
+});
+
+const LAST = "01a18000-0000-7000-8000-00000000000a";
+
+async function openSeries(form: ReturnType<typeof within>) {
+  const fold = form.getByText("Series").closest("details");
+  if (!fold) throw new Error("no series section");
+  expect(fold.open).toBe(false);
+  expect(within(fold).getByText("None")).toBeTruthy();
+  fold.open = true;
+  return within(fold);
+}
+
+test("a series goes on where the server says, counts its runs and starts them", async () => {
+  seriesFound["nightly"] = {
+    name: "nightly",
+    next_index: 5,
+    previous: LAST,
+    busy: null,
+    runs: [run(LAST, { series: "nightly", series_index: 4 })],
+  };
+  const router = renderAt("/runs");
+  const form = await openForm();
+  const fold = await openSeries(form);
+  expect(fold.getByRole("spinbutton", { name: "Runs" }).hasAttribute("disabled")).toBe(true);
+  fireEvent.change(fold.getByRole("textbox", { name: "Name" }), { target: { value: "nightly" } });
+  fireEvent.change(fold.getByRole("spinbutton", { name: "Runs" }), { target: { value: "3" } });
+  expect(await fold.findByText("Goes on after #4; the next run is #5.")).toBeTruthy();
+  expect(fold.getByText("nightly · 3 runs")).toBeTruthy();
+  expect(form.getByRole("spinbutton", { name: "Samples" }).hasAttribute("disabled")).toBe(true);
+  expect(form.getByRole("spinbutton", { name: "At once" }).hasAttribute("disabled")).toBe(true);
+  await form.findByText("Total: cannot exceed $27.00.");
+  expect(samplesAsked.at(-1)).toBe(3);
+  fireEvent.click(form.getByRole("checkbox", { name: /above the \$20.00 limit/ }));
+  fireEvent.click(form.getByRole("button", { name: "Start 3 runs" }));
+  await waitFor(() => expect(router.state.location.search).toEqual({ series: "nightly" }));
+  expect(posted[0]).toMatchObject({ samples: 1, series: "nightly", runs: 3, confirm: true });
+  expect(posted[0]).not.toHaveProperty("restart");
+});
+
+test("a busy series holds the start and a restart says so", async () => {
+  seriesFound["nightly"] = {
+    name: "nightly",
+    next_index: 2,
+    previous: null,
+    busy: NEW,
+    runs: [run(NEW, { series: "nightly", series_index: 1, status: "waiting", state: "waiting" })],
+  };
+  renderAt("/runs");
+  const form = await openForm();
+  const fold = await openSeries(form);
+  fireEvent.change(fold.getByRole("textbox", { name: "Name" }), { target: { value: "nightly" } });
+  expect(await fold.findByText("Busy: #1 is waiting. Start after it ends.")).toBeTruthy();
+  expect(form.getByRole("button", { name: "Start run" }).hasAttribute("disabled")).toBe(true);
+
+  fireEvent.change(fold.getByRole("textbox", { name: "Name" }), { target: { value: "fresh" } });
+  expect(await fold.findByText("New series; starts at #0.")).toBeTruthy();
+  fireEvent.click(fold.getByRole("checkbox", { name: "Start the series again at #0" }));
+  expect(fold.getByText("Starts again at #0 from the scenario's own folders.")).toBeTruthy();
+  seriesPost = Response.json(
+    {
+      type: "about:blank",
+      title: "Conflict",
+      status: 409,
+      detail: `run ${NEW} of series fresh has not ended`,
+      code: "series_busy",
+      errors: [],
+    },
+    { status: 409, headers: { "content-type": "application/problem+json" } },
+  );
+  const start = form.getByRole("button", { name: "Start run" });
+  await waitFor(() => expect(start.hasAttribute("disabled")).toBe(false));
+  fireEvent.click(start);
+  expect(
+    await form.findByText(new RegExp(`run ${NEW} of series fresh has not ended`)),
+  ).toBeTruthy();
+  expect(posted[0]).toMatchObject({ series: "fresh", runs: 1, restart: true });
+});
+
+test("a series that does not load leaves the check to the server", async () => {
+  renderAt("/runs");
+  const form = await openForm();
+  const fold = await openSeries(form);
+  fireEvent.change(fold.getByRole("textbox", { name: "Name" }), { target: { value: "broken" } });
+  expect(
+    await fold.findByText("The series did not load; the server checks it when the runs start."),
+  ).toBeTruthy();
+  expect(form.getByRole("button", { name: "Start run" }).hasAttribute("disabled")).toBe(false);
 });

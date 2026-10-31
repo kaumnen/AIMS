@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 
 import { RunCommands } from "./commands";
 import { agentsOf, RunControls } from "./controls";
+import { SeriesPrevious, SeriesStrip } from "./series";
 
 function Fact({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -32,8 +33,15 @@ export function RunHeader({ detail }: { detail: RunDetail }) {
         <h1 className="flex items-baseline gap-2 text-lg font-medium">
           <span className="truncate">{title}</span>
           {run.variant && <span className="text-muted-foreground text-sm">{run.variant}</span>}
-          {run.series_index !== null && (
-            <span className="text-muted-foreground text-sm">#{run.series_index}</span>
+          {run.series !== null && run.series_index !== null && (
+            <Link
+              to="/runs"
+              search={{ series: run.series }}
+              title={`Runs of series ${run.series}`}
+              className="text-muted-foreground hover:text-foreground truncate text-sm underline-offset-2 hover:underline"
+            >
+              {run.series} #{run.series_index}
+            </Link>
           )}
         </h1>
         <p className="text-muted-foreground flex flex-wrap gap-x-2 font-mono text-xs">
@@ -47,6 +55,9 @@ export function RunHeader({ detail }: { detail: RunDetail }) {
             >
               run {shortId(run.origin)}
             </Link>
+          )}
+          {run.series !== null && detail.series_previous && (
+            <SeriesPrevious name={run.series} previous={detail.series_previous} />
           )}
         </p>
       </div>
@@ -86,6 +97,7 @@ export function RunHeader({ detail }: { detail: RunDetail }) {
         <RunControls detail={detail} />
         <RunCommands run={run} />
       </div>
+      {run.series !== null && <SeriesStrip name={run.series} current={run.run_id} />}
     </header>
   );
 }

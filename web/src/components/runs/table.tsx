@@ -1,7 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ChevronRight } from "lucide-react";
-import { type ReactNode, useEffect, useRef } from "react";
+import { Fragment, type ReactNode, useEffect, useRef } from "react";
 
 import type { RunSummary } from "@/api/runs";
 import { shortId } from "@/lib/format";
@@ -135,14 +135,27 @@ function RunRow({
   open: boolean;
   onToggle: (runId: string) => void;
 }) {
-  const extra: string[] = [];
-  if (run.variant) extra.push(run.variant);
-  if (run.series_index !== null) extra.push(`#${run.series_index}`);
+  const extra: [string, ReactNode][] = [];
+  if (run.variant) extra.push(["variant", run.variant]);
+  if (run.series !== null && run.series_index !== null) {
+    extra.push([
+      "series",
+      <Link
+        key="series"
+        to="/runs"
+        search={{ series: run.series }}
+        title={`Runs of series ${run.series}`}
+        className="hover:text-foreground relative z-10 underline-offset-2 hover:underline"
+      >
+        #{run.series_index}
+      </Link>,
+    ]);
+  }
   const preset = run.kind === "monitor" ? presetText(run) : null;
-  if (preset) extra.push(preset);
+  if (preset) extra.push(["preset", preset]);
   if (run.kind === "monitor" && run.origin && !child)
-    extra.push(`review of ${shortId(run.origin)}`);
-  if (run.reason && run.started_at === null) extra.push(run.reason);
+    extra.push(["origin", `review of ${shortId(run.origin)}`]);
+  if (run.reason && run.started_at === null) extra.push(["reason", run.reason]);
   const name = child ? "Review" : (run.scenario ?? run.kind);
   return (
     <div
@@ -182,7 +195,14 @@ function RunRow({
           {name}
         </Link>
         {extra.length > 0 && (
-          <span className="text-muted-foreground truncate">{extra.join(" · ")}</span>
+          <span className="text-muted-foreground truncate">
+            {extra.map(([key, part], i) => (
+              <Fragment key={key}>
+                {i > 0 && " · "}
+                {part}
+              </Fragment>
+            ))}
+          </span>
         )}
       </span>
       <span role="cell" className={cn(wide, "text-muted-foreground tabular-nums")}>
