@@ -48,6 +48,25 @@ export default defineConfig({
   build: {
     outDir: "../src/aims/ui/dist",
     emptyOutDir: true,
+    // What first paint needs goes in a few named chunks, not dozens of shared ones; lazy
+    // pages keep their own. scripts/budget.ts checks the sizes, so no size warning here.
+    chunkSizeWarningLimit: Infinity,
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [
+            {
+              name: "react",
+              test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/,
+              tags: ["$initial"],
+              priority: 2,
+            },
+            { name: "vendor", test: /node_modules[\\/]/, tags: ["$initial"], priority: 1 },
+            { name: "app", tags: ["$initial"] },
+          ],
+        },
+      },
+    },
   },
   test: {
     environment: "happy-dom",

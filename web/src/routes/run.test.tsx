@@ -21,7 +21,7 @@ const NEWER = "01a18d3c-0000-7000-8000-000000000000";
 const ARGS = "a".repeat(64);
 const fetch = vi.fn<(request: Request) => Promise<Response>>();
 
-preloadRoutes();
+preloadRoutes(() => import("@/components/run/score"));
 stubHeight();
 
 const ev = (seq: number, type: string, data: Record<string, unknown>): Event =>

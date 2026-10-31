@@ -1,6 +1,6 @@
 import { useInfiniteQuery, useQueries, useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 
 import type { Event } from "@/api/events";
 import {
@@ -18,12 +18,13 @@ import { reviewsQuery } from "@/api/runs";
 import { isProblem } from "@/api/session";
 import type { InFlight } from "@/api/tail";
 import { ForkHere } from "@/components/run/fork";
+import { useHarm } from "@/components/run/harm";
 import { RunHeader } from "@/components/run/header";
 import { HoldBanner } from "@/components/run/hold";
 import { InFlightStep, useRunTail } from "@/components/run/live-tail";
 import { defaultSource, LIVE, MonitorPanel, useSource, useSources } from "@/components/run/monitor";
 import { RAW_SEARCH_ID, RawEvents, type RawSearch } from "@/components/run/raw";
-import { ScoreTab, type StepsLink, useHarm } from "@/components/run/score";
+import type { StepsLink } from "@/components/run/score";
 import { Scrubber } from "@/components/run/scrubber";
 import { SelfTestCases } from "@/components/run/selftest";
 import { type StepFlags, StepList } from "@/components/run/step-list";
@@ -53,6 +54,8 @@ interface RunSearch extends RawSearch {
   layer?: FlagLayer;
   category?: string;
 }
+
+const ScoreTab = lazy(() => import("@/components/run/score"));
 
 const LIVE_MS = 3000;
 const MAX_EVIDENCE = 20;
@@ -250,14 +253,16 @@ function Score({
   const { sources, ready } = useSources(runId, detail);
   const monitor = search.source ?? (ready ? defaultSource(sources) : LIVE);
   return (
-    <ScoreTab
-      runId={runId}
-      detail={detail}
-      scoreId={search.score}
-      onScore={(id) => onChange((prev) => ({ ...prev, score: id }))}
-      monitor={monitor}
-      onSteps={toSteps}
-    />
+    <Suspense fallback={<p className="text-muted-foreground">Loading the score</p>}>
+      <ScoreTab
+        runId={runId}
+        detail={detail}
+        scoreId={search.score}
+        onScore={(id) => onChange((prev) => ({ ...prev, score: id }))}
+        monitor={monitor}
+        onSteps={toSteps}
+      />
+    </Suspense>
   );
 }
 
