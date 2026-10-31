@@ -285,6 +285,34 @@ def test_the_monitor_budget_is_its_ceiling(tmp_path: Path) -> None:
     assert e.total.ceiling_usd == pytest.approx(10 * STEP + 2.0)
 
 
+@pytest.mark.anyio
+async def test_a_monitor_whose_model_runs_with_and_without_an_effort_is_matched(
+    tmp_path: Path, store: LocalEventStore
+) -> None:
+    plain = """
+[profiles.plain]
+backend = "chat"
+base_url = "https://api.fireworks.ai/inference/v1"
+model = "watch-model"
+weights = "watch-weights"
+reasoning = "full"
+price = { input = 2.0, cached = 0.2, output = 4.0 }
+"""
+    preset = "standard, review: {profile: plain}"
+    settings, path = write(tmp_path, preset=preset, config=CONFIG + plain)
+    bundle = load_scenario(path)
+    m = plan(settings, bundle).monitor
+    assert m is not None
+    assert m.review is not None
+    assert m.judge is not None
+    assert (m.review.model, m.review.effort) == (m.judge.model, None)
+    assert m.judge.effort is not None
+    await record(store, settings, bundle, 0.1, monitor_cost=0.2)
+    monitor = one(settings, await history(store), bundle).parts[0].monitor
+    assert monitor is not None
+    assert (monitor.tier, monitor.runs) == ("scenario", 1)
+
+
 def test_a_profile_without_a_price_is_named_and_not_counted(tmp_path: Path) -> None:
     settings, path = write(tmp_path)
     e = one(settings, History(), load_scenario(path), profile="glimmer")

@@ -766,7 +766,7 @@ def _monitor_key(m: ResolvedMonitor | None) -> MonitorKey | None:
     found = [
         q for q in (*m.sweeps.values(), m.review, m.judge, m.extract, m.channels) if q is not None
     ]
-    return m.config.preset, tuple(sorted((q.model, q.effort) for q in found))
+    return m.config.preset, _models((q.model, q.effort) for q in found)
 
 
 def _snapshot_key(value: object) -> MonitorKey | None:
@@ -776,7 +776,11 @@ def _snapshot_key(value: object) -> MonitorKey | None:
     preset = _str(_dict(m.get("config")).get("preset"))
     found = [*_dict(m.get("sweeps")).values(), m.get("review"), m.get("judge")]
     found += [m.get("extract"), m.get("channels")]
-    return preset, tuple(sorted(_model(q) for q in found if isinstance(q, dict)))
+    return preset, _models(_model(q) for q in found if isinstance(q, dict))
+
+
+def _models(found: Iterable[tuple[str, str | None]]) -> tuple[tuple[str, str | None], ...]:
+    return tuple(sorted(found, key=lambda m: (m[0], m[1] or "")))
 
 
 def _model(snapshot: Mapping[str, Any]) -> tuple[str, str | None]:
