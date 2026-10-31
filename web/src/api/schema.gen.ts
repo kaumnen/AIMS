@@ -324,7 +324,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Commands */
+        /**
+         * List Commands
+         * @description The commands sent to a run through the control plane, oldest first, with the runner's
+         *     answers. Answers given at a terminal reach the run's log only, as `operator.action`.
+         */
         get: operations["list_commands"];
         put?: never;
         post?: never;
@@ -1904,22 +1908,42 @@ export interface components {
              */
             token: string | null;
         };
-        /** CommandInfo */
+        /**
+         * CommandInfo
+         * @description A command sent to a run and the runner's answer. `state` reads the answer: waiting
+         *     until the runner acks, failed when it refused, saying why in `outcome`, dropped when the
+         *     run ended first. `by` names the token it came with.
+         */
         CommandInfo: {
             /** Acked */
             acked: number | null;
             /** Action */
             action: string;
+            /** Agent */
+            agent: string | null;
+            /** By */
+            by: string | null;
             /** Created */
             created: number;
             /** Id */
             id: string;
             /** Outcome */
             outcome: string | null;
+            /** Reason */
+            reason: string | null;
             /** Run Id */
             run_id: string;
             /** Runner */
             runner: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "waiting" | "done" | "failed" | "dropped";
+            /** Text */
+            text: string | null;
+            /** Then */
+            then: ("continue" | "kill" | "inject" | "deny") | null;
         };
         /** CommandMessage */
         CommandMessage: {
@@ -5079,13 +5103,25 @@ export interface components {
          *     when there is none), `reward` is the verifier's last reward and `reviews` counts the
          *     monitor runs over it, queued ones too. `preset` is the preset of the monitor that watches
          *     the run, or that a monitor run runs, and `monitor_mode` a monitor run's mode. `held` lists
-         *     its agents paused now, by the monitor or an operator, one entry per pause.
+         *     its agents paused now, by the monitor or an operator, one entry per pause. `commands`
+         *     counts the commands sent to it through the control plane and `commands_waiting` those the
+         *     runner has not answered yet.
          */
         RunSummary: {
             /** Categories */
             categories: {
                 [key: string]: number;
             };
+            /**
+             * Commands
+             * @default 0
+             */
+            commands: number;
+            /**
+             * Commands Waiting
+             * @default 0
+             */
+            commands_waiting: number;
             /** Cost Usd */
             cost_usd: number | null;
             /** Diverged */
@@ -11047,6 +11083,8 @@ export const channelInfoLifetimeValues: ReadonlyArray<FlattenedDeepRequired<comp
 export const checkLineVerdictValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CheckLine"]["verdict"]> = ["ok", "warn", "fail"];
 export const commandActionActionValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CommandAction"]["action"]> = ["pause", "resume", "inject", "kill", "cancel", "sweep"];
 export const commandActionThenAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CommandAction"]["then"]> = ["continue", "kill", "inject", "deny"];
+export const commandInfoStateValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CommandInfo"]["state"]> = ["waiting", "done", "failed", "dropped"];
+export const commandInfoThenAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CommandInfo"]["then"]> = ["continue", "kill", "inject", "deny"];
 export const commandMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CommandMessage"]["kind"]> = ["command"];
 export const configFileLayerValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ConfigFile"]["layer"]> = ["user", "project"];
 export const costFiguresTierValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CostFigures"]["tier"]> = ["scenario", "models", "cap"];

@@ -501,6 +501,8 @@ async def test_commands_reach_the_runner_and_unacked_ones_come_again(
         assert r.status_code == 202
         sent = r.json()
         assert sent["delivered"]
+        run = (await c.get(f"/api/runs/{run_id}")).json()["run"]
+        assert (run["commands"], run["commands_waiting"]) == (1, 1)
         command = await fake.next(CommandMessage)
         assert command.id == sent["command_id"]
         assert (command.command.action, command.command.agent, command.command.token) == (
@@ -514,7 +516,12 @@ async def test_commands_reach_the_runner_and_unacked_ones_come_again(
         assert again.id == command.id
         await fake.client.ack(command.id, Ack(ok=True, outcome="done"))
         listed = (await c.get(f"/api/runs/{run_id}/commands")).json()
-        assert [(x["action"], x["outcome"]) for x in listed] == [("pause", "done")]
+        assert [(x["action"], x["outcome"], x["state"]) for x in listed] == [
+            ("pause", "done", "done")
+        ]
+        assert (listed[0]["agent"], listed[0]["reason"], listed[0]["by"]) == ("a", "look", "op")
+        run = (await c.get(f"/api/runs/{run_id}")).json()["run"]
+        assert (run["commands"], run["commands_waiting"]) == (1, 0)
         await fake.disconnect()
         await fake.connect()
         with pytest.raises(TimeoutError):
@@ -524,6 +531,11 @@ async def test_commands_reach_the_runner_and_unacked_ones_come_again(
         async with asyncio.timeout(10):
             await task
         assert (await cp.state.db.pending_commands("fake")) == []
+        listed = (await c.get(f"/api/runs/{run_id}/commands")).json()
+        assert [(x["action"], x["text"], x["state"]) for x in listed] == [
+            ("pause", None, "done"),
+            ("inject", "hi", "dropped"),
+        ]
         r = await c.post(f"/api/runs/{run_id}/kill", json={})
         assert (r.status_code, r.json()["code"]) == (409, "ended")
 

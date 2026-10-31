@@ -31,6 +31,8 @@ export function run(runId: string, over: Partial<RunSummary> = {}): RunSummary {
     preset: null,
     monitor_mode: null,
     held: [],
+    commands: 0,
+    commands_waiting: 0,
     ...over,
   };
 }

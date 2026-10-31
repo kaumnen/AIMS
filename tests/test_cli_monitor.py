@@ -556,6 +556,24 @@ async def test_aims_control_sends_commands_and_reports_the_ack(
     assert (await sent).exit_code == 0
     assert (message.command.action, message.command.reason) == ("cancel", "enough")
 
+    listed = await control(cp, run_id, "list", token=cp.viewer)
+    assert listed.exit_code == 0, listed.output
+    lines = listed.stdout.splitlines()
+    assert [line.split("  ")[1:3] for line in lines if not line.startswith(" ")] == [
+        ["op", "pause a"],
+        ["op", "resume a deny"],
+        ["op", "resume inject"],
+        ["op", "sweep"],
+        ["op", "cancel"],
+    ]
+    assert "failed: no paused agent waits before a tool call to deny" in lines[2]
+    assert [line for line in lines if line.startswith(" ")] == [
+        "    reason: look",
+        "    text: go on",
+        "    reason: enough",
+    ]
+    assert (await control(cp, run_id, "list", "--agent", "a", token=cp.operator)).exit_code == 2
+
     assert (await control(cp, run_id, "inject", token=cp.operator)).exit_code == 2
     assert (await control(cp, run_id, "kill", "--agent", "a", token=cp.operator)).exit_code == 2
     assert (await control(cp, run_id, "cancel", "--agent", "a", token=cp.operator)).exit_code == 2
@@ -577,6 +595,11 @@ async def test_aims_control_finds_a_local_ui(
         json.dumps({"url": cp.url, "token": cp.runner, "operator": cp.operator})
     )
     monkeypatch.setenv("AIMS_SERVER_DIR", str(data))
+    empty = await asyncio.to_thread(
+        CliRunner().invoke, app, ["control", run_id, "list"], env={"AIMS_TOKEN": ""}
+    )
+    assert empty.exit_code == 0, empty.output
+    assert "no commands sent through the control plane" in empty.stdout
     sent = asyncio.create_task(
         asyncio.to_thread(
             CliRunner().invoke,

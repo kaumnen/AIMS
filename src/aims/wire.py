@@ -243,7 +243,9 @@ class RunSummary(_Wire):
     when there is none), `reward` is the verifier's last reward and `reviews` counts the
     monitor runs over it, queued ones too. `preset` is the preset of the monitor that watches
     the run, or that a monitor run runs, and `monitor_mode` a monitor run's mode. `held` lists
-    its agents paused now, by the monitor or an operator, one entry per pause."""
+    its agents paused now, by the monitor or an operator, one entry per pause. `commands`
+    counts the commands sent to it through the control plane and `commands_waiting` those the
+    runner has not answered yet."""
 
     run_id: str
     scenario: str | None
@@ -274,6 +276,8 @@ class RunSummary(_Wire):
     preset: str | None = None
     monitor_mode: str | None = None
     held: list[HoldInfo] = Field(default_factory=list)
+    commands: int = 0
+    commands_waiting: int = 0
 
 
 class RunMessage(_Wire):

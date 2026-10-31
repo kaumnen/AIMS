@@ -462,6 +462,18 @@ class ServerDB:
         rows = await self._all(f"{self._COMMAND} where run_id = ? order by created", (run_id,))
         return [self._command(r) for r in rows]
 
+    async def command_counts(self, run_ids: Sequence[str]) -> dict[str, tuple[int, int]]:
+        """Per run, the commands sent to it and how many of them wait for the runner's answer."""
+        if not run_ids:
+            return {}
+        marks = ", ".join("?" * len(run_ids))
+        rows = await self._all(
+            "select run_id, count(*), sum(acked is null) from commands"
+            f" where run_id in ({marks}) group by run_id",
+            tuple(run_ids),
+        )
+        return {r[0]: (r[1], r[2]) for r in rows}
+
     async def group_active(self, group: str) -> int:
         row = await self._one(
             "select count(*) from jobs where grp = ?"

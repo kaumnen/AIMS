@@ -1434,6 +1434,7 @@
         "type": "object"
       },
       "CommandInfo": {
+        "description": "A command sent to a run and the runner's answer. `state` reads the answer: waiting\nuntil the runner acks, failed when it refused, saying why in `outcome`, dropped when the\nrun ended first. `by` names the token it came with.",
         "properties": {
           "acked": {
             "anyOf": [
@@ -1449,6 +1450,28 @@
           "action": {
             "title": "Action",
             "type": "string"
+          },
+          "agent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent"
+          },
+          "by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "By"
           },
           "created": {
             "title": "Created",
@@ -1469,6 +1492,17 @@
             ],
             "title": "Outcome"
           },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
           "run_id": {
             "title": "Run Id",
             "type": "string"
@@ -1476,6 +1510,44 @@
           "runner": {
             "title": "Runner",
             "type": "string"
+          },
+          "state": {
+            "enum": [
+              "waiting",
+              "done",
+              "failed",
+              "dropped"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "then": {
+            "anyOf": [
+              {
+                "enum": [
+                  "continue",
+                  "kill",
+                  "inject",
+                  "deny"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Then"
           }
         },
         "required": [
@@ -1483,9 +1555,15 @@
           "run_id",
           "runner",
           "action",
+          "agent",
+          "then",
+          "text",
+          "reason",
+          "by",
           "created",
           "acked",
-          "outcome"
+          "outcome",
+          "state"
         ],
         "title": "CommandInfo",
         "type": "object"
@@ -9348,7 +9426,7 @@
       },
       "RunSummary": {
         "additionalProperties": false,
-        "description": "`kind` says what the run is and `origin` names the run a monitor run watched. `flags`\ncounts its logical flags and `categories` them per category, whatever their status;\n`max_importance` is the highest importance of a flag not cleared or rejected,\n`verdict_severity` the judge's, and `max_severity` the higher of the two, 0 for neither.\n`series` and `series_index` place a run in its series; `variant` is the scenario variant\nit ran, known once the run is sealed and its truth file arrived. `steps` counts its agents'\nmodel calls, `cost_usd` sums its priced live model responses, monitor calls included (None\nwhen there is none), `reward` is the verifier's last reward and `reviews` counts the\nmonitor runs over it, queued ones too. `preset` is the preset of the monitor that watches\nthe run, or that a monitor run runs, and `monitor_mode` a monitor run's mode. `held` lists\nits agents paused now, by the monitor or an operator, one entry per pause.",
+        "description": "`kind` says what the run is and `origin` names the run a monitor run watched. `flags`\ncounts its logical flags and `categories` them per category, whatever their status;\n`max_importance` is the highest importance of a flag not cleared or rejected,\n`verdict_severity` the judge's, and `max_severity` the higher of the two, 0 for neither.\n`series` and `series_index` place a run in its series; `variant` is the scenario variant\nit ran, known once the run is sealed and its truth file arrived. `steps` counts its agents'\nmodel calls, `cost_usd` sums its priced live model responses, monitor calls included (None\nwhen there is none), `reward` is the verifier's last reward and `reviews` counts the\nmonitor runs over it, queued ones too. `preset` is the preset of the monitor that watches\nthe run, or that a monitor run runs, and `monitor_mode` a monitor run's mode. `held` lists\nits agents paused now, by the monitor or an operator, one entry per pause. `commands`\ncounts the commands sent to it through the control plane and `commands_waiting` those the\nrunner has not answered yet.",
         "properties": {
           "categories": {
             "additionalProperties": {
@@ -9356,6 +9434,16 @@
             },
             "title": "Categories",
             "type": "object"
+          },
+          "commands": {
+            "default": 0,
+            "title": "Commands",
+            "type": "integer"
+          },
+          "commands_waiting": {
+            "default": 0,
+            "title": "Commands Waiting",
+            "type": "integer"
           },
           "cost_usd": {
             "anyOf": [
@@ -9634,7 +9722,9 @@
           "reviews",
           "preset",
           "monitor_mode",
-          "held"
+          "held",
+          "commands",
+          "commands_waiting"
         ],
         "title": "RunSummary",
         "type": "object"
@@ -14532,6 +14622,7 @@
     },
     "/api/runs/{run_id}/commands": {
       "get": {
+        "description": "The commands sent to a run through the control plane, oldest first, with the runner's\nanswers. Answers given at a terminal reach the run's log only, as `operator.action`.",
         "operationId": "list_commands",
         "parameters": [
           {

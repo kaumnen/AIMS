@@ -1572,7 +1572,8 @@ CONTROL_ACTIONS = ("pause", "resume", "deny", "inject", "kill", "cancel", "sweep
 def control(
     run: Annotated[str, typer.Argument(help="The run's id.")],
     action: Annotated[
-        str, typer.Argument(help="pause, resume, deny, inject, kill, cancel or sweep.")
+        str,
+        typer.Argument(help="pause, resume, deny, inject, kill, cancel, sweep, or list."),
     ],
     agent: Annotated[str | None, typer.Option(help="One agent; every agent by default.")] = None,
     text: Annotated[
@@ -1586,16 +1587,24 @@ def control(
     server: ServerOption = None,
     token_file: TokenFileOption = None,
 ) -> None:
-    """Pause, resume, deny, inject, kill, cancel or sweep a run through its control plane.
+    """Pause, resume, deny, inject, kill, cancel or sweep a run through its control plane, or
+    list the commands sent to it and the runner's answers.
 
-    Needs an operator token in AIMS_TOKEN or --token-file. Deny refuses the tool call a paused
-    agent waits before; the agent gets the configured `denied` reply. Kill skips the verifier;
-    cancel also seals the run as cancelled, or drops it while it waits in the queue.
+    Needs an operator token in AIMS_TOKEN or --token-file; list reads with any token. Deny
+    refuses the tool call a paused agent waits before; the agent gets the configured `denied`
+    reply. Kill skips the verifier; cancel also seals the run as cancelled, or drops it while
+    it waits in the queue.
     """
     import asyncio
 
+    if action == "list":
+        for given, hint in ((agent, "--agent"), (text, "--text"), (reason, "--reason")):
+            if given is not None:
+                raise typer.BadParameter("list takes no options but --server", param_hint=hint)
+        url, token = _operator(server, token_file)
+        raise typer.Exit(asyncio.run(_commands(url, token, run)))
     if action not in CONTROL_ACTIONS:
-        raise typer.BadParameter(f"use {', '.join(CONTROL_ACTIONS)}", param_hint="ACTION")
+        raise typer.BadParameter(f"use {', '.join(CONTROL_ACTIONS)} or list", param_hint="ACTION")
     if action == "inject" and not text:
         raise typer.BadParameter("an inject needs text", param_hint="--text")
     if text is not None and action not in ("inject", "resume"):
@@ -1657,10 +1666,56 @@ async def _control(
             return EXIT_FAILED
     typer.echo(
         f"error: {action} {run}: sent, but the runner did not answer within {wait:g} s;"
-        f" `GET /api/runs/{run}/commands` shows it later",
+        f" `aims control {run} list` shows it later",
         err=True,
     )
     return EXIT_FAILED
+
+
+def _command_line(c: dict[str, Any]) -> str:
+    from datetime import UTC, datetime
+
+    sent = datetime.fromtimestamp(c["created"], UTC).strftime("%Y-%m-%d %H:%M:%S")
+    what = " ".join(
+        str(x)
+        for x in (c["action"], c["agent"], c["then"] if c["then"] != "continue" else None)
+        if x
+    )
+    answer = "waiting" if c["state"] == "waiting" else str(c["outcome"])
+    took = ""
+    if c["state"] in ("done", "failed"):
+        s = c["acked"] - c["created"]
+        took = f"  {round(s * 1000)} ms" if s < 1 else f"  {s:.1f} s"
+    lines = [f"{sent}  {c['by'] or '-'}  {what}  {answer}{took}"]
+    lines += [f"    {k}: {c[k]}" for k in ("text", "reason") if c[k]]
+    return "\n".join(lines)
+
+
+async def _commands(url: str, token: str, run: str) -> int:
+    import httpx2
+
+    from aims import __version__
+
+    headers = {"Authorization": f"Bearer {token}", "User-Agent": f"aims/{__version__}"}
+    async with httpx2.AsyncClient(
+        base_url=url.rstrip("/"), headers=headers, timeout=30, trust_env=False
+    ) as c:
+        try:
+            r = await c.get(f"/api/runs/{run}/commands")
+        except httpx2.TransportError as e:
+            typer.echo(f"error: cannot reach the control plane at {url}: {e}", err=True)
+            return EXIT_FAILED
+    if r.status_code >= 400:
+        return _problem(r)
+    commands = r.json()
+    if not commands:
+        typer.echo(
+            f"{run}: no commands sent through the control plane; answers given at a terminal"
+            " are in the run's log as operator.action"
+        )
+    for command in commands:
+        typer.echo(_command_line(command))
+    return 0
 
 
 def _problem(r: Any) -> int:

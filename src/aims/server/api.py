@@ -295,12 +295,14 @@ async def summaries(state: ServerState, run_ids: list[str]) -> list[RunSummary]:
     jobs = await state.db.jobs_of(run_ids)
     metas = await state.db.runs_meta(run_ids)
     reviews = await state.db.review_jobs(run_ids)
+    sent = await state.db.command_counts(run_ids)
     out = []
     for run_id in run_ids:
         info = await state.store.run(run_id)
         if info is None and run_id not in jobs:
             continue
         found = summary(state, run_id, info, jobs.get(run_id), metas.get(run_id))
+        found.commands, found.commands_waiting = sent.get(run_id, (0, 0))
         for review in reviews.get(run_id, ()):
             if await state.store.run(review) is None:
                 found.reviews += 1
@@ -783,14 +785,55 @@ class CommandSent(Out):
     state: str
 
 
+CommandState = Literal["waiting", "done", "failed", "dropped"]
+
+
 class CommandInfo(Out):
+    """A command sent to a run and the runner's answer. `state` reads the answer: waiting
+    until the runner acks, failed when it refused, saying why in `outcome`, dropped when the
+    run ended first. `by` names the token it came with."""
+
     id: str
     run_id: str
     runner: str
     action: str
+    agent: str | None = None
+    then: ResumeThen | None = None
+    text: str | None = None
+    reason: str | None = None
+    by: str | None = None
     created: float
     acked: float | None
     outcome: str | None
+    state: CommandState
+
+
+def command_state(c: sdb.Command) -> CommandState:
+    outcome = c.outcome or ""
+    if c.acked is None:
+        return "waiting"
+    if outcome.startswith("failed"):
+        return "failed"
+    return "dropped" if outcome.startswith("dropped") else "done"
+
+
+def command_info(c: sdb.Command) -> CommandInfo:
+    act = CommandAction(**c.payload)
+    return CommandInfo(
+        id=c.id,
+        run_id=c.run_id,
+        runner=c.runner,
+        action=act.action,
+        agent=act.agent,
+        then=act.then,
+        text=act.text,
+        reason=act.reason,
+        by=act.token,
+        created=c.created,
+        acked=c.acked,
+        outcome=c.outcome,
+        state=command_state(c),
+    )
 
 
 async def command(
@@ -884,18 +927,9 @@ async def cancel_run(run_id: str, body: StopBody, principal: Operator, state: St
 
 @router.get("/runs/{run_id}/commands", tags=["control"])
 async def list_commands(run_id: str, principal: Viewer, state: State) -> list[CommandInfo]:
-    return [
-        CommandInfo(
-            id=c.id,
-            run_id=c.run_id,
-            runner=c.runner,
-            action=str(c.payload.get("action")),
-            created=c.created,
-            acked=c.acked,
-            outcome=c.outcome,
-        )
-        for c in await state.db.commands_of(_run_id(run_id))
-    ]
+    """The commands sent to a run through the control plane, oldest first, with the runner's
+    answers. Answers given at a terminal reach the run's log only, as `operator.action`."""
+    return [command_info(c) for c in await state.db.commands_of(_run_id(run_id))]
 
 
 # Events, samples, blobs, verification
