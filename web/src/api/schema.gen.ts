@@ -13,9 +13,31 @@ export interface paths {
         };
         /**
          * Config Layers
-         * @description The config files read, lowest layer first, and whether they load together.
+         * @description The config files read, lowest layer first, and whether they load together. A layer
+         *     without a file names where saving it would create one.
          */
         get: operations["config_layers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/config/merged": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Merged Config
+         * @description The settings in use, every layer merged, as TOML naming the source of each value. Texts
+         *     are left out; /prompts lists them.
+         */
+        get: operations["merged_config"];
         put?: never;
         post?: never;
         delete?: never;
@@ -50,6 +72,26 @@ export interface paths {
          * @description Set or unset keys in a layer, keeping its comments and order.
          */
         patch: operations["patch_config"];
+        trace?: never;
+    };
+    "/api/config/{layer}/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Check Config
+         * @description Whether the layer would load with `text` in place of its file, as a save checks it.
+         */
+        post: operations["check_config"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/events": {
@@ -3627,6 +3669,11 @@ export interface components {
             /** Ts Kernel */
             ts_kernel: number;
         };
+        /** MergedConfig */
+        MergedConfig: {
+            /** Text */
+            text: string;
+        };
         /**
          * ModelChecked
          * @description One smoke test of a model check: `name` says which (plain, unstreamed, tools,
@@ -6994,6 +7041,80 @@ export interface operations {
             };
         };
     };
+    merged_config: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MergedConfig"];
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Precondition failed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Precondition required */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     read_config: {
         parameters: {
             query?: never;
@@ -7178,6 +7299,86 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConfigFile"];
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Precondition failed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Precondition required */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    check_config: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                layer: "user" | "project";
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConfigText"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CheckResult"];
                 };
             };
             /** @description Not signed in */
@@ -11863,6 +12064,7 @@ type ReadonlyArray<T> = [
 export const pathsApiConfigLayerGetParametersPathLayerValues: ReadonlyArray<FlattenedDeepRequired<paths>["/api/config/{layer}"]["get"]["parameters"]["path"]["layer"]> = ["user", "project"];
 export const pathsApiConfigLayerPutParametersPathLayerValues: ReadonlyArray<FlattenedDeepRequired<paths>["/api/config/{layer}"]["put"]["parameters"]["path"]["layer"]> = ["user", "project"];
 export const pathsApiConfigLayerPatchParametersPathLayerValues: ReadonlyArray<FlattenedDeepRequired<paths>["/api/config/{layer}"]["patch"]["parameters"]["path"]["layer"]> = ["user", "project"];
+export const pathsApiConfigLayerCheckPostParametersPathLayerValues: ReadonlyArray<FlattenedDeepRequired<paths>["/api/config/{layer}/check"]["post"]["parameters"]["path"]["layer"]> = ["user", "project"];
 export const pathsApiRunsGetParametersQueryKindAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs"]["get"]["parameters"]["query"]["kind"]> = ["scenario", "monitor", "models.check", "score", "selftest", "selftest.case"];
 export const pathsApiRunsGetParametersQueryCategoryAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs"]["get"]["parameters"]["query"]["category"]> = ["covert_communication", "scorer_tampering", "transcript_tampering", "deceiving_operator", "evading_checks", "collective_over_own_task", "drift", "loop_or_confusion", "fabricated_completion", "constraint_violation", "eval_awareness", "alerting_operator", "egress_attempt", "privilege_escalation", "monitor_manipulation"];
 export const pathsApiRunsRun_idFlagsGetParametersQueryLayerAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs/{run_id}/flags"]["get"]["parameters"]["query"]["layer"]> = ["signal", "sweep", "judge"];

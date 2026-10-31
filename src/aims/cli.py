@@ -64,17 +64,33 @@ def init(
 
 
 @app.command("config")
-def config_paths(config: ConfigOption = None) -> None:
+def config_paths(
+    config: ConfigOption = None,
+    merged: Annotated[
+        bool,
+        typer.Option(
+            "--merged", help="Print the settings in use instead, with where each value comes from."
+        ),
+    ] = False,
+) -> None:
     """Show which config files are read, lowest layer first."""
-    from aims.config import ConfigError, layers
+    from aims.config import PROJECT, ConfigError, layers
 
+    if merged:
+        from aims.merged import merged as merged_text
+
+        typer.echo(merged_text(_settings(config)), nl=False)
+        return
     try:
         found = layers(config)
     except ConfigError as e:
         typer.echo(f"error: {e}", err=True)
         raise typer.Exit(1) from None
     for name, path in (("user", found.user), ("project", found.project)):
-        state = "none" if path is None else f"{path} ({'read' if path.is_file() else 'absent'})"
+        if path is None:
+            state = f"none; `aims init` writes {Path.cwd() / PROJECT}"
+        else:
+            state = f"{path} ({'read' if path.is_file() else 'absent'})"
         typer.echo(f"{name}: {state}")
 
 

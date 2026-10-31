@@ -15,7 +15,8 @@ from fastapi import APIRouter, Header, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, JsonValue
 
-from aims.config import STARTER, ConfigError, Layers, load_layers
+from aims.config import PROJECT, STARTER, ConfigError, Layers, load_layers
+from aims.merged import merged
 from aims.models import ProfileError
 from aims.monitor.config import MonitorConfigError
 from aims.plants import PlantError, category_of, registry, taken_tier
@@ -26,6 +27,7 @@ from aims.scenario import Bundle, Scenario, ScenarioError, parse
 from aims.scenario.edit import PromptChange, check_key, set_prompts
 from aims.scenario.model import ImpossiblePlant, Role
 from aims.server.api import (
+    CheckResult,
     Operator,
     Out,
     SourcesDep,
@@ -93,30 +95,31 @@ class ConfigText(BaseModel):
     text: str = Field(max_length=1024 * 1024)
 
 
+class MergedConfig(Out):
+    text: str
+
+
 def _layers(state: ServerState) -> Layers:
     return state.config.layers()
 
 
 def _path(state: ServerState, layer: Layer) -> Path:
+    """The layer's file. Without a project file it is aims.toml in the working directory, where
+    `aims init` writes one; saving there makes it the project's."""
     found = _layers(state)
     if layer == "user":
         return found.user
-    if found.project is None:
-        raise ProblemException(
-            404, "Not found", "no project file: start `aims ui` in a project or with --config"
-        )
-    return found.project
+    return found.project if found.project is not None else Path.cwd() / PROJECT
 
 
 @router.get("/config", tags=["config"])
 async def config_layers(principal: Viewer, state: State) -> ConfigInfo:
-    """The config files read, lowest layer first, and whether they load together."""
-    found = _layers(state)
+    """The config files read, lowest layer first, and whether they load together. A layer
+    without a file names where saving it would create one."""
     out = []
-    pairs: list[tuple[Layer, Path | None]] = [("user", found.user), ("project", found.project)]
-    for layer, path in pairs:
-        if path is None:
-            continue
+    layers: list[Layer] = ["user", "project"]
+    for layer in layers:
+        path = _path(state, layer)
         data = read_or_none(path)
         out.append(
             LayerInfo(
@@ -132,6 +135,13 @@ async def config_layers(principal: Viewer, state: State) -> ConfigInfo:
     except ProblemException as e:
         error = e.problem.detail
     return ConfigInfo(layers=out, error=error)
+
+
+@router.get("/config/merged", tags=["config"])
+async def merged_config(principal: Viewer, state: State) -> MergedConfig:
+    """The settings in use, every layer merged, as TOML naming the source of each value. Texts
+    are left out; /prompts lists them."""
+    return MergedConfig(text=merged(state.config.settings()))
 
 
 def _file(layer: Layer, path: Path, data: bytes | None) -> ConfigFile:
@@ -151,12 +161,14 @@ async def read_config(layer: Layer, principal: Viewer, state: State) -> ConfigFi
     return _file(layer, path, read_or_none(path))
 
 
-def _validate(state: ServerState, layer: Layer, text: str) -> None:
-    """Load every layer with `text` in place of `layer`, with the real loaders."""
+def _problem(state: ServerState, layer: Layer, text: str) -> tuple[str, ProblemError] | None:
+    """Load every layer with `text` in place of `layer`, with the real loaders: None when they
+    load, else the error code and what is wrong. TOML errors carry their line. The trial file
+    sits beside the real one, as `[scenarios] paths` are relative to it."""
     try:
         tomllib.loads(text)
     except tomllib.TOMLDecodeError as e:
-        raise ProblemException(422, "Not TOML", str(e), code="toml") from None
+        return "toml", ProblemError(msg=f"{e.msg} (column {e.colno})", line=e.lineno)
     found = _layers(state)
     path = _path(state, layer)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -169,11 +181,29 @@ def _validate(state: ServerState, layer: Layer, text: str) -> None:
         )
         load_layers(trial)
     except (ConfigError, ProfileError, TextError, MonitorConfigError) as e:
-        raise ProblemException(
-            422, "Config does not load", str(e).replace(str(tmp), str(path)), code="config"
-        ) from None
+        return "config", ProblemError(msg=str(e).replace(str(tmp), str(path)))
     finally:
         tmp.unlink(missing_ok=True)
+    return None
+
+
+def _validate(state: ServerState, layer: Layer, text: str) -> None:
+    found = _problem(state, layer, text)
+    if found is None:
+        return
+    code, error = found
+    title = "Not TOML" if code == "toml" else "Config does not load"
+    detail = error.msg if error.line is None else f"line {error.line}: {error.msg}"
+    raise ProblemException(422, title, detail, code=code, errors=[error])
+
+
+@router.post("/config/{layer}/check", tags=["config"])
+async def check_config(
+    layer: Layer, body: ConfigText, principal: Operator, state: State
+) -> CheckResult:
+    """Whether the layer would load with `text` in place of its file, as a save checks it."""
+    found = await asyncio.to_thread(_problem, state, layer, body.text)
+    return CheckResult(ok=found is None, errors=[] if found is None else [found[1]], warnings=[])
 
 
 _LOCKS: dict[Path, asyncio.Lock] = {}

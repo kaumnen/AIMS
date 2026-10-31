@@ -18,6 +18,7 @@ import pytest
 from cp import CP, control_plane
 
 from aims import __version__
+from aims.config import STARTER
 from aims.events import (
     AgentInput,
     BlobRef,
@@ -604,6 +605,59 @@ async def test_config_edits_keep_comments_and_need_the_current_etag(cp: CP) -> N
         assert project["text"].startswith("# Test project.")
         info = (await c.get("/api/config")).json()
         assert [x["layer"] for x in info["layers"]] == ["user", "project"]
+
+
+async def test_config_text_is_checked_by_line_and_merged_for_viewers(cp: CP) -> None:
+    async with cp.client(cp.operator) as c:
+        r = await c.post("/api/config/user/check", json={"text": "[roles]\nagent = \n"})
+        assert r.json() == {
+            "ok": False,
+            "errors": [{"loc": [], "msg": "Invalid value (column 9)", "line": 2}],
+            "warnings": [],
+        }
+        r = await c.post("/api/config/project/check", json={"text": "[nonsense]\n"})
+        (error,) = r.json()["errors"]
+        assert error["line"] is None
+        assert error["msg"].startswith(f"{cp.project}: unknown table(s) nonsense")
+        r = await c.post("/api/config/user/check", json={"text": "[credits]\nmeta = 1\n"})
+        assert r.json()["ok"]
+        r = await c.put("/api/config/user", json={"text": "x = \n"}, headers={"If-None-Match": "*"})
+        assert (r.status_code, r.json()["code"], r.json()["errors"][0]["line"]) == (422, "toml", 1)
+        user = Path((await c.get("/api/config/user")).json()["path"])
+        assert [p.name for p in user.parent.iterdir()] == []
+    async with cp.client(cp.viewer) as c:
+        r = await c.post("/api/config/user/check", json={"text": ""})
+        assert r.status_code == 403
+        r = await c.get("/api/config/merged")
+        assert r.status_code == 200, r.text
+        assert '\n[roles]\nagent = "' in r.json()["text"]
+
+
+async def test_without_a_project_file_saving_the_project_layer_makes_one(
+    cp: CP, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    here = tmp_path / "here"
+    here.mkdir()
+    monkeypatch.chdir(here)
+    cp.state.config.project = None
+    async with cp.client(cp.operator) as c:
+        info = (await c.get("/api/config")).json()
+        assert info["layers"][1] == {
+            "layer": "project",
+            "path": str(Path.cwd() / "aims.toml"),
+            "exists": False,
+            "etag": None,
+        }
+        assert (await c.get("/api/config/project")).json()["text"] == STARTER
+        r = await c.put(
+            "/api/config/project",
+            json={"text": "[credits]\nmeta = 1\n"},
+            headers={"If-None-Match": "*"},
+        )
+        assert r.status_code == 200, r.text
+        assert (await c.get("/api/config")).json()["layers"][1]["exists"]
+        merged = (await c.get("/api/config/merged")).json()["text"]
+        assert "meta = 1.0  # this project" in merged
 
 
 async def test_scenario_files_are_validated_and_confined(cp: CP) -> None:

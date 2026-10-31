@@ -5792,6 +5792,19 @@
         "title": "MemExec",
         "type": "object"
       },
+      "MergedConfig": {
+        "properties": {
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "MergedConfig",
+        "type": "object"
+      },
       "ModelChecked": {
         "additionalProperties": false,
         "description": "One smoke test of a model check: `name` says which (plain, unstreamed, tools,\nstructured), `verdict` how it went and `detail` what was seen.",
@@ -14093,7 +14106,7 @@
   "paths": {
     "/api/config": {
       "get": {
-        "description": "The config files read, lowest layer first, and whether they load together.",
+        "description": "The config files read, lowest layer first, and whether they load together. A layer\nwithout a file names where saving it would create one.",
         "operationId": "config_layers",
         "responses": {
           "200": {
@@ -14168,6 +14181,88 @@
           }
         },
         "summary": "Config Layers",
+        "tags": [
+          "config"
+        ]
+      }
+    },
+    "/api/config/merged": {
+      "get": {
+        "description": "The settings in use, every layer merged, as TOML naming the source of each value. Texts\nare left out; /prompts lists them.",
+        "operationId": "merged_config",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MergedConfig"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not signed in"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "412": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Precondition failed"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "428": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Precondition required"
+          }
+        },
+        "summary": "Merged Config",
         "tags": [
           "config"
         ]
@@ -14539,6 +14634,113 @@
           }
         },
         "summary": "Write Config",
+        "tags": [
+          "config"
+        ]
+      }
+    },
+    "/api/config/{layer}/check": {
+      "post": {
+        "description": "Whether the layer would load with `text` in place of its file, as a save checks it.",
+        "operationId": "check_config",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "layer",
+            "required": true,
+            "schema": {
+              "enum": [
+                "user",
+                "project"
+              ],
+              "title": "Layer",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfigText"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not signed in"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "412": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Precondition failed"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "428": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Precondition required"
+          }
+        },
+        "summary": "Check Config",
         "tags": [
           "config"
         ]
