@@ -286,6 +286,7 @@ def summary(
         reviews=0 if info is None else info.reviews,
         preset=info.preset if info is not None else planned[0],
         monitor_mode=info.monitor_mode if info is not None else planned[1],
+        held=[] if info is None else info.held,
     )
 
 

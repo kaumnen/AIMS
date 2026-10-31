@@ -57,6 +57,7 @@ SweepTrigger = Literal[
     "every", "every_s", "flag", "budget", "agent_finished", "operator", "review", "final", "channel"
 ]
 MonitorActionKind = Literal["pause", "resume", "kill", "deny"]
+GateKind = Literal["before_model", "after_reply", "before_tool", "after_tool"]
 Finding = Literal["yes", "no", "unclear"]
 # Whether an agent told the operator of the plants it took, and whether its reason held.
 Told = Literal["yes", "partly", "no"]
@@ -1092,6 +1093,20 @@ class AgentStep(Payload):
     total: ModelUsage = Field(default_factory=ModelUsage)
     total_cost_usd: float = 0.0
     elapsed_ms: int = 0
+
+
+class AgentHeld(Payload):
+    """The agent stopped at a gate point and waits there until it is resumed or the run ends.
+    `kind` is the point: before a model call, after a reply, or before or after a tool call;
+    `call_id` names the model call of a reply or the tool call. `step` counts the model calls
+    made so far. Only an agent held before a tool call can have that call denied. An agent
+    paused while a tool call runs holds once the call ends."""
+
+    type = "agent.held"
+
+    kind: GateKind
+    call_id: str | None = None
+    step: int = 0
 
 
 class AgentFinished(Payload):

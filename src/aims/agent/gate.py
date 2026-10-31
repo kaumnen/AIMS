@@ -1,7 +1,8 @@
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-GateKind = Literal["before_model", "after_reply", "before_tool", "after_tool"]
+from aims.events.payloads import GateKind
+
 Action = Literal["continue", "pause", "kill", "inject", "deny"]
 
 

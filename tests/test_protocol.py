@@ -50,6 +50,7 @@ TYPES = {
     "agent.input",
     "agent.step",
     "agent.finished",
+    "agent.held",
     "agent.report",
     "agent.compacted",
     "task.scored",

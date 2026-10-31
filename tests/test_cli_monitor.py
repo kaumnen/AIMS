@@ -526,8 +526,16 @@ async def test_aims_control_sends_commands_and_reports_the_ack(
     assert (await sent).exit_code == 1
     assert message.command.action == "sweep"
 
+    sent = asyncio.create_task(
+        control(cp, run_id, "cancel", "--reason", "enough", token=cp.operator)
+    )
+    message = await answer(True, "done")
+    assert (await sent).exit_code == 0
+    assert (message.command.action, message.command.reason) == ("cancel", "enough")
+
     assert (await control(cp, run_id, "inject", token=cp.operator)).exit_code == 2
     assert (await control(cp, run_id, "kill", "--agent", "a", token=cp.operator)).exit_code == 2
+    assert (await control(cp, run_id, "cancel", "--agent", "a", token=cp.operator)).exit_code == 2
     assert (await control(cp, run_id, "nap", token=cp.operator)).exit_code == 2
 
 

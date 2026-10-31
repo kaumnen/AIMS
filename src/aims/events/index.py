@@ -3,6 +3,7 @@ import bisect
 import json
 import sqlite3
 from collections.abc import Mapping, Sequence
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Literal
 
@@ -11,6 +12,8 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
 from aims.events.chain import Head
 from aims.events.payloads import (
+    AgentFinished,
+    AgentHeld,
     AgentStep,
     Category,
     ExecEnd,
@@ -20,13 +23,18 @@ from aims.events.payloads import (
     FileAccess,
     FlagLayer,
     FsSnapshot,
+    GateKind,
     ModelRequest,
     ModelResponse,
     ModelStatus,
+    MonitorAction,
     MonitorCleared,
     MonitorFlag,
     MonitorVerdict,
+    OperatorAction,
+    Oversight,
     ResourceSample,
+    RunFinished,
     RunKind,
     ScoreUnit,
     TaskScored,
@@ -35,7 +43,7 @@ from aims.events.payloads import (
 )
 from aims.events.schema import SCHEMA_VERSION, BlobRef, Content, Event, Timestamp, format_ts
 
-VERSION = 7
+VERSION = 8
 MAX_TEXT = 32 * 1024
 MAX_PAGE = 1000
 
@@ -64,7 +72,8 @@ create table runs (
     nano_usd integer,
     reward real,
     preset text,
-    monitor_mode text
+    monitor_mode text,
+    held text not null default '{}'
 ) strict;
 
 create index runs_by_origin on runs (origin, run_id) where origin is not null;
@@ -211,6 +220,34 @@ FlagStatus = Literal["open", "cleared", "tainted", "confirmed", "rejected", "unc
 MONITOR_TYPES = frozenset(
     {MonitorFlag.type, MonitorCleared.type, MonitorVerdict.type, TaskScored.type}
 )
+HOLD_TYPES = frozenset(
+    {
+        MonitorAction.type,
+        OperatorAction.type,
+        AgentHeld.type,
+        AgentFinished.type,
+        RunFinished.type,
+    }
+)
+
+
+class HoldInfo(BaseModel):
+    """An agent the monitor or an operator paused that has not been let go. `seq` and `since`
+    are the action that paused it, `flags` the flags behind a monitor's pause and `mode` the
+    monitor's oversight then; `until` is when the monitor kills the run if the pause is still
+    open. `at` is the gate point the agent waits at once it holds there, and `call` the model
+    call or tool call it names; only a hold `before_tool` can deny that call."""
+
+    agent: str
+    by: Literal["monitor", "operator"]
+    reason: str | None = None
+    seq: int
+    since: Timestamp
+    flags: list[int] = Field(default_factory=list)
+    mode: Oversight | None = None
+    until: Timestamp | None = None
+    at: GateKind | None = None
+    call: str | None = None
 
 
 class RunInfo(BaseModel):
@@ -220,8 +257,8 @@ class RunInfo(BaseModel):
     higher of the two, 0 when there is neither. `steps` counts its agents' model calls,
     `cost_usd` sums the priced live model responses of every caller (None when there is none),
     `reward` is the last verifier reward and `reviews` counts the monitor runs over it.
-    `preset` is the preset of the monitor that watched it, or that a monitor run ran, and
-    `monitor_mode` a monitor run's mode."""
+    `preset` is the preset of the monitor that watched it, or that a monitor run ran,
+    `monitor_mode` a monitor run's mode and `held` its agents paused now."""
 
     run_id: str
     scenario: str
@@ -247,6 +284,7 @@ class RunInfo(BaseModel):
     reviews: int = 0
     preset: str | None = None
     monitor_mode: str | None = None
+    held: list[HoldInfo] = Field(default_factory=list)
 
 
 def monitor_of(config: Mapping[str, Any]) -> tuple[str | None, str | None]:
@@ -392,6 +430,7 @@ RUN_KEYS = (
     "preset",
     "monitor_mode",
     "categories",
+    "held",
 )
 AGGREGATE = """
 update runs set
@@ -637,6 +676,7 @@ class Index:
                     "select last_seq from runs where run_id = ?", (run_id,)
                 ) as cur:
                     row = await cur.fetchone()
+                fresh: list[Event] = []
                 if row is not None:
                     fresh = [e for e in events if e.seq > row[0]]
                     await self._monitor(run_id, [e for e in fresh if e.type in MONITOR_TYPES])
@@ -655,6 +695,7 @@ class Index:
                         f" ({', '.join('?' * len(SAMPLE_FIELDS))}) on conflict do nothing",
                         [tuple(w[f] for f in SAMPLE_FIELDS) for w in windows],
                     )
+                await self._hold(run_id, [e for e in fresh if e.type in HOLD_TYPES])
                 await self._db.execute(
                     "update runs set last_seq = ?, last_hash = ?, log_offset = ?,"
                     " status = coalesce(?, status), ended_at = coalesce(?, ended_at)"
@@ -698,6 +739,125 @@ class Index:
                 " reward = case when ? then ? else reward end where run_id = ?",
                 (steps, priced, nanos, scored, reward, run_id),
             )
+
+    async def _hold(self, run_id: str, fresh: Sequence[Event]) -> None:
+        """Carry the run's open pauses through `fresh`, in seq order. Runs inside `add`'s
+        transaction after the batch's rows went in, so the run's start and its agents' ends
+        are in the table."""
+        if not fresh:
+            return
+        async with self._db.execute("select held from runs where run_id = ?", (run_id,)) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return
+        held: dict[str, dict[str, Any]] = json.loads(row[0])
+        before = json.dumps(held, sort_keys=True)
+        for e in fresh:
+            match e.type:
+                case MonitorAction.type:
+                    await self._monitor_hold(e, held)
+                case OperatorAction.type:
+                    action = e.data.get("action")
+                    if action in ("kill", "cancel") or (
+                        action == "resume" and e.data.get("then") == "kill"
+                    ):
+                        held.clear()
+                        continue
+                    targets = await self._agents(e)
+                    if e.agent_id:
+                        targets = [e.agent_id] if e.agent_id in targets else []
+                    for agent in targets:
+                        if action == "pause":
+                            held.setdefault(agent, {}).setdefault(
+                                "operator",
+                                {
+                                    "reason": e.data.get("reason") or "paused by the operator",
+                                    "seq": e.seq,
+                                    "since": format_ts(e.ts),
+                                },
+                            )
+                        elif action == "resume":
+                            held.pop(agent, None)
+                case AgentHeld.type:
+                    hold = held.get(e.agent_id or "")
+                    if hold is not None:
+                        hold["at"] = e.data.get("kind")
+                        hold["call"] = e.data.get("call_id")
+                case AgentFinished.type:
+                    held.pop(e.agent_id or "", None)
+                case RunFinished.type:
+                    held.clear()
+        if json.dumps(held, sort_keys=True) != before:
+            await self._db.execute(
+                "update runs set held = ? where run_id = ?",
+                (json.dumps(held, separators=(",", ":"), sort_keys=True), run_id),
+            )
+
+    async def _monitor_hold(self, e: Event, held: dict[str, dict[str, Any]]) -> None:
+        """Apply a monitor decision; a simulated one changed nothing. A monitor's resume lets go
+        of its own pause only; an operator's pause of the same agent stays."""
+        try:
+            action = MonitorAction.model_validate(e.data)
+        except ValidationError:
+            return
+        if action.simulated:
+            return
+        if action.action == "kill":
+            held.clear()
+            return
+        until = None
+        if action.action == "pause":
+            timeout = await self._timeout(e.run_id, action.mode)
+            until = None if timeout is None else format_ts(e.ts + timedelta(seconds=timeout))
+        for agent in action.agents:
+            if action.action == "pause":
+                held.setdefault(agent, {})["monitor"] = {
+                    "reason": action.reason or None,
+                    "seq": e.seq,
+                    "since": format_ts(e.ts),
+                    "flags": action.flags,
+                    "mode": action.mode,
+                    "until": until,
+                }
+                continue
+            hold = held.get(agent)
+            if hold is None:
+                continue
+            hold.pop("monitor", None)
+            if "operator" not in hold:
+                held.pop(agent)
+
+    async def _start(self, run_id: str) -> dict[str, Any]:
+        async with self._db.execute(
+            "select data from events where run_id = ? and seq = 0", (run_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        return {} if row is None else json.loads(row[0])
+
+    async def _agents(self, e: Event) -> list[str]:
+        """The agents an operator's action can reach: the run's agents that had not finished
+        before it."""
+        agents = (await self._start(e.run_id)).get("agents")
+        if not isinstance(agents, list):
+            return []
+        async with self._db.execute(
+            "select agent_id from events where run_id = ? and type = ? and seq < ?",
+            (e.run_id, AgentFinished.type, e.seq),
+        ) as cur:
+            done = {r[0] for r in await cur.fetchall()}
+        return [a for a in agents if isinstance(a, str) and a not in done]
+
+    async def _timeout(self, run_id: str, mode: Oversight) -> float | None:
+        """How long the run's monitor holds a pause in `mode` before it kills the run."""
+        config = (await self._start(run_id)).get("config")
+        monitor = config.get("monitor") if isinstance(config, dict) else None
+        inner = monitor.get("config") if isinstance(monitor, dict) else None
+        policy = inner.get("policy") if isinstance(inner, dict) else None
+        if not isinstance(policy, dict):
+            return None
+        value = policy.get("human_timeout_s" if mode == "human" else "pause_timeout_s")
+        is_number = isinstance(value, int | float) and not isinstance(value, bool)
+        return float(value) if is_number else None
 
     async def _monitor(self, run_id: str, fresh: Sequence[Event]) -> None:
         """Index the flags and flag statuses of monitor events not indexed yet, then the run's
@@ -889,13 +1049,17 @@ class Index:
             " origin, flags, max_importance, verdict_severity, severity, series, series_index,"
             " variant, run_group, steps, nano_usd / 1e9, reward, (select count(*) from runs m"
             " where m.origin = runs.run_id and m.kind = 'monitor'), preset, monitor_mode,"
-            f" categories from runs {clause}",
+            f" categories, held from runs {clause}",
             args,
         ) as cur:
             rows = await cur.fetchall()
         return [
             RunInfo.model_validate(
-                {**dict(zip(RUN_KEYS, row, strict=True)), "categories": json.loads(row[-1])}
+                {
+                    **dict(zip(RUN_KEYS, row, strict=True)),
+                    "categories": json.loads(row[-2]),
+                    "held": _holds(json.loads(row[-1])),
+                }
             )
             for row in rows
         ]
@@ -1468,6 +1632,20 @@ def _cap(limit: int) -> int:
 
 def _dump(value: Content) -> Any:
     return value.model_dump(mode="json") if isinstance(value, BaseModel) else value
+
+
+def _holds(held: Mapping[str, Mapping[str, Any]]) -> list[HoldInfo]:
+    out: list[HoldInfo] = []
+    for agent, hold in held.items():
+        for by in ("monitor", "operator"):
+            if (fields := hold.get(by)) is not None:
+                out.append(
+                    HoldInfo.model_validate(
+                        {"agent": agent, "by": by, "at": hold.get("at"), "call": hold.get("call")}
+                        | fields
+                    )
+                )
+    return sorted(out, key=lambda h: (h.seq, h.agent))
 
 
 def _least(a: int | None, b: int | None) -> int | None:

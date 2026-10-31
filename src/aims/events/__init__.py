@@ -2,6 +2,7 @@ from aims.events.blobs import BlobError, BlobStore
 from aims.events.chain import ChainError, Head
 from aims.events.index import (
     ExecActivity,
+    HoldInfo,
     Label,
     LabelKind,
     RunInfo,
@@ -16,6 +17,7 @@ from aims.events.payloads import (
     AgentCompacted,
     AgentEnd,
     AgentFinished,
+    AgentHeld,
     AgentInput,
     AgentReport,
     AgentStarted,
@@ -134,6 +136,7 @@ __all__ = [
     "AgentCompacted",
     "AgentEnd",
     "AgentFinished",
+    "AgentHeld",
     "AgentInput",
     "AgentReport",
     "AgentStarted",
@@ -181,6 +184,7 @@ __all__ = [
     "FsSnapshot",
     "Gap",
     "Head",
+    "HoldInfo",
     "IngestError",
     "InputKind",
     "Invalid",

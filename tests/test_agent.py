@@ -22,6 +22,7 @@ from aims.agent import (
 from aims.events import (
     AgentCompacted,
     AgentFinished,
+    AgentHeld,
     AgentInput,
     AgentReport,
     AgentStep,
@@ -29,6 +30,7 @@ from aims.events import (
     LocalEventStore,
     ReplayDivergence,
     RunStarted,
+    ToolCall,
     ToolResult,
 )
 from aims.models import Message, ModelClient, Profile, ToolOutput
@@ -341,6 +343,21 @@ async def test_the_gate_pauses_injects_and_kills(store: LocalEventStore) -> None
     inputs = await payloads(store, run_id, AgentInput)
     assert [(i.kind, i.text) for i in inputs][1] == ("inject", "note this")
     assert script.requests[1]["messages"][-1] == {"role": "user", "content": "note this"}
+
+
+async def test_a_held_agent_logs_the_point_it_waits_at(store: LocalEventStore) -> None:
+    gate = Gate({("after_reply", 1): Verdict("pause"), ("before_tool", 1): Verdict("pause")})
+    script = Script(call("bash", command="ls"), call("submit", answer="done"))
+    agent, run_id = await make_agent(store, script, sandbox=FakeSandbox(echo), gate=gate)
+    await agent.run()
+
+    (step, _) = await payloads(store, run_id, AgentStep)
+    (tool, _) = await payloads(store, run_id, ToolCall)
+    held = await payloads(store, run_id, AgentHeld)
+    assert [(h.kind, h.call_id, h.step) for h in held] == [
+        ("after_reply", step.call_id, 1),
+        ("before_tool", tool.call_id, 1),
+    ]
 
 
 async def test_a_fork_feeds_recorded_outputs_and_logs_divergence(store: LocalEventStore) -> None:

@@ -1502,13 +1502,15 @@ async def _monitor_runs(**o: Any) -> int:
     return EXIT_FAILED if any(r.status != "completed" for r in results) else 0
 
 
-CONTROL_ACTIONS = ("pause", "resume", "deny", "inject", "kill", "sweep")
+CONTROL_ACTIONS = ("pause", "resume", "deny", "inject", "kill", "cancel", "sweep")
 
 
 @app.command()
 def control(
     run: Annotated[str, typer.Argument(help="The run's id.")],
-    action: Annotated[str, typer.Argument(help="pause, resume, deny, inject, kill or sweep.")],
+    action: Annotated[
+        str, typer.Argument(help="pause, resume, deny, inject, kill, cancel or sweep.")
+    ],
     agent: Annotated[str | None, typer.Option(help="One agent; every agent by default.")] = None,
     text: Annotated[
         str | None,
@@ -1521,10 +1523,11 @@ def control(
     server: ServerOption = None,
     token_file: TokenFileOption = None,
 ) -> None:
-    """Pause, resume, deny, inject, kill or sweep a running run through its control plane.
+    """Pause, resume, deny, inject, kill, cancel or sweep a run through its control plane.
 
     Needs an operator token in AIMS_TOKEN or --token-file. Deny refuses the tool call a paused
-    agent waits before; the agent gets the configured `denied` reply.
+    agent waits before; the agent gets the configured `denied` reply. Kill skips the verifier;
+    cancel also seals the run as cancelled, or drops it while it waits in the queue.
     """
     import asyncio
 
@@ -1534,8 +1537,8 @@ def control(
         raise typer.BadParameter("an inject needs text", param_hint="--text")
     if text is not None and action not in ("inject", "resume"):
         raise typer.BadParameter(f"{action} takes no text", param_hint="--text")
-    if agent is not None and action == "kill":
-        raise typer.BadParameter("a kill stops the whole run", param_hint="--agent")
+    if agent is not None and action in ("kill", "cancel"):
+        raise typer.BadParameter(f"a {action} stops the whole run", param_hint="--agent")
     url, token = _operator(server, token_file)
     body: dict[str, Any] = {}
     match action:
@@ -1548,7 +1551,7 @@ def control(
         case "inject":
             path, body = "inject", {"agent": agent, "text": text}
         case _:
-            path, body = "kill", {"reason": reason}
+            path, body = action, {"reason": reason}
     raise typer.Exit(asyncio.run(_control(url, token, run, path, body, action, wait)))
 
 

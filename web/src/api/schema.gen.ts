@@ -1359,6 +1359,31 @@ export interface components {
             wall_ms: number;
         };
         /**
+         * AgentHeld
+         * @description The agent stopped at a gate point and waits there until it is resumed or the run ends.
+         *     `kind` is the point: before a model call, after a reply, or before or after a tool call;
+         *     `call_id` names the model call of a reply or the tool call. `step` counts the model calls
+         *     made so far. Only an agent held before a tool call can have that call denied. An agent
+         *     paused while a tool call runs holds once the call ends.
+         */
+        AgentHeld: {
+            /**
+             * Call Id
+             * @default null
+             */
+            call_id: string | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "before_model" | "after_reply" | "before_tool" | "after_tool";
+            /**
+             * Step
+             * @default 0
+             */
+            step: number;
+        };
+        /**
          * AgentInput
          * @description A message the harness gave the agent. `step` is the number of steps taken before it.
          */
@@ -2138,11 +2163,12 @@ export interface components {
             next: string | null;
         };
         /** @enum {string} */
-        EventType: "agent.compacted" | "agent.finished" | "agent.input" | "agent.report" | "agent.started" | "agent.step" | "audit.lost" | "audit.spill" | "cache.probe" | "channel.message" | "channel.read" | "channel.snapshot" | "exec.finished" | "exec.started" | "file.access" | "file.setattr" | "file.sync" | "file.write" | "fs.snapshot" | "ipc.event" | "log.truncated" | "mem.exec" | "model.checked" | "model.request" | "model.response" | "monitor.action" | "monitor.cleared" | "monitor.degraded" | "monitor.flag" | "monitor.sweep" | "monitor.verdict" | "net.connect" | "ns.event" | "operator.action" | "plant.triggered" | "proc.exec" | "proc.exit" | "proc.fork" | "proc.output" | "proc.signal" | "ptrace.event" | "replay.divergence" | "resource.sample" | "run.finished" | "run.started" | "sandbox.archived" | "sandbox.started" | "sandbox.stopped" | "score.answer" | "score.awareness" | "score.unexplained" | "score.unit" | "sys.denied" | "task.scored" | "tool.call" | "tool.result";
+        EventType: "agent.compacted" | "agent.finished" | "agent.held" | "agent.input" | "agent.report" | "agent.started" | "agent.step" | "audit.lost" | "audit.spill" | "cache.probe" | "channel.message" | "channel.read" | "channel.snapshot" | "exec.finished" | "exec.started" | "file.access" | "file.setattr" | "file.sync" | "file.write" | "fs.snapshot" | "ipc.event" | "log.truncated" | "mem.exec" | "model.checked" | "model.request" | "model.response" | "monitor.action" | "monitor.cleared" | "monitor.degraded" | "monitor.flag" | "monitor.sweep" | "monitor.verdict" | "net.connect" | "ns.event" | "operator.action" | "plant.triggered" | "proc.exec" | "proc.exit" | "proc.fork" | "proc.output" | "proc.signal" | "ptrace.event" | "replay.divergence" | "resource.sample" | "run.finished" | "run.started" | "sandbox.archived" | "sandbox.started" | "sandbox.stopped" | "score.answer" | "score.awareness" | "score.unexplained" | "score.unit" | "sys.denied" | "task.scored" | "tool.call" | "tool.result";
         /** @description Each event type and the schema of its `data`. */
         EventTypes: {
             "agent.compacted": components["schemas"]["AgentCompacted"];
             "agent.finished": components["schemas"]["AgentFinished"];
+            "agent.held": components["schemas"]["AgentHeld"];
             "agent.input": components["schemas"]["AgentInput"];
             "agent.report": components["schemas"]["AgentReport"];
             "agent.started": components["schemas"]["AgentStarted"];
@@ -2856,6 +2882,39 @@ export interface components {
             name: string;
             /** Requeued */
             requeued: string[];
+        };
+        /**
+         * HoldInfo
+         * @description An agent the monitor or an operator paused that has not been let go. `seq` and `since`
+         *     are the action that paused it, `flags` the flags behind a monitor's pause and `mode` the
+         *     monitor's oversight then; `until` is when the monitor kills the run if the pause is still
+         *     open. `at` is the gate point the agent waits at once it holds there, and `call` the model
+         *     call or tool call it names; only a hold `before_tool` can deny that call.
+         */
+        HoldInfo: {
+            /** Agent */
+            agent: string;
+            /** At */
+            at?: ("before_model" | "after_reply" | "before_tool" | "after_tool") | null;
+            /**
+             * By
+             * @enum {string}
+             */
+            by: "monitor" | "operator";
+            /** Call */
+            call?: string | null;
+            /** Flags */
+            flags?: number[];
+            /** Mode */
+            mode?: ("observe" | "autonomous" | "human") | null;
+            /** Reason */
+            reason?: string | null;
+            /** Seq */
+            seq: number;
+            /** Since */
+            since: string;
+            /** Until */
+            until?: string | null;
         };
         /** InjectBody */
         InjectBody: {
@@ -4905,7 +4964,8 @@ export interface components {
          *     model calls, `cost_usd` sums its priced live model responses, monitor calls included (None
          *     when there is none), `reward` is the verifier's last reward and `reviews` counts the
          *     monitor runs over it that have started. `preset` is the preset of the monitor that watches
-         *     the run, or that a monitor run runs, and `monitor_mode` a monitor run's mode.
+         *     the run, or that a monitor run runs, and `monitor_mode` a monitor run's mode. `held` lists
+         *     its agents paused now, by the monitor or an operator, one entry per pause.
          */
         RunSummary: {
             /** Categories */
@@ -4930,6 +4990,8 @@ export interface components {
             flags: number;
             /** Group */
             group: string | null;
+            /** Held */
+            held: components["schemas"]["HoldInfo"][];
             /**
              * Kind
              * @default scenario
@@ -10692,6 +10754,7 @@ export const pathsApiRunsRun_idFlagsGetParametersQueryStatusAnyOf0Values: Readon
 export const pathsApiScenariosSourceNameEstimateGetParametersQueryMonitorAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/scenarios/{source}/{name}/estimate"]["get"]["parameters"]["query"]["monitor"]> = ["off", "signals", "standard", "research"];
 export const agentCompactedStrategyValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentCompacted"]["strategy"]> = ["trim", "summary"];
 export const agentFinishedReasonValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentFinished"]["reason"]> = ["submitted", "no_submit", "budget_steps", "budget_output_tokens", "budget_cost", "budget_wall", "context_exhausted", "model_error", "sandbox_failed", "divergence", "killed", "cancelled", "error"];
+export const agentHeldKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentHeld"]["kind"]> = ["before_model", "after_reply", "before_tool", "after_tool"];
 export const agentInputKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentInput"]["kind"]> = ["instruction", "continue", "inject", "budget_warning"];
 export const agentStartedBackendAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentStarted"]["backend"]> = ["responses", "chat"];
 export const agentStepSourceValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentStep"]["source"]> = ["live", "replay"];
@@ -10712,7 +10775,7 @@ export const costFiguresTierValues: ReadonlyArray<FlattenedDeepRequired<componen
 export const deltaMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["DeltaMessage"]["kind"]> = ["delta"];
 export const deltasDroppedMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["DeltasDroppedMessage"]["kind"]> = ["deltas_dropped"];
 export const endMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EndMessage"]["kind"]> = ["end"];
-export const eventTypeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventType"]> = ["agent.compacted", "agent.finished", "agent.input", "agent.report", "agent.started", "agent.step", "audit.lost", "audit.spill", "cache.probe", "channel.message", "channel.read", "channel.snapshot", "exec.finished", "exec.started", "file.access", "file.setattr", "file.sync", "file.write", "fs.snapshot", "ipc.event", "log.truncated", "mem.exec", "model.checked", "model.request", "model.response", "monitor.action", "monitor.cleared", "monitor.degraded", "monitor.flag", "monitor.sweep", "monitor.verdict", "net.connect", "ns.event", "operator.action", "plant.triggered", "proc.exec", "proc.exit", "proc.fork", "proc.output", "proc.signal", "ptrace.event", "replay.divergence", "resource.sample", "run.finished", "run.started", "sandbox.archived", "sandbox.started", "sandbox.stopped", "score.answer", "score.awareness", "score.unexplained", "score.unit", "sys.denied", "task.scored", "tool.call", "tool.result"];
+export const eventTypeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventType"]> = ["agent.compacted", "agent.finished", "agent.held", "agent.input", "agent.report", "agent.started", "agent.step", "audit.lost", "audit.spill", "cache.probe", "channel.message", "channel.read", "channel.snapshot", "exec.finished", "exec.started", "file.access", "file.setattr", "file.sync", "file.write", "fs.snapshot", "ipc.event", "log.truncated", "mem.exec", "model.checked", "model.request", "model.response", "monitor.action", "monitor.cleared", "monitor.degraded", "monitor.flag", "monitor.sweep", "monitor.verdict", "net.connect", "ns.event", "operator.action", "plant.triggered", "proc.exec", "proc.exit", "proc.fork", "proc.output", "proc.signal", "ptrace.event", "replay.divergence", "resource.sample", "run.finished", "run.started", "sandbox.archived", "sandbox.started", "sandbox.stopped", "score.answer", "score.awareness", "score.unexplained", "score.unit", "sys.denied", "task.scored", "tool.call", "tool.result"];
 export const eventsMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventsMessage"]["kind"]> = ["events"];
 export const execFinishedEndValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ExecFinished"]["end"]> = ["exited", "timeout", "cancelled", "failed"];
 export const execStartedAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ExecStarted"]["audit"]> = ["kernel", "snapshot"];
@@ -10728,6 +10791,9 @@ export const flagReviewStatusValues: ReadonlyArray<FlattenedDeepRequired<compone
 export const fsChangeChangeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["FsChange"]["change"]> = ["added", "modified", "meta", "removed", "kind"];
 export const fsChangeKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["FsChange"]["kind"]> = ["file", "dir", "symlink", "fifo", "socket", "other"];
 export const groupWorstAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Group"]["worst"]> = ["covert_communication", "scorer_tampering", "transcript_tampering", "deceiving_operator", "evading_checks", "collective_over_own_task", "drift", "loop_or_confusion", "fabricated_completion", "constraint_violation", "eval_awareness", "alerting_operator", "egress_attempt", "privilege_escalation", "monitor_manipulation"];
+export const holdInfoAtAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["HoldInfo"]["at"]> = ["before_model", "after_reply", "before_tool", "after_tool"];
+export const holdInfoByValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["HoldInfo"]["by"]> = ["monitor", "operator"];
+export const holdInfoModeAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["HoldInfo"]["mode"]> = ["observe", "autonomous", "human"];
 export const ipcEventFamilyAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["IpcEvent"]["family"]> = ["unix", "sysv"];
 export const ipcEventKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["IpcEvent"]["kind"]> = ["bind", "connect", "fifo", "shmget", "shmat"];
 export const jobAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Job"]["audit"]> = ["kernel", "snapshot"];

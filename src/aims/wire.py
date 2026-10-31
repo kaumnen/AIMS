@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
-from aims.events import Event, Label, OperatorActionKind, ResumeThen, RunKind
+from aims.events import Event, HoldInfo, Label, OperatorActionKind, ResumeThen, RunKind
 from aims.models import Profile
 from aims.monitor.setup import ResolvedMonitor
 from aims.run.job import Job, JobOptions
@@ -242,7 +242,8 @@ class RunSummary(_Wire):
     model calls, `cost_usd` sums its priced live model responses, monitor calls included (None
     when there is none), `reward` is the verifier's last reward and `reviews` counts the
     monitor runs over it that have started. `preset` is the preset of the monitor that watches
-    the run, or that a monitor run runs, and `monitor_mode` a monitor run's mode."""
+    the run, or that a monitor run runs, and `monitor_mode` a monitor run's mode. `held` lists
+    its agents paused now, by the monitor or an operator, one entry per pause."""
 
     run_id: str
     scenario: str | None
@@ -272,6 +273,7 @@ class RunSummary(_Wire):
     reviews: int = 0
     preset: str | None = None
     monitor_mode: str | None = None
+    held: list[HoldInfo] = Field(default_factory=list)
 
 
 class RunMessage(_Wire):

@@ -342,6 +342,12 @@ async def test_a_held_agent_takes_an_inject_on_resume(
     assert control is not None
     await until(lambda: control.is_held("a"))
     assert not script.requests
+    assert runner.run_id is not None
+    info = await store.run(runner.run_id)
+    assert info is not None
+    assert [(h.agent, h.by, h.reason, h.at) for h in info.held] == [
+        ("a", "operator", "look first", "before_model")
+    ]
     await runner.operate("resume", then="inject", text="the operator says hi")
     result = await task
 
@@ -351,6 +357,9 @@ async def test_a_held_agent_takes_an_inject_on_resume(
     assert [(i.kind, i.text) for i in inputs][-1] == ("inject", "the operator says hi")
     sent = [m["content"] for m in script.requests[0]["messages"]]
     assert "the operator says hi" in sent
+    info = await store.run(result.run_id)
+    assert info is not None
+    assert info.held == []
 
 
 @pytest.mark.docker

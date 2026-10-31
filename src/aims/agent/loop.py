@@ -16,6 +16,7 @@ from aims.events import (
     AgentCompacted,
     AgentEnd,
     AgentFinished,
+    AgentHeld,
     AgentInput,
     AgentStarted,
     AgentStep,
@@ -619,6 +620,8 @@ class Agent:
             self.clock.hold("gate")
             try:
                 while verdict.action == "pause":
+                    held = AgentHeld(kind=point.kind, call_id=point.call_id, step=point.step)
+                    await self._emit(held)
                     await self.sandbox.sandbox.pause()
                     try:
                         verdict = await self.gate.held(point)

@@ -222,6 +222,46 @@
         "title": "AgentFinished",
         "type": "object"
       },
+      "AgentHeld": {
+        "additionalProperties": false,
+        "description": "The agent stopped at a gate point and waits there until it is resumed or the run ends.\n`kind` is the point: before a model call, after a reply, or before or after a tool call;\n`call_id` names the model call of a reply or the tool call. `step` counts the model calls\nmade so far. Only an agent held before a tool call can have that call denied. An agent\npaused while a tool call runs holds once the call ends.",
+        "properties": {
+          "call_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Call Id"
+          },
+          "kind": {
+            "enum": [
+              "before_model",
+              "after_reply",
+              "before_tool",
+              "after_tool"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "step": {
+            "default": 0,
+            "title": "Step",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "call_id",
+          "step"
+        ],
+        "title": "AgentHeld",
+        "type": "object"
+      },
       "AgentInput": {
         "additionalProperties": false,
         "description": "A message the harness gave the agent. `step` is the number of steps taken before it.",
@@ -2113,6 +2153,7 @@
         "enum": [
           "agent.compacted",
           "agent.finished",
+          "agent.held",
           "agent.input",
           "agent.report",
           "agent.started",
@@ -2178,6 +2219,9 @@
           },
           "agent.finished": {
             "$ref": "#/components/schemas/AgentFinished"
+          },
+          "agent.held": {
+            "$ref": "#/components/schemas/AgentHeld"
           },
           "agent.input": {
             "$ref": "#/components/schemas/AgentInput"
@@ -2345,6 +2389,7 @@
         "required": [
           "agent.compacted",
           "agent.finished",
+          "agent.held",
           "agent.input",
           "agent.report",
           "agent.started",
@@ -4101,6 +4146,112 @@
           "envs"
         ],
         "title": "HelloReply",
+        "type": "object"
+      },
+      "HoldInfo": {
+        "description": "An agent the monitor or an operator paused that has not been let go. `seq` and `since`\nare the action that paused it, `flags` the flags behind a monitor's pause and `mode` the\nmonitor's oversight then; `until` is when the monitor kills the run if the pause is still\nopen. `at` is the gate point the agent waits at once it holds there, and `call` the model\ncall or tool call it names; only a hold `before_tool` can deny that call.",
+        "properties": {
+          "agent": {
+            "title": "Agent",
+            "type": "string"
+          },
+          "at": {
+            "anyOf": [
+              {
+                "enum": [
+                  "before_model",
+                  "after_reply",
+                  "before_tool",
+                  "after_tool"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "At"
+          },
+          "by": {
+            "enum": [
+              "monitor",
+              "operator"
+            ],
+            "title": "By",
+            "type": "string"
+          },
+          "call": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Call"
+          },
+          "flags": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Flags",
+            "type": "array"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "observe",
+                  "autonomous",
+                  "human"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "since": {
+            "title": "Since",
+            "type": "string"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Until"
+          }
+        },
+        "required": [
+          "agent",
+          "by",
+          "seq",
+          "since"
+        ],
+        "title": "HoldInfo",
         "type": "object"
       },
       "InjectBody": {
@@ -9052,7 +9203,7 @@
       },
       "RunSummary": {
         "additionalProperties": false,
-        "description": "`kind` says what the run is and `origin` names the run a monitor run watched. `flags`\ncounts its logical flags and `categories` them per category, whatever their status;\n`max_importance` is the highest importance of a flag not cleared or rejected,\n`verdict_severity` the judge's, and `max_severity` the higher of the two, 0 for neither.\n`series` and `series_index` place a run in its series; `variant` is the scenario variant\nit ran, known once the run is sealed and its truth file arrived. `steps` counts its agents'\nmodel calls, `cost_usd` sums its priced live model responses, monitor calls included (None\nwhen there is none), `reward` is the verifier's last reward and `reviews` counts the\nmonitor runs over it that have started. `preset` is the preset of the monitor that watches\nthe run, or that a monitor run runs, and `monitor_mode` a monitor run's mode.",
+        "description": "`kind` says what the run is and `origin` names the run a monitor run watched. `flags`\ncounts its logical flags and `categories` them per category, whatever their status;\n`max_importance` is the highest importance of a flag not cleared or rejected,\n`verdict_severity` the judge's, and `max_severity` the higher of the two, 0 for neither.\n`series` and `series_index` place a run in its series; `variant` is the scenario variant\nit ran, known once the run is sealed and its truth file arrived. `steps` counts its agents'\nmodel calls, `cost_usd` sums its priced live model responses, monitor calls included (None\nwhen there is none), `reward` is the verifier's last reward and `reviews` counts the\nmonitor runs over it that have started. `preset` is the preset of the monitor that watches\nthe run, or that a monitor run runs, and `monitor_mode` a monitor run's mode. `held` lists\nits agents paused now, by the monitor or an operator, one entry per pause.",
         "properties": {
           "categories": {
             "additionalProperties": {
@@ -9114,6 +9265,13 @@
               }
             ],
             "title": "Group"
+          },
+          "held": {
+            "items": {
+              "$ref": "#/components/schemas/HoldInfo"
+            },
+            "title": "Held",
+            "type": "array"
           },
           "kind": {
             "default": "scenario",
@@ -9330,7 +9488,8 @@
           "reward",
           "reviews",
           "preset",
-          "monitor_mode"
+          "monitor_mode",
+          "held"
         ],
         "title": "RunSummary",
         "type": "object"
