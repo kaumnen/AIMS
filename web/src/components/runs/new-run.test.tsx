@@ -39,6 +39,7 @@ const scenarios: ScenarioInfo[] = [
     agents: 1,
     profiles: ["spark"],
     variants: ["observed", "unobserved"],
+    selftest: true,
   },
   {
     source: "project",
@@ -50,6 +51,7 @@ const scenarios: ScenarioInfo[] = [
     agents: 2,
     profiles: ["spark"],
     variants: [],
+    selftest: false,
   },
   {
     source: "project",
@@ -61,6 +63,7 @@ const scenarios: ScenarioInfo[] = [
     agents: null,
     profiles: [],
     variants: [],
+    selftest: false,
   },
 ];
 

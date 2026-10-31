@@ -1,4 +1,4 @@
-"""Editing config layers and scenario files from the UI."""
+"""Editing config layers and scenario files from the UI, and the scenario overview it shows."""
 
 import asyncio
 import contextlib
@@ -18,8 +18,13 @@ from pydantic import BaseModel, Field, JsonValue
 from aims.config import STARTER, ConfigError, Layers, load_layers
 from aims.models import ProfileError
 from aims.monitor.config import MonitorConfigError
-from aims.prompts import TextError
-from aims.scenario import ScenarioError, parse
+from aims.plants import PlantError, category_of, registry, taken_tier
+from aims.prompts import Prompts, TextError
+from aims.run import selftest
+from aims.run.runner import check
+from aims.scenario import Bundle, Scenario, ScenarioError, parse
+from aims.scenario.edit import PromptChange, check_key, set_prompts
+from aims.scenario.model import ImpossiblePlant, Role
 from aims.server.api import (
     Operator,
     Out,
@@ -275,8 +280,9 @@ class Duplicate(BaseModel):
 
 @router.get("/scenarios/{source}/{name}/files", tags=["scenarios"])
 async def list_files(
-    source: str, name: str, principal: Viewer, sources: SourcesDep
+    source: str, name: str, principal: Operator, sources: SourcesDep
 ) -> list[FileInfo]:
+    """A scenario's files: operators only, as they hold its plants and self-test."""
     _, path = sources.scenario(source, name)
     return [FileInfo.model_validate(f) for f in await asyncio.to_thread(listing, path)]
 
@@ -288,7 +294,7 @@ async def list_files(
     responses={200: {"content": {"application/octet-stream": {}}}},
 )
 async def read_file(
-    source: str, name: str, file: str, principal: Viewer, sources: SourcesDep
+    source: str, name: str, file: str, principal: Operator, sources: SourcesDep
 ) -> Response:
     """A scenario file's bytes, with its ETag for the write that replaces it."""
     _, base = sources.scenario(source, name)
@@ -413,3 +419,235 @@ async def duplicate_scenario(
         raise ProblemException(422, "Invalid request", f"copy failed: {e}") from None
     data = (dst / SCENARIO).read_bytes()
     return Saved(path=SCENARIO, etag=etag(data))
+
+
+# The scenario overview
+
+
+class AgentOverview(Out):
+    """`profile` is the one it runs unless a run picks another. `role`, `scripted` and `prompts`
+    (its own text overrides) are sent to operators only."""
+
+    id: str
+    profile: str
+    tools: list[str]
+    budget: dict[str, JsonValue]
+    role: Role | None = None
+    scripted: bool | None = None
+    prompts: dict[str, JsonValue] | None = None
+
+
+class ChannelOverview(Out):
+    name: str
+    kind: str
+    members: list[str] | None
+    read_only: list[str]
+
+
+class PlantOverview(Out):
+    """`category` and `taken` are the ones scoring uses, None when the plant kind is unknown."""
+
+    name: str
+    kind: str
+    category: str | None
+    taken: str | None
+    agents: list[str] | None
+    canary: bool
+
+
+class SelfTestOverview(Out):
+    """`impossible` names the impossible plants whose references the self-test also runs."""
+
+    reference: bool
+    exploit: bool
+    claims: list[str]
+    impossible: list[str]
+
+
+class ScenarioDetail(Out):
+    """A scenario as the scenario page shows it. `errors` say why it does not load, and then
+    only the names are set. Viewers see what a run of it shows (`truth` False): no plants,
+    roles, scripts, prompts or self-test."""
+
+    source: str
+    name: str
+    writable: bool
+    etag: str
+    errors: list[ProblemError]
+    truth: bool
+    title: str | None
+    oversight: str | None
+    instruction: str | None
+    environment: str | None
+    limits: dict[str, JsonValue]
+    agents: list[AgentOverview]
+    channels: list[ChannelOverview]
+    variants: list[str]
+    plants: list[PlantOverview] | None
+    selftest: SelfTestOverview | None
+
+
+@router.get("/scenarios/{source}/{name}", tags=["scenarios"])
+async def scenario_detail(
+    source: str, name: str, principal: Viewer, state: State, sources: SourcesDep
+) -> ScenarioDetail:
+    s, base = sources.scenario(source, name)
+    data = await asyncio.to_thread((base / SCENARIO).read_bytes)
+    truth = principal.role != "viewer"
+    out = ScenarioDetail(
+        source=s.id,
+        name=name,
+        writable=s.writable,
+        etag=etag(data),
+        errors=[],
+        truth=truth,
+        title=None,
+        oversight=None,
+        instruction=None,
+        environment=None,
+        limits={},
+        agents=[],
+        channels=[],
+        variants=[],
+        plants=None,
+        selftest=None,
+    )
+    try:
+        scenario = parse(data.decode(), source=SCENARIO)
+    except UnicodeDecodeError:
+        out.errors = [ProblemError(msg="scenario.yaml is not UTF-8")]
+        return out
+    except ScenarioError as e:
+        out.errors = scenario_problems(e)
+        return out
+    return _overview(out, scenario, state.config.settings().models.roles.agent)
+
+
+def _overview(out: ScenarioDetail, sc: Scenario, default: str) -> ScenarioDetail:
+    truth = out.truth
+    env = sc.task.environment
+    out.title = sc.name
+    out.oversight = sc.oversight
+    out.instruction = sc.task.instruction
+    out.environment = env.image or (f"{env.dockerfile} (Dockerfile)" if env.dockerfile else None)
+    out.limits = sc.limits.model_dump(mode="json", exclude_none=True)
+    out.variants = list(sc.variants)
+    for a in sc.agents:
+        agent = AgentOverview(
+            id=a.id,
+            profile=a.profile or default,
+            tools=a.tool_names,
+            budget=a.budget.model_dump(mode="json", exclude_none=True),
+        )
+        if truth:
+            agent.role = a.role
+            agent.scripted = a.scripted
+            agent.prompts = _prompts(a.prompts)
+        out.agents.append(agent)
+    for c in sc.channels:
+        kind = getattr(c, "kind", "plugin")
+        out.channels.append(
+            ChannelOverview(name=c.name, kind=kind, members=c.members, read_only=c.read_only)
+        )
+    if not truth:
+        return out
+    kinds = registry()
+    out.plants = []
+    for p in sc.plants:
+        cls = kinds.get(p.kind)
+        category = taken = None
+        if cls is not None:
+            with contextlib.suppress(PlantError):
+                category = category_of(p, cls)
+            with contextlib.suppress(PlantError):
+                taken = taken_tier(p, cls)
+        out.plants.append(
+            PlantOverview(
+                name=p.name,
+                kind=p.kind,
+                category=category,
+                taken=taken,
+                agents=p.agents,
+                canary=p.canary is not None,
+            )
+        )
+    if selftest.wanted(sc):
+        test = sc.selftest
+        out.selftest = SelfTestOverview(
+            reference=test is not None and test.reference is not None,
+            exploit=test is not None and test.exploit is not None,
+            claims=list(test.claims) if test is not None else [],
+            impossible=[p.name for p in sc.plants if isinstance(p, ImpossiblePlant)],
+        )
+    return out
+
+
+def _prompts(prompts: Prompts | None) -> dict[str, JsonValue]:
+    if prompts is None:
+        return {}
+    dumped = prompts.model_dump(mode="json", exclude_none=True)
+    return {k: v for k, v in dumped.items() if v or k not in ("tools", "monitor")}
+
+
+class PromptKeySet(BaseModel):
+    agent: str = Field(min_length=1)
+    key: list[str] = Field(min_length=1, max_length=3)
+    value: str = Field(max_length=256 * 1024)
+
+
+class PromptKeyUnset(BaseModel):
+    agent: str = Field(min_length=1)
+    key: list[str] = Field(min_length=1, max_length=3)
+
+
+class PromptsPatch(BaseModel):
+    """Agent text overrides to set or drop in scenario.yaml, by agent id and key: a text name,
+    or ["tools", tool, text]."""
+
+    set: list[PromptKeySet] = Field(default_factory=list)
+    unset: list[PromptKeyUnset] = Field(default_factory=list)
+
+
+@router.patch("/scenarios/{source}/{name}/prompts", tags=["scenarios"])
+async def patch_prompts(
+    source: str,
+    name: str,
+    body: PromptsPatch,
+    principal: Operator,
+    state: State,
+    sources: SourcesDep,
+    if_match: IfMatch = None,
+) -> Saved:
+    """Set or drop agents' text overrides in scenario.yaml, keeping its comments and layout.
+    The file must still load; texts the run would refuse come back as warnings."""
+    base = sources.writable(source, name)
+    path = base / SCENARIO
+    changes = [PromptChange(c.agent, tuple(c.key), c.value) for c in body.set]
+    changes += [PromptChange(c.agent, tuple(c.key), None) for c in body.unset]
+    for change in changes:
+        try:
+            check_key(change.key)
+        except ValueError as e:
+            raise ProblemException(422, "Invalid request", str(e)) from None
+    async with _lock(path):
+        current = await asyncio.to_thread(read_or_none, path)
+        check_match(current, if_match, None)
+        if current is None:
+            raise ProblemException(404, "Not found", f"no {SCENARIO}")
+        try:
+            text = set_prompts(current.decode(), changes, source=SCENARIO)
+            scenario = parse(text, source=SCENARIO)
+        except UnicodeDecodeError:
+            raise ProblemException(422, "Invalid request", "scenario.yaml is not UTF-8") from None
+        except ScenarioError as e:
+            raise ProblemException(
+                422, "Scenario does not load", code="scenario", errors=scenario_problems(e)
+            ) from None
+        except ValueError as e:
+            raise ProblemException(422, "Invalid request", str(e)) from None
+        data = text.encode()
+        await asyncio.to_thread(write_atomic, path, data)
+    settings = state.config.settings()
+    bundle = Bundle(scenario, data)
+    warnings = [ProblemError(msg=w) for w in check(bundle, settings.models, None, settings.prompts)]
+    return Saved(path=SCENARIO, etag=etag(data), warnings=warnings)

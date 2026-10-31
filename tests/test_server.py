@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -633,6 +634,73 @@ async def test_scenario_files_are_validated_and_confined(cp: CP) -> None:
         assert check["ok"]
         check = (await c.post("/api/scenarios/check", json={"text": bad.decode()})).json()
         assert not check["ok"]
+
+
+async def test_scenario_files_and_truth_are_for_operators(cp: CP) -> None:
+    src = Path(__file__).parent.parent / "scenarios/cache-keys/scenario.yaml"
+    dst = cp.project.parent / "scenarios/cache-keys"
+    dst.mkdir()
+    (dst / "scenario.yaml").write_bytes(src.read_bytes())
+    async with cp.client(cp.viewer) as c:
+        base = "/api/scenarios/project/cache-keys"
+        assert (await c.get(f"{base}/files")).status_code == 403
+        assert (await c.get(f"{base}/files/scenario.yaml")).status_code == 403
+        listed = {s["name"]: s for s in (await c.get("/api/scenarios")).json()}
+        assert listed["cache-keys"]["selftest"] is True
+        assert listed["control"]["selftest"] is False
+        seen = (await c.get(base)).json()
+        assert seen["truth"] is False
+        assert seen["title"] == "cache-keys"
+        assert seen["plants"] is None
+        assert seen["selftest"] is None
+        assert [(a["id"], a["role"], a["prompts"]) for a in seen["agents"]] == [
+            ("agent", None, None)
+        ]
+        assert seen["agents"][0]["budget"]["steps"] == 80
+    async with cp.client(cp.operator) as c:
+        full = (await c.get(base)).json()
+        assert full["truth"] is True
+        assert full["etag"] == hashlib.sha256(src.read_bytes()).hexdigest()
+        assert full["agents"][0]["role"] == "subject"
+        plants = {p["name"]: p for p in full["plants"]}
+        assert plants["golden-keys"]["category"] == "scorer_tampering"
+        assert plants["golden-keys"]["taken"] == "used"
+        assert full["selftest"]["exploit"] is True
+        (dst / "scenario.yaml").write_text("version: 1\nname: [\n")
+        broken = (await c.get(base)).json()
+        assert broken["errors"]
+        assert broken["title"] is None
+        assert (await c.get("/api/scenarios/project/missing")).status_code == 404
+
+
+async def test_prompt_overrides_are_patched_in_place(cp: CP) -> None:
+    path = cp.project.parent / "scenarios/control/scenario.yaml"
+    url = "/api/scenarios/project/control/prompts"
+    original = path.read_text()
+    body = {"set": [{"agent": "a", "key": ["nudge"], "value": "Keep going.\nPlease."}]}
+    async with cp.client(cp.viewer) as c:
+        assert (await c.patch(url, json=body)).status_code == 403
+    async with cp.client(cp.operator) as c:
+        assert (await c.patch(url, json=body)).status_code == 428
+        tag = (await c.get("/api/scenarios/project/control")).json()["etag"]
+        r = await c.patch(url, json=body, headers={"If-Match": f'"{tag}"'})
+        assert r.status_code == 200, r.text
+        assert (
+            path.read_text()
+            == original + "    prompts:\n      nudge: |-\n        Keep going.\n        Please.\n"
+        )
+        new = r.json()["etag"]
+        assert (await c.patch(url, json=body, headers={"If-Match": f'"{tag}"'})).status_code == 412
+        seen = (await c.get("/api/scenarios/project/control")).json()
+        assert seen["agents"][0]["prompts"] == {"nudge": "Keep going.\nPlease."}
+        bad = {"set": [{"agent": "a", "key": ["monitor"], "value": "x"}]}
+        assert (await c.patch(url, json=bad, headers={"If-Match": f'"{new}"'})).status_code == 422
+        who = {"set": [{"agent": "zz", "key": ["nudge"], "value": "x"}]}
+        assert (await c.patch(url, json=who, headers={"If-Match": f'"{new}"'})).status_code == 422
+        undo = {"unset": [{"agent": "a", "key": ["nudge"]}]}
+        r = await c.patch(url, json=undo, headers={"If-Match": f'"{new}"'})
+        assert r.status_code == 200, r.text
+        assert path.read_text() == original
 
 
 # The live stream

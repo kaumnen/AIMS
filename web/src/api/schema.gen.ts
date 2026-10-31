@@ -820,7 +820,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** Scenario Detail */
+        get: operations["scenario_detail"];
         put?: never;
         /**
          * Create Scenario
@@ -882,7 +883,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Files */
+        /**
+         * List Files
+         * @description A scenario's files: operators only, as they hold its plants and self-test.
+         */
         get: operations["list_files"];
         put?: never;
         post?: never;
@@ -915,6 +919,27 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/scenarios/{source}/{name}/prompts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Patch Prompts
+         * @description Set or drop agents' text overrides in scenario.yaml, keeping its comments and layout.
+         *     The file must still load; texts the run would refuse come back as warnings.
+         */
+        patch: operations["patch_prompts"];
         trace?: never;
     };
     "/api/series/{name}": {
@@ -1467,6 +1492,31 @@ export interface components {
             text: string | components["schemas"]["BlobRef"];
         };
         /**
+         * AgentOverview
+         * @description `profile` is the one it runs unless a run picks another. `role`, `scripted` and `prompts`
+         *     (its own text overrides) are sent to operators only.
+         */
+        AgentOverview: {
+            /** Budget */
+            budget: {
+                [key: string]: components["schemas"]["JsonValue"];
+            };
+            /** Id */
+            id: string;
+            /** Profile */
+            profile: string;
+            /** Prompts */
+            prompts: {
+                [key: string]: components["schemas"]["JsonValue"];
+            } | null;
+            /** Role */
+            role: ("subject" | "confederate") | null;
+            /** Scripted */
+            scripted: boolean | null;
+            /** Tools */
+            tools: string[];
+        };
+        /**
          * AgentReport
          * @description A message the agent sent the operator with its `report_to_operator` tool.
          */
@@ -1877,6 +1927,17 @@ export interface components {
             id: number;
             /** Text */
             text: string | components["schemas"]["BlobRef"];
+        };
+        /** ChannelOverview */
+        ChannelOverview: {
+            /** Kind */
+            kind: string;
+            /** Members */
+            members: string[] | null;
+            /** Name */
+            name: string;
+            /** Read Only */
+            read_only: string[];
         };
         /**
          * ChannelRead
@@ -4273,6 +4334,24 @@ export interface components {
             reason?: string | null;
         };
         /**
+         * PlantOverview
+         * @description `category` and `taken` are the ones scoring uses, None when the plant kind is unknown.
+         */
+        PlantOverview: {
+            /** Agents */
+            agents: string[] | null;
+            /** Canary */
+            canary: boolean;
+            /** Category */
+            category: string | null;
+            /** Kind */
+            kind: string;
+            /** Name */
+            name: string;
+            /** Taken */
+            taken: string | null;
+        };
+        /**
          * PlantTriggered
          * @description A plant reached a tier for the event's agent, in the run `origin` that a score run
          *     scores. `seq` is the first event that set it off, the harm seq when the tier counts as
@@ -4706,6 +4785,22 @@ export interface components {
             /** Spent Usd */
             spent_usd: number;
         };
+        /** PromptKeySet */
+        PromptKeySet: {
+            /** Agent */
+            agent: string;
+            /** Key */
+            key: string[];
+            /** Value */
+            value: string;
+        };
+        /** PromptKeyUnset */
+        PromptKeyUnset: {
+            /** Agent */
+            agent: string;
+            /** Key */
+            key: string[];
+        };
         /**
          * PromptsInfo
          * @description `agent` and `tools` are what the agent reads from the harness, `monitor` the monitor's
@@ -4731,6 +4826,17 @@ export interface components {
                     [key: string]: components["schemas"]["Text"];
                 };
             };
+        };
+        /**
+         * PromptsPatch
+         * @description Agent text overrides to set or drop in scenario.yaml, by agent id and key: a text name,
+         *     or ["tools", tool, text].
+         */
+        PromptsPatch: {
+            /** Set */
+            set?: components["schemas"]["PromptKeySet"][];
+            /** Unset */
+            unset?: components["schemas"]["PromptKeyUnset"][];
         };
         /**
          * ProviderCredit
@@ -5592,10 +5698,52 @@ export interface components {
             text: string;
         };
         /**
+         * ScenarioDetail
+         * @description A scenario as the scenario page shows it. `errors` say why it does not load, and then
+         *     only the names are set. Viewers see what a run of it shows (`truth` False): no plants,
+         *     roles, scripts, prompts or self-test.
+         */
+        ScenarioDetail: {
+            /** Agents */
+            agents: components["schemas"]["AgentOverview"][];
+            /** Channels */
+            channels: components["schemas"]["ChannelOverview"][];
+            /** Environment */
+            environment: string | null;
+            /** Errors */
+            errors: components["schemas"]["ProblemError"][];
+            /** Etag */
+            etag: string;
+            /** Instruction */
+            instruction: string | null;
+            /** Limits */
+            limits: {
+                [key: string]: components["schemas"]["JsonValue"];
+            };
+            /** Name */
+            name: string;
+            /** Oversight */
+            oversight: string | null;
+            /** Plants */
+            plants: components["schemas"]["PlantOverview"][] | null;
+            selftest: components["schemas"]["SelfTestOverview"] | null;
+            /** Source */
+            source: string;
+            /** Title */
+            title: string | null;
+            /** Truth */
+            truth: boolean;
+            /** Variants */
+            variants: string[];
+            /** Writable */
+            writable: boolean;
+        };
+        /**
          * ScenarioInfo
          * @description `oversight` is what the scenario lets its monitor do, `agents` how many agents it has,
-         *     `profiles` the profiles they run unless a run picks one, and `variants` the names of its
-         *     variants; all are missing when it does not load.
+         *     `profiles` the profiles they run unless a run picks one, `variants` the names of its
+         *     variants and `selftest` whether it has a self-test to run; all are missing when it does not
+         *     load.
          */
         ScenarioInfo: {
             /** Agents */
@@ -5608,6 +5756,11 @@ export interface components {
             oversight: ("observe" | "autonomous" | "human") | null;
             /** Profiles */
             profiles: string[];
+            /**
+             * Selftest
+             * @default false
+             */
+            selftest: boolean;
             /** Source */
             source: string;
             /** Title */
@@ -5938,6 +6091,20 @@ export interface components {
              * @default null
              */
             told: ("yes" | "partly" | "no") | null;
+        };
+        /**
+         * SelfTestOverview
+         * @description `impossible` names the impossible plants whose references the self-test also runs.
+         */
+        SelfTestOverview: {
+            /** Claims */
+            claims: string[];
+            /** Exploit */
+            exploit: boolean;
+            /** Impossible */
+            impossible: string[];
+            /** Reference */
+            reference: boolean;
         };
         /**
          * Separation
@@ -9175,6 +9342,83 @@ export interface operations {
             };
         };
     };
+    scenario_detail: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScenarioDetail"];
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Precondition failed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Precondition required */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     create_scenario: {
         parameters: {
             query?: never;
@@ -9661,6 +9905,89 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Precondition failed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Precondition required */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    patch_prompts: {
+        parameters: {
+            query?: never;
+            header?: {
+                "If-Match"?: string | null;
+            };
+            path: {
+                source: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PromptsPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Saved"];
+                };
             };
             /** @description Not signed in */
             401: {
@@ -11295,6 +11622,7 @@ export const agentCompactedStrategyValues: ReadonlyArray<FlattenedDeepRequired<c
 export const agentFinishedReasonValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentFinished"]["reason"]> = ["submitted", "no_submit", "budget_steps", "budget_output_tokens", "budget_cost", "budget_wall", "context_exhausted", "model_error", "sandbox_failed", "divergence", "killed", "cancelled", "error"];
 export const agentHeldKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentHeld"]["kind"]> = ["before_model", "after_reply", "before_tool", "after_tool"];
 export const agentInputKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentInput"]["kind"]> = ["instruction", "continue", "inject", "budget_warning"];
+export const agentOverviewRoleAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentOverview"]["role"]> = ["subject", "confederate"];
 export const agentStartedBackendAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentStarted"]["backend"]> = ["responses", "chat"];
 export const agentStepSourceValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentStep"]["source"]> = ["live", "replay"];
 export const agentStepStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentStep"]["status"]> = ["completed", "incomplete", "error", "cancelled"];

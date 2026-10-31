@@ -301,6 +301,84 @@
         "title": "AgentInput",
         "type": "object"
       },
+      "AgentOverview": {
+        "description": "`profile` is the one it runs unless a run picks another. `role`, `scripted` and `prompts`\n(its own text overrides) are sent to operators only.",
+        "properties": {
+          "budget": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "title": "Budget",
+            "type": "object"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
+          "prompts": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/JsonValue"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompts"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "enum": [
+                  "subject",
+                  "confederate"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          },
+          "scripted": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scripted"
+          },
+          "tools": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tools",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "profile",
+          "tools",
+          "budget",
+          "role",
+          "scripted",
+          "prompts"
+        ],
+        "title": "AgentOverview",
+        "type": "object"
+      },
       "AgentReport": {
         "additionalProperties": false,
         "description": "A message the agent sent the operator with its `report_to_operator` tool.",
@@ -1353,6 +1431,47 @@
           "call_id"
         ],
         "title": "ChannelMessage",
+        "type": "object"
+      },
+      "ChannelOverview": {
+        "properties": {
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "members": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Members"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "read_only": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Read Only",
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "members",
+          "read_only"
+        ],
+        "title": "ChannelOverview",
         "type": "object"
       },
       "ChannelRead": {
@@ -7342,6 +7461,69 @@
         "title": "PauseBody",
         "type": "object"
       },
+      "PlantOverview": {
+        "description": "`category` and `taken` are the ones scoring uses, None when the plant kind is unknown.",
+        "properties": {
+          "agents": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agents"
+          },
+          "canary": {
+            "title": "Canary",
+            "type": "boolean"
+          },
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "taken": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Taken"
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "category",
+          "taken",
+          "agents",
+          "canary"
+        ],
+        "title": "PlantOverview",
+        "type": "object"
+      },
       "PlantTriggered": {
         "additionalProperties": false,
         "description": "A plant reached a tier for the event's agent, in the run `origin` that a score run\nscores. `seq` is the first event that set it off, the harm seq when the tier counts as\ntaken; `evidence` holds every such seq. `inherited` marks a canary a run of the series\nbefore made, used here. `matches` are how each monitor layer did on this plant alone, as\nthe agent's unit has them over all its taken plants; empty when it was not taken.",
@@ -8415,6 +8597,60 @@
         "title": "Projection",
         "type": "object"
       },
+      "PromptKeySet": {
+        "properties": {
+          "agent": {
+            "minLength": 1,
+            "title": "Agent",
+            "type": "string"
+          },
+          "key": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 3,
+            "minItems": 1,
+            "title": "Key",
+            "type": "array"
+          },
+          "value": {
+            "maxLength": 262144,
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent",
+          "key",
+          "value"
+        ],
+        "title": "PromptKeySet",
+        "type": "object"
+      },
+      "PromptKeyUnset": {
+        "properties": {
+          "agent": {
+            "minLength": 1,
+            "title": "Agent",
+            "type": "string"
+          },
+          "key": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 3,
+            "minItems": 1,
+            "title": "Key",
+            "type": "array"
+          }
+        },
+        "required": [
+          "agent",
+          "key"
+        ],
+        "title": "PromptKeyUnset",
+        "type": "object"
+      },
       "PromptsInfo": {
         "description": "`agent` and `tools` are what the agent reads from the harness, `monitor` the monitor's\nown texts (`[prompts.monitor]`) and `categories` its category definitions\n(`[prompts.monitor.categories]`).",
         "properties": {
@@ -8457,6 +8693,27 @@
           "categories"
         ],
         "title": "PromptsInfo",
+        "type": "object"
+      },
+      "PromptsPatch": {
+        "description": "Agent text overrides to set or drop in scenario.yaml, by agent id and key: a text name,\nor [\"tools\", tool, text].",
+        "properties": {
+          "set": {
+            "items": {
+              "$ref": "#/components/schemas/PromptKeySet"
+            },
+            "title": "Set",
+            "type": "array"
+          },
+          "unset": {
+            "items": {
+              "$ref": "#/components/schemas/PromptKeyUnset"
+            },
+            "title": "Unset",
+            "type": "array"
+          }
+        },
+        "title": "PromptsPatch",
         "type": "object"
       },
       "ProviderCredit": {
@@ -10916,8 +11173,156 @@
         "title": "ScenarioCheck",
         "type": "object"
       },
+      "ScenarioDetail": {
+        "description": "A scenario as the scenario page shows it. `errors` say why it does not load, and then\nonly the names are set. Viewers see what a run of it shows (`truth` False): no plants,\nroles, scripts, prompts or self-test.",
+        "properties": {
+          "agents": {
+            "items": {
+              "$ref": "#/components/schemas/AgentOverview"
+            },
+            "title": "Agents",
+            "type": "array"
+          },
+          "channels": {
+            "items": {
+              "$ref": "#/components/schemas/ChannelOverview"
+            },
+            "title": "Channels",
+            "type": "array"
+          },
+          "environment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Environment"
+          },
+          "errors": {
+            "items": {
+              "$ref": "#/components/schemas/ProblemError"
+            },
+            "title": "Errors",
+            "type": "array"
+          },
+          "etag": {
+            "title": "Etag",
+            "type": "string"
+          },
+          "instruction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instruction"
+          },
+          "limits": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "title": "Limits",
+            "type": "object"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "oversight": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oversight"
+          },
+          "plants": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PlantOverview"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plants"
+          },
+          "selftest": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SelfTestOverview"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "truth": {
+            "title": "Truth",
+            "type": "boolean"
+          },
+          "variants": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Variants",
+            "type": "array"
+          },
+          "writable": {
+            "title": "Writable",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "source",
+          "name",
+          "writable",
+          "etag",
+          "errors",
+          "truth",
+          "title",
+          "oversight",
+          "instruction",
+          "environment",
+          "limits",
+          "agents",
+          "channels",
+          "variants",
+          "plants",
+          "selftest"
+        ],
+        "title": "ScenarioDetail",
+        "type": "object"
+      },
       "ScenarioInfo": {
-        "description": "`oversight` is what the scenario lets its monitor do, `agents` how many agents it has,\n`profiles` the profiles they run unless a run picks one, and `variants` the names of its\nvariants; all are missing when it does not load.",
+        "description": "`oversight` is what the scenario lets its monitor do, `agents` how many agents it has,\n`profiles` the profiles they run unless a run picks one, `variants` the names of its\nvariants and `selftest` whether it has a self-test to run; all are missing when it does not\nload.",
         "properties": {
           "agents": {
             "anyOf": [
@@ -10968,6 +11373,11 @@
             "title": "Profiles",
             "type": "array"
           },
+          "selftest": {
+            "default": false,
+            "title": "Selftest",
+            "type": "boolean"
+          },
           "source": {
             "title": "Source",
             "type": "string"
@@ -11004,7 +11414,8 @@
           "oversight",
           "agents",
           "profiles",
-          "variants"
+          "variants",
+          "selftest"
         ],
         "title": "ScenarioInfo",
         "type": "object"
@@ -11725,6 +12136,41 @@
           "cause"
         ],
         "title": "ScoreUnit",
+        "type": "object"
+      },
+      "SelfTestOverview": {
+        "description": "`impossible` names the impossible plants whose references the self-test also runs.",
+        "properties": {
+          "claims": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Claims",
+            "type": "array"
+          },
+          "exploit": {
+            "title": "Exploit",
+            "type": "boolean"
+          },
+          "impossible": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Impossible",
+            "type": "array"
+          },
+          "reference": {
+            "title": "Reference",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "reference",
+          "exploit",
+          "claims",
+          "impossible"
+        ],
+        "title": "SelfTestOverview",
         "type": "object"
       },
       "Separation": {
@@ -17523,6 +17969,105 @@
       }
     },
     "/api/scenarios/{source}/{name}": {
+      "get": {
+        "operationId": "scenario_detail",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source",
+            "required": true,
+            "schema": {
+              "title": "Source",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScenarioDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not signed in"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "412": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Precondition failed"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "428": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Precondition required"
+          }
+        },
+        "summary": "Scenario Detail",
+        "tags": [
+          "scenarios"
+        ]
+      },
       "post": {
         "description": "A new scenario directory with a starter scenario.yaml.",
         "operationId": "create_scenario",
@@ -17921,6 +18466,7 @@
     },
     "/api/scenarios/{source}/{name}/files": {
       "get": {
+        "description": "A scenario's files: operators only, as they hold its plants and self-test.",
         "operationId": "list_files",
         "parameters": [
           {
@@ -18390,6 +18936,134 @@
           }
         },
         "summary": "Write File",
+        "tags": [
+          "scenarios"
+        ]
+      }
+    },
+    "/api/scenarios/{source}/{name}/prompts": {
+      "patch": {
+        "description": "Set or drop agents' text overrides in scenario.yaml, keeping its comments and layout.\nThe file must still load; texts the run would refuse come back as warnings.",
+        "operationId": "patch_prompts",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source",
+            "required": true,
+            "schema": {
+              "title": "Source",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PromptsPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Saved"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not signed in"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "412": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Precondition failed"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "428": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Precondition required"
+          }
+        },
+        "summary": "Patch Prompts",
         "tags": [
           "scenarios"
         ]

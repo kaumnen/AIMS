@@ -47,6 +47,7 @@ from aims.monitor.config import MonitorConfigError, Preset
 from aims.monitor.offline import origin_agents
 from aims.monitor.setup import ResolvedMonitor
 from aims.prompts import Prompts, TextError, load_prompts
+from aims.run import selftest
 from aims.run.estimate import Estimate, History, estimate_fork, estimate_runs, needs_confirm
 from aims.run.fork import CutAt, Origin, check_fork, cut_at, live_profiles, load_origin
 from aims.run.job import Job, fork_jobs, monitor_for, scenario_jobs
@@ -1593,8 +1594,9 @@ async def list_runners(principal: Viewer, state: State) -> list[RunnerInfo]:
 
 class ScenarioInfo(Out):
     """`oversight` is what the scenario lets its monitor do, `agents` how many agents it has,
-    `profiles` the profiles they run unless a run picks one, and `variants` the names of its
-    variants; all are missing when it does not load."""
+    `profiles` the profiles they run unless a run picks one, `variants` the names of its
+    variants and `selftest` whether it has a self-test to run; all are missing when it does not
+    load."""
 
     source: str
     name: str
@@ -1605,6 +1607,7 @@ class ScenarioInfo(Out):
     agents: int | None = None
     profiles: list[str] = Field(default_factory=list)
     variants: list[str] = Field(default_factory=list)
+    selftest: bool = False
 
 
 @router.get("/scenarios", tags=["scenarios"])
@@ -1630,6 +1633,7 @@ async def list_scenarios(
                 info.agents = len(sc.agents)
                 info.profiles = sorted({a.profile or default for a in sc.agents})
                 info.variants = list(sc.variants)
+                info.selftest = selftest.wanted(sc)
             out.append(info)
     return out
 
