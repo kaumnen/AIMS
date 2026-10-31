@@ -9,14 +9,17 @@ import { useOperator } from "@/components/run/controls";
 import { NewRun } from "@/components/runs/new-run";
 import { NewScenario } from "@/components/scenarios/new-scenario";
 import { Overview } from "@/components/scenarios/overview";
+import { PromptsTab } from "@/components/scenarios/prompts";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 // The editor is the heaviest part of the app; it loads when the Files tab opens.
 const FilesTab = lazy(() => import("@/components/scenarios/files"));
 
+type Tab = "files" | "prompts";
+
 interface ScenarioSearch {
-  tab?: "files";
+  tab?: Tab;
   file?: string;
 }
 
@@ -29,7 +32,7 @@ function without(search: ScenarioSearch, key: keyof ScenarioSearch): ScenarioSea
 export const Route = createFileRoute("/scenarios/$source/$name")({
   staticData: { crumb: (p) => p["name"] ?? "" },
   validateSearch: (raw: Record<string, unknown>): ScenarioSearch => ({
-    ...(raw["tab"] === "files" ? { tab: "files" as const } : {}),
+    ...(raw["tab"] === "files" || raw["tab"] === "prompts" ? { tab: raw["tab"] } : {}),
     ...(typeof raw["file"] === "string" && raw["file"] ? { file: raw["file"] } : {}),
   }),
   loader: ({ context, params }) => {
@@ -58,7 +61,7 @@ function ScenarioPage() {
     );
   }
   const d = detail.data;
-  const tab = operator && search.tab === "files" ? "files" : "overview";
+  const tab = operator && search.tab ? search.tab : "overview";
   return (
     <div className="flex max-w-7xl flex-col gap-3">
       <header className="flex flex-wrap items-end gap-x-8 gap-y-2">
@@ -93,7 +96,7 @@ function ScenarioPage() {
         onValueChange={(v) =>
           void navigate({
             search: (prev) =>
-              v === "files" ? { ...prev, tab: "files" as const } : without(prev, "tab"),
+              v === "files" || v === "prompts" ? { ...prev, tab: v } : without(prev, "tab"),
             replace: true,
           })
         }
@@ -102,11 +105,21 @@ function ScenarioPage() {
           <TabsList variant="line" className="border-b">
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="files">Files</TabsTrigger>
+            <TabsTrigger value="prompts">Prompts</TabsTrigger>
           </TabsList>
         )}
         <TabsContent value="overview" className="pt-3">
           <Overview detail={d} />
         </TabsContent>
+        {operator && (
+          <TabsContent value="prompts" className="pt-3">
+            {d.errors.length > 0 ? (
+              <p className="text-muted-foreground">Fix scenario.yaml first: it does not load.</p>
+            ) : (
+              <PromptsTab detail={d} />
+            )}
+          </TabsContent>
+        )}
         {operator && (
           <TabsContent value="files" className="pt-3">
             <Suspense fallback={<p className="text-muted-foreground">Loading the editor</p>}>

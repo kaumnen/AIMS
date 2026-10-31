@@ -130,3 +130,35 @@ export async function duplicateScenario(
   if (error) throw error;
   return data;
 }
+
+export type PromptsInfo = Schemas["PromptsInfo"];
+export type PromptKey = string[];
+
+export const promptsQuery = queryOptions({
+  queryKey: ["prompts"] as const,
+  queryFn: async ({ signal }) => {
+    const { data, error } = await client.GET("/api/prompts", { signal });
+    if (error) throw error;
+    return data;
+  },
+  staleTime: 30_000,
+});
+
+// Set an agent's text override in scenario.yaml, or drop it with `value` null. `etag` is the
+// scenario.yaml version the change is made against.
+export async function patchPrompt(
+  source: string,
+  name: string,
+  agent: string,
+  key: PromptKey,
+  value: string | null,
+  etag: string,
+): Promise<Saved> {
+  const body = value === null ? { unset: [{ agent, key }] } : { set: [{ agent, key, value }] };
+  const { data, error } = await client.PATCH("/api/scenarios/{source}/{name}/prompts", {
+    params: { path: { source, name }, header: { "If-Match": `"${etag}"` } },
+    body,
+  });
+  if (error) throw error;
+  return data;
+}
