@@ -13,6 +13,7 @@ import {
 import { modelsQuery, type Preset, presets } from "@/api/launch";
 import type { RunDetail, StepInfo } from "@/api/run";
 import { isProblem } from "@/api/session";
+import { BudgetSection } from "@/components/budget";
 import { DEFAULT, Field, Pick, problemText } from "@/components/form";
 import { up, useRunners } from "@/components/health";
 import { OversightNote } from "@/components/oversight-note";
@@ -28,6 +29,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { changesText, draftText, EMPTY_DRAFT, readDraft } from "@/lib/budget";
 import { confirmWhy, oversightNote } from "@/lib/launch";
 import { cn } from "@/lib/utils";
 
@@ -84,18 +86,21 @@ function ForkForm({
   const [strict, setStrict] = useState(false);
   const [keep, setKeep] = useState(false);
   const [confirmed, setConfirmed] = useState<string | null>(null);
+  const [draft, setDraft] = useState(EMPTY_DRAFT);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const runners = useRunners().filter((r) => up(r) && r.kinds.includes("scenario"));
   const models = useQuery(modelsQuery);
 
   const cut = keepStep ? step.n : step.n - 1;
+  const { budget, problems } = readDraft(draft);
   const ask: ForkAsk = {
     ...(multi ? { at: `${agent}:${cut}` } : { step: cut }),
     keepOthers,
     samples,
     profile: profile || undefined,
     monitor: (monitor || undefined) as Preset | undefined,
+    budget,
   };
   const fields = forkFields(ask);
   const key = JSON.stringify(fields);
@@ -104,6 +109,9 @@ function ForkForm({
   const confirm = confirmed === key;
   const preset = estimate.data?.parts[0]?.monitor_preset;
   const before = recorded(detail);
+  const caps = estimate.data?.parts[0]?.caps;
+  const kept = changesText(detail.budget, multi);
+  const unread = Object.keys(problems).length > 0;
   const note = oversightNote(
     ((oversight || before) as Oversight | undefined) ?? null,
     monitor || preset || undefined,
@@ -259,6 +267,14 @@ function ForkForm({
             onChange={(v) => setAudit(v === "snapshot" ? "snapshot" : "kernel")}
           />
         </Field>
+        <BudgetSection
+          caps={caps}
+          draft={draft}
+          problems={problems}
+          summary={draftText(budget, multi) ?? (kept ? `As this run: ${kept}` : "Scenario caps")}
+          note={`${kept ? `This run ran with ${kept}. ` : ""}The replayed steps keep this run's caps; changes apply from the cut.`}
+          onChange={setDraft}
+        />
         <div className="flex flex-col gap-1.5 sm:col-span-2">
           {multi && (
             <label className="flex items-center gap-2">
@@ -335,7 +351,11 @@ function ForkForm({
         <Button
           size="sm"
           disabled={
-            busy || estimate.isPending || estimate.isPlaceholderData || (why !== null && !confirm)
+            busy ||
+            unread ||
+            estimate.isPending ||
+            estimate.isPlaceholderData ||
+            (why !== null && !confirm)
           }
           onClick={() => void submit()}
         >

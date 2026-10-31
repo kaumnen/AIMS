@@ -1,5 +1,7 @@
 import { keepPreviousData, queryOptions } from "@tanstack/react-query";
 
+import type { BudgetOverride } from "@/lib/budget";
+
 import { client, type Schemas } from "./client";
 
 export type StartRun = Schemas["StartRun"];
@@ -28,13 +30,15 @@ export interface EstimateAsk {
   samples: number;
   profile?: string | undefined;
   monitor?: Preset | undefined;
+  budget?: BudgetOverride | undefined;
 }
 
 // The previous estimate stays on screen while a changed field is estimated again.
 export function runEstimateQuery(ask: EstimateAsk) {
   const { source, name, variant, samples, profile, monitor } = ask;
+  const budget = ask.budget ? JSON.stringify(ask.budget) : undefined;
   return queryOptions({
-    queryKey: ["estimate", source, name, variant, samples, profile, monitor] as const,
+    queryKey: ["estimate", source, name, variant, samples, profile, monitor, budget] as const,
     queryFn: async ({ signal }) => {
       const { data, error } = await client.GET("/api/scenarios/{source}/{name}/estimate", {
         params: {
@@ -44,6 +48,7 @@ export function runEstimateQuery(ask: EstimateAsk) {
             ...(variant ? { variant } : {}),
             ...(profile ? { profile } : {}),
             ...(monitor ? { monitor } : {}),
+            ...(budget ? { budget } : {}),
           },
         },
         signal,

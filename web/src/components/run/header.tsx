@@ -2,12 +2,13 @@ import { Link } from "@tanstack/react-router";
 
 import type { RunDetail } from "@/api/run";
 import { Duration, Flags, Started, statusLabel, Verdict } from "@/components/runs/cells";
+import { changesText } from "@/lib/budget";
 import { shortId, usd } from "@/lib/format";
 import { useNow } from "@/lib/use-now";
 import { cn } from "@/lib/utils";
 
 import { RunCommands } from "./commands";
-import { RunControls } from "./controls";
+import { agentsOf, RunControls } from "./controls";
 
 function Fact({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -24,6 +25,7 @@ export function RunHeader({ detail }: { detail: RunDetail }) {
   const now = useNow(run.status === "running");
   const title =
     run.kind === "monitor" ? "Review" : run.kind === "score" ? "Score" : (run.scenario ?? run.kind);
+  const budget = changesText(detail.budget, agentsOf(detail).length > 1);
   return (
     <header className="flex flex-wrap items-end gap-x-8 gap-y-2 pb-3">
       <div className="min-w-0">
@@ -77,6 +79,7 @@ export function RunHeader({ detail }: { detail: RunDetail }) {
             <Verdict run={run} />
           </Fact>
         )}
+        {budget && <Fact label="Budget">{budget}</Fact>}
         {run.runner && <Fact label="Runner">{run.runner}</Fact>}
       </dl>
       <div className="ml-auto flex items-start gap-1.5">

@@ -215,10 +215,27 @@ const forkEstimate = (q: URLSearchParams) => {
   const count = Number(q.get("samples") ?? 1);
   const at = q.get("at");
   const ceiling = 5 * count;
+  const budget = q.get("budget");
+  const every = budget ? (JSON.parse(budget) as { every?: { steps?: number } }).every : undefined;
+  const cap = every?.steps ?? (detail.budget.length > 0 ? 200 : 80);
+  const caps = { steps: cap, output_tokens: null, cost_usd: 4, wall_s: 1800 };
   return {
     scenario: "cache-keys",
     samples: count,
-    parts: [],
+    parts: [
+      {
+        variant: null,
+        agents: { ...NO_FIGURES },
+        monitor: null,
+        monitor_preset: null,
+        steps: {},
+        replayed: {},
+        caps: {
+          agents: { agent: caps },
+          run: { steps: null, output_tokens: null, cost_usd: null, wall_s: null },
+        },
+      },
+    ],
     total: { typical_usd: null, high_usd: null, ceiling_usd: ceiling },
     rates: [],
     credits: [],
@@ -232,6 +249,19 @@ const forkEstimate = (q: URLSearchParams) => {
       `Total: cannot exceed $${ceiling}.00.`,
     ],
   };
+};
+
+const NO_FIGURES = {
+  typical_usd: null,
+  high_usd: null,
+  ceiling_usd: 5,
+  stepped: false,
+  tier: "cap" as const,
+  runs: 0,
+  capped: 0,
+  excluded: 0,
+  doubled: false,
+  priced: true,
 };
 
 const verdict = (seq: number) =>
@@ -1456,6 +1486,36 @@ test("a run of several agents forks at the agent's step and can keep the others"
     strict: true,
     keep: false,
   });
+});
+
+const forkBudgets = () =>
+  fetch.mock.calls
+    .map(([r]) => new URL(r.url))
+    .filter((u) => u.pathname.endsWith("/forks/estimate"))
+    .map((u) => u.searchParams.get("budget"));
+
+test("a fork keeps the run's budget and takes caps over it", async () => {
+  detail.started = ev(0, "run.started", { agents: ["agent"], oversight: "observe" });
+  detail.budget = [{ scope: "agent", agent: "agent", key: "steps", value: 200, scenario: 80 }];
+  renderAt(`/runs/${BEE5}`);
+  expect(await screen.findByText("steps 200 (scenario 80)")).toBeTruthy();
+  const form = await forkForm();
+  expect(await form.findByText("As this run: steps 200 (scenario 80)")).toBeTruthy();
+  expect(
+    form.getByText(
+      "This run ran with steps 200 (scenario 80). The replayed steps keep this run's caps; changes apply from the cut.",
+    ),
+  ).toBeTruthy();
+  const cell = form.getByRole("textbox", { name: "Agent steps" });
+  await waitFor(() => expect(cell.getAttribute("placeholder")).toBe("200"));
+  fireEvent.change(cell, { target: { value: "300" } });
+  expect(await form.findByText("steps 300")).toBeTruthy();
+  await waitFor(() => expect(forkBudgets().at(-1)).toBe(JSON.stringify({ every: { steps: 300 } })));
+  const start = form.getByRole("button", { name: "Start fork" });
+  await waitFor(() => expect(start.hasAttribute("disabled")).toBe(false));
+  fireEvent.click(start);
+  await waitFor(() => expect(posted).toHaveLength(1));
+  expect(posted[0]?.body).toMatchObject({ step: 1, budget: { every: { steps: 300 } } });
 });
 
 test("only an operator forks, and only a sealed run", async () => {

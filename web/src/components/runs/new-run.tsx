@@ -14,6 +14,7 @@ import {
 } from "@/api/launch";
 import { type ScenarioInfo, scenariosQuery } from "@/api/scenarios";
 import { isProblem, whoami } from "@/api/session";
+import { BudgetSection } from "@/components/budget";
 import { DEFAULT, Field, Pick, problemText } from "@/components/form";
 import { up, useRunners } from "@/components/health";
 import { useLive } from "@/components/live";
@@ -29,6 +30,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { draftText, EMPTY_DRAFT, readDraft } from "@/lib/budget";
 import { started } from "@/lib/format";
 import { checkProblem, checkState, confirmWhy, oversightNote } from "@/lib/launch";
 import { cn } from "@/lib/utils";
@@ -68,9 +70,11 @@ function NewRunForm({ onDone }: { onDone: () => void }) {
   const [score, setScore] = useState(false);
   const [keep, setKeep] = useState(false);
   const [confirm, setConfirm] = useState(false);
+  const [draft, setDraft] = useState(EMPTY_DRAFT);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const runners = useRunners().filter((r) => up(r) && r.kinds.includes("scenario"));
+  const { budget, problems } = readDraft(draft);
 
   const estimate = useQuery({
     ...runEstimateQuery({
@@ -80,6 +84,7 @@ function NewRunForm({ onDone }: { onDone: () => void }) {
       samples,
       profile: profile || undefined,
       monitor: (monitor || undefined) as Preset | undefined,
+      budget,
     }),
     enabled: scenario !== undefined,
   });
@@ -102,10 +107,14 @@ function NewRunForm({ onDone }: { onDone: () => void }) {
   );
   const why = estimate.data ? confirmWhy(estimate.data) : null;
   const needsYes = why !== null && !confirm;
+  const caps = estimate.data?.parts[0]?.caps;
+  const several = Object.keys(caps?.agents ?? {}).length > 1;
+  const unread = Object.keys(problems).length > 0;
 
   const pickScenario = (key: string) => {
     setChosen(key);
     setVariant(DEFAULT);
+    setDraft(EMPTY_DRAFT);
     setConfirm(false);
   };
   const submit = async () => {
@@ -125,6 +134,7 @@ function NewRunForm({ onDone }: { onDone: () => void }) {
         ...(oversight ? { oversight: oversight as Oversight } : {}),
         ...(runner ? { runner } : {}),
         ...(parallel && samples > 1 ? { parallel } : {}),
+        ...(budget ? { budget } : {}),
       });
       onDone();
       const [first] = out.run_ids;
@@ -267,6 +277,16 @@ function NewRunForm({ onDone }: { onDone: () => void }) {
             onChange={(v) => setAudit(v === "snapshot" ? "snapshot" : "kernel")}
           />
         </Field>
+        <BudgetSection
+          caps={caps}
+          draft={draft}
+          problems={problems}
+          summary={draftText(budget, several) ?? "Scenario caps"}
+          onChange={(d) => {
+            setDraft(d);
+            setConfirm(false);
+          }}
+        />
         <div className="flex flex-col gap-1.5 sm:col-span-2">
           <label className="flex items-center gap-2">
             <input
@@ -329,7 +349,7 @@ function NewRunForm({ onDone }: { onDone: () => void }) {
         <Button variant="ghost" size="sm" onClick={onDone}>
           Cancel
         </Button>
-        <Button size="sm" disabled={busy || needsYes} onClick={() => void submit()}>
+        <Button size="sm" disabled={busy || needsYes || unread} onClick={() => void submit()}>
           {samples === 1 ? "Start run" : `Start ${samples} runs`}
         </Button>
       </DialogFooter>

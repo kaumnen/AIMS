@@ -15,6 +15,7 @@ const fetch = vi.fn<(request: Request) => Promise<Response>>();
 let role: string;
 let posted: Record<string, unknown>[];
 let checks: string[][];
+let budgets: (string | null)[];
 
 const CAPS = { steps: 80, output_tokens: null, cost_usd: 4, wall_s: 1800 };
 const NO_CAPS = { steps: null, output_tokens: null, cost_usd: null, wall_s: null };
@@ -59,8 +60,9 @@ const scenarios: ScenarioInfo[] = [
   },
 ];
 
-function estimate(samples: number): Estimate {
+function estimate(samples: number, budget: string | null = null): Estimate {
   const ceiling = 9 * samples;
+  const every = budget ? (JSON.parse(budget) as { every?: { steps?: number } }).every : undefined;
   return {
     scenario: "cache-keys",
     samples,
@@ -77,7 +79,7 @@ function estimate(samples: number): Estimate {
         monitor_preset: "standard",
         steps: {},
         replayed: {},
-        caps: { agents: { agent: CAPS }, run: NO_CAPS },
+        caps: { agents: { agent: { ...CAPS, ...every } }, run: NO_CAPS },
       },
     ],
     rates: [],
@@ -91,6 +93,7 @@ beforeEach(() => {
   role = "operator";
   posted = [];
   checks = [];
+  budgets = [];
   vi.stubGlobal("EventSource", FakeEventSource);
   vi.stubGlobal("fetch", fetch);
   fetch.mockImplementation(async (request) => {
@@ -133,7 +136,9 @@ beforeEach(() => {
       });
     }
     if (path.endsWith("/estimate")) {
-      return Response.json(estimate(Number(url.searchParams.get("samples") ?? 1)));
+      const budget = url.searchParams.get("budget");
+      budgets.push(budget);
+      return Response.json(estimate(Number(url.searchParams.get("samples") ?? 1), budget));
     }
     if (path === "/api/models/check" && request.method === "POST") {
       checks.push(((await request.json()) as { profiles: string[] }).profiles);
@@ -283,4 +288,41 @@ test("runs above the confirm limit wait for a yes", async () => {
   fireEvent.click(start);
   await waitFor(() => expect(router.state.location.search).toEqual({ scenario: "cache-keys" }));
   expect(posted[0]).toMatchObject({ samples: 3, confirm: true });
+});
+
+test("a budget over the scenario's caps is estimated and goes with the run", async () => {
+  renderAt("/runs");
+  const form = await openForm();
+  const fold = form.getByText("Budget").closest("details");
+  if (!fold) throw new Error("no budget section");
+  expect(fold.open).toBe(false);
+  expect(within(fold).getByText("Scenario caps")).toBeTruthy();
+  fold.open = true;
+  const steps = form.getByRole("textbox", { name: "Agent steps" });
+  const wall = form.getByRole("textbox", { name: "Agent wall" });
+  expect([steps.getAttribute("placeholder"), wall.getAttribute("placeholder")]).toEqual([
+    "80",
+    "30m",
+  ]);
+  expect(form.getByRole("textbox", { name: "Run cost" }).getAttribute("placeholder")).toBe(
+    "no cap",
+  );
+  fireEvent.change(steps, { target: { value: "200" } });
+  fireEvent.change(form.getByRole("textbox", { name: "Run cost" }), { target: { value: "none" } });
+  await waitFor(() =>
+    expect(budgets.at(-1)).toBe(JSON.stringify({ every: { steps: 200 }, run: { cost_usd: null } })),
+  );
+  expect(within(fold).getByText("steps 200, run cost no cap")).toBeTruthy();
+
+  fireEvent.change(wall, { target: { value: "soon" } });
+  expect(await form.findByText("Wall: Write seconds, or 30m, 2h, or none.")).toBeTruthy();
+  const start = form.getByRole("button", { name: "Start run" });
+  expect(start.hasAttribute("disabled")).toBe(true);
+  fireEvent.change(wall, { target: { value: "2h" } });
+  expect(start.hasAttribute("disabled")).toBe(false);
+  fireEvent.click(start);
+  await waitFor(() => expect(posted).toHaveLength(1));
+  expect(posted[0]).toMatchObject({
+    budget: { every: { steps: 200, wall_s: 7200 }, run: { cost_usd: null } },
+  });
 });

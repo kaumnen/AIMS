@@ -1,5 +1,7 @@
 import { keepPreviousData, queryOptions } from "@tanstack/react-query";
 
+import type { BudgetOverride } from "@/lib/budget";
+
 import { client, type Schemas } from "./client";
 import type { Preset, Started } from "./launch";
 
@@ -16,9 +18,11 @@ export interface ForkAsk {
   samples: number;
   profile?: string | undefined;
   monitor?: Preset | undefined;
+  budget?: BudgetOverride | undefined;
 }
 
-// The fields of a fork request that change its cost, as the estimate and the start take them.
+// The fields of a fork request that change its cost, as the start takes them; the estimate
+// takes the budget as JSON.
 export function forkFields(ask: ForkAsk) {
   return {
     samples: ask.samples,
@@ -26,12 +30,14 @@ export function forkFields(ask: ForkAsk) {
     ...(ask.at !== undefined && ask.keepOthers ? { keep_others: true } : {}),
     ...(ask.profile ? { profile: ask.profile } : {}),
     ...(ask.monitor ? { monitor: ask.monitor } : {}),
+    ...(ask.budget ? { budget: ask.budget } : {}),
   };
 }
 
 // The previous estimate stays on screen while a changed field is estimated again.
 export function forkEstimateQuery(runId: string, ask: ForkAsk) {
-  const query = forkFields(ask);
+  const { budget, ...rest } = forkFields(ask);
+  const query = { ...rest, ...(budget ? { budget: JSON.stringify(budget) } : {}) };
   return queryOptions({
     queryKey: ["runs", "fork-estimate", runId, query] as const,
     queryFn: async ({ signal }) => {
