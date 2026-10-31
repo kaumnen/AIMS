@@ -470,8 +470,8 @@ async def test_a_confederate_takes_its_steps_again_before_the_cut(
 
 
 async def test_a_series_goes_on_after_its_last_completed_run(store: LocalEventStore) -> None:
-    from aims.cli import last_of_series
     from aims.events import Draft, RunFinished, RunStatus, Series
+    from aims.run.series import last_of_series
 
     async def made(index: int, status: RunStatus) -> str:
         started = RunStarted(
@@ -482,12 +482,16 @@ async def test_a_series_goes_on_after_its_last_completed_run(store: LocalEventSt
         return run_id
 
     assert await last_of_series(store, "nightly") is None
+    await made(0, "failed")
+    assert await last_of_series(store, "nightly") == (None, 1)
+    assert await last_of_series(store, "nightly", [4]) == (None, 5)
     await made(0, "completed")
     second = await made(1, "completed")
     await made(2, "failed")
     found = await last_of_series(store, "nightly")
     assert found is not None
     last, start = found
+    assert last is not None
     assert (last.run_id, last.series_index, start) == (second, 1, 3)
 
 

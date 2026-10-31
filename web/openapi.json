@@ -5125,6 +5125,16 @@
             "title": "Score",
             "type": "boolean"
           },
+          "series": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Series"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "variant": {
             "anyOf": [
               {
@@ -9486,7 +9496,7 @@
         "type": "object"
       },
       "RunDetail": {
-        "description": "`verdict` is the judge's `monitor.verdict`; `monitor_runs` are the monitor runs over this\nrun and `score_runs` the scores of it, queued ones too, newest first. `budget` lists the\ncaps the run's budget override changed from its scenario's.",
+        "description": "`verdict` is the judge's `monitor.verdict`; `monitor_runs` are the monitor runs over this\nrun and `score_runs` the scores of it, queued ones too, newest first. `budget` lists the\ncaps the run's budget override changed from its scenario's. `series_previous` is the run\nof its series it starts from, None for the first.",
         "properties": {
           "budget": {
             "items": {
@@ -9522,6 +9532,17 @@
             "title": "Score Runs",
             "type": "array"
           },
+          "series_previous": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Series Previous"
+          },
           "started": {
             "anyOf": [
               {
@@ -9550,7 +9571,8 @@
           "verdict",
           "monitor_runs",
           "score_runs",
-          "budget"
+          "budget",
+          "series_previous"
         ],
         "title": "RunDetail",
         "type": "object"
@@ -11768,7 +11790,7 @@
         "description": "A run's place in a series: the `index`th run of series `name`, after run `previous`.",
         "properties": {
           "index": {
-            "minimum": 0,
+            "minimum": 0.0,
             "title": "Index",
             "type": "integer"
           },
@@ -11785,7 +11807,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Previous"
           }
         },
@@ -11794,6 +11815,57 @@
           "index"
         ],
         "title": "Series",
+        "type": "object"
+      },
+      "SeriesInfo": {
+        "description": "Where series `name` goes on, as a new start of it would: its next run takes index\n`next_index` and starts from the completed run `previous` (None for a new series); `busy`\nnames a run of it not ended yet, which a new start waits for. `runs` are its runs, started\nor not, in index order.",
+        "properties": {
+          "busy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Busy"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "next_index": {
+            "title": "Next Index",
+            "type": "integer"
+          },
+          "previous": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previous"
+          },
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/RunSummary"
+            },
+            "title": "Runs",
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "next_index",
+          "previous",
+          "busy",
+          "runs"
+        ],
+        "title": "SeriesInfo",
         "type": "object"
       },
       "SessionStart": {
@@ -12132,7 +12204,7 @@
         "type": "object"
       },
       "StartRun": {
-        "description": "`monitor` picks the monitor's preset over the config files and the scenario; None keeps\nwhat they say, else `standard`. `variant` applies a named variant of the scenario. When the\nestimate is above `confirm_above_usd`, or nothing bounds the cost, the runs start only with\n`confirm`, like `aims run --yes`. `score` scores each run against its truth file once the\nfile arrives, as `aims run --score` does. `oversight` replaces the scenario's: what the\nmonitor may do in these runs. `budget` changes the scenario's caps, as `aims run --budget`\ndoes: in each set of caps a field set to null lifts that cap, a field left out keeps it.",
+        "description": "`monitor` picks the monitor's preset over the config files and the scenario; None keeps\nwhat they say, else `standard`. `variant` applies a named variant of the scenario. When the\nestimate is above `confirm_above_usd`, or nothing bounds the cost, the runs start only with\n`confirm`, like `aims run --yes`. `score` scores each run against its truth file once the\nfile arrives, as `aims run --score` does. `oversight` replaces the scenario's: what the\nmonitor may do in these runs. `budget` changes the scenario's caps, as `aims run --budget`\ndoes: in each set of caps a field set to null lifts that cap, a field left out keeps it.\n`series` makes `runs` runs of that series, one after another, as `aims run --series --runs`\ndoes: each starts from the folders and canaries the one before it left once that one\ncompleted, and the first goes on after the series' last completed run unless `restart`.",
         "properties": {
           "audit": {
             "default": "kernel",
@@ -12219,6 +12291,11 @@
             ],
             "title": "Profile"
           },
+          "restart": {
+            "default": false,
+            "title": "Restart",
+            "type": "boolean"
+          },
           "runner": {
             "anyOf": [
               {
@@ -12229,6 +12306,13 @@
               }
             ],
             "title": "Runner"
+          },
+          "runs": {
+            "default": 1,
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Runs",
+            "type": "integer"
           },
           "samples": {
             "default": 1,
@@ -12244,6 +12328,19 @@
             "default": false,
             "title": "Score",
             "type": "boolean"
+          },
+          "series": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Series"
           },
           "variant": {
             "anyOf": [
@@ -14297,7 +14394,7 @@
     },
     "/api/runs": {
       "get": {
-        "description": "Runs newest first, with jobs that have not started yet. `kind` keeps runs of that kind,\n`origin` the monitor runs of that run, `severity` runs whose `max_severity` is at least it,\n`category` runs with a flag in it, whatever its status, `series` the runs of that series,\n`variant` the sealed runs of that variant and `scenario` the runs of that scenario. Jobs\nnot started yet have none of `severity`, `category`, `series` and `variant`, so those\nleave them out.",
+        "description": "Runs newest first, with jobs that have not started yet. `kind` keeps runs of that kind,\n`origin` the monitor runs of that run, `severity` runs whose `max_severity` is at least it,\n`category` runs with a flag in it, whatever its status, `series` the runs of that series,\n`variant` the sealed runs of that variant and `scenario` the runs of that scenario. Jobs\nnot started yet have none of `severity`, `category` and `variant`, so those leave them\nout; a job of a series knows its series.",
         "operationId": "list_runs",
         "parameters": [
           {
@@ -18295,6 +18392,68 @@
         "summary": "Write File",
         "tags": [
           "scenarios"
+        ]
+      }
+    },
+    "/api/series/{name}": {
+      "get": {
+        "operationId": "get_series",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SeriesInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not signed in"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Invalid request"
+          }
+        },
+        "summary": "Get Series",
+        "tags": [
+          "runs"
         ]
       }
     },

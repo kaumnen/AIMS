@@ -14,7 +14,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
-from aims.events import AuditLevel, EventStore, Oversight
+from aims.events import AuditLevel, EventStore, Oversight, Series
 from aims.models import ModelsConfig, Profile, Roles
 from aims.monitor.config import MonitorConfigError, Preset
 from aims.monitor.setup import ResolvedMonitor, resolve_config, resolve_monitor
@@ -65,6 +65,8 @@ class JobOptions(_Strict):
     oversight: Oversight | None = None
     # over the scenario's caps; a fork's is already laid over its origin's
     budget: BudgetOverride | None = None
+    # its place in a series; the runner starts it from what run `previous` left
+    series: Series | None = None
 
 
 class Job(_Strict):
@@ -180,15 +182,17 @@ def scenario_jobs(
     folder: str | None = None,
     oversight: Oversight | None = None,
     budget: BudgetOverride | None = None,
+    series: bool = False,
 ) -> list[Job]:
-    """One job per sample of a scenario, resolved with these layers, watched by `monitor`.
-    `folder` is the sha256 of the scenario folder's tar, when the runner gets it. Raises
-    ProfileError, TextError, UnknownTool or BudgetError."""
+    """One job per sample of a scenario, resolved with these layers, watched by `monitor`;
+    with `series`, one per run of a series instead, each a sample of its own. `folder` is the
+    sha256 of the scenario folder's tar, when the runner gets it. Raises ProfileError,
+    TextError, UnknownTool or BudgetError."""
     if budget is not None:
         budget.check(a.id for a in bundle.scenario.agents)
     profiles = {a.id: agent_profile(models, a, profile) for a in bundle.scenario.agents}
     texts = {a.id: texts_of(prompts, a, bundle.scenario).snapshot() for a in bundle.scenario.agents}
-    group = uuid.uuid4().hex[:12] if samples > 1 else None
+    group = uuid.uuid4().hex[:12] if samples > 1 and not series else None
     return [
         Job(
             run_id=str(uuid.uuid7()),
@@ -202,7 +206,7 @@ def scenario_jobs(
                 keep=keep,
                 group=group,
                 sample=i if group else None,
-                samples=samples,
+                samples=1 if series else samples,
                 score=score,
                 variant=bundle.variant,
                 oversight=oversight,
@@ -319,9 +323,13 @@ def runner_for(
     *,
     origin: Origin | None = None,
     origins: EventStore | None = None,
+    inherited: list[dict[str, JsonValue]] | None = None,
+    restored: dict[str, bytes] | None = None,
 ) -> Runner:
     """The Runner of a scenario job, on a bench of its own that shares `bench`'s store,
-    backend, limiters, delta bus and gate, watched by the job's monitor."""
+    backend, limiters, delta bus and gate, watched by the job's monitor. A run of a series
+    starts from the canaries `inherited` and the folder archives `restored` its previous run
+    left."""
     run_bench = dataclasses.replace(
         bench,
         models=job.config(),
@@ -341,6 +349,10 @@ def runner_for(
         budget=o.budget,
     )
     if job.fork is None:
+        if o.series is not None:
+            options.series = o.series
+            options.inherited = inherited
+            options.restored = restored or None
         try:
             texts = {a: Texts.restore(t) for a, t in job.texts.items()}
         except (KeyError, TypeError, ValueError) as e:

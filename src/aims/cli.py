@@ -653,22 +653,6 @@ def _preset(value: str | None, allowed: tuple[str, ...] | None = None) -> None:
         raise typer.BadParameter(f"use {', '.join(allowed)}", param_hint="--monitor")
 
 
-async def last_of_series(store: Any, name: str) -> tuple[Any, int] | None:
-    """Where series `name` goes on: its completed run with the highest index, whose folders
-    and canaries the next run inherits, and the index after every run of it; None when no run
-    of it completed."""
-    runs = [
-        i
-        for i in await store.runs(series=name, kind="scenario", limit=1000)
-        if i.series_index is not None
-    ]
-    done = [i for i in runs if i.status == "completed"]
-    if not done:
-        return None
-    last = max(done, key=lambda i: (i.series_index, i.run_id))
-    return last, max(i.series_index for i in runs) + 1
-
-
 async def _run(**o: Any) -> int:
     import asyncio
     import json
@@ -706,6 +690,7 @@ async def _run(**o: Any) -> int:
     )
     from aims.run.job import monitor_for, monitor_profiles
     from aims.run.runner import Bench, Fork, Options, Result, RunError, Runner, agent_profile, check
+    from aims.run.series import last_of_series
     from aims.run.view import HumanPrompt, JsonLines, LiveView, digest, result_json, summary
     from aims.sandbox import DockerBackend, SandboxError
     from aims.scenario import ScenarioError, load
@@ -1026,8 +1011,10 @@ async def _run(**o: Any) -> int:
                     start = 0
                     if not o["series_restart"]:
                         found = await last_of_series(store, o["series"])
+                        last = None
                         if found is not None:
                             last, start = found
+                        if last is not None:
                             previous = last.run_id
                             inherited = truth.inherit(store.root / previous)
                             restored = await archives(store, previous)

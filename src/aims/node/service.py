@@ -14,7 +14,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx2
+from pydantic import JsonValue
 
+from aims.channels import archives
 from aims.events import LocalEventStore, split_lines
 from aims.events.blobs import decode
 from aims.events.schema import blob_refs
@@ -28,6 +30,7 @@ from aims.node.client import ApiError, ControlClient
 from aims.node.link import Link
 from aims.node.shipper import Backoff
 from aims.prompts import TextError
+from aims.run import truth
 from aims.run.fork import load_origin
 from aims.run.job import Job, job_bundle, runner_for
 from aims.run.runner import Bench, RunError, seal_unsealed
@@ -238,12 +241,15 @@ class Node:
                 if job.fork is not None:
                     source = await self._origin(job.fork.origin)
                     origin = await load_origin(source, job.fork.origin)
+                inherited, restored = await self._previous(job)
                 runner = runner_for(
                     ctx.bench,
                     job,
                     bundle,
                     origin=origin,
                     origins=None if source is store else source,
+                    inherited=inherited,
+                    restored=restored,
                 )
                 link.track(runner)
                 if self.stopping:
@@ -329,6 +335,31 @@ class Node:
             )
         except ScoreError as e:
             raise RunError(str(e)) from None
+
+    async def _previous(
+        self, job: Job
+    ) -> tuple[list[dict[str, JsonValue]] | None, dict[str, bytes] | None]:
+        """The canaries and folder archives the series run before `job` left, fetched with its
+        truth file when another runner ran it; (None, None) for a run that starts a series."""
+        place = job.options.series
+        if place is None or place.previous is None:
+            return None, None
+        previous = place.previous
+        source = await self._origin(previous)
+        if not source.truth_path(previous).is_file():
+            try:
+                data = await self.ctx.link.client.run_truth(previous)
+            except ApiError as e:
+                if e.status != 404:
+                    raise
+            else:
+                try:
+                    await source.put_truth(previous, data)
+                except TruthRefused as e:
+                    raise RunError(f"the truth file of {previous} does not check: {e}") from None
+        found = source.truth_path(previous).is_file()
+        inherited = truth.inherit(source.root / previous) if found else []
+        return inherited, await archives(source, previous)
 
     async def _origin(self, run_id: str) -> LocalEventStore:
         """The store holding run `run_id`: this runner's own, or a copy fetched from the

@@ -338,6 +338,7 @@ beforeEach(() => {
     monitor_runs: [],
     score_runs: [],
     budget: [],
+    series_previous: null,
   };
   samples = [];
   flags = [];
@@ -733,6 +734,7 @@ function withReview() {
         monitor_runs: [],
         score_runs: [],
         budget: [],
+        series_previous: null,
       },
       flags: [],
       sweeps: [],

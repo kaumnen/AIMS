@@ -202,8 +202,8 @@ export interface paths {
          *     `origin` the monitor runs of that run, `severity` runs whose `max_severity` is at least it,
          *     `category` runs with a flag in it, whatever its status, `series` the runs of that series,
          *     `variant` the sealed runs of that variant and `scenario` the runs of that scenario. Jobs
-         *     not started yet have none of `severity`, `category`, `series` and `variant`, so those
-         *     leave them out.
+         *     not started yet have none of `severity`, `category` and `variant`, so those leave them
+         *     out; a job of a series knows its series.
          */
         get: operations["list_runs"];
         put?: never;
@@ -912,6 +912,23 @@ export interface paths {
         post?: never;
         /** Delete File */
         delete: operations["delete_file"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/series/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Series */
+        get: operations["get_series"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -3269,6 +3286,7 @@ export interface components {
              * @default false
              */
             score?: boolean;
+            series?: components["schemas"]["Series"] | null;
             /** Variant */
             variant?: string | null;
         };
@@ -5105,7 +5123,8 @@ export interface components {
          * RunDetail
          * @description `verdict` is the judge's `monitor.verdict`; `monitor_runs` are the monitor runs over this
          *     run and `score_runs` the scores of it, queued ones too, newest first. `budget` lists the
-         *     caps the run's budget override changed from its scenario's.
+         *     caps the run's budget override changed from its scenario's. `series_previous` is the run
+         *     of its series it starts from, None for the first.
          */
         RunDetail: {
             /** Budget */
@@ -5116,6 +5135,8 @@ export interface components {
             run: components["schemas"]["RunSummary"];
             /** Score Runs */
             score_runs: string[];
+            /** Series Previous */
+            series_previous: string | null;
             started: components["schemas"]["Event"] | null;
             verdict: components["schemas"]["Event"] | null;
         };
@@ -5950,11 +5971,27 @@ export interface components {
             index: number;
             /** Name */
             name: string;
-            /**
-             * Previous
-             * @default null
-             */
+            /** Previous */
             previous?: string | null;
+        };
+        /**
+         * SeriesInfo
+         * @description Where series `name` goes on, as a new start of it would: its next run takes index
+         *     `next_index` and starts from the completed run `previous` (None for a new series); `busy`
+         *     names a run of it not ended yet, which a new start waits for. `runs` are its runs, started
+         *     or not, in index order.
+         */
+        SeriesInfo: {
+            /** Busy */
+            busy: string | null;
+            /** Name */
+            name: string;
+            /** Next Index */
+            next_index: number;
+            /** Previous */
+            previous: string | null;
+            /** Runs */
+            runs: components["schemas"]["RunSummary"][];
         };
         /**
          * SessionStart
@@ -6095,6 +6132,9 @@ export interface components {
          *     file arrives, as `aims run --score` does. `oversight` replaces the scenario's: what the
          *     monitor may do in these runs. `budget` changes the scenario's caps, as `aims run --budget`
          *     does: in each set of caps a field set to null lifts that cap, a field left out keeps it.
+         *     `series` makes `runs` runs of that series, one after another, as `aims run --series --runs`
+         *     does: each starts from the folders and canaries the one before it left once that one
+         *     completed, and the first goes on after the series' last completed run unless `restart`.
          */
         StartRun: {
             /**
@@ -6122,8 +6162,18 @@ export interface components {
             parallel?: number | null;
             /** Profile */
             profile?: string | null;
+            /**
+             * Restart
+             * @default false
+             */
+            restart?: boolean;
             /** Runner */
             runner?: string | null;
+            /**
+             * Runs
+             * @default 1
+             */
+            runs?: number;
             /**
              * Samples
              * @default 1
@@ -6135,6 +6185,8 @@ export interface components {
              * @default false
              */
             score?: boolean;
+            /** Series */
+            series?: string | null;
             /** Variant */
             variant?: string | null;
         };
@@ -9657,6 +9709,55 @@ export interface operations {
             };
             /** @description Precondition required */
             428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_series: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SeriesInfo"];
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid request */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

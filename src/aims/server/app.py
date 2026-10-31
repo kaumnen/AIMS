@@ -3,7 +3,6 @@ touches Docker; runners do."""
 
 import asyncio
 import contextlib
-import functools
 import json
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -83,7 +82,12 @@ def create_app(
         lifespan=lifespan,
     )
     app.state.server = state
-    state.on_truth = functools.partial(score_api.score_after, state)
+
+    async def on_truth(run_id: str) -> None:
+        await score_api.score_after(state, run_id)
+        state.poke()
+
+    state.on_truth = on_truth
     app.state.auth = state.auth
     app.state.sources = Sources(state.data, state.config)
     problems.install(app)

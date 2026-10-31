@@ -32,6 +32,7 @@ from aims.events import (
     RunInfo,
     RunKind,
     SampleWindow,
+    Series,
     StepInfo,
     split_lines,
 )
@@ -54,6 +55,7 @@ from aims.scenario import Bundle, Scenario, ScenarioError, folder_tar, load, par
 from aims.scenario import budget as budgets
 from aims.scenario.budget import BudgetError, BudgetOverride
 from aims.server import db as sdb
+from aims.server import series as sseries
 from aims.server.auth import Principal, require
 from aims.server.files import Sources
 from aims.server.problems import ProblemError, ProblemException, responses
@@ -218,6 +220,8 @@ def _run_id(run_id: str) -> str:
 
 
 def queue_reason(state: ServerState, job: sdb.Job) -> str | None:
+    if job.state == "waiting":
+        return job.reason or sseries.waiting_reason(job)
     if job.state not in ("queued", "offered"):
         return job.reason
     if job.target is not None and job.target not in state.runners:
@@ -258,6 +262,7 @@ def summary(
         else:
             scenario = snap if isinstance(snap, str) else job.payload.get("kind")
     planned = monitor_of(job.payload) if job is not None else (None, None)
+    place = sseries.place_of(job) if info is None and job is not None else None
     if info is not None:
         kind, origin = info.kind, info.origin
     else:
@@ -283,8 +288,10 @@ def summary(
         max_importance=None if info is None else info.max_importance,
         verdict_severity=None if info is None else info.verdict_severity,
         max_severity=0 if info is None else info.severity,
-        series=None if info is None else info.series,
-        series_index=None if info is None else info.series_index,
+        series=info.series if info is not None else None if place is None else place.name,
+        series_index=(
+            info.series_index if info is not None else None if place is None else place.index
+        ),
         variant=None if info is None else info.variant,
         steps=0 if info is None else info.steps,
         cost_usd=None if info is None else info.cost_usd,
@@ -333,8 +340,8 @@ async def list_runs(
     `origin` the monitor runs of that run, `severity` runs whose `max_severity` is at least it,
     `category` runs with a flag in it, whatever its status, `series` the runs of that series,
     `variant` the sealed runs of that variant and `scenario` the runs of that scenario. Jobs
-    not started yet have none of `severity`, `category`, `series` and `variant`, so those
-    leave them out."""
+    not started yet have none of `severity`, `category` and `variant`, so those leave them
+    out; a job of a series knows its series."""
     infos = await state.store.runs(
         scenario=scenario,
         limit=limit,
@@ -346,15 +353,44 @@ async def list_runs(
         series=series,
         variant=variant,
     )
-    if severity is None and category is None and series is None and variant is None:
+    if severity is None and category is None and variant is None:
         jobs = await state.db.jobs_page(
-            before=before, limit=limit, kind=kind, origin=origin, scenario=scenario
+            before=before, limit=limit, kind=kind, origin=origin, scenario=scenario, series=series
         )
     else:
         jobs = []
     ids = sorted({i.run_id for i in infos} | {j.run_id for j in jobs}, reverse=True)[:limit]
     items = await summaries(state, ids)
     return RunPage(items=items, next=ids[-1] if len(ids) == limit else None)
+
+
+class SeriesInfo(Out):
+    """Where series `name` goes on, as a new start of it would: its next run takes index
+    `next_index` and starts from the completed run `previous` (None for a new series); `busy`
+    names a run of it not ended yet, which a new start waits for. `runs` are its runs, started
+    or not, in index order."""
+
+    name: str
+    next_index: int
+    previous: str | None
+    busy: str | None
+    runs: list[RunSummary]
+
+
+@router.get("/series/{name:path}", tags=["runs"])
+async def get_series(name: str, principal: Viewer, state: State) -> SeriesInfo:
+    place = await sseries.where(state, name)
+    infos = await state.store.runs(series=name, kind="scenario", limit=sseries.MAX_RUNS)
+    jobs = await sseries.series_jobs(state, name)
+    items = await summaries(state, sorted({i.run_id for i in infos} | {j.run_id for j in jobs}))
+    items.sort(key=lambda r: (r.series_index if r.series_index is not None else -1, r.run_id))
+    return SeriesInfo(
+        name=name,
+        next_index=place.next_index,
+        previous=place.previous,
+        busy=place.busy,
+        runs=items,
+    )
 
 
 # Runs whose content shows a run's truth: a score names the plants, where each was taken and
@@ -395,7 +431,8 @@ async def get_truth(run_id: str, principal: Operator, state: State) -> dict[str,
 class RunDetail(Out):
     """`verdict` is the judge's `monitor.verdict`; `monitor_runs` are the monitor runs over this
     run and `score_runs` the scores of it, queued ones too, newest first. `budget` lists the
-    caps the run's budget override changed from its scenario's."""
+    caps the run's budget override changed from its scenario's. `series_previous` is the run
+    of its series it starts from, None for the first."""
 
     run: RunSummary
     started: Event | None = None
@@ -404,6 +441,7 @@ class RunDetail(Out):
     monitor_runs: list[str] = Field(default_factory=list)
     score_runs: list[str] = Field(default_factory=list)
     budget: list[budgets.BudgetChange] = Field(default_factory=list)
+    series_previous: str | None = None
 
 
 def budget_changes(started: dict[str, JsonValue]) -> list[budgets.BudgetChange]:
@@ -432,6 +470,7 @@ async def get_run(run_id: str, principal: Viewer, state: State) -> RunDetail:
     started = first[0] if first and first[0].type == "run.started" else None
     return RunDetail(
         run=found,
+        series_previous=await _series_previous(state, run_id, started),
         budget=[] if started is None else budget_changes(started.data),
         started=first[0] if first else None,
         finished=next(iter(last), None),
@@ -439,6 +478,17 @@ async def get_run(run_id: str, principal: Viewer, state: State) -> RunDetail:
         monitor_runs=await _over(state, run_id, "monitor"),
         score_runs=await _over(state, run_id, "score"),
     )
+
+
+async def _series_previous(state: ServerState, run_id: str, started: Event | None) -> str | None:
+    """The run of its series run `run_id` starts from: in its `run.started`, else its job."""
+    if started is not None:
+        place = started.data.get("series")
+        previous = place.get("previous") if isinstance(place, dict) else None
+        return previous if isinstance(previous, str) else None
+    job = await state.db.job(run_id)
+    place_of = None if job is None else sseries.place_of(job)
+    return None if place_of is None else place_of.previous
 
 
 async def _over(state: ServerState, run_id: str, kind: Literal["monitor", "score"]) -> list[str]:
@@ -460,10 +510,16 @@ class StartRun(BaseModel):
     `confirm`, like `aims run --yes`. `score` scores each run against its truth file once the
     file arrives, as `aims run --score` does. `oversight` replaces the scenario's: what the
     monitor may do in these runs. `budget` changes the scenario's caps, as `aims run --budget`
-    does: in each set of caps a field set to null lifts that cap, a field left out keeps it."""
+    does: in each set of caps a field set to null lifts that cap, a field left out keeps it.
+    `series` makes `runs` runs of that series, one after another, as `aims run --series --runs`
+    does: each starts from the folders and canaries the one before it left once that one
+    completed, and the first goes on after the series' last completed run unless `restart`."""
 
     scenario: ScenarioRef
     variant: str | None = None
+    series: str | None = Field(default=None, min_length=1, max_length=100)
+    runs: int = Field(default=1, ge=1, le=100)
+    restart: bool = False
     confirm: bool = False
     score: bool = False
     oversight: Oversight | None = None
@@ -475,6 +531,19 @@ class StartRun(BaseModel):
     audit: AuditLevel = "kernel"
     runner: str | None = None
     monitor: Preset | None = None
+
+    @model_validator(mode="after")
+    def _series(self) -> Self:
+        if self.series is None:
+            if self.runs != 1:
+                raise ValueError("runs needs a series")
+            if self.restart:
+                raise ValueError("restart needs a series")
+        elif not self.series.strip():
+            raise ValueError("a series needs a name")
+        elif self.samples > 1:
+            raise ValueError("use runs for a series, not samples")
+        return self
 
 
 class StartFork(BaseModel):
@@ -548,7 +617,9 @@ async def _queue(
     parallel: int | None,
     blobs: dict[str, bytes] | None = None,
     copy_from: str | None = None,
+    waiting: Sequence[str] = (),
 ) -> Started:
+    """Queue `jobs`; the ones named in `waiting` wait for the series run before them."""
     _check_runner(state, runner, jobs)
     now = time.time()
     for job in jobs:
@@ -564,7 +635,7 @@ async def _queue(
             run_id=j.run_id,
             group=j.options.group,
             parallel=parallel,
-            state="queued",
+            state="waiting" if j.run_id in waiting else "queued",
             payload=j.model_dump(mode="json"),
             needs=dict(j.needs()),
             target=runner,
@@ -640,7 +711,7 @@ async def start_runs(
             bundle,
             settings.models,
             settings.prompts,
-            samples=body.samples,
+            samples=body.samples if body.series is None else body.runs,
             profile=body.profile,
             keep=body.keep,
             audit=body.audit,
@@ -650,9 +721,14 @@ async def start_runs(
             folder=hashlib.sha256(folder).hexdigest(),
             oversight=body.oversight,
             budget=body.budget,
+            series=body.series is not None,
         )
     except (ProfileError, UnknownTool, ValueError) as e:
         raise ProblemException(422, "Scenario cannot run", str(e), code="scenario") from None
+    waiting: list[str] = []
+    if body.series is not None:
+        jobs = await _place_series(state, body.series, body.restart, jobs)
+        waiting = [j.run_id for j in jobs[1:]]
     if not body.confirm:
         try:
             cost = estimate_runs(
@@ -661,7 +737,7 @@ async def start_runs(
                 [bundle],
                 profile=body.profile,
                 preset=body.monitor,
-                samples=body.samples,
+                samples=body.samples * body.runs,
                 budget=body.budget,
             )
         except ProfileError, MonitorConfigError, TextError:
@@ -669,8 +745,35 @@ async def start_runs(
         _confirm(cost)
     blobs = {hashlib.sha256(b).hexdigest(): b for b in [*bundle.blobs(), folder]}
     return await _queue(
-        state, principal.name, jobs, runner=body.runner, parallel=body.parallel, blobs=blobs
+        state,
+        principal.name,
+        jobs,
+        runner=body.runner,
+        parallel=None if body.series is not None else body.parallel,
+        blobs=blobs,
+        waiting=waiting,
     )
+
+
+async def _place_series(state: ServerState, name: str, restart: bool, jobs: list[Job]) -> list[Job]:
+    """`jobs` as the next runs of series `name`, each after the one before it; refused while
+    a run of it has not ended."""
+    place = await sseries.where(state, name)
+    if place.busy is not None:
+        raise ProblemException(
+            409,
+            "Conflict",
+            f"run {place.busy} of series {name} has not ended",
+            code="series_busy",
+        )
+    start, previous = (0, None) if restart else (place.next_index, place.previous)
+    out: list[Job] = []
+    for i, job in enumerate(jobs):
+        series = Series(name=name, index=start + i, previous=previous)
+        options = job.options.model_copy(update={"series": series})
+        out.append(job.model_copy(update={"options": options}))
+        previous = job.run_id
+    return out
 
 
 def _confirm(cost: Estimate | None) -> None:
@@ -881,11 +984,12 @@ async def command(
 ) -> CommandSent:
     run_id = _run_id(run_id)
     job = await state.db.job(run_id)
-    if job is not None and job.state in ("queued", "offered"):
+    if job is not None and job.state in ("waiting", "queued", "offered"):
         if action.action in ("cancel", "kill"):
             reason = action.reason or f"{action.action}led by {principal.name}"
             if await state.db.cancel_queued(run_id, reason):
                 state.changes.touch(run_id)
+                await sseries.settle(state)
                 return CommandSent(state="cancelled")
         raise ProblemException(409, "Conflict", "the run has not started yet", code="not_started")
     info = await state.store.run(run_id)

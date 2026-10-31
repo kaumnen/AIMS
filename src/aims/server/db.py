@@ -20,9 +20,9 @@ SESSION_DAYS = 30
 TOKEN_PREFIX = "aims_"
 
 Role = Literal["viewer", "operator", "runner"]
-JobState = Literal["queued", "offered", "claimed", "running", "done", "cancelled"]
+JobState = Literal["waiting", "queued", "offered", "claimed", "running", "done", "cancelled"]
 ROLES: tuple[Role, ...] = ("viewer", "operator", "runner")
-OPEN_STATES: tuple[JobState, ...] = ("queued", "offered", "claimed", "running")
+OPEN_STATES: tuple[JobState, ...] = ("waiting", "queued", "offered", "claimed", "running")
 
 SCHEMA = """
 create table tokens (
@@ -427,11 +427,16 @@ class ServerDB:
         kind: str | None = None,
         origin: str | None = None,
         scenario: str | None = None,
+        series: str | None = None,
     ) -> list[Job]:
         """Jobs of every state, newest run id first; with `kind` only jobs of that kind, with
-        `origin` only monitor jobs over that run, with `scenario` only jobs of that scenario."""
+        `origin` only monitor jobs over that run, with `scenario` only jobs of that scenario,
+        with `series` only runs of that series."""
         where: list[str] = []
         args: list[Any] = []
+        if series is not None:
+            where.append("json_extract(payload, '$.options.series.name') = ?")
+            args.append(series)
         if scenario is not None:
             where.append(
                 "coalesce(json_extract(payload, '$.scenario.name'),"
@@ -544,11 +549,32 @@ class ServerDB:
             > 0
         )
 
+    async def note_waiting(self, run_id: str, reason: str) -> bool:
+        """Say why a waiting job still waits. False if it was not waiting."""
+        return (
+            await self._write(
+                "update jobs set reason = ?, updated = ? where run_id = ? and state = 'waiting'",
+                (reason, time.time(), run_id),
+            )
+            > 0
+        )
+
+    async def release(self, run_id: str) -> bool:
+        """Queue a waiting job. False if it was not waiting."""
+        return (
+            await self._write(
+                "update jobs set state = 'queued', reason = null, updated = ?"
+                " where run_id = ? and state = 'waiting'",
+                (time.time(), run_id),
+            )
+            > 0
+        )
+
     async def cancel_queued(self, run_id: str, reason: str) -> bool:
         return (
             await self._write(
                 "update jobs set state = 'cancelled', reason = ?, updated = ?"
-                " where run_id = ? and state in ('queued', 'offered')",
+                " where run_id = ? and state in ('waiting', 'queued', 'offered')",
                 (reason, time.time(), run_id),
             )
             > 0

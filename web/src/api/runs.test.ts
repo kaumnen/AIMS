@@ -122,6 +122,7 @@ test("an open run takes its update and refetches when it ends", () => {
     monitor_runs: [],
     score_runs: [],
     budget: [],
+    series_previous: null,
   });
   const refetch = vi.spyOn(qc, "invalidateQueries");
   applyRuns(qc, [run("b", { flags: 2 })]);

@@ -8,6 +8,7 @@ import time
 
 from aims.server.db import Job
 from aims.server.runner_api import send
+from aims.server.series import settle
 from aims.server.state import Connected, ServerState
 from aims.wire import CLAIM_S, OfferMessage
 
@@ -46,6 +47,7 @@ def pick(state: ServerState, job: Job) -> Connected | None:
 
 async def dispatch(state: ServerState) -> None:
     db = state.db
+    await settle(state)
     now = time.time()
     open_jobs = await db.jobs(("queued", "offered"))
     for job in open_jobs:

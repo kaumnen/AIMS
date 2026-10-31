@@ -21,6 +21,7 @@ from aims.events.chain import MAX_LINE
 from aims.events.store import TruthRefused, is_run_id
 from aims.server.auth import Principal, require
 from aims.server.problems import ProblemException, responses
+from aims.server.series import place_of
 from aims.server.state import Connected, ServerState
 from aims.wire import (
     RUNNER_API,
@@ -104,7 +105,8 @@ async def _same_owner(state: ServerState, owner: str | None, conn: Connected) ->
 
 
 async def reader(state: ServerState, run_id: str, name: str) -> None:
-    """Refuse unless `name` owns the run or holds a fork or monitor job of it."""
+    """Refuse unless `name` owns the run or holds a fork, monitor or score job of it, or the
+    job of the series run after it."""
     meta = await state.db.run_meta(run_id)
     if meta is not None and meta.runner == name and meta.source != "import":
         return
@@ -120,6 +122,9 @@ async def reader(state: ServerState, run_id: str, name: str) -> None:
             job.payload.get("origin"),
             job.payload.get("monitor"),
         ):
+            return
+        place = place_of(job)
+        if place is not None and place.previous == run_id:
             return
     raise ProblemException(403, "Forbidden", f"run {run_id} is not yours to read", code="owner")
 
