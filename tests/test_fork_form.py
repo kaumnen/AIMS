@@ -6,6 +6,7 @@ import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 
+import click
 import pytest
 from cp import CONFIG, CP, control_plane
 from cp import SCENARIO as CONTROL
@@ -230,7 +231,8 @@ def test_aims_run_and_estimate_take_a_budget_and_say_it(tmp_path: Path) -> None:
     assert "--budget: no agent zed in the scenario" in result.stderr
     result = CliRunner().invoke(app, [*args, "--budget", "steps=0"])
     assert result.exit_code == 2
-    assert "greater than or equal to 1" in " ".join(result.output.replace("│", "").split())
+    said = " ".join(click.unstyle(result.output).replace("│", "").split())
+    assert "greater than or equal to 1" in said
 
     estimate = ["estimate", str(scenario), "--config", str(config), "--runs-dir", str(runs)]
     result = CliRunner().invoke(app, [*estimate, "--json", "--budget", "cost_usd=none"])
