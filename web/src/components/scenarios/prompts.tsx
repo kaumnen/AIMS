@@ -8,13 +8,9 @@ import {
   promptsQuery,
   type PromptText,
 } from "@/api/scenario-files";
-import type { ScenarioDetail } from "@/api/scenarios";
-import { isProblem } from "@/api/session";
-import { problemText } from "@/components/form";
-import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
+import { type ScenarioDetail, scenarioQuery } from "@/api/scenarios";
+import { type TextFile, TextRow } from "@/components/text-row";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { cn } from "@/lib/utils";
 
 type Agent = ScenarioDetail["agents"][number];
 
@@ -24,6 +20,8 @@ interface Row {
   text: string;
   // where the text comes from: this scenario, or the config layer below it
   source: string;
+  // the config's text, which applies without an override
+  inherited: string;
 }
 
 function override(agent: Agent, key: PromptKey): string | undefined {
@@ -47,9 +45,10 @@ export function PromptsTab({ detail }: { detail: ScenarioDetail }) {
   }
   const row = (key: PromptKey, label: string, layer: PromptText): Row => {
     const own = override(agent, key);
+    const inherited = layer.text;
     return own === undefined
-      ? { key, label, text: layer.text, source: PROMPT_SOURCES[layer.source] }
-      : { key, label, text: own, source: "this scenario" };
+      ? { key, label, text: inherited, source: PROMPT_SOURCES[layer.source], inherited }
+      : { key, label, text: own, source: "this scenario", inherited };
   };
   const agentRows = Object.entries(prompts.data.agent).map(([k, t]) => row([k], k, t));
   const toolRows = agent.tools.flatMap((tool) =>
@@ -103,107 +102,55 @@ function TextTable({
       <h2 className="font-medium">{title}</h2>
       <ul className="flex flex-col">
         {rows.map((r) => (
-          <TextRow key={r.key.join(".")} row={r} detail={detail} agent={agent} />
+          <ScenarioText key={r.key.join(".")} row={r} detail={detail} agent={agent} />
         ))}
       </ul>
     </section>
   );
 }
 
-function TextRow({ row, detail, agent }: { row: Row; detail: ScenarioDetail; agent: string }) {
+function ScenarioText({ row, detail, agent }: { row: Row; detail: ScenarioDetail; agent: string }) {
   const queryClient = useQueryClient();
-  const [draft, setDraft] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState<string | null>(null);
-  const overridden = row.source === "this scenario";
+  const scenario = scenarioQuery(detail.source, detail.name);
+  // the file as it is now: a save just made may not have reached the page yet
+  const fresh = () => queryClient.fetchQuery({ ...scenario, staleTime: 0 });
 
-  const write = async (value: string | null) => {
-    setBusy(true);
-    setNote(null);
-    try {
+  const file: TextFile = {
+    begin: async () => {
+      const now = await fresh();
+      const own = now.agents.find((a) => a.id === agent);
+      return { value: (own && override(own, row.key)) ?? row.inherited, base: now.etag };
+    },
+    save: async (value, base) => {
       const saved = await patchPrompt(
         detail.source,
         detail.name,
         agent,
         row.key,
         value,
-        detail.etag,
+        base ?? detail.etag,
       );
-      setDraft(null);
-      setNote(saved.warnings.length ? saved.warnings.map((w) => w.msg).join(" ") : null);
-      void queryClient.invalidateQueries({
-        queryKey: ["scenarios", "detail", detail.source, detail.name],
-      });
+      void queryClient.invalidateQueries({ queryKey: scenario.queryKey });
       void queryClient.invalidateQueries({
         queryKey: ["scenarios", "file", detail.source, detail.name],
       });
-    } catch (e) {
-      if (isProblem(e) && e.status === 412) {
-        setNote("scenario.yaml changed since this page loaded; it is loaded again, try again.");
-        void queryClient.invalidateQueries({
-          queryKey: ["scenarios", "detail", detail.source, detail.name],
-        });
-      } else {
-        setNote(isProblem(e) ? problemText(e) : "The request failed.");
-      }
-    } finally {
-      setBusy(false);
-    }
+      return saved.warnings.length ? saved.warnings.map((w) => w.msg).join(" ") : null;
+    },
+    latest: async () => (await fresh()).etag,
+    reload: () => void queryClient.invalidateQueries({ queryKey: scenario.queryKey }),
   };
 
+  const overridden = row.source === "this scenario";
   return (
-    <li className="grid gap-x-4 border-b py-1.5 last:border-0 md:grid-cols-[14rem_8rem_minmax(0,1fr)]">
-      <span className="font-mono">{row.label}</span>
-      <span className={cn(overridden ? "font-medium" : "text-muted-foreground")}>{row.source}</span>
-      {draft === null ? (
-        <div className="flex min-w-0 items-start gap-2">
-          <p className="line-clamp-3 min-w-0 flex-1 whitespace-pre-wrap">
-            {row.text || <span className="text-muted-foreground">empty</span>}
-          </p>
-          {detail.writable && (
-            <Button variant="ghost" size="sm" onClick={() => setDraft(row.text)}>
-              Edit
-            </Button>
-          )}
-        </div>
-      ) : (
-        <form
-          className="flex min-w-0 flex-col gap-2"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void write(draft);
-          }}
-        >
-          <Textarea
-            aria-label={`Text of ${row.label}`}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            rows={Math.min(14, Math.max(3, draft.split("\n").length + 1))}
-            className="font-mono"
-            autoFocus
-          />
-          <div className="flex flex-wrap items-center gap-2">
-            <Button type="submit" size="sm" disabled={busy || draft === row.text}>
-              Save override
-            </Button>
-            {overridden && (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={busy}
-                onClick={() => void write(null)}
-              >
-                Use the config's text
-              </Button>
-            )}
-            <Button type="button" variant="ghost" size="sm" onClick={() => setDraft(null)}>
-              Cancel
-            </Button>
-          </div>
-        </form>
-      )}
-      {note && <p className="text-muted-foreground md:col-start-3">{note}</p>}
-    </li>
+    <TextRow
+      label={row.label}
+      source={row.source}
+      own={overridden}
+      text={row.text}
+      editable={detail.writable}
+      file={file}
+      saveLabel="Save override"
+      resetLabel={overridden ? "Use the config's text" : undefined}
+    />
   );
 }

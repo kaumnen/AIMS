@@ -8,9 +8,12 @@ import { PromptsTab } from "./prompts";
 
 const fetch = vi.fn<(request: Request) => Promise<Response>>();
 let patches: { body: unknown; ifMatch: string | null }[];
+// scenario.yaml's version on the server; each save makes a new one
+let version: number;
 
 beforeEach(() => {
   patches = [];
+  version = 1;
   vi.stubGlobal("fetch", fetch);
   fetch.mockImplementation(async (request) => {
     const url = new URL(request.url);
@@ -30,7 +33,11 @@ beforeEach(() => {
     }
     if (url.pathname === "/api/scenarios/project/demo/prompts") {
       patches.push({ body: await request.json(), ifMatch: request.headers.get("If-Match") });
-      return Response.json({ path: "scenario.yaml", etag: "e2", warnings: [] });
+      version += 1;
+      return Response.json({ path: "scenario.yaml", etag: `e${version}`, warnings: [] });
+    }
+    if (url.pathname === "/api/scenarios/project/demo") {
+      return Response.json({ ...detail(), etag: `e${version}` });
     }
     return Response.json({});
   });
@@ -91,8 +98,8 @@ test("each text says where it comes from, the agent's own tools only", async () 
 test("an override is written into the scenario against the version on the page", async () => {
   renderTab();
   await screen.findByText("system");
-  fireEvent.click(rowOf("nudge").getByRole("button", { name: "Edit" }));
-  const box = screen.getByLabelText("Text of nudge");
+  fireEvent.click(rowOf("nudge").getByRole("button", { name: "Edit nudge" }));
+  const box = await screen.findByLabelText("Text of nudge");
   fireEvent.change(box, { target: { value: "Go on." } });
   fireEvent.click(screen.getByRole("button", { name: "Save override" }));
   await vi.waitFor(() => expect(patches).toHaveLength(1));
@@ -100,17 +107,34 @@ test("an override is written into the scenario against the version on the page",
     body: { set: [{ agent: "agent", key: ["nudge"], value: "Go on." }] },
     ifMatch: '"e1"',
   });
-  fireEvent.click(rowOf("bash.description").getByRole("button", { name: "Edit" }));
-  fireEvent.click(screen.getByRole("button", { name: "Use the config's text" }));
+  await vi.waitFor(() => expect(screen.queryByLabelText("Text of nudge")).toBeNull());
+  fireEvent.click(rowOf("bash.description").getByRole("button", { name: "Edit bash.description" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Use the config's text" }));
   await vi.waitFor(() => expect(patches).toHaveLength(2));
   expect(patches[1]?.body).toEqual({
     unset: [{ agent: "agent", key: ["tools", "bash", "description"] }],
   });
 });
 
+test("a second edit right after a save is made against the saved version", async () => {
+  // the page still holds the first version: its refetch has not landed
+  renderTab();
+  await screen.findByText("system");
+  fireEvent.click(rowOf("nudge").getByRole("button", { name: "Edit nudge" }));
+  fireEvent.change(await screen.findByLabelText("Text of nudge"), { target: { value: "Go on." } });
+  fireEvent.click(screen.getByRole("button", { name: "Save override" }));
+  await vi.waitFor(() => expect(patches).toHaveLength(1));
+  await vi.waitFor(() => expect(screen.queryByLabelText("Text of nudge")).toBeNull());
+  fireEvent.click(rowOf("system").getByRole("button", { name: "Edit system" }));
+  fireEvent.change(await screen.findByLabelText("Text of system"), { target: { value: "Hi." } });
+  fireEvent.click(screen.getByRole("button", { name: "Save override" }));
+  await vi.waitFor(() => expect(patches).toHaveLength(2));
+  expect(patches.map((p) => p.ifMatch)).toEqual(['"e1"', '"e2"']);
+});
+
 test("a read-only source shows the texts without edits", async () => {
   renderTab(false);
   await screen.findByText("system");
-  expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+  expect(screen.queryByRole("button", { name: /^Edit / })).toBeNull();
   expect(screen.getByText(/duplicate the scenario/)).toBeTruthy();
 });

@@ -12,12 +12,11 @@ import {
 import { isProblem } from "@/api/session";
 import { configQuery, type Layer, layerQuery, patchConfig } from "@/api/settings";
 import { problemText } from "@/components/form";
+import { type TextFile, TextRow } from "@/components/text-row";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useOperator } from "@/lib/use-operator";
-import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/settings/prompts")({
   staticData: { crumb: "Prompts" },
@@ -156,7 +155,7 @@ function PromptsPage() {
           </h2>
           <ul className="flex flex-col">
             {s.rows.map((r) => (
-              <TextRow
+              <ConfigText
                 key={`${layer}:${r.key.join(".")}`}
                 row={r}
                 layer={layer}
@@ -176,188 +175,68 @@ function hint(placeholders: string[] | null | undefined): string | null {
   return `${names ? `Placeholders: ${names}.` : "No placeholders."} Write a literal brace as {{ or }}.`;
 }
 
-function TextRow({ row, layer, editable }: { row: Row; layer: Layer; editable: boolean }) {
+function ConfigText({ row, layer, editable }: { row: Row; layer: Layer; editable: boolean }) {
   const queryClient = useQueryClient();
-  const [draft, setDraft] = useState<string | null>(null);
-  const [start, setStart] = useState("");
-  // the version of the file the draft began from, null when it did not exist
-  const [base, setBase] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState<string | null>(null);
-  // the value a save tried to write when the file had changed under it
-  const [conflict, setConflict] = useState<{ value: string | null } | null>(null);
   const { text } = row;
   const own = layer === "project" ? text.project : text.user;
   const below = layer === "project" && text.user != null ? "this machine's" : "the built-in";
   const shadowed = layer === "user" && text.project != null;
   const placeholders = hint(text.placeholders);
-  // a tool's texts break after the tool's name
-  const dot = row.label.indexOf(".");
 
-  const failed = (e: unknown) => setNote(isProblem(e) ? problemText(e) : "The request failed.");
-
-  const begin = async () => {
-    setBusy(true);
-    setNote(null);
-    try {
-      const [file, fresh] = await Promise.all([
+  const file: TextFile = {
+    begin: async () => {
+      const [current, fresh] = await Promise.all([
         queryClient.fetchQuery(layerQuery(layer)),
         queryClient.fetchQuery({ ...promptsQuery, staleTime: 0 }),
       ]);
       const now = sections(fresh)
         .flatMap((s) => s.rows)
         .find((r) => r.key.join(".") === row.key.join("."));
-      const value = inLayer(now?.text ?? text, layer);
-      setBase(file.exists ? file.etag : null);
-      setStart(value);
-      setDraft(value);
-    } catch (e) {
-      failed(e);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const write = async (value: string | null, etag: string | null) => {
-    setBusy(true);
-    setNote(null);
-    setConflict(null);
-    try {
+      return {
+        value: inLayer(now?.text ?? text, layer),
+        base: current.exists ? current.etag : null,
+      };
+    },
+    save: async (value, base) => {
       const saved = await patchConfig(
         layer,
         value === null ? { unset: [row.key] } : { set: [{ key: row.key, value }] },
-        etag,
+        base,
       );
       queryClient.setQueryData(layerQuery(layer).queryKey, saved);
       void queryClient.invalidateQueries({ queryKey: ["prompts"] });
       void queryClient.invalidateQueries({ queryKey: ["config"], exact: true });
-      setDraft(null);
-    } catch (e) {
-      if (isProblem(e) && e.status === 412) setConflict({ value });
-      else failed(e);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const keepMine = async (value: string | null) => {
-    try {
-      const file = await queryClient.fetchQuery(layerQuery(layer));
-      await write(value, file.exists ? file.etag : null);
-    } catch (e) {
-      failed(e);
-    }
-  };
-
-  const loadTheirs = () => {
-    setConflict(null);
-    setDraft(null);
-    void queryClient.invalidateQueries({ queryKey: ["prompts"] });
-    void queryClient.invalidateQueries({ queryKey: ["config"] });
+      return null;
+    },
+    latest: async () => {
+      const current = await queryClient.fetchQuery(layerQuery(layer));
+      return current.exists ? current.etag : null;
+    },
+    reload: () => {
+      void queryClient.invalidateQueries({ queryKey: ["prompts"] });
+      void queryClient.invalidateQueries({ queryKey: ["config"] });
+    },
   };
 
   return (
-    <li className="grid gap-x-4 border-b py-1.5 last:border-0 md:grid-cols-[14rem_8rem_minmax(0,1fr)]">
-      <span className="font-mono wrap-break-word">
-        {dot < 0 ? (
-          row.label
-        ) : (
-          <>
-            {row.label.slice(0, dot + 1)}
-            <wbr />
-            {row.label.slice(dot + 1)}
-          </>
-        )}
-      </span>
-      <span className={cn(text.source !== "default" ? "font-medium" : "text-muted-foreground")}>
-        {PROMPT_SOURCES[text.source]}
-      </span>
-      {draft === null ? (
-        <div className="flex min-w-0 items-start gap-2">
-          <p className="line-clamp-3 min-w-0 flex-1 whitespace-pre-wrap">
-            {text.text || <span className="text-muted-foreground">empty</span>}
-          </p>
-          {editable && (
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={busy}
-              aria-label={`Edit ${row.label}`}
-              onClick={() => void begin()}
-            >
-              Edit
-            </Button>
-          )}
-        </div>
-      ) : (
-        <form
-          className="flex min-w-0 flex-col gap-2"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void write(draft, base);
-          }}
-        >
-          <Textarea
-            aria-label={`Text of ${row.label}`}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            rows={Math.min(14, Math.max(3, draft.split("\n").length + 1))}
-            className="font-mono"
-            autoFocus
-          />
+    <TextRow
+      label={row.label}
+      source={PROMPT_SOURCES[text.source]}
+      own={text.source !== "default"}
+      text={text.text}
+      editable={editable}
+      file={file}
+      resetLabel={own != null ? `Use ${below} text` : undefined}
+      hints={
+        <>
           {placeholders && <p className="text-muted-foreground">{placeholders}</p>}
           {shadowed && (
             <p className="text-muted-foreground">
               This project's text wins here; this machine's applies in projects that set none.
             </p>
           )}
-          <div className="flex flex-wrap items-center gap-2">
-            <Button type="submit" size="sm" disabled={busy || draft === start}>
-              Save
-            </Button>
-            {own != null && (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={busy}
-                onClick={() => void write(null, base)}
-              >
-                Use {below} text
-              </Button>
-            )}
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                setDraft(null);
-                setConflict(null);
-                setNote(null);
-              }}
-            >
-              Cancel
-            </Button>
-          </div>
-        </form>
-      )}
-      {conflict && (
-        <div role="alert" className="flex flex-wrap items-center gap-2 py-1 md:col-start-3">
-          <span className="font-medium">The file changed since you began this edit.</span>
-          <Button variant="outline" size="sm" disabled={busy} onClick={loadTheirs}>
-            Load theirs, drop mine
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={busy}
-            onClick={() => void keepMine(conflict.value)}
-          >
-            Keep mine
-          </Button>
-        </div>
-      )}
-      {note && <p className="text-muted-foreground md:col-start-3">{note}</p>}
-    </li>
+        </>
+      }
+    />
   );
 }
