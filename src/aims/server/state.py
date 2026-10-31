@@ -13,7 +13,7 @@ from aims.monitor.config import MonitorConfigError
 from aims.prompts import TextError
 from aims.run.estimate import History, history
 from aims.server.auth import Auth
-from aims.server.db import ServerDB, hash_secret
+from aims.server.db import Job, ServerDB, hash_secret
 from aims.server.problems import ProblemException
 from aims.wire import (
     STALE_S,
@@ -239,6 +239,14 @@ class ServerState:
         if self._history is None or self._history[0] != version:
             self._history = (version, await history(self.store))
         return self._history[1]
+
+    def touch_job(self, job: Job) -> None:
+        """Note that a job changed, and for a monitor job the run it watches, whose `reviews`
+        count counts it."""
+        self.changes.touch(job.run_id)
+        origin = job.payload.get("origin")
+        if job.payload.get("kind") == "monitor" and isinstance(origin, str):
+            self.changes.touch(origin)
 
     def poke(self) -> None:
         """Ask the dispatcher to look at the queue now."""

@@ -35,6 +35,7 @@ from aims.monitor.setup import ResolvedMonitor
 from aims.run.job import monitor_for
 from aims.run.runner import agent_profile
 from aims.scenario import AgentConfig, Bundle, Scenario
+from aims.wire import MonitorMode
 
 Tier = Literal["scenario", "models", "cap"]
 MonitorKey = tuple[str, tuple[tuple[str, str | None], ...]]
@@ -924,12 +925,197 @@ def needs_confirm(e: Estimate) -> str | None:
 def guard(e: Estimate, *, yes: bool, tty: bool, ask: Callable[[str], bool]) -> str | None:
     """None when the run may start: the estimate is under the threshold, `yes` was given, or
     the person at the terminal agreed through `ask`. Otherwise why it may not."""
-    why = None if yes else needs_confirm(e)
+    return ask_why(None if yes else needs_confirm(e), tty=tty, ask=ask)
+
+
+def ask_why(why: str | None, *, tty: bool, ask: Callable[[str], bool]) -> str | None:
+    """None when nothing needs a yes or the person at the terminal gave it through `ask`;
+    otherwise why the work may not start."""
     if why is None:
         return None
     if not tty:
         return f"{why}; pass --yes to start anyway"
     return None if ask(f"{why[0].upper()}{why[1:]}. Start anyway?") else "not started"
+
+
+# Offline monitor runs
+
+
+class ReviewEstimate(_Out):
+    """What `samples` offline monitor runs over run `run_id` cost at list prices. Each stops at
+    `ceiling_usd`, its spend cap. `typical_usd` is the median of `runs` past monitor runs with
+    the same preset, models and mode, each scaled from its run's agent steps to this run's
+    `steps`: of the same scenario when `same_scenario`, else of any. `high_usd` is their 90th
+    percentile, or twice the median when `doubled` (under 10 runs); neither passes the cap.
+    `priced` is false when no model of the monitor has a price, so its cost is not counted;
+    with no model at all every figure is 0. `total` is every sample together, and `confirm`
+    says they start only with a person's yes, as runs do."""
+
+    run_id: str
+    preset: Preset
+    mode: MonitorMode
+    samples: int
+    steps: int
+    total: CostTotal
+    typical_usd: float | None = None
+    high_usd: float | None = None
+    ceiling_usd: float | None = None
+    priced: bool = True
+    runs: int = 0
+    same_scenario: bool = False
+    doubled: bool = False
+    confirm_above_usd: float = CONFIRM_ABOVE_USD
+    confirm: bool = False
+    lines: list[str] = Field(default_factory=list)
+
+
+async def estimate_review(
+    store: LocalEventStore,
+    run: str,
+    monitor: ResolvedMonitor,
+    mode: MonitorMode,
+    *,
+    samples: int = 1,
+    confirm_above_usd: float = CONFIRM_ABOVE_USD,
+) -> ReviewEstimate:
+    """What `samples` runs of `monitor` over run `run` cost, from the monitor runs in `store`.
+    Raises KeyError for an unknown run."""
+    info = await store.run(run)
+    if info is None:
+        raise KeyError(run)
+    out = ReviewEstimate(
+        run_id=run,
+        preset=monitor.config.preset,
+        mode=mode,
+        samples=samples,
+        steps=info.steps,
+        total=CostTotal(),
+        confirm_above_usd=confirm_above_usd,
+    )
+    called = _review_profiles(monitor)
+    if not called:
+        out.typical_usd = out.high_usd = out.ceiling_usd = 0.0
+    elif all(p.price is None for p in called):
+        out.priced = False
+    else:
+        ceiling = out.ceiling_usd = monitor.budget_usd
+        key = _monitor_key(monitor)
+        same: list[float] = []
+        every: list[float] = []
+        before: str | None = None
+        while page := await store.runs(kind="monitor", limit=PAGE, before=before):
+            before = page[-1].run_id
+            for p in page:
+                if (
+                    p.status != "completed"
+                    or not p.cost_usd
+                    or p.preset != out.preset
+                    or p.monitor_mode != mode
+                    or p.origin is None
+                ):
+                    continue
+                origin = await store.run(p.origin)
+                if origin is None or origin.steps <= 0 or info.steps <= 0:
+                    continue
+                if await _past_key(store, p.run_id) != key:
+                    continue
+                cost = p.cost_usd * info.steps / origin.steps
+                every.append(cost)
+                if origin.scenario == info.scenario:
+                    same.append(cost)
+        costs = same or every
+        if costs:
+            typical, high, out.doubled = spread(costs)
+            out.typical_usd, out.high_usd = min(typical, ceiling), min(high, ceiling)
+            out.runs, out.same_scenario = len(costs), bool(same)
+    if out.priced:
+        out.total = CostTotal(
+            typical_usd=None if out.typical_usd is None else out.typical_usd * samples,
+            high_usd=None if out.high_usd is None else out.high_usd * samples,
+            ceiling_usd=None if out.ceiling_usd is None else out.ceiling_usd * samples,
+        )
+    out.confirm = reviews_confirm([out]) is not None
+    out.lines = describe_review(out)
+    return out
+
+
+def _review_profiles(m: ResolvedMonitor) -> list[Profile]:
+    if not m.config.models_on:
+        return []
+    found = (*m.sweeps.values(), m.review, m.judge, m.extract, m.channels)
+    return [q for q in found if q is not None]
+
+
+async def _past_key(store: LocalEventStore, run_id: str) -> MonitorKey | None:
+    page = await store.events(run_id, limit=1, types=("run.started",))
+    return _snapshot_key(_dict(page[0].data.get("config")).get("monitor")) if page else None
+
+
+def reviews_confirm(found: Sequence[ReviewEstimate]) -> str | None:
+    """Why the monitor runs of `found` need a person's yes before they start, None when they
+    do not: together their high figure, or without one their cap, is above
+    `confirm_above_usd`."""
+    priced = [e for e in found if e.priced]
+    if not priced:
+        return None
+    limit = priced[0].confirm_above_usd
+    capped = any(e.total.high_usd is None for e in priced)
+    figure = sum(
+        e.total.high_usd if e.total.high_usd is not None else e.total.ceiling_usd or 0.0
+        for e in priced
+    )
+    if figure <= limit:
+        return None
+    if capped:
+        return f"the caps allow {usd(figure)}, above confirm_above_usd {usd(limit)}"
+    return f"the high estimate {usd(figure)} is above confirm_above_usd {usd(limit)}"
+
+
+MODEL_PRESETS = ("standard", "research")
+MODE_WORDS: dict[MonitorMode, str] = {
+    "full": "",
+    "signals_only": ", signals only",
+    "judge_only": ", judge only",
+}
+
+
+def describe_review(e: ReviewEstimate) -> list[str]:
+    """The estimate as `aims monitor` and the UI show it."""
+    head = f"Review: {e.preset} monitor{MODE_WORDS[e.mode]}"
+    if e.preset not in MODEL_PRESETS:
+        return [f"{head}; no layer calls a model, so it costs nothing."]
+    if not e.priced:
+        return [f"{head}; its models have no price, so its cost is not counted."]
+    steps = "1 agent step" if e.steps == 1 else f"{e.steps} agent steps"
+    words = [f"{head}, over {steps}."]
+    if e.typical_usd is not None and e.high_usd is not None:
+        runs = "1 past review" if e.runs == 1 else f"{e.runs} past reviews"
+        of = "of this scenario" if e.same_scenario else "of any scenario"
+        words.append(
+            f"Typically {usd(e.typical_usd)} (median of {runs} {of}, scaled to these steps)."
+        )
+        if e.ceiling_usd is not None and e.high_usd >= e.ceiling_usd:
+            words.append("1 in 10 may hit the cap." if e.doubled else "1 in 10 hits the cap.")
+        elif e.doubled:
+            words.append(
+                f"1 in 10 may exceed {usd(e.high_usd)} (twice the median, under {MIN_RUNS})."
+            )
+        else:
+            words.append(f"1 in 10 exceeds {usd(e.high_usd)}.")
+    else:
+        words.append("No past reviews to go by.")
+    if e.ceiling_usd is not None:
+        words.append(f"Stops at {usd(e.ceiling_usd)}, its spend cap.")
+    lines = [" ".join(words)]
+    if e.samples > 1:
+        t = e.total
+        parts = [f"{e.samples} reviews:"]
+        if t.typical_usd is not None:
+            parts.append(f"typically {usd(t.typical_usd)},")
+        if t.ceiling_usd is not None:
+            parts.append(f"at most {usd(t.ceiling_usd)}.")
+        lines.append(" ".join(parts).rstrip(","))
+    return lines
 
 
 # While it runs

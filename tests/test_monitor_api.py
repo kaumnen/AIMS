@@ -373,6 +373,71 @@ async def test_monitor_runs_queue_for_runners_that_take_them(
     await seal(local, running, task)
 
 
+async def test_a_review_has_an_estimate_a_cost_guard_and_counts_as_listed(
+    cp: CP, local: LocalEventStore, fake: FakeRunner
+) -> None:
+    origin = await pushed(cp, local, fake, flagged())
+    running, task = await live(cp, local, fake, [call(1)])
+    url = f"/api/runs/{origin}/monitor/estimate"
+    async with cp.client(cp.viewer) as viewer, cp.client(cp.operator) as c:
+        assert (await viewer.get(url)).status_code == 403
+        r = await c.get(url, params={"preset": "standard"})
+        assert r.status_code == 200, r.text
+        e = r.json()
+        assert (e["preset"], e["mode"], e["samples"], e["runs"], e["confirm"]) == (
+            "standard",
+            "full",
+            1,
+            0,
+            False,
+        )
+        assert e["lines"][0].startswith("Review: standard monitor, over 0 agent steps.")
+        r = await c.get(url, params={"signals_only": True})
+        assert r.json()["lines"] == [
+            "Review: signals monitor, signals only; no layer calls a model, so it costs nothing."
+        ]
+        r = await c.get(url, params={"signals_only": True, "judge_only": True})
+        assert r.status_code == 422
+        r = await c.get(url, params={"profile": "nope"})
+        assert (r.status_code, r.json()["code"]) == (422, "estimate")
+        r = await c.get(f"/api/runs/{running}/monitor/estimate")
+        assert (r.status_code, r.json()["code"]) == (409, "not_sealed")
+        r = await c.get("/api/runs/01a18280-0000-7000-8000-000000000000/monitor/estimate")
+        assert r.status_code == 404
+        r = await c.get(url, params={"preset": "standard", "samples": 5})
+        assert r.json()["confirm"] is True
+
+        mon = MonitorRunner(cp, "mon", envs=["MODEL_API_KEY"])
+        await mon.connect()
+        try:
+            listed = (await c.get("/api/runs", params={"kind": "scenario"})).json()["items"]
+            assert next(x["reviews"] for x in listed if x["run_id"] == origin) == 0
+            version = cp.state.changes.version
+            r = await c.post(
+                f"/api/runs/{origin}/monitor", json={"preset": "standard", "samples": 5}
+            )
+            assert (r.status_code, r.json()["code"]) == (409, "confirm")
+            assert "set confirm to start anyway" in r.json()["detail"]
+            body = {"preset": "standard", "samples": 5, "confirm": True}
+            r = await c.post(f"/api/runs/{origin}/monitor", json=body)
+            assert r.status_code == 202, r.text
+            queued = r.json()["run_ids"]
+            _, changed = cp.state.changes.since(version)
+            assert changed is not None
+            assert origin in changed
+            listed = (await c.get("/api/runs", params={"kind": "scenario"})).json()["items"]
+            assert next(x["reviews"] for x in listed if x["run_id"] == origin) == 5
+
+            r = await c.post(f"/api/runs/{queued[0]}/cancel", json={})
+            assert r.status_code == 202, r.text
+            detail = (await c.get(f"/api/runs/{origin}")).json()
+            listed = (await c.get("/api/runs", params={"kind": "monitor", "origin": origin})).json()
+            assert detail["run"]["reviews"] == len(listed["items"]) == 5
+        finally:
+            await mon.close()
+    await seal(local, running, task)
+
+
 async def test_a_job_that_does_not_load_ends_instead_of_failing_the_claim(
     cp: CP, fake: FakeRunner
 ) -> None:

@@ -293,12 +293,17 @@ def summary(
 async def summaries(state: ServerState, run_ids: list[str]) -> list[RunSummary]:
     jobs = await state.db.jobs_of(run_ids)
     metas = await state.db.runs_meta(run_ids)
+    reviews = await state.db.review_jobs(run_ids)
     out = []
     for run_id in run_ids:
         info = await state.store.run(run_id)
         if info is None and run_id not in jobs:
             continue
-        out.append(summary(state, run_id, info, jobs.get(run_id), metas.get(run_id)))
+        found = summary(state, run_id, info, jobs.get(run_id), metas.get(run_id))
+        for review in reviews.get(run_id, ()):
+            if await state.store.run(review) is None:
+                found.reviews += 1
+        out.append(found)
     return out
 
 
@@ -532,8 +537,8 @@ async def _queue(
         for j in jobs
     ]
     await state.db.add_jobs(rows)
-    for j in jobs:
-        state.changes.touch(j.run_id)
+    for row in rows:
+        state.touch_job(row)
     state.poke()
     return Started(run_ids=[j.run_id for j in jobs], group=jobs[0].options.group if jobs else None)
 

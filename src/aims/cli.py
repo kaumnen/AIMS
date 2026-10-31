@@ -1285,7 +1285,13 @@ def monitor_cmd(
     quiet: Annotated[bool, typer.Option(help="One line per monitor run.")] = False,
     json_out: Annotated[
         bool,
-        typer.Option("--json", help="Print JSON lines: flags, actions, sweeps, verdicts, results."),
+        typer.Option(
+            "--json",
+            help="Print JSON lines: estimates, flags, actions, sweeps, verdicts, results.",
+        ),
+    ] = False,
+    yes: Annotated[
+        bool, typer.Option("--yes", help="Start even when the cost estimate is above the limit.")
     ] = False,
     server: ServerOption = None,
     token_file: TokenFileOption = None,
@@ -1319,6 +1325,7 @@ def monitor_cmd(
             budget_usd=budget_usd,
             quiet=quiet,
             json_out=json_out,
+            yes=yes,
             link=link,
         )
     )
@@ -1330,6 +1337,7 @@ async def _monitor_runs(**o: Any) -> int:
     import json
     import logging
     import signal
+    import sys
     import tomllib
     import uuid
 
@@ -1353,6 +1361,7 @@ async def _monitor_runs(**o: Any) -> int:
     )
     from aims.node.client import ApiError
     from aims.prompts import TextError
+    from aims.run.estimate import ask_why, estimate_review, reviews_confirm
     from aims.run.job import JobOptions, monitor_profiles
     from aims.run.runner import RunError
     from aims.run.view import JsonLines, digest, monitor_table
@@ -1380,6 +1389,7 @@ async def _monitor_runs(**o: Any) -> int:
     results: list[OfflineResult] = []
     async with await LocalEventStore.open(o["runs_dir"]) as store:
         planned = []
+        costs = []
         for run_id in dict.fromkeys(o["runs"]):
             try:
                 origin, _ = await monitored(store, run_id)
@@ -1402,6 +1412,16 @@ async def _monitor_runs(**o: Any) -> int:
                     p.api_key()
             except (RunError, MonitorConfigError, ProfileError, TextError) as e:
                 return fail(f"{run_id}: {e}")
+            costs.append(
+                await estimate_review(
+                    store,
+                    origin.run_id,
+                    resolved,
+                    mode,
+                    samples=o["samples"],
+                    confirm_above_usd=settings.confirm_above_usd,
+                )
+            )
             group = uuid.uuid4().hex[:12] if o["samples"] > 1 else None
             for i in range(o["samples"]):
                 options = JobOptions(
@@ -1411,6 +1431,19 @@ async def _monitor_runs(**o: Any) -> int:
                     samples=o["samples"],
                 )
                 planned.append((origin, resolved, options))
+        for cost in costs:
+            if o["json_out"]:
+                typer.echo(json.dumps({"type": "estimate", **cost.model_dump(mode="json")}))
+            elif not o["quiet"]:
+                for text in cost.lines:
+                    err.print(escape(text), highlight=False)
+        refused = ask_why(
+            None if o["yes"] else reviews_confirm(costs),
+            tty=sys.stdin.isatty() and sys.stderr.isatty(),
+            ask=lambda q: typer.confirm(q, default=False, err=True),
+        )
+        if refused is not None:
+            return fail(refused)
         lines = JsonLines(store, typer.echo) if o["json_out"] else None
         gate = asyncio.Semaphore(o["parallel"])
 

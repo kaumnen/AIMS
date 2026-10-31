@@ -139,6 +139,29 @@ def test_aims_monitor_refuses_what_it_cannot_run(
     assert off.exit_code == 2
 
 
+def test_aims_monitor_prints_its_estimate_and_refuses_above_the_limit_unless_yes(
+    runs: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, origin = runs
+    monkeypatch.setenv("MODEL_API_KEY", "unused")
+    base = ["monitor", origin, "--runs-dir", str(root), "--no-server", "--monitor", "standard"]
+    result = invoke(*base, "--samples", "5", "--json")
+    assert result.exit_code == 1, result.output
+    assert "pass --yes to start anyway" in " ".join(result.stderr.split())
+    (first,) = lines(result.stdout)
+    assert (first["type"], first["run_id"], first["confirm"], first["samples"]) == (
+        "estimate",
+        origin,
+        True,
+        5,
+    )
+    shown = invoke("monitor", origin, "--runs-dir", str(root), "--no-server", "--signals-only")
+    assert shown.exit_code == 0, shown.output
+    assert "Review: signals monitor, signals only; no layer calls a model" in " ".join(
+        shown.stderr.split()
+    )
+
+
 def test_aims_monitor_lays_the_config_file_over_the_scenario(
     runs: tuple[Path, str], tmp_path: Path
 ) -> None:

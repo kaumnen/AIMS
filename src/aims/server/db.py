@@ -403,6 +403,22 @@ class ServerDB:
         )
         return [self._job(r) for r in rows]
 
+    async def review_jobs(self, origins: Sequence[str]) -> dict[str, list[str]]:
+        """The run ids of the monitor jobs over each of `origins`, whatever their state."""
+        if not origins:
+            return {}
+        marks = ", ".join("?" * len(origins))
+        rows = await self._all(
+            "select run_id, json_extract(payload, '$.origin') from jobs"
+            " where json_extract(payload, '$.kind') = 'monitor'"
+            f" and json_extract(payload, '$.origin') in ({marks})",
+            tuple(origins),
+        )
+        out: dict[str, list[str]] = {}
+        for run_id, origin in rows:
+            out.setdefault(origin, []).append(run_id)
+        return out
+
     async def jobs_page(
         self,
         *,

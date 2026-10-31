@@ -501,6 +501,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/monitor/estimate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Estimate Monitor
+         * @description What monitor runs over a sealed run cost, as `aims monitor` prints it before they start:
+         *     the typical and high cost of past monitor runs with the same monitor, per agent step, and
+         *     each one's spend cap. Takes the fields of the request that starts them, but `config`.
+         */
+        get: operations["estimate_monitor"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{run_id}/pause": {
         parameters: {
             query?: never;
@@ -4853,6 +4875,74 @@ export interface components {
             max?: number;
         };
         /**
+         * ReviewEstimate
+         * @description What `samples` offline monitor runs over run `run_id` cost at list prices. Each stops at
+         *     `ceiling_usd`, its spend cap. `typical_usd` is the median of `runs` past monitor runs with
+         *     the same preset, models and mode, each scaled from its run's agent steps to this run's
+         *     `steps`: of the same scenario when `same_scenario`, else of any. `high_usd` is their 90th
+         *     percentile, or twice the median when `doubled` (under 10 runs); neither passes the cap.
+         *     `priced` is false when no model of the monitor has a price, so its cost is not counted;
+         *     with no model at all every figure is 0. `total` is every sample together, and `confirm`
+         *     says they start only with a person's yes, as runs do.
+         */
+        ReviewEstimate: {
+            /** Ceiling Usd */
+            ceiling_usd: number | null;
+            /**
+             * Confirm
+             * @default false
+             */
+            confirm: boolean;
+            /**
+             * Confirm Above Usd
+             * @default 20
+             */
+            confirm_above_usd: number;
+            /**
+             * Doubled
+             * @default false
+             */
+            doubled: boolean;
+            /** High Usd */
+            high_usd: number | null;
+            /** Lines */
+            lines: string[];
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "full" | "signals_only" | "judge_only";
+            /**
+             * Preset
+             * @enum {string}
+             */
+            preset: "off" | "signals" | "standard" | "research";
+            /**
+             * Priced
+             * @default true
+             */
+            priced: boolean;
+            /** Run Id */
+            run_id: string;
+            /**
+             * Runs
+             * @default 0
+             */
+            runs: number;
+            /**
+             * Same Scenario
+             * @default false
+             */
+            same_scenario: boolean;
+            /** Samples */
+            samples: number;
+            /** Steps */
+            steps: number;
+            total: components["schemas"]["CostTotal"];
+            /** Typical Usd */
+            typical_usd: number | null;
+        };
+        /**
          * RunDetail
          * @description `verdict` is the judge's `monitor.verdict`; `monitor_runs` are the monitor runs over this
          *     run and `score_runs` the scores of it, queued ones too, newest first.
@@ -4963,7 +5053,7 @@ export interface components {
          *     it ran, known once the run is sealed and its truth file arrived. `steps` counts its agents'
          *     model calls, `cost_usd` sums its priced live model responses, monitor calls included (None
          *     when there is none), `reward` is the verifier's last reward and `reviews` counts the
-         *     monitor runs over it that have started. `preset` is the preset of the monitor that watches
+         *     monitor runs over it, queued ones too. `preset` is the preset of the monitor that watches
          *     the run, or that a monitor run runs, and `monitor_mode` a monitor run's mode. `held` lists
          *     its agents paused now, by the monitor or an operator, one entry per pause.
          */
@@ -5773,7 +5863,8 @@ export interface components {
          *     runs the signals alone, `judge_only` the judge alone. `profile` replaces the model of every
          *     sweep, the review and the judge. `config` is one more `[monitor]` layer, laid over the
          *     config files and the scenario. `budget_usd` replaces the spend cap of each monitor run that
-         *     the scenario's limits or the preset give.
+         *     the scenario's limits or the preset give. When the estimate is above `confirm_above_usd`,
+         *     the monitor runs start only with `confirm`, like `aims monitor --yes`.
          */
         StartMonitor: {
             /** Budget Usd */
@@ -5782,6 +5873,11 @@ export interface components {
             config?: {
                 [key: string]: components["schemas"]["JsonValue"];
             } | null;
+            /**
+             * Confirm
+             * @default false
+             */
+            confirm?: boolean;
             /**
              * Judge Only
              * @default false
@@ -7920,6 +8016,80 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Started"];
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    estimate_monitor: {
+        parameters: {
+            query?: {
+                preset?: ("signals" | "standard" | "research") | null;
+                signals_only?: boolean;
+                judge_only?: boolean;
+                profile?: string | null;
+                budget_usd?: number | null;
+                samples?: number;
+            };
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewEstimate"];
                 };
             };
             /** @description Not signed in */
@@ -10751,6 +10921,7 @@ export const pathsApiRunsGetParametersQueryCategoryAnyOf0Values: ReadonlyArray<F
 export const pathsApiRunsRun_idFlagsGetParametersQueryLayerAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs/{run_id}/flags"]["get"]["parameters"]["query"]["layer"]> = ["signal", "sweep", "judge"];
 export const pathsApiRunsRun_idFlagsGetParametersQueryCategoryAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs/{run_id}/flags"]["get"]["parameters"]["query"]["category"]> = ["covert_communication", "scorer_tampering", "transcript_tampering", "deceiving_operator", "evading_checks", "collective_over_own_task", "drift", "loop_or_confusion", "fabricated_completion", "constraint_violation", "eval_awareness", "alerting_operator", "egress_attempt", "privilege_escalation", "monitor_manipulation"];
 export const pathsApiRunsRun_idFlagsGetParametersQueryStatusAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs/{run_id}/flags"]["get"]["parameters"]["query"]["status"]> = ["open", "cleared", "tainted", "confirmed", "rejected", "unclear"];
+export const pathsApiRunsRun_idMonitorEstimateGetParametersQueryPresetAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs/{run_id}/monitor/estimate"]["get"]["parameters"]["query"]["preset"]> = ["signals", "standard", "research"];
 export const pathsApiScenariosSourceNameEstimateGetParametersQueryMonitorAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/scenarios/{source}/{name}/estimate"]["get"]["parameters"]["query"]["monitor"]> = ["off", "signals", "standard", "research"];
 export const agentCompactedStrategyValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentCompacted"]["strategy"]> = ["trim", "summary"];
 export const agentFinishedReasonValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentFinished"]["reason"]> = ["submitted", "no_submit", "budget_steps", "budget_output_tokens", "budget_cost", "budget_wall", "context_exhausted", "model_error", "sandbox_failed", "divergence", "killed", "cancelled", "error"];
@@ -10839,6 +11010,8 @@ export const profileReasoningValues: ReadonlyArray<FlattenedDeepRequired<compone
 export const profileSummaryAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Profile"]["summary"]> = ["auto", "concise", "detailed"];
 export const replayDivergenceKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ReplayDivergence"]["kind"]> = ["output", "channel"];
 export const resumeBodyThenValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ResumeBody"]["then"]> = ["continue", "kill", "inject", "deny"];
+export const reviewEstimateModeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ReviewEstimate"]["mode"]> = ["full", "signals_only", "judge_only"];
+export const reviewEstimatePresetValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ReviewEstimate"]["preset"]> = ["off", "signals", "standard", "research"];
 export const runFinishedStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunFinished"]["status"]> = ["completed", "failed", "killed", "cancelled"];
 export const runMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunMessage"]["kind"]> = ["run"];
 export const runStartedKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunStarted"]["kind"]> = ["scenario", "monitor", "models.check", "score"];

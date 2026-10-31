@@ -32,11 +32,14 @@ from aims.events import (
 )
 from aims.events.store import LOG
 from aims.models import DeltaBus
+from aims.monitor.offline import offline_monitor
+from aims.monitor.setup import ResolvedMonitor
 from aims.run.estimate import (
     CACHED_SHARE,
     Estimate,
     History,
     Progress,
+    estimate_review,
     estimate_runs,
     guard,
     history,
@@ -45,12 +48,14 @@ from aims.run.estimate import (
     project,
     project_run,
     provider,
+    reviews_confirm,
     spend,
     spend_lines,
 )
 from aims.run.view import LiveView, _Run
 from aims.scenario import Bundle
 from aims.scenario import load as load_scenario
+from aims.wire import MonitorMode
 
 CONFIG = """\
 [profiles.agent]
@@ -477,6 +482,134 @@ async def test_the_monitor_estimate_matches_the_same_monitor(
     assert e.total.typical_usd == pytest.approx(0.1 + math.sqrt(0.08))
     signals = one(settings, found, bundle, preset="signals")
     assert signals.parts[0].monitor_preset == "signals"
+
+
+# Offline monitor runs
+
+
+async def stepped(store: LocalEventStore, scenario: str, steps: int) -> str:
+    """A sealed run of `scenario` whose agent took `steps` steps."""
+    run_id = await store.create_run(
+        RunStarted(scenario=scenario, oversight="observe", agents=["a"])
+    )
+    drafts = [
+        Draft(AgentStep(n=n, call_id=f"c{n}", status="completed"), "a") for n in range(1, 1 + steps)
+    ]
+    await store.append(run_id, [*drafts, Draft(RunFinished(status="completed"))])
+    return run_id
+
+
+async def reviewed(
+    store: LocalEventStore,
+    origin: str,
+    monitor: ResolvedMonitor,
+    cost: float,
+    *,
+    mode: MonitorMode = "full",
+    status: RunStatus = "completed",
+) -> str:
+    """A sealed monitor run over `origin` that cost `cost`, as a runner writes it."""
+    info = await store.run(origin)
+    head = await store.head(origin)
+    assert info is not None
+    assert head is not None
+    started = RunStarted(
+        scenario=info.scenario,
+        oversight="observe",
+        kind="monitor",
+        origin=origin,
+        origin_head=head.hash,
+        config={"monitor": monitor.snapshot(), "mode": mode},
+    )
+    run_id = await store.create_run(started)
+    reply = _response("w", ModelUsage(), cost)
+    await store.append(run_id, [Draft(reply), Draft(RunFinished(status=status))])
+    return run_id
+
+
+def watcher(settings: Settings, bundle: Bundle, **kw: Any) -> ResolvedMonitor:
+    agents = list(plan(settings, bundle).profiles.values())
+    return offline_monitor(
+        settings.models, settings.prompts, bundle.scenario, agents, layers=settings.monitor, **kw
+    )
+
+
+@pytest.mark.anyio
+async def test_a_review_is_priced_per_step_from_past_reviews_of_the_same_monitor(
+    tmp_path: Path, store: LocalEventStore
+) -> None:
+    settings, path = write(tmp_path, preset="standard")
+    bundle = load_scenario(path)
+    m = watcher(settings, bundle, preset="standard")
+    origin = await stepped(store, "s", 10)
+
+    e = await estimate_review(store, origin, m, "full")
+    assert (e.steps, e.runs, e.typical_usd, e.ceiling_usd) == (10, 0, None, m.budget_usd)
+    assert e.lines == [
+        "Review: standard monitor, over 10 agent steps. No past reviews to go by. Stops at"
+        f" ${m.budget_usd:,.2f}, its spend cap."
+    ]
+
+    await reviewed(store, await stepped(store, "t", 5), m, 1.0)
+    e = await estimate_review(store, origin, m, "full")
+    assert (e.runs, e.same_scenario, e.typical_usd) == (1, False, pytest.approx(2.0))
+
+    other = await stepped(store, "s", 20)
+    await reviewed(store, other, m, 0.4)
+    await reviewed(store, other, m, 9.0, mode="judge_only")
+    await reviewed(store, other, m, 9.0, status="failed")
+    await reviewed(store, other, watcher(settings, bundle, preset="research"), 9.0)
+    await reviewed(store, other, watcher(settings, bundle, preset="standard", profile="other"), 9.0)
+    e = await estimate_review(store, origin, m, "full", samples=3)
+    assert (e.runs, e.same_scenario, e.doubled) == (1, True, True)
+    assert (e.typical_usd, e.high_usd) == (pytest.approx(0.2), pytest.approx(0.4))
+    assert e.total.typical_usd == pytest.approx(0.6)
+    assert e.total.ceiling_usd == pytest.approx(3 * m.budget_usd)
+    assert (
+        "Typically $0.20 (median of 1 past review of this scenario, scaled to these steps)."
+        in (e.lines[0])
+    )
+    assert e.lines[1] == f"3 reviews: typically $0.60, at most ${3 * m.budget_usd:,.2f}."
+
+    await reviewed(store, other, m, 1000.0)
+    e = await estimate_review(store, origin, m, "full")
+    assert e.high_usd == m.budget_usd
+    assert "1 in 10 may hit the cap." in e.lines[0]
+
+    free = await estimate_review(
+        store, origin, watcher(settings, bundle, signals_only=True), "signals_only"
+    )
+    assert (free.typical_usd, free.ceiling_usd, free.confirm) == (0.0, 0.0, False)
+    assert free.lines == [
+        "Review: signals monitor, signals only; no layer calls a model, so it costs nothing."
+    ]
+    unpriced = watcher(settings, bundle, preset="standard", profile="glimmer")
+    e = await estimate_review(store, origin, unpriced, "full", samples=100)
+    assert (e.priced, e.confirm, e.total.ceiling_usd) == (False, False, None)
+    with pytest.raises(KeyError):
+        await estimate_review(store, "01a18280-0000-7000-8000-000000000000", m, "full")
+
+
+@pytest.mark.anyio
+async def test_reviews_need_a_yes_above_the_limit_together(
+    tmp_path: Path, store: LocalEventStore
+) -> None:
+    settings, path = write(tmp_path, preset="standard")
+    bundle = load_scenario(path)
+    m = watcher(settings, bundle, preset="standard", budget_usd=6.0)
+    origin = await stepped(store, "s", 10)
+    one_run = await estimate_review(store, origin, m, "full", samples=3, confirm_above_usd=20)
+    assert (one_run.confirm, reviews_confirm([one_run])) == (False, None)
+    four = await estimate_review(store, origin, m, "full", samples=4, confirm_above_usd=20)
+    assert four.confirm
+    assert reviews_confirm([four]) == "the caps allow $24.00, above confirm_above_usd $20.00"
+    assert reviews_confirm([one_run, one_run]) is not None
+
+    await reviewed(store, await stepped(store, "s", 10), m, 1.0)
+    four = await estimate_review(store, origin, m, "full", samples=4, confirm_above_usd=20)
+    assert (four.total.high_usd, four.confirm) == (pytest.approx(8.0), False)
+    ten = await estimate_review(store, origin, m, "full", samples=11, confirm_above_usd=20)
+    assert reviews_confirm([ten]) == "the high estimate $22.00 is above confirm_above_usd $20.00"
 
 
 # Spend and credits

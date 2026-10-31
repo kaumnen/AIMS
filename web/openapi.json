@@ -8918,6 +8918,135 @@
         "title": "Retries",
         "type": "object"
       },
+      "ReviewEstimate": {
+        "description": "What `samples` offline monitor runs over run `run_id` cost at list prices. Each stops at\n`ceiling_usd`, its spend cap. `typical_usd` is the median of `runs` past monitor runs with\nthe same preset, models and mode, each scaled from its run's agent steps to this run's\n`steps`: of the same scenario when `same_scenario`, else of any. `high_usd` is their 90th\npercentile, or twice the median when `doubled` (under 10 runs); neither passes the cap.\n`priced` is false when no model of the monitor has a price, so its cost is not counted;\nwith no model at all every figure is 0. `total` is every sample together, and `confirm`\nsays they start only with a person's yes, as runs do.",
+        "properties": {
+          "ceiling_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ceiling Usd"
+          },
+          "confirm": {
+            "default": false,
+            "title": "Confirm",
+            "type": "boolean"
+          },
+          "confirm_above_usd": {
+            "default": 20.0,
+            "title": "Confirm Above Usd",
+            "type": "number"
+          },
+          "doubled": {
+            "default": false,
+            "title": "Doubled",
+            "type": "boolean"
+          },
+          "high_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "High Usd"
+          },
+          "lines": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "mode": {
+            "enum": [
+              "full",
+              "signals_only",
+              "judge_only"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "preset": {
+            "enum": [
+              "off",
+              "signals",
+              "standard",
+              "research"
+            ],
+            "title": "Preset",
+            "type": "string"
+          },
+          "priced": {
+            "default": true,
+            "title": "Priced",
+            "type": "boolean"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "runs": {
+            "default": 0,
+            "title": "Runs",
+            "type": "integer"
+          },
+          "same_scenario": {
+            "default": false,
+            "title": "Same Scenario",
+            "type": "boolean"
+          },
+          "samples": {
+            "title": "Samples",
+            "type": "integer"
+          },
+          "steps": {
+            "title": "Steps",
+            "type": "integer"
+          },
+          "total": {
+            "$ref": "#/components/schemas/CostTotal"
+          },
+          "typical_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Typical Usd"
+          }
+        },
+        "required": [
+          "run_id",
+          "preset",
+          "mode",
+          "samples",
+          "steps",
+          "total",
+          "typical_usd",
+          "high_usd",
+          "ceiling_usd",
+          "priced",
+          "runs",
+          "same_scenario",
+          "doubled",
+          "confirm_above_usd",
+          "confirm",
+          "lines"
+        ],
+        "title": "ReviewEstimate",
+        "type": "object"
+      },
       "RunDetail": {
         "description": "`verdict` is the judge's `monitor.verdict`; `monitor_runs` are the monitor runs over this\nrun and `score_runs` the scores of it, queued ones too, newest first.",
         "properties": {
@@ -9203,7 +9332,7 @@
       },
       "RunSummary": {
         "additionalProperties": false,
-        "description": "`kind` says what the run is and `origin` names the run a monitor run watched. `flags`\ncounts its logical flags and `categories` them per category, whatever their status;\n`max_importance` is the highest importance of a flag not cleared or rejected,\n`verdict_severity` the judge's, and `max_severity` the higher of the two, 0 for neither.\n`series` and `series_index` place a run in its series; `variant` is the scenario variant\nit ran, known once the run is sealed and its truth file arrived. `steps` counts its agents'\nmodel calls, `cost_usd` sums its priced live model responses, monitor calls included (None\nwhen there is none), `reward` is the verifier's last reward and `reviews` counts the\nmonitor runs over it that have started. `preset` is the preset of the monitor that watches\nthe run, or that a monitor run runs, and `monitor_mode` a monitor run's mode. `held` lists\nits agents paused now, by the monitor or an operator, one entry per pause.",
+        "description": "`kind` says what the run is and `origin` names the run a monitor run watched. `flags`\ncounts its logical flags and `categories` them per category, whatever their status;\n`max_importance` is the highest importance of a flag not cleared or rejected,\n`verdict_severity` the judge's, and `max_severity` the higher of the two, 0 for neither.\n`series` and `series_index` place a run in its series; `variant` is the scenario variant\nit ran, known once the run is sealed and its truth file arrived. `steps` counts its agents'\nmodel calls, `cost_usd` sums its priced live model responses, monitor calls included (None\nwhen there is none), `reward` is the verifier's last reward and `reviews` counts the\nmonitor runs over it, queued ones too. `preset` is the preset of the monitor that watches\nthe run, or that a monitor run runs, and `monitor_mode` a monitor run's mode. `held` lists\nits agents paused now, by the monitor or an operator, one entry per pause.",
         "properties": {
           "categories": {
             "additionalProperties": {
@@ -11409,7 +11538,7 @@
         "type": "object"
       },
       "StartMonitor": {
-        "description": "`preset` replaces the preset the config files and the run's scenario name. `signals_only`\nruns the signals alone, `judge_only` the judge alone. `profile` replaces the model of every\nsweep, the review and the judge. `config` is one more `[monitor]` layer, laid over the\nconfig files and the scenario. `budget_usd` replaces the spend cap of each monitor run that\nthe scenario's limits or the preset give.",
+        "description": "`preset` replaces the preset the config files and the run's scenario name. `signals_only`\nruns the signals alone, `judge_only` the judge alone. `profile` replaces the model of every\nsweep, the review and the judge. `config` is one more `[monitor]` layer, laid over the\nconfig files and the scenario. `budget_usd` replaces the spend cap of each monitor run that\nthe scenario's limits or the preset give. When the estimate is above `confirm_above_usd`,\nthe monitor runs start only with `confirm`, like `aims monitor --yes`.",
         "properties": {
           "budget_usd": {
             "anyOf": [
@@ -11436,6 +11565,11 @@
               }
             ],
             "title": "Config"
+          },
+          "confirm": {
+            "default": false,
+            "title": "Confirm",
+            "type": "boolean"
           },
           "judge_only": {
             "default": false,
@@ -15377,6 +15511,175 @@
           }
         },
         "summary": "Monitor Run",
+        "tags": [
+          "monitor"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/monitor/estimate": {
+      "get": {
+        "description": "What monitor runs over a sealed run cost, as `aims monitor` prints it before they start:\nthe typical and high cost of past monitor runs with the same monitor, per agent step, and\neach one's spend cap. Takes the fields of the request that starts them, but `config`.",
+        "operationId": "estimate_monitor",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "preset",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "signals",
+                    "standard",
+                    "research"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Preset"
+            }
+          },
+          {
+            "in": "query",
+            "name": "signals_only",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Signals Only",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "judge_only",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Judge Only",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "profile",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Profile"
+            }
+          },
+          {
+            "in": "query",
+            "name": "budget_usd",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Budget Usd"
+            }
+          },
+          {
+            "in": "query",
+            "name": "samples",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Samples",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewEstimate"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not signed in"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Invalid request"
+          }
+        },
+        "summary": "Estimate Monitor",
         "tags": [
           "monitor"
         ]
