@@ -45,6 +45,9 @@ export default function FilesTab({
   const opened = useQuery(fileQuery(source, name, file));
   const schema = useQuery(schemaQuery);
   const [draft, setDraft] = useState<string | null>(null);
+  // the version the draft was started from: a save replaces that one or is refused, even if
+  // the file was read again since
+  const [from, setFrom] = useState<string | null>(null);
   const [problems, setProblems] = useState<LineProblem[]>([]);
   const [status, setStatus] = useState<string | null>(null);
   const [conflict, setConflict] = useState<string | null>(null);
@@ -95,7 +98,12 @@ export default function FilesTab({
     onFile(next);
   };
 
-  const save = async (etag: string | null = base?.etag ?? null) => {
+  const edit = (t: string) => {
+    if (draft === null) setFrom(base?.etag ?? null);
+    setDraft(t);
+  };
+
+  const save = async (etag: string | null = from ?? base?.etag ?? null) => {
     if (!writable || busy || base === undefined || base.text === null) return;
     setBusy(true);
     setStatus("Saving");
@@ -104,6 +112,7 @@ export default function FilesTab({
       const now: Opened = { text, size: new Blob([text]).size, etag: `"${saved.etag}"` };
       queryClient.setQueryData(fileQuery(source, name, file).queryKey, now);
       setDraft(null);
+      setFrom(null);
       setConflict(null);
       setStatus("Saved");
       refresh();
@@ -131,6 +140,7 @@ export default function FilesTab({
 
   const reload = async () => {
     setDraft(null);
+    setFrom(null);
     setConflict(null);
     setStatus(null);
     await opened.refetch();
@@ -263,7 +273,7 @@ export default function FilesTab({
               schema={isScenario ? schema.data : undefined}
               readOnly={!writable}
               problems={isScenario ? problems : []}
-              onChange={(t) => setDraft(t)}
+              onChange={edit}
               onSave={() => void save()}
               label={`Contents of ${file}`}
               goto={goto}

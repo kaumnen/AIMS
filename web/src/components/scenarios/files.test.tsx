@@ -38,13 +38,16 @@ beforeEach(() => {
       return new Response(onDisk.text, { headers: { ETag: onDisk.etag } });
     }
     if (url.pathname === `${BASE}/files/scenario.yaml` && request.method === "PUT") {
-      puts.push({ body: await request.text(), ifMatch: request.headers.get("If-Match") });
-      if (putStatus === 412) {
+      const body = await request.text();
+      const ifMatch = request.headers.get("If-Match");
+      puts.push({ body, ifMatch });
+      if (putStatus === 412 || ifMatch !== onDisk.etag) {
         return Response.json(
           { status: 412, title: "Precondition failed", detail: "the file changed" },
           { status: 412, headers: { "Content-Type": "application/problem+json" } },
         );
       }
+      onDisk = { text: body, etag: '"e2"' };
       return Response.json({ path: "scenario.yaml", etag: "e2", warnings: [] });
     }
     if (url.pathname === "/api/scenarios/schema") return Response.json({ properties: {} });
@@ -81,7 +84,7 @@ function renderTab(writable = true) {
       <FilesTab detail={detail(writable)} file="scenario.yaml" onFile={onFile} />
     </QueryClientProvider>,
   );
-  return onFile;
+  return { onFile, client };
 }
 
 async function editor(): Promise<EditorView> {
@@ -98,7 +101,7 @@ function type(view: EditorView, from: string, to: string) {
 }
 
 test("the tree opens folders on a click and the open file sits first", async () => {
-  const onFile = renderTab();
+  const { onFile } = renderTab();
   const folder = await screen.findByRole("button", { name: "selftest" });
   expect(folder.getAttribute("aria-expanded")).toBe("false");
   fireEvent.click(folder);
@@ -141,6 +144,19 @@ test("a file changed on disk is not overwritten unless you say so", async () => 
   fireEvent.click(screen.getByRole("button", { name: "Keep mine, overwrite" }));
   await screen.findByText("Saved");
   expect(puts.at(-1)).toEqual({ body: TEXT.replace("demo", "mine"), ifMatch: '"e9"' });
+});
+
+test("a file read again under a draft still saves against the version the draft began from", async () => {
+  const { client } = renderTab();
+  const view = await editor();
+  type(view, "demo", "mine");
+  onDisk = { text: TEXT.replace("demo", "theirs"), etag: '"e9"' };
+  await act(() => client.refetchQueries({ queryKey: ["scenarios", "file"] }));
+  // the query tells the page on its next tick
+  await act(() => new Promise((r) => setTimeout(r, 20)));
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("changed on disk");
+  expect(puts.at(-1)?.ifMatch).toBe('"e1"');
 });
 
 test("a read-only source opens files without a way to save", async () => {
