@@ -633,6 +633,7 @@ async def test_openapi_documents_the_monitor_surface(cp: CP) -> None:
         "models.check",
         "monitor",
         "score",
+        "selftest",
     }
     status = schemas["FlagInfo"]["properties"]["status"]["enum"]
     assert status == ["open", "cleared", "tainted", "confirmed", "rejected", "unclear"]

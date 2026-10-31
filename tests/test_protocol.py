@@ -66,6 +66,7 @@ TYPES = {
     "score.unexplained",
     "score.answer",
     "score.awareness",
+    "selftest.case",
 }
 RESERVED_TAGS: set[str] = set()
 RESERVED_TYPES: set[str] = set()

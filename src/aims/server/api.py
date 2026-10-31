@@ -50,7 +50,7 @@ from aims.prompts import Prompts, TextError, load_prompts
 from aims.run import selftest
 from aims.run.estimate import Estimate, History, estimate_fork, estimate_runs, needs_confirm
 from aims.run.fork import CutAt, Origin, check_fork, cut_at, live_profiles, load_origin
-from aims.run.job import Job, fork_jobs, monitor_for, scenario_jobs
+from aims.run.job import Job, fork_jobs, monitor_for, scenario_jobs, selftest_job
 from aims.run.runner import RunError, agent_profile, check
 from aims.scenario import Bundle, Scenario, ScenarioError, folder_tar, load, parse
 from aims.scenario import budget as budgets
@@ -394,9 +394,10 @@ async def get_series(name: str, principal: Viewer, state: State) -> SeriesInfo:
     )
 
 
-# Runs whose content shows a run's truth: a score names the plants, where each was taken and
-# the facts the classifier was told. Viewers see them listed, not opened.
-TRUTH_KINDS = ("score",)
+# Runs whose content shows a scenario's truth: a score names the plants, where each was taken
+# and the facts the classifier was told; a self-test and its cases run the exploit and say
+# which plants it took. Viewers see them listed, not opened.
+TRUTH_KINDS = ("score", "selftest", "selftest.case")
 
 
 async def _shown(state: ServerState, principal: Principal, run_id: str) -> None:
@@ -408,7 +409,7 @@ async def _shown(state: ServerState, principal: Principal, run_id: str) -> None:
         raise ProblemException(
             403,
             "Forbidden",
-            f"a {info.kind} run shows the truth of the run it scores; this needs the operator role",
+            f"a {info.kind} run shows what a scenario hides; this needs the operator role",
             code="truth",
         )
 
@@ -597,7 +598,7 @@ def _check_runner(
     if not known:
         raise ProblemException(409, "Conflict", "no runner has said hello", code="no_runner")
     kind = jobs[0].kind if jobs else None
-    if kind in ("monitor", "score") and not any(kind in c.hello.kinds for c in known):
+    if kind in ("monitor", "score", "selftest") and not any(kind in c.hello.kinds for c in known):
         raise ProblemException(422, "Invalid request", f"no runner runs {kind} jobs", code="kind")
     envs = set(jobs[0].envs()) if jobs else set()
     if envs and not any(envs <= set(c.envs) for c in known):
@@ -1666,6 +1667,78 @@ async def check_scenario(body: ScenarioCheck, principal: Viewer, state: State) -
     bundle = Bundle(scenario, body.text.encode())
     warnings = check(bundle, settings.models, body.profile, settings.prompts)
     return CheckResult(ok=True, errors=[], warnings=[ProblemError(msg=w) for w in warnings])
+
+
+class StartSelfTest(BaseModel):
+    """`profile` as in StartRun; the agents are scripted, so no model is called."""
+
+    profile: str | None = None
+    runner: str | None = None
+
+
+@router.post(
+    "/scenarios/{source}/{name}/selftest",
+    status_code=202,
+    tags=["scenarios"],
+    responses=responses(404, 409),
+)
+async def start_selftest(
+    source: str,
+    name: str,
+    body: StartSelfTest,
+    principal: Operator,
+    state: State,
+    sources: SourcesDep,
+) -> Started:
+    """Queue the scenario's self-test, as `aims scenario check` runs it: a run of kind
+    `selftest` that records each case, each case a `selftest.case` run under it. It needs a
+    runner with the kernel tracer up."""
+    _, path = sources.scenario(source, name)
+    settings = state.config.settings()
+    try:
+        bundle = load(path / "scenario.yaml")
+    except ScenarioError as e:
+        raise ProblemException(
+            422, "Scenario does not load", code="scenario", errors=scenario_problems(e)
+        ) from None
+    if not selftest.wanted(bundle.scenario):
+        raise ProblemException(
+            422,
+            "No self-test",
+            "the scenario has no selftest and no impossible plant",
+            code="selftest",
+        )
+    problems = check(bundle, settings.models, body.profile, settings.prompts)
+    try:
+        selftest.cases(bundle)
+    except selftest.SelfTestError as e:
+        problems += e.problems
+    if problems:
+        raise ProblemException(
+            422,
+            "Self-test cannot run",
+            code="selftest",
+            errors=[ProblemError(msg=p) for p in problems],
+        )
+    try:
+        folder = await asyncio.to_thread(folder_tar, path / "scenario.yaml")
+    except OSError as e:
+        raise ProblemException(422, "Self-test cannot run", str(e), code="selftest") from None
+    try:
+        job = selftest_job(
+            bundle,
+            settings.models,
+            settings.prompts,
+            folder=hashlib.sha256(folder).hexdigest(),
+            profile=body.profile,
+            config_files=settings.layers.digests(),
+        )
+    except (ProfileError, UnknownTool, TextError) as e:
+        raise ProblemException(422, "Self-test cannot run", str(e), code="selftest") from None
+    blobs = {hashlib.sha256(b).hexdigest(): b for b in [*bundle.blobs(), folder]}
+    return await _queue(
+        state, principal.name, [job], runner=body.runner, parallel=None, blobs=blobs
+    )
 
 
 # Tokens

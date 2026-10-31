@@ -942,6 +942,28 @@ export interface paths {
         patch: operations["patch_prompts"];
         trace?: never;
     };
+    "/api/scenarios/{source}/{name}/selftest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start Selftest
+         * @description Queue the scenario's self-test, as `aims scenario check` runs it: a run of kind
+         *     `selftest` that records each case, each case a `selftest.case` run under it. It needs a
+         *     runner with the kernel tracer up.
+         */
+        post: operations["start_selftest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/series/{name}": {
         parameters: {
             query?: never;
@@ -2391,7 +2413,7 @@ export interface components {
             next: string | null;
         };
         /** @enum {string} */
-        EventType: "agent.compacted" | "agent.finished" | "agent.held" | "agent.input" | "agent.report" | "agent.started" | "agent.step" | "audit.lost" | "audit.spill" | "cache.probe" | "channel.message" | "channel.read" | "channel.snapshot" | "exec.finished" | "exec.started" | "file.access" | "file.setattr" | "file.sync" | "file.write" | "fs.snapshot" | "ipc.event" | "log.truncated" | "mem.exec" | "model.checked" | "model.request" | "model.response" | "monitor.action" | "monitor.cleared" | "monitor.degraded" | "monitor.flag" | "monitor.sweep" | "monitor.verdict" | "net.connect" | "ns.event" | "operator.action" | "plant.triggered" | "proc.exec" | "proc.exit" | "proc.fork" | "proc.output" | "proc.signal" | "ptrace.event" | "replay.divergence" | "resource.sample" | "run.finished" | "run.started" | "sandbox.archived" | "sandbox.started" | "sandbox.stopped" | "score.answer" | "score.awareness" | "score.unexplained" | "score.unit" | "sys.denied" | "task.scored" | "tool.call" | "tool.result";
+        EventType: "agent.compacted" | "agent.finished" | "agent.held" | "agent.input" | "agent.report" | "agent.started" | "agent.step" | "audit.lost" | "audit.spill" | "cache.probe" | "channel.message" | "channel.read" | "channel.snapshot" | "exec.finished" | "exec.started" | "file.access" | "file.setattr" | "file.sync" | "file.write" | "fs.snapshot" | "ipc.event" | "log.truncated" | "mem.exec" | "model.checked" | "model.request" | "model.response" | "monitor.action" | "monitor.cleared" | "monitor.degraded" | "monitor.flag" | "monitor.sweep" | "monitor.verdict" | "net.connect" | "ns.event" | "operator.action" | "plant.triggered" | "proc.exec" | "proc.exit" | "proc.fork" | "proc.output" | "proc.signal" | "ptrace.event" | "replay.divergence" | "resource.sample" | "run.finished" | "run.started" | "sandbox.archived" | "sandbox.started" | "sandbox.stopped" | "score.answer" | "score.awareness" | "score.unexplained" | "score.unit" | "selftest.case" | "sys.denied" | "task.scored" | "tool.call" | "tool.result";
         /** @description Each event type and the schema of its `data`. */
         EventTypes: {
             "agent.compacted": components["schemas"]["AgentCompacted"];
@@ -2447,6 +2469,7 @@ export interface components {
             "score.awareness": components["schemas"]["ScoreAwareness"];
             "score.unexplained": components["schemas"]["ScoreUnexplained"];
             "score.unit": components["schemas"]["ScoreUnit"];
+            "selftest.case": components["schemas"]["SelfTestCase"];
             "sys.denied": components["schemas"]["SysDenied"];
             "task.scored": components["schemas"]["TaskScored"];
             "tool.call": components["schemas"]["ToolCall"];
@@ -3254,7 +3277,7 @@ export interface components {
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
-            kind: "models.check" | "scenario";
+            kind: "models.check" | "scenario" | "selftest";
             /** Models */
             models?: {
                 [key: string]: components["schemas"]["Profile"];
@@ -5278,7 +5301,9 @@ export interface components {
         /**
          * RunStarted
          * @description `kind` says what the run is: a scenario run, a monitor run over the sealed run `origin`
-         *     (whose head hash was `origin_head`), a scoring of `origin`, or a model check. `monitor` is
+         *     (whose head hash was `origin_head`), a scoring of `origin`, a model check, or a scenario's
+         *     self-test (`selftest`) or one case of it (`selftest.case`, whose `origin` is that run).
+         *     `monitor` is
          *     the identity hash of the monitor that watches the run: its prompts, rubric, schemas, models,
          *     lanes, signal versions, rules and AIMS version; None when the run has no monitor.
          *
@@ -5301,7 +5326,7 @@ export interface components {
              * @default scenario
              * @enum {string}
              */
-            kind: "scenario" | "monitor" | "models.check" | "score";
+            kind: "scenario" | "monitor" | "models.check" | "score" | "selftest" | "selftest.case";
             /**
              * Monitor
              * @default null
@@ -5388,7 +5413,7 @@ export interface components {
              * @default scenario
              * @enum {string}
              */
-            kind: "scenario" | "monitor" | "models.check" | "score";
+            kind: "scenario" | "monitor" | "models.check" | "score" | "selftest" | "selftest.case";
             /** Max Importance */
             max_importance: number | null;
             /**
@@ -5469,7 +5494,7 @@ export interface components {
             /** Jobs */
             jobs?: string[];
             /** Kinds */
-            kinds?: ("scenario" | "models.check" | "monitor" | "score")[];
+            kinds?: ("scenario" | "models.check" | "monitor" | "score" | "selftest")[];
             /** Name */
             name: string;
             /**
@@ -5498,7 +5523,7 @@ export interface components {
              */
             free: number;
             /** Kinds */
-            kinds: ("scenario" | "models.check" | "monitor" | "score")[];
+            kinds: ("scenario" | "models.check" | "monitor" | "score" | "selftest")[];
             /**
              * Local
              * @default false
@@ -6093,6 +6118,29 @@ export interface components {
             told: ("yes" | "partly" | "no") | null;
         };
         /**
+         * SelfTestCase
+         * @description One run of a scenario's self-test, which a `selftest` run records as each ends: `case`
+         *     is its kind, `name` says which, `run_id` the run it made (nested under this one), `ok`
+         *     whether it proved what it should, `problems` why not and `notes` what else it saw.
+         */
+        SelfTestCase: {
+            /**
+             * Case
+             * @enum {string}
+             */
+            case: "reference" | "exploit" | "empty" | "impossible";
+            /** Name */
+            name: string;
+            /** Notes */
+            notes: string[];
+            /** Ok */
+            ok: boolean;
+            /** Problems */
+            problems: string[];
+            /** Run Id */
+            run_id: string | null;
+        };
+        /**
          * SelfTestOverview
          * @description `impossible` names the impossible plants whose references the self-test also runs.
          */
@@ -6379,6 +6427,16 @@ export interface components {
             /** Monitor */
             monitor?: string | null;
             plants_from?: components["schemas"]["ScenarioRef"] | null;
+            /** Runner */
+            runner?: string | null;
+        };
+        /**
+         * StartSelfTest
+         * @description `profile` as in StartRun; the agents are scripted, so no model is called.
+         */
+        StartSelfTest: {
+            /** Profile */
+            profile?: string | null;
             /** Runner */
             runner?: string | null;
         };
@@ -7475,7 +7533,7 @@ export interface operations {
             query?: {
                 before?: string | null;
                 limit?: number;
-                kind?: ("scenario" | "monitor" | "models.check" | "score") | null;
+                kind?: ("scenario" | "monitor" | "models.check" | "score" | "selftest" | "selftest.case") | null;
                 origin?: string | null;
                 severity?: number | null;
                 category?: ("covert_communication" | "scorer_tampering" | "transcript_tampering" | "deceiving_operator" | "evading_checks" | "collective_over_own_task" | "drift" | "loop_or_confusion" | "fabricated_completion" | "constraint_violation" | "eval_awareness" | "alerting_operator" | "egress_attempt" | "privilege_escalation" | "monitor_manipulation") | null;
@@ -10045,6 +10103,78 @@ export interface operations {
             };
         };
     };
+    start_selftest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartSelfTest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Started"];
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     get_series: {
         parameters: {
             query?: never;
@@ -11610,7 +11740,7 @@ type ReadonlyArray<T> = [
 export const pathsApiConfigLayerGetParametersPathLayerValues: ReadonlyArray<FlattenedDeepRequired<paths>["/api/config/{layer}"]["get"]["parameters"]["path"]["layer"]> = ["user", "project"];
 export const pathsApiConfigLayerPutParametersPathLayerValues: ReadonlyArray<FlattenedDeepRequired<paths>["/api/config/{layer}"]["put"]["parameters"]["path"]["layer"]> = ["user", "project"];
 export const pathsApiConfigLayerPatchParametersPathLayerValues: ReadonlyArray<FlattenedDeepRequired<paths>["/api/config/{layer}"]["patch"]["parameters"]["path"]["layer"]> = ["user", "project"];
-export const pathsApiRunsGetParametersQueryKindAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs"]["get"]["parameters"]["query"]["kind"]> = ["scenario", "monitor", "models.check", "score"];
+export const pathsApiRunsGetParametersQueryKindAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs"]["get"]["parameters"]["query"]["kind"]> = ["scenario", "monitor", "models.check", "score", "selftest", "selftest.case"];
 export const pathsApiRunsGetParametersQueryCategoryAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs"]["get"]["parameters"]["query"]["category"]> = ["covert_communication", "scorer_tampering", "transcript_tampering", "deceiving_operator", "evading_checks", "collective_over_own_task", "drift", "loop_or_confusion", "fabricated_completion", "constraint_violation", "eval_awareness", "alerting_operator", "egress_attempt", "privilege_escalation", "monitor_manipulation"];
 export const pathsApiRunsRun_idFlagsGetParametersQueryLayerAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs/{run_id}/flags"]["get"]["parameters"]["query"]["layer"]> = ["signal", "sweep", "judge"];
 export const pathsApiRunsRun_idFlagsGetParametersQueryCategoryAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs/{run_id}/flags"]["get"]["parameters"]["query"]["category"]> = ["covert_communication", "scorer_tampering", "transcript_tampering", "deceiving_operator", "evading_checks", "collective_over_own_task", "drift", "loop_or_confusion", "fabricated_completion", "constraint_violation", "eval_awareness", "alerting_operator", "egress_attempt", "privilege_escalation", "monitor_manipulation"];
@@ -11646,7 +11776,7 @@ export const costFiguresTierValues: ReadonlyArray<FlattenedDeepRequired<componen
 export const deltaMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["DeltaMessage"]["kind"]> = ["delta"];
 export const deltasDroppedMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["DeltasDroppedMessage"]["kind"]> = ["deltas_dropped"];
 export const endMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EndMessage"]["kind"]> = ["end"];
-export const eventTypeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventType"]> = ["agent.compacted", "agent.finished", "agent.held", "agent.input", "agent.report", "agent.started", "agent.step", "audit.lost", "audit.spill", "cache.probe", "channel.message", "channel.read", "channel.snapshot", "exec.finished", "exec.started", "file.access", "file.setattr", "file.sync", "file.write", "fs.snapshot", "ipc.event", "log.truncated", "mem.exec", "model.checked", "model.request", "model.response", "monitor.action", "monitor.cleared", "monitor.degraded", "monitor.flag", "monitor.sweep", "monitor.verdict", "net.connect", "ns.event", "operator.action", "plant.triggered", "proc.exec", "proc.exit", "proc.fork", "proc.output", "proc.signal", "ptrace.event", "replay.divergence", "resource.sample", "run.finished", "run.started", "sandbox.archived", "sandbox.started", "sandbox.stopped", "score.answer", "score.awareness", "score.unexplained", "score.unit", "sys.denied", "task.scored", "tool.call", "tool.result"];
+export const eventTypeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventType"]> = ["agent.compacted", "agent.finished", "agent.held", "agent.input", "agent.report", "agent.started", "agent.step", "audit.lost", "audit.spill", "cache.probe", "channel.message", "channel.read", "channel.snapshot", "exec.finished", "exec.started", "file.access", "file.setattr", "file.sync", "file.write", "fs.snapshot", "ipc.event", "log.truncated", "mem.exec", "model.checked", "model.request", "model.response", "monitor.action", "monitor.cleared", "monitor.degraded", "monitor.flag", "monitor.sweep", "monitor.verdict", "net.connect", "ns.event", "operator.action", "plant.triggered", "proc.exec", "proc.exit", "proc.fork", "proc.output", "proc.signal", "ptrace.event", "replay.divergence", "resource.sample", "run.finished", "run.started", "sandbox.archived", "sandbox.started", "sandbox.stopped", "score.answer", "score.awareness", "score.unexplained", "score.unit", "selftest.case", "sys.denied", "task.scored", "tool.call", "tool.result"];
 export const eventsMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventsMessage"]["kind"]> = ["events"];
 export const execFinishedEndValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ExecFinished"]["end"]> = ["exited", "timeout", "cancelled", "failed"];
 export const execStartedAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ExecStarted"]["audit"]> = ["kernel", "snapshot"];
@@ -11668,7 +11798,7 @@ export const holdInfoModeAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<compo
 export const ipcEventFamilyAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["IpcEvent"]["family"]> = ["unix", "sysv"];
 export const ipcEventKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["IpcEvent"]["kind"]> = ["bind", "connect", "fifo", "shmget", "shmat"];
 export const jobAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Job"]["audit"]> = ["kernel", "snapshot"];
-export const jobKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Job"]["kind"]> = ["models.check", "scenario"];
+export const jobKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Job"]["kind"]> = ["models.check", "scenario", "selftest"];
 export const jobOptionsOversightAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["JobOptions"]["oversight"]> = ["observe", "autonomous", "human"];
 export const labelInputLabelValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Label-Input"]["label"]> = ["real", "false_alarm", "unclear"];
 export const labelOutputLabelValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Label-Output"]["label"]> = ["real", "false_alarm", "unclear"];
@@ -11715,12 +11845,12 @@ export const reviewEstimateModeValues: ReadonlyArray<FlattenedDeepRequired<compo
 export const reviewEstimatePresetValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ReviewEstimate"]["preset"]> = ["off", "signals", "standard", "research"];
 export const runFinishedStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunFinished"]["status"]> = ["completed", "failed", "killed", "cancelled"];
 export const runMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunMessage"]["kind"]> = ["run"];
-export const runStartedKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunStarted"]["kind"]> = ["scenario", "monitor", "models.check", "score"];
+export const runStartedKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunStarted"]["kind"]> = ["scenario", "monitor", "models.check", "score", "selftest", "selftest.case"];
 export const runStartedOversightValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunStarted"]["oversight"]> = ["observe", "autonomous", "human"];
-export const runSummaryKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunSummary"]["kind"]> = ["scenario", "monitor", "models.check", "score"];
+export const runSummaryKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunSummary"]["kind"]> = ["scenario", "monitor", "models.check", "score", "selftest", "selftest.case"];
 export const runnerHealthMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunnerHealthMessage"]["kind"]> = ["runner"];
-export const runnerHelloKindsValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunnerHello"]["kinds"]> = ["scenario", "models.check", "monitor", "score"];
-export const runnerInfoKindsValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunnerInfo"]["kinds"]> = ["scenario", "models.check", "monitor", "score"];
+export const runnerHelloKindsValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunnerHello"]["kinds"]> = ["scenario", "models.check", "monitor", "score", "selftest"];
+export const runnerInfoKindsValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunnerInfo"]["kinds"]> = ["scenario", "models.check", "monitor", "score", "selftest"];
 export const sandboxStartedAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["SandboxStarted"]["audit"]> = ["kernel", "snapshot"];
 export const sandboxStoppedReasonValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["SandboxStopped"]["reason"]> = ["closed", "killed", "exec_failed"];
 export const scenarioInfoOversightAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScenarioInfo"]["oversight"]> = ["observe", "autonomous", "human"];
@@ -11736,6 +11866,7 @@ export const scoreUnitCauseAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<com
 export const scoreUnitEval_awareAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreUnit"]["eval_aware"]> = ["yes", "no", "unclear"];
 export const scoreUnitRoleValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreUnit"]["role"]> = ["subject", "confederate"];
 export const scoreUnitToldAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreUnit"]["told"]> = ["yes", "partly", "no"];
+export const selfTestCaseCaseValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["SelfTestCase"]["case"]> = ["reference", "exploit", "empty", "impossible"];
 export const separationLayerValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Separation"]["layer"]> = ["signal", "sweep", "judge", "llm", "any"];
 export const startForkAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["StartFork"]["audit"]> = ["kernel", "snapshot"];
 export const startForkMonitorAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["StartFork"]["monitor"]> = ["off", "signals", "standard", "research"];

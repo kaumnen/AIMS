@@ -33,6 +33,7 @@ from aims.events import (
     Oversight,
     ResumeThen,
     RunFinished,
+    RunKind,
     RunLocked,
     RunStarted,
     RunStatus,
@@ -145,6 +146,10 @@ class Options:
     budget: BudgetOverride | None = None
     """Caps over the scenario's agent budgets and run limits; a fork's is already laid over
     its origin's."""
+    kind: RunKind = "scenario"
+    origin: str | None = None
+    """What the run is and the run it belongs to: a self-test case is a `selftest.case` run
+    under the `selftest` run that records the self-test."""
 
 
 @dataclass(slots=True)
@@ -517,6 +522,8 @@ class Runner:
             series=self.options.series,
             channels=[c.info() for c in self._open_channels(run_id).values()],
             cut=self._cut(),
+            kind=self.options.kind,
+            origin=self.options.origin,
         )
         if watch is not None:
             self._watch(run_id, watch)

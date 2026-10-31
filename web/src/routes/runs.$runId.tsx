@@ -137,7 +137,7 @@ function Run() {
     if (status === 403) {
       return (
         <p className="text-muted-foreground flex items-center gap-1">
-          Only operators can open this run: it shows the truth of the run it scores.
+          Only operators can open this run: it shows what a scenario hides.
           <Button variant="link" size="sm" render={<Link to="/runs" />}>
             Back to runs
           </Button>

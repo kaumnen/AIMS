@@ -32,7 +32,7 @@ from aims.wire import (
 
 log = logging.getLogger("aims.node")
 
-KINDS: tuple[JobKindName, ...] = (*BASE_KINDS, "monitor", "score")
+KINDS: tuple[JobKindName, ...] = (*BASE_KINDS, "monitor", "score", "selftest")
 DELTA_EVERY_S = 0.05
 DELTA_BATCH = 2000
 MAX_DONE = 10_000

@@ -34,7 +34,7 @@ class TracerHealth(_Wire):
     restarts: int = 0
 
 
-JobKindName = Literal["scenario", "models.check", "monitor", "score"]
+JobKindName = Literal["scenario", "models.check", "monitor", "score", "selftest"]
 MonitorMode = Literal["full", "signals_only", "judge_only"]
 BASE_KINDS: tuple[JobKindName, ...] = ("scenario", "models.check")
 

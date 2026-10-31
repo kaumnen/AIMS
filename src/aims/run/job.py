@@ -27,7 +27,7 @@ from aims.run.runner import resolve_texts as texts_of
 from aims.scenario import Bundle, Scenario, ScenarioError, from_snapshot, load
 from aims.scenario.budget import BudgetOverride
 
-JobKind = Literal["scenario", "models.check"]
+JobKind = Literal["scenario", "models.check", "selftest"]
 INPUTS = ("file", "files", "verifier", "context")
 
 
@@ -109,11 +109,16 @@ class Job(_Strict):
         return sorted(names)
 
     def needs(self) -> dict[str, JsonValue]:
-        """What a runner must offer to take it."""
-        return {
+        """What a runner must offer to take it. A self-test needs the kernel tracer whatever
+        `audit` says: its plants are proved on what the tracer saw."""
+        out: dict[str, JsonValue] = {
             "envs": list(self.envs()),
-            "kernel": self.kind == "scenario" and self.audit == "kernel",
+            "kernel": self.kind == "selftest"
+            or (self.kind == "scenario" and self.audit == "kernel"),
         }
+        if self.kind == "selftest":
+            out["kind"] = "selftest"
+        return out
 
     def config(self) -> ModelsConfig:
         return models_config([*self.profiles.values(), *self.models.values()])
@@ -218,6 +223,43 @@ def scenario_jobs(
         )
         for i in range(samples)
     ]
+
+
+def selftest_job(
+    bundle: Bundle,
+    models: ModelsConfig,
+    prompts: Prompts,
+    *,
+    folder: str,
+    profile: str | None = None,
+    config_files: dict[str, str | None] | None = None,
+) -> Job:
+    """The job that runs the self-test of the scenario in `bundle`, whose folder's tar has the
+    sha256 `folder`: every agent scripted, so no model is called. Raises ProfileError,
+    TextError or UnknownTool."""
+    agents = bundle.scenario.agents
+    return Job(
+        kind="selftest",
+        run_id=str(uuid.uuid7()),
+        scenario=bundle.snapshot(),
+        profiles={a.id: agent_profile(models, a, profile) for a in agents},
+        texts={a.id: texts_of(prompts, a, bundle.scenario).snapshot() for a in agents},
+        options=JobOptions(profile=profile),
+        config_files=dict(config_files or {}),
+        folder=folder,
+    )
+
+
+def selftest_runner(bench: Bench, job: Job, bundle: Bundle, options: Options) -> Runner:
+    """The Runner of one case of a self-test job, on a bench like `runner_for`'s."""
+    run_bench = dataclasses.replace(
+        bench, models=job.config(), audit="kernel", config_files=dict(job.config_files)
+    )
+    try:
+        texts = {a: Texts.restore(t) for a, t in job.texts.items()}
+    except (KeyError, TypeError, ValueError) as e:
+        raise RunError(f"the job's texts do not load: {e}") from None
+    return Runner(run_bench, bundle, options, profiles=dict(job.profiles), texts=texts)
 
 
 def fork_jobs(

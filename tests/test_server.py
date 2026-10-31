@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import tarfile
 import time
 import uuid
@@ -83,8 +84,10 @@ class FakeRunner:
         self.task: asyncio.Task[None] | None = None
         self.last_id: str | None = None
 
-    def hello_body(self, jobs: list[str] | None = None) -> RunnerHello:
-        return RunnerHello(
+    def hello_body(
+        self, jobs: list[str] | None = None, kinds: list[Any] | None = None
+    ) -> RunnerHello:
+        body = RunnerHello(
             name=self.name,
             version=__version__,
             arch="arm64",
@@ -93,6 +96,7 @@ class FakeRunner:
             slots=2,
             jobs=jobs or [],
         )
+        return body if kinds is None else body.model_copy(update={"kinds": kinds})
 
     async def connect(self) -> None:
         await self.client.hello(self.hello_body())
@@ -671,6 +675,33 @@ async def test_scenario_files_and_truth_are_for_operators(cp: CP) -> None:
         assert broken["errors"]
         assert broken["title"] is None
         assert (await c.get("/api/scenarios/project/missing")).status_code == 404
+
+
+async def test_a_selftest_is_queued_for_a_runner_that_runs_it(cp: CP) -> None:
+    src = Path(__file__).parent.parent / "scenarios/cache-keys"
+    shutil.copytree(src, cp.project.parent / "scenarios/cache-keys")
+    runner = FakeRunner(cp)
+    await runner.client.hello(runner.hello_body())
+    url = "/api/scenarios/project/cache-keys/selftest"
+    async with cp.client(cp.viewer) as c:
+        assert (await c.post(url, json={})).status_code == 403
+    async with cp.client(cp.operator) as c:
+        r = await c.post("/api/scenarios/project/control/selftest", json={})
+        assert (r.status_code, r.json()["code"]) == (422, "selftest")
+        r = await c.post(url, json={})
+        assert (r.status_code, r.json()["code"]) == (422, "kind")
+        await runner.client.hello(runner.hello_body(kinds=["scenario", "selftest"]))
+        r = await c.post(url, json={})
+        assert r.status_code == 202, r.text
+        (run_id,) = r.json()["run_ids"]
+        job = await cp.state.db.job(run_id)
+        assert job is not None
+        assert job.payload["kind"] == "selftest"
+        assert job.needs == {"envs": [], "kernel": True, "kind": "selftest"}
+        listed = (await c.get("/api/runs", params={"kind": "selftest"})).json()["items"]
+        assert [(x["run_id"], x["kind"], x["scenario"]) for x in listed] == [
+            (run_id, "selftest", "cache-keys")
+        ]
 
 
 async def test_prompt_overrides_are_patched_in_place(cp: CP) -> None:

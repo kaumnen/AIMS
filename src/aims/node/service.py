@@ -17,7 +17,15 @@ import httpx2
 from pydantic import JsonValue
 
 from aims.channels import archives
-from aims.events import LocalEventStore, split_lines
+from aims.events import (
+    Draft,
+    LocalEventStore,
+    RunFinished,
+    RunStarted,
+    RunStatus,
+    SelfTestCase,
+    split_lines,
+)
 from aims.events.blobs import decode
 from aims.events.schema import blob_refs
 from aims.events.store import TruthRefused
@@ -30,13 +38,15 @@ from aims.node.client import ApiError, ControlClient
 from aims.node.link import Link
 from aims.node.shipper import Backoff
 from aims.prompts import TextError
+from aims.run import selftest as st
 from aims.run import truth
 from aims.run.fork import load_origin
-from aims.run.job import Job, job_bundle, runner_for
-from aims.run.runner import Bench, RunError, seal_unsealed
+from aims.run.job import Job, job_bundle, runner_for, selftest_runner
+from aims.run.runner import Bench, Options, RunError, Runner, seal_unsealed
 from aims.run.score import Added
 from aims.run.scoring import ScoreError, score_with
 from aims.sandbox import DockerBackend, SandboxError
+from aims.scenario import Bundle
 from aims.wire import MonitorJob, OfferMessage, ScoreJob, TracerHealth
 
 log = logging.getLogger("aims.node")
@@ -237,6 +247,9 @@ class Node:
                 )
                 return
             with job_bundle(job, blobs) as bundle:
+                if job.kind == "selftest":
+                    await self._selftest(job, bundle)
+                    return
                 origin = source = None
                 if job.fork is not None:
                     source = await self._origin(job.fork.origin)
@@ -266,6 +279,74 @@ class Node:
             self.claimed.pop(job.run_id, None)
             self._jobs.pop(job.run_id, None)
             link.untrack(job.run_id)
+
+    async def _selftest(self, job: Job, bundle: Bundle) -> None:
+        """Run the self-test of the job's scenario into the run `job.run_id`: each case a
+        `selftest.case` run of its own under it, shipped and open to commands, and one
+        `selftest.case` event per case as it ends. It completes when every case proved what it
+        should. A command to the self-test's run goes to the case running."""
+        ctx = self.ctx
+        link, store = ctx.link, ctx.store
+        try:
+            plan = st.cases(bundle)
+        except st.SelfTestError as e:
+            raise RunError("; ".join(e.problems)) from None
+        started = RunStarted(
+            scenario=bundle.scenario.name,
+            oversight="observe",
+            config={"cases": [c.name for c in plan], "digest": bundle.digest},
+            kind="selftest",
+        )
+        run_id = await store.create_run(started, run_id=job.run_id)
+        link.ship(run_id)
+
+        def make(options: Options) -> Runner:
+            runner = selftest_runner(ctx.bench, job, bundle, options)
+            link.track(runner)
+            link.runners[run_id] = runner
+            if self.stopping:
+                runner.cancel()
+            return runner
+
+        async def record(o: st.Outcome) -> None:
+            if o.run_id is not None:
+                link.untrack(o.run_id)
+            case = SelfTestCase(
+                case=o.kind,
+                name=o.case,
+                run_id=o.run_id,
+                ok=o.ok,
+                problems=o.problems,
+                notes=o.notes,
+            )
+            await store.append(run_id, [Draft(case)])
+
+        status: RunStatus = "failed"
+        reason: str | None = None
+        try:
+            outcomes = await st.run(
+                ctx.bench,
+                bundle,
+                plan,
+                profile=job.options.profile,
+                on_outcome=record,
+                origin=run_id,
+                runner=make,
+            )
+            stopped = next((o for o in outcomes if o.status in ("cancelled", "killed")), None)
+            failed = [o.case for o in outcomes if not o.ok]
+            if stopped is not None and stopped.status is not None:
+                status, reason = stopped.status, f"{stopped.case} was {stopped.status}"
+            elif failed:
+                reason = f"{len(failed)} of {len(plan)} cases failed: {', '.join(failed)}"
+            else:
+                status = "completed"
+        except Exception as e:
+            reason = f"{type(e).__name__}: {e}"
+            raise
+        finally:
+            link.untrack(run_id)
+            await store.append(run_id, [Draft(RunFinished(status=status, reason=reason))])
 
     async def _monitor(self, job: MonitorJob) -> None:
         """Monitor a sealed run again: import it like a fork's origin, check it is still the run

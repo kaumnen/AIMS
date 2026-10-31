@@ -8,12 +8,13 @@ both its reference, laid over the workdir, and a workdir no agent touched; in th
 plant may trigger at all.
 """
 
+import inspect
 import posixpath
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from aims.events import Event, LocalEventStore, TaskScored
+from aims.events import Event, LocalEventStore, RunStatus, TaskScored
 from aims.run import truth
 from aims.run.runner import Bench, Options, Result, RunError, Runner
 from aims.run.score import Taken, check_run
@@ -54,6 +55,8 @@ class Outcome:
     run_id: str | None
     problems: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    kind: CaseKind = "reference"
+    status: RunStatus | None = None
 
     @property
     def ok(self) -> bool:
@@ -135,26 +138,42 @@ async def run(
     plan: Sequence[Case],
     *,
     profile: str | None = None,
-    on_outcome: Callable[[Outcome], None] | None = None,
+    on_outcome: Callable[[Outcome], Awaitable[None] | None] | None = None,
+    origin: str | None = None,
+    runner: Callable[[Options], Runner] | None = None,
 ) -> list[Outcome]:
-    """Make each run of `plan` in turn and check it."""
+    """Make each run of `plan` in turn and check it; a run cancelled or killed ends the
+    self-test there. With `origin`, each is a `selftest.case` run under that one. `runner`
+    makes each Runner, by default on `bench`."""
     out: list[Outcome] = []
     for case in plan:
-        options = Options(profile=profile, scripts=case.scripts, overlays=case.overlays or None)
+        options = Options(
+            profile=profile,
+            scripts=case.scripts,
+            overlays=case.overlays or None,
+            kind="scenario" if origin is None else "selftest.case",
+            origin=origin,
+        )
         try:
-            result = await Runner(bench, bundle, options).run()
+            made = Runner(bench, bundle, options) if runner is None else runner(options)
+            result = await made.run()
         except RunError as e:
             outcome = Outcome(case.name, None, problems=[f"the run did not start: {e}"])
+            outcome.kind = case.kind
         else:
             outcome = await _check(bench.store, bundle.scenario, case, result)
         out.append(outcome)
         if on_outcome is not None:
-            on_outcome(outcome)
+            done = on_outcome(outcome)
+            if inspect.isawaitable(done):
+                await done
+        if outcome.status in ("cancelled", "killed"):
+            break
     return out
 
 
 async def _check(store: LocalEventStore, scenario: Scenario, case: Case, result: Result) -> Outcome:
-    outcome = Outcome(case.name, result.run_id)
+    outcome = Outcome(case.name, result.run_id, kind=case.kind, status=result.status)
     if result.run_id is None or result.status != "completed":
         outcome.problems.append(f"the run {result.status}: {result.reason or 'no reason given'}")
         return outcome

@@ -47,7 +47,7 @@ AgentEnd = Literal[
 InputKind = Literal["instruction", "continue", "inject", "budget_warning"]
 OperatorActionKind = Literal["pause", "resume", "inject", "kill", "cancel", "sweep"]
 ResumeThen = Literal["continue", "kill", "inject", "deny"]
-RunKind = Literal["scenario", "monitor", "models.check", "score"]
+RunKind = Literal["scenario", "monitor", "models.check", "score", "selftest", "selftest.case"]
 ModelRole = Literal["sweep", "judge", "review", "score"]
 FlagLayer = Literal["signal", "sweep", "judge"]
 PlantTier = Literal["touched", "considered", "claimed", "used"]
@@ -124,7 +124,9 @@ class Cut(BaseModel):
 
 class RunStarted(Payload):
     """`kind` says what the run is: a scenario run, a monitor run over the sealed run `origin`
-    (whose head hash was `origin_head`), a scoring of `origin`, or a model check. `monitor` is
+    (whose head hash was `origin_head`), a scoring of `origin`, a model check, or a scenario's
+    self-test (`selftest`) or one case of it (`selftest.case`, whose `origin` is that run).
+    `monitor` is
     the identity hash of the monitor that watches the run: its prompts, rubric, schemas, models,
     lanes, signal versions, rules and AIMS version; None when the run has no monitor.
 
@@ -320,6 +322,21 @@ class ModelChecked(Payload):
     name: str
     verdict: Literal["ok", "warn", "fail"]
     detail: str = ""
+
+
+class SelfTestCase(Payload):
+    """One run of a scenario's self-test, which a `selftest` run records as each ends: `case`
+    is its kind, `name` says which, `run_id` the run it made (nested under this one), `ok`
+    whether it proved what it should, `problems` why not and `notes` what else it saw."""
+
+    type = "selftest.case"
+
+    case: Literal["reference", "exploit", "empty", "impossible"]
+    name: str
+    run_id: str | None
+    ok: bool
+    problems: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
 
 
 class Proc(BaseModel):

@@ -11,8 +11,10 @@ from typer.testing import CliRunner
 
 from aims.cli import app
 from aims.events import LocalEventStore, TaskScored
+from aims.prompts import Prompts
 from aims.run import selftest as st
-from aims.run.runner import Bench, Options, Runner
+from aims.run.job import selftest_job
+from aims.run.runner import Bench, Options, Result, Runner
 from aims.run.score import Taken, check_run
 from aims.sandbox import DockerBackend
 from aims.scenario import load
@@ -253,6 +255,45 @@ def test_an_impossible_check_needs_a_failing_reward_and_no_trigger(tmp_path: Pat
         {"agent": TaskScored(reward=1.0)},
     )
     assert problems == ["agent took plant sum (impossible, used): impossible hit"]
+
+
+def test_a_selftest_job_needs_the_tracer_and_a_runner_that_runs_it(tmp_path: Path) -> None:
+    bundle = load(write(tmp_path / "s"))
+    job = selftest_job(bundle, models(profile()), Prompts(), folder="f" * 64, profile="scripted")
+    assert job.kind == "selftest"
+    assert job.needs() == {"envs": [], "kernel": True, "kind": "selftest"}
+    assert set(job.profiles) == {"agent"}
+
+
+class Stopped:
+    async def run(self) -> Result:
+        return Result(run_id=None, status="cancelled", reason="operator")
+
+
+async def test_a_cancelled_case_ends_the_selftest_and_cases_nest_under_their_run(
+    tmp_path: Path,
+) -> None:
+    bundle = load(write(tmp_path / "s"))
+    ran: list[Options] = []
+
+    def make(options: Options) -> Any:
+        ran.append(options)
+        return Stopped()
+
+    seen: list[str] = []
+
+    async def record(o: st.Outcome) -> None:
+        seen.append(o.case)
+
+    bench: Any = type("B", (), {"store": None})()
+    outcomes = await st.run(
+        bench, bundle, st.cases(bundle), on_outcome=record, origin="parent", runner=make
+    )
+    assert [(o.case, o.kind, o.status) for o in outcomes] == [
+        ("reference", "reference", "cancelled")
+    ]
+    assert seen == ["reference"]
+    assert [(o.kind, o.origin) for o in ran] == [("selftest.case", "parent")]
 
 
 def test_check_without_the_selftest_needs_no_docker(tmp_path: Path) -> None:

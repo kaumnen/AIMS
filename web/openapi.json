@@ -1690,7 +1690,8 @@
                 "models.check": "#/components/schemas/Job",
                 "monitor": "#/components/schemas/MonitorJob",
                 "scenario": "#/components/schemas/Job",
-                "score": "#/components/schemas/ScoreJob"
+                "score": "#/components/schemas/ScoreJob",
+                "selftest": "#/components/schemas/Job"
               },
               "propertyName": "kind"
             },
@@ -2657,6 +2658,7 @@
           "score.awareness",
           "score.unexplained",
           "score.unit",
+          "selftest.case",
           "sys.denied",
           "task.scored",
           "tool.call",
@@ -2826,6 +2828,9 @@
           "score.unit": {
             "$ref": "#/components/schemas/ScoreUnit"
           },
+          "selftest.case": {
+            "$ref": "#/components/schemas/SelfTestCase"
+          },
           "sys.denied": {
             "$ref": "#/components/schemas/SysDenied"
           },
@@ -2893,6 +2898,7 @@
           "score.awareness",
           "score.unexplained",
           "score.unit",
+          "selftest.case",
           "sys.denied",
           "task.scored",
           "tool.call",
@@ -4990,7 +4996,8 @@
             "default": "scenario",
             "enum": [
               "scenario",
-              "models.check"
+              "models.check",
+              "selftest"
             ],
             "title": "Kind",
             "type": "string"
@@ -9917,7 +9924,7 @@
       },
       "RunStarted": {
         "additionalProperties": false,
-        "description": "`kind` says what the run is: a scenario run, a monitor run over the sealed run `origin`\n(whose head hash was `origin_head`), a scoring of `origin`, or a model check. `monitor` is\nthe identity hash of the monitor that watches the run: its prompts, rubric, schemas, models,\nlanes, signal versions, rules and AIMS version; None when the run has no monitor.\n\n`truth` is the sha256 of the run's truth file, kept outside the log: what the scenario hid\nfrom the monitor, revealed when the run is scored.",
+        "description": "`kind` says what the run is: a scenario run, a monitor run over the sealed run `origin`\n(whose head hash was `origin_head`), a scoring of `origin`, a model check, or a scenario's\nself-test (`selftest`) or one case of it (`selftest.case`, whose `origin` is that run).\n`monitor` is\nthe identity hash of the monitor that watches the run: its prompts, rubric, schemas, models,\nlanes, signal versions, rules and AIMS version; None when the run has no monitor.\n\n`truth` is the sha256 of the run's truth file, kept outside the log: what the scenario hid\nfrom the monitor, revealed when the run is scored.",
         "properties": {
           "agents": {
             "items": {
@@ -9957,7 +9964,9 @@
               "scenario",
               "monitor",
               "models.check",
-              "score"
+              "score",
+              "selftest",
+              "selftest.case"
             ],
             "title": "Kind",
             "type": "string"
@@ -10143,7 +10152,9 @@
               "scenario",
               "monitor",
               "models.check",
-              "score"
+              "score",
+              "selftest",
+              "selftest.case"
             ],
             "title": "Kind",
             "type": "string"
@@ -10430,7 +10441,8 @@
                 "scenario",
                 "models.check",
                 "monitor",
-                "score"
+                "score",
+                "selftest"
               ],
               "type": "string"
             },
@@ -10504,7 +10516,8 @@
                 "scenario",
                 "models.check",
                 "monitor",
-                "score"
+                "score",
+                "selftest"
               ],
               "type": "string"
             },
@@ -12138,6 +12151,65 @@
         "title": "ScoreUnit",
         "type": "object"
       },
+      "SelfTestCase": {
+        "additionalProperties": false,
+        "description": "One run of a scenario's self-test, which a `selftest` run records as each ends: `case`\nis its kind, `name` says which, `run_id` the run it made (nested under this one), `ok`\nwhether it proved what it should, `problems` why not and `notes` what else it saw.",
+        "properties": {
+          "case": {
+            "enum": [
+              "reference",
+              "exploit",
+              "empty",
+              "impossible"
+            ],
+            "title": "Case",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Notes",
+            "type": "array"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "problems": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Problems",
+            "type": "array"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          }
+        },
+        "required": [
+          "case",
+          "name",
+          "run_id",
+          "ok",
+          "problems",
+          "notes"
+        ],
+        "title": "SelfTestCase",
+        "type": "object"
+      },
       "SelfTestOverview": {
         "description": "`impossible` names the impossible plants whose references the self-test also runs.",
         "properties": {
@@ -12853,6 +12925,35 @@
           }
         },
         "title": "StartScore",
+        "type": "object"
+      },
+      "StartSelfTest": {
+        "description": "`profile` as in StartRun; the agents are scripted, so no model is called.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile"
+          },
+          "runner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Runner"
+          }
+        },
+        "title": "StartSelfTest",
         "type": "object"
       },
       "Started": {
@@ -14882,7 +14983,9 @@
                     "scenario",
                     "monitor",
                     "models.check",
-                    "score"
+                    "score",
+                    "selftest",
+                    "selftest.case"
                   ],
                   "type": "string"
                 },
@@ -19064,6 +19167,108 @@
           }
         },
         "summary": "Patch Prompts",
+        "tags": [
+          "scenarios"
+        ]
+      }
+    },
+    "/api/scenarios/{source}/{name}/selftest": {
+      "post": {
+        "description": "Queue the scenario's self-test, as `aims scenario check` runs it: a run of kind\n`selftest` that records each case, each case a `selftest.case` run under it. It needs a\nrunner with the kernel tracer up.",
+        "operationId": "start_selftest",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source",
+            "required": true,
+            "schema": {
+              "title": "Source",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartSelfTest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Started"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not signed in"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Invalid request"
+          }
+        },
+        "summary": "Start Selftest",
         "tags": [
           "scenarios"
         ]
