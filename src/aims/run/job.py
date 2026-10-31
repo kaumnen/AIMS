@@ -14,7 +14,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
-from aims.events import AuditLevel, EventStore
+from aims.events import AuditLevel, EventStore, Oversight
 from aims.models import ModelsConfig, Profile, Roles
 from aims.monitor.config import MonitorConfigError, Preset
 from aims.monitor.setup import ResolvedMonitor, resolve_config, resolve_monitor
@@ -60,6 +60,8 @@ class JobOptions(_Strict):
     # the control plane scores the run once its truth file arrives
     score: bool = False
     variant: str | None = None
+    # over the scenario's oversight
+    oversight: Oversight | None = None
 
 
 class Job(_Strict):
@@ -173,6 +175,7 @@ def scenario_jobs(
     monitor: ResolvedMonitor | None = None,
     score: bool = False,
     folder: str | None = None,
+    oversight: Oversight | None = None,
 ) -> list[Job]:
     """One job per sample of a scenario, resolved with these layers, watched by `monitor`.
     `folder` is the sha256 of the scenario folder's tar, when the runner gets it. Raises
@@ -196,6 +199,7 @@ def scenario_jobs(
                 samples=samples,
                 score=score,
                 variant=bundle.variant,
+                oversight=oversight,
             ),
             audit=audit,
             config_files=dict(config_files or {}),
@@ -220,6 +224,7 @@ def fork_jobs(
     monitor: ResolvedMonitor | None = None,
     cut: CutAt | None = None,
     keep_others: bool = False,
+    oversight: Oversight | None = None,
 ) -> list[Job]:
     """Jobs that fork the run `origin` at `step`, or at `cut` for a run of several agents,
     watched by `monitor`. The runner loads the
@@ -243,6 +248,7 @@ def fork_jobs(
                 group=group,
                 sample=i if group else None,
                 samples=samples,
+                oversight=oversight,
             ),
             fork=JobFork(
                 origin=origin.run_id,
@@ -321,6 +327,7 @@ def runner_for(
         sample=o.sample,
         samples=o.samples,
         variant=o.variant,
+        oversight=o.oversight,
     )
     if job.fork is None:
         try:

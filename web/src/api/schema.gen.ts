@@ -3130,6 +3130,8 @@ export interface components {
              * @default false
              */
             keep?: boolean;
+            /** Oversight */
+            oversight?: ("observe" | "autonomous" | "human") | null;
             /** Profile */
             profile?: string | null;
             /** Sample */
@@ -5835,8 +5837,8 @@ export interface components {
          * @description `monitor` picks the fork's monitor preset over the config files and the scenario. `at`
          *     cuts a run of several agents: `agent:N` after that agent's step N, or `@seq` after an
          *     event; with `keep_others` the other agents keep their recorded answers until their own
-         *     inputs change. `step` is the last step replayed of a run of one agent. `confirm` as in
-         *     StartRun; the estimate counts only the steps after the cut.
+         *     inputs change. `step` is the last step replayed of a run of one agent. `confirm` and
+         *     `oversight` as in StartRun; the estimate counts only the steps after the cut.
          */
         StartFork: {
             /** At */
@@ -5866,6 +5868,8 @@ export interface components {
             keep_others?: boolean;
             /** Monitor */
             monitor?: ("off" | "signals" | "standard" | "research") | null;
+            /** Oversight */
+            oversight?: ("observe" | "autonomous" | "human") | null;
             /** Parallel */
             parallel?: number | null;
             /** Profile */
@@ -5936,7 +5940,8 @@ export interface components {
          *     what they say, else `standard`. `variant` applies a named variant of the scenario. When the
          *     estimate is above `confirm_above_usd`, or nothing bounds the cost, the runs start only with
          *     `confirm`, like `aims run --yes`. `score` scores each run against its truth file once the
-         *     file arrives, as `aims run --score` does.
+         *     file arrives, as `aims run --score` does. `oversight` replaces the scenario's: what the
+         *     monitor may do in these runs.
          */
         StartRun: {
             /**
@@ -5957,6 +5962,8 @@ export interface components {
             keep?: boolean;
             /** Monitor */
             monitor?: ("off" | "signals" | "standard" | "research") | null;
+            /** Oversight */
+            oversight?: ("observe" | "autonomous" | "human") | null;
             /** Parallel */
             parallel?: number | null;
             /** Profile */
@@ -11069,6 +11076,7 @@ export const ipcEventFamilyAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<com
 export const ipcEventKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["IpcEvent"]["kind"]> = ["bind", "connect", "fifo", "shmget", "shmat"];
 export const jobAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Job"]["audit"]> = ["kernel", "snapshot"];
 export const jobKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Job"]["kind"]> = ["models.check", "scenario"];
+export const jobOptionsOversightAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["JobOptions"]["oversight"]> = ["observe", "autonomous", "human"];
 export const labelInputLabelValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Label-Input"]["label"]> = ["real", "false_alarm", "unclear"];
 export const labelOutputLabelValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Label-Output"]["label"]> = ["real", "false_alarm", "unclear"];
 export const labelBodyLabelValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["LabelBody"]["label"]> = ["real", "false_alarm", "unclear"];
@@ -11138,9 +11146,11 @@ export const scoreUnitToldAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<comp
 export const separationLayerValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Separation"]["layer"]> = ["signal", "sweep", "judge", "llm", "any"];
 export const startForkAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["StartFork"]["audit"]> = ["kernel", "snapshot"];
 export const startForkMonitorAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["StartFork"]["monitor"]> = ["off", "signals", "standard", "research"];
+export const startForkOversightAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["StartFork"]["oversight"]> = ["observe", "autonomous", "human"];
 export const startMonitorPresetAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["StartMonitor"]["preset"]> = ["signals", "standard", "research"];
 export const startRunAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["StartRun"]["audit"]> = ["kernel", "snapshot"];
 export const startRunMonitorAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["StartRun"]["monitor"]> = ["off", "signals", "standard", "research"];
+export const startRunOversightAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["StartRun"]["oversight"]> = ["observe", "autonomous", "human"];
 export const stepInfoSourceValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["StepInfo"]["source"]> = ["live", "replay"];
 export const stepInfoStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["StepInfo"]["status"]> = ["completed", "incomplete", "error", "cancelled"];
 export const taskScoredEndAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["TaskScored"]["end"]> = ["exited", "timeout", "cancelled", "failed"];

@@ -514,6 +514,13 @@ def run(
             help="Score each sealed run that has a truth file against it, as aims score does.",
         ),
     ] = True,
+    oversight: Annotated[
+        str | None,
+        typer.Option(
+            help="What the monitor may do, over the scenario's oversight: observe, autonomous"
+            " or human."
+        ),
+    ] = None,
 ) -> None:
     """Run a scenario, or fork a recorded run at a step.
 
@@ -524,10 +531,16 @@ def run(
     With --series, --runs K makes K runs in a row, each continuing from the one before it.
     """
     import asyncio
+    from typing import get_args
+
+    from aims.events import Oversight
 
     _preset(monitor)
     if audit not in ("kernel", "snapshot"):
         raise typer.BadParameter("use kernel or snapshot", param_hint="--audit")
+    oversights = get_args(Oversight)
+    if oversight is not None and oversight not in oversights:
+        raise typer.BadParameter(f"use {', '.join(oversights)}", param_hint="--oversight")
     if scenario is None and replay is None:
         raise typer.BadParameter("give a scenario file or --replay", param_hint="SCENARIO")
     if replay is None and (fork_at is not None or strict_env or inject is not None or keep_others):
@@ -575,6 +588,7 @@ def run(
             runs=runs,
             yes=yes,
             score=score,
+            oversight=oversight,
         )
     )
     raise typer.Exit(code)
@@ -622,6 +636,7 @@ async def _run(**o: Any) -> int:
     import signal
     import sys
     import uuid
+    from dataclasses import replace
 
     from rich.console import Console
     from rich.live import Live
@@ -723,6 +738,8 @@ async def _run(**o: Any) -> int:
             )
         except (MonitorConfigError, ProfileError, TextError, RunError) as e:
             return fail(escape(f"monitor: {e}"))
+        if monitor is not None and o["oversight"] is not None:
+            monitor = replace(monitor, oversight=o["oversight"])
         if monitor is not None:
             for p in monitor_profiles(monitor).values():
                 try:
@@ -823,6 +840,7 @@ async def _run(**o: Any) -> int:
                     sample=i if group else None,
                     samples=o["samples"] if series_run is None else 1,
                     variant=o["variant"],
+                    oversight=o["oversight"],
                 )
                 kwargs: dict[str, Any] = {}
                 if series_run is not None:

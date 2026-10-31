@@ -4675,6 +4675,22 @@
             "title": "Keep",
             "type": "boolean"
           },
+          "oversight": {
+            "anyOf": [
+              {
+                "enum": [
+                  "observe",
+                  "autonomous",
+                  "human"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oversight"
+          },
           "profile": {
             "anyOf": [
               {
@@ -11415,7 +11431,7 @@
         "type": "object"
       },
       "StartFork": {
-        "description": "`monitor` picks the fork's monitor preset over the config files and the scenario. `at`\ncuts a run of several agents: `agent:N` after that agent's step N, or `@seq` after an\nevent; with `keep_others` the other agents keep their recorded answers until their own\ninputs change. `step` is the last step replayed of a run of one agent. `confirm` as in\nStartRun; the estimate counts only the steps after the cut.",
+        "description": "`monitor` picks the fork's monitor preset over the config files and the scenario. `at`\ncuts a run of several agents: `agent:N` after that agent's step N, or `@seq` after an\nevent; with `keep_others` the other agents keep their recorded answers until their own\ninputs change. `step` is the last step replayed of a run of one agent. `confirm` and\n`oversight` as in StartRun; the estimate counts only the steps after the cut.",
         "properties": {
           "at": {
             "anyOf": [
@@ -11479,6 +11495,22 @@
               }
             ],
             "title": "Monitor"
+          },
+          "oversight": {
+            "anyOf": [
+              {
+                "enum": [
+                  "observe",
+                  "autonomous",
+                  "human"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oversight"
           },
           "parallel": {
             "anyOf": [
@@ -11648,7 +11680,7 @@
         "type": "object"
       },
       "StartRun": {
-        "description": "`monitor` picks the monitor's preset over the config files and the scenario; None keeps\nwhat they say, else `standard`. `variant` applies a named variant of the scenario. When the\nestimate is above `confirm_above_usd`, or nothing bounds the cost, the runs start only with\n`confirm`, like `aims run --yes`. `score` scores each run against its truth file once the\nfile arrives, as `aims run --score` does.",
+        "description": "`monitor` picks the monitor's preset over the config files and the scenario; None keeps\nwhat they say, else `standard`. `variant` applies a named variant of the scenario. When the\nestimate is above `confirm_above_usd`, or nothing bounds the cost, the runs start only with\n`confirm`, like `aims run --yes`. `score` scores each run against its truth file once the\nfile arrives, as `aims run --score` does. `oversight` replaces the scenario's: what the\nmonitor may do in these runs.",
         "properties": {
           "audit": {
             "default": "kernel",
@@ -11685,6 +11717,22 @@
               }
             ],
             "title": "Monitor"
+          },
+          "oversight": {
+            "anyOf": [
+              {
+                "enum": [
+                  "observe",
+                  "autonomous",
+                  "human"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oversight"
           },
           "parallel": {
             "anyOf": [

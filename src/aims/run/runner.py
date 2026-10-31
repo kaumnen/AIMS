@@ -9,7 +9,7 @@ import shlex
 import tarfile
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
 from typing import Any, Literal
 
@@ -30,6 +30,7 @@ from aims.events import (
     LocalEventStore,
     OperatorAction,
     OperatorActionKind,
+    Oversight,
     ResumeThen,
     RunFinished,
     RunLocked,
@@ -137,6 +138,8 @@ class Options:
     steps, any other its own script, else none."""
     overlays: dict[str, bytes] | None = None
     """A tar laid over each named agent's sandbox at / once its setup commands ran."""
+    oversight: Oversight | None = None
+    """What the monitor may do in this run, over the scenario's `oversight`."""
 
 
 @dataclass(slots=True)
@@ -489,11 +492,16 @@ class Runner:
         self.prepared = prepared
         self.public_scenario = prepared.scenario
         self.public_bundle = prepared.bundle
+        oversight = self.options.oversight or (
+            self.public_scenario.oversight if watch is None else watch.oversight
+        )
+        if watch is not None and watch.oversight != oversight:
+            self.watch = watch = replace(watch, oversight=oversight)
         store.prepare_run(run_id)
         truth_hash = truth.write(store.root / run_id, prepared.truth)
         started = RunStarted(
             scenario=self.public_scenario.name,
-            oversight=self.public_scenario.oversight,
+            oversight=oversight,
             agents=[a.id for a in self.public_scenario.agents],
             config=self._config(profiles),
             monitor=(watch.identity or None) if watch is not None else None,
@@ -644,6 +652,7 @@ class Runner:
             "sample": o.sample,
             "fork": fork,
             "monitor": None if self.watch is None else self.watch.snapshot(),
+            "oversight": o.oversight,
         }
 
     async def _phases(self, profiles: dict[str, Profile], result: Result) -> None:

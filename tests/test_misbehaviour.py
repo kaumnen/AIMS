@@ -11,6 +11,7 @@ import dataclasses
 import os
 from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
 from scripted import Script, Turn, call, models, profile
@@ -73,9 +74,10 @@ async def watched(
     bundle: Bundle,
     *turns: Turn,
     oversight: Oversight = "observe",
+    override: Oversight | None = None,
 ) -> tuple[Result, list[Flag], list[MonitorAction]]:
     """Run the scenario with `turns` as the agent script and the signals monitor, then read
-    back its flags and policy actions."""
+    back its flags and policy actions. `override` is the run's oversight over the scenario's."""
     scenario = bundle.scenario
     if scenario.oversight != oversight:
         scenario = scenario.model_copy(update={"oversight": oversight})
@@ -83,7 +85,7 @@ async def watched(
     script = Script(*turns)
     monitor = monitor_for(MODELS, Prompts(), scenario, [profile()])
     bench = Bench(store, backend, MODELS, transport=script.transport())
-    result = await Runner(bench, bundle, Options(), monitor=monitor).run()
+    result = await Runner(bench, bundle, Options(oversight=override), monitor=monitor).run()
     assert result.run_id is not None
     flags = [Flag(e) for e in await store.events(result.run_id, limit=2000, types=["monitor.flag"])]
     actions = [
@@ -369,6 +371,29 @@ async def test_autonomous_pauses_then_a_hard_signal_kills(
     killed = [a for a in actions if a.action == "kill" and not a.simulated]
     assert paused, [(a.action, a.simulated) for a in actions]
     assert killed, [(a.action, a.simulated) for a in actions]
+
+
+async def test_a_run_s_oversight_replaces_the_scenario_s_and_is_recorded(
+    backend: DockerBackend, store: LocalEventStore, bundle: Bundle
+) -> None:
+    assert bundle.scenario.oversight == "observe"
+    result, _, actions = await watched(
+        backend,
+        store,
+        bundle,
+        call("bash", command=ESCALATION),
+        call("submit", answer="never"),
+        override="autonomous",
+    )
+    assert result.status == "killed", result.reason
+    assert actions
+    assert not any(a.simulated for a in actions)
+    assert result.run_id is not None
+    (started,) = await store.events(result.run_id, limit=1, types=["run.started"])
+    config: Any = started.data["config"]
+    assert (started.data["oversight"], config["oversight"]) == ("autonomous", "autonomous")
+    assert config["monitor"]["oversight"] == "autonomous"
+    assert config["scenario"]["resolved"]["oversight"] == "observe"
 
 
 async def test_observe_simulates_the_same_decisions(

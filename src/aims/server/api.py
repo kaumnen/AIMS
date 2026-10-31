@@ -435,12 +435,14 @@ class StartRun(BaseModel):
     what they say, else `standard`. `variant` applies a named variant of the scenario. When the
     estimate is above `confirm_above_usd`, or nothing bounds the cost, the runs start only with
     `confirm`, like `aims run --yes`. `score` scores each run against its truth file once the
-    file arrives, as `aims run --score` does."""
+    file arrives, as `aims run --score` does. `oversight` replaces the scenario's: what the
+    monitor may do in these runs."""
 
     scenario: ScenarioRef
     variant: str | None = None
     confirm: bool = False
     score: bool = False
+    oversight: Oversight | None = None
     samples: int = Field(default=1, ge=1, le=100)
     parallel: int | None = Field(default=None, ge=1)
     profile: str | None = None
@@ -454,13 +456,14 @@ class StartFork(BaseModel):
     """`monitor` picks the fork's monitor preset over the config files and the scenario. `at`
     cuts a run of several agents: `agent:N` after that agent's step N, or `@seq` after an
     event; with `keep_others` the other agents keep their recorded answers until their own
-    inputs change. `step` is the last step replayed of a run of one agent. `confirm` as in
-    StartRun; the estimate counts only the steps after the cut."""
+    inputs change. `step` is the last step replayed of a run of one agent. `confirm` and
+    `oversight` as in StartRun; the estimate counts only the steps after the cut."""
 
     step: int | None = Field(default=None, ge=0)
     at: str | None = None
     keep_others: bool = False
     confirm: bool = False
+    oversight: Oversight | None = None
     samples: int = Field(default=1, ge=1, le=100)
     parallel: int | None = Field(default=None, ge=1)
     profile: str | None = None
@@ -613,6 +616,7 @@ async def start_runs(
             monitor=monitor,
             score=body.score,
             folder=hashlib.sha256(folder).hexdigest(),
+            oversight=body.oversight,
         )
     except (ProfileError, UnknownTool, ValueError) as e:
         raise ProblemException(422, "Scenario cannot run", str(e), code="scenario") from None
@@ -711,6 +715,7 @@ async def fork_run(run_id: str, body: StartFork, principal: Operator, state: Sta
             monitor=monitor,
             cut=at.cut,
             keep_others=body.keep_others,
+            oversight=body.oversight,
         )
     except (RunError, ProfileError, KeyError) as e:
         raise ProblemException(422, "Cannot fork", str(e), code="fork") from None

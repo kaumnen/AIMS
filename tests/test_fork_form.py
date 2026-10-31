@@ -1,5 +1,5 @@
-"""What the UI's fork dialog needs from the control plane: the estimate of a fork and the cost
-guard on forks."""
+"""What the UI's fork dialog needs from the control plane: the estimate of a fork, the cost guard
+on forks, and an oversight that replaces the scenario's on runs and forks."""
 
 import asyncio
 import json
@@ -20,6 +20,8 @@ from aims.run.runner import resolve_texts
 from aims.scenario import load
 
 pytestmark = pytest.mark.anyio
+
+SCENARIO = {"source": "project", "name": "control"}
 
 
 @pytest.fixture
@@ -68,6 +70,33 @@ async def test_forks_are_estimated_and_above_the_confirm_limit_need_confirm(
         assert (r.status_code, r.json()["detail"]) == (422, "give step or at, not both")
 
 
+async def test_runs_and_forks_take_an_oversight_over_the_scenarios(
+    cp: CP, local: LocalEventStore
+) -> None:
+    origin = await push_forged(cp, local, "http://model.invalid/v1")
+    async with cp.client(cp.operator) as c:
+        r = await c.post(
+            "/api/runs", json={"scenario": SCENARIO, "monitor": "signals", "oversight": "human"}
+        )
+        assert r.status_code == 202, r.text
+        (run,) = r.json()["run_ids"]
+        r = await c.post("/api/runs", json={"scenario": SCENARIO, "oversight": "loud"})
+        assert r.status_code == 422
+        r = await c.post(
+            f"/api/runs/{origin}/forks", json={"monitor": "signals", "oversight": "autonomous"}
+        )
+        assert r.status_code == 202, r.text
+        (fork,) = r.json()["run_ids"]
+        r = await c.post(f"/api/runs/{origin}/forks", json={"monitor": "signals"})
+        (plain,) = r.json()["run_ids"]
+    oversight = {}
+    for run_id in (run, fork, plain):
+        job = await cp.state.db.job(run_id)
+        assert job is not None
+        oversight[run_id] = job.payload["options"]["oversight"]
+    assert oversight == {run: "human", fork: "autonomous", plain: None}
+
+
 async def recorded(runs: Path, scenario: Path, config: Path) -> str:
     """A sealed run of `scenario` as `aims run` records it, with no steps."""
     bundle = load(scenario)
@@ -89,7 +118,7 @@ async def recorded(runs: Path, scenario: Path, config: Path) -> str:
     return run_id
 
 
-def test_aims_run_prices_a_replay_as_a_fork(tmp_path: Path) -> None:
+def test_aims_run_prices_a_replay_as_a_fork_and_checks_the_oversight(tmp_path: Path) -> None:
     config = tmp_path / "aims.toml"
     config.write_text(CONFIG + "[estimate]\nconfirm_above_usd = 1\n")
     scenario = tmp_path / "control.yaml"
@@ -108,3 +137,6 @@ def test_aims_run_prices_a_replay_as_a_fork(tmp_path: Path) -> None:
         {"a": 0},
     )
     assert first["lines"][1] == "A fork after step 0: the agents pay only for the steps after it."
+    result = CliRunner().invoke(app, [*args, "--oversight", "loud"])
+    assert result.exit_code == 2
+    assert "use observe, autonomous, human" in " ".join(result.output.split())
