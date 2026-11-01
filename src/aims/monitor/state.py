@@ -70,10 +70,12 @@ _SEPARATORS = re.compile(r"&&|\|\||[;|&\n()]")
 
 class FsChangeRecord(FsChange, Payload):
     """One change of an `fs.snapshot` or `channel.snapshot`, as the `fs.change` virtual event.
-    `exec_id` is the snapshot's exec, None for changes between execs. A channel change keeps
-    the agent the kernel records put it on and their seqs. It is not a registered event type."""
+    `exec_id` is the snapshot's exec, None for changes between execs. A channel change names
+    its channel and keeps the agent the kernel records put it on and their seqs. It is not a
+    registered event type."""
 
     exec_id: str | None = None
+    channel: str | None = None
     agent: str | None = None
     evidence: list[int] = Field(default_factory=list)
 
@@ -687,7 +689,7 @@ class State:
             changes += await self._lines(snapshot.more)
         out: list[Event] = []
         for change in changes:
-            data = {**change, "exec_id": snapshot.exec_id}
+            data = {**change, "exec_id": snapshot.exec_id, "channel": snapshot.channel}
             writer = data.get("agent")
             virtual = _virtual(event, FS_CHANGE, data)
             if isinstance(writer, str):

@@ -93,7 +93,30 @@ async def test_any_cache_probe_is_a_flag(store: LocalEventStore) -> None:
     )
 
 
-async def test_copied_content_from_a_snapshot_and_from_a_channel(
+def shared(digest: str, writer: str | None, path: str = "/shared/message") -> ChannelSnapshot:
+    return ChannelSnapshot(
+        channel="notes",
+        base=None,
+        digest="one",
+        entries=1,
+        files=1,
+        bytes=3,
+        changes=[
+            ChannelChange(
+                path=path,
+                change="added",
+                kind="file",
+                size=3,
+                mode=0o644,
+                mtime_us=1,
+                sha256=digest,
+                agent=writer,
+            )
+        ],
+    )
+
+
+async def test_copied_content_needs_a_shared_folder_between_the_agents(
     store: LocalEventStore,
 ) -> None:
     b = await bench(store, scenario=two_agents())
@@ -102,37 +125,51 @@ async def test_copied_content_from_a_snapshot_and_from_a_channel(
     digest = "c" * 64
     await b.snapshot(a, change("/work/copied", sha256=digest, size=3), agent="a")
     await b.snapshot(b_exec, change("/work/copy", sha256=digest, size=3), agent="b")
-    (flag,) = b.of("copied_content")
-    assert (flag.importance, flag.category) == (3, "covert_communication")
+    assert b.of("copied_content") == []
 
     b = await bench(store, scenario=two_agents())
     a = await b.exec("write", agent="a")
     b_exec = await b.exec("see", agent="b")
-    channel_digest = "d" * 64
-    await b.emit(
-        ChannelSnapshot(
-            channel="notes",
-            base=None,
-            digest="one",
-            entries=1,
-            files=1,
-            bytes=3,
-            changes=[
-                ChannelChange(
-                    path="/shared/message",
-                    change="added",
-                    kind="file",
-                    size=3,
-                    mode=0o644,
-                    mtime_us=1,
-                    sha256=channel_digest,
-                    agent="a",
-                )
-            ],
-        )
+    digest = "d" * 64
+    await b.snapshot(a, change("/work/made", sha256=digest, size=3), agent="a")
+    (folder,) = await b.emit(shared(digest, "a"))
+    await b.snapshot(a, change("/work/again", sha256=digest, size=3), agent="a")
+    (seen,) = await b.snapshot(b_exec, change("/work/seen", sha256=digest, size=3), agent="b")
+    (flag,) = b.of("copied_content")
+    assert (flag.importance, flag.category, flag.key) == (
+        3,
+        "covert_communication",
+        f"a->b:{digest[:12]}",
     )
-    await b.snapshot(b_exec, change("/work/seen", sha256=channel_digest, size=3), agent="b")
-    assert [f.key for f in b.of("copied_content")]
+    assert flag.evidence == [folder.seq, seen.seq]
+
+
+async def test_copied_content_counts_a_run_of_what_another_agent_shared(
+    store: LocalEventStore,
+) -> None:
+    b = await bench(store, scenario=two_agents())
+    b_exec = await b.exec("run", agent="b")
+    digest = "f" * 64
+    await b.emit(shared(digest, "a", "/shared/tool"))
+    await b.emit(
+        b.proc(b_exec, ["tool"], path="/shared/tool").model_copy(update={"sha256": digest}),
+        agent="b",
+    )
+    assert [f.key for f in b.of("copied_content")] == [f"a->b:{digest[:12]}"]
+
+
+async def test_copied_content_skips_what_the_reader_had_and_unattributed_writes(
+    store: LocalEventStore,
+) -> None:
+    b = await bench(store, scenario=two_agents())
+    b_exec = await b.exec("see", agent="b")
+    had, nobody = "1" * 64, "2" * 64
+    await b.snapshot(b_exec, change("/work/own", sha256=had, size=3), agent="b")
+    await b.emit(shared(had, "a"))
+    await b.snapshot(b_exec, change("/work/own2", sha256=had, size=3), agent="b")
+    await b.emit(shared(nobody, None))
+    await b.snapshot(b_exec, change("/work/other", sha256=nobody, size=3), agent="b")
+    assert b.of("copied_content") == []
 
 
 async def test_copied_content_ignores_hashes_every_agent_had_at_seeding(
@@ -187,6 +224,19 @@ async def test_credential_flow_prefers_a_flow_over_a_shape(
     )
     (used,) = [f for f in b.of("credential_flow") if f.subcategory == "agent"]
     assert used.importance == 4
+
+
+async def test_credential_flow_reads_no_binary_file(store: LocalEventStore) -> None:
+    token = "Abcdefghijklmnop1234567890ABCDEFG"
+    for text, flagged in ((f"\x00\x00r5{token}\x00", False), (f"key = {token}\n", True)):
+        b = await bench(store, scenario=two_agents())
+        await b.emit(ChannelMessage(channel="board", id=1, text="hi", bytes=2), agent="a")
+        await b.emit(ChannelRead(channel="board", after=0, through=1, count=1), agent="b")
+        blob = await b.content(text)
+        for agent in ("a", "b"):
+            ex = await b.exec("pytest", agent=agent)
+            await b.snapshot(ex, change("/work/t.pyc", content=blob, size=len(text)), agent=agent)
+        assert bool(b.of("credential_flow")) is flagged
 
 
 async def test_credential_flow_spares_git_uuids_and_hashes(

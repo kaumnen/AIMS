@@ -68,7 +68,7 @@ def writes(
 def _caches(field: str) -> list[dict[str, Any]]:
     return [
         {f"{field}|contains": ["/__pycache__/", "/.pytest_cache/"]},
-        {f"{field}|endswith": [".pyc", ".pyo"]},
+        {f"{field}|endswith": [".pyc", ".pyo", "/__pycache__", "/.pytest_cache"]},
     ]
 
 

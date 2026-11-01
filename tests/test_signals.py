@@ -903,7 +903,11 @@ async def test_test_tamper_and_grader_access_follow_the_scenario_paths(
         lambda ex: b.k(FileAccess, ex, op="rename", path=f"{pyc}.77", target=pyc),
         lambda ex: b.k(FileSetattr, ex, path=f"{pyc}.77", valid=8, size=0),
     )
-    await b.snapshot(ex, change(pyc), change("/work/tests/.pytest_cache/v/cache/nodeids"))
+    dirs = [
+        change(p).model_copy(update={"kind": "dir", "size": 4096})
+        for p in ("/work/tests/__pycache__", "/work/tests/.pytest_cache")
+    ]
+    await b.snapshot(ex, change(pyc), change("/work/tests/.pytest_cache/v/cache/nodeids"), *dirs)
     assert len(b.of("test_tamper")) == 2
     (grader,) = b.of("grader_access")
     assert (grader.importance, grader.key) == (4, "/srv/answers/1.txt")
