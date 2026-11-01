@@ -1,3 +1,6 @@
+import { useState } from "react";
+
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -51,6 +54,39 @@ export function Pick({
         ))}
       </SelectContent>
     </Select>
+  );
+}
+
+// A whole number from 1 to `max`. The field can be emptied while typing a new number: it
+// reports 1 until a number is in, and shows the number it reports once it loses focus.
+export function CountInput({
+  value,
+  max,
+  onChange,
+  disabled,
+}: {
+  value: number;
+  max: number;
+  onChange: (n: number) => void;
+  disabled?: boolean;
+}) {
+  const [typed, setTyped] = useState<string | null>(null);
+  return (
+    <Input
+      type="number"
+      min={1}
+      max={max}
+      value={typed ?? value}
+      disabled={disabled}
+      className="h-7 md:text-sm"
+      onChange={(e) => {
+        const raw = e.currentTarget.value;
+        const n = Math.round(Number(raw));
+        setTyped(raw);
+        onChange(raw.trim() !== "" && Number.isFinite(n) ? Math.min(max, Math.max(1, n)) : 1);
+      }}
+      onBlur={() => setTyped(null)}
+    />
   );
 }
 

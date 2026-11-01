@@ -1,5 +1,5 @@
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import { Fragment, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 
 import type { Hold } from "@/api/control";
 import { flagsQuery, type RunDetail, stepsQuery } from "@/api/run";
@@ -15,6 +15,8 @@ import { CommandAnswer, StopForm, useCommand } from "./controls";
 import { toolLine } from "./tool-text";
 
 const REASON = "answered in the UI";
+// how often a pause reads the flags again while one it cites is not in yet
+const FLAGS_MS = 3000;
 
 // The monitor's pauses still open, one per decision, oldest first.
 export function monitorPauses(detail: RunDetail): Hold[][] {
@@ -62,17 +64,32 @@ function Pause({
   const [killing, setKilling] = useState(false);
   const [text, setText] = useState("");
   const steps = useInfiniteQuery(stepsQuery(runId));
-  const flags = useQuery(flagsQuery(runId));
-  if (first === undefined) return null;
-  const human = first.mode === "human";
-  const names = holds.map((h) => h.agent).join(", ");
-  const left = first.until ? Date.parse(first.until) - now : null;
   const tools = new Map(
     (steps.data?.pages ?? []).flatMap((p) =>
       p.items.flatMap((s) => (s.tools ?? []).map((t) => [t.call_id, t] as const)),
     ),
   );
-  const cited = (first.flags ?? []).map((seq) => ({
+  // A held call is in its agent's latest step, which may sit past the pages read so far.
+  const unseen = holds.some((h) => h.call && !tools.has(h.call));
+  const { hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage } = steps;
+  useEffect(() => {
+    if (unseen && hasNextPage && !isFetchingNextPage && !isFetchNextPageError) {
+      void fetchNextPage();
+    }
+  }, [unseen, hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage]);
+  const seqs = first?.flags ?? [];
+  const flags = useQuery({
+    ...flagsQuery(runId),
+    refetchInterval: (q) =>
+      seqs.some((seq) => !q.state.data?.some((f) => f.seq === seq || f.latest === seq))
+        ? FLAGS_MS
+        : false,
+  });
+  if (first === undefined) return null;
+  const human = first.mode === "human";
+  const names = holds.map((h) => h.agent).join(", ");
+  const left = first.until ? Date.parse(first.until) - now : null;
+  const cited = seqs.map((seq) => ({
     seq,
     flag: flags.data?.find((f) => f.seq === seq || f.latest === seq),
   }));

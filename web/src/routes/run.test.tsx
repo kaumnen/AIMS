@@ -335,7 +335,7 @@ beforeEach(() => {
       cost_usd: 1.12123625,
       reward: 1,
     }),
-    started: ev(0, "run.started", { agents: [{ id: "agent" }] }),
+    started: ev(0, "run.started", { agents: ["agent"] }),
     finished: null,
     verdict: null,
     monitor_runs: [],
@@ -684,6 +684,42 @@ test("j and k move through the steps in the URL", async () => {
   expect(router.state.location.search).toEqual({ step: 4 });
   fireEvent.keyDown(window, { key: "k" });
   expect(router.state.location.search).toEqual({ step: 4 });
+});
+
+test("arrows scroll a focused output and move steps only from the step list", async () => {
+  const router = renderAt(`/runs/${BEE5}`);
+  await screen.findByText("Fix the failing tests.");
+  const output = (await screen.findAllByText("1 failed, 7 passed"))
+    .map((e) => e.closest("pre"))
+    .find((p) => p?.tabIndex === 0);
+  if (!output) throw new Error("no focusable output");
+  fireEvent.keyDown(output, { key: "ArrowDown" });
+  expect(router.state.location.search).toEqual({});
+  fireEvent.keyDown(screen.getByRole("listbox", { name: "Steps" }), { key: "ArrowDown" });
+  expect(router.state.location.search).toEqual({ step: 11 });
+});
+
+test("an event picked on Raw opens Steps at it, and a step picked drops the event", async () => {
+  const router = renderAt(`/runs/${BEE5}?tab=raw&step=4`);
+  const list = await screen.findByRole("listbox", { name: "Events" });
+  const rows = await within(list).findAllByRole("option");
+  const row = rows.find((r) => r.id === "event-12");
+  if (!row) throw new Error("no row for event 12");
+  fireEvent.click(row);
+  expect(router.state.location.search).toEqual({ tab: "raw", seq: 12 });
+  await act(() => router.navigate({ to: ".", search: { step: 4, seq: 3 } }));
+  await screen.findByText("Fix the failing tests.");
+  fireEvent.keyDown(window, { key: "j" });
+  expect(router.state.location.search).toEqual({ step: 11 });
+});
+
+test("an agent that ends before the others shows its answer on its last step", async () => {
+  detail = { ...detail, started: ev(0, "run.started", { agents: ["agent", "other"] }) };
+  steps[1] = { ...steps[1]!, agent_id: "other" };
+  renderAt(`/runs/${BEE5}?step=4`);
+  await screen.findByText("Fix the failing tests.");
+  expect(await screen.findByText("Fixed the encoder.")).toBeTruthy();
+  expect(eventQueries().at(-1)?.has("before")).toBe(false);
 });
 
 test("two quick presses of j move two steps", async () => {
@@ -1574,6 +1610,19 @@ test("a pause under human oversight waits for an answer like the terminal's", as
   expect(posted[1]?.body).toEqual(
     resumed("agent", "inject", "Leave the tests alone.", "answered in the UI"),
   );
+});
+
+test("a pause names the held call though its step is past the pages read", async () => {
+  const filler = Array.from({ length: 200 }, (_, i) =>
+    step({ seq: 1000 + i * 10, n: i + 3, seq_from: 998 + i * 10, seq_to: 1000 + i * 10 }),
+  );
+  const tools = [{ seq: 8999, call_id: "c9", name: "bash", args: { command: "rm -rf tests" } }];
+  steps = [...steps, ...filler, step({ seq: 9000, n: 300, seq_from: 8998, seq_to: 9001, tools })];
+  detail = open({ held: [hold({ call: "c9" })] });
+  flags = [flag(20, [3], 4)];
+  renderAt(`/runs/${BEE5}?tab=raw`);
+  const banner = await screen.findByRole("region", { name: "Monitor pause of agent" });
+  expect(await within(banner).findByText("bash rm -rf tests")).toBeTruthy();
 });
 
 test("a pause mid-call offers no deny, and an autonomous one no answers", async () => {

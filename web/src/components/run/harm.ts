@@ -1,14 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { scoreQuery, scoresQuery } from "@/api/score";
-import { whoami } from "@/api/session";
 import { readScore } from "@/lib/score";
+import { useOperator } from "@/lib/use-operator";
 
 // Where the newest finished score says each agent first did harm, for the timeline and the
 // step list; none for a viewer or before a score.
 export function useHarm(runId: string): { seq: number; agent: string }[] {
-  const me = useQuery(whoami);
-  const operator = me.data?.role === "operator";
+  const operator = useOperator();
   const scores = useQuery({ ...scoresQuery(runId), enabled: operator });
   const newest = (scores.data?.items ?? []).find((s) => s.status === "completed");
   const events = useQuery({

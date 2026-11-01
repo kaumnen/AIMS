@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { isProblem } from "@/api/session";
 import {
@@ -77,6 +77,11 @@ function LayerFile({
   const queryClient = useQueryClient();
   const opened = useQuery(layerQuery(layer));
   const [draft, setDraft] = useState<string | null>(null);
+  // the draft as last rendered, for a save that ends after more was typed
+  const typed = useRef(draft);
+  useLayoutEffect(() => {
+    typed.current = draft;
+  });
   // the version the draft began from, null when there was no file; a save replaces that one
   const [from, setFrom] = useState<string | null | undefined>(undefined);
   const [problems, setProblems] = useState<LineProblem[]>([]);
@@ -124,10 +129,12 @@ function LayerFile({
     try {
       const saved = await saveConfig(layer, text, etag);
       queryClient.setQueryData(layerQuery(layer).queryKey, saved);
-      setDraft(null);
-      setFrom(undefined);
+      // what was typed while it saved stays a draft over the saved version
+      const more = typed.current !== null && typed.current !== text;
+      setDraft((d) => (d === text ? null : d));
+      setFrom(saved.etag);
       setConflict(null);
-      setStatus(base.exists ? "Saved" : "Created");
+      setStatus(more ? null : base.exists ? "Saved" : "Created");
       for (const queryKey of CONFIG_DEPENDENT) void queryClient.invalidateQueries({ queryKey });
     } catch (e) {
       if (isProblem(e) && e.status === 412) {

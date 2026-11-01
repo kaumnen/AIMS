@@ -16,7 +16,13 @@ import {
 import { toml } from "@codemirror/legacy-modes/mode/toml";
 import { type Diagnostic, setDiagnostics } from "@codemirror/lint";
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
-import { Compartment, EditorState, type Extension } from "@codemirror/state";
+import {
+  Annotation,
+  Compartment,
+  EditorState,
+  type Extension,
+  Transaction,
+} from "@codemirror/state";
 import {
   drawSelection,
   EditorView,
@@ -153,6 +159,8 @@ function toDiagnostics(state: EditorState, problems: readonly LineProblem[]): Di
 export type Language = "yaml" | "toml" | null;
 
 const tomlLanguage = StreamLanguage.define(toml);
+// marks the editor taking new text from its `text` prop, which is no edit of the person's
+const synced = Annotation.define<boolean>();
 
 // A CodeMirror editor over `text`, highlighted for `language`. YAML gets completion and hover
 // docs from `schema` when given. Mod-s calls `onSave`.
@@ -220,7 +228,8 @@ export function CodeEditor({
       // a tab stop even read only, where CodeMirror drops contenteditable, so keys can scroll it
       EditorView.contentAttributes.of({ "aria-label": first.current.label, tabindex: "0" }),
       EditorView.updateListener.of((u) => {
-        if (u.docChanged) handlers.current.onChange?.(u.state.doc.toString());
+        if (!u.docChanged || u.transactions.some((t) => t.annotation(synced))) return;
+        handlers.current.onChange?.(u.state.doc.toString());
       }),
       language.current.of([]),
       editable.current.of([]),
@@ -238,7 +247,10 @@ export function CodeEditor({
   useEffect(() => {
     const v = view.current;
     if (!v || v.state.doc.toString() === text) return;
-    v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: text } });
+    v.dispatch({
+      changes: { from: 0, to: v.state.doc.length, insert: text },
+      annotations: [synced.of(true), Transaction.addToHistory.of(false)],
+    });
   }, [text]);
 
   useEffect(() => {

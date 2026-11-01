@@ -447,3 +447,40 @@ test("a series that does not load leaves the check to the server", async () => {
   ).toBeTruthy();
   expect(form.getByRole("button", { name: "Start run" }).hasAttribute("disabled")).toBe(false);
 });
+
+test("a yes to the cost holds only for the estimate it was given to", async () => {
+  renderAt("/runs");
+  const form = await openForm();
+  fireEvent.change(form.getByRole("spinbutton", { name: "Samples" }), { target: { value: "3" } });
+  await form.findByText("Total: cannot exceed $27.00.");
+  const yes = () => form.getByRole("checkbox", { name: /above the \$20.00 limit/ });
+  fireEvent.click(yes());
+  expect(form.getByRole("button", { name: "Start 3 runs" }).hasAttribute("disabled")).toBe(false);
+  await pick(form, "Monitor", "off");
+  await waitFor(() => expect((yes() as HTMLInputElement).checked).toBe(false));
+  expect(form.getByRole("button", { name: "Start 3 runs" }).hasAttribute("disabled")).toBe(true);
+});
+
+test("a count can be emptied to type another and shows what it counts once left", async () => {
+  renderAt("/runs");
+  const form = await openForm();
+  const samples = form.getByRole("spinbutton", { name: "Samples" }) as HTMLInputElement;
+  fireEvent.change(samples, { target: { value: "" } });
+  expect(samples.value).toBe("");
+  fireEvent.change(samples, { target: { value: "5" } });
+  await form.findByText("Total: cannot exceed $45.00.");
+  expect(samplesAsked.at(-1)).toBe(5);
+  fireEvent.change(samples, { target: { value: "500" } });
+  fireEvent.blur(samples);
+  expect(samples.value).toBe("100");
+});
+
+test("a series section stays open while its name is typed again", async () => {
+  renderAt("/runs");
+  const form = await openForm();
+  const fold = await openSeries(form);
+  const name = fold.getByRole("textbox", { name: "Name" });
+  fireEvent.change(name, { target: { value: "nightly" } });
+  fireEvent.change(name, { target: { value: "" } });
+  expect(form.getByText("Series").closest("details")?.open).toBe(true);
+});

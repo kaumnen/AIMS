@@ -6,7 +6,7 @@ import { FakeEventSource } from "@/test/event-source";
 
 import type { Schemas } from "./client";
 import type { Event } from "./events";
-import { rawEventsQuery, type RawPage, type StepInfo, stepsQuery } from "./run";
+import { rawEventsQuery, type RawPage, stepEventsQuery, type StepInfo, stepsQuery } from "./run";
 import { mergeTail, RunTail, tailStart } from "./tail";
 
 type StepPage = Schemas["StepPage"];
@@ -235,5 +235,43 @@ test("the default scheduler calls the browser's frame callback as a plain functi
   tail.start(0);
   FakeEventSource.all.at(-1)?.send({ kind: "delta", deltas: [delta({ text: "x" })] });
   expect(asked).toHaveLength(1);
+  tail.stop();
+});
+
+test("what a step shows after its last tool event reads again the steps that run to the end", () => {
+  const qc = new QueryClient();
+  const last = stepEventsQuery(RUN, step(30, 2), 20, true);
+  const cut = stepEventsQuery(RUN, step(10, 1), -1, false);
+  qc.setQueryData(last.queryKey, []);
+  qc.setQueryData(cut.queryKey, []);
+  const { source, tail } = open(qc);
+  source.send({ kind: "events", run_id: RUN, events: [event(60, "agent.finished")] });
+  flush();
+  expect(qc.getQueryState(last.queryKey)?.isInvalidated).toBe(true);
+  expect(qc.getQueryState(cut.queryKey)?.isInvalidated).toBe(false);
+  tail.stop();
+});
+
+test("a step event while the steps are read reads on once that read is in", async () => {
+  const qc = new QueryClient();
+  const steps = stepsQuery(RUN);
+  const seqs = () =>
+    qc
+      .getQueryData<InfiniteData<StepPage>>(steps.queryKey)
+      ?.pages.flatMap((p) => p.items.map((s) => s.seq));
+  fetch.mockResolvedValueOnce(Response.json({ items: [step(10, 1), step(30, 2)], next: null }));
+  await qc.prefetchInfiniteQuery(steps);
+  const held = Promise.withResolvers<Response>();
+  fetch.mockImplementationOnce(() => held.promise);
+  void qc.refetchQueries({ queryKey: steps.queryKey });
+  await waitFor(() => expect(qc.getQueryState(steps.queryKey)?.fetchStatus).toBe("fetching"));
+  fetch.mockResolvedValue(Response.json({ items: [step(30, 2), step(50, 3)], next: null }));
+  const { source, tail } = open(qc);
+  source.send({ kind: "events", run_id: RUN, events: [event(50, "agent.step")] });
+  flush();
+  expect(fetch).toHaveBeenCalledTimes(2);
+  held.resolve(Response.json({ items: [step(10, 1), step(30, 2)], next: null }));
+  await waitFor(() => expect(seqs()).toEqual([10, 30, 50]));
+  expect(fetch).toHaveBeenCalledTimes(3);
   tail.stop();
 });

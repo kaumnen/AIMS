@@ -14,7 +14,7 @@ import { modelsQuery, type Preset, presets } from "@/api/launch";
 import type { RunDetail, StepInfo } from "@/api/run";
 import { isProblem } from "@/api/session";
 import { BudgetSection } from "@/components/budget";
-import { DEFAULT, Field, Pick, problemText } from "@/components/form";
+import { CountInput, DEFAULT, Field, Pick, problemText } from "@/components/form";
 import { up, useRunners } from "@/components/health";
 import { OversightNote } from "@/components/oversight-note";
 import { Button } from "@/components/ui/button";
@@ -230,17 +230,7 @@ function ForkForm({
         </Field>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Samples">
-            <Input
-              type="number"
-              min={1}
-              max={MAX_SAMPLES}
-              value={samples}
-              className="h-7 md:text-sm"
-              onChange={(e) => {
-                const n = Math.round(Number(e.currentTarget.value));
-                setSamples(Number.isFinite(n) ? Math.min(MAX_SAMPLES, Math.max(1, n)) : 1);
-              }}
-            />
+            <CountInput value={samples} max={MAX_SAMPLES} onChange={setSamples} />
           </Field>
           <Field label="At once">
             <Input

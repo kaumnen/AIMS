@@ -1,4 +1,9 @@
-import { infiniteQueryOptions, queryOptions } from "@tanstack/react-query";
+import {
+  infiniteQueryOptions,
+  keepPreviousData,
+  type QueryClient,
+  queryOptions,
+} from "@tanstack/react-query";
 
 import { client, type Schemas } from "./client";
 import type { Event } from "./events";
@@ -99,6 +104,17 @@ export function stepEventsQuery(runId: string, step: StepInfo, after: number, la
       return data.items;
     },
     staleTime: Infinity,
+    // a live step's rows grow and move its key; it keeps what it shows while they are read
+    placeholderData: keepPreviousData,
+  });
+}
+
+// Reads again the steps that run on to the end, for what came after their last tool event,
+// such as the answer or the score.
+export function refreshLastSteps(qc: QueryClient, runId: string): void {
+  void qc.invalidateQueries({
+    queryKey: ["runs", "step", runId],
+    predicate: (q) => q.queryKey[6] === true,
   });
 }
 

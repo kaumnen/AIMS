@@ -1,14 +1,16 @@
-import type { InfiniteData, QueryClient } from "@tanstack/react-query";
+import { hashKey, type InfiniteData, type QueryClient } from "@tanstack/react-query";
 
 import { client, type Schemas } from "./client";
 import type { Event } from "./events";
 import { Live } from "./live";
-import type { RawFilters, RawPage, StepInfo } from "./run";
+import { type RawFilters, type RawPage, refreshLastSteps, type StepInfo, stepTypes } from "./run";
 
 type StepPage = Schemas["StepPage"];
 type WireDelta = Schemas["WireDelta"];
 
 // Events that add a step row or change one: the step itself, its tool calls and their execs.
+// what a step's transcript shows, which a step that runs on to the end reads again
+const SHOWN: ReadonlySet<string> = new Set(stepTypes);
 const STEP_EVENTS = new Set([
   "agent.step",
   "tool.call",
@@ -64,6 +66,8 @@ export class RunTail {
   #scheduled = false;
   #refreshing = false;
   #again = false;
+  // waiting for a read of the steps already under way to end
+  #waiting = false;
   #stopped = false;
 
   constructor(
@@ -162,6 +166,7 @@ export class RunTail {
     if (events.length === 0) return;
     this.#appendRaw(events);
     if (events.some((e) => STEP_EVENTS.has(e.type))) this.refreshSteps();
+    if (events.some((e) => SHOWN.has(e.type))) refreshLastSteps(this.qc, this.runId);
   }
 
   #delta(d: WireDelta): boolean {
@@ -239,8 +244,12 @@ export class RunTail {
     const key = ["runs", "steps", this.runId] as const;
     const state = this.qc.getQueryState(key);
     const data = this.qc.getQueryData<InfiniteData<StepPage, number | null>>(key);
-    if (!data || state?.fetchStatus === "fetching" || (data.pages.at(-1)?.next ?? null) !== null)
+    if (!data || (data.pages.at(-1)?.next ?? null) !== null) return;
+    if (state?.fetchStatus === "fetching") {
+      // that read may have started before these events: read on from it once it is in
+      this.#afterRead(hashKey(key));
       return;
+    }
     const rows = data.pages.flatMap((p) => p.items);
     const after = tailStart(rows);
     this.#refreshing = true;
@@ -264,6 +273,17 @@ export class RunTail {
           this.refreshSteps();
         }
       });
+  }
+
+  #afterRead(hash: string): void {
+    if (this.#waiting) return;
+    this.#waiting = true;
+    const off = this.qc.getQueryCache().subscribe(({ query }) => {
+      if (query.queryHash !== hash || query.state.fetchStatus === "fetching") return;
+      off();
+      this.#waiting = false;
+      if (!this.#stopped) this.refreshSteps();
+    });
   }
 }
 

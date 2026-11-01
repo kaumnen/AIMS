@@ -13,7 +13,7 @@ import {
 } from "@/api/review";
 import { reviewsQuery, type RunSummary } from "@/api/runs";
 import { isProblem } from "@/api/session";
-import { DEFAULT, Field, Pick, problemText } from "@/components/form";
+import { CountInput, DEFAULT, Field, Pick, problemText } from "@/components/form";
 import { up, useRunners } from "@/components/health";
 import { Button } from "@/components/ui/button";
 import {
@@ -109,7 +109,8 @@ function ReviewForm({ runId, onDone }: { runId: string; onDone: (id?: string) =>
         ...(runner ? { runner } : {}),
         ...(parallel && samples > 1 ? { parallel } : {}),
       });
-      void qc.invalidateQueries({ queryKey: reviewsQuery(runId).queryKey });
+      // the list names the new review before the panel switches to it
+      await qc.invalidateQueries({ queryKey: reviewsQuery(runId).queryKey });
       onDone(out.run_ids[0]);
     } catch (e) {
       setProblem(isProblem(e) ? problemText(e) : "The review did not start.");
@@ -200,17 +201,7 @@ function ReviewForm({ runId, onDone }: { runId: string; onDone: (id?: string) =>
         </Field>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Samples">
-            <Input
-              type="number"
-              min={1}
-              max={MAX_SAMPLES}
-              value={samples}
-              className="h-7 md:text-sm"
-              onChange={(e) => {
-                const n = Math.round(Number(e.currentTarget.value));
-                setSamples(Number.isFinite(n) ? Math.min(MAX_SAMPLES, Math.max(1, n)) : 1);
-              }}
-            />
+            <CountInput value={samples} max={MAX_SAMPLES} onChange={setSamples} />
           </Field>
           <Field label="At once">
             <Input

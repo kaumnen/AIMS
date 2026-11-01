@@ -2,6 +2,7 @@ import { ChevronRight } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
 import { type BudgetDraft, inForce, KEYS, LABELS, type Row, type RunCaps } from "@/lib/budget";
+import { useOpenWhen } from "@/lib/use-open-when";
 import { cn } from "@/lib/utils";
 
 // The caps of a new run or fork, folded under its summary: each cell keeps the cap in force
@@ -41,8 +42,9 @@ export function BudgetSection({
     { id: "run", label: "Run", row: draft.run, set: (row) => onChange({ ...draft, run: row }) },
   ];
   const shown = Object.entries(problems);
+  const fold = useOpenWhen(shown.length > 0);
   return (
-    <details className="group sm:col-span-2" open={shown.length > 0 || undefined}>
+    <details ref={fold} className="group sm:col-span-2">
       <summary className="flex cursor-default list-none items-center gap-2">
         <ChevronRight
           aria-hidden

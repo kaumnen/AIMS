@@ -8,6 +8,7 @@ import {
 
 import { client, type Schemas } from "./client";
 import type { Live } from "./live";
+import { refreshLastSteps } from "./run";
 import {
   pathsApiRunsGetParametersQueryCategoryAnyOf0Values as categoryValues,
   runSummaryKindValues,
@@ -208,6 +209,7 @@ export function applyRuns(qc: QueryClient, runs: readonly RunSummary[]): void {
       if (data.run.status !== run.status || data.run.verdict_severity !== run.verdict_severity) {
         void qc.invalidateQueries({ queryKey: q.queryKey, exact: true });
         void qc.invalidateQueries({ queryKey: ["runs", "steps", run.run_id], exact: true });
+        refreshLastSteps(qc, run.run_id);
       }
     } else if (what === "series") {
       applySeries(qc, q.queryKey, runs);

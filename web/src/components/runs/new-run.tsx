@@ -15,7 +15,7 @@ import { type ScenarioInfo, scenariosQuery } from "@/api/scenarios";
 import { seriesQuery } from "@/api/series";
 import { isProblem, whoami } from "@/api/session";
 import { BudgetSection } from "@/components/budget";
-import { DEFAULT, Field, Pick, problemText } from "@/components/form";
+import { CountInput, DEFAULT, Field, Pick, problemText } from "@/components/form";
 import { up, useRunners } from "@/components/health";
 import { CHECK_TEXT, useModelCheck } from "@/components/model-check";
 import { OversightNote } from "@/components/oversight-note";
@@ -83,7 +83,8 @@ function NewRunForm({ onDone, initial }: { onDone: () => void; initial: string }
   const [audit, setAudit] = useState<"kernel" | "snapshot">("kernel");
   const [score, setScore] = useState(false);
   const [keep, setKeep] = useState(false);
-  const [confirm, setConfirm] = useState(false);
+  // the estimate a yes to its cost was given for
+  const [confirmed, setConfirmed] = useState<string | null>(null);
   const [draft, setDraft] = useState(EMPTY_DRAFT);
   const [plan, setPlan] = useState(NO_SERIES);
   const [busy, setBusy] = useState(false);
@@ -96,18 +97,19 @@ function NewRunForm({ onDone, initial }: { onDone: () => void; initial: string }
   const place = series !== null && settled === series ? found.data : undefined;
   const count = series === null ? samples : plan.runs;
 
-  const estimate = useQuery({
-    ...runEstimateQuery({
-      source: scenario?.source ?? "",
-      name: scenario?.name ?? "",
-      variant: variant || undefined,
-      samples: count,
-      profile: profile || undefined,
-      monitor: (monitor || undefined) as Preset | undefined,
-      budget,
-    }),
-    enabled: scenario !== undefined,
+  const asking = runEstimateQuery({
+    source: scenario?.source ?? "",
+    name: scenario?.name ?? "",
+    variant: variant || undefined,
+    samples: count,
+    profile: profile || undefined,
+    monitor: (monitor || undefined) as Preset | undefined,
+    budget,
   });
+  const estimate = useQuery({ ...asking, enabled: scenario !== undefined });
+  // A yes holds only for what it was given to; any change that moves the estimate asks again.
+  const asked = JSON.stringify(asking.queryKey);
+  const confirm = confirmed === asked;
 
   if (scenarios.isPending) return <p className="text-muted-foreground">Loading scenarios</p>;
   if (scenarios.isError) return <p>Scenarios did not load.</p>;
@@ -138,7 +140,6 @@ function NewRunForm({ onDone, initial }: { onDone: () => void; initial: string }
     setChosen(key);
     setVariant(DEFAULT);
     setDraft(EMPTY_DRAFT);
-    setConfirm(false);
   };
   const submit = async () => {
     setBusy(true);
@@ -266,18 +267,11 @@ function NewRunForm({ onDone, initial }: { onDone: () => void; initial: string }
         </Field>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Samples">
-            <Input
-              type="number"
-              min={1}
-              max={MAX_SAMPLES}
+            <CountInput
               value={series === null ? samples : 1}
+              max={MAX_SAMPLES}
               disabled={series !== null}
-              className="h-7 md:text-sm"
-              onChange={(e) => {
-                const n = Math.round(Number(e.currentTarget.value));
-                setSamples(Number.isFinite(n) ? Math.min(MAX_SAMPLES, Math.max(1, n)) : 1);
-                setConfirm(false);
-              }}
+              onChange={setSamples}
             />
           </Field>
           <Field label="At once">
@@ -306,24 +300,13 @@ function NewRunForm({ onDone, initial }: { onDone: () => void; initial: string }
             onChange={(v) => setAudit(v === "snapshot" ? "snapshot" : "kernel")}
           />
         </Field>
-        <SeriesSection
-          draft={plan}
-          found={place}
-          unknown={unknown}
-          onChange={(p) => {
-            setPlan(p);
-            setConfirm(false);
-          }}
-        />
+        <SeriesSection draft={plan} found={place} unknown={unknown} onChange={setPlan} />
         <BudgetSection
           caps={caps}
           draft={draft}
           problems={problems}
           summary={draftText(budget, several) ?? "Scenario caps"}
-          onChange={(d) => {
-            setDraft(d);
-            setConfirm(false);
-          }}
+          onChange={setDraft}
         />
         <div className="flex flex-col gap-1.5 sm:col-span-2">
           <label className="flex items-center gap-2">
@@ -375,7 +358,7 @@ function NewRunForm({ onDone, initial }: { onDone: () => void; initial: string }
             <input
               type="checkbox"
               checked={confirm}
-              onChange={(e) => setConfirm(e.target.checked)}
+              onChange={(e) => setConfirmed(e.target.checked ? asked : null)}
               className="accent-foreground mt-0.5"
             />
             {why} Start anyway.

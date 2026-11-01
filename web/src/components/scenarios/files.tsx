@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import {
   checkScenario,
@@ -44,6 +44,11 @@ export default function FilesTab({
   const opened = useQuery(fileQuery(source, name, file));
   const schema = useQuery(schemaQuery);
   const [draft, setDraft] = useState<string | null>(null);
+  // the draft as last rendered, for a save that ends after more was typed
+  const typed = useRef(draft);
+  useLayoutEffect(() => {
+    typed.current = draft;
+  });
   // the version the draft was started from: a save replaces that one or is refused, even if
   // the file was read again since
   const [from, setFrom] = useState<string | null>(null);
@@ -53,6 +58,17 @@ export default function FilesTab({
   const [goto, setGoto] = useState<{ line: number } | null>(null);
   const [busy, setBusy] = useState(false);
   const [adding, setAdding] = useState<string | null>(null);
+  // Whatever opens another file (the tree, Back, a delete), the last one's edits stay behind.
+  const [shown, setShown] = useState(file);
+  if (shown !== file) {
+    setShown(file);
+    setDraft(null);
+    setFrom(null);
+    setProblems([]);
+    setStatus(null);
+    setConflict(null);
+    setGoto(null);
+  }
 
   const base = opened.data;
   const text = draft ?? base?.text ?? "";
@@ -90,10 +106,6 @@ export default function FilesTab({
   const open = (next: string) => {
     if (next === file) return;
     if (dirty && !window.confirm(`Discard your changes to ${file}?`)) return;
-    setDraft(null);
-    setProblems([]);
-    setStatus(null);
-    setConflict(null);
     onFile(next);
   };
 
@@ -111,10 +123,12 @@ export default function FilesTab({
       const saved = await saveFile(source, name, file, text, etag);
       const now: Opened = { text, size: new Blob([text]).size, etag: `"${saved.etag}"` };
       queryClient.setQueryData(fileQuery(source, name, file).queryKey, now);
-      setDraft(null);
-      setFrom(null);
+      // what was typed while it saved stays a draft over the saved version
+      const more = typed.current !== null && typed.current !== text;
+      setDraft((d) => (d === text ? null : d));
+      setFrom(now.etag);
       setConflict(null);
-      setStatus("Saved");
+      setStatus(more ? null : "Saved");
       refresh();
     } catch (e) {
       if (isProblem(e) && e.status === 412) {

@@ -13,6 +13,8 @@ const TEXT = "version: 1\nname: demo\noversight: observe\n";
 let onDisk: { text: string; etag: string };
 let puts: { body: string; ifMatch: string | null }[];
 let putStatus: number;
+// a save answers once this settles
+let putGate: Promise<void>;
 
 beforeAll(() => {
   // jsdom lays nothing out; CodeMirror measures text ranges
@@ -25,6 +27,7 @@ beforeEach(() => {
   onDisk = { text: TEXT, etag: '"e1"' };
   puts = [];
   putStatus = 200;
+  putGate = Promise.resolve();
   vi.stubGlobal("fetch", fetch);
   fetch.mockImplementation(async (request) => {
     const url = new URL(request.url);
@@ -41,6 +44,7 @@ beforeEach(() => {
       const body = await request.text();
       const ifMatch = request.headers.get("If-Match");
       puts.push({ body, ifMatch });
+      await putGate;
       if (putStatus === 500) {
         return Response.json({ status: 500, title: "Error", detail: "disk full" }, { status: 500 });
       }
@@ -52,6 +56,9 @@ beforeEach(() => {
       }
       onDisk = { text: body, etag: '"e2"' };
       return Response.json({ path: "scenario.yaml", etag: "e2", warnings: [] });
+    }
+    if (decodeURIComponent(url.pathname) === `${BASE}/files/selftest/exploit.sh`) {
+      return new Response("echo hi\n", { headers: { ETag: '"x1"' } });
     }
     if (url.pathname === "/api/scenarios/schema") return Response.json({ properties: {} });
     if (url.pathname === "/api/scenarios/check") {
@@ -82,16 +89,17 @@ const detail = (writable = true) =>
 function renderTab(writable = true) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const onFile = vi.fn<(file: string) => void>();
-  render(
+  const tab = (file: string) => (
     <QueryClientProvider client={client}>
-      <FilesTab detail={detail(writable)} file="scenario.yaml" onFile={onFile} />
-    </QueryClientProvider>,
+      <FilesTab detail={detail(writable)} file={file} onFile={onFile} />
+    </QueryClientProvider>
   );
-  return { onFile, client };
+  const { rerender } = render(tab("scenario.yaml"));
+  return { onFile, client, open: (file: string) => rerender(tab(file)) };
 }
 
-async function editor(): Promise<EditorView> {
-  const content = await screen.findByLabelText("Contents of scenario.yaml");
+async function editor(file = "scenario.yaml"): Promise<EditorView> {
+  const content = await screen.findByLabelText(`Contents of ${file}`);
   const view = EditorView.findFromDOM(content);
   if (!view) throw new Error("no editor");
   return view;
@@ -182,4 +190,49 @@ test("a read-only source opens files without a way to save", async () => {
   expect(view.state.readOnly).toBe(true);
   expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
   expect(screen.getByText("read only")).toBeTruthy();
+});
+
+test("a file opened any way but the tree, such as Back, leaves the last one's draft behind", async () => {
+  const { open } = renderTab();
+  type(await editor(), "demo", "mine");
+  expect(await screen.findByText("unsaved changes")).toBeTruthy();
+  open("selftest/exploit.sh");
+  await waitFor(async () =>
+    expect((await editor("selftest/exploit.sh")).state.doc.toString()).toBe("echo hi\n"),
+  );
+  expect(screen.queryByText("unsaved changes")).toBeNull();
+  open("scenario.yaml");
+  await waitFor(async () => expect((await editor()).state.doc.toString()).toBe(TEXT));
+  expect(screen.queryByText("unsaved changes")).toBeNull();
+});
+
+test("what is typed while a save is under way stays a draft over the saved version", async () => {
+  renderTab();
+  const view = await editor();
+  type(view, "demo", "mine");
+  const held = Promise.withResolvers<void>();
+  putGate = held.promise;
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(puts).toHaveLength(1));
+  type(view, "mine", "mine2");
+  await act(async () => held.resolve());
+  await screen.findByText("unsaved changes");
+  expect(view.state.doc.toString()).toBe(TEXT.replace("demo", "mine2"));
+  putGate = Promise.resolve();
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(puts).toHaveLength(2));
+  expect(puts.at(-1)).toEqual({ body: TEXT.replace("demo", "mine2"), ifMatch: '"e2"' });
+});
+
+test("a file read again with no edits shows each new version and makes no draft", async () => {
+  const { client } = renderTab();
+  const view = await editor();
+  const reread = async (text: string, etag: string) => {
+    onDisk = { text, etag };
+    await act(() => client.refetchQueries({ queryKey: ["scenarios", "file"] }));
+    await waitFor(() => expect(view.state.doc.toString()).toBe(text));
+    expect(screen.queryByText("unsaved changes")).toBeNull();
+  };
+  await reread(TEXT.replace("demo", "theirs"), '"e8"');
+  await reread(TEXT.replace("demo", "later"), '"e9"');
 });

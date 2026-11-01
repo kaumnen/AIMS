@@ -26,6 +26,7 @@ import {
 import { useNow } from "@/lib/use-now";
 import { cn } from "@/lib/utils";
 
+import { agentsOf } from "./controls";
 import { stepLine } from "./step-list";
 
 const AXIS = 16;
@@ -62,18 +63,6 @@ export function bandsOf(sweeps: readonly Event[]): Band[] {
       return [];
     }
     return [{ agent: e.agent_id, from, to, error: typeof e.data["error"] === "string" }];
-  });
-}
-
-function agentsOf(detail: RunDetail): string[] {
-  const listed = detail.started?.data["agents"];
-  if (!Array.isArray(listed)) return [];
-  return listed.flatMap((a: unknown) => {
-    if (typeof a === "string") return [a];
-    if (typeof a === "object" && a !== null && typeof (a as { id?: unknown }).id === "string") {
-      return [(a as { id: string }).id];
-    }
-    return [];
   });
 }
 

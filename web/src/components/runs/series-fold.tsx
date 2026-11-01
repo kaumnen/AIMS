@@ -1,8 +1,10 @@
 import { ChevronRight } from "lucide-react";
 
 import type { SeriesInfo } from "@/api/series";
+import { CountInput } from "@/components/form";
 import { statusLabel } from "@/components/runs/cells";
 import { Input } from "@/components/ui/input";
+import { useOpenWhen } from "@/lib/use-open-when";
 
 export const MAX_RUNS = 100;
 
@@ -51,8 +53,9 @@ export function SeriesSection({
 }) {
   const name = draft.name.trim();
   const summary = name ? `${name} · ${draft.runs} ${draft.runs === 1 ? "run" : "runs"}` : "None";
+  const fold = useOpenWhen(name !== "");
   return (
-    <details className="group sm:col-span-2" open={name ? true : undefined}>
+    <details ref={fold} className="group sm:col-span-2">
       <summary className="flex cursor-default list-none items-center gap-2">
         <ChevronRight
           aria-hidden
@@ -79,18 +82,11 @@ export function SeriesSection({
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-muted-foreground">Runs</span>
-            <Input
-              type="number"
-              min={1}
-              max={MAX_RUNS}
+            <CountInput
               value={draft.runs}
+              max={MAX_RUNS}
               disabled={!name}
-              className="h-7 md:text-sm"
-              onChange={(e) => {
-                const n = Math.round(Number(e.currentTarget.value));
-                const runs = Number.isFinite(n) ? Math.min(MAX_RUNS, Math.max(1, n)) : 1;
-                onChange({ ...draft, runs });
-              }}
+              onChange={(runs) => onChange({ ...draft, runs })}
             />
           </label>
         </div>

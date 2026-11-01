@@ -17,6 +17,7 @@ import {
 import { reviewsQuery } from "@/api/runs";
 import { isProblem } from "@/api/session";
 import type { InFlight } from "@/api/tail";
+import { agentsOf } from "@/components/run/controls";
 import { ForkHere } from "@/components/run/fork";
 import { useHarm } from "@/components/run/harm";
 import { RunHeader } from "@/components/run/header";
@@ -59,6 +60,7 @@ interface RunSearch extends RawSearch {
 
 const LIVE_MS = 3000;
 const MAX_EVIDENCE = 20;
+const STEP_LIST = '[role="listbox"][aria-label="Steps"]';
 const isLayer = (v: unknown): v is FlagLayer => layers.some((l) => l.value === v);
 
 const int = (v: unknown) => {
@@ -108,6 +110,12 @@ function Run() {
   const operator = useOperator();
   const change = (update: (prev: RunSearch) => RunSearch) =>
     void navigate({ search: update, replace: true });
+  // Raw keeps the rest of the URL; an event it picks drops the step, so Steps opens there.
+  const pickRaw = (update: (prev: RawSearch) => RawSearch) =>
+    change((prev) => {
+      const next = update(prev) as RunSearch;
+      return next.seq === prev.seq ? next : without(next, "step");
+    });
   const run = detail.data?.run;
   // An open run shows its latest step until someone picks one, on every tab of this visit.
   const [follow, setFollow] = useState<{ runId: string; on: boolean }>();
@@ -219,7 +227,7 @@ function Run() {
           </TabsContent>
         )}
         <TabsContent value="raw" className="flex min-h-0 flex-col pt-1">
-          <RawEvents runId={runId} search={search} onChange={change} />
+          <RawEvents runId={runId} search={search} onChange={pickRaw} />
         </TabsContent>
       </Tabs>
     </div>
@@ -347,7 +355,7 @@ function Steps({
   if (current === undefined && !loading) current = steps[0];
   const at = current === undefined ? -1 : steps.indexOf(current);
 
-  const select = (seq: number) => onChange((prev) => ({ ...prev, step: seq }));
+  const select = (seq: number) => onChange((prev) => ({ ...without(prev, "seq"), step: seq }));
   const chosen = (prev: RunSearch, f: FlagInfo): RunSearch => {
     const step = reaches(steps, cited(f), more) ? flagStep(f, steps) : undefined;
     return { ...without(prev, "seq", "step"), flag: f.seq, ...(step ? { step: step.seq } : {}) };
@@ -385,6 +393,10 @@ function Steps({
         walk(e.key === "F");
         return;
       }
+      // Arrows scroll whatever else has focus, such as a tool's output.
+      const arrow = e.key === "ArrowDown" || e.key === "ArrowUp";
+      const t = e.target;
+      if (arrow && t !== document.body && !(t instanceof Element && t.closest(STEP_LIST))) return;
       const move =
         e.key === "j" || e.key === "ArrowDown" ? 1 : e.key === "k" || e.key === "ArrowUp" ? -1 : 0;
       if (move === 0 || steps.length === 0) return;
@@ -393,7 +405,7 @@ function Steps({
       onChange((prev) => {
         const here = steps.find((s) => s.seq === prev.step) ?? current;
         const next = steps[(here === undefined ? -1 : steps.indexOf(here)) + move];
-        return next === undefined ? prev : { ...prev, step: next.seq };
+        return next === undefined ? prev : { ...without(prev, "seq"), step: next.seq };
       });
     };
     window.addEventListener("keydown", onKey);
@@ -437,8 +449,7 @@ function Steps({
       </p>
     );
   }
-  const agents = detail.started?.data["agents"];
-  const multi = Array.isArray(agents) && agents.length > 1;
+  const multi = agentsOf(detail).length > 1;
   const prev =
     current === undefined
       ? undefined
@@ -535,7 +546,7 @@ function Steps({
               runId={runId}
               step={current}
               after={prev ? prev.seq_to : -1}
-              last={at === steps.length - 1 && !more}
+              last={latest.get(current.agent_id ?? "") === current && !more}
               multi={multi}
               focus={focus}
               actions={<ForkHere detail={detail} step={current} />}

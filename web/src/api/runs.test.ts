@@ -112,7 +112,7 @@ test("updates reach every loaded list, review list and score list", () => {
   expect(qc.getQueryData(scores.queryKey)?.items.map((r) => r.run_id)).toEqual(["s"]);
 });
 
-test("an open run takes its update and refetches when it ends", () => {
+test("an open run takes its update and refetches when it ends, its last steps too", () => {
   const qc = new QueryClient();
   const detail = runQuery("b");
   qc.setQueryData(detail.queryKey, {
@@ -134,6 +134,7 @@ test("an open run takes its update and refetches when it ends", () => {
   expect(refetch.mock.calls.map(([f]) => f?.queryKey)).toEqual([
     detail.queryKey,
     ["runs", "steps", "b"],
+    ["runs", "step", "b"],
   ]);
 });
 
