@@ -4,6 +4,7 @@ import { useState } from "react";
 import { type Answer, type Command, send } from "@/api/control";
 import type { RunDetail } from "@/api/run";
 import { isProblem } from "@/api/session";
+import { Field, Pick } from "@/components/form";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -21,13 +22,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { useOperator } from "@/lib/use-operator";
 import { cn } from "@/lib/utils";
@@ -225,8 +219,8 @@ function InjectForm({
   const [agent, setAgent] = useState(EVERY);
   const [text, setText] = useState("");
   const items = [
-    { value: EVERY, label: agents.length > 1 ? "Every agent" : (agents[0] ?? "The agent") },
-    ...(agents.length > 1 ? agents.map((a) => ({ value: a, label: a })) : []),
+    { value: EVERY, label: "Every agent" },
+    ...agents.map((a) => ({ value: a, label: a })),
   ];
   return (
     <form
@@ -243,26 +237,18 @@ function InjectForm({
         </DialogDescription>
       </DialogHeader>
       {agents.length > 1 && (
-        <Select items={items} value={agent} onValueChange={(v) => setAgent(String(v ?? EVERY))}>
-          <SelectTrigger size="sm" aria-label="Agent" className="w-full">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent alignItemWithTrigger={false} align="start">
-            {items.map((i) => (
-              <SelectItem key={i.value || "every"} value={i.value}>
-                {i.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <Field label="Agent">
+          <Pick label="Agent" value={agent} items={items} onChange={setAgent} />
+        </Field>
       )}
-      <Textarea
-        aria-label="Message"
-        value={text}
-        rows={4}
-        onChange={(e) => setText(e.currentTarget.value)}
-        autoFocus
-      />
+      <Field label="Message">
+        <Textarea
+          value={text}
+          rows={4}
+          onChange={(e) => setText(e.currentTarget.value)}
+          autoFocus
+        />
+      </Field>
       <CommandAnswer answer={answer} />
       <DialogFooter>
         <Button type="button" variant="ghost" size="sm" onClick={onClose}>
