@@ -27,6 +27,7 @@ FIND_S = 10
 RETRY_S = 1.0
 RETRY_MAX_S = 30.0
 GONE = 1
+STDERR_MAX = 512
 
 
 class SamplerError(Exception):
@@ -149,9 +150,11 @@ class Watch:
     async def _read(self, trace: DockerExec) -> tuple[str | None, bool]:
         """Read one stream to its end; return why it failed, if it did, and if it read a sample.
 
-        `aims-sample` exits 0 or GONE when the cgroup is removed or missing.
+        `aims-sample` exits 0 or GONE when the cgroup is removed or missing; any other end is a
+        failure, given with what the sampler wrote to stderr.
         """
         pending = b""
+        errors = b""
         delivered = False
         try:
             stream = await trace.start(detach=False).__aenter__()
@@ -161,6 +164,7 @@ class Watch:
                         log.warning(
                             "sampler %s: %s", self.cgroup, message.data.decode(errors="replace")
                         )
+                        errors = (errors + message.data)[-STDERR_MAX:]
                         continue
                     *lines, pending = (pending + message.data).split(b"\n")
                     for line in lines:
@@ -177,7 +181,10 @@ class Watch:
             raise
         except Exception as e:
             return f"{type(e).__name__}: {e}", delivered
-        return (None if code in (0, GONE) else f"exit {code}"), delivered
+        if code in (0, GONE):
+            return None, delivered
+        detail = errors.decode(errors="replace").strip().replace("\n", "; ")
+        return f"exit {code}: {detail}" if detail else f"exit {code}", delivered
 
 
 class Sampler:

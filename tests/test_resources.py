@@ -2,6 +2,7 @@ import asyncio
 import itertools
 import os
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
@@ -12,8 +13,15 @@ from aims.events import Event, LocalEventStore, ResourceSample, RunStarted
 from aims.sandbox import AuditedSandbox, DockerBackend, SandboxSpec
 from aims.sandbox import execs as execs_module
 from aims.sandbox import resources as resources_module
-from aims.sandbox.base import Sample
-from aims.sandbox.resources import Sampler, SamplerError, Windows, parse_sample
+from aims.sandbox.base import Lost, Sample
+from aims.sandbox.resources import (
+    GONE,
+    Sampler,
+    SamplerError,
+    Watch,
+    Windows,
+    parse_sample,
+)
 from aims.sandbox.tracer import parse_pmu
 
 COLUMNS = len(ResourceSample.COLUMNS)
@@ -151,6 +159,91 @@ async def test_a_slow_cgroup_lookup_is_a_sampler_error(monkeypatch: pytest.Monke
     sampler._container = cast(Any, StuckContainer())
     with pytest.raises(SamplerError, match="timed out"):
         await sampler.watch("abc123", 50)
+
+
+@dataclass
+class Message:
+    stream: int
+    data: bytes
+
+
+class FakeStream:
+    def __init__(self, messages: list[Message]) -> None:
+        self._messages = messages
+
+    async def read_out(self) -> Message | None:
+        return self._messages.pop(0) if self._messages else None
+
+    async def close(self) -> None:
+        pass
+
+
+class FakeExec:
+    """An `aims-sample` exec that writes `messages` and exits `code`."""
+
+    def __init__(self, code: int, *messages: Message) -> None:
+        self._stream = FakeStream(list(messages))
+        self._code = code
+
+    def start(self, *, detach: bool) -> Any:
+        stream = self._stream
+
+        class Start:
+            async def __aenter__(self) -> FakeStream:
+                return stream
+
+        return Start()
+
+    async def inspect(self) -> dict[str, Any]:
+        return {"ExitCode": self._code}
+
+
+class FakeSampler:
+    def __init__(self, *later: FakeExec) -> None:
+        self.later = list(later)
+
+    async def stream(self, cgroup: str, hz: int) -> FakeExec:
+        return self.later.pop(0)
+
+
+def drain(watch: Watch) -> list[Sample | Lost]:
+    out: list[Sample | Lost] = []
+    while not watch.queue.empty():
+        out.append(watch.queue.get_nowait())
+    return out
+
+
+@pytest.mark.anyio
+async def test_a_sampler_that_cannot_read_the_cgroup_is_a_gap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(resources_module, "RETRY_S", 0.01)
+    line = Message(1, f"5 {' '.join(['7'] * COLUMNS)}\n".encode())
+    denied = Message(2, b"/sys/fs/cgroup/x/cpu.stat: Permission denied\n")
+    sampler = FakeSampler(FakeExec(3, denied), FakeExec(GONE))
+    watch = Watch(cast(Any, sampler), "/sys/fs/cgroup/x", 10, cast(Any, FakeExec(3, line, denied)))
+    await watch.ended(2)
+    items = drain(watch)
+    assert items[0] == Sample(5, (7,) * COLUMNS)
+    assert items[1:] == [
+        Lost(
+            None,
+            "resource sampler stopped: exit 3: /sys/fs/cgroup/x/cpu.stat: Permission denied",
+        )
+    ]
+    assert watch.restarts == 2
+    assert not sampler.later
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("code", [0, GONE])
+async def test_a_sampler_whose_cgroup_is_gone_just_ends(code: int) -> None:
+    gone = Message(2, b"/sys/fs/cgroup/x/cpu.stat: No such file or directory\n")
+    watch = Watch(cast(Any, FakeSampler()), "/sys/fs/cgroup/x", 10, cast(Any, FakeExec(code, gone)))
+    await watch.ended(2)
+    assert watch._reader.done()
+    assert drain(watch) == []
+    assert watch.restarts == 0
 
 
 @pytest.fixture
@@ -325,6 +418,39 @@ async def test_tracer_counts_the_runs_every_probe_skips(
     await asyncio.sleep(2.2)
     assert tracer._skips_ts is not None
     assert tracer._skips_ts > read
+
+
+@pytest.mark.docker
+@pytest.mark.anyio
+async def test_sampler_exit_codes(backend: DockerBackend, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(resources_module, "RETRY_S", 0.05)
+    sampler = backend.sampler
+    assert sampler is not None
+    container = await sampler._ensure()
+
+    denied = Watch(sampler, "/root", 10, await sampler.stream("/root", 10))
+    try:
+        async with asyncio.timeout(10):
+            item = await denied.queue.get()
+        # The retries fail the same way and add no gap.
+        await asyncio.sleep(1)
+    finally:
+        await denied.close()
+    assert denied.restarts >= 2
+    assert item == Lost(None, "resource sampler stopped: exit 3: /root/cpu.stat: Permission denied")
+    assert denied.queue.empty()
+
+    missing = Watch(sampler, "/nonexistent", 10, await sampler.stream("/nonexistent", 10))
+    await missing.ended(10)
+    assert missing._reader.done()
+    assert missing.queue.empty()
+    assert missing.restarts == 0
+
+    # A reader that leaves is not a removed cgroup.
+    cgroup = await sampler._find(container, container.id)
+    script = '{ { /aims/aims-sample 50 "$0"; echo $? >&3; } | head -c 1 >/dev/null; } 3>&1'
+    out = await execs_module.exec_output(container, ["sh", "-c", script, cgroup], timeout_s=10)
+    assert out == b"4\n"
 
 
 @pytest.mark.docker

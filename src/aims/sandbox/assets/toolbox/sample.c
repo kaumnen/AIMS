@@ -7,7 +7,8 @@
  * totals of cpu, io and memory pressure in us, memory bytes and pids. A file
  * that cannot be opened reads as -1. Lines go out in batches every 100 ms. A
  * tick that falls behind is skipped, not bunched. Exits 0 once the cgroup is
- * gone or the reader has left.
+ * removed, 1 if it is missing at the start, 2 on bad arguments, 3 if cpu.stat
+ * cannot be opened for another reason and 4 once the reader has left.
  */
 #define _GNU_SOURCE
 #include <errno.h>
@@ -101,10 +102,11 @@ int main(int argc, char **argv) {
     for (int i = 0; i < FILES; i++) {
         snprintf(path, sizeof path, "%s/%s", argv[2], names[i]);
         fds[i] = open(path, O_RDONLY | O_CLOEXEC);
-    }
-    if (fds[CPU] < 0) {
-        perror(argv[2]);
-        return 1;
+        if (i == CPU && fds[i] < 0) {
+            int e = errno;
+            perror(path);
+            return e == ENOENT || e == ENODEV ? 1 : 3;
+        }
     }
     struct timespec next, now, boot;
     clock_gettime(CLOCK_MONOTONIC, &next);
@@ -124,7 +126,7 @@ int main(int argc, char **argv) {
         }
         clock_gettime(CLOCK_MONOTONIC, &now);
         if (gone || used > (int)sizeof out - 512 || ns(now) - flushed >= BATCH_NS) {
-            if (used && write(1, out, used) != used) return 0;
+            if (used && write(1, out, used) != used) return 4;
             used = 0;
             flushed = ns(now);
         }
