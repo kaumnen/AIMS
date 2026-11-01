@@ -435,7 +435,8 @@ test("a new token shows its value once with how to use it", async () => {
   await waitFor(() => expect(screen.queryByText("aims_secret")).toBeNull());
 });
 
-test("revoking warns about your own token and the ui token", async () => {
+test("revoking warns about your own token, the ui token and runner names", async () => {
+  tokens = [...tokens, token({ name: "mac", role: "runner" })];
   renderAt("/settings/tokens");
   const table = await screen.findByRole("table");
 
@@ -443,9 +444,16 @@ test("revoking warns about your own token and the ui token", async () => {
   let dialog = within(await screen.findByRole("dialog"));
   expect(dialog.getByText(/until aims ui starts again/)).toBeTruthy();
   expect(dialog.queryByText(/signs you out/)).toBeNull();
+  expect(dialog.queryByText(/runner names free up/)).toBeNull();
   fireEvent.click(dialog.getByRole("button", { name: "Cancel" }));
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(calls("DELETE", "/api/tokens/")).toHaveLength(0);
+
+  fireEvent.click(within(table).getByRole("button", { name: "Revoke mac" }));
+  dialog = within(await screen.findByRole("dialog"));
+  expect(dialog.getByText(/runner names free up/)).toBeTruthy();
+  fireEvent.click(dialog.getByRole("button", { name: "Cancel" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 
   fireEvent.click(within(table).getByRole("button", { name: "Revoke me" }));
   dialog = within(await screen.findByRole("dialog"));

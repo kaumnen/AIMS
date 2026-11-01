@@ -15,7 +15,7 @@ from typing import Any, Literal
 
 import aiosqlite
 
-VERSION = 2
+VERSION = 3
 SESSION_DAYS = 30
 TOKEN_PREFIX = "aims_"
 
@@ -91,8 +91,16 @@ create table runs (
     source text not null,
     token text,
     diverged text,
-    created real not null
+    created real not null,
+    shipper text
 ) strict;
+"""
+
+# v2 had no runs.shipper. Its runner names never changed token, so the token a name is bound
+# to is the one that shipped every run of that name.
+MIGRATE_2 = """
+alter table runs add column shipper text;
+update runs set shipper = (select token from runners where runners.name = runs.runner);
 """
 
 
@@ -160,12 +168,16 @@ class Command:
 
 @dataclass(frozen=True, slots=True)
 class RunMeta:
+    """`token` is the operator token that started or imported the run; `shipper` is the runner
+    token that first shipped it, set with `runner`."""
+
     run_id: str
     runner: str | None
     source: str
     token: str | None
     diverged: str | None
     created: float
+    shipper: str | None = None
 
 
 class ServerDB:
@@ -188,6 +200,10 @@ class ServerDB:
             if version == 0:
                 await db.executescript(
                     f"begin immediate; {SCHEMA} pragma user_version = {VERSION}; commit;"
+                )
+            elif version == 2:
+                await db.executescript(
+                    f"begin immediate; {MIGRATE_2} pragma user_version = {VERSION}; commit;"
                 )
             elif version != VERSION:
                 raise RuntimeError(f"{path} has schema version {version}, not {VERSION}")
@@ -243,6 +259,12 @@ class ServerDB:
     async def tokens(self) -> list[Token]:
         rows = await self._all("select name, role, created, revoked from tokens order by created")
         return [Token(*r) for r in rows]
+
+    async def live_token(self, name: str) -> bool:
+        return (
+            await self._one("select 1 from tokens where name = ? and revoked is null", (name,))
+            is not None
+        )
 
     async def revoke_token(self, name: str) -> bool:
         async with self._lock:
@@ -386,7 +408,8 @@ class ServerDB:
                     ],
                 )
                 await self._db.executemany(
-                    "insert into runs values (?, null, 'job', ?, null, ?) on conflict do nothing",
+                    "insert into runs (run_id, source, token, created) values (?, 'job', ?, ?)"
+                    " on conflict do nothing",
                     [(j.run_id, j.token, j.created) for j in jobs],
                 )
             except BaseException:
@@ -637,6 +660,19 @@ class ServerDB:
             > 0
         )
 
+    async def drop_runner_commands(self, runner: str, outcome: str) -> list[str]:
+        """Settle the commands still waiting for `runner`; the runs they were for."""
+        async with (
+            self._lock,
+            self._db.execute(
+                "update commands set acked = ?, outcome = ? where runner = ? and acked is null"
+                " returning run_id",
+                (time.time(), outcome, runner),
+            ) as cur,
+        ):
+            rows = await cur.fetchall()
+        return sorted({r[0] for r in rows})
+
     async def drop_commands(self, run_id: str, outcome: str = "dropped: the run ended") -> int:
         """Settle the commands still waiting for a run that has ended."""
         return await self._write(
@@ -647,14 +683,22 @@ class ServerDB:
     # Run attribution
 
     async def attribute(
-        self, run_id: str, runner: str, source: str, token: str | None = None
+        self,
+        run_id: str,
+        runner: str,
+        source: str,
+        token: str | None = None,
+        shipper: str | None = None,
     ) -> RunMeta:
-        """Record which runner writes a run, the first time it ships. A run keeps its runner."""
+        """Record which runner, by name and token, writes a run, the first time it ships. A run
+        keeps its runner."""
         async with self._lock:
             await self._db.execute(
-                "insert into runs values (?, ?, ?, ?, null, ?) on conflict (run_id) do update"
-                " set runner = coalesce(runs.runner, excluded.runner)",
-                (run_id, runner, source, token, time.time()),
+                "insert into runs (run_id, runner, source, token, created, shipper)"
+                " values (?, ?, ?, ?, ?, ?) on conflict (run_id) do update"
+                " set runner = coalesce(runs.runner, excluded.runner),"
+                " shipper = iif(runs.runner is null, excluded.shipper, runs.shipper)",
+                (run_id, runner, source, token, time.time(), shipper),
             )
         meta = await self.run_meta(run_id)
         assert meta is not None
@@ -662,7 +706,8 @@ class ServerDB:
 
     async def run_meta(self, run_id: str) -> RunMeta | None:
         row = await self._one(
-            "select run_id, runner, source, token, diverged, created from runs where run_id = ?",
+            "select run_id, runner, source, token, diverged, created, shipper from runs"
+            " where run_id = ?",
             (run_id,),
         )
         return None if row is None else RunMeta(*row)
@@ -672,7 +717,7 @@ class ServerDB:
             return {}
         marks = ", ".join("?" * len(run_ids))
         rows = await self._all(
-            "select run_id, runner, source, token, diverged, created from runs"
+            "select run_id, runner, source, token, diverged, created, shipper from runs"
             f" where run_id in ({marks})",
             tuple(run_ids),
         )

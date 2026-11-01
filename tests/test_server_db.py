@@ -1,3 +1,4 @@
+import sqlite3
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -5,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from aims.server.db import Job, ServerDB
+from aims.server.db import VERSION, Job, ServerDB
 
 pytestmark = pytest.mark.anyio
 
@@ -113,18 +114,54 @@ async def test_commands_have_a_seq_per_runner_and_ack_once(db: ServerDB) -> None
     assert not await db.ack(c1.id, "r1", "ok")
     assert await db.drop_commands(run) == 2
     assert await db.pending_commands("r1") == []
+    late = await db.add_command("r1", run, {"action": "kill"})
+    assert await db.drop_runner_commands("r1", "dropped: gone") == [run]
+    settled = await db.command(late.id)
+    assert settled is not None
+    assert settled.outcome == "dropped: gone"
+    assert await db.drop_runner_commands("r1", "dropped: gone") == []
 
 
 async def test_runs_keep_their_first_runner_and_divergence(db: ServerDB) -> None:
     run = str(uuid.uuid7())
-    meta = await db.attribute(run, "r1", "push", "alice")
-    assert (meta.runner, meta.source) == ("r1", "push")
-    assert (await db.attribute(run, "r2", "push")).runner == "r1"
+    meta = await db.attribute(run, "r1", "push", "alice", shipper="t1")
+    assert (meta.runner, meta.source, meta.shipper) == ("r1", "push", "t1")
+    again = await db.attribute(run, "r2", "push", shipper="t2")
+    assert (again.runner, again.shipper) == ("r1", "t1")
+    queued = job()
+    await db.add_jobs([queued])
+    fresh = await db.run_meta(queued.run_id)
+    assert fresh is not None
+    assert (fresh.runner, fresh.shipper) == (None, None)
+    claimed = await db.attribute(queued.run_id, "r2", "job", shipper="t2")
+    assert (claimed.runner, claimed.token, claimed.shipper) == ("r2", "op", "t2")
     await db.mark_diverged(run, "event 3 differs")
     await db.mark_diverged(run, "later")
     got = await db.run_meta(run)
     assert got is not None
     assert got.diverged == "event 3 differs"
+
+
+async def test_a_v2_db_learns_which_token_shipped_each_run(tmp_path: Path) -> None:
+    path = tmp_path / "server.sqlite"
+    db = await ServerDB.open(path)
+    pushed, imported = str(uuid.uuid7()), str(uuid.uuid7())
+    await db.hello("box", "t1", {})
+    await db.attribute(pushed, "box", "push")
+    await db.attribute(imported, "import:op", "import", "op")
+    await db.close()
+    raw = sqlite3.connect(path)
+    raw.execute("alter table runs drop column shipper")
+    raw.execute("pragma user_version = 2")
+    raw.commit()
+    raw.close()
+    db = await ServerDB.open(path)
+    got = await db.runs_meta([pushed, imported])
+    assert (got[pushed].shipper, got[imported].shipper) == ("t1", None)
+    await db.close()
+    raw = sqlite3.connect(path)
+    assert raw.execute("pragma user_version").fetchone() == (VERSION,)
+    raw.close()
 
 
 async def test_runners_hello_and_status(db: ServerDB) -> None:

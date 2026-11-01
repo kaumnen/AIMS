@@ -1159,7 +1159,8 @@ export interface paths {
         post?: never;
         /**
          * Revoke Token
-         * @description Revoke a token and end every session made with it.
+         * @description Revoke a token and end every session made with it. Its runner names free up for another
+         *     token.
          */
         delete: operations["revoke_token"];
         options?: never;

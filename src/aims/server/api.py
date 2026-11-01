@@ -1044,6 +1044,12 @@ async def command(
         raise ProblemException(404, "Not found", f"no run {run_id} to control")
     if info is not None and info.status != "running":
         raise ProblemException(409, "Conflict", "the run has ended", code="ended")
+    if meta is not None and meta.shipper is not None:
+        bound = await state.db.runner(runner)
+        if bound is None or bound.token != meta.shipper:
+            raise ProblemException(
+                409, "Conflict", f"the runner of run {run_id} is gone", code="runner_gone"
+            )
     action = action.model_copy(update={"token": principal.name})
     c = await state.db.add_command(runner, run_id, action.model_dump(mode="json"))
     delivered = send(
@@ -1873,7 +1879,8 @@ async def create_token(body: TokenCreate, principal: Operator, state: State) -> 
 
 @router.delete("/tokens/{name}", status_code=204, tags=["tokens"], responses=responses(404))
 async def revoke_token(name: str, principal: Operator, state: State) -> None:
-    """Revoke a token and end every session made with it."""
+    """Revoke a token and end every session made with it. Its runner names free up for another
+    token."""
     if not await state.db.revoke_token(name):
         raise ProblemException(404, "Not found", f"no live token {name}")
     state.auth.revoke()

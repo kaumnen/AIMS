@@ -173,7 +173,7 @@ async def test_the_control_plane_checks_a_truth_file_before_it_keeps_it(
 
     async with cp.client(cp.runner) as c:
         await FakeRunner(cp, "pusher").client.hello(FakeRunner(cp, "pusher").hello_body())
-        await cp.state.db.attribute(running, "pusher", "push")
+        await cp.state.db.attribute(running, "pusher", "push", shipper="r1")
         r = await c.put(
             f"/runner/v1/runs/{running}/truth",
             content=truth.encode({"variant": "forged"}),

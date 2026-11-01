@@ -20332,7 +20332,7 @@
     },
     "/api/tokens/{name}": {
       "delete": {
-        "description": "Revoke a token and end every session made with it.",
+        "description": "Revoke a token and end every session made with it. Its runner names free up for another\ntoken.",
         "operationId": "revoke_token",
         "parameters": [
           {

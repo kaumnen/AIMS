@@ -1276,6 +1276,68 @@ async def test_push_finishes_what_a_run_on_the_same_token_began(
         await c.aclose()
 
 
+async def test_a_revoked_token_frees_its_runner_name(cp: CP, local: LocalEventStore) -> None:
+    old = FakeRunner(cp, "box")
+    await old.client.hello(old.hello_body())
+    run_id = await local.create_run(STARTED)
+    await local.append(run_id, [call(1)])
+    lines = split_lines((local.root / run_id / "events.jsonl").read_bytes())
+    assert (await raw_events(cp, "box", run_id, lines[:1])).status_code == 200
+    sealed = await local.create_run(STARTED)
+    await local.append(sealed, [Draft(RunFinished(status="completed"))])
+    assert (await ship(local, old.client, sealed)).done
+    async with cp.client(cp.operator) as c:
+        assert (await c.post(f"/api/runs/{run_id}/kill", json={})).status_code == 202
+    token = await cp.state.db.create_token("r2", "runner")
+    new = ControlClient(cp.url, token, runner="box")
+    with pytest.raises(ApiError) as caught:
+        await new.hello(old.hello_body())
+    assert (caught.value.status, caught.value.code) == (403, "name")
+    assert "revoke that token" in str(caught.value)
+
+    async with cp.client(cp.operator) as c:
+        assert (await c.delete("/api/tokens/r1")).status_code == 204
+    await new.hello(old.hello_body())
+    assert cp.state.runners["box"].token == "r2"
+    (kill,) = await cp.state.db.commands_of(run_id)
+    assert kill.outcome == "dropped: another token took the runner name"
+    r = await raw_events(cp, "box", run_id, lines[1:], token)
+    assert (r.status_code, r.json()["code"]) == (403, "owner")
+    with pytest.raises(ApiError) as caught:
+        await new.run_log(run_id)
+    assert caught.value.code == "owner"
+    async with cp.client(cp.operator) as c:
+        r = await c.post(f"/api/runs/{run_id}/kill", json={})
+        assert (r.status_code, r.json()["code"]) == (409, "runner_gone")
+    again = await ship(local, new, sealed)
+    assert (again.done, again.refused) == (True, None)
+
+    fresh = await local.create_run(STARTED)
+    await local.append(fresh, [Draft(RunFinished(status="completed"))])
+    assert (await ship(local, new, fresh)).done
+    meta = await cp.state.db.run_meta(fresh)
+    assert meta is not None
+    assert (meta.runner, meta.shipper) == ("box", "r2")
+    await cp.state.db.hello("ghost", "vanished", {})
+    ghost = ControlClient(cp.url, token, runner="ghost")
+    await ghost.hello(FakeRunner(cp, "ghost").hello_body())
+    for client in (old.client, new, ghost):
+        await client.aclose()
+
+
+async def test_taking_a_name_takes_back_the_jobs_it_held(cp: CP, fake: FakeRunner) -> None:
+    (run_id,) = await start_run(cp)
+    offer = await fake.next(OfferMessage)
+    assert await fake.client.claim(offer.run_id) is not None
+    async with cp.client(cp.operator) as c:
+        assert (await c.delete("/api/tokens/r1")).status_code == 204
+    token = await cp.state.db.create_token("r2", "runner")
+    new = ControlClient(cp.url, token, runner="fake")
+    reply = await new.hello(fake.hello_body(jobs=[run_id]))
+    assert reply.requeued == [run_id]
+    await new.aclose()
+
+
 async def test_requeue_only_gives_back_its_own_offers(cp: CP) -> None:
     from aims.server.db import Job as JobRow
 

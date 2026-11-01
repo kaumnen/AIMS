@@ -1945,7 +1945,7 @@ def token_revoke(
     name: Annotated[str, typer.Argument(help="The token to revoke.")],
     data_dir: DataDirOption = None,
 ) -> None:
-    """Revoke a token and end its sessions."""
+    """Revoke a token and end its sessions; its runner names free up for another token."""
     import asyncio
 
     async def main() -> bool:

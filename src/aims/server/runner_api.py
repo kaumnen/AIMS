@@ -20,6 +20,7 @@ from aims.events.blobs import BlobError
 from aims.events.chain import MAX_LINE
 from aims.events.store import TruthRefused, is_run_id
 from aims.server.auth import Principal, require
+from aims.server.db import Job
 from aims.server.problems import ProblemException, responses
 from aims.server.series import place_of
 from aims.server.state import Connected, ServerState
@@ -77,41 +78,48 @@ RunnerName = Annotated[str | None, Header(alias="X-Aims-Runner")]
 
 
 async def writer(state: ServerState, run_id: str, conn: Connected) -> None:
-    """Refuse unless `conn` writes this run: its job was claimed by it, or it shipped the run
-    first, or the runner that did uses the same token (an `aims push` finishing what an
-    `aims run` began). A run nobody claimed yet becomes this runner's."""
+    """Refuse unless `conn` writes this run: its job was claimed by it and its token ships it,
+    or its token shipped the run first (an `aims push` may finish what an `aims run` with the
+    same token began). A run nobody claimed yet becomes this runner's."""
     if not is_run_id(run_id):
         raise ProblemException(404, "Not found", f"not a run id: {run_id}")
     job = await state.db.job(run_id)
     if job is not None:
         if job.runner != conn.name or job.state not in ("claimed", "running", "done"):
             raise ProblemException(403, "Forbidden", f"run {run_id} is not yours", code="owner")
-        await state.db.attribute(run_id, conn.name, "job")
+        meta = await state.db.attribute(run_id, conn.name, "job", shipper=conn.token)
+        if meta.shipper != conn.token:
+            raise ProblemException(403, "Forbidden", f"run {run_id} is not yours", code="owner")
         return
     meta = await state.db.run_meta(run_id)
     if meta is None or meta.runner is None:
-        meta = await state.db.attribute(run_id, conn.name, "push")
-    if meta.source == "import" or not await _same_owner(state, meta.runner, conn):
+        meta = await state.db.attribute(run_id, conn.name, "push", shipper=conn.token)
+    if meta.source == "import" or meta.shipper != conn.token:
         raise ProblemException(403, "Forbidden", f"run {run_id} is not yours", code="owner")
 
 
-async def _same_owner(state: ServerState, owner: str | None, conn: Connected) -> bool:
-    if owner == conn.name:
-        return True
-    if owner is None:
+async def _holds(state: ServerState, job: Job, conn: Connected) -> bool:
+    """Whether `conn` holds `job`. A runner that took the name of a revoked token does not
+    hold the jobs that token began."""
+    if job.runner != conn.name:
         return False
-    known = await state.db.runner(owner)
-    return known is not None and known.token == conn.token
+    meta = await state.db.run_meta(job.run_id)
+    return meta is None or meta.shipper in (None, conn.token)
 
 
-async def reader(state: ServerState, run_id: str, name: str) -> None:
-    """Refuse unless `name` owns the run or holds a fork, monitor or score job of it, or the
+async def reader(state: ServerState, run_id: str, conn: Connected) -> None:
+    """Refuse unless `conn` owns the run or holds a fork, monitor or score job of it, or the
     job of the series run after it."""
     meta = await state.db.run_meta(run_id)
-    if meta is not None and meta.runner == name and meta.source != "import":
+    if (
+        meta is not None
+        and meta.source != "import"
+        and meta.runner == conn.name
+        and meta.shipper == conn.token
+    ):
         return
     for job in await state.db.jobs(("claimed", "running")):
-        if job.runner != name:
+        if not await _holds(state, job, conn):
             continue
         fork = job.payload.get("fork")
         if isinstance(fork, dict) and fork.get("origin") == run_id:
@@ -159,21 +167,41 @@ async def runner_hello(
         raise ProblemException(
             403, "Forbidden", f"{body.name} is the name of the local runner", code="name"
         )
+    # a name stays with its token while that token lives; a revoked or gone one frees it
     known = await state.db.runner(body.name)
-    if known is not None and known.token != principal.name:
+    taken = known is not None and known.token != principal.name
+    if (
+        known is not None
+        and taken
+        and (known.token in local or await state.db.live_token(known.token))
+    ):
         raise ProblemException(
-            403, "Forbidden", f"runner {body.name} uses another token", code="name"
+            403,
+            "Forbidden",
+            f"runner {body.name} uses another token; revoke that token to free the name",
+            code="name",
         )
     await state.db.hello(body.name, principal.name, body.model_dump(mode="json"))
     conn = state.runners.get(body.name)
-    if conn is None:
+    if conn is None or taken:
+        if conn is not None:
+            conn.offered.clear()
+            with contextlib.suppress(asyncio.QueueFull):
+                conn.feed.put_nowait(None)
         conn = Connected(body.name, principal.name, body, local=body.name == state.local_runner)
         state.runners[body.name] = conn
     else:
         conn.hello, conn.status, conn.seen = body, None, time.time()
+    if taken:
+        dropped = await state.db.drop_runner_commands(
+            body.name, "dropped: another token took the runner name"
+        )
+        for run_id in dropped:
+            state.changes.touch(run_id)
+    kept = set() if taken else set(body.jobs)
     requeued: list[str] = []
     for job in await state.db.jobs(("offered", "claimed")):
-        if job.runner != body.name or job.run_id in body.jobs:
+        if job.runner != body.name or job.run_id in kept:
             continue
         if await state.store.run(job.run_id) is not None:
             continue
@@ -414,7 +442,7 @@ async def runner_truth(
 ) -> Response:
     """The truth file of a sealed run, for the runner that holds a score job of it."""
     conn = connected(state, principal, name)
-    await reader(state, run_id, conn.name)
+    await reader(state, run_id, conn)
     try:
         data = await asyncio.to_thread(state.store.truth_path(run_id).read_bytes)
     except OSError:
@@ -540,7 +568,10 @@ async def post_deltas(
             job = await state.db.job(d.run_id)
             owner = (job.runner if job is not None else None) or (meta.runner if meta else None)
             imported = meta is not None and meta.source == "import"
-            mine[d.run_id] = not imported and owner in (None, conn.name)
+            shipper = meta.shipper if meta is not None else None
+            mine[d.run_id] = (
+                not imported and owner in (None, conn.name) and shipper in (None, conn.token)
+            )
         if mine[d.run_id]:
             keep.append(d)
     state.publish(keep)
@@ -556,7 +587,7 @@ async def run_log(
 ) -> Response:
     """The exact log of a run, to fork it on another runner."""
     conn = connected(state, principal, name)
-    await reader(state, run_id, conn.name)
+    await reader(state, run_id, conn)
     head = await state.store.head(run_id)
     if head is None:
         raise ProblemException(404, "Not found", f"no run {run_id}")
@@ -579,7 +610,7 @@ async def run_blob(
     run_id: str, sha256: str, principal: RunnerToken, state: State, name: RunnerName = None
 ) -> FileResponse:
     conn = connected(state, principal, name)
-    await reader(state, run_id, conn.name)
+    await reader(state, run_id, conn)
     return _stored(state, run_id, sha256)
 
 

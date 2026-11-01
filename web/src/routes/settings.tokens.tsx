@@ -205,6 +205,9 @@ function Revoke({
             It stops working at once and every session made with it ends. Its name stays taken.
           </DialogDescription>
         </DialogHeader>
+        {token?.role === "runner" && (
+          <p>Its runner names free up, so a runner with another token can take them.</p>
+        )}
         {mine && (
           <p className="font-medium">You are signed in with this token, so this signs you out.</p>
         )}
