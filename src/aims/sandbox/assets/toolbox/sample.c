@@ -8,15 +8,18 @@
  * that cannot be opened reads as -1. Lines go out in batches every 100 ms. A
  * tick that falls behind is skipped, not bunched. Exits 0 once the cgroup is
  * removed, 1 if it is missing at the start, 2 on bad arguments, 3 if cpu.stat
- * cannot be opened for another reason and 4 once the reader has left.
+ * cannot be opened for another reason and 4 once the reader has left: a write
+ * fails, or stdin, when it is a pipe or socket, reaches its end.
  */
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -91,6 +94,13 @@ static int sample(long long *v) {
 
 static long long ns(struct timespec t) { return t.tv_sec * 1000000000LL + t.tv_nsec; }
 
+/* Whether stdin has reached its end. Anything written to it is dropped. */
+static int ended(void) {
+    char scrap[512];
+    ssize_t n = read(0, scrap, sizeof scrap);
+    return n == 0 || (n < 0 && errno != EINTR && errno != EAGAIN);
+}
+
 int main(int argc, char **argv) {
     if (argc != 3 || atoi(argv[1]) < 1 || atoi(argv[1]) > 1000) {
         fprintf(stderr, "usage: aims-sample HZ DIR\n");
@@ -108,6 +118,9 @@ int main(int argc, char **argv) {
             return e == ENOENT || e == ENODEV ? 1 : 3;
         }
     }
+    struct stat in;
+    struct pollfd reader = {.fd = 0, .events = POLLIN};
+    nfds_t watched = fstat(0, &in) == 0 && (S_ISFIFO(in.st_mode) || S_ISSOCK(in.st_mode));
     struct timespec next, now, boot;
     clock_gettime(CLOCK_MONOTONIC, &next);
     long long flushed = ns(next);
@@ -135,7 +148,12 @@ int main(int argc, char **argv) {
         while (t <= ns(now)) t += period;
         next.tv_sec = t / 1000000000LL;
         next.tv_nsec = t % 1000000000LL;
-        while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL) == EINTR) {
+        for (;;) {
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            long long left = t - ns(now);
+            if (left <= 0) break;
+            struct timespec wait = {left / 1000000000LL, left % 1000000000LL};
+            if (ppoll(&reader, watched, &wait, NULL) > 0 && ended()) return 4;
         }
     }
 }

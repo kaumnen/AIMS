@@ -455,6 +455,36 @@ async def test_sampler_exit_codes(backend: DockerBackend, monkeypatch: pytest.Mo
 
 @pytest.mark.docker
 @pytest.mark.anyio
+async def test_a_closed_watch_ends_its_sampler(backend: DockerBackend) -> None:
+    sampler = backend.sampler
+    assert sampler is not None
+    container = await sampler._ensure()
+    # The sampler's own cgroup lives on, so only the closed attach can end the exec.
+    cgroup = await sampler._find(container, container.id)
+    trace = await sampler.stream(cgroup, 10)
+    watch = Watch(sampler, cgroup, 10, trace)
+    try:
+        async with asyncio.timeout(10):
+            await watch.queue.get()
+        assert (await trace.inspect())["Running"]
+    finally:
+        await watch.close()
+    async with asyncio.timeout(2):
+        while (info := await trace.inspect())["Running"]:  # noqa: ASYNC110
+            await asyncio.sleep(0.05)
+    assert info["ExitCode"] == 4
+
+    # A stdin that is not a pipe or socket, such as /dev/null, is not watched.
+    script = (
+        'true | /aims/aims-sample 10 "$0" >/dev/null; echo $?;'
+        ' timeout -s KILL 1 /aims/aims-sample 10 "$0" </dev/null >/dev/null; echo $?'
+    )
+    out = await execs_module.exec_output(container, ["sh", "-c", script, cgroup], timeout_s=10)
+    assert out == b"4\n137\n"
+
+
+@pytest.mark.docker
+@pytest.mark.anyio
 @pytest.mark.parametrize("death", ["kill", "delete"])
 async def test_sampler_death_is_a_gap(store: LocalEventStore, death: str) -> None:
     async with await DockerBackend.open(audit="snapshot") as snapshot:

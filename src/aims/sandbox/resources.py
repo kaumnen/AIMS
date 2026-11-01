@@ -2,7 +2,8 @@
 
 One unprivileged sampler container per backend sees every container's cgroup through the host
 cgroup namespace. Each watched sandbox gets its own `aims-sample` process in it, streaming one
-line per reading over an attached exec.
+line per reading over an attached exec. The process ends when the attach closes, as its stdin
+then ends.
 """
 
 import asyncio
@@ -253,7 +254,7 @@ class Sampler:
 
     async def _sample(self, container: DockerContainer, cgroup: str, hz: int) -> DockerExec:
         return await container.exec(
-            ["/aims/aims-sample", str(hz), cgroup], stdout=True, stderr=True
+            ["/aims/aims-sample", str(hz), cgroup], stdin=True, stdout=True, stderr=True
         )
 
     async def _ensure(self) -> DockerContainer:
