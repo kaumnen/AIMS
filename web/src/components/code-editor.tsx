@@ -217,7 +217,8 @@ export function CodeEditor({
         ...historyKeymap,
         ...searchKeymap,
       ]),
-      EditorView.contentAttributes.of({ "aria-label": first.current.label }),
+      // a tab stop even read only, where CodeMirror drops contenteditable, so keys can scroll it
+      EditorView.contentAttributes.of({ "aria-label": first.current.label, tabindex: "0" }),
       EditorView.updateListener.of((u) => {
         if (u.docChanged) handlers.current.onChange?.(u.state.doc.toString());
       }),

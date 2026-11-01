@@ -65,7 +65,11 @@ function Models() {
             <th className="py-1 pr-4 font-normal max-sm:hidden">Model</th>
             <th className="py-1 pr-4 font-normal max-md:hidden">Keys</th>
             <th className="py-1 pr-4 font-normal whitespace-nowrap">Last check</th>
-            {operator && <th className="py-1 font-normal" aria-label="Actions" />}
+            {operator && (
+              <th className="py-1 font-normal">
+                <span className="sr-only">Actions</span>
+              </th>
+            )}
           </tr>
         </thead>
         <tbody>
@@ -143,7 +147,8 @@ function Row({
           </Link>
         )}
         {bad && (
-          <span className="text-muted-foreground block max-w-md truncate" title={bad}>
+          // a narrow screen wraps it, or the table pushes the page wider than the screen
+          <span className="text-muted-foreground block max-w-md sm:truncate" title={bad}>
             {bad}
           </span>
         )}

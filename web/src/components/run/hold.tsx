@@ -202,6 +202,7 @@ function Pause({
             >
               <Textarea
                 aria-label="Message for the agent"
+                placeholder="Message for the agent"
                 value={text}
                 rows={3}
                 onChange={(e) => setText(e.currentTarget.value)}

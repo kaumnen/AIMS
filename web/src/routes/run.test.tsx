@@ -580,6 +580,10 @@ test("a run opens on its first step", async () => {
   expect(screen.getByText("60", { selector: "dd" })).toBeTruthy();
   expect(screen.getByText("Ran 3 processes")).toBeTruthy();
   expect(screen.getAllByText("1 failed, 7 passed")).toHaveLength(2);
+  // output that does not fit scrolls, so keys must reach each box
+  for (const box of screen.getAllByText("1 failed, 7 passed")) {
+    expect(box.closest("pre")?.tabIndex).toBe(0);
+  }
   expect(screen.queryByText("Fixed the encoder.")).toBeNull();
 
   const [query] = eventQueries();
@@ -825,7 +829,12 @@ test("a run without agent steps points at its raw events", async () => {
 
 test("an unknown run says so", async () => {
   renderAt("/runs/01a18a50-0000-7000-8000-000000000000");
-  expect(await screen.findByText(/No run 01a18a50-0000-7000-8000-000000000000\./)).toBeTruthy();
+  expect(
+    await screen.findByRole("heading", {
+      level: 1,
+      name: "No run 01a18a50-0000-7000-8000-000000000000.",
+    }),
+  ).toBeTruthy();
   expect(screen.getByRole("link", { name: "Back to runs" }).getAttribute("href")).toBe("/runs");
 });
 

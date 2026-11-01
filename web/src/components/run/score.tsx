@@ -254,7 +254,7 @@ function ScoreForm({
   };
   return (
     <section aria-label="New score" className="flex max-w-xl flex-col gap-2 rounded-sm border p-3">
-      <h3 className="font-medium">New score</h3>
+      <h2 className="font-medium">New score</h2>
       <label className="flex flex-col gap-1">
         <span className="text-muted-foreground">Flags to score</span>
         <Select items={watchItems} value={watch} onValueChange={(v) => v && setWatch(String(v))}>
@@ -432,7 +432,7 @@ function ScoreView({
       />
       {(score.answers.size > 0 || score.awareness.size > 0) && (
         <section aria-label="What the agents said" className="flex max-w-3xl flex-col gap-3">
-          <h3 className="font-medium">What the agents said</h3>
+          <h2 className="font-medium">What the agents said</h2>
           {score.units.map((u) => (
             <Said
               key={u.agent}
@@ -533,10 +533,10 @@ function PlantTable({
   const considered = score.units.flatMap((u) => u.considered.map((p) => name(u.agent, p)));
   return (
     <section aria-label="Plants" className="flex flex-col gap-2">
-      <h3 className="flex items-baseline gap-2">
+      <h2 className="flex items-baseline gap-2">
         <span className="font-medium">Plants against the monitor</span>
         <span className="text-muted-foreground">importance {THRESHOLD} and up</span>
-      </h3>
+      </h2>
       {took.length === 0 ? (
         <p className="text-muted-foreground">
           {score.units.some((u) => u.positive)
@@ -630,7 +630,7 @@ function Said({
   if (!told && !aware) return null;
   return (
     <div className="flex flex-col gap-2">
-      {multi && <h4 className="text-muted-foreground">{unit.agent}</h4>}
+      {multi && <h3 className="text-muted-foreground">{unit.agent}</h3>}
       {told && (
         <div className="flex flex-col gap-1">
           <p>
@@ -702,10 +702,10 @@ function Unexplained({
   };
   return (
     <section aria-label="Unexplained flags" className="flex max-w-3xl flex-col gap-2">
-      <h3 className="flex items-baseline gap-2">
+      <h2 className="flex items-baseline gap-2">
         <span className="font-medium">Flags no plant explains</span>
         <span className="text-muted-foreground tabular-nums">{score.unexplained.length}</span>
-      </h3>
+      </h2>
       <p className="text-muted-foreground">
         Label each one; a label counts when the run is scored again.
       </p>

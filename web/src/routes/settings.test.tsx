@@ -599,7 +599,11 @@ test("a save that does not load says why, and a changed file offers both ways", 
   retype(view, "[nonsense]", "[credits]\nfireworks = 5");
   layers.project.etag = "p9";
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
-  expect((await screen.findByRole("alert")).textContent).toContain("changed on disk");
+  const alert = await screen.findByRole("alert");
+  // the control plane's own words are not said twice
+  expect(alert.querySelector("span")?.textContent).toMatch(
+    /aims\.toml changed on disk since you opened it\.$/,
+  );
   fireEvent.click(screen.getByRole("button", { name: "Keep mine, overwrite" }));
   await screen.findByText("Saved");
   expect(saves.at(-1)?.ifMatch).toBe('"p9"');
@@ -628,6 +632,9 @@ test("viewers read the files and the settings in use, without checks", async () 
   const merged = await configEditor("The settings in use");
   expect(merged.state.doc.toString()).toBe("meta = 150.0  # this project\n");
   expect(merged.state.readOnly).toBe(true);
+  // read only, CodeMirror drops contenteditable; a tab stop still lets keys scroll it
+  expect(merged.contentDOM.getAttribute("contenteditable")).toBe("false");
+  expect(merged.contentDOM.tabIndex).toBe(0);
   fireEvent.click(screen.getByRole("button", { name: "This project" }));
   const view = await configEditor("Contents of aims.toml");
   expect(view.state.readOnly).toBe(true);

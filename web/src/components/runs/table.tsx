@@ -196,7 +196,9 @@ function RunRow({
       : "Review"
     : run.kind === "selftest"
       ? `Self-test of ${run.scenario ?? "a scenario"}`
-      : (run.scenario ?? run.kind);
+      : run.kind === "models.check"
+        ? "Model check"
+        : (run.scenario ?? run.kind);
   const holds = run.kind === "selftest" ? "cases" : run.reviews === 1 ? "review" : "reviews";
   return (
     <div

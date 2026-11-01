@@ -126,11 +126,13 @@ export function RunFilterBar({
     search.scenario ?? search.series ?? search.variant ?? search.severity ?? search.category;
   return (
     <div className="flex flex-wrap items-center gap-2 pb-2">
+      {/* scrolls sideways on a screen too narrow for every kind */}
       <ToggleGroup
         aria-label="Kind"
         size="sm"
         spacing={0}
         variant="outline"
+        className="max-w-full overflow-x-auto"
         value={[search.kind ?? "scenario"]}
         onValueChange={(v) => {
           const kind = v[0] as RunKind | "all" | undefined;

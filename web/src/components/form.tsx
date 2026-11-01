@@ -62,3 +62,17 @@ export function problemText(p: {
   const errors = (p.errors ?? []).map((e) => e.msg);
   return [p.detail ?? p.title, ...errors].join(" ");
 }
+
+// What the control plane's detail of a save refused with 412 says happened to the file.
+const CONFLICTS: Record<string, string> = {
+  "the file changed since it was read": "changed on disk",
+  "the file does not exist": "was deleted on disk",
+  "the file exists": "was created on disk",
+};
+
+export function conflictText(name: string, detail: string): string {
+  const what = CONFLICTS[detail];
+  return what
+    ? `${name} ${what} since you opened it.`
+    : `${name} changed on disk since you opened it (${detail}).`;
+}

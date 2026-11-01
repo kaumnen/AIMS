@@ -28,7 +28,7 @@ export function Header({ me }: { me: Schemas["Whoami"] }) {
           </Link>
         ))}
       </nav>
-      <div className="ml-auto flex items-center gap-3">
+      <div className="ml-auto flex min-w-0 items-center gap-3">
         <Health />
         <UserMenu me={me} />
       </div>

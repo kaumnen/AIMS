@@ -41,9 +41,13 @@ export function InFlightStep({ draft, n }: { draft: InFlight; n: number }) {
       )}
       {draft.text && <p className="whitespace-pre-wrap">{draft.text}</p>}
       {draft.tools.map((t, i) => (
-        // tool drafts have no id until the response is logged
-        // oxlint-disable-next-line react/no-array-index-key
-        <pre key={i} className="bg-muted/50 overflow-x-auto rounded-sm p-2 font-mono text-xs">
+        <pre
+          // tool drafts have no id until the response is logged
+          // oxlint-disable-next-line react/no-array-index-key
+          key={i}
+          tabIndex={0}
+          className="bg-muted/50 focus-visible:ring-ring/50 overflow-x-auto rounded-sm p-2 font-mono text-xs outline-none focus-visible:ring-2"
+        >
           {t.name}
           {t.args ? ` ${t.args}` : ""}
         </pre>

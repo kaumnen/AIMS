@@ -338,7 +338,11 @@ function Args({ raw }: { raw: unknown }) {
       {blocks.map(([k, v]) => (
         <div key={k}>
           <p className="text-muted-foreground font-mono text-xs">{k}</p>
-          <pre className="max-h-96 overflow-auto rounded-sm border px-2 py-1.5 font-mono text-xs break-words whitespace-pre-wrap">
+          {/* a tab stop, so keys can scroll output that does not fit */}
+          <pre
+            tabIndex={0}
+            className="focus-visible:ring-ring/50 max-h-96 overflow-auto rounded-sm border px-2 py-1.5 font-mono text-xs break-words whitespace-pre-wrap outline-none focus-visible:ring-2"
+          >
             {String(v)}
           </pre>
         </div>

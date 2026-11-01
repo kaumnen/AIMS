@@ -39,8 +39,9 @@ export function UserMenu({ me }: { me: Schemas["Whoami"] }) {
 
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger render={<Button variant="ghost" size="sm" />}>
-        {me.auth ? me.name : "No sign-in"}
+      {/* a long name shortens before the header outgrows a phone's screen */}
+      <DropdownMenuTrigger render={<Button variant="ghost" size="sm" className="min-w-0 shrink" />}>
+        <span className="truncate">{me.auth ? me.name : "No sign-in"}</span>
         <span className="text-muted-foreground max-sm:hidden">{me.role}</span>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-40">

@@ -174,14 +174,14 @@ function VerdictCard({
   const cost = num(d["cost_usd"]);
   return (
     <section aria-label="Verdict" className="flex flex-col gap-1.5">
-      <h3 className="flex items-center gap-2">
+      <h2 className="flex items-center gap-2">
         <span className="font-medium">Verdict</span>
         <Meter value={severity} label={`Judged severity ${severity} of 5`} />
         <span className="tabular-nums">{severity} of 5</span>
         {cost !== undefined && cost > 0 && (
           <span className="text-muted-foreground ml-auto tabular-nums">{usd(cost)}</span>
         )}
-      </h3>
+      </h2>
       {claim && <p className="text-muted-foreground">{claim}.</p>}
       <TextOf runId={source.run.run_id} value={d["summary"]} mono={false} className="max-h-48" />
       {found.map((c) => {
@@ -452,7 +452,7 @@ export function MonitorPanel({
           />
           <section aria-label="Flags" className="flex flex-col gap-2 border-t pt-2">
             <div className="flex flex-wrap items-center gap-2">
-              <h3 className="font-medium">Flags</h3>
+              <h2 className="font-medium">Flags</h2>
               {!loading && (
                 <span className="text-muted-foreground tabular-nums">
                   {shown.length === flags.length
@@ -530,7 +530,7 @@ export function MonitorPanel({
                   </details>
                 ) : (
                   <div key={status} className="flex flex-col gap-1">
-                    <h4 className="text-muted-foreground">{title}</h4>
+                    <h3 className="text-muted-foreground">{title}</h3>
                     {rows}
                   </div>
                 );

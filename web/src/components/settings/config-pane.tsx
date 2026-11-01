@@ -12,7 +12,7 @@ import {
   saveConfig,
 } from "@/api/settings";
 import { CodeEditor, type LineProblem, Problems } from "@/components/code-editor";
-import { problemText } from "@/components/form";
+import { conflictText, problemText } from "@/components/form";
 import { Button } from "@/components/ui/button";
 import { useDebounced } from "@/lib/use-debounced";
 
@@ -190,9 +190,7 @@ function LayerFile({
       </div>
       {conflict && (
         <div role="alert" className="flex flex-wrap items-center gap-2 rounded-sm border px-3 py-2">
-          <span className="font-medium">
-            {name} changed on disk since you opened it ({conflict}).
-          </span>
+          <span className="font-medium">{conflictText(name, conflict)}</span>
           <Button variant="outline" size="sm" onClick={() => void reload()}>
             Load theirs, drop mine
           </Button>

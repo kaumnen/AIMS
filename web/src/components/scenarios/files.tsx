@@ -16,7 +16,7 @@ import {
 import type { ScenarioDetail } from "@/api/scenarios";
 import { isProblem } from "@/api/session";
 import { CodeEditor, type LineProblem, Problems } from "@/components/code-editor";
-import { problemText } from "@/components/form";
+import { conflictText, problemText } from "@/components/form";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { fileTree, type TreeNode } from "@/lib/scenario";
@@ -244,9 +244,7 @@ export default function FilesTab({
             role="alert"
             className="flex flex-wrap items-center gap-2 rounded-sm border px-3 py-2"
           >
-            <span className="font-medium">
-              {file} changed on disk since you opened it ({conflict}).
-            </span>
+            <span className="font-medium">{conflictText(file, conflict)}</span>
             <Button variant="outline" size="sm" onClick={() => void reload()}>
               Load theirs, drop mine
             </Button>

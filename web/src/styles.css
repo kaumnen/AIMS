@@ -95,7 +95,8 @@
   --input: light-dark(#c8d1c5, #3a4a5b);
   --ring: light-dark(#7d8a96, #6b7a89);
   --grid: light-dark(#d9e0d6, #2c3a4a);
-  --flag: light-dark(#c62f3a, #e5535d);
+  /* 4.5:1 or more on paper, muted and accent (a selected row), in both themes */
+  --flag: light-dark(#bd2c37, #f37c83);
   --pen-1: light-dark(#2f5da8, #7099de);
   --pen-2: light-dark(#2e7d5b, #5db08a);
   --pen-3: light-dark(#6b4fa0, #a48bd4);

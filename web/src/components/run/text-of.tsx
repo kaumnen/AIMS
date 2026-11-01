@@ -29,7 +29,7 @@ export function TextOf({
   });
   const text = blob ? q.data : typeof value === "string" ? value : JSON.stringify(value, null, 2);
   const style = cn(
-    "max-h-96 overflow-auto rounded-sm border px-2 py-1.5 break-words whitespace-pre-wrap",
+    "focus-visible:ring-ring/50 max-h-96 overflow-auto rounded-sm border px-2 py-1.5 break-words whitespace-pre-wrap outline-none focus-visible:ring-2",
     mono ? "font-mono text-xs" : "font-sans",
     className,
   );
@@ -46,5 +46,10 @@ export function TextOf({
     return <p className="text-muted-foreground">Loading {bytes(blob.size)}</p>;
   }
   if (!text) return null;
-  return <pre className={style}>{text}</pre>;
+  // a tab stop, so keys can scroll text that does not fit
+  return (
+    <pre tabIndex={0} className={style}>
+      {text}
+    </pre>
+  );
 }

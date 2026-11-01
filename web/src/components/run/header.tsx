@@ -59,6 +59,7 @@ export function RunHeader({
     score: "Score",
     selftest: "Self-test",
     "selftest.case": "Self-test case",
+    "models.check": "Model check",
   };
   const title =
     run.kind === "selftest.case" && run.case
@@ -84,7 +85,9 @@ export function RunHeader({
         </h1>
         <p className="text-muted-foreground flex flex-wrap gap-x-2 font-mono text-xs">
           <span>{run.run_id}</span>
-          {run.kind !== "scenario" && run.scenario && <span>of {run.scenario}</span>}
+          {run.kind !== "scenario" && run.scenario && run.scenario !== run.kind && (
+            <span>of {run.scenario}</span>
+          )}
           {run.origin && (
             <Link
               to="/runs/$runId"

@@ -130,7 +130,7 @@ function Row({ r, seenAgo }: { r: RunnerInfo; seenAgo: number | null }) {
             )}
             {r.tracer.detail && (
               <span
-                className="text-muted-foreground block max-w-xs truncate"
+                className="text-muted-foreground block max-w-xs sm:truncate"
                 title={r.tracer.detail}
               >
                 {r.tracer.detail}

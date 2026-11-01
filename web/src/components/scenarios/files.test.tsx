@@ -152,7 +152,10 @@ test("a file changed on disk is not overwritten unless you say so", async () => 
   putStatus = 412;
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
   const alert = await screen.findByRole("alert");
-  expect(alert.textContent).toContain("changed on disk");
+  // a detail the page has no words for shows as it came
+  expect(alert.textContent).toContain(
+    "scenario.yaml changed on disk since you opened it (the file changed).",
+  );
   onDisk = { text: TEXT.replace("demo", "theirs"), etag: '"e9"' };
   putStatus = 200;
   fireEvent.click(screen.getByRole("button", { name: "Keep mine, overwrite" }));

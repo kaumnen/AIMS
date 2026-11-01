@@ -124,6 +124,9 @@ function Form({
       )}
       {problem && <p className="font-medium">{problem}</p>}
       <DialogFooter>
+        <Button type="button" variant="ghost" size="sm" onClick={onDone}>
+          Cancel
+        </Button>
         <Button type="submit" size="sm" disabled={!chosen || !valid || busy}>
           {from ? "Duplicate" : "Create"}
         </Button>

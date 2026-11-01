@@ -45,6 +45,7 @@ import {
 } from "@/lib/monitor";
 import { stepOf } from "@/lib/timeline";
 import { useOperator } from "@/lib/use-operator";
+import { cn } from "@/lib/utils";
 
 interface RunSearch extends RawSearch {
   tab?: "raw" | "score";
@@ -144,8 +145,8 @@ function Run() {
       );
     }
     return (
-      <p className="text-muted-foreground flex items-center gap-1">
-        {missing ? `No run ${runId}.` : "The run did not load."}
+      <div className="text-muted-foreground flex items-center gap-1">
+        <h1>{missing ? `No run ${runId}.` : "The run did not load."}</h1>
         {missing ? (
           <Link to="/runs" className={buttonVariants({ variant: "link", size: "sm" })}>
             Back to runs
@@ -155,7 +156,7 @@ function Run() {
             Retry
           </Button>
         )}
-      </p>
+      </div>
     );
   }
   const kind = detail.data.run.kind;
@@ -407,31 +408,32 @@ function Steps({
   if (steps.length === 0) {
     const origin = detail.run.kind === "monitor" ? detail.run.origin : null;
     return (
-      <p className="text-muted-foreground flex flex-wrap items-center gap-1">
+      <p className="text-muted-foreground">
         {origin ? (
           <>
-            This review has no agent steps. Its flags show on
+            This review has no agent steps. Its flags show on{" "}
             <Link
               to="/runs/$runId"
               params={{ runId: origin }}
               search={{ source: runId }}
-              className={buttonVariants({ variant: "link", size: "sm", className: "px-0" })}
+              className={cn(buttonVariants({ variant: "link", size: "sm" }), "h-auto px-0")}
             >
               the run it reviewed
             </Link>
-            ; its own record is under
+            ; its own record is under{" "}
           </>
         ) : (
-          "This run has no agent steps. Its record is under"
+          "This run has no agent steps. Its record is under "
         )}
         <Button
           variant="link"
           size="sm"
-          className="px-0"
+          className="h-auto px-0"
           onClick={() => onChange((prev) => ({ ...prev, tab: "raw" }))}
         >
           Raw events
         </Button>
+        .
       </p>
     );
   }
