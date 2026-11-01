@@ -1,7 +1,7 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 
 import type { CommandInfo } from "@/api/commands";
 import type { Event } from "@/api/events";
@@ -509,7 +509,12 @@ beforeEach(() => {
           (execs.length === 0 || execs.includes(String(e.data["exec_id"]))) &&
           (!text || JSON.stringify(e.data).includes(text)),
       );
-      return Response.json({ items, next: null });
+      // like the server: a page of `limit`, read back from `before` when only it is given
+      const limit = Number(q.get("limit") ?? 100);
+      const back = q.has("before") && !q.has("after");
+      const page = back ? items.slice(-limit) : items.slice(0, limit);
+      const edge = back ? page[0] : page.at(-1);
+      return Response.json({ items: page, next: page.length === limit ? String(edge?.seq) : null });
     }
     return Response.json(
       { type: "about:blank", title: "Not found", status: 404 },
@@ -694,6 +699,53 @@ test("the raw tab asks for a type group and a search", async () => {
   fireEvent.click(screen.getByRole("option", { name: /exec.started/ }));
   expect(router.state.location.search).toMatchObject({ seq: 5 });
   expect(await screen.findByText(/"exec_id": "x1"/)).toBeTruthy();
+});
+
+test("End reads the raw events from the last one back and Home from the first", async () => {
+  events = Array.from({ length: 450 }, (_, i) => ({
+    ...ev(i, "file.access", { path: `/work/f${i}` }),
+    ts: new Date(Date.UTC(2026, 9, 30, 10, 0, i)).toISOString(),
+  }));
+  // happy-dom lays nothing out: a list's scroll height is its first child's set height
+  const scrollTo = vi.spyOn(HTMLElement.prototype, "scrollTo").mockImplementation(function (
+    this: HTMLElement,
+    to?: ScrollToOptions | number,
+  ) {
+    this.scrollTop = typeof to === "object" ? (to.top ?? 0) : 0;
+    this.dispatchEvent(new Event("scroll"));
+  });
+  const height = vi
+    .spyOn(HTMLElement.prototype, "scrollHeight", "get")
+    .mockImplementation(function (this: HTMLElement) {
+      return Number.parseFloat((this.firstElementChild as HTMLElement | null)?.style.height ?? "");
+    });
+  onTestFinished(() => {
+    scrollTo.mockRestore();
+    height.mockRestore();
+  });
+  renderAt(`/runs/${BEE5}?tab=raw`);
+  expect(await screen.findByText("200+ events")).toBeTruthy();
+  const list = screen.getByRole("listbox", { name: "Events" });
+  fireEvent.keyDown(list, { key: "End" });
+  expect(await within(list).findByRole("option", { name: /^449\b/ })).toBeTruthy();
+  expect(eventQueries().at(-1)?.get("before")).toBe(String(Number.MAX_SAFE_INTEGER));
+  expect(screen.getByText("200+ events")).toBeTruthy();
+
+  const box = list.parentElement as HTMLElement;
+  box.scrollTop = 0;
+  fireEvent.scroll(box);
+  await waitFor(() => expect(eventQueries().at(-1)?.get("before")).toBe("250"));
+  await waitFor(() => expect(box.scrollTop).toBe(200 * 24));
+  // a browser fires this for the set scrollTop
+  fireEvent.scroll(box);
+  expect(await within(list).findByRole("option", { name: /^250\b/ })).toBeTruthy();
+  expect(screen.getByText("400+ events")).toBeTruthy();
+
+  fireEvent.click(screen.getByRole("button", { name: "First" }));
+  expect(await within(list).findByRole("option", { name: /^0\b/ })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Last" }));
+  expect(await within(list).findByRole("option", { name: /^449\b/ })).toBeTruthy();
+  expect(eventQueries().filter((q) => q.has("before"))).toHaveLength(2);
 });
 
 test("/ opens the raw tab with its search focused", async () => {

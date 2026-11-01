@@ -3,10 +3,9 @@ import type { InfiniteData, QueryClient } from "@tanstack/react-query";
 import { client, type Schemas } from "./client";
 import type { Event } from "./events";
 import { Live } from "./live";
-import type { RawFilters, StepInfo } from "./run";
+import type { RawFilters, RawPage, StepInfo } from "./run";
 
 type StepPage = Schemas["StepPage"];
-type EventPage = Schemas["EventPage"];
 type WireDelta = Schemas["WireDelta"];
 
 // Events that add a step row or change one: the step itself, its tool calls and their execs.
@@ -212,18 +211,18 @@ export class RunTail {
   // Raw tabs that reach the end of the log take the new events; a tab with a search or more
   // pages to load gets them by paging.
   #appendRaw(events: readonly Event[]): void {
-    const queries = this.qc.getQueriesData<InfiniteData<EventPage, number | null>>({
+    const queries = this.qc.getQueriesData<InfiniteData<RawPage>>({
       queryKey: ["runs", "events", this.runId],
     });
     for (const [key, data] of queries) {
       const filters = (key[3] ?? {}) as RawFilters;
       const last = data?.pages.at(-1);
-      if (!data || !last || last.next !== null || filters.q) continue;
+      if (!data || !last || last.newer !== null || filters.q) continue;
       const types = filters.types ? new Set(filters.types) : null;
       const held = last.items.at(-1)?.seq ?? -1;
       const fresh = events.filter((e) => e.seq > held && (types === null || types.has(e.type)));
       if (fresh.length === 0) continue;
-      this.qc.setQueryData<InfiniteData<EventPage, number | null>>(key, {
+      this.qc.setQueryData<InfiniteData<RawPage>>(key, {
         ...data,
         pages: [...data.pages.slice(0, -1), { ...last, items: [...last.items, ...fresh] }],
       });

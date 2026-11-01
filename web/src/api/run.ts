@@ -147,10 +147,22 @@ export interface RawFilters {
   q?: string;
 }
 
-export function rawEventsQuery(runId: string, filters: RawFilters) {
+// The raw list reads from the first event on, or from the last one back.
+export type RawAnchor = "start" | "end";
+
+// One page of raw events; `older` and `newer` are the cursors of the pages beside it.
+export interface RawPage {
+  items: Event[];
+  older: number | null;
+  newer: number | null;
+}
+
+type RawCursor = { after: number } | { before: number } | null;
+
+export function rawEventsQuery(runId: string, filters: RawFilters, anchor: RawAnchor = "start") {
   return infiniteQueryOptions({
-    queryKey: ["runs", "events", runId, filters] as const,
-    queryFn: async ({ pageParam, signal }) => {
+    queryKey: ["runs", "events", runId, filters, anchor] as const,
+    queryFn: async ({ pageParam, signal }): Promise<RawPage> => {
       const { data, error } = await client.GET("/api/runs/{run_id}/events", {
         params: {
           ...path(runId),
@@ -158,16 +170,20 @@ export function rawEventsQuery(runId: string, filters: RawFilters) {
             limit: RAW_PAGE,
             ...(filters.types ? { types: [...filters.types] } : {}),
             ...(filters.q ? { q: filters.q } : {}),
-            ...(pageParam === null ? {} : { after: pageParam }),
+            ...pageParam,
           },
         },
         signal,
       });
       if (error) throw error;
-      return data;
+      const next = data.next === null || data.next === undefined ? null : Number(data.next);
+      return pageParam !== null && "before" in pageParam
+        ? { items: data.items, older: next, newer: null }
+        : { items: data.items, older: null, newer: next };
     },
-    initialPageParam: null as number | null,
-    getNextPageParam: (last) => (last.next === null ? null : Number(last.next)),
+    initialPageParam: (anchor === "end" ? { before: Number.MAX_SAFE_INTEGER } : null) as RawCursor,
+    getNextPageParam: (last) => (last.newer === null ? null : { after: last.newer }),
+    getPreviousPageParam: (first) => (first.older === null ? null : { before: first.older }),
     staleTime: Infinity,
   });
 }

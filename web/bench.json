@@ -39,18 +39,24 @@
     "stat": "median",
     "what": "Enter in Raw events search until the matching events show"
   },
+  "raw.end": {
+    "ms": 500,
+    "stat": "median",
+    "what": "in a freshly opened Raw events tab, press End until the last of the 20k events shows"
+  },
+  "raw.scroll.up": {
+    "ms": 100,
+    "stat": "max",
+    "what": "longest task over 50 ms, 0 if none, while Raw events scrolls from its last event up to its first, loading earlier pages"
+  },
   "raw.scroll": {
     "ms": 100,
     "stat": "max",
     "what": "longest task over 50 ms, 0 if none, while Raw events scrolls through all 20k events"
   },
-  "raw.end": {
+  "raw.end.loaded": {
     "ms": 500,
     "stat": "median",
-    "what": "with every event loaded, jump from the top of Raw events to its end until the last event shows"
-  },
-  "raw.end.cold": {
-    "stat": "median",
-    "what": "from a freshly opened Raw events tab, scroll to the end until the last event shows"
+    "what": "with every event loaded from the top, press End until the last event shows"
   }
 }

@@ -6,11 +6,10 @@ import { FakeEventSource } from "@/test/event-source";
 
 import type { Schemas } from "./client";
 import type { Event } from "./events";
-import { rawEventsQuery, type StepInfo, stepsQuery } from "./run";
+import { rawEventsQuery, type RawPage, type StepInfo, stepsQuery } from "./run";
 import { mergeTail, RunTail, tailStart } from "./tail";
 
 type StepPage = Schemas["StepPage"];
-type EventPage = Schemas["EventPage"];
 type WireDelta = Schemas["WireDelta"];
 
 const RUN = "r1";
@@ -62,8 +61,8 @@ function open(qc: QueryClient, after = 41) {
   return { tail, source };
 }
 
-const page = (items: Event[], next: string | null = null) => ({
-  pages: [{ items, next } as EventPage],
+const page = (items: Event[], newer: number | null = null, older: number | null = null) => ({
+  pages: [{ items, older, newer } as RawPage],
   pageParams: [null],
 });
 
@@ -142,7 +141,13 @@ test("raw tabs at the end of the log take new events of their types; a search do
   qc.setQueryData(all.queryKey, page([event(40, "tool.call"), event(41, "exec.started")]));
   qc.setQueryData(execs.queryKey, page([event(41, "exec.started")]));
   qc.setQueryData(searched.queryKey, page([]));
-  qc.setQueryData(paged.queryKey, page([event(40, "tool.call")], "40"));
+  qc.setQueryData(paged.queryKey, page([event(40, "tool.call")], 40));
+  // read from the end back: earlier pages to load, but nothing after the last event
+  const last = rawEventsQuery(RUN, {}, "end");
+  qc.setQueryData(
+    last.queryKey,
+    page([event(40, "tool.call"), event(41, "exec.started")], null, 40),
+  );
   const { source, tail } = open(qc);
   source.send({
     kind: "events",
@@ -151,11 +156,12 @@ test("raw tabs at the end of the log take new events of their types; a search do
   });
   flush();
   const seqs = (key: readonly unknown[]) =>
-    qc.getQueryData<InfiniteData<EventPage>>(key)?.pages.flatMap((p) => p.items.map((e) => e.seq));
+    qc.getQueryData<InfiniteData<RawPage>>(key)?.pages.flatMap((p) => p.items.map((e) => e.seq));
   expect(seqs(all.queryKey)).toEqual([40, 41, 42, 43]);
   expect(seqs(execs.queryKey)).toEqual([41, 43]);
   expect(seqs(searched.queryKey)).toEqual([]);
   expect(seqs(paged.queryKey)).toEqual([40]);
+  expect(seqs(last.queryKey)).toEqual([40, 41, 42, 43]);
   tail.stop();
 });
 

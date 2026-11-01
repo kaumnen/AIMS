@@ -1,9 +1,10 @@
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import type { Event } from "@/api/events";
-import { eventQuery, rawEventsQuery } from "@/api/run";
+import { eventQuery, type RawAnchor, rawEventsQuery } from "@/api/run";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -22,6 +23,7 @@ export interface RawSearch {
 }
 
 const ANY = "any";
+const ROW = 24;
 const clock = new Intl.DateTimeFormat(undefined, {
   hour: "2-digit",
   minute: "2-digit",
@@ -42,10 +44,24 @@ export function RawEvents({
   onChange: (update: (prev: RawSearch) => RawSearch) => void;
 }) {
   const types = typeGroups.find((g) => g.name === search.group)?.types;
-  const list = useInfiniteQuery(
-    rawEventsQuery(runId, { ...(types ? { types } : {}), ...(search.q ? { q: search.q } : {}) }),
-  );
+  const filters = { ...(types ? { types } : {}), ...(search.q ? { q: search.q } : {}) };
+  // End reads the log from its last event back, for the filters it was pressed under.
+  const shown = `${search.group ?? ""}\n${search.q ?? ""}`;
+  const [ended, setEnded] = useState<string | null>(null);
+  const anchor: RawAnchor = ended === shown ? "end" : "start";
+  const list = useInfiniteQuery({
+    ...rawEventsQuery(runId, filters, anchor),
+    // the other end of the same list stays up until its first page arrives
+    placeholderData: (data, query) =>
+      JSON.stringify(query?.queryKey[3]) === JSON.stringify(filters) ? data : undefined,
+  });
   const events = list.data?.pages.flatMap((p) => p.items) ?? [];
+  const [jump, setJump] = useState<Jump | null>(null);
+  const go = (to: Jump["to"]) => {
+    if (to === "end" && list.hasNextPage) setEnded(shown);
+    if (to === "start" && anchor === "end" && list.hasPreviousPage) setEnded(null);
+    setJump((j) => ({ to, n: (j?.n ?? 0) + 1 }));
+  };
   const set = (key: keyof RawSearch, value: string | number | undefined) =>
     onChange((prev) => {
       const next = { ...prev };
@@ -88,8 +104,16 @@ export function RawEvents({
             if (e.key === "Escape") e.currentTarget.blur();
           }}
         />
+        <Button variant="ghost" size="sm" onClick={() => go("start")}>
+          First
+        </Button>
+        <Button variant="ghost" size="sm" onClick={() => go("end")}>
+          Last
+        </Button>
         <span className="text-muted-foreground ml-auto tabular-nums">
-          {list.isSuccess ? `${events.length}${list.hasNextPage ? "+" : ""} events` : ""}
+          {list.isSuccess
+            ? `${events.length}${list.hasNextPage || list.hasPreviousPage ? "+" : ""} events`
+            : ""}
         </span>
       </div>
       <div className="flex min-h-0 flex-1 gap-3 max-md:flex-col">
@@ -101,9 +125,15 @@ export function RawEvents({
           <EventList
             events={events}
             selected={search.seq}
+            jump={list.isPlaceholderData ? null : jump}
             onSelect={(seq) => set("seq", seq)}
+            onKey={go}
             onNearEnd={() => {
               if (list.hasNextPage && !list.isFetchingNextPage) void list.fetchNextPage();
+            }}
+            onNearStart={() => {
+              if (list.hasPreviousPage && !list.isFetchingPreviousPage)
+                void list.fetchPreviousPage();
             }}
           />
         )}
@@ -119,16 +149,28 @@ export function RawEvents({
   );
 }
 
+// A request to show one end of the list; `n` tells two presses of the same key apart.
+interface Jump {
+  to: "start" | "end";
+  n: number;
+}
+
 function EventList({
   events,
   selected,
+  jump,
   onSelect,
+  onKey,
   onNearEnd,
+  onNearStart,
 }: {
   events: readonly Event[];
   selected: number | undefined;
+  jump: Jump | null;
   onSelect: (seq: number) => void;
+  onKey: (to: Jump["to"]) => void;
   onNearEnd: () => void;
+  onNearStart: () => void;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   // The compiler leaves this component alone; rows get plain values, so they still memoize.
@@ -136,22 +178,51 @@ function EventList({
   const v = useVirtualizer({
     count: events.length,
     getScrollElement: () => scroller.current,
-    estimateSize: () => 24,
+    estimateSize: () => ROW,
     overscan: 20,
     getItemKey: (i) => events[i]?.seq ?? i,
   });
   const items = v.getVirtualItems();
+  const first = items[0]?.index ?? 0;
   const last = items.at(-1)?.index ?? -1;
+  // Rows read in above keep the rows on screen where they were.
+  const head = useRef(events[0]?.seq);
+  useLayoutEffect(() => {
+    const was = head.current;
+    head.current = events[0]?.seq;
+    const el = scroller.current;
+    if (el === null || was === undefined || head.current === undefined || head.current >= was)
+      return;
+    const added = events.findIndex((e) => e.seq === was);
+    if (added > 0) el.scrollTop += added * ROW;
+  }, [events]);
+  const done = useRef(0);
+  useLayoutEffect(() => {
+    if (jump === null || jump.n === done.current || events.length === 0) return;
+    done.current = jump.n;
+    v.scrollToIndex(jump.to === "end" ? events.length - 1 : 0, {
+      align: jump.to === "end" ? "end" : "start",
+    });
+  }, [jump, events.length, v]);
   useEffect(() => {
     if (last >= events.length - 40) onNearEnd();
   }, [last, events.length, onNearEnd]);
+  useEffect(() => {
+    if (first < 40 && (scroller.current?.scrollTop ?? 0) < 40 * ROW) onNearStart();
+  }, [first, onNearStart]);
   return (
     <div ref={scroller} className="min-h-0 flex-1 overflow-auto rounded-sm border">
       <div
         role="listbox"
         aria-label="Events"
-        className="relative"
+        tabIndex={0}
+        className="relative outline-none"
         style={{ height: v.getTotalSize() }}
+        onKeyDown={(e) => {
+          if (e.key !== "Home" && e.key !== "End") return;
+          e.preventDefault();
+          onKey(e.key === "End" ? "end" : "start");
+        }}
       >
         {items.map((item) => {
           const e = events[item.index];

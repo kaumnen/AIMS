@@ -82,12 +82,13 @@ const PROBE = `(() => {
     return n !== undefined && h2.startsWith(head) && !(next >= "0" && next <= "9");
   };
   b.scroller = (s) => b.q(s)?.parentElement;
-  // Scrolls 'el' to its end a frame at a time, until it stops growing for a second.
+  // Scrolls 'el' to its end (its start for a negative px) a frame at a time, until it stops
+  // growing for a second.
   b.scroll = (el, px = 800) => new Promise((resolve) => {
     const from = performance.now();
     let still = 0, height = -1;
     const frame = () => {
-      const end = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+      const end = px > 0 ? el.scrollTop + el.clientHeight >= el.scrollHeight - 1 : el.scrollTop <= 0;
       still = end && el.scrollHeight === height ? still + 1 : 0;
       height = el.scrollHeight;
       if (still >= 60) return resolve([from, performance.now()]);
@@ -218,10 +219,10 @@ class Page {
     await this.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...at });
   }
 
-  // The longest task while `el` (an expression) scrolls to its end.
-  scroll(el: string): Promise<number> {
+  // The longest task while `el` (an expression) scrolls to its end, or start for a negative px.
+  scroll(el: string, px = 800): Promise<number> {
     return this.eval<number>(
-      `__bench.scroll(${el}).then(([from, to]) => __bench.longest(from, to))`,
+      `__bench.scroll(${el}, ${px}).then(([from, to]) => __bench.longest(from, to))`,
     );
   }
 
@@ -353,36 +354,48 @@ async function runPage(cdp: Cdp, url: string, first: number, last: boolean): Pro
   }
 }
 
+const LIST = `__bench.scroller("[aria-label=Events]")`;
+const row = (seq: number) =>
+  `[...document.querySelectorAll("[aria-label=Events] [role=option]")].some((r) => r.firstElementChild?.textContent === "${seq}")`;
+const END = (page: Page) => page.key("End", "End", 35);
+
 async function rawEvents(cdp: Cdp, url: string, matches: number, last: boolean): Promise<void> {
   const page = await Page.open(cdp);
-  const lastRow = `[...document.querySelectorAll("[aria-label=Events] [role=option]")].some((r) => r.firstElementChild?.textContent === "${seeded.events - 1}")`;
-  const list = `__bench.scroller("[aria-label=Events]")`;
+  const lastRow = row(seeded.events - 1);
   try {
     await page.goto(`${url}/runs/${seeded.run}?tab=raw`, RAW_READY);
-    const t0 = await page.eval<number>("performance.now()");
-    await page.eval(`__bench.scroll(${list}, 1e9)`);
-    await page.eval(`__bench.until(() => ${lastRow})`);
-    record("raw.end.cold", (await page.eval<number>("performance.now()")) - t0);
+    await page.eval(`__bench.q("[aria-label=Events]").focus()`);
+    record("raw.end", await page.timed(`() => ${lastRow}`, () => END(page)));
     if (last) {
-      await page.eval(`${list}.scrollTop = 0`);
-      await Bun.sleep(300);
-      record("raw.scroll", await page.scroll(list));
-      for (let i = 0; i < SAMPLES; i++) {
-        // oxlint-disable-next-line no-await-in-loop
-        await page.eval(`${list}.scrollTop = 0`);
-        // oxlint-disable-next-line no-await-in-loop
-        await Bun.sleep(300);
-        // oxlint-disable-next-line no-await-in-loop
-        const ms = await page.eval<number>(
-          `(() => { const t = performance.now(); const p = __bench.until(() => ${lastRow}); const el = ${list}; el.scrollTop = el.scrollHeight; return p.then((e) => e - t); })()`,
-        );
-        record("raw.end", ms);
-      }
+      record("raw.scroll.up", await page.scroll(LIST, -800));
+      if (!(await page.eval<boolean>(row(0))))
+        throw new Error("Raw events scrolled up short of the first event");
     }
     await page.click(`__bench.q("#raw-search")`);
     await page.send("Input.insertText", { text: seeded.needle });
     const done = `() => __bench.q("[aria-label=Events]") && [...document.querySelectorAll("span")].some((s) => s.textContent === "${matches} events")`;
     record("raw.search", await page.timed(done, () => page.key("Enter", "Enter", 13)));
+  } finally {
+    await page.close();
+  }
+}
+
+async function rawLoaded(cdp: Cdp, url: string): Promise<void> {
+  const page = await Page.open(cdp);
+  const lastRow = row(seeded.events - 1);
+  try {
+    await page.goto(`${url}/runs/${seeded.run}?tab=raw`, RAW_READY);
+    record("raw.scroll", await page.scroll(LIST));
+    if (!(await page.eval<boolean>(lastRow)))
+      throw new Error("Raw events scrolled short of the last event");
+    for (let i = 0; i < SAMPLES; i++) {
+      // oxlint-disable-next-line no-await-in-loop
+      await page.eval(`${LIST}.scrollTop = 0; __bench.q("[aria-label=Events]").focus()`);
+      // oxlint-disable-next-line no-await-in-loop
+      await Bun.sleep(300);
+      // oxlint-disable-next-line no-await-in-loop
+      record("raw.end.loaded", await page.timed(`() => ${lastRow}`, () => END(page)));
+    }
   } finally {
     await page.close();
   }
@@ -442,6 +455,8 @@ try {
     await runPage(cdp, url, first, last);
     // oxlint-disable-next-line no-await-in-loop
     await rawEvents(cdp, url, found.items.length, last);
+    // oxlint-disable-next-line no-await-in-loop
+    if (last) await rawLoaded(cdp, url);
     if (i === 0) samples.clear();
   }
   cdp.close();
