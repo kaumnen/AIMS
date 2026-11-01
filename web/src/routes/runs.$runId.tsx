@@ -17,6 +17,7 @@ import {
 import { reviewsQuery } from "@/api/runs";
 import { isProblem } from "@/api/session";
 import type { InFlight } from "@/api/tail";
+import { ModelChecks } from "@/components/run/checks";
 import { agentsOf } from "@/components/run/controls";
 import { ForkHere } from "@/components/run/fork";
 import { useHarm } from "@/components/run/harm";
@@ -196,7 +197,9 @@ function Run() {
       >
         <TabsList variant="line" className="border-b">
           {stepped && (
-            <TabsTrigger value="steps">{kind === "selftest" ? "Cases" : "Steps"}</TabsTrigger>
+            <TabsTrigger value="steps">
+              {kind === "selftest" ? "Cases" : kind === "models.check" ? "Checks" : "Steps"}
+            </TabsTrigger>
           )}
           {scored && <TabsTrigger value="score">Score</TabsTrigger>}
           <TabsTrigger value="raw">Raw events</TabsTrigger>
@@ -204,6 +207,8 @@ function Run() {
         <TabsContent value="steps" className="flex min-h-0 flex-col pt-1">
           {kind === "selftest" ? (
             <SelfTestCases runId={runId} detail={detail.data} />
+          ) : kind === "models.check" ? (
+            <ModelChecks runId={runId} detail={detail.data} />
           ) : (
             <Steps
               runId={runId}

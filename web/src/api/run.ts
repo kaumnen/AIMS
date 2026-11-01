@@ -263,6 +263,15 @@ export function selftestCasesQuery(runId: string) {
   });
 }
 
+// What a model check recorded of each test, in order.
+export function modelChecksQuery(runId: string) {
+  return queryOptions({
+    queryKey: ["runs", "checks", runId] as const,
+    queryFn: ({ signal }) => everyEvent(runId, ["model.checked"], signal),
+    staleTime: Infinity,
+  });
+}
+
 // Where each sandbox's boot clock sits on the wall clock.
 export function sandboxesQuery(runId: string) {
   return queryOptions({
