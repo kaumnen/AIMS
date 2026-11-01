@@ -68,7 +68,13 @@ from aims.sandbox.trace import (
 from aims.sandbox.trace import (
     PIPEFS_MAGIC as PIPEFS,
 )
-from aims.sandbox.tracer import UNKNOWN, Tracer
+from aims.sandbox.tracer import (
+    UNKNOWN,
+    Tracer,
+    parse_preemption,
+    parse_probes,
+    parse_skips,
+)
 
 MOUNTINFO = """\
 161 93 0:64 / / ro,relatime - overlay overlay rw,lowerdir=/x
@@ -1050,6 +1056,95 @@ async def test_pmu_probe_failure_leaves_the_tracer_running(
     tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
     await tracer._probe_pmu(cast(Any, container))
     assert tracer.pmu is None
+
+
+# One reading of bpftrace's fdinfo on 7.0.14-linuxkit with a probe made to recurse: fds 12 and
+# 13 hold the programs, 15 and 16 their links.
+SKIP_READING = """\
+T 1687.99
+/proc/6331/fdinfo/12:prog_id:\t3183
+/proc/6331/fdinfo/12:recursion_misses:\t1002
+/proc/6331/fdinfo/13:prog_id:\t3185
+/proc/6331/fdinfo/13:recursion_misses:\t0
+/proc/6331/fdinfo/15:prog_id:\t3185
+/proc/6331/fdinfo/16:prog_id:\t3183
+"""
+SKIP_REASON = "kernel skipped tracer probe {}: a run of it was in progress on that cpu"
+
+
+def test_parse_skips_reads_program_fds_only() -> None:
+    assert parse_skips(SKIP_READING.splitlines()) == (1_687_990_000, {3183: 1002, 3185: 0})
+    assert parse_skips(["T x", "/proc/1/fdinfo/3:prog_id:\tnope", "junk"]) == (None, {})
+
+
+def test_parse_probes_drops_the_probe_index() -> None:
+    text = json.dumps(
+        [
+            {"id": 3136, "type": "tracing", "name": "fentry_vmlinux_security_file_open_9"},
+            {"id": 3104, "type": "cgroup_device"},
+            {"id": 3173, "type": "perf_event", "name": "interval_s_5_45"},
+        ]
+    )
+    assert parse_probes(text) == {3136: "fentry_vmlinux_security_file_open", 3173: "interval_s_5"}
+    assert parse_probes("") == {}
+    assert parse_probes("{}") == {}
+
+
+def test_parse_preemption() -> None:
+    plain = {"preemptible_rcu": False, "mode": None, "preemptible": False}
+    assert parse_preemption("H 0 ") == plain
+    assert parse_preemption("H") == plain
+    assert parse_preemption("H 0 none voluntary (full) lazy")["preemptible"] is False
+    assert parse_preemption("H 1 ") == {"preemptible_rcu": True, "mode": None, "preemptible": True}
+    lazy = parse_preemption("H 1 none voluntary full (lazy)")
+    assert lazy == {"preemptible_rcu": True, "mode": "lazy", "preemptible": True}
+    assert parse_preemption("H 1 none (voluntary) full lazy")["preemptible"] is False
+
+
+@pytest.mark.anyio
+async def test_skipped_probe_runs_are_lost_in_every_sandbox() -> None:
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    one = tracer.register(99, Mounts.parse(MOUNTINFO), SYSCALLS["aarch64"])
+    two = tracer.register(77, Mounts.parse(MOUNTINFO), SYSCALLS["aarch64"])
+    tracer.clock = (1_000_000, 0)
+    tracer._probes = {3183: "fentry_vmlinux_strncpy_from_kernel_nofault"}
+    tracer._skipped(*parse_skips(SKIP_READING.splitlines()))
+    reason = SKIP_REASON.format("fentry_vmlinux_strncpy_from_kernel_nofault")
+    first = [Lost(1002, reason, (), 1_000_000, 1_687_990_000)]
+    assert drain(one) == first
+    assert drain(two) == first
+
+    # A reading that arrives after a newer one reports nothing; the next, the runs since.
+    tracer._skipped(1_600_000_000, {3183: 900})
+    tracer._skipped(1_688_990_000, {3183: 1010, 3185: 2})
+    window = (1_687_990_000, 1_688_990_000)
+    assert drain(one) == [
+        Lost(8, reason, (), *window),
+        Lost(2, SKIP_REASON.format("program 3185"), (), *window),
+    ]
+    assert tracer.skipped == 1012
+    assert tracer._skips == {3183: 1010, 3185: 2}
+    await tracer.stop()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("container", [StuckContainer(), StuckContainer(OSError("gone"))])
+async def test_a_failed_skip_reading_leaves_the_close_alone(
+    monkeypatch: pytest.MonkeyPatch, container: StuckContainer
+) -> None:
+    monkeypatch.setattr(tracer_module, "SKIPS_S", 0)
+    monkeypatch.setattr(execs_module, "GRACE_S", 0.05)
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    route = tracer.register(99, Mounts.parse(MOUNTINFO), SYSCALLS["aarch64"])
+    tracer.alive = True
+    tracer._bpftrace = 5
+    tracer._container = cast(Any, container)
+    async with asyncio.timeout(2):
+        await tracer.quiesce(route, 1)
+    assert route.queue.empty()
+    tracer.alive = False
+    tracer._container = None
+    await tracer.stop()
 
 
 ADDRSPACE = [

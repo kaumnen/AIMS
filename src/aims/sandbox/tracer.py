@@ -1,11 +1,12 @@
 import asyncio
 import contextlib
 import dataclasses
+import json
 import logging
 import posixpath
 import re
 from collections import OrderedDict, deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
 import aiodocker
@@ -69,6 +70,25 @@ MEMORY = 4096
 READY_S = 120.0
 CONFIRM_S = 5.0
 PMU_S = 60
+SKIPS_S = 10
+# The kernel skips a probe while a run of the same probe is in progress on that cpu. With
+# preemptible RCU (Ubuntu's generic kernel, for one) that includes a run preempted midway, so
+# records go missing with no sequence hole. Each program's fd in bpftrace's fdinfo carries its
+# count.
+SKIP_READ = (
+    'u=$(cat /proc/uptime); echo "T ${u%% *}"; '
+    'grep -H -E "^(prog_id|recursion_misses):" /proc/$p/fdinfo/* 2>/dev/null'
+)
+SKIPS = (
+    "p=$1; mountpoint -q /sys/kernel/debug "
+    "|| mount -t debugfs nodev /sys/kernel/debug 2>/dev/null; "
+    # Only preemptible RCU defines __rcu_read_lock; without it a probe runs preemption off.
+    "if grep -qw __rcu_read_lock /proc/kallsyms; then r=1; else r=0; fi; "
+    'echo "H $r $(cat /sys/kernel/debug/sched/preempt 2>/dev/null)"; '
+    'echo "N $(bpftool -j prog show 2>/dev/null)"; '
+    f"while [ -d /proc/$p ]; do {SKIP_READ}; echo .; sleep 1; done"
+)
+PROBE_INDEX = re.compile(r"_\d+$")
 # bpftrace prints a loss once its ring has drained, within a tick of the last record before it.
 # The hole shows at its cpu's next record, a tick later at most, and expires at the first tick
 # more than a second after that: every cpu ticks in phase, a little under a second apart, so
@@ -220,6 +240,16 @@ class Tracer:
         self.located = 0
         self.unlocated = 0
         self.pmu: dict[str, JsonValue] | None = None
+        # Whether this kernel can preempt a probe midway, and its preemption mode if it says.
+        self.preemption: dict[str, JsonValue] | None = None
+        self._bpftrace: int | None = None
+        self._skip_reader: asyncio.Task[None] | None = None
+        self._host: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self._probes: dict[int, str] = {}
+        # Each program's skip count so far, and the boot clock of the reading it came from.
+        self._skips: dict[int, int] = {}
+        self._skips_ts: int | None = None
+        self.skipped = 0
         # lines still to come of a known compile warning
         self._quiet = 0
 
@@ -255,6 +285,7 @@ class Tracer:
                 raise TracerError("the tracer is not in the host pid namespace")
             self.alive = True
             await self._probe_pmu(self._container)
+            await self._start_skips(self._container, trace)
         except BaseException:
             await self.stop()
             raise
@@ -268,12 +299,109 @@ class Tracer:
             return
         self.pmu = parse_pmu(out.decode(errors="replace"))
 
+    async def _start_skips(self, container: DockerContainer, trace: DockerExec) -> None:
+        """Count the probe runs the kernel skips, once a second, and learn whether it can
+        preempt a probe."""
+        try:
+            pid = int((await trace.inspect())["Pid"])
+            if pid <= 0:
+                raise TracerError("bpftrace has no pid")
+            skips = await container.exec(
+                ["sh", "-c", SKIPS, "sh", str(pid)], stdout=True, stderr=True
+            )
+        except Exception as e:
+            log.warning("probe skips are not counted: %s", e)
+            return
+        self._bpftrace = pid
+        self._skip_reader = asyncio.create_task(self._read_skips(skips))
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(SKIPS_S):
+                await asyncio.shield(self._host)
+
+    async def _read_skips(self, skips: DockerExec) -> None:
+        reading: list[str] = []
+        pending = b""
+        try:
+            stream = await skips.start(detach=False).__aenter__()
+            try:
+                while (message := await stream.read_out()) is not None:
+                    if message.stream != 1:
+                        text = message.data.decode(errors="replace").strip()
+                        log.warning("tracer skip counter: %s", text)
+                        continue
+                    *lines, pending = (pending + message.data).split(b"\n")
+                    for raw in lines:
+                        line = raw.decode(errors="replace")
+                        if line == ".":
+                            self._skipped(*parse_skips(reading))
+                            reading = []
+                        elif line.startswith("H "):
+                            self._set_preemption(parse_preemption(line))
+                        elif line.startswith("N "):
+                            self._probes = parse_probes(line[2:])
+                        else:
+                            reading.append(line)
+            finally:
+                await stream.close()
+        except Exception as e:
+            log.warning("tracer skip counter failed: %s", e)
+        finally:
+            if not self._host.done():
+                self._host.set_result(None)
+            if self.alive:
+                log.warning("probe skips are no longer counted each second")
+
+    def _set_preemption(self, preemption: dict[str, JsonValue]) -> None:
+        self.preemption = preemption
+        if preemption["preemptible"]:
+            log.warning(
+                "this kernel can preempt a tracer probe midway (preemptible RCU, mode %s); "
+                "runs it skips meanwhile are reported as audit.lost",
+                preemption["mode"] or "unknown",
+            )
+        if not self._host.done():
+            self._host.set_result(None)
+
+    def _skipped(self, ts: int | None, counts: dict[int, int]) -> None:
+        """Report the runs each probe skipped since the last reading, in every sandbox."""
+        start = self._skips_ts
+        if start is None and self.clock is not None:
+            start = self.clock[0]
+        for prog, count in counts.items():
+            seen = self._skips.get(prog, 0)
+            self._skips[prog] = max(seen, count)
+            new = count - seen
+            if new <= 0:
+                continue
+            self.skipped += new
+            name = self._probes.get(prog, f"program {prog}")
+            reason = f"kernel skipped tracer probe {name}: a run of it was in progress on that cpu"
+            lost = Lost(new, reason, (), start, ts)
+            for route in self._routes.values():
+                route.put(lost)
+        if ts is not None and (self._skips_ts is None or ts > self._skips_ts):
+            self._skips_ts = ts
+
+    async def count_skips(self) -> None:
+        """Read the probes' skip counts now, so a sandbox that closes gets those up to its end."""
+        container, pid = self._container, self._bpftrace
+        if not self.alive or container is None or pid is None:
+            return
+        argv = ["sh", "-c", f"p=$1; {SKIP_READ}", "sh", str(pid)]
+        try:
+            out = await exec_output(container, argv, timeout_s=SKIPS_S)
+        except Exception as e:
+            log.warning("could not read tracer probe skips: %s", e)
+            return
+        self._skipped(*parse_skips(out.decode(errors="replace").splitlines()))
+
     async def stop(self) -> None:
         self.alive = False
-        if self._reader is not None:
-            self._reader.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await self._reader
+        for task in (self._reader, self._skip_reader):
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
         if self._container is not None:
             with contextlib.suppress(aiodocker.DockerError):
                 await self._container.delete(force=True)
@@ -317,13 +445,15 @@ class Tracer:
             self._waiters.pop(pid, None)
 
     async def quiesce(self, route: Route, timeout_s: float) -> None:
-        """Wait until every process of `route` has exited, then for the records its exit leaves."""
+        """Wait until every process of `route` has exited, then for the records its exit leaves
+        and the probe runs skipped up to then."""
         with contextlib.suppress(TimeoutError):
             async with asyncio.timeout(timeout_s):
                 while self.alive and any(r is route for r in self._pids.values()):
                     self._exited.clear()
                     await self._exited.wait()
                 await asyncio.sleep(EXIT_GRACE_S)
+        await self.count_skips()
 
     async def _read(self, trace: DockerExec) -> None:
         """Read bpftrace's output as bytes, so file names that are not UTF-8 keep their bytes."""
@@ -720,3 +850,51 @@ def parse_pmu(text: str) -> dict[str, JsonValue]:
             events[name] = rest.strip() or "unknown"
     available = any(v == "ok" for v in events.values())
     return {"available": available, "devices": devices, "events": events}
+
+
+def parse_preemption(line: str) -> dict[str, JsonValue]:
+    """`H <1 with preemptible RCU> <sched/preempt>`; that file marks the mode in brackets and
+    exists only on kernels that choose it at boot."""
+    parts = line.split()
+    rcu = len(parts) > 1 and parts[1] == "1"
+    mode = next((m[1:-1] for m in parts[2:] if m.startswith("(") and m.endswith(")")), None)
+    preemptible = rcu and mode not in ("none", "voluntary")
+    return {"preemptible_rcu": rcu, "mode": mode, "preemptible": preemptible}
+
+
+def parse_probes(text: str) -> dict[int, str]:
+    """Program names by id from `bpftool -j prog show`, without bpftrace's probe index."""
+    try:
+        progs = json.loads(text)
+    except ValueError:
+        return {}
+    if not isinstance(progs, list):
+        return {}
+    return {
+        p["id"]: PROBE_INDEX.sub("", p["name"])
+        for p in progs
+        if isinstance(p, dict) and isinstance(p.get("id"), int) and isinstance(p.get("name"), str)
+    }
+
+
+def parse_skips(lines: Iterable[str]) -> tuple[int | None, dict[int, int]]:
+    """The boot clock in µs and each program's skip count, from one reading of fdinfo.
+
+    A link's fd names its program too, but only the program's own fd carries the count.
+    """
+    ts = None
+    fds: dict[str, dict[str, int]] = {}
+    for line in lines:
+        if line.startswith("T "):
+            with contextlib.suppress(ValueError):
+                ts = round(float(line[2:]) * 1_000_000)
+            continue
+        fd, _, rest = line.partition(":")
+        key, _, value = rest.partition(":")
+        with contextlib.suppress(ValueError):
+            fds.setdefault(fd, {})[key] = int(value)
+    return ts, {
+        f["prog_id"]: f["recursion_misses"]
+        for f in fds.values()
+        if "prog_id" in f and "recursion_misses" in f
+    }

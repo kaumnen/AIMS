@@ -488,6 +488,8 @@ class DockerSandbox:
                     holder._info.config["kernel_clock"] = {"boot_us": boot_us, "tai_us": tai_us}
         if tracer is not None and tracer.pmu is not None:
             holder._info.config["pmu"] = tracer.pmu
+        if tracer is not None and tracer.preemption is not None:
+            holder._info.config["preemption"] = tracer.preemption
         await holder._sample(backend.sampler)
         holder._shell = shell
         holder._route = route

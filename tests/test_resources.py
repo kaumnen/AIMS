@@ -283,6 +283,51 @@ async def test_sandbox_records_hardware_counters(
 
 
 @pytest.mark.docker
+@pytest.mark.tracer
+@pytest.mark.anyio
+async def test_tracer_counts_the_runs_every_probe_skips(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    tracer = backend.tracer
+    if tracer is None:
+        if os.environ.get("AIMS_REQUIRE_TRACER"):
+            pytest.fail("the kernel tracer did not start")
+        pytest.skip("the kernel tracer is not available here")
+    preemption = tracer.preemption
+    assert preemption is not None
+    assert isinstance(preemption["preemptible"], bool)
+    run_id = await store.create_run(RunStarted(scenario="t", oversight="observe"))
+    sb = await AuditedSandbox.start(
+        backend, SandboxSpec(image=IMAGE), store, run_id=run_id, agent_id="a1"
+    )
+    try:
+        await sb.exec("cat /etc/hostname > /tmp/x", timeout_s=20)
+    finally:
+        await sb.close()
+        await backend.remove_run(run_id)
+
+    config = (await store.events(run_id, types=["sandbox.started"]))[0].data["config"]
+    assert isinstance(config, dict)
+    assert config["preemption"] == preemption
+    # The close read every program's count, and each has its probe's name.
+    names = {tracer._probes.get(prog, f"program {prog}") for prog in tracer._skips}
+    assert {
+        "fentry_vmlinux_security_file_open",
+        "tracepoint_sched_sched_process_exec",
+        "profile_s_1",
+    } <= names
+    if not preemption["preemptible"]:
+        lost = await store.events(run_id, types=["audit.lost"])
+        assert not [e for e in lost if "skipped" in str(e.data.get("reason"))]
+    # The counts are also read once a second, between closes.
+    read = tracer._skips_ts
+    assert read is not None
+    await asyncio.sleep(2.2)
+    assert tracer._skips_ts is not None
+    assert tracer._skips_ts > read
+
+
+@pytest.mark.docker
 @pytest.mark.anyio
 @pytest.mark.parametrize("death", ["kill", "delete"])
 async def test_sampler_death_is_a_gap(store: LocalEventStore, death: str) -> None:
