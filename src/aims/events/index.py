@@ -237,7 +237,8 @@ class HoldInfo(BaseModel):
     are the action that paused it, `flags` the flags behind a monitor's pause and `mode` the
     monitor's oversight then; `until` is when the monitor kills the run if the pause is still
     open. `at` is the gate point the agent waits at once it holds there, and `call` the model
-    call or tool call it names; only a hold `before_tool` can deny that call."""
+    call or tool call it names. `next_call` is the first tool call of the reply an agent holds
+    after. A deny refuses the call held `before_tool`, or that `next_call`."""
 
     agent: str
     by: Literal["monitor", "operator"]
@@ -249,6 +250,7 @@ class HoldInfo(BaseModel):
     until: Timestamp | None = None
     at: GateKind | None = None
     call: str | None = None
+    next_call: str | None = None
 
 
 class RunInfo(BaseModel):
@@ -789,6 +791,7 @@ class Index:
                     if hold is not None:
                         hold["at"] = e.data.get("kind")
                         hold["call"] = e.data.get("call_id")
+                        hold["next_call"] = e.data.get("next_call")
                 case AgentFinished.type:
                     held.pop(e.agent_id or "", None)
                 case RunFinished.type:
@@ -1652,7 +1655,13 @@ def _holds(held: Mapping[str, Mapping[str, Any]]) -> list[HoldInfo]:
             if (fields := hold.get(by)) is not None:
                 out.append(
                     HoldInfo.model_validate(
-                        {"agent": agent, "by": by, "at": hold.get("at"), "call": hold.get("call")}
+                        {
+                            "agent": agent,
+                            "by": by,
+                            "at": hold.get("at"),
+                            "call": hold.get("call"),
+                            "next_call": hold.get("next_call"),
+                        }
                         | fields
                     )
                 )

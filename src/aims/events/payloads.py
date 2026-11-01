@@ -1127,14 +1127,17 @@ class AgentHeld(Payload):
     """The agent stopped at a gate point and waits there until it is resumed or the run ends.
     `kind` is the point: before a model call, after a reply, or before or after a tool call;
     `call_id` names the model call of a reply or the tool call. `step` counts the model calls
-    made so far. Only an agent held before a tool call can have that call denied. An agent
-    paused while a tool call runs holds once the call ends."""
+    made so far. After a reply, `next_call` is the first tool call it asks for. A deny refuses
+    the tool call the agent holds before, or that first call of the reply it holds after. An
+    agent paused while a tool call runs holds once the call ends, and that call cannot be
+    denied."""
 
     type = "agent.held"
 
     kind: GateKind
     call_id: str | None = None
     step: int = 0
+    next_call: str | None = None
 
 
 class AgentFinished(Payload):

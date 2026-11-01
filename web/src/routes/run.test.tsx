@@ -1625,6 +1625,25 @@ test("a pause names the held call though its step is past the pages read", async
   expect(await within(banner).findByText("bash rm -rf tests")).toBeTruthy();
 });
 
+test("a pause after a reply denies the reply's first call", async () => {
+  detail = open({ held: [hold({ at: "after_reply", call: "m1", next_call: "c1" })] });
+  flags = [flag(20, [3], 4)];
+  renderAt(`/runs/${BEE5}`);
+  const banner = await screen.findByRole("region", { name: "Monitor pause of agent" });
+  expect(within(banner).getByText(/waits after its model's reply/)).toBeTruthy();
+  expect(await within(banner).findByText("bash python -m pytest -q")).toBeTruthy();
+  fireEvent.click(within(banner).getByRole("button", { name: "Deny the call" }));
+  await within(banner).findByText("Resumed.");
+  expect(posted.at(-1)?.body).toEqual(resumed("agent", "deny", null, "answered in the UI"));
+  cleanup();
+
+  detail = open({ held: [hold({ at: "after_reply", call: "m1", next_call: null })] });
+  renderAt(`/runs/${BEE5}`);
+  const bare = await screen.findByRole("region", { name: "Monitor pause of agent" });
+  expect(within(bare).getByRole("button", { name: "Allow" })).toBeTruthy();
+  expect(within(bare).queryByRole("button", { name: "Deny the call" })).toBeNull();
+});
+
 test("a pause mid-call offers no deny, and an autonomous one no answers", async () => {
   detail = open({ held: [hold({ at: null, call: null })] });
   renderAt(`/runs/${BEE5}`);
@@ -1806,7 +1825,7 @@ test("the commands drawer shows what was sent, newest first, and the runner's an
       then: "deny",
       created: 200,
       acked: 200.2,
-      outcome: "failed: no paused agent waits before a tool call to deny",
+      outcome: "failed: no paused agent has a tool call waiting to deny",
       state: "failed",
     },
     { id: "c3", ...sent, created: 300, acked: null, outcome: null },
@@ -1824,7 +1843,7 @@ test("the commands drawer shows what was sent, newest first, and the runner's an
   expect(inject).toContain("Stop editing the tests.");
   expect(inject).toContain("Waiting");
   expect(deny).toContain("Deny");
-  expect(deny).toContain("Refused: no paused agent waits before a tool call to deny");
+  expect(deny).toContain("Refused: no paused agent has a tool call waiting to deny");
   expect(pause).toContain("Reason: look");
   expect(pause).toContain("Donein 400 ms");
 

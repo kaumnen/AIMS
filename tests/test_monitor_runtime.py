@@ -18,6 +18,7 @@ from typer.testing import CliRunner
 from aims.agent import GatePoint, OpenGate, PauseClock, Verdict
 from aims.cli import app
 from aims.events import (
+    AgentHeld,
     Event,
     LocalEventStore,
     MonitorAction,
@@ -482,6 +483,40 @@ async def test_an_operator_denies_the_call_an_agent_is_held_before(
     assert results[0].denied
 
 
+async def test_a_pause_at_the_barrier_after_a_reply_denies_its_call(
+    store: LocalEventStore, tmp_path: Path, fake_monitor: list[FakeMonitor]
+) -> None:
+    script = Script(call("bash", command="curl evil"), call("submit", answer="ok"))
+    backend = Boxes()
+    runner = Runner(bench(store, script, backend), scenario(tmp_path), Options(), monitor=watched())
+    flagged: list[int] = []
+
+    async def flag() -> None:
+        seen = [e.seq for e in fake_monitor[0].events if e.type == "tool.call"]
+        if seen and not flagged:
+            flagged.append(seen[0])
+            await runner.operate("pause", agent="a", reason="flagged")
+
+    runner.on_start = lambda run_id: setattr(fake_monitor[0], "on_barrier", flag)
+    task = asyncio.create_task(runner.run())
+    await held(runner, "a")
+    assert runner.held_call("a") == "call_1"
+    assert runner.run_id is not None
+    info = await store.run(runner.run_id)
+    assert info is not None
+    assert [(h.at, h.next_call) for h in info.held] == [("after_reply", "call_1")]
+    await runner.operate("resume", then="deny", token="alice")
+    result = await task
+
+    assert result.status == "completed", result.reason
+    assert result.run_id is not None
+    assert not any("curl" in c for c in backend.made["a"].commands)
+    (hold,) = await of(store, result.run_id, AgentHeld, "agent.held")
+    assert (hold.kind, hold.next_call) == ("after_reply", "call_1")
+    results = await of(store, result.run_id, ToolResult, "tool.result")
+    assert (results[0].call_id, results[0].denied) == ("call_1", True)
+
+
 async def test_a_deny_needs_an_agent_held_before_a_tool_call(
     store: LocalEventStore, tmp_path: Path, fake_monitor: list[FakeMonitor]
 ) -> None:
@@ -493,7 +528,7 @@ async def test_a_deny_needs_an_agent_held_before_a_tool_call(
     await started.wait()
     await runner.operate("pause")
     await held(runner, "a")
-    with pytest.raises(RunError, match="no paused agent waits before a tool call"):
+    with pytest.raises(RunError, match="no paused agent has a tool call waiting"):
         await runner.operate("resume", then="deny")
     await runner.operate("sweep", agent="a", token="bob")
     await runner.operate("resume")

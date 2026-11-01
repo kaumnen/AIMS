@@ -179,6 +179,64 @@ async def test_a_held_agent_is_denied_only_at_a_tool_call() -> None:
     assert [v.action for v in await asyncio.gather(*held)] == ["deny", "continue"]
 
 
+def reply(agent: str = "a", *calls: str) -> GatePoint:
+    return GatePoint("after_reply", "run", agent, 1, "m1", calls)
+
+
+async def test_a_deny_after_a_reply_refuses_its_first_call() -> None:
+    inner = Inner()
+    gate = ControlGate(inner)
+    gate.pause(["a"])
+    at_reply = reply("a", "c1", "c2")
+    assert (await gate.check(at_reply)).action == "pause"
+    held = asyncio.create_task(gate.held(at_reply))
+    await asyncio.sleep(0)
+    assert gate.held_call("a") == "c1"
+    assert gate.resume(["a"], DENY) == []
+    assert (await held).action == "continue"
+    assert inner.checks == [at_reply]
+    assert await gate.check(point(kind="before_tool", call="c1")) == DENY
+    assert (await gate.check(point(kind="before_tool", call="c2"))).action == "continue"
+    assert len(inner.checks) == 2
+
+
+async def test_a_deny_right_after_a_pause_at_a_reply_waits_for_its_call() -> None:
+    inner = Inner()
+    gate = ControlGate(inner)
+
+    def deny(p: GatePoint) -> None:
+        gate.pause([p.agent_id], "flagged")
+        assert gate.held_call(p.agent_id) == "c1"
+        assert gate.resume([p.agent_id], DENY) == ["a"]
+
+    inner.act = deny
+    assert (await gate.check(reply("a", "c1"))).action == "continue"
+    assert gate.held_call("a") is None
+    assert await gate.check(point(kind="before_tool", call="c1")) == DENY
+
+
+async def test_an_allow_after_a_deny_lets_the_call_run() -> None:
+    inner = Inner()
+    gate = ControlGate(inner)
+
+    def deny_then_allow(p: GatePoint) -> None:
+        gate.pause([p.agent_id])
+        gate.resume([p.agent_id], DENY)
+        gate.pause([p.agent_id])
+        gate.resume([p.agent_id])
+
+    inner.act = deny_then_allow
+    assert (await gate.check(reply("a", "c1"))).action == "continue"
+    assert (await gate.check(point(kind="before_tool", call="c1"))).action == "continue"
+
+
+async def test_a_reply_without_calls_has_none_to_deny() -> None:
+    gate = ControlGate()
+    gate.pause(["a"])
+    assert (await gate.check(reply("a"))).action == "pause"
+    assert gate.held_call("a") is None
+
+
 # Sealing runs a dead process left open
 
 

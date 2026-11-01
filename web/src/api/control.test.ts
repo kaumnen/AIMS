@@ -60,11 +60,11 @@ test("a resume sends `then` and waits for the runner's answer", async () => {
 });
 
 test("a refusal comes back with the runner's reason", async () => {
-  serve(SENT, "failed: no paused agent waits before a tool call to deny", 1);
+  serve(SENT, "failed: no paused agent has a tool call waiting to deny", 1);
   const answer = await send(RUN, { action: "pause" }, { every: 1 });
   expect(answer).toEqual({
     state: "failed",
-    text: "no paused agent waits before a tool call to deny",
+    text: "no paused agent has a tool call waiting to deny",
   });
 });
 

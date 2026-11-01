@@ -479,7 +479,7 @@ class Agent:
             reply = await self._call()
             calls = reply.tool_calls if reply.status == "completed" else []
             self._open = self.marks[self.steps] if calls else None
-            await self._gate("after_reply", reply.call_id)
+            await self._gate("after_reply", reply.call_id, tuple(c.id for c in calls))
             if not calls:
                 nudges += 1
                 if nudges >= MAX_NUDGES:
@@ -631,14 +631,21 @@ class Agent:
             text = self.texts.budget(name).format(used=value, limit=limit)
             self.pending.append(("budget_warning", text))
 
-    async def _gate(self, kind: GateKind, call_id: str | None = None) -> Verdict:
-        point = GatePoint(kind, self.run_id, self.id, self.steps, call_id)
+    async def _gate(
+        self, kind: GateKind, call_id: str | None = None, calls: tuple[str, ...] = ()
+    ) -> Verdict:
+        point = GatePoint(kind, self.run_id, self.id, self.steps, call_id, calls)
         verdict = await self.gate.check(point)
         if verdict.action == "pause":
             self.clock.hold("gate")
             try:
                 while verdict.action == "pause":
-                    held = AgentHeld(kind=point.kind, call_id=point.call_id, step=point.step)
+                    held = AgentHeld(
+                        kind=point.kind,
+                        call_id=point.call_id,
+                        step=point.step,
+                        next_call=calls[0] if calls else None,
+                    )
                     await self._emit(held)
                     await self.sandbox.sandbox.pause()
                     try:

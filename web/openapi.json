@@ -224,7 +224,7 @@
       },
       "AgentHeld": {
         "additionalProperties": false,
-        "description": "The agent stopped at a gate point and waits there until it is resumed or the run ends.\n`kind` is the point: before a model call, after a reply, or before or after a tool call;\n`call_id` names the model call of a reply or the tool call. `step` counts the model calls\nmade so far. Only an agent held before a tool call can have that call denied. An agent\npaused while a tool call runs holds once the call ends.",
+        "description": "The agent stopped at a gate point and waits there until it is resumed or the run ends.\n`kind` is the point: before a model call, after a reply, or before or after a tool call;\n`call_id` names the model call of a reply or the tool call. `step` counts the model calls\nmade so far. After a reply, `next_call` is the first tool call it asks for. A deny refuses\nthe tool call the agent holds before, or that first call of the reply it holds after. An\nagent paused while a tool call runs holds once the call ends, and that call cannot be\ndenied.",
         "properties": {
           "call_id": {
             "anyOf": [
@@ -248,6 +248,18 @@
             "title": "Kind",
             "type": "string"
           },
+          "next_call": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Next Call"
+          },
           "step": {
             "default": 0,
             "title": "Step",
@@ -257,7 +269,8 @@
         "required": [
           "kind",
           "call_id",
-          "step"
+          "step",
+          "next_call"
         ],
         "title": "AgentHeld",
         "type": "object"
@@ -4675,7 +4688,7 @@
         "type": "object"
       },
       "HoldInfo": {
-        "description": "An agent the monitor or an operator paused that has not been let go. `seq` and `since`\nare the action that paused it, `flags` the flags behind a monitor's pause and `mode` the\nmonitor's oversight then; `until` is when the monitor kills the run if the pause is still\nopen. `at` is the gate point the agent waits at once it holds there, and `call` the model\ncall or tool call it names; only a hold `before_tool` can deny that call.",
+        "description": "An agent the monitor or an operator paused that has not been let go. `seq` and `since`\nare the action that paused it, `flags` the flags behind a monitor's pause and `mode` the\nmonitor's oversight then; `until` is when the monitor kills the run if the pause is still\nopen. `at` is the gate point the agent waits at once it holds there, and `call` the model\ncall or tool call it names. `next_call` is the first tool call of the reply an agent holds\nafter. A deny refuses the call held `before_tool`, or that `next_call`.",
         "properties": {
           "agent": {
             "title": "Agent",
@@ -4739,6 +4752,17 @@
               }
             ],
             "title": "Mode"
+          },
+          "next_call": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Call"
           },
           "reason": {
             "anyOf": [

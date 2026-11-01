@@ -23,9 +23,10 @@ class ControlGate:
     sandbox at once, so an agent paused mid-call stops there and holds once the call lands.
     Every point passes the inner gate, again after a hold, and a pause asked while the inner gate
     decides holds the agent at that same point. An inject reaches the agent at its next gate
-    point. A deny refuses the tool call the agent holds before. Once the run is killed every
-    point answers kill. A held agent never moves on by itself. Each agent's `clock` runs from
-    the moment it is paused to the moment it is resumed.
+    point. A deny refuses the tool call the agent holds before, or the first tool call of the
+    reply it holds after; a call already running cannot be denied. Once the run is killed
+    every point answers kill. A held agent never moves on by itself. Each agent's `clock` runs
+    from the moment it is paused to the moment it is resumed.
     """
 
     def __init__(self, inner: Gate | None = None) -> None:
@@ -78,10 +79,11 @@ class ControlGate:
 
     @staticmethod
     def _denied(state: _Agent, point: GatePoint) -> bool:
-        """Whether a deny waits for this call; a deny left for another call is dropped."""
-        if state.deny is None:
+        """Whether a deny waits for this call; a deny left for another call is dropped. A deny
+        given after a reply waits for the reply's call."""
+        if state.deny is None or point.kind != "before_tool":
             return False
-        denied = state.deny == point.call_id and point.kind == "before_tool"
+        denied = state.deny == point.call_id
         state.deny = None
         return denied
 
@@ -108,7 +110,7 @@ class ControlGate:
             verdict = await state.held
         finally:
             state.held = None
-        if verdict.action in ("kill", "deny"):
+        if verdict.action == "kill":
             return verdict
         if verdict.action == "inject" and verdict.text:
             state.injects.insert(0, verdict.text)
@@ -123,11 +125,17 @@ class ControlGate:
         return state is not None and state.paused is not None
 
     def held_call(self, agent_id: str) -> str | None:
-        """The tool call the agent waits before at a gate point, not yet run."""
+        """The tool call a deny refuses, not yet run: the call the agent waits before, or the
+        first call of the reply it waits after."""
         state = self._agents.get(agent_id)
-        if state is None or state.at is None or state.at.kind != "before_tool":
+        at = None if state is None else state.at
+        if at is None:
             return None
-        return state.at.call_id
+        if at.kind == "before_tool":
+            return at.call_id
+        if at.kind == "after_reply" and at.calls:
+            return at.calls[0]
+        return None
 
     def pause(self, agents: Iterable[str], reason: str | None = None) -> None:
         for agent_id in agents:
@@ -137,9 +145,8 @@ class ControlGate:
 
     def resume(self, agents: Iterable[str], verdict: Verdict = CONTINUE) -> list[str]:
         """Let paused agents go on, with an inject when `verdict` carries one. A deny refuses
-        the call of each paused agent waiting before a tool call; the others just go on.
-        Returns the agents that were not held at a gate point, whose sandboxes the caller
-        unfreezes."""
+        the held call of each paused agent that has one; the others just go on. Returns the
+        agents that were not held at a gate point, whose sandboxes the caller unfreezes."""
         if verdict.action not in ("continue", "inject", "deny"):
             raise ValueError(f"resume takes continue, inject or deny, not {verdict.action}")
         loose: list[str] = []
@@ -148,14 +155,14 @@ class ControlGate:
             call = self.held_call(agent_id) if state.paused is not None else None
             state.paused = None
             given = verdict if verdict.action != "deny" or call is not None else CONTINUE
+            if call is not None:
+                state.deny = call if given.action == "deny" else None
             if state.held is not None and not state.held.done():
                 state.held.set_result(given)
             else:
                 loose.append(agent_id)
                 if given.action == "inject" and given.text:
                     state.injects.append(given.text)
-                elif given.action == "deny":
-                    state.deny = call
             state.clock.release("control")
         return loose
 

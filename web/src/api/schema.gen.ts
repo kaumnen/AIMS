@@ -1560,8 +1560,10 @@ export interface components {
          * @description The agent stopped at a gate point and waits there until it is resumed or the run ends.
          *     `kind` is the point: before a model call, after a reply, or before or after a tool call;
          *     `call_id` names the model call of a reply or the tool call. `step` counts the model calls
-         *     made so far. Only an agent held before a tool call can have that call denied. An agent
-         *     paused while a tool call runs holds once the call ends.
+         *     made so far. After a reply, `next_call` is the first tool call it asks for. A deny refuses
+         *     the tool call the agent holds before, or that first call of the reply it holds after. An
+         *     agent paused while a tool call runs holds once the call ends, and that call cannot be
+         *     denied.
          */
         AgentHeld: {
             /**
@@ -1574,6 +1576,11 @@ export interface components {
              * @enum {string}
              */
             kind: "before_model" | "after_reply" | "before_tool" | "after_tool";
+            /**
+             * Next Call
+             * @default null
+             */
+            next_call: string | null;
             /**
              * Step
              * @default 0
@@ -3245,7 +3252,8 @@ export interface components {
          *     are the action that paused it, `flags` the flags behind a monitor's pause and `mode` the
          *     monitor's oversight then; `until` is when the monitor kills the run if the pause is still
          *     open. `at` is the gate point the agent waits at once it holds there, and `call` the model
-         *     call or tool call it names; only a hold `before_tool` can deny that call.
+         *     call or tool call it names. `next_call` is the first tool call of the reply an agent holds
+         *     after. A deny refuses the call held `before_tool`, or that `next_call`.
          */
         HoldInfo: {
             /** Agent */
@@ -3263,6 +3271,8 @@ export interface components {
             flags?: number[];
             /** Mode */
             mode?: ("observe" | "autonomous" | "human") | null;
+            /** Next Call */
+            next_call?: string | null;
             /** Reason */
             reason?: string | null;
             /** Seq */

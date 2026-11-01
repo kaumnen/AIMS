@@ -402,7 +402,7 @@ class Runner:
         c = self._control
         held = any(c.is_paused(a) and c.held_call(a) for a in targets)
         if action == "resume" and then == "deny" and not held:
-            raise RunError("no paused agent waits before a tool call to deny")
+            raise RunError("no paused agent has a tool call waiting to deny")
         store = self.bench.store
         recorded = OperatorAction(
             action=action,

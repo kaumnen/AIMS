@@ -70,7 +70,10 @@ function Pause({
     ),
   );
   // A held call is in its agent's latest step, which may sit past the pages read so far.
-  const unseen = holds.some((h) => h.call && !tools.has(h.call));
+  const unseen = holds.some((h) => {
+    const id = toolOf(h);
+    return id && !tools.has(id);
+  });
   const { hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage } = steps;
   useEffect(() => {
     if (unseen && hasNextPage && !isFetchingNextPage && !isFetchNextPageError) {
@@ -93,13 +96,13 @@ function Pause({
     seq,
     flag: flags.data?.find((f) => f.seq === seq || f.latest === seq),
   }));
-  const deniable = holds.some((h) => h.at === "before_tool");
+  const deniable = holds.some(canDeny);
 
-  // Like the terminal prompt: each agent of the pause goes on by itself; only an agent
-  // waiting before a tool call has it denied.
+  // Like the terminal prompt: each agent of the pause goes on by itself; only an agent with a
+  // tool call waiting has it denied.
   const answerAll = async (choice: "continue" | "deny" | "inject", message?: string) => {
     for (const h of holds) {
-      const next = choice === "deny" && h.at !== "before_tool" ? "continue" : choice;
+      const next = choice === "deny" && !canDeny(h) ? "continue" : choice;
       // one agent at a time, so a refusal stops the rest
       // oxlint-disable-next-line no-await-in-loop
       const got = await run({
@@ -155,7 +158,8 @@ function Pause({
       )}
       <ul className="flex flex-col">
         {holds.map((h) => {
-          const tool = h.call ? tools.get(h.call) : undefined;
+          const id = toolOf(h);
+          const tool = id ? tools.get(id) : undefined;
           return (
             <li key={h.agent}>
               <span className="font-mono">{h.agent}</span> {where(h)}
@@ -238,6 +242,17 @@ function Pause({
       {human && !operator && <p className="text-muted-foreground">Only operators can answer.</p>}
     </section>
   );
+}
+
+// The tool call a hold names: the one the agent waits before or after, or the first of the
+// reply it waits after.
+function toolOf(h: Hold): string | null | undefined {
+  return h.at === "after_reply" ? h.next_call : h.call;
+}
+
+// A deny refuses a call not run yet: the one held before, or the reply's first.
+function canDeny(h: Hold): boolean {
+  return (h.at === "before_tool" || h.at === "after_reply") && Boolean(toolOf(h));
 }
 
 function where(h: Hold): string {

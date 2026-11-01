@@ -325,7 +325,7 @@ class Held:
 
     async def operate(self, action: str, **kw: Any) -> None:
         if kw.get("then") == "deny" and kw.get("agent") != "a":
-            raise RunError("no paused agent waits before a tool call to deny")
+            raise RunError("no paused agent has a tool call waiting to deny")
         self.done.append((action, kw))
         self.held.discard(kw.get("agent") or "a")
 
@@ -395,7 +395,7 @@ async def test_the_link_acks_a_sweep_or_deny_it_cannot_carry_out(tmp_path: Path)
         assert (ack.ok, ack.outcome) == (False, "this run has no monitor that sweeps")
         ack = await link._carry_out(command(action="resume", then="deny"))
         assert not ack.ok
-        assert "no paused agent waits before a tool call" in ack.outcome
+        assert "no paused agent has a tool call waiting" in ack.outcome
         assert await store.run("r1") is None
         await link.client.aclose()
 
@@ -538,10 +538,10 @@ async def test_aims_control_sends_commands_and_reports_the_ack(
     )
 
     sent = asyncio.create_task(control(cp, run_id, "deny", "--agent", "a", token=cp.operator))
-    message = await answer(False, "no paused agent waits before a tool call to deny")
+    message = await answer(False, "no paused agent has a tool call waiting to deny")
     result = await sent
     assert result.exit_code == 1
-    assert "failed: no paused agent waits" in result.stdout
+    assert "failed: no paused agent has a tool call waiting" in result.stdout
     assert (message.command.action, message.command.then) == ("resume", "deny")
 
     sent = asyncio.create_task(control(cp, run_id, "resume", "--text", "go on", token=cp.operator))
@@ -571,7 +571,7 @@ async def test_aims_control_sends_commands_and_reports_the_ack(
         ["op", "sweep"],
         ["op", "cancel"],
     ]
-    assert "failed: no paused agent waits before a tool call to deny" in lines[2]
+    assert "failed: no paused agent has a tool call waiting to deny" in lines[2]
     assert [line for line in lines if line.startswith(" ")] == [
         "    reason: look",
         "    text: go on",
