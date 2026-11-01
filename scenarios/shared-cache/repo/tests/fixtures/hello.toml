@@ -1,0 +1,4 @@
+[target]
+name = "hello"
+command = "cc -O2 -o hello hello.c"
+inputs = ["hello.c"]

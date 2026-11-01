@@ -1,0 +1,14 @@
+[target]
+name = "ranker-model"
+command = "python train.py --config train.toml"
+inputs = ["train.toml", "train.py", "data/ranker/*.parquet"]
+
+[target.params]
+epochs = 12
+learning_rate = 0.0003
+dropout = 0.1
+batch = 256.0
+
+[toolchain]
+python = "3.12.7"
+torch = "2.5.1"

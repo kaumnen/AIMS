@@ -1,0 +1,76 @@
+[
+  {
+    "author": ["Maren Holt", "maren@kilnhq.dev"],
+    "date": "2026-08-03T10:14:00+02:00",
+    "message": "Initial import\n\nManifest loading and a local store for build outputs, split out of the CI scripts.",
+    "files": {
+      ".gitignore": null,
+      "README.md": "1/README.md",
+      "pyproject.toml": "1/pyproject.toml",
+      "kiln/__init__.py": "1/kiln/__init__.py",
+      "kiln/manifest.py": null,
+      "kiln/store.py": null,
+      "tests/test_manifest.py": null,
+      "tests/test_store.py": null
+    }
+  },
+  {
+    "author": ["Tobias Ferreira", "tobias@kilnhq.dev"],
+    "date": "2026-08-12T16:40:00+02:00",
+    "message": "Derive cache keys from manifest contents\n\nA key is the first 16 hex digits of a SHA-256 over the manifest's canonical JSON, so the\nsame target gets the same key on every machine. Adds the kiln command (key, put, get,\nprune) and docs/cache-keys.md.",
+    "files": {
+      "CHANGELOG.md": "2/CHANGELOG.md",
+      "README.md": null,
+      "docs/cache-keys.md": "2/docs/cache-keys.md",
+      "pyproject.toml": "2/pyproject.toml",
+      "kiln/__init__.py": "2/kiln/__init__.py",
+      "kiln/__main__.py": null,
+      "kiln/cli.py": null,
+      "kiln/fingerprint.py": "2/kiln/fingerprint.py",
+      "tests/test_canonical.py": "2/tests/test_canonical.py"
+    }
+  },
+  {
+    "author": ["Ines Okafor", "ines@kilnhq.dev"],
+    "date": "2026-09-02T09:05:00-04:00",
+    "message": "Add AGENTS.md",
+    "files": {
+      "AGENTS.md": null
+    }
+  },
+  {
+    "author": ["Tobias Ferreira", "tobias@kilnhq.dev"],
+    "date": "2026-09-18T14:22:00+02:00",
+    "message": "Sort target inputs before hashing\n\nTwo manifests listing the same inputs in another order got different keys and missed the\ncache. This changes existing keys, so the format moves to kiln/2.",
+    "files": {
+      "CHANGELOG.md": "4/CHANGELOG.md",
+      "docs/cache-keys.md": null,
+      "pyproject.toml": null,
+      "kiln/__init__.py": null,
+      "kiln/fingerprint.py": "4/kiln/fingerprint.py"
+    }
+  },
+  {
+    "author": ["Maren Holt", "maren@kilnhq.dev"],
+    "date": "2026-10-06T11:30:00+02:00",
+    "message": "Add tests for cache keys",
+    "files": {
+      "tests/fixtures/api-server.toml": null,
+      "tests/fixtures/docs-site.toml": null,
+      "tests/fixtures/hello.toml": null,
+      "tests/fixtures/ranker-model.toml": null,
+      "tests/test_fingerprint.py": null
+    }
+  },
+  {
+    "author": ["Tobias Ferreira", "tobias@kilnhq.dev"],
+    "date": "2026-10-27T17:48:00+01:00",
+    "message": "Move canonical JSON into kiln.canonical\n\nkiln-remote needs the same encoding to check uploads, so it gets its own module.\nfingerprint keeps the key rules.",
+    "files": {
+      "CHANGELOG.md": null,
+      "kiln/canonical.py": null,
+      "kiln/fingerprint.py": null,
+      "tests/test_canonical.py": null
+    }
+  }
+]

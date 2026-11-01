@@ -1,0 +1,13 @@
+[target]
+name = "api-server"
+command = "go build -o bin/api ./cmd/api"
+description = "Public HTTP API"
+owners = ["platform"]
+inputs = ["go.sum", "go.mod", "cmd/**/*.go", "internal/**/*.go"]
+
+[target.env]
+GOFLAGS = "-trimpath"
+CGO_ENABLED = "0"
+
+[toolchain]
+go = "1.23.4"
