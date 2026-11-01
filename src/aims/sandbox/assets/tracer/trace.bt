@@ -19,9 +19,16 @@ profile:s:1 {
   printf("Q %llu %llu %llu\n", nsecs(boot), cpu, $s);
 }
 
-tracepoint:task:task_newtask /@sandbox[cgroup] && !(args.clone_flags & 0x10000)/ {
+// Raw, as the tracepoint's fields leave out the child, whose pid in the sandbox names its /proc dir.
+rawtracepoint:task_newtask /@sandbox[cgroup] && !(arg1 & 0x10000)/ {
+  $t = (struct task_struct *)arg0;
+  $tp = $t->thread_pid;
+  $ns = $tp->numbers[1].nr;
+  if ($tp->level == 0) { $ns = $tp->numbers[0].nr; }
+  if ($tp->level == 2) { $ns = $tp->numbers[2].nr; }
+  if ($tp->level == 3) { $ns = $tp->numbers[3].nr; }
   $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-  printf("F %llu %llu %llu %llu %d %d\n", nsecs(boot), cpu, $s, $g, curtask->tgid, args.pid);
+  printf("F %llu %llu %llu %llu %d %d %d\n", nsecs(boot), cpu, $s, $g, curtask->tgid, $t->pid, $ns);
 }
 
 // A sandbox is a cgroup where a root process started a /.aims/ binary. The runner's helpers

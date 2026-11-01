@@ -518,8 +518,8 @@ def _tick(body: str, at: Stamp) -> Tick:
 
 @record("F")
 def _fork(body: str, at: Stamp) -> Fork:
-    parent, child = _ints(body, 2)
-    return Fork(parent, child, at=at)
+    parent, child, ns_pid = _ints(body, 3)
+    return Fork(parent, child, ns_pid, at=at)
 
 
 @record("B")

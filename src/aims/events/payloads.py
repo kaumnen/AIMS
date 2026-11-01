@@ -493,6 +493,7 @@ class ProcFork(KernelPayload):
     type = "proc.fork"
 
     ppid: int
+    ns_pid: int | None = None
 
 
 class ProcExit(KernelPayload):

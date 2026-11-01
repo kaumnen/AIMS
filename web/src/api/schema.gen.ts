@@ -4724,6 +4724,11 @@ export interface components {
             cpu_seq: number;
             /** Exec Id */
             exec_id: string | null;
+            /**
+             * Ns Pid
+             * @default null
+             */
+            ns_pid: number | null;
             /** Pid */
             pid: number;
             /** Ppid */

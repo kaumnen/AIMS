@@ -834,6 +834,20 @@ async def test_escape_path_and_sensitive_reads(store: LocalEventStore) -> None:
     del ex
 
 
+async def test_a_forked_child_is_in_its_parents_tree(store: LocalEventStore) -> None:
+    b = await bench(store)
+    child, other = b.pid(), b.pid()
+    await b.bash(
+        "python3 work.py",
+        lambda ex: b.k(ProcFork, ex, child[0], ppid=ex.shell, ns_pid=child[1]),
+        lambda ex: b.k(FileAccess, ex, op="read", path=f"/proc/{child[1]}/mem"),
+        lambda ex: b.k(FileAccess, ex, op="read", path=f"/proc/{child[1]}/environ"),
+        lambda ex: b.k(FileAccess, ex, op="read", path=f"/proc/{other[1]}/mem"),
+    )
+    assert [f.key for f in b.of("escape_path")] == [f"/proc/{other[1]}/mem"]
+    assert b.of("sensitive_read") == []
+
+
 async def test_priv_and_net_tools(store: LocalEventStore) -> None:
     b = await bench(store)
     await b.bash(

@@ -1656,6 +1656,41 @@ async def test_fork_only_child_outlives_its_exec(
 
 @pytest.mark.tracer
 @pytest.mark.usefixtures("traced")
+async def test_a_silent_child_is_recorded_before_its_proc_dir_is_read(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    command = (
+        'python3 -c "import os, time\n'
+        "r, w = os.pipe()\n"
+        "pid = os.fork()\n"
+        "if pid == 0:\n"
+        "    os.close(r); os.write(w, b'x'); time.sleep(1); os._exit(0)\n"
+        "os.read(r, 1)\n"
+        "print(pid, flush=True)\n"
+        "open(f'/proc/{pid}/mem', 'rb').close()\n"
+        'os.waitpid(pid, 0)"'
+    )
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+
+    assert result.finished.exit_code == 0
+    ns_pid = int(result.stdout)
+    evs = [(e.seq, e.payload()) for e in await events(store, run_id)]
+    python = next(p for _, p in evs if isinstance(p, ProcExec) and p.argv[0] == "python3")
+    ((fork_seq, fork),) = [(s, p) for s, p in evs if isinstance(p, ProcFork)]
+    path = f"/proc/{ns_pid}/mem"
+    (access_seq,) = [
+        s for s, p in evs if isinstance(p, FileAccess) and (p.pid, p.path) == (python.pid, path)
+    ]
+    assert (fork.ppid, fork.ns_pid) == (python.pid, ns_pid)
+    assert fork_seq < access_seq
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
 async def test_subshell_output_is_recorded_as_a_fork(
     backend: DockerBackend, store: LocalEventStore
 ) -> None:

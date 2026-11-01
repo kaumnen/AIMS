@@ -4,6 +4,7 @@ import io
 import json
 import logging
 import posixpath
+import re
 import tarfile
 import time
 import uuid
@@ -97,6 +98,7 @@ log = logging.getLogger("aims.sandbox")
 
 CAPS = {"procs": 1000, "files": 2000, "other": 500, "output": 200}
 PROC_READS = frozenset(MASK_PROC)
+PROC_DIR = re.compile(r"^/proc/(\d+)(?:/|$)")
 PROC_READ_CAP = 64
 ATTR_MODE, ATTR_UID, ATTR_GID, ATTR_SIZE, ATTR_ATIME, ATTR_MTIME, ATTR_CTIME = (
     1,
@@ -193,9 +195,8 @@ class _Fork:
     exit: Exit | None = None
     oom: bool = False
 
-    def forked(self, child: Fork) -> bool:
-        """Whether `child` was forked while this process lived, so a reused pid is never taken."""
-        ts = child.at.ts
+    def alive(self, ts: int) -> bool:
+        """Whether this process lived at `ts`, so a reused pid is never taken."""
         return self.record.at.ts <= ts and (self.exit is None or ts <= self.exit.at.ts)
 
 
@@ -1146,8 +1147,20 @@ class AuditedSandbox:
             errno=record.errno,
             partial=record.partial,
         )
-        if self._admit(owner, "files", payload) and not polled:
+        child = self._proc_child(record.path, record.at.ts)
+        if self._admit(owner, "files", payload, target=child) and not polled:
             scope.seen.add(key)
+
+    def _proc_child(self, path: str, ts: int) -> int | None:
+        """The unrecorded child whose /proc directory holds `path`, by its pid in the sandbox."""
+        m = PROC_DIR.match(path)
+        if m is None:
+            return None
+        ns_pid = int(m.group(1))
+        for child, fork in reversed(self._forks.items()):
+            if fork.record.ns_pid == ns_pid and fork.alive(ts):
+                return child
+        return None
 
     def _on_cache(self, record: Cache) -> None:
         owner = self._owner_of(record.pid)
@@ -1379,7 +1392,7 @@ class AuditedSandbox:
         seen: set[int] = set()
         while pid not in self._shown and pid not in seen:
             fork = self._forks.get(pid)
-            if fork is None or (chain and not fork.forked(chain[-1].record)):
+            if fork is None or (chain and not fork.alive(chain[-1].record.at.ts)):
                 break
             chain.append(fork)
             seen.add(pid)
@@ -1388,7 +1401,9 @@ class AuditedSandbox:
             child = fork.record.child
             del self._forks[child]
             parent = fork.record.pid
-            payload = self._kernel(ProcFork, fork.record, fork.owner, pid=child, ppid=parent)
+            payload = self._kernel(
+                ProcFork, fork.record, fork.owner, pid=child, ppid=parent, ns_pid=fork.record.ns_pid
+            )
             if spill:
                 scope = self._scope(fork.owner)
                 if not self._spill("procs", payload):

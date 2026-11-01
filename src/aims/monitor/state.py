@@ -576,6 +576,9 @@ class State:
             node.path, node.argv, node.uid = parent.path, parent.argv, parent.uid
             node.env, node.installs = parent.env, parent.installs
         self._add(self._pids, payload.pid, node)
+        if payload.ns_pid is not None:
+            node.ns_pid = payload.ns_pid
+            self._add(self._ns, (agent, payload.ns_pid), node)
 
     def _access(self, event: Event, payload: FileAccess) -> None:
         exec_id = payload.exec_id

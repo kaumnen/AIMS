@@ -272,7 +272,7 @@ async def test_exec_writes_ahead_and_attributes_kernel_records(store: LocalEvent
     sb.steps.append(
         step(
             root(100),
-            Fork(100, 101, at=AT),
+            Fork(100, 101, 2, at=AT),
             child(101, 100, "python3", "x.py"),
             File(101, "write", "/work/x", at=AT),
             File(101, "write", "/work/x", at=AT),
@@ -333,7 +333,7 @@ async def test_orphaned_child_keeps_its_exec(store: LocalEventStore) -> None:
     sb = FakeSandbox()
     sb.after = [Proc(pid=101, ppid=1, uid=AGENT_UID, command="sleep 30")]
     sb.steps.append(
-        step(root(100), Fork(100, 101, at=AT), Exit(100, 0, None, at=AT), child(101, 1, "sleep"))
+        step(root(100), Fork(100, 101, 2, at=AT), Exit(100, 0, None, at=AT), child(101, 1, "sleep"))
     )
     run_id, audited = await start(store, sb)
     result = await audited.exec("setsid sleep 30 &", timeout_s=5)
@@ -357,17 +357,17 @@ async def test_fork_only_children_are_recorded_when_seen(store: LocalEventStore)
     sb.steps.append(
         step(
             root(100),
-            Fork(100, 101, at=tick(1)),
-            Fork(101, 102, at=tick(2)),
+            Fork(100, 101, 2, at=tick(1)),
+            Fork(101, 102, 3, at=tick(2)),
             File(102, "write", "/work/x", at=tick(3)),
-            Fork(100, 103, at=tick(4)),
+            Fork(100, 103, 4, at=tick(4)),
             child(103, 100, "ls"),
-            Fork(100, 104, at=tick(5)),
+            Fork(100, 104, 5, at=tick(5)),
             Exit(104, 0, None, at=tick(6)),
-            Fork(100, 105, at=tick(7)),
-            Fork(105, 106, at=tick(8)),
+            Fork(100, 105, 6, at=tick(7)),
+            Fork(105, 106, 7, at=tick(8)),
             child(106, 105, "cat"),
-            Fork(100, 107, at=tick(9)),
+            Fork(100, 107, 8, at=tick(9)),
             Output(107, 7, 3, PIPEFS, b"hi\n", at=tick(10)),
             Exit(107, 0, None, at=tick(11)),
             *(Exit(pid, 0, None, at=AT) for pid in (102, 101, 103, 106, 105, 100)),
@@ -398,7 +398,7 @@ async def test_fork_only_children_are_recorded_when_seen(store: LocalEventStore)
     ]
     exec_id = result.finished.exec_id
     fork = next(e for e in evs if e.type == "proc.fork")
-    assert fork.data == {"exec_id": exec_id, "pid": 101, "ppid": 100, **tick_data(1)}
+    assert fork.data == {"exec_id": exec_id, "pid": 101, "ppid": 100, "ns_pid": 2, **tick_data(1)}
     assert all(e.data["exec_id"] == exec_id for e in evs if "ts_kernel" in e.data)
     assert result.finished.procs == 3
     assert (await store.verify(run_id)).ok
@@ -409,14 +409,14 @@ async def test_a_dead_parent_is_recorded_before_its_child(store: LocalEventStore
     sb.steps.append(
         step(
             root(100),
-            Fork(100, 101, at=tick(1)),
-            Fork(101, 102, at=tick(2)),
+            Fork(100, 101, 2, at=tick(1)),
+            Fork(101, 102, 3, at=tick(2)),
             Exit(101, 3, None, at=tick(3)),
             File(102, "write", "/work/late", at=tick(4)),
-            Fork(100, 103, at=tick(5)),
-            Fork(103, 104, at=tick(6)),
+            Fork(100, 103, 4, at=tick(5)),
+            Fork(103, 104, 5, at=tick(6)),
             Exit(103, 0, None, at=tick(7)),
-            Fork(100, 103, at=tick(8)),
+            Fork(100, 103, 4, at=tick(8)),
             File(104, "write", "/work/y", at=tick(9)),
             File(103, "write", "/work/z", at=tick(10)),
         )
@@ -448,17 +448,17 @@ async def test_files_closed_after_an_exit_keep_their_exec(store: LocalEventStore
     sb.steps.append(
         step(
             root(100),
-            Fork(100, 101, at=tick(1)),
+            Fork(100, 101, 2, at=tick(1)),
             Exit(101, 0, None, at=tick(2)),
             Close(101, 3, "/work/a", at=tick(3)),
             Close(101, 4, "/work/a", at=tick(4)),
-            Fork(100, 102, at=tick(5)),
+            Fork(100, 102, 3, at=tick(5)),
             File(102, "write", "/work/b", at=tick(6)),
             Exit(102, 0, None, at=tick(7)),
             Close(102, 2, "/work/b", at=tick(8)),
             Exit(100, 0, None, at=tick(9)),
             Close(100, 1, "/work/c", at=tick(10)),
-            Fork(100, 103, at=tick(11)),
+            Fork(100, 103, 4, at=tick(11)),
             File(103, "write", "/work/d", at=tick(12)),
         )
     )
@@ -497,9 +497,9 @@ async def test_forks_follow_their_event_into_the_spill(
         step(
             root(100),
             File(100, "write", "/work/a", at=AT),
-            Fork(100, 101, at=tick(1)),
+            Fork(100, 101, 2, at=tick(1)),
             File(101, "write", "/work/b", at=tick(2)),
-            Fork(100, 102, at=tick(3)),
+            Fork(100, 102, 3, at=tick(3)),
             File(102, "write", "/work/c", at=tick(4)),
             Exit(101, 0, None, at=tick(5)),
             Exit(102, 0, None, at=tick(6)),
@@ -540,7 +540,7 @@ async def test_an_exec_keeps_its_exit_in_the_log_after_a_spilled_fork(
         step(
             root(100),
             File(100, "write", "/work/a", at=AT),
-            Fork(100, 101, at=tick(1)),
+            Fork(100, 101, 2, at=tick(1)),
             Close(101, 3, "/tmp/out", at=tick(2)),
             child(101, 100, "true"),
             Exit(101, 0, None, at=tick(3)),
@@ -1043,7 +1043,7 @@ def change(path: str, kind: Any = "modified", data: bytes | None = None) -> Chan
 async def test_file_writes_are_recorded_once_per_size(store: LocalEventStore) -> None:
     sb = FakeSandbox()
     closes = [Close(101, size, "/work/log", at=AT) for size in (3, 3, 9)]
-    sb.steps.append(step(root(100), Fork(100, 101, at=AT), *closes, Exit(100, 0, None, at=AT)))
+    sb.steps.append(step(root(100), Fork(100, 101, 2, at=AT), *closes, Exit(100, 0, None, at=AT)))
     run_id, audited = await start(store, sb)
     result = await audited.exec("x", timeout_s=5)
     await audited.close()
@@ -1133,9 +1133,9 @@ async def test_exec_context_is_recorded_and_env_deduped(store: LocalEventStore) 
     sb.steps.append(
         step(
             r,
-            Fork(100, 101, at=AT),
+            Fork(100, 101, 2, at=AT),
             kid,
-            Fork(100, 102, at=AT),
+            Fork(100, 102, 3, at=AT),
             changed,
             Exit(100, 0, None, at=AT),
         )
@@ -1315,9 +1315,9 @@ async def test_env_is_only_deduped_when_read_whole(store: LocalEventStore) -> No
     sb.steps.append(
         step(
             parent,
-            Fork(100, 101, at=AT),
+            Fork(100, 101, 2, at=AT),
             longer,
-            Fork(100, 102, at=AT),
+            Fork(100, 102, 3, at=AT),
             same,
             Exit(100, 0, None, at=AT),
         )
@@ -1368,7 +1368,7 @@ async def test_exec_hashes_a_file_under_a_captured_root(store: LocalEventStore) 
     sb.steps.append(
         step(
             root(100),
-            Fork(100, 101, at=AT),
+            Fork(100, 101, 2, at=AT),
             dataclasses.replace(child(101, 100, "./x"), cwd="/work"),
             Exit(101, 0, None, at=AT),
             Exit(100, 0, None, at=AT),
@@ -1394,7 +1394,7 @@ async def test_pre_exec_hashes_before_the_exec(store: LocalEventStore) -> None:
     sb.steps.append(
         step(
             root_exec,
-            Fork(100, 101, at=AT),
+            Fork(100, 101, 2, at=AT),
             PreExec(101, 100, "./x", 0, at=AT),
             child_exec,
             Exit(101, 0, None, at=AT),
@@ -1417,7 +1417,7 @@ async def test_output_streams_stay_within_their_cap(
     kids = [
         r
         for pid in range(101, 107)
-        for r in (Fork(100, pid, at=AT), Output(pid, 7, 1, PIPEFS, b"x", at=AT))
+        for r in (Fork(100, pid, pid - 99, at=AT), Output(pid, 7, 1, PIPEFS, b"x", at=AT))
     ]
     sb = FakeSandbox()
     sb.steps.append(step(root(100), *kids, Exit(100, 0, None, at=AT)))
@@ -1436,8 +1436,8 @@ async def test_file_access_is_deduped_per_process(store: LocalEventStore) -> Non
     sb.steps.append(
         step(
             root(100),
-            Fork(100, 101, at=AT),
-            Fork(100, 102, at=AT),
+            Fork(100, 101, 2, at=AT),
+            Fork(100, 102, 3, at=AT),
             File(101, "read", secret, at=AT),
             File(101, "read", secret, at=AT),
             File(102, "read", secret, at=AT),
@@ -1475,7 +1475,7 @@ async def test_new_kernel_records_are_mapped(store: LocalEventStore) -> None:
     sb.steps.append(
         step(
             root(100),
-            Fork(100, 101, at=AT),
+            Fork(100, 101, 2, at=AT),
             exe,
             Ipc(101, "bind", "unix", "/work/s.sock", at=AT),
             Ptrace(101, 5000, "attach", True, 1, ns_target=1, at=AT),
@@ -1540,8 +1540,8 @@ async def test_a_silent_child_is_recorded_before_the_call_on_it(store: LocalEven
     sb.steps.append(
         step(
             root(100),
-            Fork(100, 101, at=AT),
-            Fork(100, 102, at=AT),
+            Fork(100, 101, 2, at=AT),
+            Fork(100, 102, 3, at=AT),
             Ptrace(100, 101, "attach", False, None, ns_target=7, at=AT),
             Signal(100, 102, 9, at=AT),
             Exit(101, None, 9, at=AT),
@@ -1560,3 +1560,36 @@ async def test_a_silent_child_is_recorded_before_the_call_on_it(store: LocalEven
         ("proc.fork", 102, None),
         ("proc.signal", 100, 102),
     ]
+
+
+async def test_a_silent_child_is_recorded_before_its_proc_dir_is_opened(
+    store: LocalEventStore,
+) -> None:
+    sb = FakeSandbox()
+    sb.steps.append(
+        step(
+            root(100),
+            Fork(100, 101, 7, at=tick(1)),
+            Exit(101, 0, None, at=tick(2)),
+            Fork(100, 102, 7, at=tick(3)),
+            Fork(100, 103, 8, at=tick(4)),
+            File(100, "read", "/proc/9/mem", at=tick(5)),
+            File(100, "read", "/proc/78/environ", at=tick(6)),
+            File(100, "read", "/proc/7/mem", at=tick(7)),
+            Exit(102, None, 9, at=tick(8)),
+            Exit(103, None, 9, at=tick(9)),
+            Exit(100, 0, None, at=tick(10)),
+        )
+    )
+    run_id, audited = await start(store, sb)
+    await audited.exec("x", timeout_s=5)
+    await audited.close()
+
+    evs = await events(store, run_id, "proc.fork", "file.access")
+    assert [(e.type, e.data["pid"], e.data.get("path")) for e in evs] == [
+        ("file.access", 100, "/proc/9/mem"),
+        ("file.access", 100, "/proc/78/environ"),
+        ("proc.fork", 102, None),
+        ("file.access", 100, "/proc/7/mem"),
+    ]
+    assert evs[2].data["ns_pid"] == 7

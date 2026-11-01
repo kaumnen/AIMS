@@ -167,7 +167,7 @@ def test_parse_exec_splits_argv_exactly() -> None:
 def test_parse_reads_the_header() -> None:
     wire = Stamp(9_007_199_254_740_993_123, 7, 123456789012, 2**64 - 1)
     parsed = Stamp(9_007_199_254_740_993, 7, 123456789012, 2**64 - 1)
-    assert parse(line("F 10 11", wire)) == Fork(10, 11, at=parsed)
+    assert parse(line("F 10 11 2", wire)) == Fork(10, 11, 2, at=parsed)
     own = Stamp(5, 0, 1)
     ready = parse(line("R 0 1793054641268664792", AT))
     assert ready == Ready(0, 5, 1793054641268664, own)
@@ -201,7 +201,7 @@ def test_parse_output() -> None:
 
 
 def test_parse_simple_lines() -> None:
-    assert parse(line("F 10 11")) == Fork(10, 11, at=PARSED)
+    assert parse(line("F 10 11 2")) == Fork(10, 11, 2, at=PARSED)
     assert parse(line("B 10 /usr/bin/my tool")) == Bprm(10, "/usr/bin/my tool", at=PARSED)
     assert parse(line("X 10 3 0")) == Exit(10, 3, None, at=PARSED)
     assert parse(line("X 10 0 9")) == Exit(10, None, 9, at=PARSED)
@@ -651,7 +651,7 @@ async def test_tracer_routes_by_pid_namespace(monkeypatch: pytest.MonkeyPatch) -
             "R 0 999",
             "B 10 /bin/sh",
             f"E 10 1 1 1000 99 5 {len(argv)} {hx(argv)}",
-            "F 10 11",
+            "F 10 11 6",
             f"E 11 10 0 1000 99 6 3 {hx(b'ls\0')}",
             "W 11 /work/out",
             unlink(11, VDA1, "out", "_data", "aims-r-a1-work", "volumes", "docker"),
@@ -673,7 +673,7 @@ async def test_tracer_routes_by_pid_namespace(monkeypatch: pytest.MonkeyPatch) -
 
     assert drain(route) == [
         Exec(10, 1, 5, 1000, "/bin/sh", ("sh", "-c", "ls"), len(argv), True, at=s[2]),
-        Fork(10, 11, at=s[3]),
+        Fork(10, 11, 6, at=s[3]),
         Exec(11, 10, 6, 1000, "ls", ("ls",), 3, False, at=s[4]),
         File(11, "write", "/work/out", at=s[5]),
         File(11, "delete", "/work/out", at=s[6]),
@@ -751,7 +751,7 @@ async def test_runtime_setup_in_a_sandbox_cgroup_is_foreign() -> None:
     feed("A 70 /runc")
     feed(f"E 70 60 1 0 0 0 {len(init)} {hx(init)}")
     feed("W 70 /proc/70/oom_score_adj")
-    feed("F 70 71")
+    feed("F 70 71 2")
     s = feed(f"E 71 70 1 1000 99 5 3 {hx(b'sh\0')}")
     t = feed("W 71 /work/x")
     feed("X 70 0 0")
@@ -798,14 +798,14 @@ async def test_exited_pids_route_until_reused() -> None:
     feed = Feed(tracer)
     feed("R 0 999")
     feed(f"E 10 1 1 1000 99 5 3 {hx(b'sh\0')}")
-    feed("F 10 11")
-    feed("F 10 12")
+    feed("F 10 11 2")
+    feed("F 10 12 3")
     feed("X 11 0 0")
     feed("X 12 0 0")
     drain(route)
 
     late = feed(release(11, 3, TMP, "c"))
-    feed("F 7 11")
+    feed("F 7 11 5")
     feed("W 11 /work/reused")
     feed(f"E 12 1 1 1000 77 5 3 {hx(b'sh\0')}")
     feed("W 12 /work/reused")
@@ -893,7 +893,7 @@ async def test_quiesce_waits_for_every_process_to_exit() -> None:
     feed = Feed(tracer)
     feed("R 0 999")
     feed(f"E 10 1 1 1000 99 5 3 {hx(b'sh\0')}")
-    feed("F 10 11")
+    feed("F 10 11 2")
     quiet = asyncio.create_task(tracer.quiesce(route, 5))
     feed("X 11 0 0")
     await asyncio.sleep(0.01)
@@ -1241,11 +1241,11 @@ def test_streams_the_kernel_stopped_counting_are_forgotten() -> None:
 async def test_route_reports_overflow() -> None:
     route = tracer_module.Route(1, Mounts([]), {}, asyncio.Queue(2))
     for pid in range(5):
-        route.put(Fork(0, pid, at=Stamp(100 + pid, 0, pid + 1)))
+        route.put(Fork(0, pid, pid, at=Stamp(100 + pid, 0, pid + 1)))
     assert route.overflow == 3
     route.queue.get_nowait()
     route.queue.get_nowait()
-    late = Fork(0, 9, at=Stamp(200, 0, 9))
+    late = Fork(0, 9, 9, at=Stamp(200, 0, 9))
     route.put(late)
     assert [route.queue.get_nowait(), route.queue.get_nowait()] == [
         Lost(3, "audit queue full", (), 102, 104),

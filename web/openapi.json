@@ -8136,6 +8136,18 @@
             ],
             "title": "Exec Id"
           },
+          "ns_pid": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Ns Pid"
+          },
           "pid": {
             "title": "Pid",
             "type": "integer"
@@ -8155,7 +8167,8 @@
           "ts_kernel",
           "cpu",
           "cpu_seq",
-          "ppid"
+          "ppid",
+          "ns_pid"
         ],
         "title": "ProcFork",
         "type": "object"

@@ -149,6 +149,7 @@ class Kernel:
 @dataclass(frozen=True, slots=True)
 class Fork(Kernel):
     child: int
+    ns_pid: int
 
 
 @dataclass(frozen=True, slots=True)

@@ -146,7 +146,9 @@ def test_sandbox_probes_filter_by_pid_namespace() -> None:
     # bpftrace 0.23 lose struct filename's anonymous head, so raw_syscalls:sys_exit goes without
     # the level test; the runtime records it lets through are already foreign.
     script = (ASSETS / "tracer" / "trace.bt").read_text()
-    probes = [line for line in script.splitlines() if re.match(r"(fentry|fexit|tracepoint):", line)]
+    probes = [
+        line for line in script.splitlines() if re.match(r"(fentry|fexit|(raw)?tracepoint):", line)
+    ]
     assert not [line for line in probes if "comm" in line]
     level = re.compile(
         r"curtask->thread_pid->level > @base|!\(curtask->thread_pid->level <= @base\)"
@@ -157,7 +159,7 @@ def test_sandbox_probes_filter_by_pid_namespace() -> None:
         if "@sandbox[cgroup]" in line and not level.search(line)
     ]
     assert unfiltered == [
-        "tracepoint:task:task_newtask",
+        "rawtracepoint:task_newtask",
         "tracepoint:sched:sched_process_exec",
         "tracepoint:sched:sched_process_exit",
         "tracepoint:raw_syscalls:sys_exit",
