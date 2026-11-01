@@ -632,10 +632,11 @@ class IpcEvent(KernelPayload):
     """A request to open a unix socket, FIFO or SysV shared memory channel.
 
     It is recorded when asked for, so it does not prove the channel was made or the request was
-    allowed. `path` is the socket or FIFO path; for a bind it is local, for a connect the peer.
-    `key` and `size` are a shmget key and size, `id` a shmat segment, and `flags` the requested
-    flag word. Abstract unix names start with `@`. A `partial` path is not exact: it lacks its
-    leading part or may be cut at the tracer's string cap.
+    allowed. `path` is the socket or FIFO path; for a bind it is local, for a connect or sendto
+    the peer. Each message sent with a peer address gives its own sendto record. `key` and `size`
+    are a shmget key and size, `id` a shmat segment, and `flags` the requested flag word.
+    Abstract unix names start with `@`. A `partial` path is not exact: it lacks its leading part
+    or may be cut at the tracer's string cap.
     """
 
     type = "ipc.event"
