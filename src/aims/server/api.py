@@ -9,13 +9,14 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Iterator, Sequence
 from compression import zstd
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Annotated, Literal, Self, cast
 
 from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError, model_validator
 
 from aims import __version__
 from aims.config import Settings
@@ -61,7 +62,7 @@ from aims.server import series as sseries
 from aims.server.auth import Principal, require
 from aims.server.files import Sources
 from aims.server.problems import ProblemError, ProblemException, responses
-from aims.server.runner_api import send
+from aims.server.runner_api import JOBS, send
 from aims.server.state import ServerState
 from aims.tools import UnknownTool, registry
 from aims.wire import (
@@ -415,10 +416,7 @@ class SeriesInfo(Out):
 @router.get("/series/{name:path}", tags=["runs"])
 async def get_series(name: str, principal: Viewer, state: State) -> SeriesInfo:
     place = await sseries.where(state, name)
-    infos = await state.store.runs(series=name, kind="scenario", limit=sseries.MAX_RUNS)
-    jobs = await sseries.series_jobs(state, name)
-    ids = sorted({i.run_id for i in infos} | {j.run_id for j in jobs})
-    items = await summaries(state, ids, hidden(principal))
+    items = await summaries(state, list(place.run_ids), hidden(principal))
     items.sort(key=lambda r: (r.series_index if r.series_index is not None else -1, r.run_id))
     return SeriesInfo(
         name=name,
@@ -772,39 +770,38 @@ async def start_runs(
         )
     except (ProfileError, UnknownTool, ValueError) as e:
         raise ProblemException(422, "Scenario cannot run", str(e), code="scenario") from None
-    waiting: list[str] = []
-    if body.series is not None:
-        jobs = await _place_series(state, body.series, body.restart, jobs)
-        waiting = [j.run_id for j in jobs[1:]]
-    if not body.confirm:
-        try:
-            cost = estimate_runs(
-                await state.history(),
-                settings,
-                [bundle],
-                profile=body.profile,
-                preset=body.monitor,
-                samples=body.samples * body.runs,
-                budget=body.budget,
-            )
-        except ProfileError, MonitorConfigError, TextError:
-            cost = None
-        _confirm(cost)
-    blobs = {hashlib.sha256(b).hexdigest(): b for b in [*bundle.blobs(), folder]}
-    return await _queue(
-        state,
-        principal.name,
-        jobs,
-        runner=body.runner,
-        parallel=None if body.series is not None else body.parallel,
-        blobs=blobs,
-        waiting=waiting,
-    )
+    async with state.series_lock if body.series is not None else nullcontext():
+        if body.series is not None:
+            jobs = await _place_series(state, body.series, body.restart, jobs)
+        if not body.confirm:
+            try:
+                cost = estimate_runs(
+                    await state.history(),
+                    settings,
+                    [bundle],
+                    profile=body.profile,
+                    preset=body.monitor,
+                    samples=body.samples * body.runs,
+                    budget=body.budget,
+                )
+            except ProfileError, MonitorConfigError, TextError:
+                cost = None
+            _confirm(cost)
+        blobs = {hashlib.sha256(b).hexdigest(): b for b in [*bundle.blobs(), folder]}
+        return await _queue(
+            state,
+            principal.name,
+            jobs,
+            runner=body.runner,
+            parallel=None if body.series is not None else body.parallel,
+            blobs=blobs,
+            waiting=[j.run_id for j in jobs if (s := j.options.series) and s.previous],
+        )
 
 
 async def _place_series(state: ServerState, name: str, restart: bool, jobs: list[Job]) -> list[Job]:
     """`jobs` as the next runs of series `name`, each after the one before it; refused while
-    a run of it has not ended."""
+    a run of it has not ended. Callers hold `state.series_lock` until the jobs are queued."""
     place = await sseries.where(state, name)
     if place.busy is not None:
         raise ProblemException(
@@ -1180,7 +1177,7 @@ async def search_events(
 ) -> EventPage:
     """Events of every run whose text holds `q`, newest first; a viewer's leave out the runs
     that show a run's truth."""
-    skip = TRUTH_KINDS if principal.role == "viewer" else ()
+    skip = hidden(principal)
     items, cursor = await state.store.search(q, limit=limit, before=before, skip_kinds=skip)
     return EventPage(items=items, next=None if cursor is None else str(cursor))
 
@@ -1248,6 +1245,22 @@ async def list_samples(
     return SamplePage(items=items, next=items[-1].ts_to + 1 if len(items) == limit else None)
 
 
+async def _job_input(state: ServerState, run_id: str, sha256: str) -> bool:
+    """Whether blob `sha256` is one the run's job carried to its runner and its log does not
+    show: the whole scenario, plants and self-test with it, which only operators read."""
+    job = await state.db.job(run_id)
+    if job is None:
+        return False
+    try:
+        inputs = JOBS.validate_python(job.payload).blobs()
+    except ValidationError:
+        return True
+    if sha256 not in inputs:
+        return False
+    first = await state.store.events(run_id, types=["run.started"], limit=1)
+    return not first or sha256 not in set(blob_refs(first[0].data))
+
+
 @router.get(
     "/runs/{run_id}/blobs/{sha256}",
     tags=["events"],
@@ -1264,6 +1277,8 @@ async def get_blob(
 ) -> Response:
     """A blob's bytes, never rendered: always an attachment of type octet-stream."""
     await _shown(state, principal, _run_id(run_id))
+    if principal.role == "viewer" and await _job_input(state, run_id, sha256):
+        raise ProblemException(404, "Not found", f"no blob {sha256}")
     try:
         path = state.store.blob_path(_run_id(run_id), sha256)
     except KeyError, BlobError:

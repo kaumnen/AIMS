@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from aims.events import Series
-from aims.run.series import last_of_series
+from aims.run.series import series_end
 from aims.server.db import OPEN_STATES, Job
 from aims.server.state import ServerState
 
@@ -21,6 +21,8 @@ class Place:
     next_index: int
     previous: str | None
     busy: str | None
+    # every run of it, started or still a job
+    run_ids: tuple[str, ...] = ()
 
 
 def place_of(job: Job) -> Series | None:
@@ -38,21 +40,19 @@ async def where(state: ServerState, name: str) -> Place:
     """Where series `name` goes on, with the runs pushed to the store and the jobs queued
     here; indexes are never taken twice."""
     jobs = await series_jobs(state, name)
+    infos = await state.store.runs(series=name, kind="scenario", limit=MAX_RUNS)
     indexes = [p.index for j in jobs if (p := place_of(j)) is not None]
-    found = await last_of_series(state.store, name, indexes)
+    found = series_end(infos, indexes)
     last, next_index = found if found is not None else (None, 0)
     open_jobs = sorted(
         (p.index, j.run_id)
         for j in jobs
         if j.state in OPEN_STATES and (p := place_of(j)) is not None
     )
-    running = sorted(
-        (i.series_index or 0, i.run_id)
-        for i in await state.store.runs(series=name, kind="scenario", limit=MAX_RUNS)
-        if i.status == "running"
-    )
+    running = sorted((i.series_index or 0, i.run_id) for i in infos if i.status == "running")
     busy = (open_jobs or running or [(0, None)])[0][1]
-    return Place(next_index, None if last is None else last.run_id, busy)
+    run_ids = tuple(sorted({i.run_id for i in infos} | {j.run_id for j in jobs}))
+    return Place(next_index, None if last is None else last.run_id, busy, run_ids)
 
 
 Verdict = Literal["go", "wait", "stop"]

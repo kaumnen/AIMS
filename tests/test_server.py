@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 from compression import zstd
 from pathlib import Path
 from typing import Any, Literal
+from unittest.mock import patch
 
 import httpx2
 import pytest
@@ -38,6 +39,7 @@ from aims.prompts import Prompts
 from aims.run.job import Job
 from aims.run.runner import resolve_texts
 from aims.scenario import load
+from aims.server import app as app_module
 from aims.server import dispatch
 from aims.server.db import UI_TOKEN
 from aims.server.state import CODES, InFlight, LaunchCodes
@@ -1311,6 +1313,21 @@ async def test_the_ui_serves_the_assets_of_a_build_made_while_it_runs(
         assert (r.status_code, r.text) == (200, "export const b = 1;\n")
         assert (await c.get("/assets/a.js")).status_code == 404
         assert (await c.get("/assets/..%2Findex.html")).status_code == 404
+        listings = 0
+        real = app_module._assets
+
+        def counted(root: Path | None) -> Any:
+            nonlocal listings
+            listings += 1
+            return real(root)
+
+        with patch.object(app_module, "_assets", counted):
+            for _ in range(3):
+                assert (await c.get("/assets/nope.js")).status_code == 404
+            assert listings == 0
+            (assets / "c.js").write_text("export const c = 1;\n")
+            assert (await c.get("/assets/c.js")).status_code == 200
+            assert listings == 1
 
 
 async def test_a_self_test_takes_one_slot_while_its_case_runs(local: LocalEventStore) -> None:

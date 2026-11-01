@@ -12,11 +12,12 @@ async def last_of_series(
     and canaries the next run inherits (None when none completed), and the index after every
     run of it and every one of `indexes` (the runs of it not started yet); None when it has no
     run at all."""
-    runs = [
-        i
-        for i in await store.runs(series=name, kind="scenario", limit=1000)
-        if i.series_index is not None
-    ]
+    return series_end(await store.runs(series=name, kind="scenario", limit=1000), indexes)
+
+
+def series_end(infos: Iterable[Any], indexes: Iterable[int] = ()) -> tuple[Any | None, int] | None:
+    """`last_of_series` over the runs `infos` of the series, already read."""
+    runs = [i for i in infos if i.series_index is not None]
     taken = [*(i.series_index for i in runs), *indexes]
     if not taken:
         return None

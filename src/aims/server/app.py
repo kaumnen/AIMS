@@ -105,22 +105,31 @@ def create_app(
     return app
 
 
-def _assets(root: Path | None) -> dict[str, Path]:
+def _stamp(root: Path | None) -> int | None:
+    """When the assets folder last changed, which a build does; None without one."""
+    try:
+        return None if root is None else (root / "assets").stat().st_mtime_ns
+    except OSError:
+        return None
+
+
+def _assets(root: Path | None) -> tuple[int | None, dict[str, Path]]:
+    stamp = _stamp(root)
     folder = None if root is None else root / "assets"
     if folder is None or not folder.is_dir():
-        return {}
-    return {f.name: f for f in folder.iterdir() if f.is_file()}
+        return stamp, {}
+    return stamp, {f.name: f for f in folder.iterdir() if f.is_file()}
 
 
 def _spa(app: FastAPI, root: Path | None) -> None:
     """The UI shell and its assets, served without auth; the API behind them needs it. Assets
-    are found by name in a listing of their folder, looked at again when a build since the
-    last look replaced them."""
-    assets = _assets(root)
+    are found by name in a listing of their folder, listed again only when the folder changed
+    since the last listing, so a name that is not there costs a stat, not a listing."""
+    stamp, assets = _assets(root)
 
     @app.get("/{path:path}", include_in_schema=False)
     async def spa(path: str, request: Request) -> Response:
-        nonlocal assets
+        nonlocal stamp, assets
         if path.startswith(("api/", "runner/")) or path in ("api", "runner"):
             raise problems.ProblemException(404, "Not found", f"no route /{path}")
         if root is None:
@@ -130,10 +139,12 @@ def _spa(app: FastAPI, root: Path | None) -> None:
         if path.startswith("assets/"):
             name = path.removeprefix("assets/")
             file = assets.get(name)
-            if file is None or not file.is_file():
-                assets = await asyncio.to_thread(_assets, root)
+            there = file is not None and file.is_file()
+            if not there and _stamp(root) != stamp:
+                stamp, assets = await asyncio.to_thread(_assets, root)
                 file = assets.get(name)
-            if file is None:
+                there = file is not None
+            if file is None or not there:
                 raise problems.ProblemException(404, "Not found", f"no asset /{path}")
             return FileResponse(
                 file, headers={"Cache-Control": "public, max-age=31536000, immutable"}

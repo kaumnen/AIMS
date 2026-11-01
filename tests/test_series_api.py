@@ -2,6 +2,7 @@
 before it completed and its truth file arrived, the rest cancelled with a reason when one does
 not complete."""
 
+import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,7 @@ from aims.node.client import ApiError
 from aims.run import truth
 from aims.run.job import Job
 from aims.server import api
+from aims.server import series as sseries
 from aims.wire import OfferMessage
 
 pytestmark = pytest.mark.anyio
@@ -167,12 +169,10 @@ async def test_each_run_starts_once_the_one_before_completed_and_its_truth_arriv
         assert detail["series_previous"] is None
 
 
-async def test_a_run_waits_for_the_truth_file_and_the_tick_releases_it(
-    cp: CP, fake: FakeRunner, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    ids = await series(cp, runs=2)
-    assert await offered(fake) == ids[0]
-    job = await fake.client.claim(ids[0])
+async def play_without_truth(fake: FakeRunner, local: LocalEventStore, run_id: str) -> Path:
+    """Complete the series job `run_id` and ship it all but its truth file, which waits at the
+    path returned."""
+    job = await fake.client.claim(run_id)
     assert isinstance(job, Job)
     started = RunStarted(
         scenario="control",
@@ -180,17 +180,68 @@ async def test_a_run_waits_for_the_truth_file_and_the_tick_releases_it(
         truth=truth.digest(RECORD),
         series=job.options.series,
     )
-    await local.create_run(started, run_id=ids[0])
-    truth.write(local.root / ids[0], RECORD)
-    await local.append(ids[0], [Draft(RunFinished(status="completed"))])
-    held = truth.path(local.root / ids[0]).rename(local.root / "held.json")
-    await ship(local, fake.client, ids[0])
+    await local.create_run(started, run_id=run_id)
+    truth.write(local.root / run_id, RECORD)
+    await local.append(run_id, [Draft(RunFinished(status="completed"))])
+    held = truth.path(local.root / run_id).rename(local.root / "held.json")
+    await ship(local, fake.client, run_id)
+    return held
+
+
+async def test_a_run_waits_for_the_truth_file_and_the_tick_releases_it(
+    cp: CP, fake: FakeRunner, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ids = await series(cp, runs=2)
+    assert await offered(fake) == ids[0]
+    held = await play_without_truth(fake, local, ids[0])
     waits = ("waiting", f"waits for the truth file of #0 (run {ids[0]})")
     await until(lambda: reason(cp, ids[1]), waits)
     monkeypatch.setattr(cp.state, "on_truth", None)
     held.rename(truth.path(local.root / ids[0]))
     await ship(local, fake.client, ids[0])
     assert await offered(fake) == ids[1]
+
+
+async def test_a_series_goes_on_only_once_its_last_run_s_truth_file_arrived(
+    cp: CP, fake: FakeRunner, local: LocalEventStore
+) -> None:
+    (first,) = await series(cp, runs=1)
+    assert await offered(fake) == first
+    held = await play_without_truth(fake, local, first)
+    await until(lambda: job_state(cp, first), "done")
+    (more,) = await series(cp, runs=1)
+    waits = ("waiting", f"waits for the truth file of #0 (run {first})")
+    await until(lambda: reason(cp, more), waits)
+    with pytest.raises(TimeoutError):
+        await offered(fake, within=1.5)
+    held.rename(truth.path(local.root / first))
+    await ship(local, fake.client, first)
+    assert await offered(fake) == more
+
+
+async def test_two_starts_of_one_series_at_once_never_share_an_index(
+    cp: CP, fake: FakeRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = sseries.where
+
+    async def slow(*args: Any) -> sseries.Place:
+        found = await real(*args)
+        await asyncio.sleep(0.3)
+        return found
+
+    monkeypatch.setattr(sseries, "where", slow)
+    body = {
+        "scenario": {"source": "project", "name": "control"},
+        "monitor": "signals",
+        "series": "nightly",
+    }
+    async with cp.client(cp.operator) as c:
+        first, second = await asyncio.gather(
+            c.post("/api/runs", json=body), c.post("/api/runs", json=body)
+        )
+    assert sorted([first.status_code, second.status_code]) == [202, 409]
+    refused = first if first.status_code == 409 else second
+    assert refused.json()["code"] == "series_busy"
 
 
 async def test_a_series_stops_when_a_run_does_not_complete(
@@ -246,6 +297,7 @@ async def test_a_series_goes_on_after_its_last_completed_run_unless_restarted(
     await play(fake, local, first)
     await until(lambda: job_state(cp, first), "done")
     more = await series(cp, runs=2)
+    assert await offered(fake) == more[0]
     jobs = [await cp.state.db.job(i) for i in more]
     places = [Job.model_validate(j.payload).options.series for j in jobs if j]
     assert [(p.index, p.previous) for p in places if p] == [(1, first), (2, more[0])]

@@ -238,6 +238,8 @@ class ServerState:
     _history: tuple[int, History] | None = None
     # called with a run's id once its truth file is kept here
     on_truth: Callable[[str], Awaitable[None]] | None = None
+    # held from placing a series' runs to queueing them, so two starts never take one index
+    series_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     async def history(self) -> History:
         """The runs' history the estimates read, read again once a run changed."""
