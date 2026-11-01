@@ -27,7 +27,7 @@ import {
   lineNumbers,
 } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { useEffect, useId, useLayoutEffect, useRef } from "react";
 
 import { reflow } from "@/lib/scenario";
 import { cn } from "@/lib/utils";
@@ -180,12 +180,13 @@ export function CodeEditor({
 }) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
+  const hint = useId();
   const handlers = useRef({ onChange, onSave });
   useLayoutEffect(() => {
     handlers.current = { onChange, onSave };
   });
   // the editor is made once, from the first text and label; later props reach it below
-  const first = useRef({ text, label });
+  const first = useRef({ text, label, hint });
   const language = useRef(new Compartment());
   const editable = useRef(new Compartment());
 
@@ -216,7 +217,10 @@ export function CodeEditor({
         ...historyKeymap,
         ...searchKeymap,
       ]),
-      EditorView.contentAttributes.of({ "aria-label": first.current.label }),
+      EditorView.contentAttributes.of({
+        "aria-label": first.current.label,
+        "aria-describedby": first.current.hint,
+      }),
       EditorView.updateListener.of((u) => {
         if (u.docChanged) handlers.current.onChange?.(u.state.doc.toString());
       }),
@@ -272,7 +276,21 @@ export function CodeEditor({
     v.focus();
   }, [goto]);
 
-  return <div ref={host} className="h-full min-h-0 overflow-hidden" />;
+  // Tab indents, so say how to leave; Escape lets the next Tab move focus on (CodeMirror's own).
+  return (
+    <div className="group relative h-full min-h-0">
+      <div ref={host} className="h-full min-h-0 overflow-hidden" />
+      <p
+        id={hint}
+        className={cn(
+          "bg-background text-muted-foreground pointer-events-none absolute right-2 bottom-1 z-10 rounded-sm border px-1.5 text-xs",
+          readOnly ? "hidden" : "not-group-focus-within:sr-only",
+        )}
+      >
+        Esc then Tab leaves the editor
+      </p>
+    </div>
+  );
 }
 
 // The problems in a text, those with a line as buttons that move the editor there.

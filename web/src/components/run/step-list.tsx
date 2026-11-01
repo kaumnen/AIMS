@@ -74,7 +74,13 @@ export function StepList({
   }, [at, v]);
 
   return (
-    <div ref={scroller} className={cn("min-h-0 overflow-auto rounded-sm border", className)}>
+    <div
+      ref={scroller}
+      className={cn(
+        "has-[[role=listbox]:focus-visible]:ring-ring/50 min-h-0 overflow-auto rounded-sm border has-[[role=listbox]:focus-visible]:ring-2",
+        className,
+      )}
+    >
       <div
         role="listbox"
         aria-label="Steps"
@@ -138,7 +144,6 @@ function StepRow({
       role="option"
       id={`step-${step.seq}`}
       aria-selected={active}
-      tabIndex={-1}
       onClick={() => onSelect(step.seq)}
       className={cn(
         "absolute inset-x-0 top-0 flex h-7 cursor-default items-center gap-2 px-2",

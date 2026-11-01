@@ -6,6 +6,7 @@ import { client } from "@/api/client";
 import { whoami } from "@/api/session";
 import { setTheme, type Theme, themes, useTheme } from "@/lib/theme";
 
+import { openShortcuts } from "./shortcuts";
 import { Button } from "./ui/button";
 import {
   DropdownMenu,
@@ -16,6 +17,7 @@ import {
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
   DropdownMenuSeparator,
+  DropdownMenuShortcut,
   DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
 
@@ -52,12 +54,12 @@ export function UserMenu({ me }: { me: Schemas["Whoami"] }) {
             ))}
           </DropdownMenuRadioGroup>
         </DropdownMenuGroup>
-        {me.auth && (
-          <>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => void signOut()}>Sign out</DropdownMenuItem>
-          </>
-        )}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onClick={openShortcuts}>
+          Shortcuts
+          <DropdownMenuShortcut>?</DropdownMenuShortcut>
+        </DropdownMenuItem>
+        {me.auth && <DropdownMenuItem onClick={() => void signOut()}>Sign out</DropdownMenuItem>}
       </DropdownMenuContent>
     </DropdownMenu>
   );

@@ -149,6 +149,35 @@ test("a run's reviews open under it", async () => {
   expect(screen.queryByRole("link", { name: "Review" })).toBeNull();
 });
 
+test("j and k move between the runs, reviews included", async () => {
+  renderAt("/runs");
+  await screen.findAllByRole("link", { name: "cache-keys" });
+  fireEvent.click(screen.getByRole("button", { name: "1 review" }));
+  const review = await screen.findByRole("link", { name: "Review" });
+  const [first] = screen.getAllByRole("link", { name: "cache-keys" });
+  const last = screen.getByRole("link", { name: "word-count" });
+  fireEvent.keyDown(window, { key: "j" });
+  expect(document.activeElement).toBe(first);
+  fireEvent.keyDown(document.activeElement!, { key: "j" });
+  expect(document.activeElement).toBe(review);
+  fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" });
+  expect(document.activeElement).toBe(last);
+  fireEvent.keyDown(document.activeElement!, { key: "j" });
+  expect(document.activeElement).toBe(last);
+  fireEvent.keyDown(document.activeElement!, { key: "k" });
+  fireEvent.keyDown(document.activeElement!, { key: "ArrowUp" });
+  expect(document.activeElement).toBe(first);
+});
+
+test("j typed into a filter stays text", async () => {
+  renderAt("/runs");
+  await screen.findAllByRole("link", { name: "cache-keys" });
+  const field = screen.getAllByRole("textbox")[0]!;
+  field.focus();
+  fireEvent.keyDown(field, { key: "j" });
+  expect(document.activeElement).toBe(field);
+});
+
 test("the stream updates rows and adds new runs", async () => {
   renderAt("/runs");
   await screen.findAllByRole("link", { name: "cache-keys" });

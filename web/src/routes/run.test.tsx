@@ -682,6 +682,42 @@ test("j and k move through the steps in the URL", async () => {
   expect(router.state.location.search).toEqual({ step: 4 });
 });
 
+test("two quick presses of j move two steps", async () => {
+  events.push(
+    ev(15, "model.response", { call_id: "m3", text: "Running the tests again." }),
+    ev(16, "agent.step", { n: 3, call_id: "m3", status: "completed" }),
+  );
+  steps.push(step({ seq: 16, n: 3, seq_from: 15, seq_to: 16 }));
+  const router = renderAt(`/runs/${BEE5}`);
+  await screen.findByText("Fix the failing tests.");
+  // both land before React renders again
+  act(() => {
+    fireEvent.keyDown(window, { key: "j" });
+    fireEvent.keyDown(window, { key: "j" });
+  });
+  expect(router.state.location.search).toEqual({ step: 16 });
+});
+
+test("arrows and j and k move through the raw events", async () => {
+  const router = renderAt(`/runs/${BEE5}?tab=raw`);
+  const list = await screen.findByRole("listbox", { name: "Events" });
+  await within(list).findAllByRole("option");
+  const [a, b] = events;
+  fireEvent.keyDown(list, { key: "ArrowDown" });
+  expect(router.state.location.search).toEqual({ tab: "raw", seq: a?.seq });
+  act(() => {
+    fireEvent.keyDown(list, { key: "j" });
+    fireEvent.keyDown(list, { key: "ArrowDown" });
+  });
+  expect(router.state.location.search).toEqual({ tab: "raw", seq: events[2]?.seq });
+  fireEvent.keyDown(list, { key: "k" });
+  expect(router.state.location.search).toEqual({ tab: "raw", seq: b?.seq });
+  await waitFor(() => expect(list.getAttribute("aria-activedescendant")).toBe(`event-${b?.seq}`));
+  fireEvent.keyDown(list, { key: "ArrowUp" });
+  fireEvent.keyDown(list, { key: "ArrowUp" });
+  expect(router.state.location.search).toEqual({ tab: "raw", seq: a?.seq });
+});
+
 test("the raw tab asks for a type group and a search", async () => {
   const router = renderAt(`/runs/${BEE5}?tab=raw&group=Execs`);
   expect(await screen.findByText("2 events")).toBeTruthy();

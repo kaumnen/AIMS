@@ -127,6 +127,14 @@ export function RawEvents({
             selected={search.seq}
             jump={list.isPlaceholderData ? null : jump}
             onSelect={(seq) => set("seq", seq)}
+            // from the URL as it is now, so a quick second press moves on from the first
+            onMove={(by, start) =>
+              onChange((prev) => {
+                const i = events.findIndex((e) => e.seq === prev.seq);
+                const next = i < 0 ? start : events[i + by]?.seq;
+                return next === undefined ? prev : { ...prev, seq: next };
+              })
+            }
             onKey={go}
             onNearEnd={() => {
               if (list.hasNextPage && !list.isFetchingNextPage) void list.fetchNextPage();
@@ -160,6 +168,7 @@ function EventList({
   selected,
   jump,
   onSelect,
+  onMove,
   onKey,
   onNearEnd,
   onNearStart,
@@ -168,6 +177,8 @@ function EventList({
   selected: number | undefined;
   jump: Jump | null;
   onSelect: (seq: number) => void;
+  // move the selection by `by`; with none yet, select `start`
+  onMove: (by: number, start: number | undefined) => void;
   onKey: (to: Jump["to"]) => void;
   onNearEnd: () => void;
   onNearStart: () => void;
@@ -207,21 +218,43 @@ function EventList({
   useEffect(() => {
     if (last >= events.length - 40) onNearEnd();
   }, [last, events.length, onNearEnd]);
+  const at = events.findIndex((e) => e.seq === selected);
+  useEffect(() => {
+    if (at >= 0) v.scrollToIndex(at, { align: "auto" });
+  }, [at, v]);
+  const shown = items.some((it) => it.index === at);
   useEffect(() => {
     if (first < 40 && (scroller.current?.scrollTop ?? 0) < 40 * ROW) onNearStart();
   }, [first, onNearStart]);
   return (
-    <div ref={scroller} className="min-h-0 flex-1 overflow-auto rounded-sm border">
+    <div
+      ref={scroller}
+      className="has-[[role=listbox]:focus-visible]:ring-ring/50 min-h-0 flex-1 overflow-auto rounded-sm border has-[[role=listbox]:focus-visible]:ring-2"
+    >
       <div
         role="listbox"
         aria-label="Events"
         tabIndex={0}
+        aria-activedescendant={shown && selected !== undefined ? `event-${selected}` : undefined}
         className="relative outline-none"
         style={{ height: v.getTotalSize() }}
         onKeyDown={(e) => {
-          if (e.key !== "Home" && e.key !== "End") return;
+          if (e.metaKey || e.ctrlKey || e.altKey) return;
+          if (e.key === "Home" || e.key === "End") {
+            e.preventDefault();
+            onKey(e.key === "End" ? "end" : "start");
+            return;
+          }
+          const by =
+            e.key === "ArrowDown" || e.key === "j"
+              ? 1
+              : e.key === "ArrowUp" || e.key === "k"
+                ? -1
+                : 0;
+          if (by === 0) return;
           e.preventDefault();
-          onKey(e.key === "End" ? "end" : "start");
+          const top = scroller.current?.scrollTop ?? 0;
+          onMove(by, events[items.find((it) => it.start >= top)?.index ?? 0]?.seq);
         }}
       >
         {items.map((item) => {
@@ -256,6 +289,7 @@ function EventRow({
   return (
     <div
       role="option"
+      id={`event-${event.seq}`}
       aria-selected={active}
       onClick={() => onSelect(event.seq)}
       className={cn(

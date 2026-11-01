@@ -7,6 +7,7 @@ import { signedOut, whoami } from "@/api/session";
 import { Crumbs } from "@/components/crumbs";
 import { Header } from "@/components/header";
 import { LiveProvider } from "@/components/live";
+import { Shortcuts } from "@/components/shortcuts";
 import { SignIn, Unreachable } from "@/components/sign-in";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
@@ -35,12 +36,27 @@ function Root() {
   return (
     <TooltipProvider>
       <LiveProvider onClosed={() => void me.refetch()}>
-        <div className="flex h-dvh flex-col">
+        <div data-shell className="flex h-dvh flex-col">
+          <a
+            href="#main"
+            onClick={(e) => {
+              e.preventDefault();
+              document.getElementById("main")?.focus();
+            }}
+            className="bg-background focus-visible:ring-ring/50 fixed top-1.5 left-2 z-50 -translate-y-16 rounded-sm border px-2 py-1 outline-none focus:translate-y-0 focus-visible:ring-2"
+          >
+            Skip to content
+          </a>
           <Header me={me.data} />
           <Crumbs />
-          <main className="min-h-0 flex-1 overflow-auto px-4 py-3">
+          <main
+            id="main"
+            tabIndex={-1}
+            className="min-h-0 flex-1 overflow-auto px-4 py-3 outline-none"
+          >
             <Outlet />
           </main>
+          <Shortcuts />
         </div>
       </LiveProvider>
     </TooltipProvider>

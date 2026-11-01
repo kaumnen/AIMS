@@ -29,9 +29,10 @@ import { Scrubber } from "@/components/run/scrubber";
 import { SelfTestCases } from "@/components/run/selftest";
 import { type StepFlags, StepList } from "@/components/run/step-list";
 import { type Focus, Transcript } from "@/components/run/transcript";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { shortId } from "@/lib/format";
+import { shortcut } from "@/lib/keys";
 import {
   cited,
   filterFlags,
@@ -98,17 +99,6 @@ export const Route = createFileRoute("/runs/$runId")({
   component: Run,
 });
 
-// A key typed into a field is text, not a shortcut.
-function typing(e: KeyboardEvent): boolean {
-  const t = e.target as HTMLElement | null;
-  return (
-    e.metaKey ||
-    e.ctrlKey ||
-    e.altKey ||
-    (t !== null && (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName)))
-  );
-}
-
 function Run() {
   const { runId } = Route.useParams();
   const search = Route.useSearch();
@@ -129,7 +119,7 @@ function Run() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "/" || typing(e)) return;
+      if (e.key !== "/" || !shortcut(e)) return;
       e.preventDefault();
       void navigate({ search: (prev) => ({ ...prev, tab: "raw" }), replace: true }).then(() =>
         document.getElementById(RAW_SEARCH_ID)?.focus(),
@@ -147,9 +137,9 @@ function Run() {
       return (
         <p className="text-muted-foreground flex items-center gap-1">
           Only operators can open this run: it shows what a scenario hides.
-          <Button variant="link" size="sm" render={<Link to="/runs" />}>
+          <Link to="/runs" className={buttonVariants({ variant: "link", size: "sm" })}>
             Back to runs
-          </Button>
+          </Link>
         </p>
       );
     }
@@ -157,9 +147,9 @@ function Run() {
       <p className="text-muted-foreground flex items-center gap-1">
         {missing ? `No run ${runId}.` : "The run did not load."}
         {missing ? (
-          <Button variant="link" size="sm" render={<Link to="/runs" />}>
+          <Link to="/runs" className={buttonVariants({ variant: "link", size: "sm" })}>
             Back to runs
-          </Button>
+          </Link>
         ) : (
           <Button variant="link" size="sm" onClick={() => void detail.refetch()}>
             Retry
@@ -387,7 +377,7 @@ function Steps({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (typing(e)) return;
+      if (!shortcut(e)) return;
       if (e.key === "f" || e.key === "F") {
         if (order.length === 0) return;
         e.preventDefault();
@@ -396,10 +386,14 @@ function Steps({
       }
       const move =
         e.key === "j" || e.key === "ArrowDown" ? 1 : e.key === "k" || e.key === "ArrowUp" ? -1 : 0;
-      const next = steps[at + move];
-      if (move === 0 || next === undefined) return;
+      if (move === 0 || steps.length === 0) return;
       e.preventDefault();
-      select(next.seq);
+      // From the URL as it is now, like walk, so a quick second press moves on from the first.
+      onChange((prev) => {
+        const here = steps.find((s) => s.seq === prev.step) ?? current;
+        const next = steps[(here === undefined ? -1 : steps.indexOf(here)) + move];
+        return next === undefined ? prev : { ...prev, step: next.seq };
+      });
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -417,16 +411,14 @@ function Steps({
         {origin ? (
           <>
             This review has no agent steps. Its flags show on
-            <Button
-              variant="link"
-              size="sm"
-              className="px-0"
-              render={
-                <Link to="/runs/$runId" params={{ runId: origin }} search={{ source: runId }} />
-              }
+            <Link
+              to="/runs/$runId"
+              params={{ runId: origin }}
+              search={{ source: runId }}
+              className={buttonVariants({ variant: "link", size: "sm", className: "px-0" })}
             >
               the run it reviewed
-            </Button>
+            </Link>
             ; its own record is under
           </>
         ) : (

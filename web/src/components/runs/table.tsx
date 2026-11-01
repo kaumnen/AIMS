@@ -5,6 +5,7 @@ import { Fragment, type ReactNode, useEffect, useRef } from "react";
 
 import type { RunSummary } from "@/api/runs";
 import { shortId } from "@/lib/format";
+import { shortcut } from "@/lib/keys";
 import { presetText } from "@/lib/monitor";
 import { cn } from "@/lib/utils";
 
@@ -70,11 +71,42 @@ export function RunsTable({
     if (last >= rows.length - 20) onNearEnd();
   }, [last, rows.length, onNearEnd]);
 
+  // j and k move between the runs (arrows too inside the table); Enter opens the one focused.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const box = scroller.current;
+      if (!box || !shortcut(e)) return;
+      const inside = e.target instanceof Node && box.contains(e.target);
+      const move =
+        e.key === "j" || (inside && e.key === "ArrowDown")
+          ? 1
+          : e.key === "k" || (inside && e.key === "ArrowUp")
+            ? -1
+            : 0;
+      if (move === 0) return;
+      const row = document.activeElement?.closest("[aria-rowindex]");
+      const from = row && box.contains(row) ? Number(row.getAttribute("aria-rowindex")) - 2 : -1;
+      // nothing focused yet: start at the first run in view
+      let i =
+        from >= 0
+          ? from + move
+          : (v.getVirtualItems().find((it) => it.start >= (v.scrollOffset ?? 0))?.index ?? 0);
+      while (rows[i]?.kind === "note") i += from >= 0 ? move : 1;
+      const link = box.querySelector<HTMLElement>(`[aria-rowindex="${i + 2}"] a[data-row-link]`);
+      if (!link) return;
+      e.preventDefault();
+      link.focus({ preventScroll: true });
+      link.closest("[role=row]")?.scrollIntoView({ block: "nearest" });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [rows, v]);
+
   return (
-    <div ref={scroller} className="min-h-0 flex-1 overflow-auto rounded-sm border">
+    <div ref={scroller} className="min-h-0 flex-1 scroll-pt-8 overflow-auto rounded-sm border">
       <div role="table" aria-label="Runs" aria-rowcount={rows.length + 1}>
-        <div role="rowgroup" className="bg-background sticky top-0 z-20 border-b">
-          <div role="row" className={cn(grid, "text-muted-foreground h-8 items-center")}>
+        <div role="rowgroup" className="bg-background sticky top-0 z-20">
+          <div role="row" className={cn(grid, "text-muted-foreground h-8 items-center border-b")}>
             {columns.map((c) => (
               <span key={c.label} role="columnheader" className={cn("truncate", c.className)}>
                 {c.hidden ? <span className="sr-only">{c.label}</span> : c.label}
@@ -173,7 +205,7 @@ function RunRow({
       className={cn(
         grid,
         at,
-        "hover:bg-accent has-[a:focus-visible]:bg-accent items-center",
+        "hover:bg-accent has-[a:focus-visible]:bg-accent has-[a[data-row-link]:focus-visible]:ring-ring/50 items-center has-[a[data-row-link]:focus-visible]:ring-2 has-[a[data-row-link]:focus-visible]:ring-inset",
         child && "bg-muted/50",
       )}
       style={{ transform: `translateY(${top}px)` }}
@@ -199,6 +231,7 @@ function RunRow({
         <Link
           to="/runs/$runId"
           params={{ runId: run.run_id }}
+          data-row-link
           className="max-w-full shrink-0 truncate outline-none after:absolute after:inset-0"
         >
           {name}

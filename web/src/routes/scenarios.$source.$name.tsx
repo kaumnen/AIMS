@@ -10,7 +10,7 @@ import { NewScenario } from "@/components/scenarios/new-scenario";
 import { Overview } from "@/components/scenarios/overview";
 import { PromptsTab } from "@/components/scenarios/prompts";
 import { SelfTestButton } from "@/components/scenarios/selftest-button";
-import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useOperator } from "@/lib/use-operator";
 
@@ -55,9 +55,9 @@ function ScenarioPage() {
     return (
       <p className="text-muted-foreground flex items-center">
         {missing ? `No scenario ${name} here.` : "The scenario did not load."}
-        <Button variant="link" size="sm" render={<Link to="/scenarios" />}>
+        <Link to="/scenarios" className={buttonVariants({ variant: "link", size: "sm" })}>
           Back to scenarios
-        </Button>
+        </Link>
       </p>
     );
   }
@@ -79,13 +79,13 @@ function ScenarioPage() {
           </p>
         </div>
         <div className="ml-auto flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            render={<Link to="/runs" search={{ scenario: d.title ?? d.name }} />}
+          <Link
+            to="/runs"
+            search={{ scenario: d.title ?? d.name }}
+            className={buttonVariants({ variant: "outline", size: "sm" })}
           >
             Runs
-          </Button>
+          </Link>
           {operator && d.selftest && <SelfTestButton source={d.source} name={d.name} />}
           <NewScenario from={{ source: d.source, name: d.name }} />
           {d.errors.length === 0 && (
