@@ -186,7 +186,7 @@ export function CodeEditor({
     handlers.current = { onChange, onSave };
   });
   // the editor is made once, from the first text and label; later props reach it below
-  const first = useRef({ text, label, hint });
+  const first = useRef({ text, label });
   const language = useRef(new Compartment());
   const editable = useRef(new Compartment());
 
@@ -217,10 +217,7 @@ export function CodeEditor({
         ...historyKeymap,
         ...searchKeymap,
       ]),
-      EditorView.contentAttributes.of({
-        "aria-label": first.current.label,
-        "aria-describedby": first.current.hint,
-      }),
+      EditorView.contentAttributes.of({ "aria-label": first.current.label }),
       EditorView.updateListener.of((u) => {
         if (u.docChanged) handlers.current.onChange?.(u.state.doc.toString());
       }),
@@ -258,9 +255,11 @@ export function CodeEditor({
       effects: editable.current.reconfigure([
         EditorState.readOnly.of(readOnly),
         EditorView.editable.of(!readOnly),
+        // Tab leaves a read-only editor as it is
+        readOnly ? [] : EditorView.contentAttributes.of({ "aria-describedby": hint }),
       ]),
     });
-  }, [readOnly]);
+  }, [readOnly, hint]);
 
   useEffect(() => {
     const v = view.current;

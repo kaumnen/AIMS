@@ -218,10 +218,16 @@ function EventList({
   useEffect(() => {
     if (last >= events.length - 40) onNearEnd();
   }, [last, events.length, onNearEnd]);
-  const at = events.findIndex((e) => e.seq === selected);
+  // A key move shows the row it lands on; rows read in above leave the view where it is.
+  const moved = useRef<{ from: number | undefined } | null>(null);
   useEffect(() => {
-    if (at >= 0) v.scrollToIndex(at, { align: "auto" });
-  }, [at, v]);
+    const m = moved.current;
+    if (m === null || m.from === selected) return;
+    moved.current = null;
+    const i = events.findIndex((e) => e.seq === selected);
+    if (i >= 0) v.scrollToIndex(i, { align: "auto" });
+  }, [selected, events, v]);
+  const at = events.findIndex((e) => e.seq === selected);
   const shown = items.some((it) => it.index === at);
   useEffect(() => {
     if (first < 40 && (scroller.current?.scrollTop ?? 0) < 40 * ROW) onNearStart();
@@ -253,6 +259,7 @@ function EventList({
                 : 0;
           if (by === 0) return;
           e.preventDefault();
+          moved.current = { from: selected };
           const top = scroller.current?.scrollTop ?? 0;
           onMove(by, events[items.find((it) => it.start >= top)?.index ?? 0]?.seq);
         }}

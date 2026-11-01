@@ -737,12 +737,13 @@ test("the raw tab asks for a type group and a search", async () => {
   expect(await screen.findByText(/"exec_id": "x1"/)).toBeTruthy();
 });
 
-test("End reads the raw events from the last one back and Home from the first", async () => {
+// 450 raw events, and scrolling as far as happy-dom can: it lays nothing out, so a list's
+// scroll height is its first child's set height.
+function longRawLog() {
   events = Array.from({ length: 450 }, (_, i) => ({
     ...ev(i, "file.access", { path: `/work/f${i}` }),
     ts: new Date(Date.UTC(2026, 9, 30, 10, 0, i)).toISOString(),
   }));
-  // happy-dom lays nothing out: a list's scroll height is its first child's set height
   const scrollTo = vi.spyOn(HTMLElement.prototype, "scrollTo").mockImplementation(function (
     this: HTMLElement,
     to?: ScrollToOptions | number,
@@ -759,6 +760,10 @@ test("End reads the raw events from the last one back and Home from the first", 
     scrollTo.mockRestore();
     height.mockRestore();
   });
+}
+
+test("End reads the raw events from the last one back and Home from the first", async () => {
+  longRawLog();
   renderAt(`/runs/${BEE5}?tab=raw`);
   expect(await screen.findByText("200+ events")).toBeTruthy();
   const list = screen.getByRole("listbox", { name: "Events" });
@@ -782,6 +787,23 @@ test("End reads the raw events from the last one back and Home from the first", 
   fireEvent.click(screen.getByRole("button", { name: "Last" }));
   expect(await within(list).findByRole("option", { name: /^449\b/ })).toBeTruthy();
   expect(eventQueries().filter((q) => q.has("before"))).toHaveLength(2);
+});
+
+test("rows read in above leave the view where it was, a selected row too", async () => {
+  longRawLog();
+  const router = renderAt(`/runs/${BEE5}?tab=raw`);
+  expect(await screen.findByText("200+ events")).toBeTruthy();
+  const list = screen.getByRole("listbox", { name: "Events" });
+  fireEvent.keyDown(list, { key: "End" });
+  fireEvent.click(await within(list).findByRole("option", { name: /^449\b/ }));
+  expect(router.state.location.search).toMatchObject({ seq: 449 });
+  const box = list.parentElement as HTMLElement;
+  box.scrollTop = 0;
+  fireEvent.scroll(box);
+  await waitFor(() => expect(eventQueries().at(-1)?.get("before")).toBe("250"));
+  await waitFor(() => expect(box.scrollTop).toBe(200 * 24));
+  await act(() => new Promise((r) => setTimeout(r, 50)));
+  expect(box.scrollTop).toBe(200 * 24);
 });
 
 test("/ opens the raw tab with its search focused", async () => {

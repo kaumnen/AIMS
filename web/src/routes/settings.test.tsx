@@ -588,6 +588,8 @@ test("settings open on the project's config, checked by line as you type", async
 test("a save that does not load says why, and a changed file offers both ways", async () => {
   renderAt("/settings/config");
   const view = await configEditor("Contents of aims.toml");
+  const hint = view.contentDOM.getAttribute("aria-describedby") ?? "";
+  expect(document.getElementById(hint)?.textContent).toBe("Esc then Tab leaves the editor");
   retype(view, "[credits]", "[nonsense]");
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
   expect(await screen.findByText("Not saved: it does not load.")).toBeTruthy();
@@ -629,6 +631,8 @@ test("viewers read the files and the settings in use, without checks", async () 
   fireEvent.click(screen.getByRole("button", { name: "This project" }));
   const view = await configEditor("Contents of aims.toml");
   expect(view.state.readOnly).toBe(true);
+  // Tab leaves a read-only editor, so there is no hint on how to
+  expect(view.contentDOM.getAttribute("aria-describedby")).toBeNull();
   expect(screen.getByText("read only")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
   await act(() => new Promise((r) => setTimeout(r, 500)));
