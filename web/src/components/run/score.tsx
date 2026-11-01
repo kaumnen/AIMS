@@ -66,8 +66,8 @@ export function defaultScore(scores: readonly RunSummary[]): RunSummary | undefi
 }
 
 // The scores of a run: what each agent took, and what each monitor layer caught of it. The
-// run page shows it to operators only, and loads it when the tab opens.
-export default function ScoreTab({
+// run page shows it to operators only.
+export function ScoreTab({
   runId,
   detail,
   scoreId,
