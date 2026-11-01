@@ -2,7 +2,9 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import os
 import sqlite3
+import stat
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
@@ -400,6 +402,39 @@ async def test_blob_batches(store: LocalEventStore) -> None:
     assert sorted(p.name for p in (store.root / run_id / "blobs").iterdir()) == sorted(
         {r.sha256 for r in refs}
     )
+
+
+async def test_a_failed_batch_syncs_the_blobs_it_placed(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = await store.create_run(STARTED)
+    blobs = store.root / run_id / "blobs"
+    replace = Path.replace
+    calls = 0
+
+    def flaky(self: Path, target: Path) -> Path:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("disk full")
+        return replace(self, target)
+
+    fsync = os.fsync
+    dirs: list[bool] = []
+
+    def spy(fd: int) -> None:
+        dirs.append(stat.S_ISDIR(os.fstat(fd).st_mode))
+        fsync(fd)
+
+    monkeypatch.setattr(Path, "replace", flaky)
+    monkeypatch.setattr(os, "fsync", spy)
+    with pytest.raises(OSError, match="disk full"):
+        await store.put_blobs(run_id, [b"first", b"second"])
+    first, second = (hashlib.sha256(d).hexdigest() for d in [b"first", b"second"])
+    assert (blobs / first).is_file()
+    assert not (blobs / second).exists()
+    assert not [p for p in blobs.iterdir() if p.name.startswith(".")]
+    assert dirs == [False, False, True]
 
 
 async def test_stream_tails_until_finished(store: LocalEventStore) -> None:

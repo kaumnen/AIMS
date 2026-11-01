@@ -74,6 +74,7 @@ class BlobStore:
             return refs
         self.root.mkdir(parents=True, exist_ok=True)
         written: list[tuple[Path, Path]] = []
+        placed = 0
         try:
             for sha, data in todo.items():
                 tmp = self.root / f".{sha}.{secrets.token_hex(4)}"
@@ -84,14 +85,16 @@ class BlobStore:
                     os.fsync(f.fileno())
             for tmp, path in written:
                 tmp.replace(path)
+                placed += 1
         finally:
             for tmp, _ in written:
                 tmp.unlink(missing_ok=True)
-        dir_fd = os.open(self.root, os.O_RDONLY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
+            if placed:
+                dir_fd = os.open(self.root, os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
         return refs
 
     def missing(self, shas: Sequence[str]) -> list[str]:
