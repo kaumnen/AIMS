@@ -736,15 +736,16 @@ def _ipc(body: str, at: Stamp) -> Ipc | RawFifo:
 
 @record("K")
 def _ptrace(body: str, at: Stamp) -> Ptrace:
-    pid, target, request, ret = _ints(body, 4)
+    pid, target, request, ret, named = _ints(body, 5)
     name = PTRACE_REQUESTS.get(request, f"request_{request:#x}")
     refused = ret < 0 and request not in (1, 2, 3)
     return Ptrace(
         pid,
-        _clamp(target),
+        _clamp(target) if target > 0 else None,
         name,
         refused,
         _clamp(-ret) if refused else None,
+        ns_target=None if request == 0 else _clamp(named),
         at=at,
     )
 

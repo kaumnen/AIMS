@@ -278,10 +278,11 @@ class Ipc(Kernel):
 
 @dataclass(frozen=True, slots=True)
 class Ptrace(Kernel):
-    target: int
+    target: int | None
     request: str
     refused: bool = False
     errno: int | None = None
+    ns_target: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

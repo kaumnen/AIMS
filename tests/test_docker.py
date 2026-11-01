@@ -1238,23 +1238,44 @@ async def test_ipc_events(backend: DockerBackend, store: LocalEventStore) -> Non
 async def test_ptrace_event(backend: DockerBackend, store: LocalEventStore) -> None:
     command = (
         "python3 - <<'EOF'\n"
-        "import ctypes\n"
+        "import ctypes, os, time\n"
         "libc = ctypes.CDLL(None, use_errno=True)\n"
         "libc.ptrace.argtypes = [ctypes.c_long, ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p]\n"
         "libc.ptrace.restype = ctypes.c_long\n"
-        "import os\n"
+        "libc.process_vm_writev.restype = ctypes.c_ssize_t\n"
+        "def attach(pid):\n"
+        "    print(pid, libc.ptrace(16, pid, None, None), ctypes.get_errno(), flush=True)\n"
+        "child = os.fork()\n"
+        "if child == 0:\n"
+        "    time.sleep(30)\n"
+        "    os._exit(0)\n"
         "print(os.getpid(), flush=True)\n"
-        "print(libc.ptrace(16, 1, None, None), ctypes.get_errno(), flush=True)\n"
+        "attach(1)\n"
+        "attach(99999)\n"
+        "attach(child)\n"
+        "os.waitpid(child, 0)\n"
+        "buf = ctypes.create_string_buffer(8)\n"
+        "iov = (ctypes.c_void_p * 2)(ctypes.addressof(buf), 8)\n"
+        "r = libc.process_vm_writev(1, iov, 1, iov, 1, 0)\n"
+        "print(1, r, ctypes.get_errno(), flush=True)\n"
+        "os.kill(child, 9)\n"
         "EOF"
     )
     run_id, sb = await sandbox(backend, store)
     try:
         result = await sb.exec(command, timeout_s=20)
+        processes = await sb.sandbox.processes()
     finally:
         await sb.close()
 
-    sender, ret, errno = (int(x) for x in result.stdout.split())
-    assert (ret, errno) == (-1, 1)
+    lines = [[int(x) for x in row.split()] for row in result.stdout.decode().splitlines()]
+    sender, (one, missing, child, vmw) = lines[0][0], lines[1:]
+    assert one[1:] == [-1, 1]
+    assert missing[1:] == [-1, 3]
+    assert child[1] == 0
+    host = {p.pid for p in processes}
+    inits = [p.pid for p in processes if p.ppid not in host]
+    assert len(inits) == 1
     procs = [
         p
         for p in (e.payload() for e in await events(store, run_id, "proc.exec"))
@@ -1263,19 +1284,26 @@ async def test_ptrace_event(backend: DockerBackend, store: LocalEventStore) -> N
     assert len(procs) == 1
     assert procs[0].exec_id == result.finished.exec_id
     host_pid = procs[0].pid
+    forks = [
+        (e.seq, p.pid)
+        for e in await events(store, run_id, "proc.fork")
+        if isinstance(p := e.payload(), ProcFork) and p.ppid == host_pid
+    ]
+    assert len(forks) == 1
     evs = await events(store, run_id, "ptrace.event")
-    assert evs
+    assert forks[0][0] < next(e.seq for e in evs if e.data.get("target") == forks[0][1])
     assert all(e.agent_id == "a1" for e in evs)
-    events_ = [p for p in (e.payload() for e in evs) if isinstance(p, PtraceEvent)]
-    assert any(
-        p.exec_id == result.finished.exec_id
-        and p.pid == host_pid
-        and p.target == 1
-        and p.request == "attach"
-        and p.refused
-        and p.errno == 1
-        for p in events_
-    )
+    seen = [
+        (p.target, p.ns_target, p.request, p.refused, p.errno)
+        for p in (e.payload() for e in evs)
+        if isinstance(p, PtraceEvent) and p.exec_id == result.finished.exec_id and p.pid == host_pid
+    ]
+    assert seen == [
+        (inits[0], 1, "attach", True, 1),
+        (None, missing[0], "attach", True, 3),
+        (forks[0][1], child[0], "attach", False, None),
+        (inits[0], 1, "process_vm_writev", vmw[1] < 0, -vmw[1] if vmw[1] < 0 else None),
+    ]
 
 
 @pytest.mark.tracer

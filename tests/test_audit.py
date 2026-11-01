@@ -1443,7 +1443,7 @@ async def test_new_kernel_records_are_mapped(store: LocalEventStore) -> None:
             Fork(100, 101, at=AT),
             exe,
             Ipc(101, "bind", "unix", "/work/s.sock", at=AT),
-            Ptrace(101, 1, "attach", True, 1, at=AT),
+            Ptrace(101, 5000, "attach", True, 1, ns_target=1, at=AT),
             Signal(101, 102, 15, at=AT),
             Mem(101, "mmap", "/work/x.so", 8, 1, 5, at=AT),
             Setattr(101, "/work/f", False, 127, 33152, 0, 0, 1, 0, 0, 0, at=AT),
@@ -1480,7 +1480,8 @@ async def test_new_kernel_records_are_mapped(store: LocalEventStore) -> None:
     assert isinstance(ipc, IpcEvent)
     assert (ipc.kind, ipc.family, ipc.path) == ("bind", "unix", "/work/s.sock")
     assert isinstance(ptrace, PtraceEvent)
-    assert (ptrace.target, ptrace.request, ptrace.refused, ptrace.errno) == (1, "attach", True, 1)
+    assert (ptrace.target, ptrace.ns_target, ptrace.request) == (5000, 1, "attach")
+    assert (ptrace.refused, ptrace.errno) == (True, 1)
     assert isinstance(signal, ProcSignal)
     assert (signal.target, signal.signal) == (102, 15)
     assert isinstance(mem, MemExec)
@@ -1497,3 +1498,30 @@ async def test_new_kernel_records_are_mapped(store: LocalEventStore) -> None:
     assert isinstance(ns, NsEvent)
     assert (ns.kind, ns.flags, ns.namespaces) == ("unshare", 268435456, ["user"])
     assert (await store.verify(run_id)).ok
+
+
+async def test_a_silent_child_is_recorded_before_the_call_on_it(store: LocalEventStore) -> None:
+    sb = FakeSandbox()
+    sb.steps.append(
+        step(
+            root(100),
+            Fork(100, 101, at=AT),
+            Fork(100, 102, at=AT),
+            Ptrace(100, 101, "attach", False, None, ns_target=7, at=AT),
+            Signal(100, 102, 9, at=AT),
+            Exit(101, None, 9, at=AT),
+            Exit(102, None, 9, at=AT),
+            Exit(100, 0, None, at=AT),
+        )
+    )
+    run_id, audited = await start(store, sb)
+    await audited.exec("x", timeout_s=5)
+    await audited.close()
+
+    evs = await events(store, run_id, "proc.fork", "ptrace.event", "proc.signal")
+    assert [(e.type, e.data["pid"], e.data.get("target")) for e in evs] == [
+        ("proc.fork", 101, None),
+        ("ptrace.event", 100, 101),
+        ("proc.fork", 102, None),
+        ("proc.signal", 100, 102),
+    ]

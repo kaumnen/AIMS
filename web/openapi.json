@@ -8831,7 +8831,7 @@
       },
       "PtraceEvent": {
         "additionalProperties": false,
-        "description": "A ptrace request by `pid` against `target`, recorded when the kernel returns.\n\nIt proves the request was made and whether it was refused, not that the target changed.\n`errno` is set when it was refused. Peek requests can return negative data, so a negative\nreturn for them is not marked as a refusal.",
+        "description": "A ptrace or process_vm_writev request by `pid` against `target`, recorded when the kernel\nreturns.\n\nIt proves the request was made and whether it was refused, not that the target changed.\n`errno` is set when it was refused. Peek requests can return negative data, so a negative\nreturn for them is not marked as a refusal. `target` is the host pid of the process the\nkernel looked up, like every other pid in a record; for traceme it is the parent that will\ntrace. It is missing when the kernel found no process for the pid the caller named, which\nfails the request with ESRCH, or never looked one up, as for an empty process_vm_writev.\n`ns_target` is that pid as the caller named it, in its own pid namespace; traceme names none.",
         "properties": {
           "cpu": {
             "title": "Cpu",
@@ -8864,6 +8864,18 @@
             ],
             "title": "Exec Id"
           },
+          "ns_target": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Ns Target"
+          },
           "pid": {
             "title": "Pid",
             "type": "integer"
@@ -8878,8 +8890,15 @@
             "type": "string"
           },
           "target": {
-            "title": "Target",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target"
           },
           "ts_kernel": {
             "title": "Ts Kernel",
@@ -8895,7 +8914,8 @@
           "target",
           "request",
           "refused",
-          "errno"
+          "errno",
+          "ns_target"
         ],
         "title": "PtraceEvent",
         "type": "object"

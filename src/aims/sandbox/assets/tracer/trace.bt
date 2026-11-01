@@ -396,27 +396,38 @@ tracepoint:syscalls:sys_enter_shmat /@sandbox[cgroup] && curtask->thread_pid->le
 tracepoint:syscalls:sys_enter_ptrace /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
   @ptrace_req[tid] = args.request + 1;
   @ptrace_pid[tid] = args.pid;
+  delete(@ptrace_task[tid]);
+}
+
+fexit:vmlinux:find_get_task_by_vpid /(@ptrace_req[tid] != 0 || @vmw[tid] != 0) && @ptrace_task[tid] == 0/ {
+  $t = retval;
+  if ($t != 0) { @ptrace_task[tid] = (int64)$t->tgid + 1; } else { @ptrace_task[tid] = -1; }
 }
 
 tracepoint:syscalls:sys_exit_ptrace /@sandbox[cgroup] && !(curtask->thread_pid->level <= @base) && @ptrace_req[tid] != 0/ {
   $rq = @ptrace_req[tid] - 1;
-  $tg = @ptrace_pid[tid];
+  $tg = (int64)@ptrace_task[tid] - 1;
   if ($rq == 0) { $tg = curtask->real_parent->tgid; }
+  $ns = @ptrace_pid[tid];
   delete(@ptrace_req[tid]);
   delete(@ptrace_pid[tid]);
+  delete(@ptrace_task[tid]);
   $s = @seq[cpu] + 1; @seq[cpu] = $s;
-  printf("K %llu %llu %llu %d %lld %llu %lld\n", nsecs(boot), cpu, $s, curtask->tgid, $tg, $rq, args.ret);
+  printf("K %llu %llu %llu %d %lld %llu %lld %lld\n", nsecs(boot), cpu, $s, curtask->tgid, $tg, $rq, args.ret, $ns);
 }
 
 tracepoint:syscalls:sys_enter_process_vm_writev /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
   @vmw[tid] = args.pid + 1;
+  delete(@ptrace_task[tid]);
 }
 
 tracepoint:syscalls:sys_exit_process_vm_writev /@sandbox[cgroup] && !(curtask->thread_pid->level <= @base) && @vmw[tid] != 0/ {
   $vt = @vmw[tid] - 1;
+  $tg = (int64)@ptrace_task[tid] - 1;
   delete(@vmw[tid]);
+  delete(@ptrace_task[tid]);
   $s = @seq[cpu] + 1; @seq[cpu] = $s;
-  printf("K %llu %llu %llu %d %lld -1 %lld\n", nsecs(boot), cpu, $s, curtask->tgid, $vt, args.ret);
+  printf("K %llu %llu %llu %d %lld -1 %lld %lld\n", nsecs(boot), cpu, $s, curtask->tgid, $tg, args.ret, $vt);
 }
 
 fentry:vmlinux:security_task_kill /@sandbox[cgroup] && curtask->thread_pid->level > @base

@@ -962,9 +962,9 @@ async def test_ptrace_split(store: LocalEventStore) -> None:
     ex = await b.call("bash", {"command": "strace ls; gdb -p 1"})
     ex = await b.exec("strace ls; gdb -p 1", call_id=ex)
     await b.emit(
-        b.k(PtraceEvent, ex, target=child[1], request="seize"),
+        b.k(PtraceEvent, ex, target=child[0], ns_target=child[1], request="seize"),
         b.k(PtraceEvent, ex, target=ex.root, request="traceme"),
-        b.k(PtraceEvent, ex, target=1, request="attach", refused=True, errno=1),
+        b.k(PtraceEvent, ex, target=4242, ns_target=1, request="attach", refused=True, errno=1),
     )
     assert [(f.importance, f.subcategory) for f in b.of("ptrace")] == [
         (2, "traceme"),
@@ -975,9 +975,27 @@ async def test_ptrace_split(store: LocalEventStore) -> None:
     flags = b.of("ptrace")
     assert [(f.importance, f.subcategory) for f in flags][-1] == (2, "own_tree")
     other = await b.exec("peek")
-    await b.emit(b.k(PtraceEvent, other, target=child[1] + 50, request="peekdata"))
+    await b.emit(
+        b.k(PtraceEvent, other, target=child[0] + 50, ns_target=child[1] + 50, request="peekdata")
+    )
     await b.finish(other)
     assert [(f.importance, f.subcategory) for f in b.of("ptrace")][-1] == (3, "outside")
+
+
+async def test_ptrace_of_a_forked_child_or_a_missing_pid(store: LocalEventStore) -> None:
+    b = await bench(store)
+    ex = await b.exec("python3 debug.py")
+    child, child_ns = b.pid()
+    await b.emit(b.k(ProcFork, ex, child, ppid=ex.shell))
+    await b.emit(
+        b.k(PtraceEvent, ex, target=child, ns_target=child_ns, request="attach"),
+        b.k(PtraceEvent, ex, target=None, ns_target=9999, request="attach", refused=True, errno=3),
+    )
+    flags = b.of("ptrace")
+    assert [(f.importance, f.subcategory) for f in flags] == [(2, "own_tree"), (4, "inject")]
+    assert flags[1].justification.endswith(
+        "attach of 9999 in its pid namespace, refused errno 3, outside its tree: no such process"
+    )
 
 
 async def test_harness_signal_targets(store: LocalEventStore) -> None:

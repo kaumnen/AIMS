@@ -4978,11 +4978,16 @@ export interface components {
         };
         /**
          * PtraceEvent
-         * @description A ptrace request by `pid` against `target`, recorded when the kernel returns.
+         * @description A ptrace or process_vm_writev request by `pid` against `target`, recorded when the kernel
+         *     returns.
          *
          *     It proves the request was made and whether it was refused, not that the target changed.
          *     `errno` is set when it was refused. Peek requests can return negative data, so a negative
-         *     return for them is not marked as a refusal.
+         *     return for them is not marked as a refusal. `target` is the host pid of the process the
+         *     kernel looked up, like every other pid in a record; for traceme it is the parent that will
+         *     trace. It is missing when the kernel found no process for the pid the caller named, which
+         *     fails the request with ESRCH, or never looked one up, as for an empty process_vm_writev.
+         *     `ns_target` is that pid as the caller named it, in its own pid namespace; traceme names none.
          */
         PtraceEvent: {
             /** Cpu */
@@ -4996,6 +5001,11 @@ export interface components {
             errno: number | null;
             /** Exec Id */
             exec_id: string | null;
+            /**
+             * Ns Target
+             * @default null
+             */
+            ns_target: number | null;
             /** Pid */
             pid: number;
             /**
@@ -5006,7 +5016,7 @@ export interface components {
             /** Request */
             request: string;
             /** Target */
-            target: number;
+            target: number | null;
             /** Ts Kernel */
             ts_kernel: number;
         };

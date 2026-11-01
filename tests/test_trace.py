@@ -286,10 +286,22 @@ def test_parse_ipc_fifo_and_shm() -> None:
 
 
 def test_parse_ptrace_and_signal() -> None:
-    assert parse(line("K 10 11 16 -1")) == Ptrace(10, 11, "attach", True, 1, at=PARSED)
-    assert parse(line("K 10 11 5 123")) == Ptrace(10, 11, "pokedata", False, None, at=PARSED)
-    assert parse(line("K 10 11 -1 24")) == Ptrace(
-        10, 11, "process_vm_writev", False, None, at=PARSED
+    assert parse(line("K 10 11 16 -1 1")) == Ptrace(
+        10, 11, "attach", True, 1, ns_target=1, at=PARSED
+    )
+    assert parse(line("K 10 11 5 123 4")) == Ptrace(
+        10, 11, "pokedata", False, None, ns_target=4, at=PARSED
+    )
+    assert parse(line("K 10 11 -1 24 4")) == Ptrace(
+        10, 11, "process_vm_writev", False, None, ns_target=4, at=PARSED
+    )
+    assert parse(line("K 10 9 0 0 77")) == Ptrace(10, 9, "traceme", False, None, at=PARSED)
+    # -2: the kernel found no process for the pid named; -1: its lookup was not seen.
+    assert parse(line("K 10 -2 16 -3 99999")) == Ptrace(
+        10, None, "attach", True, 3, ns_target=99999, at=PARSED
+    )
+    assert parse(line("K 10 -1 -1 -3 99999")) == Ptrace(
+        10, None, "process_vm_writev", True, 3, ns_target=99999, at=PARSED
     )
     assert parse(line("S 10 11 15")) == Signal(10, 11, 15, at=PARSED)
 
@@ -362,8 +374,8 @@ def test_large_numbers_are_clamped_to_the_canonical_range() -> None:
     assert parse(line(f"I 10 a 2 {huge} {huge}")) == Ipc(
         10, "shmat", "sysv", id=MAX_INT, flags=MAX_INT, at=PARSED
     )
-    assert parse(line(f"K 10 {huge} 16 -{huge}")) == Ptrace(
-        10, MAX_INT, "attach", True, MAX_INT, at=PARSED
+    assert parse(line(f"K 10 {huge} 16 -{huge} {huge}")) == Ptrace(
+        10, MAX_INT, "attach", True, MAX_INT, ns_target=MAX_INT, at=PARSED
     )
     assert parse(line(f"S 10 {huge} {huge}")) == Signal(10, MAX_INT, MAX_INT, at=PARSED)
     assert parse(line(f"M 10 x {huge} {huge} /memfd:x")) == Mem(
@@ -883,7 +895,7 @@ async def test_tracer_resolves_new_records() -> None:
     note_depth, note_text = walk("note", "_data", "aims-r-a1-work", "volumes", "docker")
     s = [
         feed("I 10 b 1 " + hx(b"/work/s.sock\0")),
-        feed("K 10 1 16 -1"),
+        feed("K 10 1 16 -1 1"),
         feed("S 10 1 15"),
         feed("M 10 x 42 0 /memfd:x"),
         feed("J 10 u 268435456"),
@@ -900,7 +912,7 @@ async def test_tracer_resolves_new_records() -> None:
 
     assert drain(route) == [
         Ipc(10, "bind", "unix", "/work/s.sock", at=s[0]),
-        Ptrace(10, 1, "attach", True, 1, at=s[1]),
+        Ptrace(10, 1, "attach", True, 1, ns_target=1, at=s[1]),
         Signal(10, 1, 15, at=s[2]),
         Mem(10, "exec", "/memfd:x", 42, 0, at=s[3]),
         Ns(10, "unshare", 268435456, ("user",), at=s[4]),

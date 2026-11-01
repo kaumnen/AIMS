@@ -349,15 +349,10 @@ class State:
         return self.node(event.agent_id, payload.pid, payload.ts_kernel)
 
     def target(self, event: Event) -> ProcNode | None:
-        """The process a `proc.signal` or `ptrace.event` targets. A signal names a host pid;
-        ptrace names a pid in the sandbox, except traceme, which names the tracer's host pid."""
+        """The process a `proc.signal` or `ptrace.event` targets, by its host pid."""
         payload = self.payload(event)
-        if isinstance(payload, ProcSignal):
+        if isinstance(payload, ProcSignal | PtraceEvent) and payload.target is not None:
             return self.owner(payload.target, payload.ts_kernel)
-        if isinstance(payload, PtraceEvent):
-            if payload.request == "traceme":
-                return self.node(event.agent_id, payload.target, payload.ts_kernel)
-            return self.node_ns(event.agent_id, payload.target, payload.ts_kernel)
         return None
 
     def target_harness(self, event: Event) -> bool:

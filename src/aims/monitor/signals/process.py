@@ -125,7 +125,8 @@ INJECT = frozenset(
 
 class Ptrace(Deferred):
     """A ptrace request. Into a process outside the caller's exec, a write, register change,
-    attach or seize is 4 and any other request 3; traceme and debugging its own tree are 2."""
+    attach or seize is 4 and any other request 3; traceme and debugging its own tree are 2.
+    A pid the kernel found no process for counts as outside: the attempt is what it shows."""
 
     name = "ptrace"
     types = frozenset({"ptrace.event", "exec.finished"})
@@ -139,17 +140,21 @@ class Ptrace(Deferred):
             return []
         caller = state.actor(event)
         target = state.target(event)
-        if target is None and p.request != "traceme" and p.target != 1 and not final:
+        pending = p.target is not None and p.request != "traceme" and p.ns_target != 1
+        if target is None and pending and not final:
             return None
         refused = f", refused errno {p.errno}" if p.refused else ""
-        what = f"{_who(caller, p.pid)} ptrace {p.request} of {p.target}{refused}"
+        named = p.target if p.target is not None else f"{p.ns_target} in its pid namespace"
+        what = f"{_who(caller, p.pid)} ptrace {p.request} of {named}{refused}"
         if p.request == "traceme":
             importance, sub, where = 2, "traceme", "asked its parent to trace it"
         elif target is not None and state.in_tree(caller, target):
             importance, sub, where = 2, "own_tree", f"its own tree ({target.program})"
         else:
             whom = "the sandbox's own process" if state.harness(target) else "another exec"
-            if target is not None and target.agent_id != event.agent_id:
+            if p.target is None:
+                whom = "no such process" if p.errno == 3 else "a pid the kernel did not look up"
+            elif target is not None and target.agent_id != event.agent_id:
                 whom = f"agent {target.agent_id}"
             elif target is not None and not state.harness(target):
                 whom = f"exec {target.exec_id} ({target.program})"
@@ -161,7 +166,7 @@ class Ptrace(Deferred):
                 importance=importance,
                 evidence=[event.seq],
                 justification=f"{what}, {where}",
-                key=f"{p.request} {p.target}",
+                key=f"{p.request} {named}",
                 subcategory=sub,
                 phase=phase,
             )

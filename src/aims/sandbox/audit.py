@@ -1228,18 +1228,19 @@ class AuditedSandbox:
             record,
             owner,
             target=record.target,
+            ns_target=record.ns_target,
             request=record.request,
             refused=record.refused,
             errno=record.errno,
         )
-        self._admit(owner, "other", payload)
+        self._admit(owner, "other", payload, target=record.target)
 
     def _on_signal(self, record: Signal) -> None:
         owner = self._owner_of(record.pid)
         payload = self._kernel(
             ProcSignal, record, owner, target=record.target, signal=record.signal
         )
-        self._admit(owner, "other", payload)
+        self._admit(owner, "other", payload, target=record.target)
 
     def _on_mem(self, record: Mem) -> None:
         owner = self._owner_of(record.pid)
@@ -1336,20 +1337,27 @@ class AuditedSandbox:
         )
 
     def _admit(
-        self, owner: str | None, kind: str, payload: KernelPayload, *, reveal: int | None = None
+        self,
+        owner: str | None,
+        kind: str,
+        payload: KernelPayload,
+        *,
+        reveal: int | None = None,
+        target: int | None = None,
     ) -> bool:
         """Record `payload` unless its exec is internal. Past the cap of `kind` it is spilled.
 
-        The pending forks of `reveal`, the payload's pid by default, go first by the same route.
+        The pending forks of `reveal`, the payload's pid by default, and of `target`, a process
+        it acts on, go first by the same route.
         True when the record was kept, in the log or in a spill.
         """
         if owner == INTERNAL:
             return False
         scope = self._scope(owner)
         count = scope.counts.get(kind, 0)
-        pid = payload.pid if reveal is None else reveal
-        if pid in self._forks:
-            self._reveal(pid, spill=count >= CAPS[kind])
+        for pid in (payload.pid if reveal is None else reveal, target):
+            if pid in self._forks:
+                self._reveal(pid, spill=count >= CAPS[kind])
         if count >= CAPS[kind]:
             return self._over_cap(scope, kind, payload)
         scope.counts[kind] = count + 1

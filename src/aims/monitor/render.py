@@ -994,8 +994,9 @@ class Trajectory:
                     pid=pid,
                 )
             case "ptrace.event":
+                named = d.get("ns_target") if d.get("target") is None else None
                 return {"pid": pid, "target": d.get("target"), "request": d.get("request")} | (
-                    _some(refused=d.get("refused"), errno=d.get("errno"))
+                    _some(ns_target=named, refused=d.get("refused"), errno=d.get("errno"))
                 )
             case "proc.signal":
                 return {"pid": pid, "target": d.get("target"), "signal": d.get("signal")}
