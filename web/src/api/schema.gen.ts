@@ -1709,7 +1709,8 @@ export interface components {
          * @description The kernel audit missed events. `count` is None when the number is unknown.
          *
          *     `ts_from` and `ts_to` bound the loss on the kernel boot clock, and `cpus` names the cpus whose
-         *     streams had holes, when known.
+         *     streams had holes, when known. `scope` is tracer when the loss cannot be tied to this
+         *     sandbox: one tracer serves every sandbox on the host, and the records may be another's.
          */
         AuditLost: {
             /** Count */
@@ -1718,6 +1719,12 @@ export interface components {
             cpus: number[];
             /** Reason */
             reason: string;
+            /**
+             * Scope
+             * @default sandbox
+             * @enum {string}
+             */
+            scope: "sandbox" | "tracer";
             /**
              * Ts From
              * @default null
@@ -12172,6 +12179,7 @@ export const agentOverviewRoleAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<
 export const agentStartedBackendAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentStarted"]["backend"]> = ["responses", "chat"];
 export const agentStepSourceValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentStep"]["source"]> = ["live", "replay"];
 export const agentStepStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentStep"]["status"]> = ["completed", "incomplete", "error", "cancelled"];
+export const auditLostScopeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AuditLost"]["scope"]> = ["sandbox", "tracer"];
 export const budgetChangeKeyValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["BudgetChange"]["key"]> = ["steps", "output_tokens", "cost_usd", "wall_s"];
 export const budgetChangeScopeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["BudgetChange"]["scope"]> = ["agent", "run"];
 export const cacheProbeOpValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CacheProbe"]["op"]> = ["fadvise_dontneed", "preadv2_nowait", "cachestat", "mincore"];

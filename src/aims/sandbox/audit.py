@@ -34,6 +34,7 @@ from aims.events import (
     FsSnapshot,
     IpcEvent,
     KernelPayload,
+    LossScope,
     MemExec,
     NetConnect,
     NsEvent,
@@ -158,6 +159,7 @@ class _Spill:
 
 @dataclass(slots=True)
 class _Loss:
+    scope: LossScope
     count: int = 0
     cpus: set[int] = field(default_factory=set)
     ts_from: int | None = None
@@ -748,6 +750,7 @@ class AuditedSandbox:
                 cpus=sorted(loss.cpus),
                 ts_from=loss.ts_from,
                 ts_to=loss.ts_to,
+                scope=loss.scope,
             )
             drafts.append(Draft(lost, agent_id=self._agent_id))
         self._losses = {}
@@ -1290,9 +1293,9 @@ class AuditedSandbox:
 
     def _on_lost(self, record: Lost) -> None:
         if record.count is None:
-            self._emit_payload(AuditLost(count=None, reason=record.reason))
+            self._emit_payload(AuditLost(count=None, reason=record.reason, scope=record.scope))
         else:
-            self._losses.setdefault(record.reason, _Loss()).add(record)
+            self._losses.setdefault(record.reason, _Loss(record.scope)).add(record)
 
     def _attribute(self, record: Exec) -> str | None:
         if not record.root:

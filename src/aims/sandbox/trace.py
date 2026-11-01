@@ -441,6 +441,8 @@ class Note:
 
 
 Item = Ready | Tick | Raw | Kernel
+# The tracer's own records whose header has no cgroup: the heartbeat's printf must fit 32 bytes.
+UNGROUPED = frozenset({"R", "Q"})
 Parser = Callable[[str, Stamp], Item]
 
 PARSERS: dict[str, Parser] = {}
@@ -461,9 +463,10 @@ def record(tag: str) -> Callable[[Parser], Parser]:
 def parse(line: str) -> Item | Dropped | Garbled | Note | None:
     """Turn one line of `bpftrace -f json` output into an item.
 
-    A record line is `TAG TS CPU SEQ FIELDS...`: the kernel boot clock in ns, the cpu, and the
-    cpu's sequence number, then the fields of that tag, if it has any. Times are kept in µs,
-    which canonical JSON can hold.
+    A record line is `TAG TS CPU SEQ CGROUP FIELDS...`: the kernel boot clock in ns, the cpu,
+    the record's number in its cgroup's stream on that cpu, and the cgroup, then the fields of
+    that tag, if it has any. The tracer's own R and Q leave out the cgroup. Times are kept in
+    µs, which canonical JSON can hold.
     """
     try:
         doc = json.loads(line)
@@ -480,12 +483,17 @@ def parse(line: str) -> Item | Dropped | Garbled | Note | None:
     text = (
         data.removesuffix("\n").encode("utf-8", "surrogateescape").decode(errors="backslashreplace")
     )
+    tag, _, rest = text.partition(" ")
+    width = 3 if tag in UNGROUPED else 4
+    head = rest.split(" ", width)
     try:
-        tag, ts, cpu, seq, *rest = text.split(" ", 4)
-        at = Stamp(int(ts) // 1000, int(cpu), int(seq))
-        body = rest[0] if rest else ""
+        if len(head) < width:
+            raise ValueError("short header")
+        ts, cpu, seq = (int(x) for x in head[:3])
+        at = Stamp(ts // 1000, cpu, seq, int(head[3]) if width == 4 else 0)
     except ValueError:
         return Garbled(None, text)
+    body = head[width] if len(head) > width else ""
     parser = PARSERS.get(tag)
     if parser is None:
         return Garbled(_pid(body), text, at)
@@ -934,13 +942,15 @@ def _pid(body: str) -> int | None:
 
 @dataclass(frozen=True, slots=True)
 class Gap:
-    """Records missing from one cpu's stream, between the kernel times of their neighbours."""
+    """Records missing from one cgroup's stream on one cpu, between the kernel times of their
+    neighbours."""
 
     cpu: int
     first: int
     count: int
     ts_from: int | None
     ts_to: int
+    cgroup: int = 0
 
 
 @dataclass(slots=True)
@@ -951,41 +961,105 @@ class _Hole:
     ts_to: int
 
 
+# How far a cpu's stream must run past a counter reading before the reading is checked: a
+# record numbered before it may still be on its way, as late as a hole is waited for.
+LATE_US = 1_000_000
+# A stream not counted and not heard from this long is forgotten: its cgroup is gone.
+FORGET_US = 10_000_000
+
+Key = tuple[int, int]
+
+
 class Sequence:
-    """Finds lost records from the per-cpu sequence numbers in record headers.
+    """Finds lost records from the sequence numbers in record headers, one stream per cgroup
+    and cpu.
 
     One probe can interrupt another on the same cpu, so a record may arrive after a later one.
-    A hole is reported once its cpu has moved `window` records past it, or by `expire`.
+    A hole is reported once its stream has moved `window` records past it, or by `expire`. The
+    last records of a stream leave no hole; `counted` takes the kernel's own count of each
+    stream, which shows them once their cpu's records are read `LATE_US` past the reading.
     """
 
     def __init__(self, window: int = 64) -> None:
         self.window = window
         self.latest = 0
-        self._next: dict[int, int] = {}
-        self._ts: dict[int, int] = {}
-        self._holes: dict[int, list[_Hole]] = {}
+        self._next: dict[Key, int] = {}
+        self._ts: dict[Key, int] = {}
+        self._holes: dict[Key, list[_Hole]] = {}
+        # Each cpu's latest record time, and the counter readings that wait for it to pass.
+        self._read: dict[int, int] = {}
+        self._marks: dict[int, dict[int, tuple[int, int]]] = {}
 
     def observe(self, at: Stamp) -> list[Gap]:
         self.latest = max(self.latest, at.ts)
-        expected = self._next.get(at.cpu, 1)
-        holes = self._holes.setdefault(at.cpu, [])
+        read = self._read[at.cpu] = max(self._read.get(at.cpu, 0), at.ts)
+        key = (at.cgroup, at.cpu)
+        expected = self._next.get(key, 1)
         if at.seq >= expected:
             if at.seq > expected:
-                holes.append(_Hole(expected, at.seq, self._ts.get(at.cpu), at.ts))
-            self._next[at.cpu] = at.seq + 1
-            self._ts[at.cpu] = at.ts
+                hole = _Hole(expected, at.seq, self._ts.get(key), at.ts)
+                self._holes.setdefault(key, []).append(hole)
+            self._next[key] = at.seq + 1
+            self._ts[key] = at.ts
         else:
-            self._fill(holes, at.seq)
-        return self._take(at.cpu, lambda h: h.end <= self._next[at.cpu] - self.window)
+            self._fill(key, at.seq)
+        limit = self._next.get(key, 1) - self.window
+        return self._take(key, lambda h: h.end <= limit) + self._check(at.cpu, read - LATE_US)
 
     def expire(self, before_ts: int) -> list[Gap]:
         """Report holes whose later neighbour came before `before_ts`."""
         return [
-            g for cpu in list(self._holes) for g in self._take(cpu, lambda h: h.ts_to < before_ts)
+            g for key in list(self._holes) for g in self._take(key, lambda h: h.ts_to < before_ts)
         ]
 
-    @staticmethod
-    def _fill(holes: list[_Hole], seq: int) -> None:
+    def counted(self, ts: int, counts: dict[Key, int]) -> None:
+        """The kernel had numbered `counts[key]` records of each stream by `ts`.
+
+        A reading replaces an earlier one of the same stream only once that one's records have
+        all come, so records that never come are always reported. Streams the kernel no longer
+        counts are forgotten once quiet: their cgroup was removed.
+        """
+        for (cgroup, cpu), seq in counts.items():
+            expected = self._next.get((cgroup, cpu), 1)
+            if seq < expected:
+                continue
+            marks = self._marks.setdefault(cpu, {})
+            mark = marks.get(cgroup)
+            if mark is None or mark[0] < expected:
+                marks[cgroup] = (seq, ts)
+        for key in [k for k, t in self._ts.items() if k not in counts and t < ts - FORGET_US]:
+            if key not in self._holes and key[0] not in self._marks.get(key[1], {}):
+                del self._next[key], self._ts[key]
+
+    def pending(self, cgroup: int) -> bool:
+        """Whether a hole or a reading ahead of the records of `cgroup` is still open."""
+        if any(key[0] == cgroup for key in self._holes):
+            return True
+        for cpu, marks in self._marks.items():
+            mark = marks.get(cgroup)
+            if mark is not None and mark[0] >= self._next.get((cgroup, cpu), 1):
+                return True
+        return False
+
+    def _check(self, cpu: int, before_ts: int) -> list[Gap]:
+        """Report the records each ripe reading on `cpu` counted that never came."""
+        marks = self._marks.get(cpu)
+        if not marks:
+            return []
+        gaps = []
+        for cgroup, (seq, ts) in list(marks.items()):
+            if ts >= before_ts:
+                continue
+            del marks[cgroup]
+            key = (cgroup, cpu)
+            expected = self._next.get(key, 1)
+            if seq >= expected:
+                gaps.append(Gap(cpu, expected, seq + 1 - expected, self._ts.get(key), ts, cgroup))
+                self._next[key], self._ts[key] = seq + 1, ts
+        return gaps
+
+    def _fill(self, key: Key, seq: int) -> None:
+        holes = self._holes.get(key, [])
         for i, h in enumerate(holes):
             if h.start <= seq < h.end:
                 rest = [
@@ -993,17 +1067,24 @@ class Sequence:
                     _Hole(seq + 1, h.end, h.ts_from, h.ts_to),
                 ]
                 holes[i : i + 1] = [r for r in rest if r.end > r.start]
+                if not holes:
+                    del self._holes[key]
                 return
 
-    def _take(self, cpu: int, ripe: Callable[[_Hole], bool]) -> list[Gap]:
-        holes = self._holes.get(cpu)
+    def _take(self, key: Key, ripe: Callable[[_Hole], bool]) -> list[Gap]:
+        holes = self._holes.get(key)
         if not holes:
             return []
         gone = [h for h in holes if ripe(h)]
         if not gone:
             return []
-        self._holes[cpu] = [h for h in holes if not ripe(h)]
-        return [Gap(cpu, h.start, h.end - h.start, h.ts_from, h.ts_to) for h in gone]
+        rest = [h for h in holes if not ripe(h)]
+        if rest:
+            self._holes[key] = rest
+        else:
+            del self._holes[key]
+        cgroup, cpu = key
+        return [Gap(cpu, h.start, h.end - h.start, h.ts_from, h.ts_to, cgroup) for h in gone]
 
 
 @dataclass(frozen=True, slots=True)

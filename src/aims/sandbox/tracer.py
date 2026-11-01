@@ -75,9 +75,17 @@ SKIPS_S = 10
 # preemptible RCU (Ubuntu's generic kernel, for one) that includes a run preempted midway, so
 # records go missing with no sequence hole. Each program's fd in bpftrace's fdinfo carries its
 # count.
+# The kernel's count of each record stream follows as `C <uptime> <key hex>:<value hex>...`,
+# timed after the dump so every count was reached by then. The map is bpftrace's own, $m: every
+# tracer on the host has one by that name. The raw bytes are kept: bpftool's formatted keys
+# repeat an empty field name.
 SKIP_READ = (
     'u=$(cat /proc/uptime); echo "T ${u%% *}"; '
-    'grep -H -E "^(prog_id|recursion_misses):" /proc/$p/fdinfo/* 2>/dev/null'
+    'grep -H -E "^(prog_id|recursion_misses):" /proc/$p/fdinfo/* 2>/dev/null; '
+    "c=$(bpftool -j map dump id $m 2>/dev/null "
+    r"""| grep -o '"key":\[[^]]*\],"value":\[[^]]*\]' """
+    r"""| sed 's/"0x//g; s/[",]//g; s/key:\[//; s/\]value:\[/:/; s/\]//'); """
+    "u=$(cat /proc/uptime); echo C ${u%% *} $c"
 )
 SKIPS = (
     "p=$1; mountpoint -q /sys/kernel/debug "
@@ -86,18 +94,25 @@ SKIPS = (
     "if grep -qw __rcu_read_lock /proc/kallsyms; then r=1; else r=0; fi; "
     'echo "H $r $(cat /sys/kernel/debug/sched/preempt 2>/dev/null)"; '
     'echo "N $(bpftool -j prog show 2>/dev/null)"; '
+    'm=$(for i in $(grep -h "^map_id:" /proc/$p/fdinfo/* 2>/dev/null | cut -f2 | sort -u); '
+    'do bpftool map show id $i 2>/dev/null | grep -qw "name AT_seq" && echo $i; done); '
+    'echo "S $m"; '
     f"while [ -d /proc/$p ]; do {SKIP_READ}; echo .; sleep 1; done"
 )
 PROBE_INDEX = re.compile(r"_\d+$")
 # bpftrace prints a loss once its ring has drained, within a tick of the last record before it.
-# The hole shows at its cpu's next record, a tick later at most, and expires at the first tick
-# more than a second after that: every cpu ticks in phase, a little under a second apart, so
-# that can take two ticks.
+# The hole shows at its stream's next record and expires at the first tick more than a second
+# after that. A stream's last records show in the next count reading, a second later at most,
+# once its cpu's records are read a second past the reading: every cpu ticks in phase, a little
+# under a second apart, so that can take two ticks.
 RIPE_US = 4_500_000
 # An exited pid stays routable this long for the records its exit leaves, such as closes.
 GONE_US = 10_000_000
 EXIT_GRACE_S = 0.05
 UNKNOWN = "kernel records of an unknown process"
+OWN_GAP = "kernel record gap in the tracer's own records: heartbeats and OOM kills"
+# How long a closing sandbox waits for its streams' last holes and counter readings to settle.
+SETTLE_S = 3.0
 # Compile warnings bpftrace gives for this script on every start, each followed by the source
 # line and a marker line under it; they say nothing about a run.
 KNOWN_WARNINGS = frozenset({"Addrspace mismatch"})
@@ -183,6 +198,7 @@ class _Held:
 
     ts: int
     last: int
+    cgroup: int
     count: int = 0
     lines: list[str] = field(default_factory=list)
 
@@ -222,9 +238,16 @@ class Tracer:
         self._env: OrderedDict[int, bytearray] = OrderedDict()
         self._env_bytes: dict[int, int] = {}
         self._roots: OrderedDict[int, int] = OrderedDict()
+        # The pid namespace of each sandbox cgroup, from the runtime's first exec in it.
+        self._cgroups: OrderedDict[int, int] = OrderedDict()
         self._waiters: dict[int, asyncio.Future[int]] = {}
         self._sequence = Sequence()
         self._exited = asyncio.Event()
+        # Set each time a batch of the stream has been read.
+        self._fed = asyncio.Event()
+        self._uncounted = False
+        # The id of bpftrace's map of record counts.
+        self._seq_map = ""
         # Stream time of each loss bpftrace reported, and the kernel's total by then.
         self._drops: deque[tuple[int, int]] = deque()
         self.alive = False
@@ -233,8 +256,11 @@ class Tracer:
         # Records of processes in no registered sandbox: the runtime's own setup in a sandbox's
         # cgroup, the runner's helpers, sandboxes already closed.
         self.foreign = 0
+        # Records lost from the streams of cgroups that are no registered sandbox.
+        self.foreign_lost = 0
         self.unrouted_lines: deque[str] = deque(maxlen=32)
         self._line = ""
+        self._cgroup = 0
         self.clock: tuple[int, int] | None = None
         self.kernel_lost = 0
         self.located = 0
@@ -339,6 +365,10 @@ class Tracer:
                             self._set_preemption(parse_preemption(line))
                         elif line.startswith("N "):
                             self._probes = parse_probes(line[2:])
+                        elif line.startswith("C "):
+                            self._counted(line)
+                        elif line.startswith("S "):
+                            self._seq_map = line[2:].split(" ", 1)[0]
                         else:
                             reading.append(line)
             finally:
@@ -376,7 +406,7 @@ class Tracer:
             self.skipped += new
             name = self._probes.get(prog, f"program {prog}")
             reason = f"kernel skipped tracer probe {name}: a run of it was in progress on that cpu"
-            lost = Lost(new, reason, (), start, ts)
+            lost = Lost(new, reason, (), start, ts, "tracer")
             for route in self._routes.values():
                 route.put(lost)
         if ts is not None and (self._skips_ts is None or ts > self._skips_ts):
@@ -387,13 +417,34 @@ class Tracer:
         container, pid = self._container, self._bpftrace
         if not self.alive or container is None or pid is None:
             return
-        argv = ["sh", "-c", f"p=$1; {SKIP_READ}", "sh", str(pid)]
+        argv = ["sh", "-c", f"p=$1; m=$2; {SKIP_READ}", "sh", str(pid), self._seq_map]
         try:
             out = await exec_output(container, argv, timeout_s=SKIPS_S)
         except Exception as e:
             log.warning("could not read tracer probe skips: %s", e)
             return
-        self._skipped(*parse_skips(out.decode(errors="replace").splitlines()))
+        lines = out.decode(errors="replace").splitlines()
+        self._skipped(*parse_skips(line for line in lines if not line.startswith("C ")))
+        for line in lines:
+            if line.startswith("C "):
+                self._counted(line)
+
+    def _counted(self, line: str) -> None:
+        """Take a reading of the kernel's count of each record stream."""
+        reading = parse_counts(line)
+        if reading is None:
+            log.warning("unreadable tracer stream counts: %s", line[:200])
+            return
+        ts, counts = reading
+        if not counts:
+            # A real reading always holds the tracer's own streams.
+            if not self._uncounted:
+                log.warning(
+                    "the kernel's record counts are unreadable; lost last records go unseen"
+                )
+                self._uncounted = True
+            return
+        self._sequence.counted(ts, counts)
 
     async def stop(self) -> None:
         self.alive = False
@@ -421,6 +472,8 @@ class Tracer:
 
     def unregister(self, route: Route) -> None:
         self._routes.pop(route.pidns, None)
+        for cgroup in [c for c, pidns in self._cgroups.items() if pidns == route.pidns]:
+            del self._cgroups[cgroup]
         for pid in [p for p, r in self._pids.items() if r is route]:
             del self._pids[pid]
             self._disown(pid)
@@ -445,8 +498,8 @@ class Tracer:
             self._waiters.pop(pid, None)
 
     async def quiesce(self, route: Route, timeout_s: float) -> None:
-        """Wait until every process of `route` has exited, then for the records its exit leaves
-        and the probe runs skipped up to then."""
+        """Wait until every process of `route` has exited, then for the records its exit leaves,
+        the probe runs skipped up to then and the holes its streams still have open."""
         with contextlib.suppress(TimeoutError):
             async with asyncio.timeout(timeout_s):
                 while self.alive and any(r is route for r in self._pids.values()):
@@ -454,6 +507,12 @@ class Tracer:
                     await self._exited.wait()
                 await asyncio.sleep(EXIT_GRACE_S)
         await self.count_skips()
+        cgroups = [c for c, pidns in self._cgroups.items() if pidns == route.pidns]
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(SETTLE_S):
+                while self.alive and any(self._sequence.pending(c) for c in cgroups):
+                    self._fed.clear()
+                    await self._fed.wait()
 
     async def _read(self, trace: DockerExec) -> None:
         """Read bpftrace's output as bytes, so file names that are not UTF-8 keep their bytes."""
@@ -466,6 +525,7 @@ class Tracer:
                     *lines, pending[message.stream] = data.split(b"\n")
                     for line in lines:
                         self._handle(line.decode("utf-8", "surrogateescape"))
+                    self._fed.set()
             finally:
                 await stream.close()
         except Exception as e:
@@ -477,6 +537,7 @@ class Tracer:
                 log.error("tracer stopped; sandboxes fall back to snapshot audit")
             self.alive = False
             self._exited.set()
+            self._fed.set()
             for route in self._routes.values():
                 route.put(Lost(None, "tracer stopped"))
 
@@ -513,7 +574,7 @@ class Tracer:
                 f"the kernel dropped {excess - self.unlocated} records no sequence hole located"
             )
             for route in self._routes.values():
-                route.put(Lost(None, reason))
+                route.put(Lost(None, reason, scope="tracer"))
         self.unlocated = max(excess, 0)
 
     def _handle(self, line: str) -> None:
@@ -521,6 +582,7 @@ class Tracer:
         item = parse(line)
         at = getattr(item, "at", None)
         self._ts = self._sequence.latest if at is None else at.ts
+        self._cgroup = 0 if at is None else at.cgroup
         if at is not None:
             self._gaps(self._sequence.observe(at))
         match item:
@@ -738,7 +800,7 @@ class Tracer:
             return
         held = self._held.get(pid)
         if held is None:
-            held = self._held[pid] = _Held(self._ts, self._ts)
+            held = self._held[pid] = _Held(self._ts, self._ts, self._cgroup)
             if len(self._held) > MEMORY:
                 self._count(self._held.popitem(last=False)[1])
         held.count += 1
@@ -747,15 +809,31 @@ class Tracer:
             held.lines.append(self._line)
 
     def _count(self, held: _Held, *, foreign: bool = False, route: Route | None = None) -> None:
-        """Count held records as foreign, or as loss of `route`, or of every sandbox if unknown."""
-        if foreign:
+        """Count held records as foreign, or as loss of `route`, by default the sandbox of the
+        cgroup they came from; records of no sandbox's cgroup are foreign."""
+        if not foreign and route is None:
+            route = self._sandbox(held.cgroup)
+            foreign = route is None
+        if foreign or route is None:
             self.foreign += held.count
             return
         self.unrouted += held.count
         self.unrouted_lines.extend(held.lines)
-        lost = Lost(held.count, UNKNOWN, (), held.ts, held.last)
-        for target in self._routes.values() if route is None else (route,):
-            target.put(lost)
+        route.put(Lost(held.count, UNKNOWN, (), held.ts, held.last))
+
+    def _claim(self, cgroup: int, pidns: int) -> None:
+        """Tie `cgroup` to the sandbox of `pidns`. A sandbox is one container, so an older
+        cgroup with that namespace is a gone container whose namespace number was reused."""
+        for old in [c for c, n in self._cgroups.items() if n == pidns and c != cgroup]:
+            del self._cgroups[old]
+        self._cgroups[cgroup] = pidns
+        self._cgroups.move_to_end(cgroup)
+        if len(self._cgroups) > MEMORY:
+            self._cgroups.popitem(last=False)
+
+    def _sandbox(self, cgroup: int) -> Route | None:
+        pidns = self._cgroups.get(cgroup)
+        return None if pidns is None else self._routes.get(pidns)
 
     def _disown(self, pid: int) -> None:
         self._foreign[pid] = None
@@ -780,11 +858,21 @@ class Tracer:
             self._gone.popitem(last=False)
 
     def _gaps(self, gaps: list[Gap]) -> None:
+        """Report each hole to the sandbox whose stream it is in. A hole in the tracer's own
+        stream may hide an OOM kill in any sandbox."""
         for gap in gaps:
             self.located += gap.count
-            lost = Lost(gap.count, "kernel record gap", (gap.cpu,), gap.ts_from, gap.ts_to)
-            for route in self._routes.values():
-                route.put(lost)
+            window = (gap.cpu,), gap.ts_from, gap.ts_to
+            if gap.cgroup == 0:
+                lost = Lost(gap.count, OWN_GAP, *window, "tracer")
+                for route in self._routes.values():
+                    route.put(lost)
+                continue
+            route = self._sandbox(gap.cgroup)
+            if route is None:
+                self.foreign_lost += gap.count
+            else:
+                route.put(Lost(gap.count, "kernel record gap", *window))
 
     def _exec(self, raw: RawExec) -> None:
         self._gone.pop(raw.pid, None)
@@ -794,6 +882,7 @@ class Tracer:
             self._roots[raw.pid] = raw.pidns
             if len(self._roots) > MEMORY:
                 self._roots.popitem(last=False)
+            self._claim(raw.at.cgroup, raw.pidns)
             waiter = self._waiters.get(raw.pid)
             if waiter is not None and not waiter.done():
                 waiter.set_result(raw.pidns)
@@ -875,6 +964,24 @@ def parse_probes(text: str) -> dict[int, str]:
         for p in progs
         if isinstance(p, dict) and isinstance(p.get("id"), int) and isinstance(p.get("name"), str)
     }
+
+
+def parse_counts(line: str) -> tuple[int, dict[tuple[int, int], int]] | None:
+    """The boot clock in µs and the kernel's count of each (cgroup, cpu) record stream, from
+    `C <uptime> <key hex>:<value hex>...`: a key is two little-endian u64, a value one."""
+    _, uptime, *entries = line.split(" ")
+    try:
+        ts = round(float(uptime) * 1_000_000)
+        counts = {}
+        for entry in entries:
+            key, value = (bytes.fromhex(x) for x in entry.split(":"))
+            if len(key) != 16 or len(value) != 8:
+                return None
+            stream = (int.from_bytes(key[:8], "little"), int.from_bytes(key[8:], "little"))
+            counts[stream] = int.from_bytes(value, "little")
+    except ValueError:
+        return None
+    return ts, counts
 
 
 def parse_skips(lines: Iterable[str]) -> tuple[int | None, dict[int, int]]:

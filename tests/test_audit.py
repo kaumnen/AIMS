@@ -773,14 +773,16 @@ async def test_losses_are_reported_once_per_flush(store: LocalEventStore) -> Non
     run_id, audited = await start(store, sb)
     await audited.exec("x", timeout_s=5)
     sb.queue.put_nowait(Lost(None, "tracer stopped"))
+    sb.queue.put_nowait(Lost(None, "kernel dropped records", scope="tracer"))
     await asyncio.sleep(0.3)
     await audited.close()
 
     lost = [e.data for e in await events(store, run_id) if e.type == "audit.lost"]
     none = {"cpus": [], "ts_from": None, "ts_to": None}
     assert lost == [
-        {"count": 5, "reason": "kernel buffer overflow", **none},
-        {"count": None, "reason": "tracer stopped", **none},
+        {"count": 5, "reason": "kernel buffer overflow", **none, "scope": "sandbox"},
+        {"count": None, "reason": "tracer stopped", **none, "scope": "sandbox"},
+        {"count": None, "reason": "kernel dropped records", **none, "scope": "tracer"},
     ]
 
 
@@ -792,6 +794,7 @@ async def test_gaps_keep_their_window(store: LocalEventStore) -> None:
             Lost(3, "kernel record gap", (2,), 500, 900),
             Lost(1, "kernel record gap", (0,), 100, 300),
             Lost(4, "audit queue full", (), 50, 60),
+            Lost(2, "skipped", (), 70, 80, "tracer"),
         )
     )
     run_id, audited = await start(store, sb)
@@ -799,9 +802,19 @@ async def test_gaps_keep_their_window(store: LocalEventStore) -> None:
     await audited.close()
 
     lost = [e.data for e in await events(store, run_id) if e.type == "audit.lost"]
+    gap = {"cpus": [0, 2], "ts_from": 100, "ts_to": 900, "scope": "sandbox"}
     assert lost == [
-        {"count": 4, "reason": "kernel record gap", "cpus": [0, 2], "ts_from": 100, "ts_to": 900},
-        {"count": 4, "reason": "audit queue full", "cpus": [], "ts_from": 50, "ts_to": 60},
+        {"count": 4, "reason": "kernel record gap", **gap},
+        {"count": 4, "reason": "audit queue full", "cpus": [], "ts_from": 50, "ts_to": 60}
+        | {"scope": "sandbox"},
+        {
+            "count": 2,
+            "reason": "skipped",
+            "cpus": [],
+            "ts_from": 70,
+            "ts_to": 80,
+            "scope": "tracer",
+        },
     ]
 
 

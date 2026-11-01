@@ -8,7 +8,7 @@ import tarfile
 from collections import Counter
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import aiodocker
 import pytest
@@ -39,7 +39,9 @@ from aims.events import (
 from aims.sandbox import MASK_PROC, AuditedSandbox, DockerBackend, Mount, SandboxSpec
 from aims.sandbox import audit as audit_module
 from aims.sandbox import reader as reader_module
+from aims.sandbox.execs import exec_output
 from aims.sandbox.trace import STRLEN
+from aims.sandbox.tracer import SKIP_READ, parse_counts
 
 # These test the tracer itself, so they need the host to themselves.
 pytestmark = [pytest.mark.anyio, pytest.mark.docker, pytest.mark.serial]
@@ -399,6 +401,95 @@ async def test_sequence_locates_every_lost_record(store: LocalEventStore) -> Non
 
     assert tracer.kernel_lost > 0
     assert tracer.located == tracer.kernel_lost
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_a_flood_is_lost_only_in_the_sandboxes_that_made_it(store: LocalEventStore) -> None:
+    async with await DockerBackend.open(audit="kernel", ring_pages=8) as small:
+        tracer = small.tracer
+        assert tracer is not None
+        container = tracer._container
+        assert container is not None
+
+        async def counts() -> dict[tuple[int, int], int]:
+            argv = ["sh", "-c", f"p=1; m=$1; {SKIP_READ}", "sh", tracer._seq_map]
+            out = (await exec_output(container, argv, timeout_s=10)).decode()
+            (reading,) = [parse_counts(line) for line in out.splitlines() if line.startswith("C ")]
+            assert reading is not None
+            return reading[1]
+
+        boxes = [await sandbox(small, store, f"a{i}") for i in range(3)]
+        (idle_run, idle), busy = boxes[0], boxes[1:]
+        cgroups = {c for c, pidns in tracer._cgroups.items() if pidns in tracer._routes}
+        pidns = cast(Any, idle.sandbox)._route.pidns
+        (mine,) = [c for c, n in tracer._cgroups.items() if n == pidns]
+        try:
+            await idle.exec("ls /work", timeout_s=30)
+            # The kernel's counts name the streams the records did, cgroup and cpu alike.
+            kernel = {k: n for k, n in (await counts()).items() if k[0] == mine}
+            await asyncio.sleep(0.5)
+            seen = {k: n - 1 for k, n in tracer._sequence._next.items() if k[0] == mine}
+            assert kernel
+            assert kernel.keys() <= seen.keys()
+            assert all(n <= seen[k] for k, n in kernel.items())
+            await asyncio.gather(*(sb.exec(FLOOD, timeout_s=120) for _, sb in busy))
+            await asyncio.sleep(3)
+            await idle.exec("ls /work", timeout_s=30)
+        finally:
+            for _, sb in boxes:
+                await sb.close()
+        tracer.settle()
+        await asyncio.sleep(1)
+        left = await counts()
+
+    assert len(cgroups) == 3
+    assert tracer.kernel_lost > 0
+    assert tracer.located == tracer.kernel_lost
+    gaps = [
+        e.data["count"]
+        for run_id, _ in busy
+        for e in await events(store, run_id, "audit.lost")
+        if e.data["reason"] == "kernel record gap"
+    ]
+    assert any(isinstance(c, int) and c > 0 for c in gaps), gaps
+    idle_lost = [e.data for e in await events(store, idle_run, "audit.lost")]
+    assert all(d["scope"] == "tracer" for d in idle_lost), idle_lost
+    # A sandbox's counts go with its cgroup; the tracer's own stay.
+    assert any(c == 0 for c, _ in left)
+    assert not {c for c, _ in left} & cgroups
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_the_last_records_lost_show_in_the_kernel_counts(store: LocalEventStore) -> None:
+    """With bpftrace stopped, a burst pinned to one cpu fills that cpu's ring and its last
+    records are lost with nothing after them; only the kernel's counts can show them."""
+    burst = "taskset -c 1 sh -c 'i=0; while [ $i -lt 2000 ]; do : > /tmp/f$i; i=$((i+1)); done'"
+    async with await DockerBackend.open(audit="kernel", ring_pages=8) as small:
+        tracer = small.tracer
+        assert tracer is not None
+        container = tracer._container
+        assert container is not None
+        pid = str(tracer._bpftrace)
+        run_id, sb = await sandbox(small, store)
+        try:
+            await sb.exec("true", timeout_s=30)
+            await exec_output(container, ["sh", "-c", f"kill -STOP {pid}"], timeout_s=10)
+            try:
+                await sb.exec(burst, timeout_s=60)
+            finally:
+                await exec_output(container, ["sh", "-c", f"kill -CONT {pid}"], timeout_s=10)
+            await asyncio.sleep(5)
+            tracer.settle()
+            located, lost = tracer.located, tracer.kernel_lost
+        finally:
+            await sb.close()
+
+    assert lost > 0
+    assert located == lost
+    gaps = [e.data for e in await events(store, run_id, "audit.lost")]
+    assert any(d["reason"] == "kernel record gap" and d["scope"] == "sandbox" for d in gaps)
 
 
 @pytest.mark.tracer

@@ -13,6 +13,7 @@ FileOp = Literal["read", "write", "delete", "rename", "denied", "mkdir", "symlin
 FsChangeType = Literal["added", "modified", "meta", "removed", "kind"]
 FsKind = Literal["file", "dir", "symlink", "fifo", "socket", "other"]
 FdKind = Literal["pipe", "fifo", "file", "char", "sock", "dir", "other"]
+LossScope = Literal["sandbox", "tracer"]
 ModelBackend = Literal["responses", "chat"]
 ModelStatus = Literal["completed", "incomplete", "error", "cancelled"]
 ModelError = Literal[
@@ -768,7 +769,8 @@ class AuditLost(Payload):
     """The kernel audit missed events. `count` is None when the number is unknown.
 
     `ts_from` and `ts_to` bound the loss on the kernel boot clock, and `cpus` names the cpus whose
-    streams had holes, when known.
+    streams had holes, when known. `scope` is tracer when the loss cannot be tied to this
+    sandbox: one tracer serves every sandbox on the host, and the records may be another's.
     """
 
     type = "audit.lost"
@@ -778,6 +780,7 @@ class AuditLost(Payload):
     cpus: list[int] = Field(default_factory=list)
     ts_from: int | None = None
     ts_to: int | None = None
+    scope: LossScope = "sandbox"
 
 
 class ResourceSample(Payload):

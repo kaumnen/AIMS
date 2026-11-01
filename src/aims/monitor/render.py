@@ -1009,7 +1009,10 @@ class Trajectory:
             case "ns.event":
                 return {"kind": d.get("kind"), "namespaces": d.get("namespaces"), "pid": pid}
             case "audit.lost":
-                return {"count": d.get("count"), "reason": d.get("reason")}
+                scope = d.get("scope")
+                return {"count": d.get("count"), "reason": d.get("reason")} | _some(
+                    scope=None if scope == "sandbox" else scope
+                )
             case "audit.spill":
                 return {"count": d.get("count"), "kinds": d.get("kinds")}
             case "exec.finished":

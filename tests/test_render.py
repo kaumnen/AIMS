@@ -14,6 +14,7 @@ from aims.events import (
     AgentReport,
     AgentStarted,
     AgentStep,
+    AuditLost,
     Draft,
     Event,
     ExecFinished,
@@ -449,6 +450,22 @@ async def test_the_kernel_digest_caps_dedupes_and_keeps_marked_records(run: Run)
     counts = "file.access write 1, file.setattr 6, proc.exec 1"
     assert f"not shown: {counts}" in lines(marked)
     assert "flag" not in marked.text.lower()
+
+
+async def test_loss_the_tracer_cannot_tie_to_the_sandbox_says_so(run: Run) -> None:
+    await run.preamble()
+    await run.step(1)
+    await run.add(
+        AuditLost(count=3, reason="kernel record gap", cpus=[1]),
+        AuditLost(count=None, reason="kernel dropped records", scope="tracer"),
+    )
+    await run.step(2)
+    r = await run.trajectory.render(FULL, texts=TEXTS)
+    lost = of_type(r, "audit.lost")
+    assert [{k: v for k, v in x.items() if k not in ("frame", "type")} for x in lost] == [
+        {"count": 3, "reason": "kernel record gap"},
+        {"count": None, "reason": "kernel dropped records", "scope": "tracer"},
+    ]
 
 
 async def test_a_closed_step_renders_as_a_stable_prefix(tmp_path: Path) -> None:

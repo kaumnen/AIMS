@@ -589,7 +589,7 @@
       },
       "AuditLost": {
         "additionalProperties": false,
-        "description": "The kernel audit missed events. `count` is None when the number is unknown.\n\n`ts_from` and `ts_to` bound the loss on the kernel boot clock, and `cpus` names the cpus whose\nstreams had holes, when known.",
+        "description": "The kernel audit missed events. `count` is None when the number is unknown.\n\n`ts_from` and `ts_to` bound the loss on the kernel boot clock, and `cpus` names the cpus whose\nstreams had holes, when known. `scope` is tracer when the loss cannot be tied to this\nsandbox: one tracer serves every sandbox on the host, and the records may be another's.",
         "properties": {
           "count": {
             "anyOf": [
@@ -611,6 +611,15 @@
           },
           "reason": {
             "title": "Reason",
+            "type": "string"
+          },
+          "scope": {
+            "default": "sandbox",
+            "enum": [
+              "sandbox",
+              "tracer"
+            ],
+            "title": "Scope",
             "type": "string"
           },
           "ts_from": {
@@ -643,7 +652,8 @@
           "reason",
           "cpus",
           "ts_from",
-          "ts_to"
+          "ts_to",
+          "scope"
         ],
         "title": "AuditLost",
         "type": "object"

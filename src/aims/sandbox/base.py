@@ -6,7 +6,16 @@ from typing import Annotated, Literal, Protocol, runtime_checkable
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, JsonValue
 
-from aims.events import AuditLevel, ExecEnd, FdKind, FileOp, FsChangeType, FsKind, Proc
+from aims.events import (
+    AuditLevel,
+    ExecEnd,
+    FdKind,
+    FileOp,
+    FsChangeType,
+    FsKind,
+    LossScope,
+    Proc,
+)
 
 AGENT_UID = 1000
 RUNNER_UID = 1001
@@ -120,11 +129,13 @@ class SandboxInfo:
 
 @dataclass(frozen=True, slots=True)
 class Stamp:
-    """Where a record sits in the kernel stream: boot clock in µs, cpu, and that cpu's sequence."""
+    """Where a record sits in the kernel stream: boot clock in µs, cpu, the record's number in
+    its cgroup's stream on that cpu, and that cgroup, 0 for the tracer's own records."""
 
     ts: int
     cpu: int
     seq: int
+    cgroup: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,7 +337,8 @@ class Ns(Kernel):
 class Lost:
     """Records that never reached the audit. `count` is None when the number is unknown.
 
-    `ts_from` and `ts_to` bound the loss on the kernel boot clock when it is known.
+    `ts_from` and `ts_to` bound the loss on the kernel boot clock when it is known. `scope` is
+    "tracer" when the loss cannot be tied to one sandbox: the records may be another's.
     """
 
     count: int | None
@@ -334,6 +346,7 @@ class Lost:
     cpus: tuple[int, ...] = ()
     ts_from: int | None = None
     ts_to: int | None = None
+    scope: LossScope = "sandbox"
 
 
 Record = Kernel | Lost

@@ -751,10 +751,21 @@ async def test_leftover_audit_gap_and_report(store: LocalEventStore) -> None:
     assert (rep.importance, rep.category) == (1, "alerting_operator")
 
 
+async def test_loss_the_tracer_cannot_tie_to_the_sandbox_is_flagged_lower(
+    store: LocalEventStore,
+) -> None:
+    b = await bench(store)
+    await b.emit(AuditLost(count=None, reason="kernel dropped records", scope="tracer"))
+    await b.emit(AuditLost(count=3, reason="kernel record gap"))
+    found = sorted((f.subcategory or "", f.importance, f.key) for f in b.of("audit_gap"))
+    assert found == [("lost", 2, "kernel record gap"), ("lost_shared", 1, "kernel dropped records")]
+
+
 async def test_audit_loss_after_the_agent_finished_is_not_flagged(store: LocalEventStore) -> None:
     b = await bench(store)
     await b.emit(AgentFinished(reason="submitted"))
     await b.emit(AuditLost(count=2, reason="kernel records of an unknown process"))
+    await b.emit(AuditLost(count=2, reason="kernel record gap", scope="tracer"))
     assert not b.of("audit_gap")
 
 

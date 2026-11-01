@@ -3,7 +3,7 @@ import re
 from aims.events.schema import _registry
 from aims.sandbox.base import TOOLBOX
 from aims.sandbox.images import ASSETS
-from aims.sandbox.trace import ENV_CAP, PARSERS, STRLEN
+from aims.sandbox.trace import ENV_CAP, PARSERS, STRLEN, UNGROUPED
 from aims.sandbox.tracer import TRACE
 
 TAGS = set("RFBEXOWAUNCPD") | set("VGT") | set("Z") | set("Q") | set("IKSMHJL") | set("Y")
@@ -71,7 +71,13 @@ TYPES = {
 RESERVED_TAGS: set[str] = set()
 RESERVED_TYPES: set[str] = set()
 
-SEQ = "$s = @seq[cpu] + 1; @seq[cpu] = $s;"
+SEQ = "$g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;"
+# The tracer's own records number under cgroup 0; the oom record's header still names it.
+OWN = {
+    "R": "$s = @seq[(uint64)0, cpu] + 1; @seq[(uint64)0, cpu] = $s;",
+    "Q": "$s = @seq[(uint64)0, cpu] + 1; @seq[(uint64)0, cpu] = $s;",
+    "O": "$g = (uint64)0; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;",
+}
 _PRINTF = re.compile(r'printf\("(\S+) ([^"]*)",\s*([^;]*)\);', re.S)
 
 
@@ -98,9 +104,13 @@ def test_every_tracer_line_has_a_parser_and_a_header() -> None:
     printfs = _printfs()
     assert {tag for tag, *_ in printfs} == TAGS
     for tag, fmt, args, before in printfs:
-        assert fmt.startswith("%llu %llu %llu ") or fmt == "%llu %llu %llu\\n", tag
-        assert args.startswith("nsecs(boot), cpu, $s,") or args == "nsecs(boot), cpu, $s", tag
-        assert before == SEQ, tag
+        assert before == OWN.get(tag, SEQ), tag
+        if tag in UNGROUPED:
+            assert fmt.startswith("%llu %llu %llu ") or fmt == "%llu %llu %llu\\n", tag
+            assert args.startswith("nsecs(boot), cpu, $s,") or args == "nsecs(boot), cpu, $s", tag
+        else:
+            assert fmt.startswith("%llu %llu %llu %llu "), tag
+            assert args.startswith("nsecs(boot), cpu, $s, $g,"), tag
 
 
 def test_heartbeat_fits_on_the_stack() -> None:

@@ -34,8 +34,11 @@ from aims.sandbox.base import (
 )
 from aims.sandbox.trace import (
     DEPTH,
+    FORGET_US,
+    LATE_US,
     STRLEN,
     SYSCALLS,
+    UNGROUPED,
     Bprm,
     Context,
     Delete,
@@ -69,8 +72,10 @@ from aims.sandbox.trace import (
     PIPEFS_MAGIC as PIPEFS,
 )
 from aims.sandbox.tracer import (
+    OWN_GAP,
     UNKNOWN,
     Tracer,
+    parse_counts,
     parse_preemption,
     parse_probes,
     parse_skips,
@@ -92,26 +97,38 @@ def hx(data: bytes) -> str:
     return "".join(f"\\x{b:02x}" for b in data)
 
 
-AT = Stamp(5000, 0, 1)
-PARSED = Stamp(5, 0, 1)
+CG = 512
+AT = Stamp(5000, 0, 1, CG)
+PARSED = Stamp(5, 0, 1, CG)
 
 
 def line(text: str, at: Stamp = AT) -> str:
     tag, rest = text.split(" ", 1)
-    return json.dumps({"type": "printf", "data": f"{tag} {at.ts} {at.cpu} {at.seq} {rest}\n"})
+    head = f"{tag} {at.ts} {at.cpu} {at.seq}" + ("" if tag in UNGROUPED else f" {at.cgroup}")
+    return json.dumps({"type": "printf", "data": f"{head} {rest}\n"})
 
 
 class Feed:
-    """Lines from one cpu with consecutive sequence numbers."""
+    """Lines from one cpu with consecutive sequence numbers in their stream: cgroup `CG`, or the
+    tracer's own for R and Q."""
 
-    def __init__(self, tracer: Tracer, cpu: int = 0) -> None:
-        self.tracer, self.cpu, self.seq = tracer, cpu, 0
+    def __init__(self, tracer: Tracer, cpu: int = 0, cgroup: int = CG) -> None:
+        self.tracer, self.cpu, self.cgroup, self.seq, self.own = tracer, cpu, cgroup, 0, 0
 
     def __call__(self, text: str) -> Stamp:
-        self.seq += 1
-        at = Stamp(self.seq * 10_000, self.cpu, self.seq)
-        self.tracer._handle(line(text, at))
-        return Stamp(self.seq * 10, self.cpu, self.seq)
+        if text.split(" ", 1)[0] in UNGROUPED:
+            self.own += 1
+            seq, cgroup, ts = self.own, 0, max(self.seq, 1)
+        else:
+            self.seq += 1
+            seq, cgroup, ts = self.seq, self.cgroup, self.seq
+        self.tracer._handle(line(text, Stamp(ts * 10_000, self.cpu, seq, cgroup)))
+        return Stamp(ts * 10, self.cpu, seq, cgroup)
+
+
+def claim(tracer: Tracer, pidns: int, cgroup: int = CG) -> None:
+    """Tie `cgroup` to the sandbox of `pidns`, as the runtime's first exec in it does."""
+    tracer._claim(cgroup, pidns)
 
 
 def walk(*names: str) -> tuple[int, str]:
@@ -148,12 +165,13 @@ def test_parse_exec_splits_argv_exactly() -> None:
 
 
 def test_parse_reads_the_header() -> None:
-    wire = Stamp(9_007_199_254_740_993_123, 7, 123456789012)
-    parsed = Stamp(9_007_199_254_740_993, 7, 123456789012)
+    wire = Stamp(9_007_199_254_740_993_123, 7, 123456789012, 2**64 - 1)
+    parsed = Stamp(9_007_199_254_740_993, 7, 123456789012, 2**64 - 1)
     assert parse(line("F 10 11", wire)) == Fork(10, 11, at=parsed)
+    own = Stamp(5, 0, 1)
     ready = parse(line("R 0 1793054641268664792", AT))
-    assert ready == Ready(0, 5, 1793054641268664, PARSED)
-    assert parse(json.dumps({"type": "printf", "data": "Q 5000 0 1\n"})) == Tick(PARSED)
+    assert ready == Ready(0, 5, 1793054641268664, own)
+    assert parse(json.dumps({"type": "printf", "data": "Q 5000 0 1\n"})) == Tick(own)
 
 
 def test_parse_exec_context() -> None:
@@ -242,7 +260,9 @@ def test_paths_at_the_string_cap_are_partial() -> None:
 
 
 def test_bytes_bpftrace_escapes_on_x86_are_restored() -> None:
-    raw = r'{"type": "printf", "data": "W 5000 0 1 10 /a b\uffffffff caf\uffffffc3\uffffffa9\n"}'
+    raw = (
+        r'{"type": "printf", "data": "W 5000 0 1 512 10 /a b\uffffffff caf\uffffffc3\uffffffa9\n"}'
+    )
     assert parse(raw) == File(10, "write", "/a b\\xff café", at=PARSED)
 
 
@@ -477,7 +497,7 @@ def test_parse_creations() -> None:
 
 
 def test_parse_keeps_bytes_that_are_not_utf8() -> None:
-    raw = b'{"type": "printf", "data": "W 5000 0 1 10 /work/scorer.py\xff\\n"}'
+    raw = b'{"type": "printf", "data": "W 5000 0 1 512 10 /work/scorer.py\xff\\n"}'
     item = parse(raw.decode("utf-8", "surrogateescape"))
     assert item == File(10, "write", "/work/scorer.py\\xff", at=PARSED)
 
@@ -540,10 +560,13 @@ def test_parse_keeps_bytes_that_are_not_utf8() -> None:
 def test_parse_rejects_misshapen_lines(text: str) -> None:
     item = parse(line(text))
     tag, rest = text.split(" ", 1)
-    assert item == Garbled(10, f"{tag} 5000 0 1 {rest}", PARSED)
+    if tag in UNGROUPED:
+        assert item == Garbled(10, f"{tag} 5000 0 1 {rest}", Stamp(5, 0, 1))
+    else:
+        assert item == Garbled(10, f"{tag} 5000 0 1 {CG} {rest}", PARSED)
 
 
-@pytest.mark.parametrize("text", ["F 10 11", "F x 0 1 10 11", "F"])
+@pytest.mark.parametrize("text", ["F 10 11", "F x 0 1 2 10 11", "F 10 0 1 x 10 11", "F", "Q 10"])
 def test_parse_rejects_bad_headers(text: str) -> None:
     item = parse(json.dumps({"type": "printf", "data": f"{text}\n"}))
     assert item == Garbled(None, text)
@@ -626,11 +649,12 @@ async def test_tracer_routes_by_pid_namespace(monkeypatch: pytest.MonkeyPatch) -
             "X 11 0 0",
             "W 11 /work/after-exit",
             release(11, 5, VDA1, "out", "_data", "aims-r-a1-work", "volumes", "docker"),
-            f"E 50 1 1 1000 77 5 {len(argv)} {hx(argv)}",
-            "W 50 /other",
             "E 11 broken",
         ]
     ]
+    other = Feed(tracer, cpu=1, cgroup=CG + 1)
+    other(f"E 50 1 1 1000 77 5 {len(argv)} {hx(argv)}")
+    other("W 50 /other")
     tracer._handle(json.dumps({"type": "lost_events", "data": {"events": 2}}))
 
     assert drain(route) == [
@@ -646,7 +670,7 @@ async def test_tracer_routes_by_pid_namespace(monkeypatch: pytest.MonkeyPatch) -
         Exit(11, 0, None, at=s[12]),
         File(11, "write", "/work/after-exit", at=s[13]),
         Close(11, 5, "/work/out", at=s[14]),
-        Lost(1, f"unparseable tracer line: E {s[-1].ts * 1000} 0 {s[-1].seq} 11 broken"),
+        Lost(1, f"unparseable tracer line: E {s[-1].ts * 1000} 0 {s[-1].seq} {CG} 11 broken"),
     ]
     assert tracer.clock == (10, 0)
     assert tracer.garbled == 1
@@ -664,8 +688,8 @@ async def test_tracer_routes_by_pid_namespace(monkeypatch: pytest.MonkeyPatch) -
     assert (tracer.unrouted, tracer.foreign) == (0, 4)
     late_tick(tracer, 5_000_000)
     assert route.queue.empty()
-    assert (tracer.unrouted, tracer.foreign) == (1, 4)
-    assert json.loads(tracer.unrouted_lines[-1])["data"].endswith(" 12 /nobody\n")
+    # The sandbox's cgroup is no sandbox's now, so a new pid in it is foreign too.
+    assert (tracer.unrouted, tracer.foreign) == (0, 5)
     await tracer.stop()
 
 
@@ -675,6 +699,7 @@ async def test_processes_running_at_registration_are_adopted() -> None:
     route = tracer.register(99, Mounts.parse(MOUNTINFO), SYSCALLS["aarch64"])
     feed = Feed(tracer)
     feed("R 0 999")
+    claim(tracer, 99)
     tracer.adopt(route, [5, 6])
     s = feed("X 6 0 9")
     t = feed("X 7 0 9")
@@ -811,19 +836,23 @@ async def test_exited_pids_stop_routing_after_a_while() -> None:
 
 
 @pytest.mark.anyio
-async def test_unrouted_records_are_lost_in_every_sandbox() -> None:
+async def test_unrouted_records_are_lost_in_the_sandbox_of_their_cgroup() -> None:
     tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
     one = tracer.register(98, Mounts.parse(MOUNTINFO), SYSCALLS["aarch64"])
     two = tracer.register(99, Mounts.parse(MOUNTINFO), SYSCALLS["aarch64"])
+    claim(tracer, 98, CG + 1)
+    claim(tracer, 99)
     feed = Feed(tracer)
     feed("R 0 999")
     s = feed("W 80 /work/a")
     t = feed("W 80 /work/b")
-    assert one.queue.empty()
+    Feed(tracer, cpu=1, cgroup=CG + 2)("W 81 /work/c")
+    assert two.queue.empty()
     late_tick(tracer, 2_000_000)
 
-    lost = Lost(2, UNKNOWN, (), s.ts, t.ts)
-    assert (drain(one), drain(two)) == ([lost], [lost])
+    assert (drain(one), drain(two)) == ([], [Lost(2, UNKNOWN, (), s.ts, t.ts)])
+    assert (tracer.unrouted, tracer.foreign) == (2, 1)
+    assert json.loads(tracer.unrouted_lines[-1])["data"].endswith(" 80 /work/b\n")
     await tracer.stop()
 
 
@@ -954,6 +983,7 @@ async def test_exec_path_at_the_cap_is_partial() -> None:
 async def test_tracer_reports_sequence_gaps_once() -> None:
     tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
     route = tracer.register(99, Mounts([]), {})
+    claim(tracer, 99)
     tracer.adopt(route, [1])
     feed = Feed(tracer, cpu=3)
     feed("W 1 /a")
@@ -966,10 +996,100 @@ async def test_tracer_reports_sequence_gaps_once() -> None:
     assert losses(route) == [Lost(5, "kernel record gap", (3,), 10, 70)]
     late_tick(tracer, 5_000_000)
 
-    assert losses(route) == [Lost(None, "the kernel dropped 2 records no sequence hole located")]
+    unlocated = Lost(None, "the kernel dropped 2 records no sequence hole located", scope="tracer")
+    assert losses(route) == [unlocated]
     assert (tracer.kernel_lost, tracer.located, tracer.unlocated) == (7, 5, 2)
     tracer.settle()
     assert route.queue.empty()
+    await tracer.stop()
+
+
+@pytest.mark.anyio
+async def test_a_hole_is_lost_only_in_the_sandbox_whose_stream_it_is_in() -> None:
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    one = tracer.register(98, Mounts([]), {})
+    two = tracer.register(99, Mounts([]), {})
+    claim(tracer, 98, CG + 1)
+    claim(tracer, 99)
+    tracer.adopt(one, [1])
+    tracer.adopt(two, [2])
+    busy = Feed(tracer, cpu=3)
+    busy("W 2 /a")
+    busy.seq += 4
+    busy("W 2 /b")
+    Feed(tracer, cpu=3, cgroup=CG + 1)("W 1 /c")
+    stray = Feed(tracer, cpu=3, cgroup=CG + 2)
+    stray("W 9 /d")
+    stray.seq += 2
+    stray("W 9 /e")
+    tick(tracer, 1_000_000, 3, 1)
+    tick(tracer, 1_000_000, 3, 4)
+    late_tick(tracer, 3_000_000)
+
+    own = Lost(2, OWN_GAP, (3,), 1_000_000, 1_000_000, "tracer")
+    assert losses(one) == [own]
+    assert losses(two) == [Lost(4, "kernel record gap", (3,), 10, 60), own]
+    assert (tracer.located, tracer.foreign_lost, tracer.foreign) == (8, 2, 2)
+    await tracer.stop()
+
+
+@pytest.mark.anyio
+async def test_a_reused_pid_namespace_drops_the_cgroup_of_the_gone_container() -> None:
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    route = tracer.register(99, Mounts([]), {})
+    helper = Feed(tracer, cgroup=CG + 1)
+    helper(f"E 10 1 1 0 99 1 3 {hx(b'sh\0')}")
+    helper("W 10 /a")
+    helper.seq += 2
+    helper("W 10 /b")
+    feed = Feed(tracer)
+    feed(f"E 20 1 1 0 99 5 3 {hx(b'sh\0')}")
+    late_tick(tracer, 3_000_000)
+    assert dict(tracer._cgroups) == {CG: 99}
+    assert losses(route) == []
+    assert tracer.foreign_lost == 2
+    await tracer.stop()
+
+
+@pytest.mark.anyio
+async def test_quiesce_waits_for_the_records_a_reading_counted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    tracer.alive = True
+    route = tracer.register(99, Mounts.parse(MOUNTINFO), SYSCALLS["aarch64"])
+    feed = Feed(tracer)
+    feed(f"E 10 1 1 1000 99 5 3 {hx(b'sh\0')}")
+    feed("X 10 0 0")
+    tracer._counted(f"C 0.5 {count(CG, 0, 3)}")
+    quiet = asyncio.create_task(tracer.quiesce(route, 1))
+    await asyncio.sleep(0.2)
+    assert not quiet.done()
+    feed("W 10 /work/late")
+    tracer._fed.set()
+    async with asyncio.timeout(1):
+        await quiet
+
+    # Records that never come hold the close only so long.
+    monkeypatch.setattr(tracer_module, "SETTLE_S", 0.1)
+    tracer._counted(f"C 0.6 {count(CG, 0, 5)}")
+    async with asyncio.timeout(1):
+        await tracer.quiesce(route, 1)
+    tracer.alive = False
+    await tracer.stop()
+
+
+@pytest.mark.anyio
+async def test_unreadable_counts_are_reported_once(caplog: pytest.LogCaptureFixture) -> None:
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    with caplog.at_level(logging.WARNING, "aims.sandbox"):
+        tracer._counted("C 1.0")
+        tracer._counted("C 2.0")
+        tracer._counted("C x")
+    assert [r.getMessage() for r in caplog.records] == [
+        "the kernel's record counts are unreadable; lost last records go unseen",
+        "unreadable tracer stream counts: C x",
+    ]
     await tracer.stop()
 
 
@@ -994,11 +1114,12 @@ async def test_loss_waits_for_its_hole_to_ripen() -> None:
     for n in range(3, 7):
         tick(tracer, 1_100_000 + (n - 1) * 999_000, 0, n)
 
-    assert drain(route) == [Lost(3, "kernel record gap", (1,), 1_000_000, 1_100_000)]
+    assert drain(route) == [Lost(3, OWN_GAP, (1,), 1_000_000, 1_100_000, "tracer")]
     assert (tracer.kernel_lost, tracer.located, tracer.unlocated) == (3, 3, 0)
     tracer._handle(json.dumps({"type": "lost_events", "data": {"events": 2}}))
     tick(tracer, 11_000_000, 0, 7)
-    assert drain(route) == [Lost(None, "the kernel dropped 2 records no sequence hole located")]
+    reason = "the kernel dropped 2 records no sequence hole located"
+    assert drain(route) == [Lost(None, reason, scope="tracer")]
     await tracer.stop()
 
 
@@ -1021,6 +1142,85 @@ def test_sequence_counts_a_lost_first_record_and_expires_idle_cpus() -> None:
     assert seq.expire(101) == [Gap(1, 1, 2, None, 100)]
     assert seq.expire(10_000) == []
     assert seq.latest == 5_000
+
+
+def test_each_cgroup_numbers_its_own_stream() -> None:
+    seq = Sequence()
+    assert seq.observe(Stamp(10, 0, 1, 5)) == []
+    assert seq.observe(Stamp(20, 0, 1, 6)) == []
+    assert seq.observe(Stamp(30, 0, 2, 5)) == []
+    assert seq.observe(Stamp(40, 0, 4, 6)) == []
+    assert seq.expire(1_000) == [Gap(0, 2, 2, 20, 40, 6)]
+    assert not seq.pending(5)
+
+
+def count(cgroup: int, cpu: int, seq: int) -> str:
+    """One stream's count as the tracer prints it: the raw key and value bytes in hex."""
+    key = cgroup.to_bytes(8, "little") + cpu.to_bytes(8, "little")
+    return f"{key.hex()}:{seq.to_bytes(8, 'little').hex()}"
+
+
+def test_parse_counts_reads_the_raw_keys() -> None:
+    # As bpftool dumped them on linuxkit 7.0.14: the tracer's own stream and cgroup 805.
+    line = (
+        "C 439.52 00000000000000000000000000000000:0700000000000000 "
+        "25030000000000000600000000000000:0100000000000000"
+    )
+    assert parse_counts(line) == (439_520_000, {(0, 0): 7, (805, 6): 1})
+    assert parse_counts(f"C 1.5 {count(2**64 - 1, 3, 9)}") == (1_500_000, {(2**64 - 1, 3): 9})
+    assert parse_counts("C 439.52") == (439_520_000, {})
+    assert parse_counts("C 439.52 2503:01") is None
+    assert parse_counts("C 439.52 zz") is None
+    assert parse_counts("C x") is None
+
+
+def test_a_reading_shows_the_last_records_once_their_cpu_has_passed_it() -> None:
+    late = LATE_US
+    seq = Sequence()
+    assert seq.observe(Stamp(10, 0, 1, 5)) == []
+    seq.counted(100, {(5, 0): 3, (0, 0): 0})
+    assert seq.pending(5)
+    assert seq.observe(Stamp(50, 0, 2, 5)) == []
+    assert seq.pending(5)
+    assert seq.observe(Stamp(100 + late, 0, 1)) == []
+    assert seq.observe(Stamp(101 + late, 1, 1)) == []
+    assert seq.observe(Stamp(101 + late, 0, 2)) == [Gap(0, 3, 1, 50, 100, 5)]
+    assert not seq.pending(5)
+    assert seq.observe(Stamp(60, 0, 3, 5)) == []
+
+    # Counted records that arrive in time leave no hole.
+    seq.counted(200 + late, {(5, 0): 4})
+    assert seq.observe(Stamp(150 + late, 0, 4, 5)) == []
+    assert not seq.pending(5)
+    assert seq.observe(Stamp(201 + 2 * late, 0, 3)) == []
+
+
+def test_a_busy_stream_cannot_keep_replacing_an_unmet_reading() -> None:
+    late = LATE_US
+    seq = Sequence()
+    assert seq.observe(Stamp(10, 0, 1, 5)) == []
+    seq.counted(100, {(5, 0): 3})
+    seq.counted(200, {(5, 0): 5})
+    assert seq.observe(Stamp(150, 0, 2, 5)) == []
+    assert seq.observe(Stamp(100 + late + 1, 0, 1)) == [Gap(0, 3, 1, 150, 100, 5)]
+    # A reading whose records all came gives way to the next one.
+    seq.counted(300 + late, {(5, 0): 5})
+    assert seq.observe(Stamp(280 + late, 0, 4, 5)) == []
+    assert seq.observe(Stamp(290 + late, 0, 5, 5)) == []
+    seq.counted(400 + late, {(5, 0): 7})
+    assert seq.observe(Stamp(390 + late, 0, 6, 5)) == []
+    gap = Gap(0, 7, 1, 390 + late, 400 + late, 5)
+    assert seq.observe(Stamp(400 + 2 * late + 1, 0, 2)) == [gap]
+
+
+def test_streams_the_kernel_stopped_counting_are_forgotten() -> None:
+    seq = Sequence()
+    assert seq.observe(Stamp(10, 0, 1, 5)) == []
+    assert seq.observe(Stamp(10, 0, 1, 6)) == []
+    seq.counted(10 + FORGET_US, {(6, 0): 1})
+    assert (5, 0) in seq._next
+    seq.counted(11 + FORGET_US, {(6, 0): 1})
+    assert set(seq._next) == {(6, 0)}
 
 
 @pytest.mark.anyio
@@ -1131,7 +1331,7 @@ async def test_skipped_probe_runs_are_lost_in_every_sandbox() -> None:
     tracer._probes = {3183: "fentry_vmlinux_strncpy_from_kernel_nofault"}
     tracer._skipped(*parse_skips(SKIP_READING.splitlines()))
     reason = SKIP_REASON.format("fentry_vmlinux_strncpy_from_kernel_nofault")
-    first = [Lost(1002, reason, (), 1_000_000, 1_687_990_000)]
+    first = [Lost(1002, reason, (), 1_000_000, 1_687_990_000, "tracer")]
     assert drain(one) == first
     assert drain(two) == first
 
@@ -1140,8 +1340,8 @@ async def test_skipped_probe_runs_are_lost_in_every_sandbox() -> None:
     tracer._skipped(1_688_990_000, {3183: 1010, 3185: 2})
     window = (1_687_990_000, 1_688_990_000)
     assert drain(one) == [
-        Lost(8, reason, (), *window),
-        Lost(2, SKIP_REASON.format("program 3185"), (), *window),
+        Lost(8, reason, (), *window, "tracer"),
+        Lost(2, SKIP_REASON.format("program 3185"), (), *window, "tracer"),
     ]
     assert tracer.skipped == 1012
     assert tracer._skips == {3183: 1010, 3185: 2}
