@@ -2,25 +2,16 @@
 // Seeds a 20k-event run and 1000 small runs with scripts/seed.py, serves them with `aims ui`,
 // times each interaction in headless Chrome and checks the ceilings in bench.json.
 
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { parseArgs } from "node:util";
 
 import { browserSocket, type Cdp, chromePath, connect, launch } from "./cdp";
+import { type Plane, plane, type Seeded } from "./serve";
 
 interface Ceiling {
   ms?: number;
   stat: "median" | "p95" | "max";
   what: string;
-}
-
-interface Seeded {
-  run: string;
-  events: number;
-  steps: number;
-  runs: number;
-  needle: string;
 }
 
 const { values: opts } = parseArgs({
@@ -34,7 +25,6 @@ const { values: opts } = parseArgs({
 });
 const SAMPLES = Number(opts.samples);
 const CPU = Number(opts.cpu);
-const ROOT = resolve(import.meta.dir, "../..");
 const ceilings = (await Bun.file(join(import.meta.dir, "../bench.json")).json()) as Record<
   string,
   Ceiling
@@ -232,54 +222,6 @@ class Page {
   }
 }
 
-function spawn(cmd: string[], cwd: string, env: Record<string, string>, log: string) {
-  return Bun.spawn(cmd, {
-    cwd,
-    env: { ...process.env, ...env },
-    stdout: Bun.file(log),
-    stderr: Bun.file(`${log}.err`),
-  });
-}
-
-async function run(cmd: string[], cwd: string, env: Record<string, string>, log: string) {
-  const proc = spawn(cmd, cwd, env, log);
-  if ((await proc.exited) !== 0)
-    throw new Error(`${cmd.join(" ")} failed: ${await Bun.file(`${log}.err`).text()}`);
-  return Bun.file(log).text();
-}
-
-async function stop(proc: Bun.Subprocess): Promise<void> {
-  proc.kill("SIGTERM");
-  const ended = await Promise.race([proc.exited.then(() => true), Bun.sleep(10_000)]);
-  if (!ended) proc.kill("SIGKILL");
-}
-
-async function serve(tmp: string, env: Record<string, string>): Promise<string> {
-  const info = Bun.file(join(env["AIMS_SERVER_DIR"] ?? "", "server.json"));
-  const up = async () => {
-    // server.json can be half written
-    const url = await info.json().then(
-      (j: { url: string }) => j.url,
-      () => null,
-    );
-    const ok =
-      url !== null &&
-      (await fetch(`${url}/api/health`).then(
-        (r) => r.ok,
-        () => false,
-      ));
-    return ok ? url : null;
-  };
-  for (let i = 0; i < 600; i++) {
-    // oxlint-disable-next-line no-await-in-loop
-    const url = await up();
-    if (url) return url;
-    // oxlint-disable-next-line no-await-in-loop
-    await Bun.sleep(100);
-  }
-  throw new Error(`aims ui did not start: ${await Bun.file(join(tmp, "ui.log.err")).text()}`);
-}
-
 function stat(values: number[], how: Ceiling["stat"]): number {
   const sorted = values.toSorted((a, b) => a - b);
   if (how === "max") return sorted.at(-1) ?? 0;
@@ -401,49 +343,20 @@ async function rawLoaded(cdp: Cdp, url: string): Promise<void> {
   }
 }
 
-const tmp = opts.dir ? resolve(opts.dir) : await mkdtemp(join(tmpdir(), "aims-bench-"));
-const env = { AIMS_SERVER_DIR: join(tmp, "cp") };
 let seeded: Seeded;
-let server: Bun.Subprocess | undefined;
+let cp: Plane | undefined;
 let chrome: Awaited<ReturnType<typeof launch>> | undefined;
 let failed = 0;
 try {
-  const runs = join(tmp, "runs");
-  const pushed = join(tmp, "push.log");
-  const fresh = !(await Bun.file(pushed).exists());
-  if (fresh) {
-    await mkdir(tmp, { recursive: true });
-    const seed = ["uv", "run", "--project", ROOT, "python", join(ROOT, "scripts/seed.py"), runs];
-    await run(seed, tmp, {}, join(tmp, "seed.log"));
-  }
-  seeded = JSON.parse(await Bun.file(join(tmp, "seed.log")).text()) as Seeded;
-  await rm(join(env.AIMS_SERVER_DIR, "server.json"), { force: true });
-  server = spawn(
-    [
-      "uv",
-      "run",
-      "--project",
-      ROOT,
-      "aims",
-      "ui",
-      "--no-auth",
-      "--no-runner",
-      "--no-open",
-      "--port",
-      "0",
-    ],
-    tmp,
-    env,
-    join(tmp, "ui.log"),
-  );
-  const url = await serve(tmp, env);
-  if (fresh) await run(["uv", "run", "--project", ROOT, "aims", "push", runs], tmp, env, pushed);
+  cp = await plane({ dir: opts.dir, prefix: "aims-bench-" });
+  seeded = cp.seeded;
+  const url = cp.url;
   const api = (path: string) => fetch(`${url}/api/runs/${seeded.run}${path}`).then((r) => r.json());
   const steps = (await api("/steps?limit=1")) as { items: { seq: number }[] };
   const first = steps.items[0]?.seq ?? 0;
   const found = (await api(`/events?limit=200&q=${seeded.needle}`)) as { items: unknown[] };
 
-  chrome = await launch(chromePath(), join(tmp, "chrome"));
+  chrome = await launch(chromePath(), join(cp.dir, "chrome"));
   const cdp = await connect(await browserSocket(chrome.port));
   const version = await cdp.send<{ product: string }>("Browser.getVersion");
   // The first round warms the server and the disk cache and is not counted.
@@ -481,7 +394,6 @@ try {
   console.log(`wrote ${opts.out}`);
 } finally {
   await chrome?.close();
-  if (server) await stop(server);
-  if (!opts.dir) await rm(tmp, { recursive: true, force: true });
+  await cp?.stop();
 }
 process.exit(failed ? 1 : 0);

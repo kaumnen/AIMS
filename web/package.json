@@ -9,7 +9,8 @@
     "test": "vitest run",
     "lint": "oxlint --deny-warnings",
     "budget": "bun scripts/budget.ts",
-    "bench": "bun scripts/bench.ts"
+    "bench": "bun scripts/bench.ts",
+    "pass": "bun scripts/pass.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",
@@ -48,6 +49,7 @@
     "@types/react-dom": "^19.3.0",
     "@typescript/typescript6": "6.0.2",
     "@vitejs/plugin-react": "^6.1.2",
+    "axe-core": "^4.14.0",
     "babel-plugin-react-compiler": "^1.0.0",
     "happy-dom": "^21.0.4",
     "openapi-typescript": "^7.13.0",

@@ -16,3 +16,4 @@ src/aims/ui/dist/
 /runs/
 /runs-archive/
 /web/bench-results.json
+/web/pass-shots/

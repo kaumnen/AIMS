@@ -1,0 +1,301 @@
+{
+  "states": [
+    { "name": "sign-in", "path": "/runs", "as": "nobody", "ready": "#token" },
+    {
+      "name": "sign-in-error",
+      "path": "/runs",
+      "as": "nobody",
+      "ready": "#token-error",
+      "steps": [
+        { "wait": "#token", "css": "#token" },
+        { "type": "not-a-token" },
+        { "press": "Enter" }
+      ]
+    },
+
+    {
+      "name": "runs",
+      "path": "/runs",
+      "ready": "[aria-label=Runs] [role=rowgroup]:nth-child(2) [role=row]"
+    },
+    {
+      "name": "runs-reviews",
+      "path": "/runs?kind=monitor",
+      "ready": "[aria-label=Runs] [role=rowgroup]:nth-child(2) [role=row]"
+    },
+    {
+      "name": "runs-scores",
+      "path": "/runs?kind=score",
+      "ready": "[aria-label=Runs] [role=rowgroup]:nth-child(2) [role=row]"
+    },
+    {
+      "name": "runs-selftests",
+      "path": "/runs?kind=selftest",
+      "ready": "[aria-label=Runs] [role=rowgroup]:nth-child(2) [role=row]"
+    },
+    {
+      "name": "runs-checks",
+      "path": "/runs?kind=models.check",
+      "ready": "[aria-label=Runs] [role=rowgroup]:nth-child(2) [role=row]"
+    },
+    {
+      "name": "runs-all",
+      "path": "/runs?kind=all",
+      "ready": "[aria-label=Runs] [role=rowgroup]:nth-child(2) [role=row]"
+    },
+    {
+      "name": "runs-reviews-open",
+      "path": "/runs?scenario=ledger-fix",
+      "ready": "[aria-label=Runs] [role=row] [aria-expanded=true]",
+      "steps": [
+        {
+          "wait": "[aria-label=Runs] [aria-expanded=false]",
+          "css": "[aria-label=Runs] [aria-expanded=false]"
+        }
+      ]
+    },
+    {
+      "name": "runs-cases-open",
+      "path": "/runs?kind=selftest",
+      "ready": "[aria-label=Runs] [role=row] [aria-expanded=true]",
+      "steps": [
+        {
+          "wait": "[aria-label=Runs] [aria-expanded=false]",
+          "css": "[aria-label=Runs] [aria-expanded=false]"
+        }
+      ]
+    },
+    { "name": "runs-none", "path": "/runs?scenario=no-such-scenario", "ready": "#main p" },
+    {
+      "name": "runs-viewer",
+      "path": "/runs",
+      "as": "viewer",
+      "ready": "[aria-label=Runs] [role=rowgroup]:nth-child(2) [role=row]"
+    },
+    {
+      "name": "shortcuts",
+      "path": "/runs",
+      "dialog": true,
+      "ready": "[role=dialog]",
+      "steps": [{ "wait": "[aria-label=Runs] [role=row]", "press": "?" }]
+    },
+    {
+      "name": "new-run",
+      "path": "/runs",
+      "dialog": true,
+      "ready": "[role=dialog] [aria-label='Cost estimate']",
+      "steps": [{ "wait": "[aria-label=Runs] [role=row]", "click": "New run" }]
+    },
+
+    { "name": "run", "path": "/runs/{run}", "ready": "article h2" },
+    { "name": "run-score", "path": "/runs/{run}?tab=score", "ready": "dl[aria-label=Score]" },
+    {
+      "name": "run-raw",
+      "path": "/runs/{run}?tab=raw",
+      "ready": "[aria-label=Events] [role=option]"
+    },
+    {
+      "name": "run-raw-search",
+      "path": "/runs/{run}?tab=raw",
+      "ready": "[aria-label=Events] [role=option]",
+      "steps": [
+        { "wait": "[aria-label=Events] [role=option]", "css": "[aria-label='Search events']" },
+        { "type": "ZeroDivisionError" },
+        { "press": "Enter" }
+      ]
+    },
+    { "name": "run-viewer", "path": "/runs/{run}", "as": "viewer", "ready": "article h2" },
+    {
+      "name": "run-missing",
+      "path": "/runs/01a00000-0000-7000-8000-000000000000",
+      "ready": "#main h1"
+    },
+    {
+      "name": "fork",
+      "path": "/runs/{run}",
+      "dialog": true,
+      "ready": "[role=dialog] [aria-label='Cost estimate']",
+      "steps": [{ "wait": "article h2", "click": "Fork from here" }]
+    },
+    {
+      "name": "review",
+      "path": "/runs/{run}",
+      "dialog": true,
+      "ready": "[role=dialog] [aria-label='Cost estimate']",
+      "steps": [{ "wait": "article h2", "click": "Review" }]
+    },
+
+    { "name": "review-run", "path": "/runs/{review}", "ready": "#main section, #main p" },
+    { "name": "score-run", "path": "/runs/{score}", "ready": "#main section, #main p" },
+    { "name": "fork-run", "path": "/runs/{fork}", "ready": "article h2" },
+    { "name": "selftest", "path": "/runs/{selftest}", "ready": "#main table" },
+    {
+      "name": "selftest-case",
+      "path": "/runs/{case}",
+      "ready": "[aria-label=Events] [role=option]"
+    },
+    { "name": "model-check", "path": "/runs/{check}", "ready": "#main section, #main p" },
+
+    { "name": "live", "path": "/runs/{live}", "ready": "section[aria-label^='Monitor pause']" },
+    {
+      "name": "live-hold-inject",
+      "path": "/runs/{live}",
+      "dialog": true,
+      "ready": "section[aria-label^='Monitor pause'] button[aria-expanded=true]",
+      "steps": [
+        {
+          "wait": "section[aria-label^='Monitor pause']",
+          "css": "section[aria-label^='Monitor pause'] button[aria-expanded]"
+        }
+      ]
+    },
+    {
+      "name": "live-hold-kill",
+      "path": "/runs/{live}",
+      "dialog": true,
+      "ready": "[role=dialog]",
+      "steps": [{ "wait": "section[aria-label^='Monitor pause']", "click": "Kill run" }]
+    },
+    {
+      "name": "live-inject",
+      "path": "/runs/{live}",
+      "dialog": true,
+      "ready": "[role=dialog]",
+      "steps": [{ "wait": "section[aria-label^='Monitor pause']", "click": "Inject" }]
+    },
+    {
+      "name": "live-cancel",
+      "path": "/runs/{live}",
+      "dialog": true,
+      "ready": "[role=dialog]",
+      "steps": [{ "wait": "section[aria-label^='Monitor pause']", "click": "Cancel" }]
+    },
+    {
+      "name": "live-kill",
+      "path": "/runs/{live}",
+      "dialog": true,
+      "ready": "[role=dialog]",
+      "steps": [{ "wait": "section[aria-label^='Monitor pause']", "click": "Kill" }]
+    },
+    {
+      "name": "live-commands",
+      "path": "/runs/{live}",
+      "dialog": true,
+      "ready": "[role=dialog]",
+      "steps": [{ "wait": "section[aria-label^='Monitor pause']", "click": "Commands" }]
+    },
+    { "name": "live-viewer", "path": "/runs/{live}", "as": "viewer", "ready": "article h2" },
+
+    { "name": "bee5", "path": "/runs/{bee5}", "ready": "article h2" },
+    { "name": "bee5-score", "path": "/runs/{bee5}?tab=score", "ready": "dl[aria-label=Score]" },
+    {
+      "name": "bee5-raw",
+      "path": "/runs/{bee5}?tab=raw",
+      "ready": "[aria-label=Events] [role=option]"
+    },
+
+    { "name": "scenarios", "path": "/scenarios", "ready": "#main table" },
+    {
+      "name": "new-scenario",
+      "path": "/scenarios",
+      "dialog": true,
+      "ready": "[role=dialog]",
+      "steps": [{ "wait": "#main table", "click": "New scenario" }]
+    },
+    { "name": "scenario", "path": "/scenarios/project/cache-keys", "ready": "#main h2" },
+    {
+      "name": "scenario-files",
+      "path": "/scenarios/project/cache-keys?tab=files",
+      "ready": ".cm-content"
+    },
+    {
+      "name": "scenario-prompts",
+      "path": "/scenarios/project/cache-keys?tab=prompts",
+      "ready": "#main ul"
+    },
+    {
+      "name": "scenario-viewer",
+      "path": "/scenarios/project/cache-keys",
+      "as": "viewer",
+      "ready": "#main h2"
+    },
+    {
+      "name": "duplicate",
+      "path": "/scenarios/project/cache-keys",
+      "dialog": true,
+      "ready": "[role=dialog]",
+      "steps": [{ "wait": "#main h2", "click": "Duplicate" }]
+    },
+    {
+      "name": "scenario-file-conflict",
+      "path": "/scenarios/project/cache-keys?tab=files",
+      "dialog": true,
+      "ready": "[role=alert]",
+      "steps": [
+        { "wait": ".cm-content", "css": ".cm-content" },
+        { "type": "# edited here\n" },
+        { "append": ["{project}/scenarios/cache-keys/scenario.yaml", "# edited elsewhere\n"] },
+        { "click": "Save" }
+      ]
+    },
+
+    { "name": "config-project", "path": "/settings/config?view=project", "ready": ".cm-content" },
+    { "name": "config-user", "path": "/settings/config?view=user", "ready": ".cm-content" },
+    { "name": "config-merged", "path": "/settings/config?view=merged", "ready": ".cm-content" },
+    {
+      "name": "config-conflict",
+      "path": "/settings/config?view=user",
+      "dialog": true,
+      "ready": "[role=alert]",
+      "steps": [
+        { "wait": ".cm-content", "css": ".cm-content" },
+        { "type": "# edited here\n" },
+        { "append": ["{config}/config.toml", "# edited elsewhere\n"] },
+        { "click": "Save" }
+      ]
+    },
+    { "name": "config-viewer", "path": "/settings/config", "as": "viewer", "ready": ".cm-content" },
+    { "name": "prompts", "path": "/settings/prompts", "ready": "#main section ul" },
+    { "name": "models", "path": "/settings/models", "ready": "#main table" },
+    { "name": "runners", "path": "/settings/runners", "ready": "#main table" },
+    { "name": "tokens", "path": "/settings/tokens", "ready": "#main table" },
+    { "name": "spend", "path": "/settings/spend", "ready": "#main table" },
+    {
+      "name": "settings-viewer",
+      "path": "/settings/models",
+      "as": "viewer",
+      "ready": "#main table"
+    },
+    {
+      "name": "new-token",
+      "path": "/settings/tokens",
+      "dialog": true,
+      "ready": "[role=dialog]",
+      "steps": [{ "wait": "#main table", "click": "New token" }]
+    },
+    {
+      "name": "token-made",
+      "path": "/settings/tokens",
+      "dialog": true,
+      "ready": "[aria-label='Token value']",
+      "steps": [
+        { "wait": "#main table", "click": "New token" },
+        { "wait": "[role=dialog] input", "css": "[role=dialog] input" },
+        { "type": "ci-runner-{stamp}" },
+        { "press": "Enter" }
+      ]
+    },
+    {
+      "name": "revoke",
+      "path": "/settings/tokens",
+      "dialog": true,
+      "ready": "[role=dialog]",
+      "steps": [
+        {
+          "wait": "#main table button[aria-label^=Revoke]",
+          "css": "#main table button[aria-label^=Revoke]"
+        }
+      ]
+    }
+  ]
+}
