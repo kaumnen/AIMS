@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from aims.events.chain import MAX_LINE, Head, follow
+from aims.events.disk import sync_dir
 
 
 class RunLocked(Exception):
@@ -65,7 +66,8 @@ def tail_only(path: Path, offset: int) -> bool:
 
 
 class LogFile:
-    """Append handle on a run log. Holds an exclusive flock for its whole life."""
+    """Append handle on a run log. Holds an exclusive flock for its whole life. Opening syncs
+    the log's directory, so its entry is durable before any line is."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -75,6 +77,11 @@ class LogFile:
         except BlockingIOError:
             os.close(self._fd)
             raise RunLocked(f"{path} is open for writing elsewhere") from None
+        try:
+            sync_dir(path.parent)
+        except OSError:
+            os.close(self._fd)
+            raise
 
     def write(self, data: bytes) -> None:
         view = memoryview(data)

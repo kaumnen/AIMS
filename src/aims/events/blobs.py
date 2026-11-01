@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from compression import zstd
 from pathlib import Path
 
+from aims.events.disk import make_dir, sync_dir
 from aims.events.schema import BlobRef
 
 
@@ -66,13 +67,16 @@ class BlobStore:
         return self.put_many([data])[0]
 
     def put_many(self, datas: Sequence[bytes]) -> list[BlobRef]:
-        """Store `datas` durably, with one directory fsync for the whole batch."""
+        """Store `datas` durably, with one directory fsync for the whole batch. Blobs already
+        here are synced too: another call may have renamed them in and not synced yet."""
         refs = [BlobRef(sha256=hashlib.sha256(d).hexdigest(), size=len(d)) for d in datas]
         todo = {r.sha256: d for r, d in zip(refs, datas, strict=True)}
         todo = {sha: d for sha, d in todo.items() if not self.path(sha).exists()}
         if not todo:
+            if refs:
+                sync_dir(self.root)
             return refs
-        self.root.mkdir(parents=True, exist_ok=True)
+        make_dir(self.root)
         written: list[tuple[Path, Path]] = []
         placed = 0
         try:
@@ -90,11 +94,7 @@ class BlobStore:
             for tmp, _ in written:
                 tmp.unlink(missing_ok=True)
             if placed:
-                dir_fd = os.open(self.root, os.O_RDONLY)
-                try:
-                    os.fsync(dir_fd)
-                finally:
-                    os.close(dir_fd)
+                sync_dir(self.root)
         return refs
 
     def missing(self, shas: Sequence[str]) -> list[str]:
@@ -123,7 +123,7 @@ class BlobWriter:
         self.sha256 = sha256
         self.limit = limit
         self.size = 0
-        store.root.mkdir(parents=True, exist_ok=True)
+        make_dir(store.root)
         self._tmp = store.root / f".{sha256}.{secrets.token_hex(4)}"
         self._file = self._tmp.open("xb")
         self._raw = hashlib.sha256()
@@ -195,11 +195,7 @@ class BlobWriter:
             if size > self.limit:
                 raise BlobError(f"blob {self.sha256} is over {self.limit} bytes")
             self._tmp.replace(self.path)
-            dir_fd = os.open(self.path.parent, os.O_RDONLY)
-            try:
-                os.fsync(dir_fd)
-            finally:
-                os.close(dir_fd)
+            sync_dir(self.path.parent)
             return BlobRef(sha256=self.sha256, size=size)
         finally:
             self.abort()

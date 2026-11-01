@@ -13,6 +13,7 @@ from typing import Any, Protocol, Self
 
 from aims.events.blobs import BlobStore, BlobWriter, read_blob, stored_size
 from aims.events.chain import ChainError, Head, follow, seal
+from aims.events.disk import make_dir, sync_dir
 from aims.events.index import (
     MAX_PAGE,
     ExecActivity,
@@ -206,6 +207,12 @@ class LocalEventStore:
     A run is written here by `append`, or copied here line by line from its writer by `ingest`.
     An `ingest_only` store never appends, so every copy it holds stays byte for byte the
     writer's.
+
+    On Linux, once `append` or `ingest` returns, its lines, the run directory and log they sit
+    in, and every blob they reference survive a crash or power loss, provided the blobs were
+    stored before the lines were written. On macOS `os.fsync` does not flush the drive cache,
+    so the same holds after a process crash or kernel panic but not after power loss.
+    F_FULLFSYNC would flush it, at about 4 ms per append against 0.02 ms.
     """
 
     def __init__(self, root: Path, index: Index, *, ingest_only: bool = False) -> None:
@@ -223,7 +230,7 @@ class LocalEventStore:
 
     @classmethod
     async def open(cls, root: Path, *, ingest_only: bool = False) -> LocalEventStore:
-        await asyncio.to_thread(root.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread(make_dir, root, parents=True)
         store = cls(root, await Index.open(root / INDEX), ingest_only=ingest_only)
         try:
             await store.sync()
@@ -255,7 +262,7 @@ class LocalEventStore:
             raise RuntimeError("this store only ingests runs")
         run_id = run_id or str(uuid.uuid7())
         run_dir = self._dir(run_id)
-        run_dir.mkdir(exist_ok=True)
+        make_dir(run_dir)
         if blobs:
             await self.put_blobs(run_id, blobs)
         self._log(run_id).touch(exist_ok=False)
@@ -264,7 +271,7 @@ class LocalEventStore:
 
     def prepare_run(self, run_id: str) -> None:
         """Make the directory of a run that is still to start, so its blobs can land first."""
-        self._dir(run_id).mkdir(exist_ok=True)
+        make_dir(self._dir(run_id))
 
     async def head(self, run_id: str) -> Head | None:
         """Where the indexed part of a run's log ends."""
@@ -438,7 +445,7 @@ class LocalEventStore:
             if sink is not None:
                 return sink
             run_dir = self._dir(run_id)
-            await asyncio.to_thread(run_dir.mkdir, exist_ok=True)
+            await asyncio.to_thread(make_dir, run_dir)
             path = self._log(run_id)
             file = LogFile(path)
             try:
@@ -528,6 +535,7 @@ class LocalEventStore:
         if path.is_file():
             async for _ in chunks:
                 pass
+            await asyncio.to_thread(sync_dir, blobs.root)
             return BlobRef(sha256=sha256, size=await asyncio.to_thread(stored_size, path))
         writer: BlobWriter = await asyncio.to_thread(blobs.writer, sha256, limit=limit)
         try:

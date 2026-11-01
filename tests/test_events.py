@@ -4,7 +4,6 @@ import hashlib
 import json
 import os
 import sqlite3
-import stat
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
@@ -30,12 +29,13 @@ from aims.events import (
     RunStarted,
     TaskScored,
     ToolCall,
+    split_lines,
     verify_run,
 )
 from aims.events.blobs import ZSTD_MAGIC
 from aims.events.chain import GENESIS, Head, digest, seal
 from aims.events.schema import now
-from aims.events.store import INLINE_LIMIT
+from aims.events.store import INLINE_LIMIT, LOG
 
 pytestmark = pytest.mark.anyio
 
@@ -63,6 +63,25 @@ async def finished_run(store: LocalEventStore) -> str:
 
 def log_path(store: LocalEventStore, run_id: str) -> Path:
     return store.root / run_id / "events.jsonl"
+
+
+def fsyncs(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, int]]:
+    """The device and inode of every file or directory os.fsync syncs from now on."""
+    fsync = os.fsync
+    synced: list[tuple[int, int]] = []
+
+    def spy(fd: int) -> None:
+        st = os.fstat(fd)
+        synced.append((st.st_dev, st.st_ino))
+        fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", spy)
+    return synced
+
+
+def ident(path: Path) -> tuple[int, int]:
+    st = path.stat()
+    return st.st_dev, st.st_ino
 
 
 async def test_append_and_read(store: LocalEventStore) -> None:
@@ -419,22 +438,60 @@ async def test_a_failed_batch_syncs_the_blobs_it_placed(
             raise OSError("disk full")
         return replace(self, target)
 
-    fsync = os.fsync
-    dirs: list[bool] = []
-
-    def spy(fd: int) -> None:
-        dirs.append(stat.S_ISDIR(os.fstat(fd).st_mode))
-        fsync(fd)
-
     monkeypatch.setattr(Path, "replace", flaky)
-    monkeypatch.setattr(os, "fsync", spy)
+    synced = fsyncs(monkeypatch)
     with pytest.raises(OSError, match="disk full"):
         await store.put_blobs(run_id, [b"first", b"second"])
     first, second = (hashlib.sha256(d).hexdigest() for d in [b"first", b"second"])
     assert (blobs / first).is_file()
     assert not (blobs / second).exists()
     assert not [p for p in blobs.iterdir() if p.name.startswith(".")]
-    assert dirs == [False, False, True]
+    assert [s == ident(blobs) for s in synced] == [False, False, False, True]
+
+
+async def test_blobs_already_stored_are_synced_again(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = await store.create_run(STARTED)
+    ref = await store.put_blob(run_id, b"first")
+    blobs = store.root / run_id / "blobs"
+    synced = fsyncs(monkeypatch)
+    assert await store.put_blobs(run_id, [b"first"]) == [ref]
+    assert synced == [ident(blobs)]
+
+    async def chunks() -> AsyncIterator[bytes]:
+        yield (blobs / ref.sha256).read_bytes()
+
+    synced.clear()
+    assert await store.put_blob_stream(run_id, ref.sha256, chunks(), limit=1 << 20) == ref
+    assert synced == [ident(blobs)]
+
+
+async def test_a_new_run_syncs_its_entries_before_its_lines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    synced = fsyncs(monkeypatch)
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        run_id = await store.create_run(STARTED)
+        run_dir = store.root / run_id
+        order = [synced.index(ident(p)) for p in (tmp_path, store.root, run_dir, run_dir / LOG)]
+        assert order == sorted(order)
+
+        synced.clear()
+        await store.put_blob(run_id, b"first")
+        assert synced.index(ident(run_dir)) < synced.index(ident(run_dir / "blobs"))
+
+
+async def test_a_copied_run_syncs_its_entries_before_its_lines(
+    store: LocalEventStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = await finished_run(store)
+    async with await LocalEventStore.open(tmp_path / "copy", ingest_only=True) as copy:
+        synced = fsyncs(monkeypatch)
+        await copy.ingest(run_id, split_lines(log_path(store, run_id).read_bytes()))
+        run_dir = copy.root / run_id
+        order = [synced.index(ident(p)) for p in (copy.root, run_dir, run_dir / LOG)]
+        assert order == sorted(order)
 
 
 async def test_stream_tails_until_finished(store: LocalEventStore) -> None:
