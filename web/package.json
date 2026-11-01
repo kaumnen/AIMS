@@ -8,7 +8,8 @@
     "gen": "bun --preload ./scripts/ts6.ts node_modules/openapi-typescript/bin/cli.js openapi.json -o src/api/schema.gen.ts --enum-values --default-non-nullable=false",
     "test": "vitest run",
     "lint": "oxlint --deny-warnings",
-    "budget": "bun scripts/budget.ts"
+    "budget": "bun scripts/budget.ts",
+    "bench": "bun scripts/bench.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",

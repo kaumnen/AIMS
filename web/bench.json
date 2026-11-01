@@ -1,0 +1,56 @@
+{
+  "runs.open": {
+    "ms": 1000,
+    "stat": "median",
+    "what": "open /runs in a fresh browser context until the second run row shows"
+  },
+  "runs.scroll": {
+    "ms": 100,
+    "stat": "max",
+    "what": "longest task over 50 ms, 0 if none, while the runs list scrolls to its end, loading all 1001 runs"
+  },
+  "run.open": {
+    "ms": 1500,
+    "stat": "median",
+    "what": "open the 20k-event run in a fresh browser context until step 1 and its transcript show"
+  },
+  "steps.j": {
+    "ms": 100,
+    "stat": "p95",
+    "what": "press j 50 times, each until the next step's transcript shows"
+  },
+  "steps.scroll": {
+    "ms": 100,
+    "stat": "max",
+    "what": "longest task over 50 ms, 0 if none, while the step list scrolls from top to bottom"
+  },
+  "scrubber.drag": {
+    "ms": 100,
+    "stat": "max",
+    "what": "longest task over 50 ms, 0 if none, while the timeline is dragged from start to end"
+  },
+  "score.open": {
+    "ms": 100,
+    "stat": "median",
+    "what": "first click on the Score tab of an opened run until the score panel shows"
+  },
+  "raw.search": {
+    "ms": 500,
+    "stat": "median",
+    "what": "Enter in Raw events search until the matching events show"
+  },
+  "raw.scroll": {
+    "ms": 100,
+    "stat": "max",
+    "what": "longest task over 50 ms, 0 if none, while Raw events scrolls through all 20k events"
+  },
+  "raw.end": {
+    "ms": 500,
+    "stat": "median",
+    "what": "with every event loaded, jump from the top of Raw events to its end until the last event shows"
+  },
+  "raw.end.cold": {
+    "stat": "median",
+    "what": "from a freshly opened Raw events tab, scroll to the end until the last event shows"
+  }
+}
