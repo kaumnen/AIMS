@@ -266,6 +266,20 @@ def test_bytes_bpftrace_escapes_on_x86_are_restored() -> None:
     assert parse(raw) == File(10, "write", "/a b\\xff café", at=PARSED)
 
 
+@pytest.mark.parametrize(
+    ("path", "want"),
+    [
+        ("/work/\uffffff80.py", "/work/\uffffff80.py"),
+        (r"/a\\uffffff80", r"/a\uffffff80"),
+        (r"/a\\\uffffffc3\uffffffa9", r"/a\é"),
+    ],
+    ids=["real-uffff", "escaped-backslash", "backslash-then-byte"],
+)
+def test_only_the_x86_escape_is_restored(path: str, want: str) -> None:
+    raw = f'{{"type": "printf", "data": "W 5000 0 1 512 10 {path}\\n"}}'
+    assert parse(raw) == File(10, "write", want, at=PARSED)
+
+
 def test_odd_bytes_never_hide_a_cut_path() -> None:
     odd = "/work/" + "\\xff" * (STRLEN // 4)
     item = parse(line(f"W 10 {odd}"))

@@ -114,8 +114,9 @@ def namespaces(flags: int) -> tuple[str, ...]:
 
 _HEX = re.compile(r"^(?:\\x[0-9a-f]{2})*$")
 # bpftrace's JSON escape assumes an unsigned char, so on x86_64 a byte from 0x80 up arrives as
-# U+FFFF followed by `ff` and the byte in hex.
-_SIGNED = re.compile("\uffffff([89a-f][0-9a-f])")
+# `\uffff` followed by `ff` and the byte in hex. It is undone on the JSON text, where a real
+# U+FFFF cannot pass for it, and an escaped backslash before it is left alone.
+_SIGNED = re.compile(r"(?<!\\)((?:\\\\)*)\\uffffff([89a-f][0-9a-f])")
 
 SYSCALLS: dict[str, dict[int, str]] = {
     "aarch64": {
@@ -469,7 +470,7 @@ def parse(line: str) -> Item | Dropped | Garbled | Note | None:
     µs, which canonical JSON can hold.
     """
     try:
-        doc = json.loads(line)
+        doc = json.loads(_SIGNED.sub(r"\1\\udc\2", line))
     except ValueError:
         return Note(line) if line.strip() else None
     if not isinstance(doc, dict):
@@ -479,7 +480,6 @@ def parse(line: str) -> Item | Dropped | Garbled | Note | None:
         return Dropped(int(data.get("events", 0)))
     if kind != "printf" or not isinstance(data, str):
         return None
-    data = _SIGNED.sub(lambda m: chr(0xDC00 + int(m.group(1), 16)), data)
     text = (
         data.removesuffix("\n").encode("utf-8", "surrogateescape").decode(errors="backslashreplace")
     )
