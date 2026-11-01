@@ -144,7 +144,7 @@ async def load_origin(store: EventStore, run_id: str, *, full: bool = True) -> O
     snapshot = config.get("scenario")
     agents = config.get("agents")
     if not isinstance(snapshot, dict) or not isinstance(agents, dict):
-        raise RunError(f"run {run_id} was not started by `aims run`")
+        raise RunError(f"run {run_id} is not a scenario run (no scenario or agents in run.started)")
     blobs: dict[str, bytes] = {}
     for name in ("file", "files", "verifier", "context"):
         ref = snapshot.get(name)

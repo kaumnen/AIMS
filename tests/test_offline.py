@@ -281,7 +281,7 @@ async def test_a_changed_or_unsealed_origin_is_refused(
     with pytest.raises(RunError, match="not sealed"):
         await monitored(store, open_run)
     await store.append(open_run, [Draft(RunFinished(status="completed"))])
-    with pytest.raises(RunError, match="was not started by"):
+    with pytest.raises(RunError, match="is not a scenario run"):
         await monitored(store, open_run)
     watched = await store.create_run(
         RunStarted(scenario="x", oversight="observe", kind="monitor", origin=origin_id)
