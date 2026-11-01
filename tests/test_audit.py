@@ -1430,6 +1430,28 @@ async def test_output_streams_stay_within_their_cap(
     assert len(await events(store, run_id, "proc.output")) == 4
 
 
+async def test_file_access_is_deduped_per_process(store: LocalEventStore) -> None:
+    sb = FakeSandbox()
+    secret = "/home/agent/.config/kiln/credentials"
+    sb.steps.append(
+        step(
+            root(100),
+            Fork(100, 101, at=AT),
+            Fork(100, 102, at=AT),
+            File(101, "read", secret, at=AT),
+            File(101, "read", secret, at=AT),
+            File(102, "read", secret, at=AT),
+            Exit(100, 0, None, at=AT),
+        )
+    )
+    run_id, audited = await start(store, sb)
+    await audited.exec("cat secret; ./exfil", timeout_s=5)
+    await audited.close()
+
+    evs = await events(store, run_id, "file.access")
+    assert [(e.data["pid"], e.data["path"]) for e in evs] == [(101, secret), (102, secret)]
+
+
 async def test_proc_reads_are_not_deduped_and_are_capped(
     store: LocalEventStore,
 ) -> None:

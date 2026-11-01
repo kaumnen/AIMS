@@ -1125,7 +1125,7 @@ class AuditedSandbox:
         if owner == INTERNAL:
             return
         scope = self._scope(owner)
-        key = (record.op, record.path, record.target)
+        key = (record.op, record.pid, record.path, record.target)
         # A polling loop reads the same /proc file many times in one exec; keep each read up
         # to a per-path cap instead of collapsing them into the first one.
         polled = record.op == "read" and record.path in PROC_READS
