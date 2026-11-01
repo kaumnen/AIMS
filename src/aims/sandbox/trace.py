@@ -90,6 +90,12 @@ PTRACE_REQUESTS: dict[int, str] = {
     0x420E: "get_syscall_info",
 }
 
+UNIX_KINDS: dict[str, Literal["bind", "connect", "sendto"]] = {
+    "b": "bind",
+    "c": "connect",
+    "s": "sendto",
+}
+
 NS_FLAGS: tuple[tuple[int, str], ...] = (
     (0x00000080, "time"),
     (0x00020000, "mount"),
@@ -687,7 +693,7 @@ def _ipc(body: str, at: Stamp) -> Ipc | RawFifo:
     if len(head) < 2:
         raise ValueError("short ipc line")
     pid, kind = int(head[0]), head[1]
-    if kind in ("b", "c"):
+    if kind in UNIX_KINDS:
         f = _fields(body, 4)
         if f[2] != "1":
             raise ValueError("unknown socket family")
@@ -702,7 +708,7 @@ def _ipc(body: str, at: Stamp) -> Ipc | RawFifo:
             partial = not path.startswith("/")
         return Ipc(
             pid,
-            "bind" if kind == "b" else "connect",
+            UNIX_KINDS[kind],
             "unix",
             path,
             partial=partial,

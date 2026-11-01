@@ -346,6 +346,15 @@ fentry:vmlinux:security_socket_sendmsg /@sandbox[cgroup] && curtask->thread_pid-
     $in6 = (struct sockaddr_in6 *)$a;
     $s = @seq[cpu] + 1; @seq[cpu] = $s;
     printf("C %llu %llu %llu %d s 6 %s %d\n", nsecs(boot), cpu, $s, curtask->tgid, ntop(10, $in6->sin6_addr.in6_u.u6_addr8), bswap($in6->sin6_port));
+  } else if ($a->sa_family == 1) {
+    $su = (struct sockaddr_un *)$a;
+    $sl = args.msg->msg_namelen > 110 ? 110 : args.msg->msg_namelen;
+    $sn = $sl - 2;
+    if ($sn > 0) {
+      $s = @seq[cpu] + 1; @seq[cpu] = $s;
+      printf("I %llu %llu %llu %d s 1 %rx\n", nsecs(boot), cpu, $s, curtask->tgid,
+        buf((uint64)$su + 2, $sn));
+    }
   }
 }
 

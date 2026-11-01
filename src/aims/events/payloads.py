@@ -638,7 +638,7 @@ class IpcEvent(KernelPayload):
 
     type = "ipc.event"
 
-    kind: Literal["bind", "connect", "fifo", "shmget", "shmat"]
+    kind: Literal["bind", "connect", "sendto", "fifo", "shmget", "shmat"]
     family: Literal["unix", "sysv"] | None = None
     path: str | None = None
     key: int | None = None

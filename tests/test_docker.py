@@ -1188,6 +1188,18 @@ async def test_ipc_events(backend: DockerBackend, store: LocalEventStore) -> Non
         "c = socket.socket(socket.AF_UNIX)\n"
         "c.connect('/work/s.sock')\n"
         "c.close(); s.close()\n"
+        "d = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)\n"
+        "d.bind('/work/d.sock')\n"
+        "e = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)\n"
+        "e.sendto(b'x', '/work/d.sock')\n"
+        "e.sendto(b'x', '/work/d.sock')\n"
+        "os.chdir('/work')\n"
+        "e.sendmsg([b'y'], [], 0, 'd.sock')\n"
+        "try:\n"
+        "    e.sendto(b'z', '\\0aims-none')\n"
+        "except OSError as x:\n"
+        "    print('refused', x.errno, flush=True)\n"
+        "d.close(); e.close()\n"
         "os.mkfifo('/work/f')\n"
         "libc = ctypes.CDLL(None, use_errno=True)\n"
         "libc.shmget.argtypes = [ctypes.c_int, ctypes.c_size_t, ctypes.c_int]\n"
@@ -1206,9 +1218,10 @@ async def test_ipc_events(backend: DockerBackend, store: LocalEventStore) -> Non
         await sb.close()
 
     lines = result.stdout.decode().splitlines()
-    assert lines[0].startswith("shm ")
-    assert lines[1] == "mapped True"
-    shmid = int(lines[0].split()[1])
+    assert lines[0] == "refused 111"
+    assert lines[1].startswith("shm ")
+    assert lines[2] == "mapped True"
+    shmid = int(lines[1].split()[1])
     evs = await events(store, run_id, "ipc.event")
     assert evs
     assert all(e.agent_id == "a1" for e in evs)
@@ -1218,8 +1231,13 @@ async def test_ipc_events(backend: DockerBackend, store: LocalEventStore) -> Non
     assert {
         ("bind", "unix", "/work/s.sock", False),
         ("connect", "unix", "/work/s.sock", False),
+        ("sendto", "unix", "/work/d.sock", False),
+        ("sendto", "unix", "d.sock", True),
+        ("sendto", "unix", "@aims-none", False),
         ("fifo", None, "/work/f", False),
     } <= seen
+    sends = [p.path for p in ipc if p.kind == "sendto"]
+    assert sends.count("/work/d.sock") == 2
     assert any(
         p.kind == "shmget"
         and p.family == "sysv"

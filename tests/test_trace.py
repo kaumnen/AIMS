@@ -261,13 +261,22 @@ def test_parse_ipc_sockets() -> None:
     assert parse(line(f"I 10 c 1 {hx(path)}")) == Ipc(
         10, "connect", "unix", "/var/run/x.sock", at=PARSED
     )
+    assert parse(line(f"I 10 s 1 {hx(path)}")) == Ipc(
+        10, "sendto", "unix", "/var/run/x.sock", at=PARSED
+    )
     abstract = b"\0hidden\0"
     assert parse(line(f"I 10 c 1 {hx(abstract)}")) == Ipc(
         10, "connect", "unix", "@hidden", at=PARSED
     )
+    assert parse(line(f"I 10 s 1 {hx(abstract)}")) == Ipc(
+        10, "sendto", "unix", "@hidden", at=PARSED
+    )
     relative = b"../x.sock\0"
     assert parse(line(f"I 10 b 1 {hx(relative)}")) == Ipc(
         10, "bind", "unix", "../x.sock", partial=True, at=PARSED
+    )
+    assert parse(line(f"I 10 s 1 {hx(relative)}")) == Ipc(
+        10, "sendto", "unix", "../x.sock", partial=True, at=PARSED
     )
 
 

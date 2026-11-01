@@ -3312,7 +3312,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "bind" | "connect" | "fifo" | "shmget" | "shmat";
+            kind: "bind" | "connect" | "sendto" | "fifo" | "shmget" | "shmat";
             /**
              * Partial
              * @default false
@@ -12212,7 +12212,7 @@ export const holdInfoAtAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<compone
 export const holdInfoByValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["HoldInfo"]["by"]> = ["monitor", "operator"];
 export const holdInfoModeAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["HoldInfo"]["mode"]> = ["observe", "autonomous", "human"];
 export const ipcEventFamilyAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["IpcEvent"]["family"]> = ["unix", "sysv"];
-export const ipcEventKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["IpcEvent"]["kind"]> = ["bind", "connect", "fifo", "shmget", "shmat"];
+export const ipcEventKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["IpcEvent"]["kind"]> = ["bind", "connect", "sendto", "fifo", "shmget", "shmat"];
 export const jobAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Job"]["audit"]> = ["kernel", "snapshot"];
 export const jobKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Job"]["kind"]> = ["models.check", "scenario", "selftest"];
 export const jobOptionsOversightAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["JobOptions"]["oversight"]> = ["observe", "autonomous", "human"];

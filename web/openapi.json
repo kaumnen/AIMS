@@ -4874,6 +4874,7 @@
             "enum": [
               "bind",
               "connect",
+              "sendto",
               "fifo",
               "shmget",
               "shmat"

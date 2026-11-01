@@ -266,7 +266,7 @@ class Output(Kernel):
 class Ipc(Kernel):
     """A unix socket or FIFO channel, or a SysV shared memory segment."""
 
-    kind: Literal["bind", "connect", "fifo", "shmget", "shmat"]
+    kind: Literal["bind", "connect", "sendto", "fifo", "shmget", "shmat"]
     family: Literal["unix", "sysv"] | None = None
     path: str | None = None
     key: int | None = None
