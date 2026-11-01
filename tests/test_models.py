@@ -827,7 +827,7 @@ def test_cli_models_list(tmp_path: Path) -> None:
 
 async def test_replay_can_keep_the_recorded_pace(store: LocalEventStore) -> None:
     source = await new_run(store)
-    parts = [part for e in CHAT_EVENTS for part in (*sse([e], done=False), 0.02)]
+    parts = [part for e in CHAT_EVENTS for part in (*sse([e], done=False), 0.1)]
     handler, _ = scripted(lambda: stream([*parts, b"data: [DONE]\n\n"]))
     p = profile()
     async with client(store, source, p, handler) as mc:
