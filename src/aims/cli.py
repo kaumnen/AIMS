@@ -528,7 +528,7 @@ def run(
         bool,
         typer.Option(
             "--series-restart",
-            help="Start the series again at 0 even when the runs dir has runs of it.",
+            help="Start the series fresh from the scenario's own folders, at its next free index.",
         ),
     ] = False,
     score: Annotated[
@@ -706,7 +706,7 @@ async def _run(**o: Any) -> int:
     )
     from aims.run.job import monitor_for, monitor_profiles
     from aims.run.runner import Bench, Fork, Options, Result, RunError, Runner, agent_profile, check
-    from aims.run.series import last_of_series
+    from aims.run.series import series_start
     from aims.run.view import HumanPrompt, JsonLines, LiveView, digest, result_json, summary
     from aims.sandbox import DockerBackend, SandboxError
     from aims.scenario import ScenarioError, load
@@ -1024,17 +1024,14 @@ async def _run(**o: Any) -> int:
                     previous = None
                     inherited = None
                     restored = None
-                    start = 0
-                    if not o["series_restart"]:
-                        found = await last_of_series(store, o["series"])
-                        last = None
-                        if found is not None:
-                            last, start = found
-                        if last is not None:
-                            previous = last.run_id
-                            inherited = truth.inherit(store.root / previous)
-                            restored = await archives(store, previous)
-                            err.print(f"series {o['series']} goes on after run {previous}")
+                    last, start = await series_start(store, o["series"], o["series_restart"])
+                    if o["series_restart"]:
+                        err.print(f"series {o['series']} starts fresh at #{start}")
+                    elif last is not None:
+                        previous = last.run_id
+                        inherited = truth.inherit(store.root / previous)
+                        restored = await archives(store, previous)
+                        err.print(f"series {o['series']} goes on after run {previous}")
                     for i in range(start, start + o["runs"]):
                         made = make(
                             i,

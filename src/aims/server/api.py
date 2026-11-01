@@ -558,7 +558,8 @@ class StartRun(BaseModel):
     does: in each set of caps a field set to null lifts that cap, a field left out keeps it.
     `series` makes `runs` runs of that series, one after another, as `aims run --series --runs`
     does: each starts from the folders and canaries the one before it left once that one
-    completed, and the first goes on after the series' last completed run unless `restart`."""
+    completed, and the first goes on after the series' last completed run; with `restart` it
+    starts fresh from the scenario's own folders, at the series' next free index."""
 
     scenario: ScenarioRef
     variant: str | None = None
@@ -810,7 +811,7 @@ async def _place_series(state: ServerState, name: str, restart: bool, jobs: list
             f"run {place.busy} of series {name} has not ended",
             code="series_busy",
         )
-    start, previous = (0, None) if restart else (place.next_index, place.previous)
+    start, previous = place.next_index, None if restart else place.previous
     out: list[Job] = []
     for i, job in enumerate(jobs):
         series = Series(name=name, index=start + i, previous=previous)

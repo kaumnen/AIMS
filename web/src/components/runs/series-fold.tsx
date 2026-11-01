@@ -31,7 +31,7 @@ export function seriesText(found: SeriesInfo | undefined, restart: boolean): str
     const state = busy ? statusLabel(busy).toLowerCase() : "not ended";
     return `Busy: ${which} is ${state}. Start after it ends.`;
   }
-  if (restart) return "Starts again at #0 from the scenario's own folders.";
+  if (restart) return `Starts fresh at #${found.next_index} from the scenario's own folders.`;
   if (found.runs.length === 0) return "New series; starts at #0.";
   const after = found.runs.find((r) => r.run_id === found.previous)?.series_index;
   if (found.previous === null || after == null) {
@@ -105,7 +105,7 @@ export function SeriesSection({
             onChange={(e) => onChange({ ...draft, restart: e.target.checked })}
             className="accent-foreground"
           />
-          Start the series again at #0
+          Start the series fresh
         </label>
       </div>
     </details>

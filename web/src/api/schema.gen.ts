@@ -6484,7 +6484,8 @@ export interface components {
          *     does: in each set of caps a field set to null lifts that cap, a field left out keeps it.
          *     `series` makes `runs` runs of that series, one after another, as `aims run --series --runs`
          *     does: each starts from the folders and canaries the one before it left once that one
-         *     completed, and the first goes on after the series' last completed run unless `restart`.
+         *     completed, and the first goes on after the series' last completed run; with `restart` it
+         *     starts fresh from the scenario's own folders, at the series' next free index.
          */
         StartRun: {
             /**

@@ -471,7 +471,7 @@ async def test_a_confederate_takes_its_steps_again_before_the_cut(
 
 async def test_a_series_goes_on_after_its_last_completed_run(store: LocalEventStore) -> None:
     from aims.events import Draft, RunFinished, RunStatus, Series
-    from aims.run.series import last_of_series
+    from aims.run.series import last_of_series, series_start
 
     async def made(index: int, status: RunStatus) -> str:
         started = RunStarted(
@@ -493,6 +493,13 @@ async def test_a_series_goes_on_after_its_last_completed_run(store: LocalEventSt
     last, start = found
     assert last is not None
     assert (last.run_id, last.series_index, start) == (second, 1, 3)
+    assert await series_start(store, "nightly") == (last, 3)
+    assert await series_start(store, "nightly", restart=True) == (None, 3)
+    assert await series_start(store, "weekly", restart=True) == (None, 0)
+    fresh = await made(3, "completed")
+    found = await series_start(store, "nightly")
+    assert found[0] is not None
+    assert (found[0].run_id, found[1]) == (fresh, 4)
 
 
 def test_the_command_line_checks_the_fork_and_series_flags(tmp_path: Path) -> None:

@@ -386,6 +386,10 @@ test("a series goes on where the server says, counts its runs and starts them", 
   fireEvent.change(fold.getByRole("textbox", { name: "Name" }), { target: { value: "nightly" } });
   fireEvent.change(fold.getByRole("spinbutton", { name: "Runs" }), { target: { value: "3" } });
   expect(await fold.findByText("Goes on after #4; the next run is #5.")).toBeTruthy();
+  const fresh = fold.getByRole("checkbox", { name: "Start the series fresh" });
+  fireEvent.click(fresh);
+  expect(fold.getByText("Starts fresh at #5 from the scenario's own folders.")).toBeTruthy();
+  fireEvent.click(fresh);
   expect(fold.getByText("nightly · 3 runs")).toBeTruthy();
   expect(form.getByRole("spinbutton", { name: "Samples" }).hasAttribute("disabled")).toBe(true);
   expect(form.getByRole("spinbutton", { name: "At once" }).hasAttribute("disabled")).toBe(true);
@@ -415,8 +419,8 @@ test("a busy series holds the start and a restart says so", async () => {
 
   fireEvent.change(fold.getByRole("textbox", { name: "Name" }), { target: { value: "fresh" } });
   expect(await fold.findByText("New series; starts at #0.")).toBeTruthy();
-  fireEvent.click(fold.getByRole("checkbox", { name: "Start the series again at #0" }));
-  expect(fold.getByText("Starts again at #0 from the scenario's own folders.")).toBeTruthy();
+  fireEvent.click(fold.getByRole("checkbox", { name: "Start the series fresh" }));
+  expect(fold.getByText("Starts fresh at #0 from the scenario's own folders.")).toBeTruthy();
   seriesPost = Response.json(
     {
       type: "about:blank",

@@ -304,12 +304,21 @@ async def test_a_series_goes_on_after_its_last_completed_run_unless_restarted(
     async with cp.client(cp.operator) as c:
         for run_id in more:
             await c.post(f"/api/runs/{run_id}/cancel", json={})
-    again = await series(cp, runs=1, restart=True)
-    job = await cp.state.db.job(again[0])
+    (fresh,) = await series(cp, runs=1, restart=True)
+    job = await cp.state.db.job(fresh)
     assert job is not None
     place = Job.model_validate(job.payload).options.series
     assert place is not None
-    assert (place.index, place.previous) == (0, None)
+    assert (place.index, place.previous) == (3, None)
+    assert await offered(fake) == fresh
+    await play(fake, local, fresh)
+    await until(lambda: job_state(cp, fresh), "done")
+    (after,) = await series(cp, runs=1)
+    job = await cp.state.db.job(after)
+    assert job is not None
+    place = Job.model_validate(job.payload).options.series
+    assert place is not None
+    assert (place.index, place.previous) == (4, fresh)
 
 
 async def test_a_series_job_reads_the_run_before_it_and_no_one_else_does(
