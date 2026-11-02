@@ -1,10 +1,13 @@
 import asyncio
 import contextlib
+import importlib.util
+import json
 import logging
 import os
 import socket
+import sys
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +20,8 @@ from aims.sandbox.images import context, ensure_built, ensure_image, ensure_pull
 pytestmark = pytest.mark.anyio
 
 DEFAULT = {"AIMS_IMAGE_REGISTRY": "ghcr.io/kaumnen"}
+DIGEST = "sha256:" + "ab" * 32
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class Images:
@@ -40,7 +45,8 @@ class Images:
         await asyncio.sleep(0.3)
         self.tags.add(tag)
 
-    async def pull(self, ref: str, **_: Any) -> list[Any]:
+    async def pull(self, ref: str, *, tag: str | None = None) -> list[Any]:
+        ref = f"{ref}@{tag}" if tag else ref
         self.pulls.append(ref)
         await asyncio.sleep(0.3)
         if self.pull_error is not None:
@@ -83,15 +89,65 @@ async def test_a_failed_build_raises() -> None:
         await ensure_built(docker, uuid.uuid4().bytes)
 
 
-async def test_a_published_asset_image_is_pulled_under_the_tag_a_build_would_get() -> None:
+@pytest.fixture
+def pin(monkeypatch: pytest.MonkeyPatch) -> Callable[..., str]:
+    """Pin asset images as a release would; returns the first image's tag."""
+
+    def pin(*names: str, pins: dict[str, str] | None = None) -> str:
+        tags = [context(name)[0] for name in names]
+        table = dict.fromkeys(tags, DIGEST) if pins is None else pins
+        monkeypatch.setattr(images, "published", lambda: table)
+        return tags[0] if tags else ""
+
+    return pin
+
+
+def by_digest(tag: str, prefix: str = "ghcr.io/kaumnen", digest: str = DIGEST) -> str:
+    return f"{prefix}/{tag.partition(':')[0]}@{digest}"
+
+
+async def test_a_published_asset_image_is_pulled_by_digest_under_the_tag_a_build_would_get(
+    pin: Callable[..., str],
+) -> None:
     docker: Any = Docker()
-    tag = context("tracer")[0]
-    docker.images.published.add(f"ghcr.io/kaumnen/{tag}")
+    tag = pin("tracer")
+    docker.images.published.add(by_digest(tag))
     assert await ensure_image(docker, "tracer", env={}) == tag
     assert tag.startswith("aims-tracer:")
-    assert docker.images.pulls == [f"ghcr.io/kaumnen/{tag}"]
+    assert docker.images.pulls == [by_digest(tag)]
     assert tag in docker.images.tags
     assert docker.images.builds == 0
+
+
+async def test_without_a_pin_nothing_is_pulled_even_when_the_registry_has_the_tag(
+    pin: Callable[..., str],
+) -> None:
+    docker: Any = Docker()
+    pin()
+    tag = context("tracer")[0]
+    docker.images.published.update({f"ghcr.io/kaumnen/{tag}", by_digest(tag)})
+    assert await ensure_image(docker, "tracer", env=DEFAULT) == tag
+    assert docker.images.pulls == []
+    assert docker.images.builds == 1
+
+
+async def test_a_pin_for_other_asset_files_is_not_used(pin: Callable[..., str]) -> None:
+    docker: Any = Docker()
+    stale = "aims-tracer:000000000000"
+    pin(pins={stale: DIGEST})
+    docker.images.published.add(by_digest(stale))
+    assert await ensure_image(docker, "tracer", env=DEFAULT) == context("tracer")[0]
+    assert docker.images.pulls == []
+    assert docker.images.builds == 1
+
+
+def test_the_pins_come_from_the_release_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(images, "PUBLISHED", tmp_path / "published.json")
+    assert images.published() == {}
+    (tmp_path / "published.json").write_text(json.dumps({"aims-tracer:abc": DIGEST}))
+    assert images.published() == {"aims-tracer:abc": DIGEST}
 
 
 @pytest.mark.parametrize(
@@ -104,14 +160,17 @@ async def test_a_published_asset_image_is_pulled_under_the_tag_a_build_would_get
     ],
 )
 async def test_an_asset_image_the_registry_cannot_give_is_built(
-    error: aiodocker.DockerError, level: int, caplog: pytest.LogCaptureFixture
+    error: aiodocker.DockerError,
+    level: int,
+    pin: Callable[..., str],
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     docker: Any = Docker()
     docker.images.pull_error = error
-    tag = context("tracer")[0]
+    tag = pin("tracer")
     with caplog.at_level(logging.INFO, logger="aims.sandbox"):
         assert await ensure_image(docker, "tracer", env=DEFAULT) == tag
-    assert docker.images.pulls == [f"ghcr.io/kaumnen/{tag}"]
+    assert docker.images.pulls == [by_digest(tag)]
     assert docker.images.builds == 1
     assert tag in docker.images.tags
     (record,) = [r for r in caplog.records if r.getMessage().startswith("cannot use")]
@@ -119,7 +178,7 @@ async def test_an_asset_image_the_registry_cannot_give_is_built(
     assert "\n" not in record.getMessage()
 
 
-async def test_a_pull_that_leaves_no_image_builds() -> None:
+async def test_a_pull_that_leaves_no_image_builds(pin: Callable[..., str]) -> None:
     docker: Any = Docker()
 
     async def cut(ref: str, **_: Any) -> list[Any]:
@@ -127,68 +186,100 @@ async def test_a_pull_that_leaves_no_image_builds() -> None:
         return []
 
     docker.images.pull = cut
-    tag = context("toolbox")[0]
+    tag = pin("toolbox")
     assert await ensure_image(docker, "toolbox", env=DEFAULT) == tag
     assert len(docker.images.pulls) == 1
     assert docker.images.builds == 1
 
 
-async def test_an_unreachable_daemon_is_not_mistaken_for_a_missing_image() -> None:
+async def test_an_unreachable_daemon_is_not_mistaken_for_a_missing_image(
+    pin: Callable[..., str],
+) -> None:
     docker: Any = Docker()
     docker.images.pull_error = aiodocker.DockerError(900, "Cannot connect to Docker Engine")
+    pin("toolbox")
     with pytest.raises(aiodocker.DockerError) as caught:
         await ensure_image(docker, "toolbox", env=DEFAULT)
     assert caught.value.status == 900
     assert docker.images.builds == 0
 
 
-async def test_an_empty_registry_never_pulls() -> None:
+async def test_an_empty_registry_never_pulls(pin: Callable[..., str]) -> None:
     docker: Any = Docker()
-    tag = context("toolbox")[0]
-    docker.images.published.add(f"ghcr.io/kaumnen/{tag}")
+    tag = pin("toolbox")
+    docker.images.published.add(by_digest(tag))
     assert await ensure_image(docker, "toolbox", env={"AIMS_IMAGE_REGISTRY": " "}) == tag
     assert docker.images.pulls == []
     assert docker.images.builds == 1
 
 
-async def test_a_mirror_names_the_pull() -> None:
+async def test_a_mirror_names_the_pull(pin: Callable[..., str]) -> None:
     docker: Any = Docker()
-    tag = context("toolbox")[0]
+    tag = pin("toolbox")
     mirror = "mirror.internal:5000/aims"
-    docker.images.published.add(f"{mirror}/{tag}")
+    docker.images.published.add(by_digest(tag, mirror))
     assert await ensure_image(docker, "toolbox", env={"AIMS_IMAGE_REGISTRY": f"{mirror}/"}) == tag
-    assert docker.images.pulls == [f"{mirror}/{tag}"]
+    assert docker.images.pulls == [by_digest(tag, mirror)]
     assert docker.images.builds == 0
 
 
-async def test_a_loaded_published_image_is_used_without_a_registry() -> None:
+async def test_a_loaded_published_image_is_used_without_a_registry(
+    pin: Callable[..., str],
+) -> None:
     docker: Any = Docker()
-    tag = context("tracer")[0]
-    docker.images.tags.add(f"ghcr.io/kaumnen/{tag}")
+    tag = pin("tracer")
+    docker.images.tags.add(by_digest(tag))
     assert await ensure_image(docker, "tracer", env=DEFAULT) == tag
     assert tag in docker.images.tags
     assert docker.images.pulls == []
     assert docker.images.builds == 0
 
 
-async def test_an_asset_image_already_here_is_left_alone() -> None:
+async def test_an_asset_image_already_here_is_left_alone(pin: Callable[..., str]) -> None:
     docker: Any = Docker()
-    tag = context("tracer")[0]
+    tag = pin("tracer")
     docker.images.tags.add(tag)
-    docker.images.published.add(f"ghcr.io/kaumnen/{tag}")
+    docker.images.published.add(by_digest(tag))
     assert await ensure_image(docker, "tracer", env=DEFAULT) == tag
     assert docker.images.pulls == []
     assert docker.images.builds == 0
 
 
-async def test_starts_at_once_pull_once() -> None:
+async def test_starts_at_once_pull_once(pin: Callable[..., str]) -> None:
     docker: Any = Docker()
-    tag = context("tracer")[0]
-    docker.images.published.add(f"ghcr.io/kaumnen/{tag}")
+    tag = pin("tracer")
+    docker.images.published.add(by_digest(tag))
     tags = await asyncio.gather(*(ensure_image(docker, "tracer", env=DEFAULT) for _ in range(3)))
     assert set(tags) == {tag}
     assert len(docker.images.pulls) == 1
     assert docker.images.builds == 0
+
+
+def test_the_release_names_and_checks_the_helpers_as_a_runner_would(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = importlib.util.spec_from_file_location("helpers", ROOT / "scripts" / "helpers.py")
+    assert spec is not None
+    assert spec.loader is not None
+    helpers = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helpers)
+    toolbox, tracer = context("toolbox")[0], context("tracer")[0]
+    assert helpers.names() == ["toolbox", "tracer"]
+
+    def check(pins: dict[str, str]) -> list[str]:
+        monkeypatch.setattr(helpers, "published", lambda: pins)
+        return helpers.check()
+
+    assert check({}) == [f"no pin for {toolbox}", f"no pin for {tracer}"]
+    assert check({toolbox: DIGEST, tracer: DIGEST}) == []
+    assert check({toolbox: DIGEST, tracer: "latest", "aims-tracer:0": DIGEST}) == [
+        "pin for aims-tracer:0, which no helper has",
+        f"{tracer} is pinned to 'latest'",
+    ]
+    out = tmp_path / "ctx.tar.gz"
+    monkeypatch.setattr(sys, "argv", ["helpers.py", "context", "tracer", str(out)])
+    assert helpers.main() == 0
+    assert out.read_bytes() == context("tracer")[1]
 
 
 # A registry on the daemon's own network: the daemon pulls from 127.0.0.0/8 over plain HTTP,
@@ -229,7 +320,18 @@ async def test_an_asset_image_comes_from_a_registry_and_is_built_without_one(
     tag = context("probe")[0]
     repo, _, version = tag.rpartition(":")
     port = 20000 + uuid.uuid4().int % 30000
-    remote = f"127.0.0.1:{port}/{tag}"
+    source = f"127.0.0.1:{port}/{repo}"
+    refs = [f"{source}:{version}", tag]
+    pins: dict[str, str] = {tag: "sha256:" + "0" * 64}
+    monkeypatch.setattr(images, "published", lambda: pins)
+    build = docker.images.build
+    builds: list[str] = []
+
+    async def counted(**kwargs: Any) -> Any:
+        builds.append(kwargs["tag"])
+        return await build(**kwargs)
+
+    monkeypatch.setattr(docker.images, "build", counted)
 
     await ensure_pulled(docker, REGISTRY_IMAGE)
     registry = await docker.containers.run(
@@ -251,32 +353,45 @@ async def test_an_asset_image_comes_from_a_registry_and_is_built_without_one(
             assert await ensure_image(docker, "probe", env=closed) == tag
         assert any(r.getMessage().startswith("cannot use 127.0.0.1:1/") for r in caplog.records)
         assert any(r.getMessage() == f"building {tag}" for r in caplog.records)
+        assert builds == [tag]
 
-        await docker.images.tag(tag, f"127.0.0.1:{port}/{repo}", tag=version)
+        await docker.images.tag(tag, source, tag=version)
         for attempt in range(50):
             try:
-                await docker.images.push(f"127.0.0.1:{port}/{repo}", tag=version)
+                await docker.images.push(source, tag=version)
                 break
             except aiodocker.DockerError:
                 if attempt == 49:
                     raise
                 await asyncio.sleep(0.2)
-        await docker.images.delete(remote)
-        await docker.images.delete(tag)
+        pushed = (await docker.images.inspect(f"{source}:{version}"))["RepoDigests"]
+        (digest,) = [d.partition("@")[2] for d in pushed if d.startswith(f"{source}@")]
+        remote = f"{source}@{digest}"
+        refs.append(remote)
+        for ref in refs:
+            with contextlib.suppress(aiodocker.DockerError):
+                await docker.images.delete(ref)
 
-        async def no_build(**_: Any) -> None:
-            raise AssertionError("built an image the registry has")
-
-        monkeypatch.setattr(docker.images, "build", no_build)
-        caplog.clear()
         local = {"AIMS_IMAGE_REGISTRY": f"127.0.0.1:{port}"}
+        pins[tag] = digest
+        caplog.clear()
         with caplog.at_level(logging.INFO, logger="aims.sandbox"):
             assert await ensure_image(docker, "probe", env=local) == tag
+        assert builds == [tag]
         image = await docker.images.inspect(tag)
-        assert any(d.startswith(f"127.0.0.1:{port}/{repo}@sha256:") for d in image["RepoDigests"])
-        assert f"pulling {remote}" in [r.getMessage() for r in caplog.records]
+        assert remote in image["RepoDigests"]
+        messages = [r.getMessage() for r in caplog.records]
+        assert f"pulling {remote}" in messages
+        assert f"{tag} is {remote}" in messages
+
+        for ref in refs:
+            with contextlib.suppress(aiodocker.DockerError):
+                await docker.images.delete(ref)
+        pins[tag] = "sha256:" + "1" * 64
+        assert await ensure_image(docker, "probe", env=local) == tag
+        assert builds == [tag, tag]
     finally:
-        for ref in (remote, tag):
+        for ref in refs:
             with contextlib.suppress(aiodocker.DockerError):
                 await docker.images.delete(ref, force=True)
         with contextlib.suppress(aiodocker.DockerError):

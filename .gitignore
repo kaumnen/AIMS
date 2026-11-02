@@ -17,3 +17,4 @@ src/aims/ui/dist/
 /runs-archive/
 /web/bench-results.json
 /web/pass-shots/
+/src/aims/sandbox/published.json

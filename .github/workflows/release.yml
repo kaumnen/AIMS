@@ -3,25 +3,151 @@ name: release
 on:
   push:
     tags: ["v*"]
+  # A dry run: builds the helper images, the aims image and the wheel; pushes and publishes nothing.
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io/kaumnen
+  PUSH: ${{ github.event_name == 'push' }}
+  BUILDKIT: moby/buildkit:v0.34.1@sha256:99368f3e46177c6405b9740e4461d91cee004128daeecca78d4ceac50ec1da5c
+  SBOM: generator=docker/buildkit-syft-scanner:1.12.1@sha256:873a7458c3c8ac8e32c7b796c10e1600b07b963d2aa000a72a2d97aaaa2d6315
 
 jobs:
   ci:
     uses: ./.github/workflows/ci.yml # zizmor: ignore[self-repository]
 
-  pypi:
+  # The sandbox helpers, one native build per arch, pushed by digest under no tag yet.
+  helpers:
     needs: ci
-    runs-on: ubuntu-latest
-    environment: pypi
+    strategy:
+      matrix:
+        name: [toolbox, tracer]
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     permissions:
       contents: read
-      id-token: write
+      packages: write
+    env:
+      NAME: ${{ matrix.name }}
+      ARCH: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: "0.13.5"
+          enable-cache: false
+      - if: env.PUSH == 'true'
+        run: test "${GITHUB_REF_NAME#v}" = "$(uv version --short)"
+      # The same files and tag a runner would build, from the same function.
+      - run: |
+          tag=$(uv run --frozen --no-dev python scripts/helpers.py context "$NAME" "$RUNNER_TEMP/context.tar.gz")
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+      - run: docker buildx create --use --driver docker-container --driver-opt "image=$BUILDKIT"
+      - if: env.PUSH == 'true'
+        env:
+          TOKEN: ${{ github.token }}
+        run: docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin <<< "$TOKEN"
+      - run: |
+          docker buildx build --platform "linux/$ARCH" --label aims.managed=1 \
+            --provenance=mode=max --sbom="$SBOM" --metadata-file "$RUNNER_TEMP/meta.json" \
+            --output "type=image,name=$REGISTRY/aims-$NAME,push-by-digest=true,name-canonical=true,push=$PUSH" \
+            - < "$RUNNER_TEMP/context.tar.gz"
+          digest=$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/meta.json")
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "no digest: $digest"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/out"
+          jq -n --arg name "$NAME" --arg tag "$TAG" --arg digest "$digest" '{$name, $tag, $digest}' \
+            > "$RUNNER_TEMP/out/$NAME-$ARCH.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: helper-${{ matrix.name }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/out
+          if-no-files-found: error
+
+  # One multi-arch index per helper under its content-hash tag; its digest is the pin.
+  helpers-merge:
+    needs: helpers
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: helper-*
+          merge-multiple: true
+          path: built
+      - env:
+          TOKEN: ${{ github.token }}
+        run: docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin <<< "$TOKEN"
+      - id: merge
+        run: |
+          pins='{}'
+          for name in toolbox tracer; do
+            tag=$(jq -r --arg n "$name" 'select(.name == $n) | .tag' built/*.json | sort -u)
+            count=$(jq -r --arg n "$name" 'select(.name == $n) | .digest' built/*.json | wc -l)
+            [[ "$tag" == "aims-$name:"* && $(wc -l <<< "$tag") == 1 && $count == 2 ]] \
+              || { echo "$name: want one tag and two builds, got '$tag' and $count"; exit 1; }
+            sources=$(jq -r --arg n "$name" --arg r "$REGISTRY" \
+              'select(.name == $n) | "\($r)/aims-\(.name)@\(.digest)"' built/*.json)
+            # shellcheck disable=SC2086
+            docker buildx imagetools create --metadata-file "$name.json" \
+              --tag "$REGISTRY/$tag" $sources
+            digest=$(jq -r '."containerimage.descriptor".digest' "$name.json")
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "no digest: $digest"; exit 1; }
+            echo "$name=$digest" >> "$GITHUB_OUTPUT"
+            pins=$(jq --arg t "$tag" --arg d "$digest" '. + {($t): $d}' <<< "$pins")
+          done
+          mkdir -p pins && jq . <<< "$pins" | tee pins/published.json
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ghcr.io/kaumnen/aims-toolbox
+          subject-digest: ${{ steps.merge.outputs.toolbox }}
+          push-to-registry: true
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ghcr.io/kaumnen/aims-tracer
+          subject-digest: ${{ steps.merge.outputs.tracer }}
+          push-to-registry: true
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: published
+          path: pins/published.json
+          if-no-files-found: error
+
+  # The wheel and sdist, built without credentials, carrying the helper pins.
+  dist:
+    needs: [ci, helpers-merge]
+    if: ${{ !cancelled() && needs.ci.result == 'success' && (needs.helpers-merge.result == 'success' || github.event_name != 'push') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "26.12.1"
+          package-manager-cache: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: "1.4.4"
@@ -30,8 +156,180 @@ jobs:
         with:
           version: "0.13.5"
           enable-cache: false
-      - run: test "${GITHUB_REF_NAME#v}" = "$(uv version --short)"
+      - if: env.PUSH == 'true'
+        run: test "${GITHUB_REF_NAME#v}" = "$(uv version --short)"
+      - if: env.PUSH == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: published
+          path: src/aims/sandbox
+      - if: env.PUSH == 'true'
+        run: uv run --frozen --no-dev python scripts/helpers.py check
       - run: bun install --frozen-lockfile && bun run build
         working-directory: web
       - run: uv build
+      - if: env.PUSH == 'true'
+        run: unzip -l dist/*.whl | grep -q 'aims/sandbox/published.json'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist
+          if-no-files-found: error
+
+  # The aims image, one native build per arch, pushed by digest, carrying the helper pins.
+  aims:
+    needs: [ci, helpers-merge]
+    if: ${{ !cancelled() && needs.ci.result == 'success' && (needs.helpers-merge.result == 'success' || github.event_name != 'push') }}
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    env:
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - if: env.PUSH == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: published
+          path: src/aims/sandbox
+      - run: docker buildx create --use --driver docker-container --driver-opt "image=$BUILDKIT"
+      - if: env.PUSH == 'true'
+        env:
+          TOKEN: ${{ github.token }}
+        run: docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin <<< "$TOKEN"
+      - run: |
+          docker buildx build --platform "linux/$ARCH" \
+            --provenance=mode=max --sbom="$SBOM" --metadata-file "$RUNNER_TEMP/meta.json" \
+            --output "type=image,name=$REGISTRY/aims,push-by-digest=true,name-canonical=true,push=$PUSH" \
+            .
+          digest=$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/meta.json")
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "no digest: $digest"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/out" && echo "$digest" > "$RUNNER_TEMP/out/$ARCH"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: aims-${{ matrix.arch }}
+          path: ${{ runner.temp }}/out
+          if-no-files-found: error
+
+  # The aims index under the version tag; a final release also moves major.minor and latest.
+  aims-merge:
+    needs: [aims, dist]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    outputs:
+      digest: ${{ steps.merge.outputs.digest }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: aims-*
+          merge-multiple: true
+          path: built
+      - env:
+          TOKEN: ${{ github.token }}
+        run: docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin <<< "$TOKEN"
+      - id: merge
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          tags=(--tag "$REGISTRY/aims:$version")
+          if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            tags+=(--tag "$REGISTRY/aims:${version%.*}" --tag "$REGISTRY/aims:latest")
+          fi
+          sources=()
+          for arch in amd64 arm64; do sources+=("$REGISTRY/aims@$(cat "built/$arch")"); done
+          docker buildx imagetools create --metadata-file aims.json "${tags[@]}" "${sources[@]}"
+          digest=$(jq -r '."containerimage.descriptor".digest' aims.json)
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "no digest: $digest"; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ghcr.io/kaumnen/aims
+          subject-digest: ${{ steps.merge.outputs.digest }}
+          push-to-registry: true
+
+  # Last, since a PyPI upload cannot be undone: every image is already published.
+  pypi:
+    needs: [dist, aims-merge]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: "0.13.5"
+          enable-cache: false
+      - uses: astral-sh/attest-action@39b6ce43875c196a579e31635b11aa2a2036384a # v0.0.7
       - run: uv publish
+
+  github-release:
+    needs: [pypi, aims-merge]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The compose file attached to the release runs the image this release made, by digest.
+      - env:
+          DIGEST: ${{ needs.aims-merge.outputs.digest }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          image="$REGISTRY/aims:$version@$DIGEST"
+          [[ $(grep -c "$REGISTRY/aims:latest" compose.yaml) == 2 ]] || { echo "compose.yaml changed"; exit 1; }
+          mkdir out && sed "s|$REGISTRY/aims:latest|$image|" compose.yaml > out/compose.yaml
+          cp compose.public.yaml Caddyfile out/
+          url="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME"
+          cat > notes.md <<EOF
+          Install the CLI:
+
+          \`\`\`
+          uv tool install aims-bench==$version
+          \`\`\`
+
+          Run the control plane and a runner with Docker Compose:
+
+          \`\`\`
+          curl -fsSLO $url/compose.yaml -O $url/compose.public.yaml -O $url/Caddyfile
+          docker compose up -d
+          docker compose exec server aims open --no-open
+          \`\`\`
+
+          Verify the image:
+
+          \`\`\`
+          gh attestation verify oci://$image --repo $GITHUB_REPOSITORY
+          \`\`\`
+          EOF
+          pre=()
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || pre=(--prerelease)
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" \
+            --notes-file notes.md "${pre[@]}" out/compose.yaml out/compose.public.yaml out/Caddyfile

@@ -4,6 +4,7 @@ import fcntl
 import gzip
 import hashlib
 import io
+import json
 import logging
 import os
 import tarfile
@@ -19,6 +20,8 @@ import aiodocker
 log = logging.getLogger("aims.sandbox")
 
 ASSETS = files("aims.sandbox") / "assets"
+# Written by the release: each published asset image tag and the digest it was pushed as.
+PUBLISHED = files("aims.sandbox") / "published.json"
 
 REGISTRY = "ghcr.io/kaumnen"
 # aiodocker's status when it cannot reach the Docker daemon at all
@@ -29,6 +32,14 @@ def registry(env: Mapping[str, str] = os.environ) -> str:
     """Where the published asset images live: `$AIMS_IMAGE_REGISTRY`, else GHCR. Empty means
     never pull, always build here."""
     return env.get("AIMS_IMAGE_REGISTRY", REGISTRY).strip().rstrip("/")
+
+
+def published() -> dict[str, str]:
+    """The digest each asset image tag was published as, by tag; empty outside a release."""
+    try:
+        return json.loads(PUBLISHED.read_text())
+    except FileNotFoundError:
+        return {}
 
 
 def context(name: str) -> tuple[str, bytes]:
@@ -61,10 +72,11 @@ async def ensure_image(
     docker: aiodocker.Docker, name: str, env: Mapping[str, str] = os.environ
 ) -> str:
     """The local tag of asset image `name`: an image with the same content hash, else the one
-    published under that tag in the registry, else a fresh build."""
+    this release published for that hash, pulled by digest, else a fresh build."""
     tag, data = context(name)
     prefix = registry(env)
-    remote = f"{prefix}/{tag}" if prefix else None
+    digest = published().get(tag)
+    remote = f"{prefix}/{tag.partition(':')[0]}@{digest}" if prefix and digest else None
     return await _build(docker, tag, remote=remote, fileobj=io.BytesIO(data), encoding="gzip")
 
 
@@ -97,13 +109,14 @@ async def _build(
 
 
 async def _pull(docker: aiodocker.Docker, remote: str, tag: str) -> bool:
-    """Tag the image `remote` as `tag`, pulling it unless it is here already (`docker load`).
-    False when it cannot be had."""
+    """Tag the image `remote` (`repo@digest`) as `tag`, pulling it unless it is here already
+    (`docker load`). False when it cannot be had."""
     repo, _, version = tag.rpartition(":")
+    source, _, digest = remote.partition("@")
     try:
         if not await _exists(docker, remote):
             log.info("pulling %s", remote)
-            await docker.images.pull(remote)
+            await docker.images.pull(source, tag=digest)
         await docker.images.tag(remote, repo, tag=version)
     except aiodocker.DockerError as e:
         if e.status == DAEMON_DOWN:
@@ -111,10 +124,7 @@ async def _pull(docker: aiodocker.Docker, remote: str, tag: str) -> bool:
         level = logging.INFO if e.status == 404 else logging.WARNING
         log.log(level, "cannot use %s, building it here: %s", remote, e.message.partition("\n")[0])
         return False
-    image = await docker.images.inspect(tag)
-    source = remote.rpartition(":")[0]
-    digests = [d for d in image.get("RepoDigests") or [] if d.startswith(f"{source}@")]
-    log.info("%s is %s", tag, digests[0] if digests else f"{remote} ({image['Id']})")
+    log.info("%s is %s", tag, remote)
     return True
 
 
