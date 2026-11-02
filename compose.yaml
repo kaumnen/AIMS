@@ -34,7 +34,13 @@ services:
   runner:
     <<: *aims
     user: root
-    command: [runner, --server=http://server:8484, --token-file=/token/runner, --name=compose]
+    command:
+      - runner
+      - --server=http://server:8484
+      - --token-file=/token/runner
+      - --name=compose
+      # snapshot never starts the privileged kernel tracer
+      - --audit=${AIMS_AUDIT:-auto}
     env_file:
       - path: .env
         required: false

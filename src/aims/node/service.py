@@ -45,7 +45,7 @@ from aims.run.job import Job, job_bundle, runner_for, selftest_runner
 from aims.run.runner import Bench, Options, RunError, Runner, seal_unsealed
 from aims.run.score import Added
 from aims.run.scoring import ScoreError, score_with
-from aims.sandbox import DockerBackend, SandboxError
+from aims.sandbox import AuditMode, DockerBackend, SandboxError
 from aims.scenario import Bundle
 from aims.wire import MonitorJob, OfferMessage, ScoreJob, TracerHealth
 
@@ -77,6 +77,8 @@ class NodeOptions:
     keep_days: float | None = None
     verify: bool | str = True
     docker_url: str | None = None
+    # snapshot never starts the privileged kernel tracer
+    audit: AuditMode = "auto"
     transport: httpx2.AsyncBaseTransport | None = None
     model_transport: httpx2.AsyncBaseTransport | None = None
     backend: DockerBackend | None = None
@@ -114,9 +116,15 @@ class Node:
             return TracerHealth(alive=False, detail="the sandbox backend is not open")
         tracer = backend.tracer
         alive = tracer is not None and tracer.alive
+        if alive:
+            detail = None
+        elif self.options.audit == "snapshot":
+            detail = "this runner has no kernel tracer (--audit snapshot); runs use snapshot audit"
+        else:
+            detail = "the kernel tracer is down; runs use snapshot audit"
         return TracerHealth(
             alive=alive,
-            detail=None if alive else "the kernel tracer is down; runs use snapshot audit",
+            detail=detail,
             restarts=backend.tracer_restarts,
         )
 
@@ -131,7 +139,7 @@ class Node:
             if sealed:
                 log.warning("sealed %d run(s) left open by an earlier runner", len(sealed))
             given = o.backend is not None
-            backend = o.backend or await DockerBackend.open(audit="auto", url=o.docker_url)
+            backend = o.backend or await DockerBackend.open(audit=o.audit, url=o.docker_url)
             self.backend = backend
             async with contextlib.AsyncExitStack() as stack:
                 if not given:
@@ -464,6 +472,8 @@ class Node:
 
     async def _watch_tracer(self) -> None:
         """Bring the tracer back once no sandbox is open; until then kernel jobs are refused."""
+        if self.options.audit == "snapshot":
+            return
         while True:
             await asyncio.sleep(5)
             backend = self.backend

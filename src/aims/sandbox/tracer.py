@@ -295,7 +295,7 @@ class Tracer:
         image = await ensure_image(self._docker, "tracer")
         log.warning(
             "starting %s, a privileged container with host pid access that traces sandbox "
-            "processes; use audit 'snapshot' to run without it",
+            "processes; --audit snapshot runs without it",
             self._name,
         )
         env = [] if self._ring_pages is None else [f"BPFTRACE_PERF_RB_PAGES={self._ring_pages}"]

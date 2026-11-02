@@ -1168,6 +1168,20 @@ ServerOption = Annotated[
 TokenFileOption = Annotated[
     Path | None, typer.Option("--token-file", help="A file holding the runner token.")
 ]
+AUDITS = ("auto", "kernel", "snapshot")
+RunnerAuditOption = Annotated[
+    str,
+    typer.Option(
+        help="auto (the kernel tracer if it starts), kernel (it must start) or snapshot"
+        " (never start the privileged tracer).",
+    ),
+]
+
+
+def _audit(value: str) -> str:
+    if value not in AUDITS:
+        raise typer.BadParameter(f"use {', '.join(AUDITS)}", param_hint="--audit")
+    return value
 
 
 @app.command()
@@ -1180,6 +1194,9 @@ def ui(
     ] = None,
     runner: Annotated[bool, typer.Option(help="Start a local runner with it.")] = True,
     slots: Annotated[int, typer.Option(min=1, help="Runs the local runner takes at once.")] = 2,
+    audit: Annotated[
+        str, typer.Option(help="The local runner's --audit: auto, kernel or snapshot.")
+    ] = "auto",
     tls_cert: Annotated[Path | None, typer.Option("--tls-cert", help="TLS certificate.")] = None,
     tls_key: Annotated[Path | None, typer.Option("--tls-key", help="TLS private key.")] = None,
     behind_proxy: Annotated[
@@ -1226,6 +1243,7 @@ def ui(
         project=project,
         runner=runner,
         slots=slots,
+        audit=_audit(audit),
         tls_cert=tls_cert,
         tls_key=tls_key,
         behind_proxy=behind_proxy or [],
@@ -1308,6 +1326,7 @@ def runner_cmd(
     token_file: TokenFileOption = None,
     name: Annotated[str | None, typer.Option(help="Runner name; the host name by default.")] = None,
     slots: Annotated[int, typer.Option(min=1, help="Runs at once.")] = 2,
+    audit: RunnerAuditOption = "auto",
     data_dir: Annotated[
         Path | None, typer.Option("--data-dir", help="Where this runner keeps its runs.")
     ] = None,
@@ -1323,11 +1342,14 @@ def runner_cmd(
     import asyncio
     import logging
     import signal
+    from typing import cast
 
     from aims.node.service import Node, NodeOptions
     from aims.node.service import data_dir as default_dir
+    from aims.sandbox import AuditMode
 
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
+    mode = cast(AuditMode, _audit(audit))
     found = _connection(server, token_file, required=True)
     assert found is not None
     url, token = found
@@ -1342,6 +1364,7 @@ def runner_cmd(
                 slots=slots,
                 keep_days=keep_days,
                 verify=True if tls_ca is None else str(tls_ca),
+                audit=mode,
             )
         )
         stop = asyncio.Event()

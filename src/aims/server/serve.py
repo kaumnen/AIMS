@@ -76,6 +76,7 @@ class UiOptions:
     project: Path | None = None
     runner: bool = True
     slots: int = 2
+    audit: str = "auto"
     tls_cert: Path | None = None
     tls_key: Path | None = None
     behind_proxy: list[str] = field(default_factory=list)
@@ -388,6 +389,8 @@ async def _spawn_runner(url: str, token: str, o: UiOptions) -> asyncio.subproces
         LOCAL_RUNNER,
         "--slots",
         str(o.slots),
+        "--audit",
+        o.audit,
         *(["--tls-ca", str(o.tls_cert)] if o.tls_cert is not None else []),
         env=env,
     )

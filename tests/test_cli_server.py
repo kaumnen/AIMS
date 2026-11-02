@@ -8,7 +8,7 @@ import stat
 import sys
 from collections.abc import AsyncGenerator, AsyncIterator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx2
 import pytest
@@ -17,11 +17,13 @@ from typer.testing import CliRunner
 
 from aims.cli import app
 from aims.events import Draft, LocalEventStore, RunFinished, RunStarted, ToolCall
+from aims.node.service import Node, NodeOptions
 from aims.sandbox import DockerBackend, SandboxSpec
 from aims.server.serve import (
     ServeError,
     UiOptions,
     _redirect,
+    _spawn_runner,
     check,
     connect_host,
     open_link,
@@ -143,6 +145,81 @@ def test_local_processes_reach_the_address_bound() -> None:
     assert connect_host("10.0.0.5") == "10.0.0.5"
     assert connect_host("aims.example") == "aims.example"
     assert server_dir({"AIMS_SERVER_DIR": "/srv/aims"}) == Path("/srv/aims")
+
+
+def test_runner_and_ui_refuse_an_unknown_audit_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    async def serve(o: UiOptions) -> int:
+        return 0
+
+    class Stub:
+        def __init__(self, options: NodeOptions) -> None:
+            pass
+
+        async def run(self, stop: asyncio.Event) -> None:
+            pass
+
+    monkeypatch.setattr("aims.server.serve.serve", serve)
+    monkeypatch.setattr("aims.node.service.Node", Stub)
+    runner = CliRunner()
+    for args in (
+        ["runner", "--server", "http://127.0.0.1:9", "--audit", "full"],
+        ["ui", "--no-open", "--no-runner", "--data-dir", str(tmp_path), "--audit", "full"],
+    ):
+        result = runner.invoke(app, args, env={"AIMS_TOKEN": "x"})
+        assert result.exit_code == 2, result.output
+        assert "auto, kernel, snapshot" in result.output
+
+
+def test_the_runner_gets_its_audit_mode(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    seen: list[NodeOptions] = []
+
+    class Stub:
+        def __init__(self, options: NodeOptions) -> None:
+            seen.append(options)
+
+        async def run(self, stop: asyncio.Event) -> None:
+            pass
+
+    monkeypatch.setattr("aims.node.service.Node", Stub)
+    base = ["runner", "--server", "http://127.0.0.1:9", "--data-dir", str(tmp_path)]
+    for args, mode in ((base, "auto"), ([*base, "--audit", "snapshot"], "snapshot")):
+        result = CliRunner().invoke(app, args, env={"AIMS_TOKEN": "x"})
+        assert result.exit_code == 0, result.output
+        assert seen.pop().audit == mode
+
+
+async def test_aims_ui_hands_its_audit_mode_to_the_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    argv: list[str] = []
+
+    async def spawn(*args: str, **kwargs: Any) -> None:
+        argv.extend(args)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    await _spawn_runner("http://127.0.0.1:9", "t", UiOptions(audit="snapshot"))
+    assert argv[argv.index("--audit") + 1] == "snapshot"
+
+
+class NoTracer:
+    tracer = None
+    tracer_restarts = 0
+
+    async def restart_tracer(self) -> None:
+        raise AssertionError("a snapshot runner never starts the tracer")
+
+
+async def test_a_snapshot_runner_never_starts_the_tracer(tmp_path: Path) -> None:
+    node = Node(NodeOptions(url="http://x", token="t", name="n", data=tmp_path, audit="snapshot"))
+    node.backend = cast(Any, NoTracer())
+    health = node.tracer()
+    assert not health.alive
+    assert health.detail is not None
+    assert "--audit snapshot" in health.detail
+    async with asyncio.timeout(1):
+        await node._watch_tracer()
 
 
 def test_tokens_from_the_cli(tmp_path: Path) -> None:
@@ -430,6 +507,36 @@ async def test_aims_ui_brings_a_runner_and_stops_it(tmp_path: Path) -> None:
         async with asyncio.timeout(120):
             assert await proc.wait() == 0
     assert (tmp_path / "xdg" / "aims" / "runner" / "runs").is_dir()
+
+
+@pytest.mark.docker
+async def test_aims_ui_with_snapshot_audit_brings_a_runner_without_the_tracer(
+    tmp_path: Path,
+) -> None:
+    if not os.environ.get("AIMS_REQUIRE_DOCKER"):
+        try:
+            backend = await DockerBackend.open(audit="snapshot")
+            await backend.close()
+        except Exception as e:
+            pytest.skip(f"Docker is not available: {e}")
+    async with ui_process(tmp_path, "--audit", "snapshot") as (proc, url):
+        base = url.partition("/#code=")[0]
+        token = json.loads((tmp_path / "server" / "server.json").read_text())["operator"]
+        async with httpx2.AsyncClient(
+            base_url=base, headers={"Authorization": f"Bearer {token}"}, trust_env=False
+        ) as c:
+            async with asyncio.timeout(120):
+                while True:
+                    runners = (await c.get("/api/runners")).json()
+                    if runners and runners[0]["connected"]:
+                        break
+                    await asyncio.sleep(0.2)
+        proc.send_signal(signal.SIGTERM)
+        async with asyncio.timeout(120):
+            assert await proc.wait() == 0
+    tracer = runners[0]["tracer"]
+    assert not tracer["alive"]
+    assert "--audit snapshot" in tracer["detail"]
 
 
 @pytest.mark.docker
