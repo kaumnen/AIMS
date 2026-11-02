@@ -6,7 +6,7 @@ import re
 import signal
 import stat
 import sys
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from pathlib import Path
 from typing import Any, cast
 
@@ -15,11 +15,12 @@ import pytest
 from cp import CP, control_plane
 from typer.testing import CliRunner
 
-from aims.cli import app
+from aims.cli import EXIT_CANCELLED, app
 from aims.events import Draft, LocalEventStore, RunFinished, RunStarted, ToolCall
 from aims.node.service import Node, NodeOptions
 from aims.sandbox import DockerBackend, SandboxSpec
 from aims.server.serve import (
+    UI_RUNNER,
     ServeError,
     UiOptions,
     _redirect,
@@ -28,6 +29,7 @@ from aims.server.serve import (
     connect_host,
     open_link,
     public_url,
+    serve,
     server_dir,
     snap_browser,
 )
@@ -190,6 +192,175 @@ def test_the_runner_gets_its_audit_mode(monkeypatch: pytest.MonkeyPatch, tmp_pat
         assert seen.pop().audit == mode
 
 
+def signalled_runner(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    signals: list[signal.Signals],
+    env: dict[str, str],
+) -> tuple[int, bool, bool, bool]:
+    """Run `aims runner` on a stub node that sends itself `signals`, 10 ms apart. Returns the
+    exit code, whether the node was asked to stop, whether it ran to its end (a kill now
+    cancels it) and whether the runner said it kills now."""
+    seen: dict[str, bool] = {"done": False}
+
+    class Stub:
+        def __init__(self, options: NodeOptions) -> None:
+            pass
+
+        async def run(self, stop: asyncio.Event) -> None:
+            try:
+                for sig in signals:
+                    os.kill(os.getpid(), sig)
+                    await asyncio.sleep(0.01)
+                async with asyncio.timeout(5):
+                    await stop.wait()
+                # time for a late signal to cancel this
+                await asyncio.sleep(0.2)
+                seen["done"] = True
+            finally:
+                seen["stop"] = stop.is_set()
+
+    monkeypatch.setattr("aims.node.service.Node", Stub)
+    previous = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        result = CliRunner().invoke(
+            app,
+            ["runner", "--server", "http://127.0.0.1:9", "--data-dir", str(tmp_path)],
+            env={"AIMS_TOKEN": "x", **env},
+        )
+        # a runner `aims ui` starts ignores what comes after its stop
+        assert (signal.getsignal(signal.SIGTERM) == signal.SIG_IGN) == bool(env)
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+    return result.exit_code, seen["stop"], seen["done"], "killing now" in result.output
+
+
+def test_a_runner_aims_ui_starts_stops_once_for_a_ctrl_c(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Ctrl-C in the terminal reaches the whole process group: the runner gets SIGINT and
+    # `aims ui` sends it SIGTERM. That is one Ctrl-C, so the runner seals its runs.
+    ended = signalled_runner(
+        monkeypatch, tmp_path, [signal.SIGINT, signal.SIGTERM], {UI_RUNNER: "1"}
+    )
+    assert ended == (0, True, True, False)
+
+
+def test_a_runner_aims_ui_starts_kills_now_on_a_second_ctrl_c(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ended = signalled_runner(
+        monkeypatch,
+        tmp_path,
+        [signal.SIGINT, signal.SIGTERM, signal.SIGINT, signal.SIGTERM],
+        {UI_RUNNER: "1"},
+    )
+    assert ended == (EXIT_CANCELLED, True, False, True)
+
+
+def test_a_runner_on_its_own_kills_now_on_a_second_signal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    for signals in ([signal.SIGINT, signal.SIGINT], [signal.SIGINT, signal.SIGTERM]):
+        assert signalled_runner(monkeypatch, tmp_path, signals, {}) == (
+            EXIT_CANCELLED,
+            True,
+            False,
+            True,
+        )
+
+
+async def test_aims_ui_tells_its_runner_to_leave_ctrl_c_to_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
+
+    async def spawn(*args: str, **kwargs: Any) -> None:
+        seen.update(kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    await _spawn_runner("http://127.0.0.1:9", "t", UiOptions())
+    assert seen["env"][UI_RUNNER] == "1"
+    assert seen["env"]["AIMS_TOKEN"] == "t"
+
+
+# A stand-in for the runner `aims ui` starts: it logs each SIGTERM, stops in `argv[2]` seconds
+# after the first and exits 130 at once on the second, as the runner kills now.
+FAKE_RUNNER = """
+import os, signal, sys, time
+log, slow = sys.argv[1], float(sys.argv[2])
+signal.signal(signal.SIGINT, signal.SIG_IGN)
+terms = []
+def on_term(*_):
+    terms.append(1)
+    with open(log, "a") as f:
+        f.write("TERM\\n")
+    if len(terms) > 1:
+        os._exit(130)
+signal.signal(signal.SIGTERM, on_term)
+with open(log, "a") as f:
+    f.write("ready\\n")
+while not terms:
+    time.sleep(0.01)
+end = time.monotonic() + slow
+while time.monotonic() < end:
+    time.sleep(0.01)
+"""
+
+
+async def until(test: Callable[[], bool], within: float) -> None:
+    async with asyncio.timeout(within):
+        while True:
+            if test():
+                return
+            await asyncio.sleep(0.02)
+
+
+@pytest.mark.parametrize(("presses", "code"), [(1, 0), (2, EXIT_CANCELLED)])
+async def test_aims_ui_passes_each_ctrl_c_on_to_its_runner(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    presses: int,
+    code: int,
+) -> None:
+    log = tmp_path / "signals"
+    log.touch()
+    slow = 0.5 if presses == 1 else 30.0
+
+    async def spawn(url: str, token: str, o: UiOptions) -> asyncio.subprocess.Process:
+        return await asyncio.create_subprocess_exec(
+            sys.executable, "-c", FAKE_RUNNER, str(log), str(slow)
+        )
+
+    monkeypatch.setattr("aims.server.serve._spawn_runner", spawn)
+    before = signal.getsignal(signal.SIGINT)
+    task = asyncio.create_task(
+        serve(UiOptions(port=0, data=tmp_path / "server", open_browser=False))
+    )
+    try:
+        # the server takes Ctrl-C once its handler replaces the one before
+        await until(
+            lambda: signal.getsignal(signal.SIGINT) is not before and "ready" in log.read_text(),
+            30,
+        )
+        for press in range(1, presses + 1):
+            os.kill(os.getpid(), signal.SIGINT)
+            await until(lambda n=press: log.read_text().count("TERM") >= n, 5)
+        async with asyncio.timeout(10):
+            assert await task == 0
+    finally:
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+    assert log.read_text().count("TERM") == presses
+    err = capsys.readouterr().err
+    assert "stopping the local runner" in err
+    assert ("the local runner exited with code 130" in err) == (code != 0)
+
+
 async def test_aims_ui_hands_its_audit_mode_to_the_runner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -335,8 +506,9 @@ async def read_url(proc: asyncio.subprocess.Process) -> str:
 
 @contextlib.asynccontextmanager
 async def ui_process(
-    tmp_path: Path, *args: str
+    tmp_path: Path, *args: str, session: bool = False
 ) -> AsyncGenerator[tuple[asyncio.subprocess.Process, str]]:
+    """`aims ui` with `args`; `session` puts it in a session of its own, as a terminal job."""
     env = {**os.environ, "XDG_DATA_HOME": str(tmp_path / "xdg")}
     env.pop("AIMS_TOKEN", None)
     proc = await asyncio.create_subprocess_exec(
@@ -353,6 +525,7 @@ async def ui_process(
         stderr=asyncio.subprocess.PIPE,
         env=env,
         cwd=tmp_path,
+        start_new_session=session,
     )
     try:
         yield proc, await read_url(proc)
@@ -507,6 +680,38 @@ async def test_aims_ui_brings_a_runner_and_stops_it(tmp_path: Path) -> None:
         async with asyncio.timeout(120):
             assert await proc.wait() == 0
     assert (tmp_path / "xdg" / "aims" / "runner" / "runs").is_dir()
+
+
+@pytest.mark.docker
+async def test_a_ctrl_c_in_the_terminal_stops_the_local_runner_once(tmp_path: Path) -> None:
+    if not os.environ.get("AIMS_REQUIRE_DOCKER"):
+        try:
+            backend = await DockerBackend.open(audit="snapshot")
+            await backend.close()
+        except Exception as e:
+            pytest.skip(f"Docker is not available: {e}")
+    async with ui_process(tmp_path, "--audit", "snapshot", session=True) as (proc, url):
+        base = url.partition("/#code=")[0]
+        token = json.loads((tmp_path / "server" / "server.json").read_text())["operator"]
+        async with httpx2.AsyncClient(
+            base_url=base, headers={"Authorization": f"Bearer {token}"}, trust_env=False
+        ) as c:
+            async with asyncio.timeout(120):
+                while True:
+                    runners = (await c.get("/api/runners")).json()
+                    if runners and runners[0]["connected"]:
+                        break
+                    await asyncio.sleep(0.2)
+        # what a terminal does on Ctrl-C: SIGINT to every process of the job
+        os.killpg(proc.pid, signal.SIGINT)
+        assert proc.stderr is not None
+        async with asyncio.timeout(120):
+            err = (await proc.stderr.read()).decode()
+            assert await proc.wait() == 0
+    assert err.count("stopping: runs are sealed as cancelled; again to kill now") == 1
+    assert "killing now" not in err
+    assert "the local runner exited" not in err
+    assert "the local runner was killed" not in err
 
 
 @pytest.mark.docker

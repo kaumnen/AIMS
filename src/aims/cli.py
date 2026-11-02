@@ -1341,6 +1341,7 @@ def runner_cmd(
     """Take jobs from a control plane and run them on this Docker host."""
     import asyncio
     import logging
+    import os
     import signal
     from typing import cast
 
@@ -1353,6 +1354,12 @@ def runner_cmd(
     found = _connection(server, token_file, required=True)
     assert found is not None
     url, token = found
+    # Set by `aims ui` on the runner it starts (UI_RUNNER in aims.server.serve). A Ctrl-C in
+    # the terminal reaches both processes. `aims ui` passes it on as SIGTERM, so the runner
+    # would count one Ctrl-C twice and kill now. It ignores SIGINT and waits for the SIGTERM.
+    by_ui = os.environ.get("AIMS_UI_RUNNER") == "1"
+    if by_ui:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
 
     async def main() -> None:
         node = Node(
@@ -1380,8 +1387,10 @@ def runner_cmd(
                 stop.set()
             elif current is not None:
                 current.cancel()
+                if stops == 2:
+                    typer.echo("killing now", err=True)
 
-        for sig in (signal.SIGINT, signal.SIGTERM):
+        for sig in (signal.SIGTERM,) if by_ui else (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, on_signal)
         await node.run(stop)
 
@@ -1389,6 +1398,11 @@ def runner_cmd(
         asyncio.run(main())
     except asyncio.CancelledError:
         raise typer.Exit(EXIT_CANCELLED) from None
+    finally:
+        if by_ui:
+            # The stop is over and the exit code says how it went. A SIGTERM from a late
+            # second Ctrl-C would only replace that code.
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
 
 
 @app.command()

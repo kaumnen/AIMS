@@ -31,6 +31,7 @@ log = logging.getLogger("aims.server")
 PORT = 8484
 SERVER_JSON = "server.json"
 LOCAL_RUNNER = "local"
+UI_RUNNER = "AIMS_UI_RUNNER"
 
 
 def server_dir(env: dict[str, str] | None = None) -> Path:
@@ -202,11 +203,22 @@ async def serve(o: UiOptions) -> int:
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()
         stops = 0
+        told = 0
+
+        def tell_runner() -> None:
+            """The runner leaves Ctrl-C to this server, which sends it one SIGTERM per stop:
+            the first seals its runs as cancelled, the next kills it now."""
+            nonlocal told
+            if child is not None and child.returncode is None:
+                told += 1
+                with contextlib.suppress(ProcessLookupError):
+                    child.send_signal(signal.SIGTERM)
 
         def on_signal() -> None:
             nonlocal stops
             stops += 1
             stop.set()
+            tell_runner()
             if stops > 1:
                 server.force_exit = True
 
@@ -222,7 +234,8 @@ async def serve(o: UiOptions) -> int:
                 print(
                     "stopping the local runner; its runs are sealed as cancelled", file=sys.stderr
                 )
-                child.send_signal(signal.SIGTERM)
+                if not told:
+                    tell_runner()
                 with contextlib.suppress(TimeoutError):
                     async with asyncio.timeout(180):
                         await child.wait()
@@ -233,14 +246,28 @@ async def serve(o: UiOptions) -> int:
             for sig in (signal.SIGINT, signal.SIGTERM):
                 loop.remove_signal_handler(sig)
     finally:
-        if child is not None and child.returncode is None:
-            child.kill()
-            await child.wait()
+        if child is not None:
+            if child.returncode is None:
+                child.kill()
+                await child.wait()
+            if child.returncode:
+                print(runner_ended(child.returncode), file=sys.stderr)
         info.unlink(missing_ok=True)
         # the codes in them die with this server
         _prune(o.data, None)
         await close_state(state)
     return 0
+
+
+def runner_ended(code: int) -> str:
+    """How the local runner ended, from its exit code; asyncio gives -N for signal N."""
+    if code < 0:
+        try:
+            name = signal.Signals(-code).name
+        except ValueError:
+            name = f"signal {-code}"
+        return f"the local runner was killed by {name}"
+    return f"the local runner exited with code {code}"
 
 
 def open_link(
@@ -375,8 +402,9 @@ def _port(server: uvicorn.Server, wanted: int) -> int:
 
 
 async def _spawn_runner(url: str, token: str, o: UiOptions) -> asyncio.subprocess.Process:
-    """The runner `aims ui` brings: its token goes in the environment, never on argv."""
-    env = {**os.environ, "AIMS_TOKEN": token}
+    """The runner `aims ui` brings: its token goes in the environment, never on argv.
+    UI_RUNNER tells it to ignore the terminal's Ctrl-C and wait for this server's SIGTERM."""
+    env = {**os.environ, "AIMS_TOKEN": token, UI_RUNNER: "1"}
     return await asyncio.create_subprocess_exec(
         sys.executable,
         "-P",
