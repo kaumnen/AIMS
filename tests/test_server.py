@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import gzip
 import hashlib
 import io
 import json
@@ -332,6 +333,12 @@ async def test_a_pushed_run_lands_byte_for_byte(cp: CP, local: LocalEventStore) 
         r = await c.get(
             f"/api/runs/{run_id}/blobs/{big.sha256}", headers={"Accept-Encoding": "gzip"}
         )
+        assert r.content == b"y" * 20_000
+        r = await c.get(
+            f"/api/runs/{run_id}/blobs/{big.sha256}",
+            headers={"Accept-Encoding": "zstd;q=0, gzip"},
+        )
+        assert "content-encoding" not in r.headers
         assert r.content == b"y" * 20_000
         assert r.headers["content-disposition"].startswith("attachment")
         assert r.headers["content-type"] == "application/octet-stream"
@@ -1390,6 +1397,39 @@ async def test_the_ui_serves_the_assets_of_a_build_made_while_it_runs(
             (assets / "c.js").write_text("export const c = 1;\n")
             assert (await c.get("/assets/c.js")).status_code == 200
             assert listings == 1
+
+
+async def test_the_ui_sends_the_precompressed_copy_a_request_accepts(
+    cp: CP, tmp_path: Path
+) -> None:
+    assets = tmp_path / "ui" / "assets"
+    source = b"export const big = '" + b"x" * 2000 + b"';\n"
+    (assets / "big.js").write_bytes(source)
+    (assets / "big.js.br").write_bytes(b"brotli bytes")
+    (assets / "big.js.gz").write_bytes(gzip.compress(source))
+    async with cp.client() as c:
+        headers = {"Accept-Encoding": "gzip, deflate, br, zstd"}
+        async with c.stream("GET", "/assets/big.js", headers=headers) as r:
+            body = b"".join([chunk async for chunk in r.aiter_raw()])
+        assert (r.status_code, r.headers["content-encoding"], body) == (200, "br", b"brotli bytes")
+        assert r.headers["content-type"].startswith("text/javascript")
+        assert r.headers["vary"] == "Accept-Encoding"
+        assert "immutable" in r.headers["cache-control"]
+        r = await c.get("/assets/big.js", headers={"Accept-Encoding": "br;q=0, gzip"})
+        assert (r.headers["content-encoding"], r.content) == ("gzip", source)
+        for accept in ("identity", "", "br;q=0, gzip;q=0"):
+            r = await c.get("/assets/big.js", headers={"Accept-Encoding": accept})
+            assert "content-encoding" not in r.headers
+            assert (r.content, r.headers["vary"]) == (source, "Accept-Encoding")
+        r = await c.get("/assets/a.js", headers=headers)
+        assert r.status_code == 200
+        assert "content-encoding" not in r.headers
+        assert "vary" not in r.headers
+        for copy in ("big.js.br", "big.js.gz"):
+            assert (await c.get(f"/assets/{copy}", headers=headers)).status_code == 404
+        (assets / "big.js.br").unlink()
+        r = await c.get("/assets/big.js", headers=headers)
+        assert (r.headers["content-encoding"], r.content) == ("gzip", source)
 
 
 async def test_a_self_test_takes_one_slot_while_its_case_runs(local: LocalEventStore) -> None:

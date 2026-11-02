@@ -2,9 +2,10 @@
 //
 // budget.json, sizes in kB (1000 bytes): "firstPaint" and "total" cap raw and gzip bytes of
 // what index.html loads and of every js and css asset; "chunks" caps a lazy chunk's gzip size
-// by its name without the hash, and "chunk" caps any lazy chunk not named there.
-import { readdirSync, readFileSync } from "node:fs";
-import { gzipSync } from "node:zlib";
+// by its name without the hash, and "chunk" caps any lazy chunk not named there. It also checks
+// the .br and .gz copies the build writes next to each text asset, which the server sends as is.
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { brotliDecompressSync, gunzipSync, gzipSync } from "node:zlib";
 
 interface Size {
   raw: number;
@@ -76,6 +77,30 @@ if (largest && largest[1].gzip <= budget.chunk) {
   });
 }
 
+// A copy only pays when it is smaller, so tiny assets may have none; from 1 kB up every text
+// asset compresses, so a missing copy there means the build skipped it.
+const unpack = { ".br": brotliDecompressSync, ".gz": gunzipSync };
+const holds = (open: () => Buffer, bytes: Buffer) => {
+  try {
+    return open().equals(bytes);
+  } catch {
+    return false;
+  }
+};
+const copies: string[] = [];
+for (const file of readdirSync(`${dist}/assets`)) {
+  if (!/\.(js|css|svg|json)$/.test(file)) continue;
+  const bytes = readFileSync(`${dist}/assets/${file}`);
+  for (const [ext, open] of Object.entries(unpack)) {
+    const path = `${dist}/assets/${file}${ext}`;
+    if (!existsSync(path)) {
+      if (bytes.length >= 1000) copies.push(`${file}${ext} is missing`);
+    } else if (!holds(() => open(readFileSync(path)), bytes)) {
+      copies.push(`${file}${ext} does not hold the bytes of ${file}`);
+    }
+  }
+}
+
 const over = rows.filter((r) => r.size > r.cap);
 const width = Math.max(...rows.map((r) => r.what.length));
 for (const r of rows) {
@@ -84,7 +109,8 @@ for (const r of rows) {
     `${r.what.padEnd(width)}  ${r.size.toFixed(1).padStart(7)} kB  of ${String(r.cap).padStart(5)} kB  ${mark}`,
   );
 }
+for (const problem of copies) console.error(problem);
 if (over.length > 0) {
   console.error(`\n${over.length} over budget. Trim, or raise web/budget.json with a reason.`);
-  process.exit(1);
 }
+if (over.length > 0 || copies.length > 0) process.exit(1);

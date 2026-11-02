@@ -60,6 +60,7 @@ from aims.scenario.budget import BudgetError, BudgetOverride
 from aims.server import db as sdb
 from aims.server import series as sseries
 from aims.server.auth import Principal, require
+from aims.server.codings import allowed
 from aims.server.files import Sources
 from aims.server.problems import ProblemError, ProblemException, responses
 from aims.server.runner_api import JOBS, send
@@ -1301,8 +1302,7 @@ async def get_blob(
         compressed = f.read(4) == ZSTD_MAGIC
     if not compressed:
         return FileResponse(path, media_type="application/octet-stream", headers=headers)
-    wants = {p.split(";")[0].strip().lower() for p in (accept_encoding or "").split(",")}
-    if "zstd" in wants:
+    if allowed(accept_encoding, ("zstd",)):
         headers["Content-Encoding"] = "zstd"
         headers["Vary"] = "Accept-Encoding"
         return FileResponse(path, media_type="application/octet-stream", headers=headers)

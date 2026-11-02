@@ -4,8 +4,10 @@ touches Docker; runners do."""
 import asyncio
 import contextlib
 import json
+import mimetypes
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +33,7 @@ from aims.server import (
     stream,
 )
 from aims.server.auth import SecurityHeaders
+from aims.server.codings import allowed
 from aims.server.files import Sources
 from aims.server.problems import Problem
 from aims.server.state import ServerState
@@ -38,6 +41,7 @@ from aims.wire import RunnerFeed, StreamMessage
 
 LOOPBACK = ("127.0.0.1", "localhost", "[::1]", "::1")
 REF = "#/components/schemas/{model}"
+COPIES = (("br", ".br"), ("gzip", ".gz"))
 
 
 def ui_root() -> Path | None:
@@ -113,18 +117,40 @@ def _stamp(root: Path | None) -> int | None:
         return None
 
 
-def _assets(root: Path | None) -> tuple[int | None, dict[str, Path]]:
+@dataclass(frozen=True)
+class Asset:
+    file: Path
+    copies: dict[str, Path]
+    """Its precompressed copies by content coding, in the order they are preferred."""
+
+    def pick(self, accept: str | None) -> tuple[str | None, Path]:
+        """The copy to send for an Accept-Encoding header, with its coding; the file itself
+        when the header allows none of them."""
+        for coding in allowed(accept, self.copies):
+            return coding, self.copies[coding]
+        return None, self.file
+
+
+def _assets(root: Path | None) -> tuple[int | None, dict[str, Asset]]:
     stamp = _stamp(root)
     folder = None if root is None else root / "assets"
     if folder is None or not folder.is_dir():
         return stamp, {}
-    return stamp, {f.name: f for f in folder.iterdir() if f.is_file()}
+    files = {f.name: f for f in folder.iterdir() if f.is_file()}
+    copy = tuple(ext for _, ext in COPIES)
+    return stamp, {
+        name: Asset(file, {c: files[name + ext] for c, ext in COPIES if name + ext in files})
+        for name, file in files.items()
+        if not name.endswith(copy)
+    }
 
 
 def _spa(app: FastAPI, root: Path | None) -> None:
     """The UI shell and its assets, served without auth; the API behind them needs it. Assets
     are found by name in a listing of their folder, listed again only when the folder changed
-    since the last listing, so a name that is not there costs a stat, not a listing."""
+    since the last listing, so a name that is not there costs a stat, not a listing. The build
+    writes brotli and gzip copies next to each text asset; the one the request accepts is sent
+    as it is, and the copies are never served by their own names."""
     stamp, assets = _assets(root)
 
     @app.get("/{path:path}", include_in_schema=False)
@@ -138,17 +164,22 @@ def _spa(app: FastAPI, root: Path | None) -> None:
             )
         if path.startswith("assets/"):
             name = path.removeprefix("assets/")
-            file = assets.get(name)
-            there = file is not None and file.is_file()
+            accept = request.headers.get("accept-encoding")
+            asset = assets.get(name)
+            there = asset is not None and asset.pick(accept)[1].is_file()
             if not there and _stamp(root) != stamp:
                 stamp, assets = await asyncio.to_thread(_assets, root)
-                file = assets.get(name)
-                there = file is not None
-            if file is None or not there:
+                asset = assets.get(name)
+                there = asset is not None
+            if asset is None or not there:
                 raise problems.ProblemException(404, "Not found", f"no asset /{path}")
-            return FileResponse(
-                file, headers={"Cache-Control": "public, max-age=31536000, immutable"}
-            )
+            coding, file = asset.pick(accept)
+            headers = {"Cache-Control": "public, max-age=31536000, immutable"}
+            if asset.copies:
+                headers["Vary"] = "Accept-Encoding"
+            if coding is not None:
+                headers["Content-Encoding"] = coding
+            return FileResponse(file, media_type=mimetypes.guess_type(name)[0], headers=headers)
         return FileResponse(root / "index.html", headers={"Cache-Control": "no-cache"})
 
 
