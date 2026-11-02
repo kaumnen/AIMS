@@ -214,7 +214,7 @@ app.add_typer(prompts_app, name="prompts")
 
 @prompts_app.command("show")
 def prompts_show(config: ConfigOption = None) -> None:
-    """Print the texts agents and the monitor get with this aims.toml, as [prompts] tables to
+    """Print the texts agents and the monitor get with this aims.toml, as \\[prompts] tables to
     edit: the agent's, among them the `denied` reply and `notify_on_resume`, each tool's, the
     monitor's and its category definitions.
 
@@ -2314,7 +2314,7 @@ def spend_cmd(
     runs_dir: Annotated[Path, typer.Option(help="Directory that holds the runs.")] = Path("runs"),
     json_out: Annotated[bool, typer.Option("--json", help="Print JSON.")] = False,
 ) -> None:
-    """Show what each provider was paid in the runs on record, against the [credits] of the
+    """Show what each provider was paid in the runs on record, against the \\[credits] of the
     config files."""
     import asyncio
     import json
