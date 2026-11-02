@@ -465,6 +465,10 @@ class Tracer:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await task
+        # A start cut short no longer waits for the header; mark its error read so asyncio
+        # does not log it as lost.
+        if self._ready.done() and not self._ready.cancelled():
+            self._ready.exception()
         if self._container is not None:
             with contextlib.suppress(aiodocker.DockerError):
                 await self._container.delete(force=True)

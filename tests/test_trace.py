@@ -1,4 +1,5 @@
 import asyncio
+import gc
 import json
 import logging
 from typing import Any, cast
@@ -1418,3 +1419,73 @@ async def test_a_known_warning_does_not_hide_an_error_after_it() -> None:
     tracer._handle("/tmp/trace.bt:7:1-2: ERROR: unknown function")
     with pytest.raises(tracer_module.TracerError, match="unknown function"):
         await tracer._ready
+
+
+class SilentTrace:
+    """A trace exec whose bpftrace never prints its header."""
+
+    def start(self, detach: bool = False) -> object:
+        class Opening:
+            async def __aenter__(self) -> object:
+                return SilentTrace()
+
+        return Opening()
+
+    async def read_out(self) -> object:
+        await asyncio.Event().wait()
+        raise AssertionError
+
+    async def close(self) -> None:
+        pass
+
+
+class TracerContainer:
+    async def start(self) -> None:
+        pass
+
+    async def exec(self, *args: object, **kwargs: object) -> SilentTrace:
+        return SilentTrace()
+
+    async def delete(self, force: bool = False) -> None:
+        pass
+
+
+class TracerContainers:
+    async def create(self, **kwargs: object) -> TracerContainer:
+        return TracerContainer()
+
+
+class TracerDocker:
+    containers = TracerContainers()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("cut", ["cancel", "timeout"])
+async def test_a_start_cut_short_leaves_no_unread_error(
+    monkeypatch: pytest.MonkeyPatch, cut: str
+) -> None:
+    async def image(*args: object) -> str:
+        return "tracer"
+
+    monkeypatch.setattr(tracer_module, "ensure_image", image)
+    monkeypatch.setattr(tracer_module, "READY_S", 0.05 if cut == "timeout" else 60)
+    loop = asyncio.get_running_loop()
+    handler = loop.get_exception_handler()
+    errors: list[str] = []
+    loop.set_exception_handler(lambda _, context: errors.append(context["message"]))
+    try:
+        tracer = Tracer(cast(aiodocker.Docker, TracerDocker()), {}, "t")
+        start = asyncio.create_task(tracer.start())
+        await asyncio.sleep(0.01)
+        if cut == "cancel":
+            start.cancel()
+        with pytest.raises(asyncio.CancelledError if cut == "cancel" else TimeoutError):
+            await start
+        assert tracer._container is None
+        del tracer, start
+        for _ in range(3):
+            gc.collect()
+            await asyncio.sleep(0)
+    finally:
+        loop.set_exception_handler(handler)
+    assert errors == []
