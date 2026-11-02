@@ -610,3 +610,117 @@ async def test_the_helpers_of_a_backend_carry_its_labels(
             await backend.remove_run(run_id)
     assert len(seen) == 2
     assert all(s["aims.pid"] == ME and s["aims.instance"] == INSTANCE for s in seen)
+
+
+class Helper:
+    """A tracer or sampler that notes its stop in `done`. With `hold` its stop waits for
+    `release`, so a test can cancel the caller meanwhile."""
+
+    def __init__(self, name: str, done: list[str], *, hold: bool = False, fail: bool = False):
+        self.name = name
+        self.done = done
+        self.hold = hold
+        self.fail = fail
+        self.starting = asyncio.Event()
+        self.stopping = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def start(self) -> None:
+        self.starting.set()
+        await asyncio.Event().wait()
+
+    async def stop(self) -> None:
+        self.stopping.set()
+        if self.hold:
+            await self.release.wait()
+        if self.fail:
+            raise RuntimeError("the daemon went away")
+        self.done.append(self.name)
+
+
+class Client:
+    def __init__(self, done: list[str]) -> None:
+        self.done = done
+
+    async def close(self) -> None:
+        self.done.append("docker")
+
+
+def backend(tracer: Helper, sampler: Helper, done: list[str]) -> sandbox.DockerBackend:
+    docker: Any = Client(done)
+    helpers: Any = (tracer, sampler)
+    return sandbox.DockerBackend(
+        docker,
+        arch="arm64",
+        labels={},
+        toolbox=("toolbox", "volume"),
+        tracer=helpers[0],
+        sampler=helpers[1],
+    )
+
+
+async def test_cancels_while_the_backend_closes_still_remove_both_helpers() -> None:
+    """Ctrl-C again lands while the tracer is being removed: the sampler must still go and
+    the Docker client close."""
+    done: list[str] = []
+    tracer, sampler = Helper("tracer", done, hold=True), Helper("sampler", done)
+    closing = asyncio.create_task(backend(tracer, sampler, done).close())
+    await tracer.stopping.wait()
+    closing.cancel()
+    await asyncio.sleep(0)
+    closing.cancel()
+    tracer.release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    assert done == ["tracer", "sampler", "docker"]
+
+
+async def test_a_tracer_that_fails_to_stop_still_lets_the_sampler_go() -> None:
+    done: list[str] = []
+    closing = backend(Helper("tracer", done, fail=True), Helper("sampler", done), done)
+    with pytest.raises(RuntimeError):
+        await closing.close()
+    assert done == ["sampler", "docker"]
+
+
+async def test_cancels_while_the_backend_opens_still_remove_both_helpers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ctrl-C lands while the tracer starts, then again while it is removed."""
+    done: list[str] = []
+    tracer, sampler = Helper("tracer", done, hold=True), Helper("sampler", done)
+
+    class System:
+        async def info(self) -> dict[str, str]:
+            return {"Architecture": "aarch64"}
+
+    class Opened(Client):
+        def __init__(self, url: str | None = None) -> None:
+            super().__init__(done)
+            self.system = System()
+
+    async def nothing(*_: Any) -> None:
+        return None
+
+    async def toolbox(*_: Any) -> tuple[str, str]:
+        return ("toolbox", "volume")
+
+    async def started(*_: Any) -> Helper:
+        return sampler
+
+    monkeypatch.setattr(sandbox.aiodocker, "Docker", Opened)
+    monkeypatch.setattr(sandbox, "_own_container", nothing)
+    monkeypatch.setattr(sandbox, "_sweep", nothing)
+    monkeypatch.setattr(sandbox, "_toolbox", toolbox)
+    monkeypatch.setattr(sandbox, "_remove_old", nothing)
+    monkeypatch.setattr(sandbox, "_sampler", started)
+    monkeypatch.setattr(sandbox, "Tracer", lambda *_, **__: tracer)
+    opening = asyncio.create_task(sandbox.DockerBackend.open(audit="auto"))
+    await tracer.starting.wait()
+    opening.cancel()
+    await tracer.stopping.wait()
+    opening.cancel()
+    tracer.release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await opening
+    assert done == ["tracer", "sampler", "docker"]

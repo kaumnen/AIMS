@@ -16,6 +16,7 @@ from aiodocker.containers import DockerContainer
 from aiodocker.volumes import DockerVolume
 from pydantic import JsonValue
 
+from aims.aio import settle
 from aims.events import AuditLevel, Proc
 from aims.sandbox.base import (
     AGENT_UID,
@@ -145,11 +146,7 @@ class DockerBackend:
             backend.ring_pages = ring_pages
             return backend
         except BaseException:
-            if tracer is not None:
-                await tracer.stop()
-            if sampler is not None:
-                await sampler.stop()
-            await docker.close()
+            await settle(_teardown(docker, tracer, sampler))
             raise
 
     async def __aenter__(self) -> Self:
@@ -159,11 +156,9 @@ class DockerBackend:
         await self.close()
 
     async def close(self) -> None:
-        if self.tracer is not None:
-            await self.tracer.stop()
-        if self.sampler is not None:
-            await self.sampler.stop()
-        await self.docker.close()
+        """Remove the tracer and the sampler, then close the Docker client. A cancel, such as a
+        second Ctrl-C, waits for this to end, so neither helper outlives this process."""
+        await settle(_teardown(self.docker, self.tracer, self.sampler))
 
     async def restart_tracer(self) -> None:
         """Start a new kernel tracer in place of one that stopped or never started. Sandboxes
@@ -904,6 +899,21 @@ async def _remove_old(docker: aiodocker.Docker, toolbox: str) -> None:
         log.info("removing volume %s, left by another AIMS version", name)
         with contextlib.suppress(aiodocker.DockerError):
             await DockerVolume(docker, name).delete()
+
+
+async def _teardown(
+    docker: aiodocker.Docker, tracer: Tracer | None, sampler: Sampler | None
+) -> None:
+    """Stop the tracer and the sampler and close `docker`, each even if one before it fails."""
+    try:
+        if tracer is not None:
+            await tracer.stop()
+    finally:
+        try:
+            if sampler is not None:
+                await sampler.stop()
+        finally:
+            await docker.close()
 
 
 async def _sampler(docker: aiodocker.Docker, labels: dict[str, str], image: str) -> Sampler | None:
