@@ -262,7 +262,9 @@ class Runner:
 
     `cancel()` stops the agents and skips the verifier; the files are still archived and the
     run sealed as cancelled. `kill()` freezes every sandbox, archives its files, kills it and
-    seals the run as killed, without the verifier.
+    seals the run as killed, without the verifier. An operator's cancel or kill also stops the
+    monitor's model calls; sent once the run's outcome is set, it only cuts the monitor's final
+    sweeps and judge short.
     """
 
     def __init__(
@@ -310,6 +312,8 @@ class Runner:
         self.killed = False
         self.kill_reason: str | None = None
         self.finished = False
+        self._decided = False
+        self._monitor_cut = False
         self._control = ControlGate(bench.gate)
         self._agents_task: asyncio.Task[Any] | None = None
         self._agent_tasks: dict[str, asyncio.Task[Any]] = {}
@@ -325,6 +329,11 @@ class Runner:
         self._channels_closed = False
 
     def cancel(self) -> None:
+        """Stop the agents and the monitor's model calls. Once the run's outcome is set, only
+        cut the monitor's final sweeps and judge short; the run keeps its outcome."""
+        self._cut_monitor()
+        if self._decided:
+            return
         self.cancelled = True
         for task in self._agent_tasks.values():
             task.cancel()
@@ -337,9 +346,19 @@ class Runner:
         resumes, denies, injects and kill."""
         return self._control
 
+    def _cut_monitor(self) -> None:
+        """An operator stop: the monitor makes no more model calls, and the final sweeps and
+        the judge do not run."""
+        self._monitor_cut = True
+        if self.monitor is not None:
+            self.monitor.cut()
+
     async def kill(self, reason: str = "killed by the operator") -> None:
         """Freeze every sandbox, archive its files, kill it and stop the agents. The run is
-        then sealed as killed and the verifier does not run."""
+        then sealed as killed and the verifier does not run. Once the run's outcome is set it
+        does nothing. The monitor's own kill still gets the final sweeps and the judge."""
+        if self._decided:
+            return
         if self._killing is None:
             self._killing = asyncio.ensure_future(self._kill(reason))
         await asyncio.shield(self._killing)
@@ -416,6 +435,7 @@ class Runner:
         if action == "pause":
             await self._pause(targets, reason or "paused by the operator")
         elif action == "resume" and then == "kill":
+            self._cut_monitor()
             await self.kill(reason or "killed by the operator")
         elif action == "resume":
             if then == "inject":
@@ -426,6 +446,7 @@ class Runner:
         elif action == "inject":
             self._control.inject(targets, text or "")
         elif action == "kill":
+            self._cut_monitor()
             await self.kill(reason or "killed by the operator")
         elif action == "cancel":
             self.cancel()
@@ -554,6 +575,7 @@ class Runner:
         if self._killing is not None:
             await asyncio.shield(self._killing)
             result.status, result.reason = "killed", self.kill_reason
+        self._decided = True
         await asyncio.shield(self._close_sandboxes(kill=False))
         await self._judge(result)
         await asyncio.shield(self._close(kill=False))
@@ -598,6 +620,8 @@ class Runner:
             raise RunError(f"the monitor does not start: {type(e).__name__}: {e}") from None
         self._clients.append(client)
         self.monitor = monitor
+        if self._monitor_cut:
+            monitor.cut()
         self._untap = bench.store.tap(run_id, monitor.feed)
         hold = any(s.hold for s in watch.config.sweeps)
         self._control.inner = MonitorGate(
@@ -1049,9 +1073,9 @@ class Runner:
             return []
 
     async def _final_sweeps(self) -> None:
-        """Tell the monitor the agents stopped, once, if any agent ran. A monitor that fails
-        here does not fail the run."""
-        if self.monitor is None or not self.agents or self._agents_done:
+        """Tell the monitor the agents stopped, once, if any agent ran and no operator stopped
+        the run. A monitor that fails here does not fail the run."""
+        if self.monitor is None or not self.agents or self._agents_done or self._monitor_cut:
             return
         self._agents_done = True
         try:
@@ -1060,8 +1084,10 @@ class Runner:
             log.exception("the final sweeps of run %s failed", self.run_id)
 
     async def _judge(self, result: Result) -> None:
-        """The monitor's last word on a run whose agents ran: the final sweeps when a kill cut
-        them, then the judge, skipped on a cancelled run. A second Ctrl-C cuts it short."""
+        """The monitor's last word on a run whose agents ran: the final sweeps when the
+        monitor's kill cut them, then the judge. Both are skipped on a cancelled run and after
+        an operator's stop, which also cuts them short. A second Ctrl-C cuts them short and
+        seals the run as cancelled."""
         monitor = self.monitor
         if monitor is None:
             return
@@ -1070,7 +1096,7 @@ class Runner:
             if not cancelled:
                 await self._final_sweeps()
             self._judged = True
-            await monitor.judge(skip=cancelled or not self.agents)
+            await monitor.judge(skip=cancelled or self._monitor_cut or not self.agents)
         except asyncio.CancelledError:
             result.status, result.reason = "cancelled", "cancelled while the monitor finished"
             await asyncio.shield(self._close(kill=True))

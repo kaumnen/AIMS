@@ -230,6 +230,9 @@ class FakeMonitor:
     async def judge(self, *, skip: bool = False) -> None:
         self.calls.append(f"judge skip={skip}")
 
+    def cut(self) -> None:
+        self.calls.append("cut")
+
     async def close(self) -> None:
         self.calls.append("close")
 
@@ -561,6 +564,94 @@ async def test_a_kill_by_the_monitor_still_gets_the_final_sweeps_and_the_judge(
     assert fake_monitor[0].calls == ["start", "agents_done", "judge skip=False", "close"]
 
 
+@pytest.mark.parametrize("then", [None, "kill"])
+async def test_an_operator_kill_cuts_the_monitor_and_skips_the_judge(
+    store: LocalEventStore, tmp_path: Path, fake_monitor: list[FakeMonitor], then: Any
+) -> None:
+    script = Script(call("bash", command="x"), call("submit", answer="never"))
+    runner = Runner(bench(store, script), scenario(tmp_path), Options(), monitor=watched())
+
+    async def kill() -> None:
+        fake_monitor[0].on_barrier = None
+        if then is None:
+            await runner.operate("kill", reason="stop the spend")
+        else:
+            await runner.operate("resume", then=then, reason="stop the spend")
+
+    runner.on_start = lambda run_id: setattr(fake_monitor[0], "on_barrier", kill)
+    result = await runner.run()
+    assert (result.status, result.reason) == ("killed", "stop the spend")
+    assert fake_monitor[0].calls == ["start", "cut", "judge skip=True", "close"]
+
+
+async def test_a_run_cancelled_before_it_starts_cuts_its_monitor_at_once(
+    store: LocalEventStore, tmp_path: Path, fake_monitor: list[FakeMonitor]
+) -> None:
+    script = Script(call("submit", answer="ok"))
+    runner = Runner(bench(store, script), scenario(tmp_path), Options(), monitor=watched())
+    runner.cancel()
+    result = await runner.run()
+    assert result.status == "cancelled"
+    assert fake_monitor[0].calls[:2] == ["cut", "start"]
+
+
+class SlowJudge(FakeMonitor):
+    """A judge that runs until the monitor is cut."""
+
+    def __init__(self, **kw: Any) -> None:
+        super().__init__(**kw)
+        self.judging = asyncio.Event()
+        self.stopped = asyncio.Event()
+
+    async def judge(self, *, skip: bool = False) -> None:
+        await super().judge(skip=skip)
+        if not skip:
+            self.judging.set()
+            await self.stopped.wait()
+
+    def cut(self) -> None:
+        super().cut()
+        self.stopped.set()
+
+
+@pytest.mark.parametrize("stop", ["cancel", "kill"])
+@pytest.mark.parametrize("end", ["completed", "killed"])
+async def test_a_stop_while_the_monitor_finishes_cuts_it_and_keeps_the_outcome(
+    store: LocalEventStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_monitor: list[FakeMonitor],
+    stop: Any,
+    end: str,
+) -> None:
+    monkeypatch.setattr(runner_module, "Monitor", SlowJudge)
+    answer = "ok" if end == "completed" else "never"
+    script = Script(call("bash", command="x"), call("submit", answer=answer))
+    runner = Runner(bench(store, script), scenario(tmp_path), Options(), monitor=watched())
+
+    async def kill() -> None:
+        fake_monitor[0].on_barrier = None
+        await runner.kill("killed by the monitor")
+
+    if end == "killed":
+        runner.on_start = lambda run_id: setattr(fake_monitor[0], "on_barrier", kill)
+    task = asyncio.ensure_future(runner.run())
+    async with asyncio.timeout(10):
+        while not fake_monitor:  # noqa: ASYNC110
+            await asyncio.sleep(0.01)
+        monitor = cast(SlowJudge, fake_monitor[0])
+        await monitor.judging.wait()
+        await runner.operate(stop, reason="stop the judge")
+        result = await task
+    assert result.status == end, result.reason
+    assert not runner.cancelled
+    assert runner.killed == (end == "killed")
+    assert monitor.calls[-3:] == ["judge skip=False", "cut", "close"]
+    assert result.run_id is not None
+    actions = await of(store, result.run_id, OperatorAction, "operator.action")
+    assert [a.action for a in actions] == [stop]
+
+
 async def test_a_kill_ends_a_scripted_confederate_as_killed(
     store: LocalEventStore, tmp_path: Path, fake_monitor: list[FakeMonitor]
 ) -> None:
@@ -602,7 +693,7 @@ async def test_a_cancelled_run_skips_the_final_sweeps_and_the_judge(
     runner.on_start = lambda run_id: setattr(fake_monitor[0], "on_barrier", cancel)
     result = await runner.run()
     assert result.status == "cancelled"
-    assert fake_monitor[0].calls == ["start", "judge skip=True", "close"]
+    assert fake_monitor[0].calls == ["start", "cut", "judge skip=True", "close"]
 
 
 async def test_ask_human_reaches_the_human_hook(

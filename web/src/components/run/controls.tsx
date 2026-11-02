@@ -265,12 +265,12 @@ function InjectForm({
 const STOP = {
   kill: {
     title: "Kill the run",
-    text: "Freezes, archives and kills every sandbox. The verifier does not run.",
+    text: "Freezes, archives and kills every sandbox, and stops the monitor's model calls. The verifier and the judge do not run. While the judge runs, this only cuts it short.",
     button: "Kill run",
   },
   cancel: {
     title: "Cancel the run",
-    text: "Stops the agents, skips the verifier, then archives and seals the run as cancelled.",
+    text: "Stops the agents and the monitor's model calls, skips the verifier and the judge, then archives and seals the run as cancelled. While the judge runs, this only cuts it short.",
     button: "Cancel run",
   },
 };

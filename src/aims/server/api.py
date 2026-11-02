@@ -1111,13 +1111,15 @@ async def inject_run(
 
 @router.post("/runs/{run_id}/kill", status_code=202, tags=["control"])
 async def kill_run(run_id: str, body: StopBody, principal: Operator, state: State) -> CommandSent:
-    """Freeze, archive and kill every sandbox; the verifier does not run."""
+    """Freeze, archive and kill every sandbox and stop the monitor's model calls; the verifier
+    and the judge do not run. While the judge runs, it only cuts the judge short."""
     return await command(state, run_id, CommandAction(action="kill", reason=body.reason), principal)
 
 
 @router.post("/runs/{run_id}/cancel", status_code=202, tags=["control"])
 async def cancel_run(run_id: str, body: StopBody, principal: Operator, state: State) -> CommandSent:
-    """Stop the agents, skip the verifier, archive and seal the run as cancelled."""
+    """Stop the agents and the monitor's model calls, skip the verifier and the judge, archive
+    and seal the run as cancelled. While the judge runs, it only cuts the judge short."""
     act = CommandAction(action="cancel", reason=body.reason)
     return await command(state, run_id, act, principal)
 

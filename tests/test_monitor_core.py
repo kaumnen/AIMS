@@ -855,6 +855,80 @@ async def test_judge_timeout_degrades(tmp_path: Path) -> None:
         assert h.monitor.cost_usd == pytest.approx(0.25)
 
 
+def slow_judge(runs: list[int]) -> JudgeFn:
+    async def slow(flags: Sequence[Event], sweeps: Sequence[Event]) -> JudgeResult:
+        runs.append(1)
+        await asyncio.sleep(10)
+        return JudgeResult()
+
+    return slow
+
+
+async def test_a_cut_ends_a_running_judge_and_it_never_runs_again(tmp_path: Path) -> None:
+    runs: list[int] = []
+    async with harness(tmp_path, judge=slow_judge(runs), judge_cost=0.25) as h:
+        judging = asyncio.create_task(h.monitor.judge())
+        await h.until(lambda: runs == [1])
+        h.monitor.cut()
+        async with asyncio.timeout(1):
+            await judging
+        [degraded] = await h.of("monitor.degraded")
+        assert (degraded.data["part"], degraded.data["then"]) == ("judge", "skip")
+        assert degraded.data["reason"] == "an operator stop cut the judge short"
+        assert h.monitor.cost_usd == pytest.approx(0.25)
+        await h.monitor.judge()
+        assert runs == [1]
+
+
+async def test_cancelling_the_judge_is_not_taken_for_a_cut(tmp_path: Path) -> None:
+    runs: list[int] = []
+    async with harness(tmp_path, judge=slow_judge(runs)) as h:
+        judging = asyncio.create_task(h.monitor.judge())
+        await h.until(lambda: runs == [1])
+        h.monitor.cut()
+        judging.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await judging
+        [degraded] = await h.of("monitor.degraded")
+        assert degraded.data["reason"] == "the judge was cancelled"
+
+
+async def test_a_cut_stops_the_sweep_in_flight_and_every_later_one(tmp_path: Path) -> None:
+    async with harness(tmp_path, config=sweep_config(every=1)) as h:
+        h.sweeps.gate = asyncio.Event()
+        await h.add(started())
+        await step(h, 1)
+        await h.until(lambda: h.sweeps.active == 1)
+        h.monitor.cut()
+        await h.until(lambda: h.sweeps.active == 0)
+        await step(h, 2)
+        h.monitor.request_sweep("a", "operator")
+        await h.add(AgentFinished(reason="submitted", steps=2))
+        async with asyncio.timeout(1):
+            await h.monitor.agents_done()
+        assert [t for _, _, t, _ in h.sweeps.calls] == ["every"]
+        assert await h.of("monitor.sweep") == []
+
+
+async def test_after_a_cut_flags_are_still_raised_but_never_acted_on(tmp_path: Path) -> None:
+    config = {"sweeps": [], "policy": {"pause_timeout_s": 0.2}}
+    async with harness(tmp_path, config=config) as h:
+        await h.add(started())
+        await h.bad(importance=4)
+        await h.monitor.barrier()
+        assert h.actuator.kinds() == ["pause"]
+        [pause] = h.monitor._pauses
+        h.monitor.cut()
+        assert not h.monitor._pauses
+        await h.until(lambda: pause.task is not None and pause.task.cancelled())
+        await asyncio.sleep(0.4)
+        await h.bad(call_id="t2", importance=5, category="privilege_escalation")
+        await h.monitor.barrier()
+        assert h.actuator.kinds() == ["pause"]
+        assert len(await h.of("monitor.flag")) == 2
+        assert [a.data["action"] for a in await h.of("monitor.action")] == ["pause"]
+
+
 async def test_judge_writes_the_verdict_with_the_taint(tmp_path: Path) -> None:
     seen: list[Sequence[Event]] = []
 

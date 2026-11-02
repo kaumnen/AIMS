@@ -1723,7 +1723,8 @@ def control(
     Needs an operator token in AIMS_TOKEN or --token-file; list reads with any token. Deny
     refuses the tool call a paused agent waits before; the agent gets the configured `denied`
     reply. Kill skips the verifier; cancel also seals the run as cancelled, or drops it while
-    it waits in the queue.
+    it waits in the queue. Both stop the monitor's model calls and skip the judge; sent while
+    the judge runs, either only cuts it short and the run keeps its outcome.
     """
     import asyncio
 

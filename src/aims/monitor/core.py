@@ -228,6 +228,8 @@ class Monitor:
         self._pauses: list[_Pause] = []
         self._operator_paused: set[str] = set()
         self._killed = False
+        self._cut = False
+        self._judging: asyncio.Future[JudgeResult] | None = None
         self._closed = False
         self._spent = 0.0
         self._flags: list[Event] = []
@@ -329,12 +331,28 @@ class Monitor:
         while self._sweeps_on and (self._pending or self._running is not None):
             await self._swept.wait()
 
+    def cut(self) -> None:
+        """An operator stopped the run: stop every model call now. No sweep or review starts
+        again, the one in flight is cancelled, a running judge ends with `monitor.degraded` and
+        the judge does not start. Signals still run, but no policy decision acts."""
+        self._cut = True
+        for pause in list(self._pauses):
+            self._drop(pause)
+        for task in self._tasks:
+            task.cancel()
+        if self._judging is not None:
+            self._judging.cancel()
+        self._notify_swept()
+
     async def judge(self, *, skip: bool = False) -> None:
-        """Run the judge after the verifier, before the seal; `skip` on a cancelled run."""
+        """Run the judge after the verifier, before the seal; `skip` on a cancelled run. A
+        `cut` ends it early and the run still seals."""
         config = self.config.judge
         if skip or config is None or self.monitor.judge is None:
             return
         await self.barrier()
+        if self._cut:
+            return
         left = self.monitor.budget_usd - self._spent
         if left <= 0:
             await self._degrade("judge", "the monitor budget is spent", "skip")
@@ -349,11 +367,13 @@ class Monitor:
             budget_usd=left,
             key=self._key,
         )
+        running = asyncio.ensure_future(
+            judge.run(flags=list(self._flags), sweeps=list(self._sweep_events))
+        )
+        self._judging = running
         try:
             async with asyncio.timeout(config.timeout_s):
-                result: JudgeResult = await judge.run(
-                    flags=list(self._flags), sweeps=list(self._sweep_events)
-                )
+                result: JudgeResult = await running
         except TimeoutError:
             self._spent += getattr(judge, "cost_usd", 0.0)
             reason = f"the judge ran past its {config.timeout_s:g} s timeout"
@@ -361,6 +381,10 @@ class Monitor:
             return
         except asyncio.CancelledError:
             self._spent += getattr(judge, "cost_usd", 0.0)
+            task = asyncio.current_task()
+            if self._cut and task is not None and not task.cancelling():
+                await self._degrade("judge", "an operator stop cut the judge short", "skip")
+                return
             await asyncio.shield(self._degrade("judge", "the judge was cancelled", "skip"))
             raise
         except Exception as e:
@@ -368,6 +392,8 @@ class Monitor:
             log.exception("the judge of run %s failed", self.run_id)
             await self._degrade("judge", "the judge failed", "skip", f"{type(e).__name__}: {e}")
             return
+        finally:
+            self._judging = None
         self._spent += result.cost_usd
         drafts = list(result.flags)
         if result.verdict is not None:
@@ -592,7 +618,7 @@ class Monitor:
     @property
     def _sweeps_on(self) -> bool:
         sweeps = bool(self._sweep_configs) or self._channel_log is not None
-        return sweeps and not self._signals_only and not self._closed
+        return sweeps and not self._signals_only and not self._closed and not self._cut
 
     def _request(self, triggers: Sequence[Trigger]) -> None:
         if not self._sweeps_on:
@@ -800,7 +826,7 @@ class Monitor:
     # Acting: write the decision, then carry it out.
 
     async def _act(self, d: Decision, *, degraded: bool = False) -> None:
-        if self._killed or self._closed:
+        if self._killed or self._closed or self._cut:
             return
         pause = None
         if d.action == "pause":

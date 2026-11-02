@@ -351,7 +351,8 @@ export interface paths {
         put?: never;
         /**
          * Cancel Run
-         * @description Stop the agents, skip the verifier, archive and seal the run as cancelled.
+         * @description Stop the agents and the monitor's model calls, skip the verifier and the judge, archive
+         *     and seal the run as cancelled. While the judge runs, it only cuts the judge short.
          */
         post: operations["cancel_run"];
         delete?: never;
@@ -535,7 +536,8 @@ export interface paths {
         put?: never;
         /**
          * Kill Run
-         * @description Freeze, archive and kill every sandbox; the verifier does not run.
+         * @description Freeze, archive and kill every sandbox and stop the monitor's model calls; the verifier
+         *     and the judge do not run. While the judge runs, it only cuts the judge short.
          */
         post: operations["kill_run"];
         delete?: never;

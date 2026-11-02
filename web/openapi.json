@@ -16014,7 +16014,7 @@
     },
     "/api/runs/{run_id}/cancel": {
       "post": {
-        "description": "Stop the agents, skip the verifier, archive and seal the run as cancelled.",
+        "description": "Stop the agents and the monitor's model calls, skip the verifier and the judge, archive\nand seal the run as cancelled. While the judge runs, it only cuts the judge short.",
         "operationId": "cancel_run",
         "parameters": [
           {
@@ -17062,7 +17062,7 @@
     },
     "/api/runs/{run_id}/kill": {
       "post": {
-        "description": "Freeze, archive and kill every sandbox; the verifier does not run.",
+        "description": "Freeze, archive and kill every sandbox and stop the monitor's model calls; the verifier\nand the judge do not run. While the judge runs, it only cuts the judge short.",
         "operationId": "kill_run",
         "parameters": [
           {
