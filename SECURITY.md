@@ -118,7 +118,9 @@ The runner pulls `aims-toolbox` and `aims-tracer` by digest, never by tag. The w
 
 Set `AIMS_IMAGE_REGISTRY=` to empty to never pull them. AIMS then builds them from the package.
 
-## Checklist
+## Deployment checklist
+
+Go through this list before you deploy AIMS. Each line sums up a rule from the sections above.
 
 - [ ] Runners on a dedicated machine or VM
 - [ ] No other secrets or production access on runner hosts
