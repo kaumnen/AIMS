@@ -429,6 +429,8 @@ async def test_old_asset_images_go_unless_used_or_just_tagged() -> None:
         {"Id": "fresh", "RepoTags": ["aims-tracer:333333333333"]},
         {"Id": "unknown", "RepoTags": ["aims-tracer:444444444444"]},
         {"Id": "scenario", "RepoTags": ["aims-env:0123456789abcdef"]},
+        {"Id": "renamed", "RepoTags": [f"localhost:5000/keep/{current}"]},
+        {"Id": "renamed-old", "RepoTags": ["keep/aims-tracer:555555555555"]},
     ]
     tagged = {str(i["Id"]): old for i in found} | {
         "never-tagged": "0001-01-01T00:00:00Z",
@@ -450,6 +452,7 @@ async def test_old_asset_images_go_unless_used_or_just_tagged() -> None:
         "aims-toolbox:111111111111",
         "127.0.0.1:5000/aims-toolbox@sha",
         "aims-tracer:666666666666",
+        "keep/aims-tracer:555555555555",
     ]
     assert "scenario" not in images.asked
 

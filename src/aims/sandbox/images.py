@@ -84,14 +84,15 @@ async def ensure_image(
 
 
 async def remove_old(docker: aiodocker.Docker) -> None:
-    """Remove the asset images of other AIMS versions that no container uses."""
+    """Remove the asset images of other AIMS versions that no container uses. An image that
+    carries a current tag under any registry or namespace stays."""
     current = {context(node.name)[0] for node in ASSETS.iterdir() if node.is_dir()}
     repos = {tag.partition(":")[0] for tag in current}
     used = {c["ImageID"] for c in await docker.containers.list(all=True)}
     for image in await docker.images.list(filters={"label": ["aims.managed=1"]}):
         tags = image.get("RepoTags") or []
         refs = [r for r in (*tags, *(image.get("RepoDigests") or [])) if _repo(r) in repos]
-        if not refs or image["Id"] in used or current.intersection(tags):
+        if not refs or image["Id"] in used or current.intersection(_name(t) for t in tags):
             continue
         if await _tagged_within(docker, image["Id"], MIN_AGE_S):
             continue
@@ -114,7 +115,13 @@ async def _tagged_within(docker: aiodocker.Docker, image: str, seconds: float) -
 def _repo(ref: str) -> str:
     """The repository of an image reference without its registry: `aims-tracer` for
     `ghcr.io/kaumnen/aims-tracer@sha256:...`."""
-    return ref.partition("@")[0].rsplit("/", 1)[-1].partition(":")[0]
+    return _name(ref.partition("@")[0]).partition(":")[0]
+
+
+def _name(tag: str) -> str:
+    """A tag without its registry and namespace: `aims-tracer:0dffb7782a3b` for
+    `localhost:5000/keep/aims-tracer:0dffb7782a3b`."""
+    return tag.rsplit("/", 1)[-1]
 
 
 async def _exists(docker: aiodocker.Docker, tag: str) -> bool:
