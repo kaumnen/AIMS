@@ -725,6 +725,11 @@ class DockerSandbox:
             await tracer.quiesce(self._route, QUIESCE_S)
 
     async def close(self, *, keep_volumes: bool = False) -> None:
+        """Remove the container and its volumes, unless the spec keeps them. A cancel, such as
+        a second Ctrl-C, waits for this to end, so neither outlives this process."""
+        await settle(self._close(keep_volumes))
+
+    async def _close(self, keep_volumes: bool) -> None:
         if self._watch is not None:
             await self._watch.close()
             self._watch = None

@@ -18,6 +18,7 @@ from pydantic import JsonValue
 
 from aims import __version__
 from aims.agent import CONTINUE, DENY, Agent, Gate, OpenGate, ReplayPlan, RunBudget, Verdict
+from aims.aio import settle
 from aims.channels import Board, Channel, ChannelError, ChannelSetup, tool_names, tool_texts
 from aims.channels import build as build_channel
 from aims.events import (
@@ -566,20 +567,26 @@ class Runner:
             result.status, result.reason = "failed", str(e)
         except asyncio.CancelledError:
             result.status, result.reason = "cancelled", "cancelled before the agents finished"
-            await asyncio.shield(self._close(kill=True))
-            await asyncio.shield(self._seal(result))
+            await settle(self._end(result, kill=True))
             raise
         except Exception as e:
             log.exception("run %s failed", run_id)
             result.status, result.reason = "failed", f"{type(e).__name__}: {e}"
-        if self._killing is not None:
-            await asyncio.shield(self._killing)
-            result.status, result.reason = "killed", self.kill_reason
-        self._decided = True
-        await asyncio.shield(self._close_sandboxes(kill=False))
-        await self._judge(result)
-        await asyncio.shield(self._close(kill=False))
-        await asyncio.shield(self._seal(result))
+        # A cancel here, such as a second Ctrl-C, waits for the step it lands in, then closes
+        # the run and seals it as cancelled. The judge is the one step it cuts short.
+        try:
+            if self._killing is not None:
+                await settle(self._killing)
+                result.status, result.reason = "killed", self.kill_reason
+            self._decided = True
+            await settle(self._close_sandboxes(kill=False))
+            await self._judge(result)
+        except asyncio.CancelledError:
+            if result.status != "cancelled":
+                result.status, result.reason = "cancelled", "cancelled while the run ended"
+            await settle(self._end(result, kill=True))
+            raise
+        await settle(self._end(result, kill=False))
         return result
 
     def _cut(self) -> Cut | None:
@@ -710,7 +717,7 @@ class Runner:
         if self._killing is None and not self.cancelled:
             await self._final_sweeps()
         if self._killing is not None:
-            await asyncio.shield(self._killing)
+            await settle(self._killing)
             await self._collect_finished(result)
             return
         if self.cancelled:
@@ -1099,8 +1106,6 @@ class Runner:
             await monitor.judge(skip=cancelled or self._monitor_cut or not self.agents)
         except asyncio.CancelledError:
             result.status, result.reason = "cancelled", "cancelled while the monitor finished"
-            await asyncio.shield(self._close(kill=True))
-            await asyncio.shield(self._seal(result))
             raise
         except Exception:
             log.exception("the monitor of run %s failed to finish", self.run_id)
@@ -1218,6 +1223,13 @@ class Runner:
             with contextlib.suppress(Exception):
                 await client.aclose()
         self._clients.clear()
+
+    async def _end(self, result: Result, *, kill: bool) -> None:
+        """Close the run, then seal it with `result`, even if the close fails."""
+        try:
+            await self._close(kill=kill)
+        finally:
+            await self._seal(result)
 
     async def _seal(self, result: Result) -> None:
         if self.run_id is None:

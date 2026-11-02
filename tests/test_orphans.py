@@ -17,7 +17,7 @@ import pytest
 
 from aims.sandbox import docker as sandbox
 from aims.sandbox import images as assets
-from aims.sandbox.base import SandboxSpec
+from aims.sandbox.base import SandboxInfo, SandboxSpec
 from aims.sandbox.docker import INSTANCE, _container_id, _own_container, _sweep
 from aims.sandbox.images import context, ensure_image, remove_old
 
@@ -724,3 +724,52 @@ async def test_cancels_while_the_backend_opens_still_remove_both_helpers(
     with pytest.raises(asyncio.CancelledError):
         await opening
     assert done == ["tracer", "sampler", "docker"]
+
+
+class HeldContainer:
+    """A container whose delete waits for `release`, so a test can cancel the close meanwhile."""
+
+    def __init__(self) -> None:
+        self.deleting = asyncio.Event()
+        self.release = asyncio.Event()
+        self.gone = False
+
+    async def delete(self, force: bool = False) -> None:
+        self.deleting.set()
+        await self.release.wait()
+        self.gone = True
+
+
+async def test_cancels_while_a_sandbox_closes_still_remove_its_volumes(deleted: list[str]) -> None:
+    """Ctrl-C twice lands while the container is removed, as when a start is cut short: its
+    volumes must still go."""
+
+    class Backend:
+        tracer = None
+        docker = None
+
+    container = HeldContainer()
+    owner: Any = Backend()
+    held: Any = container
+    info = SandboxInfo("sb", "docker", "img", "sha256:" + "0" * 64, {})
+    box = sandbox.DockerSandbox(
+        owner,
+        held,
+        SandboxSpec(image="img"),
+        info,
+        "work",
+        [],
+        None,
+        scratch=("tmp", "home"),
+        shared=("shared",),
+    )
+    closing = asyncio.create_task(box.close())
+    await container.deleting.wait()
+    closing.cancel()
+    await asyncio.sleep(0)
+    closing.cancel()
+    container.release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    assert container.gone
+    assert deleted == ["tmp", "home", "work", "shared"]

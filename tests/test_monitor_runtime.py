@@ -23,6 +23,7 @@ from aims.events import (
     LocalEventStore,
     MonitorAction,
     OperatorAction,
+    RunFinished,
     RunStarted,
     SandboxArchived,
     TaskScored,
@@ -166,6 +167,35 @@ class Boxes:
 
     async def close(self) -> None:
         pass
+
+
+class HeldBox(Box):
+    """A box whose close waits for `release`, and whose `bash hold` exec waits until it is
+    cancelled, so a test can cancel the run meanwhile."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.holding = asyncio.Event()
+        self.closing = asyncio.Event()
+        self.release = asyncio.Event()
+        self.closed = False
+
+    async def run(self, argv: Sequence[str], **kw: Any) -> Outcome:
+        if "hold" in argv[-1]:
+            self.holding.set()
+            await asyncio.Event().wait()
+        return await super().run(argv, **kw)
+
+    async def close(self, *, keep_volumes: bool = False) -> None:
+        self.closing.set()
+        await self.release.wait()
+        self.closed = True
+
+
+class HeldBoxes(Boxes):
+    async def create(self, spec: SandboxSpec, *, run_id: str, agent_id: str) -> Box:
+        self.made[agent_id] = box = HeldBox()
+        return box
 
 
 class FakeMonitor:
@@ -694,6 +724,44 @@ async def test_a_cancelled_run_skips_the_final_sweeps_and_the_judge(
     result = await runner.run()
     assert result.status == "cancelled"
     assert fake_monitor[0].calls == ["start", "cut", "judge skip=True", "close"]
+
+
+@pytest.mark.parametrize(
+    ("first", "reason"),
+    [
+        ("while the agents run", "cancelled before the agents finished"),
+        ("while the run ends", "cancelled while the run ended"),
+    ],
+)
+async def test_a_second_cancel_while_the_sandboxes_close_waits_for_them_and_seals_the_run(
+    store: LocalEventStore, tmp_path: Path, first: str, reason: str
+) -> None:
+    """Ctrl-C again lands while a sandbox closes: the run must wait for the close, so the
+    backend is not shut under it, and then be sealed as cancelled."""
+    script = Script(call("bash", command="hold"), call("submit", answer="ok"))
+    if first == "while the run ends":
+        script = Script(call("submit", answer="ok"))
+    backend = HeldBoxes()
+    runner = Runner(bench(store, script, backend), scenario(tmp_path), Options(), monitor=None)
+    running = asyncio.create_task(runner.run())
+    async with asyncio.timeout(10):
+        while "a" not in backend.made:  # noqa: ASYNC110
+            await asyncio.sleep(0.01)
+        box = cast(HeldBox, backend.made["a"])
+        if first == "while the agents run":
+            await box.holding.wait()
+            running.cancel()
+        await box.closing.wait()
+    running.cancel()
+    await asyncio.sleep(0.05)
+    assert not running.done()
+    box.release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    assert box.closed
+    assert runner.run_id is not None
+    finished = await of(store, runner.run_id, RunFinished, "run.finished")
+    assert [(f.status, f.reason) for f in finished] == [("cancelled", reason)]
 
 
 async def test_ask_human_reaches_the_human_hook(
