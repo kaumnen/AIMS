@@ -4,12 +4,14 @@ import json
 import os
 import re
 import signal
+import socket
 import stat
 import sys
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from pathlib import Path
 from typing import Any, cast
 
+import aiodocker
 import httpx2
 import pytest
 from cp import CP, control_plane
@@ -197,10 +199,12 @@ def signalled_runner(
     tmp_path: Path,
     signals: list[signal.Signals],
     env: dict[str, str],
+    hung: list[tuple[int, ...]] | None = None,
 ) -> tuple[int, bool, bool, bool]:
     """Run `aims runner` on a stub node that sends itself `signals`, 10 ms apart. Returns the
     exit code, whether the node was asked to stop, whether it ran to its end (a kill now
-    cancels it) and whether the runner said it kills now."""
+    cancels it) and whether the runner said it kills now. Each hangup that would point the
+    streams at /dev/null goes to `hung` instead."""
     seen: dict[str, bool] = {"done": False}
 
     class Stub:
@@ -221,7 +225,13 @@ def signalled_runner(
                 seen["stop"] = stop.is_set()
 
     monkeypatch.setattr("aims.node.service.Node", Stub)
-    previous = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+    if hung is not None:
+        monkeypatch.setattr("aims.terminal.hang_up", hung.append)
+    previous = {
+        sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+    }
+    # a SIGHUP the runner does not handle would end this test process
+    signal.signal(signal.SIGHUP, lambda *_: None)
     try:
         result = CliRunner().invoke(
             app,
@@ -269,6 +279,39 @@ def test_a_runner_on_its_own_kills_now_on_a_second_signal(
             False,
             True,
         )
+
+
+def test_a_runner_on_its_own_stops_once_when_its_terminal_hangs_up(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # zsh passes a hangup on to its jobs twice; that is still one stop, so runs are sealed
+    hung: list[tuple[int, ...]] = []
+    ended = signalled_runner(monkeypatch, tmp_path, [signal.SIGHUP, signal.SIGHUP], {}, hung)
+    assert ended == (0, True, True, False)
+    assert len(hung) == 2
+
+
+def test_a_runner_on_its_own_kills_now_on_a_signal_after_a_hangup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ended = signalled_runner(monkeypatch, tmp_path, [signal.SIGHUP, signal.SIGTERM], {}, [])
+    assert ended == (EXIT_CANCELLED, True, False, True)
+
+
+def test_a_runner_aims_ui_starts_leaves_a_hangup_to_aims_ui(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # the hangup reaches both processes and `aims ui` passes it on as one SIGTERM
+    hung: list[tuple[int, ...]] = []
+    ended = signalled_runner(
+        monkeypatch,
+        tmp_path,
+        [signal.SIGHUP, signal.SIGHUP, signal.SIGTERM],
+        {UI_RUNNER: "1"},
+        hung,
+    )
+    assert ended == (0, True, True, False)
+    assert len(hung) == 2
 
 
 async def test_aims_ui_tells_its_runner_to_leave_ctrl_c_to_it(
@@ -359,6 +402,52 @@ async def test_aims_ui_passes_each_ctrl_c_on_to_its_runner(
     err = capsys.readouterr().err
     assert "stopping the local runner" in err
     assert ("the local runner exited with code 130" in err) == (code != 0)
+
+
+async def test_aims_ui_stops_its_runner_once_when_its_terminal_hangs_up(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    log = tmp_path / "signals"
+    log.touch()
+    hung: list[tuple[int, ...]] = []
+
+    async def spawn(url: str, token: str, o: UiOptions) -> asyncio.subprocess.Process:
+        return await asyncio.create_subprocess_exec(
+            sys.executable, "-c", FAKE_RUNNER, str(log), "0.5"
+        )
+
+    monkeypatch.setattr("aims.server.serve._spawn_runner", spawn)
+    monkeypatch.setattr("aims.terminal.hang_up", hung.append)
+
+    def guard(*_: object) -> None:
+        """A SIGHUP the server does not handle would end this test process."""
+
+    before = signal.signal(signal.SIGHUP, guard)
+    task = asyncio.create_task(
+        serve(UiOptions(port=0, data=tmp_path / "server", open_browser=False))
+    )
+    try:
+        await until(
+            lambda: signal.getsignal(signal.SIGHUP) is not guard and "ready" in log.read_text(),
+            30,
+        )
+        # zsh passes a hangup on to its jobs twice
+        for _ in range(2):
+            os.kill(os.getpid(), signal.SIGHUP)
+            await asyncio.sleep(0.01)
+        async with asyncio.timeout(10):
+            assert await task == 0
+    finally:
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        signal.signal(signal.SIGHUP, before)
+    assert log.read_text().count("TERM") == 1
+    assert len(hung) == 2
+    err = capsys.readouterr().err
+    assert "stopping the local runner" in err
+    assert "the local runner exited" not in err
 
 
 async def test_aims_ui_hands_its_audit_mode_to_the_runner(
@@ -712,6 +801,113 @@ async def test_a_ctrl_c_in_the_terminal_stops_the_local_runner_once(tmp_path: Pa
     assert "killing now" not in err
     assert "the local runner exited" not in err
     assert "the local runner was killed" not in err
+
+
+async def helpers_of(pid: int) -> list[str]:
+    """The containers AIMS process `pid` made on this host."""
+    docker = aiodocker.Docker()
+    try:
+        found = await docker.containers.list(
+            all=True,
+            filters={"label": [f"aims.pid={pid}", f"aims.host={socket.gethostname()}"]},
+        )
+        return [c["Names"][0].lstrip("/") for c in found]
+    finally:
+        await docker.close()
+
+
+@pytest.mark.docker
+async def test_closing_the_terminal_stops_aims_ui_and_its_runner_cleanly(
+    tmp_path: Path,
+) -> None:
+    if not os.environ.get("AIMS_REQUIRE_DOCKER"):
+        try:
+            backend = await DockerBackend.open(audit="snapshot")
+            await backend.close()
+        except Exception as e:
+            pytest.skip(f"Docker is not available: {e}")
+    env = {**os.environ, "XDG_DATA_HOME": str(tmp_path / "xdg")}
+    env.pop("AIMS_TOKEN", None)
+    main, tty = os.openpty()
+    os.set_blocking(main, False)
+    out = bytearray()
+    loop = asyncio.get_running_loop()
+
+    def drain() -> None:
+        with contextlib.suppress(BlockingIOError, OSError):
+            out.extend(os.read(main, 65536))
+
+    loop.add_reader(main, drain)
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "aims",
+        "ui",
+        "--port",
+        "0",
+        "--no-open",
+        "--audit",
+        "snapshot",
+        "--data-dir",
+        str(tmp_path / "server"),
+        stdin=tty,
+        stdout=tty,
+        stderr=tty,
+        env=env,
+        cwd=tmp_path,
+        start_new_session=True,
+    )
+    os.close(tty)
+    runner = 0
+    try:
+        info = tmp_path / "server" / "server.json"
+        await until(info.exists, 60)
+        server = json.loads(info.read_text())
+        async with httpx2.AsyncClient(
+            base_url=server["url"],
+            headers={"Authorization": f"Bearer {server['operator']}"},
+            trust_env=False,
+        ) as c:
+            async with asyncio.timeout(120):
+                while True:
+                    runners = (await c.get("/api/runners")).json()
+                    if runners and runners[0]["connected"]:
+                        break
+                    await asyncio.sleep(0.2)
+        children = await asyncio.create_subprocess_exec(
+            "pgrep", "-P", str(proc.pid), stdout=asyncio.subprocess.PIPE
+        )
+        runner = int((await children.communicate())[0].split()[0])
+        helpers = await helpers_of(runner)
+        assert helpers, out.decode(errors="replace")
+        # what closing the window does: the terminal hangs up, so writes to it fail. The shell
+        # passes SIGHUP on to the job, zsh twice.
+        loop.remove_reader(main)
+        os.close(main)
+        main = -1
+        os.killpg(proc.pid, signal.SIGHUP)
+        await asyncio.sleep(0.001)
+        # macOS says EPERM for a group whose processes all died
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(proc.pid, signal.SIGHUP)
+        async with asyncio.timeout(120):
+            assert await proc.wait() == 0
+        assert await helpers_of(runner) == []
+    finally:
+        if main >= 0:
+            loop.remove_reader(main)
+            os.close(main)
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+        if runner:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(runner, signal.SIGKILL)
+            for name in await helpers_of(runner):
+                rm = await asyncio.create_subprocess_exec(
+                    "docker", "rm", "-f", "-v", name, stdout=asyncio.subprocess.DEVNULL
+                )
+                await rm.wait()
 
 
 @pytest.mark.docker

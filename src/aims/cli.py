@@ -734,6 +734,7 @@ async def _run(**o: Any) -> int:
     from aims.sandbox import DockerBackend, SandboxError
     from aims.scenario import ScenarioError, load
     from aims.scenario.budget import BudgetError
+    from aims.terminal import on_hangup
     from aims.wire import TracerHealth
 
     err = Console(stderr=True)
@@ -994,6 +995,8 @@ async def _run(**o: Any) -> int:
 
             for sig in (signal.SIGINT, signal.SIGTERM):
                 loop.add_signal_handler(sig, stop)
+            # A hangup starts a stop and never adds to one: nobody is left to press Ctrl-C.
+            hup = on_hangup(loop, lambda: None if stops else stop())
 
             async def one(r: Runner) -> Result:
                 async with gate:
@@ -1082,7 +1085,7 @@ async def _run(**o: Any) -> int:
                 err.print("[red]killed the sandboxes; the runs are sealed as cancelled[/]")
                 return EXIT_CANCELLED
             finally:
-                for sig in (signal.SIGINT, signal.SIGTERM):
+                for sig in (signal.SIGINT, signal.SIGTERM, *([signal.SIGHUP] if hup else [])):
                     loop.remove_signal_handler(sig)
                 if prompt is not None:
                     prompt.live = None
@@ -1340,6 +1343,7 @@ def runner_cmd(
 ) -> None:
     """Take jobs from a control plane and run them on this Docker host."""
     import asyncio
+    import contextlib
     import logging
     import os
     import signal
@@ -1348,6 +1352,7 @@ def runner_cmd(
     from aims.node.service import Node, NodeOptions
     from aims.node.service import data_dir as default_dir
     from aims.sandbox import AuditMode
+    from aims.terminal import on_hangup
 
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
     mode = cast(AuditMode, _audit(audit))
@@ -1379,19 +1384,27 @@ def runner_cmd(
         current = asyncio.current_task()
         stops = 0
 
+        def say(text: str) -> None:
+            # a terminal that hung up fails the write; the stop goes on without it
+            with contextlib.suppress(OSError):
+                typer.echo(text, err=True)
+
         def on_signal() -> None:
             nonlocal stops
             stops += 1
             if stops == 1:
-                typer.echo("stopping: runs are sealed as cancelled; again to kill now", err=True)
                 stop.set()
+                say("stopping: runs are sealed as cancelled; again to kill now")
             elif current is not None:
                 current.cancel()
                 if stops == 2:
-                    typer.echo("killing now", err=True)
+                    say("killing now")
 
         for sig in (signal.SIGTERM,) if by_ui else (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, on_signal)
+        # `aims ui` passes a hangup on as one SIGTERM, as it does Ctrl-C. On its own the runner
+        # lets a hangup start a stop but never add to one: nobody is left to press Ctrl-C.
+        on_hangup(loop, (lambda: None) if by_ui else (lambda: None if stops else on_signal()))
         await node.run(stop)
 
     try:
@@ -1401,8 +1414,9 @@ def runner_cmd(
     finally:
         if by_ui:
             # The stop is over and the exit code says how it went. A SIGTERM from a late
-            # second Ctrl-C would only replace that code.
+            # second Ctrl-C, or a late hangup, would only replace that code.
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            signal.signal(signal.SIGHUP, signal.SIG_IGN)
 
 
 @app.command()
@@ -1585,6 +1599,7 @@ async def _monitor_runs(**o: Any) -> int:
     from aims.run.job import JobOptions, monitor_profiles
     from aims.run.runner import RunError
     from aims.run.view import JsonLines, digest, monitor_table
+    from aims.terminal import on_hangup
 
     err = Console(stderr=True)
     logging.basicConfig(
@@ -1690,6 +1705,8 @@ async def _monitor_runs(**o: Any) -> int:
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, lambda: main is not None and main.cancel())
+        # A hangup starts a stop and never adds to one: nobody is left to press Ctrl-C.
+        hup = on_hangup(loop, lambda: None if main is None or main.cancelling() else main.cancel())
         try:
             results = list(await asyncio.gather(*(one(*p) for p in planned)))
         except asyncio.CancelledError:
@@ -1698,7 +1715,7 @@ async def _monitor_runs(**o: Any) -> int:
         except RunError as e:
             return fail(str(e))
         finally:
-            for sig in (signal.SIGINT, signal.SIGTERM):
+            for sig in (signal.SIGINT, signal.SIGTERM, *([signal.SIGHUP] if hup else [])):
                 loop.remove_signal_handler(sig)
             if lines is not None:
                 await lines.stop()

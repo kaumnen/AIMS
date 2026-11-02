@@ -5,8 +5,10 @@ on a runner, against the control plane on loopback."""
 import asyncio
 import contextlib
 import json
+import os
 import re
 import shutil
+import signal
 import threading
 from collections.abc import AsyncGenerator, AsyncIterator
 from pathlib import Path
@@ -20,7 +22,7 @@ from test_monitor_api import call, pushed
 from test_server import FakeRunner, play_job, start_run
 from typer.testing import CliRunner
 
-from aims.cli import app
+from aims.cli import EXIT_CANCELLED, app
 from aims.events import (
     Draft,
     Event,
@@ -38,9 +40,9 @@ from aims.monitor.core import HumanRequest
 from aims.node.client import ControlClient
 from aims.node.link import Link
 from aims.node.service import Node, NodeOptions
-from aims.run.runner import Bench, Options, RunError, Runner
+from aims.run.runner import Bench, Options, Result, RunError, Runner
 from aims.run.view import HumanPrompt, JsonLines, LiveView, digest, monitor_table
-from aims.sandbox import SandboxError
+from aims.sandbox import DockerBackend, SandboxError
 from aims.scenario import load
 from aims.server.db import OPEN_STATES
 from aims.wire import Ack, CommandAction, CommandMessage, OfferMessage
@@ -121,6 +123,44 @@ def test_aims_monitor_reruns_a_run_into_monitor_runs(runs: tuple[Path, str]) -> 
     assert quiet.stdout.split()[1:4] == [origin, "completed", "flags"]
 
 
+def guard_hangup() -> Any:
+    """A no-op SIGHUP handler: a SIGHUP the command does not handle would end this test
+    process. Returns the handler before it."""
+    return signal.signal(signal.SIGHUP, lambda *_: None)
+
+
+def test_aims_monitor_stops_once_when_its_terminal_hangs_up(
+    runs: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, origin = runs
+    hung: list[tuple[int, ...]] = []
+    sealed: list[bool] = []
+    monkeypatch.setattr("aims.terminal.hang_up", hung.append)
+
+    async def slow(*args: Any, **kwargs: Any) -> Any:
+        os.kill(os.getpid(), signal.SIGHUP)
+        try:
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            # zsh passes the hangup on twice; the second must not cut the seal short
+            os.kill(os.getpid(), signal.SIGHUP)
+            await asyncio.sleep(0.2)
+            sealed.append(True)
+            raise
+        raise AssertionError("the hangup did not stop the monitor")
+
+    monkeypatch.setattr("aims.monitor.offline.monitor_offline", slow)
+    before = guard_hangup()
+    try:
+        result = invoke("monitor", origin, "--runs-dir", str(root), "--no-server", "--signals-only")
+    finally:
+        signal.signal(signal.SIGHUP, before)
+    assert result.exit_code == EXIT_CANCELLED, result.output
+    assert sealed == [True]
+    assert len(hung) == 2
+    assert "the monitor runs are sealed as cancelled" in result.output
+
+
 def test_aims_monitor_refuses_what_it_cannot_run(
     runs: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -192,6 +232,69 @@ def test_aims_run_takes_a_monitor_preset(tmp_path: Path) -> None:
     result = invoke("run", str(path), "--monitor", "loud", "--no-server")
     assert result.exit_code == 2
     assert "--monitor" in re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+
+
+def test_aims_run_stops_once_when_its_terminal_hangs_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "aims.toml"
+    config.write_text(
+        '[profiles.agent]\nbackend = "chat"\nbase_url = "http://agent.invalid/v1"\n'
+        'model = "agent-model"\nweights = "agent-weights"\nreasoning = "full"\n'
+        '[roles]\nagent = "agent"\n'
+    )
+    path = tmp_path / "scenario.yaml"
+    path.write_text(SCENARIO)
+    hung: list[tuple[int, ...]] = []
+    ended: list[bool] = []
+    monkeypatch.setattr("aims.terminal.hang_up", hung.append)
+
+    class Backend:
+        tracer = None
+
+        async def __aenter__(self) -> Backend:
+            return self
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    async def backend(**kwargs: Any) -> Backend:
+        return Backend()
+
+    async def run(self: Runner) -> Result:
+        os.kill(os.getpid(), signal.SIGHUP)
+        async with asyncio.timeout(5):
+            while not self.cancelled:  # noqa: ASYNC110
+                await asyncio.sleep(0.01)
+        # zsh passes the hangup on twice; the second must not kill the sandboxes now
+        os.kill(os.getpid(), signal.SIGHUP)
+        await asyncio.sleep(0.2)
+        ended.append(True)
+        return Result(None, "cancelled", "cancelled by the operator")
+
+    monkeypatch.setattr(DockerBackend, "open", backend)
+    monkeypatch.setattr(Runner, "run", run)
+    before = guard_hangup()
+    try:
+        result = invoke(
+            "run",
+            str(path),
+            "--config",
+            str(config),
+            "--runs-dir",
+            str(tmp_path / "runs"),
+            "--no-server",
+            "--monitor",
+            "off",
+            "--quiet",
+        )
+    finally:
+        signal.signal(signal.SIGHUP, before)
+    assert result.exit_code == EXIT_CANCELLED, result.output
+    assert ended == [True]
+    assert len(hung) == 2
+    assert "Ctrl-C again to kill the sandboxes now" in result.output
+    assert "killed the sandboxes" not in result.output
 
 
 def test_prompts_show_lists_the_monitor_texts() -> None:

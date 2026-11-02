@@ -25,6 +25,7 @@ import uvicorn
 from aims.server.app import create_app
 from aims.server.db import UI_TOKEN, Token, new_token
 from aims.server.state import CODE_TTL_S, close_state, open_state
+from aims.terminal import on_hangup
 
 log = logging.getLogger("aims.server")
 
@@ -224,6 +225,8 @@ async def serve(o: UiOptions) -> int:
 
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, on_signal)
+        # A hangup starts a stop and never adds to one: nobody is left to press Ctrl-C.
+        hup = on_hangup(loop, lambda: None if stops else on_signal())
         try:
             done, _ = await asyncio.wait(
                 [task, asyncio.create_task(stop.wait())], return_when=asyncio.FIRST_COMPLETED
@@ -243,7 +246,7 @@ async def serve(o: UiOptions) -> int:
             server.should_exit = True
             await task
         finally:
-            for sig in (signal.SIGINT, signal.SIGTERM):
+            for sig in (signal.SIGINT, signal.SIGTERM, *([signal.SIGHUP] if hup else [])):
                 loop.remove_signal_handler(sig)
     finally:
         if child is not None:
