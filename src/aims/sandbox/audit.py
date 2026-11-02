@@ -14,7 +14,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
-from aims.aio import settle
+from aims.aio import settle, shielded
 from aims.events import (
     AuditLevel,
     AuditLost,
@@ -780,7 +780,7 @@ class AuditedSandbox:
             if payloads:
                 self._sample_append = asyncio.ensure_future(self._append(payloads))
                 try:
-                    await asyncio.shield(self._sample_append)
+                    await shielded(self._sample_append)
                 except asyncio.CancelledError:
                     raise
                 except Exception:

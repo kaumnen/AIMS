@@ -11,6 +11,7 @@ from collections.abc import Awaitable, Callable
 import httpx2
 
 from aims import __version__
+from aims.aio import shielded
 from aims.events import LocalEventStore
 from aims.models import Delta, DeltaBus
 from aims.node.client import FEED, ApiError, ControlClient
@@ -252,7 +253,7 @@ class Link:
                 doing = asyncio.create_task(self._carry_out(message))
                 self._doing[message.id] = doing
             try:
-                ack = await asyncio.shield(doing)
+                ack = await shielded(doing)
             finally:
                 if doing.done():
                     self._doing.pop(message.id, None)

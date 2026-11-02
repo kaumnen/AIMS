@@ -18,7 +18,7 @@ from pydantic import JsonValue
 
 from aims import __version__
 from aims.agent import CONTINUE, DENY, Agent, Gate, OpenGate, ReplayPlan, RunBudget, Verdict
-from aims.aio import settle
+from aims.aio import settle, shielded
 from aims.channels import Board, Channel, ChannelError, ChannelSetup, tool_names, tool_texts
 from aims.channels import build as build_channel
 from aims.events import (
@@ -362,7 +362,7 @@ class Runner:
             return
         if self._killing is None:
             self._killing = asyncio.ensure_future(self._kill(reason))
-        await asyncio.shield(self._killing)
+        await shielded(self._killing)
 
     async def _kill(self, reason: str) -> None:
         self.killed = True

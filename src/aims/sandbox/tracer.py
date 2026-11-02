@@ -14,6 +14,7 @@ from aiodocker.containers import DockerContainer
 from aiodocker.execs import Exec as DockerExec
 from pydantic import JsonValue
 
+from aims.aio import shielded
 from aims.sandbox.base import (
     TOOLBOX,
     Cache,
@@ -318,7 +319,7 @@ class Tracer:
             trace = await self._container.exec(["sh", "-c", TRACE], stdout=True, stderr=True)
             self._reader = asyncio.create_task(self._read(trace))
             async with asyncio.timeout(READY_S):
-                base = await asyncio.shield(self._ready)
+                base = await shielded(self._ready)
             if base != 0:
                 raise TracerError("the tracer is not in the host pid namespace")
             self.alive = True
