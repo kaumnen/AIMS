@@ -18,6 +18,7 @@ import webbrowser
 from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import uvicorn
 
@@ -79,11 +80,30 @@ class UiOptions:
     tls_key: Path | None = None
     behind_proxy: list[str] = field(default_factory=list)
     hosts: list[str] = field(default_factory=list)
+    public_url: str | None = None
     auth: bool = True
     open_browser: bool = True
 
 
+def public_url(value: str) -> str:
+    """`value` as the URL people open; a bare host means https, as in a Caddy site address."""
+    url = value if "://" in value else f"https://{value}"
+    try:
+        parts = urlsplit(url)
+        bad = parts.scheme not in ("http", "https") or not parts.hostname or parts.port == 0
+        bad = bad or bool(parts.path.strip("/") or parts.query or parts.fragment)
+    except ValueError:
+        bad = True
+    if bad:
+        raise ServeError(
+            f"--public-url {value!r}: give a host, or an http or https URL without a path"
+        )
+    return url.rstrip("/")
+
+
 def check(o: UiOptions) -> None:
+    if o.public_url is not None:
+        public_url(o.public_url)
     exposed = not loopback(o.host)
     if (o.tls_cert is None) != (o.tls_key is None):
         raise ServeError("--tls-cert and --tls-key go together")
@@ -116,7 +136,10 @@ async def serve(o: UiOptions) -> int:
     if not o.data.exists():
         o.data.mkdir(mode=0o700, parents=True)
     tls = o.tls_cert is not None
-    state = await open_state(o.data, project=o.project, auth=o.auth, tls=tls)
+    shown = None if o.public_url is None else public_url(o.public_url)
+    # Behind a TLS proxy the browser is on https though this server is not.
+    https = tls or (shown is not None and shown.startswith("https://"))
+    state = await open_state(o.data, project=o.project, auth=o.auth, tls=https)
     child: asyncio.subprocess.Process | None = None
     info = o.data / SERVER_JSON
     try:
@@ -125,7 +148,8 @@ async def serve(o: UiOptions) -> int:
         ui_token = await state.db.rotate_token(UI_TOKEN, "operator")
         if o.runner:
             state.local_runner = LOCAL_RUNNER
-        app = create_app(state, hosts=(connect_host(o.host), *o.hosts))
+        public = () if shown is None else (urlsplit(shown).hostname or "",)
+        app = create_app(state, hosts=(connect_host(o.host), *o.hosts, *public))
         config = uvicorn.Config(
             app,
             host=o.host.strip("[]"),
@@ -148,11 +172,17 @@ async def serve(o: UiOptions) -> int:
         port = _port(server, o.port)
         scheme = "https" if tls else "http"
         local = f"{scheme}://{connect_host(o.host)}:{port}"
-        write_private(info, json.dumps({"url": local, "token": runner_token, "operator": ui_token}))
+        shown = shown or local
+        write_private(
+            info,
+            json.dumps(
+                {"url": local, "public": shown, "token": runner_token, "operator": ui_token}
+            ),
+        )
         if o.runner:
             child = await _spawn_runner(local, runner_token, o)
-        url = f"{local}/#code={state.codes.issue(UI_TOKEN)}" if o.auth else local
-        print(f"AIMS control plane on {local}", file=sys.stderr)
+        url = f"{shown}/#code={state.codes.issue(UI_TOKEN)}" if o.auth else shown
+        print(f"AIMS control plane on {shown}", file=sys.stderr)
         if not o.auth:
             print(
                 "WARNING: --no-auth: anyone who can reach this port on this machine can start"

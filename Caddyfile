@@ -1,0 +1,10 @@
+{
+	cert_issuer acme {
+		profile shortlived
+	}
+	default_sni {$AIMS_SITE:localhost}
+}
+
+{$AIMS_SITE:http://localhost:8484} {
+	reverse_proxy server:8484
+}

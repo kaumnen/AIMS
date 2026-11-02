@@ -25,6 +25,7 @@ from aims.server.serve import (
     check,
     connect_host,
     open_link,
+    public_url,
     server_dir,
     snap_browser,
 )
@@ -43,6 +44,18 @@ def test_exposed_binds_need_tls_or_a_proxy() -> None:
         check(UiOptions(host="0.0.0.0", behind_proxy=["10.0.0.2"], auth=False))
     with pytest.raises(ServeError, match="go together"):
         check(UiOptions(tls_cert=Path("c.pem")))
+
+
+def test_a_public_url_is_a_bare_host_on_https_or_an_http_url_without_a_path() -> None:
+    assert public_url("aims.example") == "https://aims.example"
+    assert public_url("98.92.27.126") == "https://98.92.27.126"
+    assert public_url("http://localhost:8484/") == "http://localhost:8484"
+    assert public_url("https://[2001:db8::1]:8443") == "https://[2001:db8::1]:8443"
+    for bad in ("ftp://aims.example", "aims.example/sub", "http://", "https://a.example:99999"):
+        with pytest.raises(ServeError, match="--public-url"):
+            public_url(bad)
+    with pytest.raises(ServeError, match="--public-url"):
+        check(UiOptions(public_url="https://a.example/?x=1"))
 
 
 def test_the_browser_opens_a_private_redirect_not_the_code(tmp_path: Path) -> None:
@@ -148,6 +161,45 @@ def test_tokens_from_the_cli(tmp_path: Path) -> None:
     listed = runner.invoke(app, ["token", "list", "--data-dir", str(tmp_path)])
     assert "revoked" in listed.output
     assert made.output.strip() not in (tmp_path / "server.sqlite").read_text(errors="ignore")
+
+
+def test_a_token_file_is_kept_while_it_holds_the_live_token(tmp_path: Path) -> None:
+    runner = CliRunner()
+    file = tmp_path / "token" / "runner"
+    file.parent.mkdir()
+    args = ["token", "create", "compose", "--role", "runner", "--data-dir", str(tmp_path)]
+    args += ["--file", str(file)]
+
+    def made() -> str:
+        r = runner.invoke(app, args)
+        assert r.exit_code == 0, r.output
+        assert "aims_" not in r.output
+        return file.read_text().strip()
+
+    first = made()
+    assert first.startswith("aims_")
+    assert stat.S_IMODE(file.stat().st_mode) == 0o600
+    assert made() == first
+    assert list(file.parent.iterdir()) == [file]
+    file.unlink()
+    second = made()
+    assert second != first
+    file.write_text("aims_not-a-token\n")
+    third = made()
+    assert third != second
+    assert (
+        runner.invoke(app, ["token", "revoke", "compose", "--data-dir", str(tmp_path)]).exit_code
+        == 0
+    )
+    assert made() != third
+    listed = runner.invoke(app, ["token", "list", "--data-dir", str(tmp_path)])
+    assert re.search(r"^compose  runner  .*  live$", listed.output, re.M)
+    assert runner.invoke(app, [*args[:3], "--role", "viewer", *args[5:]]).exit_code == 0
+    assert re.search(
+        r"^compose  viewer ",
+        runner.invoke(app, ["token", "list", "--data-dir", str(tmp_path)]).output,
+        re.M,
+    )
 
 
 def test_the_openapi_export_is_stable_and_committed(tmp_path: Path) -> None:
@@ -304,6 +356,43 @@ async def test_aims_open_gives_a_new_link_while_aims_ui_runs(tmp_path: Path) -> 
         async with asyncio.timeout(30):
             assert await proc.wait() == 0
     assert list((tmp_path / "server").glob("open-*.html")) == []
+
+
+async def test_aims_ui_links_to_its_public_url_and_answers_its_host(tmp_path: Path) -> None:
+    async with ui_process(tmp_path, "--no-runner", "--public-url", "aims.example:8443") as (
+        proc,
+        first,
+    ):
+        assert first.startswith("https://aims.example:8443/#code=")
+        local = json.loads((tmp_path / "server" / "server.json").read_text())
+        assert local["url"].startswith("http://127.0.0.1:")
+        assert local["public"] == "https://aims.example:8443"
+        async with httpx2.AsyncClient(base_url=local["url"], trust_env=False) as c:
+            assert (await c.get("/", headers={"Host": "aims.example:8443"})).status_code == 200
+            assert (await c.get("/", headers={"Host": "other.example"})).status_code == 400
+            site = {"Host": "aims.example:8443", "Origin": "https://aims.example:8443"}
+            r = await c.post("/api/session", json={"token": local["operator"]}, headers=site)
+            assert r.status_code == 204
+            cookie = r.headers["set-cookie"]
+            assert cookie.startswith("__Host-")
+            assert "secure" in cookie.lower()
+        env = {**os.environ, "AIMS_SERVER_DIR": str(tmp_path / "server")}
+        env.pop("AIMS_TOKEN", None)
+        done = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "aims",
+            "open",
+            "--no-open",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+        out, err = await done.communicate()
+        assert done.returncode == 0, err
+        assert out.decode().startswith("https://aims.example:8443/#code=")
+        proc.send_signal(signal.SIGTERM)
+        await proc.wait()
 
 
 async def test_aims_ui_answers_on_the_address_it_binds(tmp_path: Path) -> None:

@@ -1166,6 +1166,14 @@ def ui(
     allow_host: Annotated[
         list[str] | None, typer.Option("--allow-host", help="Another Host name to answer.")
     ] = None,
+    public_url: Annotated[
+        str | None,
+        typer.Option(
+            "--public-url",
+            help="The address people open, behind a proxy or in a container; a bare host means"
+            " https. Sign-in links use it and its host is answered.",
+        ),
+    ] = None,
     no_auth: Annotated[
         bool,
         typer.Option("--no-auth", help="No token; loopback only. Anyone on this machine can act."),
@@ -1199,6 +1207,7 @@ def ui(
         tls_key=tls_key,
         behind_proxy=behind_proxy or [],
         hosts=allow_host or [],
+        public_url=public_url,
         auth=not no_auth,
         open_browser=open_browser,
     )
@@ -1224,12 +1233,18 @@ def open_cmd(
     operator, or with --server as the token in AIMS_TOKEN or --token-file.
     """
     import asyncio
+    import json
+
+    from aims.server.serve import SERVER_JSON, server_dir
 
     url, token = _operator(server, token_file)
-    raise typer.Exit(asyncio.run(_open(url, token, open_browser)))
+    shown = url
+    if server is None:
+        shown = str(json.loads((server_dir() / SERVER_JSON).read_text()).get("public", url))
+    raise typer.Exit(asyncio.run(_open(url, token, open_browser, shown)))
 
 
-async def _open(url: str, token: str, open_browser: bool) -> int:
+async def _open(url: str, token: str, open_browser: bool, shown: str) -> int:
     import asyncio
     import contextlib
 
@@ -1250,7 +1265,7 @@ async def _open(url: str, token: str, open_browser: bool) -> int:
     if r.status_code >= 400:
         return _problem(r)
     code = r.json()["code"]
-    link = url.rstrip("/") if code is None else f"{url.rstrip('/')}/#code={code}"
+    link = shown.rstrip("/") if code is None else f"{shown.rstrip('/')}/#code={code}"
     typer.echo(link)
     if code is None:
         typer.echo("the control plane runs without auth: the link needs no code", err=True)
@@ -1900,25 +1915,50 @@ def token_create(
     name: Annotated[str, typer.Argument(help="A name for the token.")],
     role: Annotated[str, typer.Option(help="viewer, operator or runner.")] = "viewer",
     data_dir: DataDirOption = None,
+    file: Annotated[
+        Path | None,
+        typer.Option(
+            "--file",
+            help="Write the token to this file, readable by its owner only, not to stdout. A"
+            " file that holds the live token NAME is kept; otherwise NAME gets a new value.",
+        ),
+    ] = None,
 ) -> None:
     """Make a named token and print it. It is shown this once."""
     import asyncio
 
+    from aims.server.serve import write_private
+
     if role not in ("viewer", "operator", "runner"):
         raise typer.BadParameter("use viewer, operator or runner", param_hint="--role")
 
-    async def main() -> str:
+    async def main() -> str | None:
         db = await _db(data_dir)
         try:
-            return await db.create_token(name, role)
+            if file is None:
+                return await db.create_token(name, role)
+            held = file.read_text().strip() if file.is_file() else ""
+            found = await db.token_for(held) if held else None
+            if found is not None and (found.name, found.role) == (name, role):
+                return None
+            return await db.rotate_token(name, role)
         finally:
             await db.close()
 
     try:
-        typer.echo(asyncio.run(main()))
+        token = asyncio.run(main())
     except ValueError as e:
         typer.echo(f"error: {e}", err=True)
         raise typer.Exit(EXIT_FAILED) from None
+    if file is None:
+        typer.echo(token)
+    elif token is None:
+        typer.echo(f"{file} holds the live token {name}", err=True)
+    else:
+        tmp = file.with_name(f".{file.name}.tmp")
+        write_private(tmp, token + "\n")
+        tmp.replace(file)
+        typer.echo(f"wrote a new value of token {name} to {file}", err=True)
 
 
 @token_app.command("list")

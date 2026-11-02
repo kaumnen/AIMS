@@ -1,0 +1,78 @@
+name: aims
+
+x-aims: &aims
+  image: ${AIMS_IMAGE:-ghcr.io/kaumnen/aims:latest}
+  restart: unless-stopped
+
+services:
+  init:
+    image: ${AIMS_IMAGE:-ghcr.io/kaumnen/aims:latest}
+    command: [token, create, compose-runner, --role=runner, --file=/token/runner]
+    volumes:
+      - server:/data
+      - token:/token
+
+  server:
+    <<: *aims
+    command:
+      - ui
+      - --host=0.0.0.0
+      - --no-runner
+      - --no-open
+      - --behind-proxy=${AIMS_SUBNET:-172.30.84.0/24}
+      - --allow-host=server
+      - --public-url=${AIMS_SITE:-http://localhost:8484}
+    volumes:
+      - server:/data
+    stop_grace_period: 30s
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  # The Docker socket makes this service root on the host: it starts the sandboxes and the
+  # privileged kernel tracer.
+  runner:
+    <<: *aims
+    user: root
+    command: [runner, --server=http://server:8484, --token-file=/token/runner, --name=compose]
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - runner:/data
+      - token:/token:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    # Time to seal and ship its runs and remove its tracer and sampler.
+    stop_grace_period: 3m
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      server:
+        condition: service_started
+
+  caddy:
+    image: caddy:2.11.7@sha256:36c24ad91a7ff7bc4c87fe22bfa8df3c4b18da0773d73fc12ee2c52b98c0bb7e
+    restart: unless-stopped
+    environment:
+      AIMS_SITE: ${AIMS_SITE:-http://localhost:8484}
+    ports:
+      - 127.0.0.1:8484:8484
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - server
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${AIMS_SUBNET:-172.30.84.0/24}
+
+volumes:
+  server:
+  runner:
+  token:
+  caddy-data:
+  caddy-config:
