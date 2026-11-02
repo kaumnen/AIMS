@@ -22,6 +22,7 @@ from aims import __version__
 from aims.config import Settings
 from aims.events import (
     AuditLevel,
+    CallCost,
     Category,
     Event,
     ExecActivity,
@@ -1228,6 +1229,14 @@ async def list_activity(
     with no events are left out."""
     await _shown(state, principal, _run_id(run_id))
     return await state.store.activity(run_id, _execs(execs))
+
+
+@router.get("/runs/{run_id}/costs", tags=["events"])
+async def list_costs(run_id: str, principal: Viewer, state: State) -> list[CallCost]:
+    """What the run's live model calls cost, per monitor role (None for an agent's calls) and
+    output schema, in the order each kind first called."""
+    await _shown(state, principal, _run_id(run_id))
+    return await state.store.call_costs(run_id)
 
 
 class SamplePage(Out):

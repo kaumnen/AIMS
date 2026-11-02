@@ -1,6 +1,7 @@
 from aims.events.blobs import BlobError, BlobStore
 from aims.events.chain import ChainError, Head
 from aims.events.index import (
+    CallCost,
     ExecActivity,
     HoldInfo,
     Label,
@@ -150,6 +151,7 @@ __all__ = [
     "BlobRef",
     "BlobStore",
     "CacheProbe",
+    "CallCost",
     "Category",
     "CategoryFinding",
     "Cause",

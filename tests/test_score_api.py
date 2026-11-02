@@ -389,7 +389,7 @@ async def test_viewers_never_see_score_runs(
         listed = (await c.get("/api/runs", params={"kind": "score"})).json()["items"]
         assert [i["run_id"] for i in listed] == [score]
         paths = ("", "/events", "/events/0", f"/blobs/{sha}", "/projection", "/labels")
-        paths += ("/steps", "/activity?exec=x", "/samples", "/verification", "/flags")
+        paths += ("/steps", "/activity?exec=x", "/samples", "/verification", "/flags", "/costs")
         for path in (*paths, "/commands"):
             r = await viewer.get(base + path)
             assert (r.status_code, r.json()["code"]) == (403, "truth"), path

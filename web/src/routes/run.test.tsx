@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest"
 
 import type { CommandInfo } from "@/api/commands";
 import type { Event } from "@/api/events";
-import type { FlagInfo, RunDetail, SampleWindow, StepInfo } from "@/api/run";
+import type { CallCost, FlagInfo, RunDetail, SampleWindow, StepInfo } from "@/api/run";
 import type { RunSummary } from "@/api/runs";
 import type { Label } from "@/api/score";
 import { makeRouter } from "@/router";
@@ -157,7 +157,10 @@ let detail: RunDetail;
 let samples: SampleWindow[];
 let flags: FlagInfo[];
 let reviews: RunSummary[];
-let others: Record<string, { detail: RunDetail; flags: FlagInfo[]; sweeps: Event[] }>;
+let others: Record<
+  string,
+  { detail: RunDetail; flags: FlagInfo[]; sweeps: Event[]; costs?: CallCost[] }
+>;
 let role: "operator" | "viewer";
 let scores: RunSummary[];
 let scoreEvents: Record<string, Event[]>;
@@ -458,6 +461,7 @@ beforeEach(() => {
     if (known && part === "flags") return Response.json({ items: known.flags, next: null });
     if (known && part === "events") return Response.json({ items: known.sweeps, next: null });
     if (known && part === "steps") return Response.json({ items: [], next: null });
+    if (known && part === "costs") return Response.json(known.costs ?? []);
     if (path === `/api/runs/${BEE5}/steps`) {
       const after = Number(q.get("after") ?? -1);
       const limit = Number(q.get("limit") ?? 200);
@@ -1080,15 +1084,91 @@ test("the timeline ticks every step, past the pages the list has shown", async (
   expect(timeline.getAttribute("aria-valuetext")).toMatch(/^Step 1 /);
 });
 
-test("a review opened on its own leads back to the run it reviewed", async () => {
+const cost = (over: Partial<CallCost>): CallCost => ({
+  role: "sweep",
+  schema_name: "sweep_window",
+  calls: 1,
+  cost_usd: 0.1,
+  input_tokens: 100,
+  output_tokens: 10,
+  ...over,
+});
+
+test("a review opened on its own lists its sweeps and what its calls cost", async () => {
   withReview();
+  others[REVIEW]!.costs = [
+    cost({ calls: 36, cost_usd: 2.61164 }),
+    cost({ schema_name: "sweep_extract", calls: 37, cost_usd: 0.3692 }),
+    cost({ role: "judge", schema_name: "verdict", calls: 17, cost_usd: 0.7361 }),
+  ];
+  others[REVIEW]!.sweeps = [
+    ev(200, "monitor.sweep", {
+      step_from: 5,
+      step_to: 7,
+      seq_to: 1483,
+      lane: "full",
+      trigger: "flag",
+      name: "main",
+      suspicion: 39,
+      history_suspicion: 0,
+      window_suspicion: 78,
+      hits: 2,
+      tokens: 25914,
+      duration_ms: 21554,
+      cost_usd: 0.1262,
+      escalated: true,
+      summary: "It hardcoded the expected hashes.",
+    }),
+    ev(201, "monitor.sweep", {
+      step_from: 7,
+      step_to: 10,
+      seq_to: 1626,
+      lane: "evidence",
+      trigger: "every",
+      name: "main",
+      hits: 0,
+      cost_usd: 0,
+      error: "the model timed out",
+    }),
+  ];
   const router = renderAt(`/runs/${REVIEW}`);
-  const link = await screen.findByRole("link", { name: "the run it reviewed" });
-  expect(link.getAttribute("href")).toBe(`/runs/${BEE5}?source=${REVIEW}`);
-  fireEvent.click(link);
+  expect((await screen.findByRole("tab", { name: "Sweeps" })).getAttribute("aria-selected")).toBe(
+    "true",
+  );
+  const costs = within(await screen.findByRole("list", { name: "Cost by caller" }));
+  expect(costs.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+    "Window scores $2.61 36 calls",
+    "Extracts $0.37 37 calls",
+    "Judge $0.74 17 calls",
+  ]);
+  const sweeps = within(screen.getByRole("region", { name: "Sweeps" }));
+  expect(sweeps.getByText("It hardcoded the expected hashes.")).toBeTruthy();
+  expect(sweeps.getByText("rescored")).toBeTruthy();
+  expect(sweeps.getByText("Failed: the model timed out")).toBeTruthy();
+  expect(
+    sweeps.getByTitle("Mean of 0 over the run so far and 78 over this range").textContent,
+  ).toBe("39");
+  expect(sweeps.getByText("25,914")).toBeTruthy();
+  const back = sweeps.getByRole("link", { name: `run ${BEE5.slice(0, 13)}` });
+  expect(back.getAttribute("href")).toBe(`/runs/${BEE5}?source=${REVIEW}`);
+  const range = sweeps.getByRole("link", { name: "steps 5 to 7" });
+  expect(range.getAttribute("href")).toBe(`/runs/${BEE5}?source=${REVIEW}&seq=1483`);
+  fireEvent.click(range);
   const panel = within(await screen.findByRole("complementary", { name: "Monitor" }));
-  expect(router.state.location.search).toEqual({ source: REVIEW });
+  expect(router.state.location.search).toEqual({ source: REVIEW, seq: 1483 });
   expect(panel.getByRole("combobox", { name: "Monitor" }).textContent).toContain("Review");
+});
+
+test("a signals-only review says why it has no sweeps", async () => {
+  withReview();
+  others[REVIEW]!.detail.run = review(REVIEW, { preset: "signals" });
+  others[REVIEW]!.sweeps = [];
+  renderAt(`/runs/${REVIEW}`);
+  expect(await screen.findByText("No sweeps: this review ran signals only.")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Raw events" }));
+  expect(
+    (await screen.findByRole("tab", { name: "Raw events" })).getAttribute("aria-selected"),
+  ).toBe("true");
 });
 
 const SCORE = "01a18d4d-1dee-73bc-b611-5553ea86c1ba";

@@ -1,6 +1,6 @@
 import { useInfiniteQuery, useQueries, useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 
 import type { Event } from "@/api/events";
 import {
@@ -47,7 +47,8 @@ import {
 } from "@/lib/monitor";
 import { stepOf } from "@/lib/timeline";
 import { useOperator } from "@/lib/use-operator";
-import { cn } from "@/lib/utils";
+
+const ReviewSweeps = lazy(() => import("@/components/run/sweeps"));
 
 interface RunSearch extends RawSearch {
   tab?: "raw" | "score";
@@ -198,7 +199,13 @@ function Run() {
         <TabsList variant="line" className="border-b">
           {stepped && (
             <TabsTrigger value="steps">
-              {kind === "selftest" ? "Cases" : kind === "models.check" ? "Checks" : "Steps"}
+              {kind === "selftest"
+                ? "Cases"
+                : kind === "models.check"
+                  ? "Checks"
+                  : kind === "monitor"
+                    ? "Sweeps"
+                    : "Steps"}
             </TabsTrigger>
           )}
           {scored && <TabsTrigger value="score">Score</TabsTrigger>}
@@ -209,6 +216,14 @@ function Run() {
             <SelfTestCases runId={runId} detail={detail.data} />
           ) : kind === "models.check" ? (
             <ModelChecks runId={runId} detail={detail.data} />
+          ) : kind === "monitor" ? (
+            <Suspense fallback={<p className="text-muted-foreground">Loading sweeps</p>}>
+              <ReviewSweeps
+                runId={runId}
+                detail={detail.data}
+                onRaw={() => change((prev) => ({ ...prev, tab: "raw" }))}
+              />
+            </Suspense>
           ) : (
             <Steps
               runId={runId}
@@ -423,25 +438,9 @@ function Steps({
     return <p className="text-muted-foreground">No steps yet.</p>;
   }
   if (steps.length === 0) {
-    const origin = detail.run.kind === "monitor" ? detail.run.origin : null;
     return (
       <p className="text-muted-foreground">
-        {origin ? (
-          <>
-            This review has no agent steps. Its flags show on{" "}
-            <Link
-              to="/runs/$runId"
-              params={{ runId: origin }}
-              search={{ source: runId }}
-              className={cn(buttonVariants({ variant: "link", size: "sm" }), "h-auto px-0")}
-            >
-              the run it reviewed
-            </Link>
-            ; its own record is under{" "}
-          </>
-        ) : (
-          "This run has no agent steps. Its record is under "
-        )}
+        This run has no agent steps. Its record is under{" "}
         <Button
           variant="link"
           size="sm"

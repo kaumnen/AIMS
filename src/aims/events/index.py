@@ -551,6 +551,20 @@ class ExecActivity(BaseModel):
     changes: int
 
 
+class CallCost(BaseModel):
+    """What one kind of live model call cost in a run: `role` is the monitor role that made the
+    calls, None for an agent's, and `schema_name` the output schema they asked for. `calls`
+    counts the calls, `cost_usd` sums their priced attempts (None when none was priced) and the
+    tokens are what their attempts reported."""
+
+    role: str | None
+    schema_name: str | None
+    calls: int
+    cost_usd: float | None
+    input_tokens: int
+    output_tokens: int
+
+
 class Index:
     """Derived SQLite view of the run logs. Every row can be rebuilt from `events.jsonl`."""
 
@@ -1507,6 +1521,45 @@ class Index:
                 a.file_ops[op] = a.file_ops.get(op, 0) + n
             a.changes += changes or 0
         return [found[x] for x in dict.fromkeys(execs) if x in found]
+
+    async def call_costs(self, run_id: str) -> list[CallCost]:
+        """What the run's live model calls cost, per role and output schema, in the order each
+        kind first called. Costs add up in whole nano-dollars, like the run's total."""
+        async with self._db.execute(
+            "select type, json_extract(data, '$.call_id'), json_extract(data, '$.role'),"
+            " json_extract(data, '$.params.schema_name'), json_extract(data, '$.cost_usd'),"
+            " json_extract(data, '$.usage.input_tokens'),"
+            " json_extract(data, '$.usage.output_tokens'), json_extract(data, '$.source')"
+            " from events where run_id = ? and type in (?, ?) order by seq",
+            (run_id, ModelRequest.type, ModelResponse.type),
+        ) as cur:
+            rows = await cur.fetchall()
+        kinds: dict[str, tuple[str | None, str | None]] = {}
+        found: dict[tuple[str | None, str | None], list[Any]] = {}
+        for type_, call, role, schema, cost, given, made, source in rows:
+            if type_ == ModelRequest.type:
+                kinds.setdefault(call, (role, schema))
+                continue
+            if (source or "live") != "live" or call not in kinds:
+                continue
+            row = found.setdefault(kinds[call], [set(), 0, False, 0, 0])
+            row[0].add(call)
+            if isinstance(cost, int | float):
+                row[1] += round(cost * 1e9)
+                row[2] = True
+            row[3] += given or 0
+            row[4] += made or 0
+        return [
+            CallCost(
+                role=role,
+                schema_name=schema,
+                calls=len(calls),
+                cost_usd=nanos / 1e9 if priced else None,
+                input_tokens=given,
+                output_tokens=made,
+            )
+            for (role, schema), (calls, nanos, priced, given, made) in found.items()
+        ]
 
 
 def _steps(page: Sequence[Sequence[Any]], rows: Sequence[Sequence[Any]]) -> list[StepInfo]:

@@ -16,6 +16,7 @@ from aims.events.chain import ChainError, Head, follow, seal
 from aims.events.disk import make_dir, sync_dir
 from aims.events.index import (
     MAX_PAGE,
+    CallCost,
     ExecActivity,
     FlagInfo,
     Index,
@@ -793,6 +794,10 @@ class LocalEventStore:
     async def activity(self, run_id: str, execs: Sequence[str]) -> list[ExecActivity]:
         """What each exec left in the log, counted per event type and file op."""
         return await self._index.activity(run_id, execs)
+
+    async def call_costs(self, run_id: str) -> list[CallCost]:
+        """What the run's live model calls cost, per role and output schema."""
+        return await self._index.call_costs(run_id)
 
     async def every(self, run_id: str, *, types: Sequence[str] = ()) -> list[Event]:
         """Every event of a run in seq order, read page by page past the index's page cap."""

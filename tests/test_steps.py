@@ -281,6 +281,54 @@ async def test_step_pages_match_the_whole_list(store: LocalEventStore) -> None:
     assert await store.steps(run_id, after=29) == []
 
 
+def asked(call: str, role: Any, schema: str | None, attempt: int = 1) -> Draft:
+    draft = request(call, "a1", attempt, role)
+    params = ModelParams(stream=False, schema_name=schema)
+    return Draft(draft.payload.model_copy(update={"params": params}), None)
+
+
+async def test_call_costs_add_up_per_role_and_schema(store: LocalEventStore) -> None:
+    run_id = await store.create_run(STARTED)
+    usage = {"input_tokens": 100, "output_tokens": 7}
+    await store.append(
+        run_id,
+        [
+            request("c1", "a1"),
+            response("c1", "a1", 0.1, usage=usage),
+            asked("s1", "sweep", "sweep_window"),
+            response("s1", "a1", 0.2, status="error"),
+            asked("s1", "sweep", "sweep_window", attempt=2),
+            response("s1", "a1", 0.3, attempt=2, usage=usage),
+            asked("x1", "sweep", "sweep_extract"),
+            response("x1", "a1", None),
+            request("c2", "a2"),
+            response("c2", "a2", 0.4, source="replay", origin_run="o", origin_seq=3),
+            asked("j1", "judge", "verdict"),
+            response("j1", "a1", 0.05),
+            request("c3", "a2"),
+            response("c3", "a2", 0.2),
+        ],
+    )
+    costs = await store.call_costs(run_id)
+    rows = [(c.role, c.schema_name, c.calls, c.cost_usd) for c in costs]
+    assert rows == [
+        (None, None, 2, 0.3),
+        ("sweep", "sweep_window", 1, 0.5),
+        ("sweep", "sweep_extract", 1, None),
+        ("judge", "verdict", 1, 0.05),
+    ]
+    assert [(c.input_tokens, c.output_tokens) for c in costs] == [
+        (100, 7),
+        (100, 7),
+        (0, 0),
+        (0, 0),
+    ]
+    info = await store.run(run_id)
+    assert info is not None
+    assert info.cost_usd == sum(c.cost_usd or 0 for c in costs)
+    assert await store.call_costs(await store.create_run(STARTED)) == []
+
+
 async def test_activity_counts_an_execs_records(store: LocalEventStore) -> None:
     run_id = await told(store)
     e1, e3 = await store.activity(run_id, ["e1", "nope", "e3"])
@@ -412,6 +460,13 @@ async def test_the_api_serves_steps_activity_and_exec_events(
         assert r.status_code == 422
         r = await c.get(f"/api/runs/{run_id}/activity")
         assert r.status_code == 422
+
+        r = await c.get(f"/api/runs/{run_id}/costs")
+        assert [(x["role"], x["calls"], x["cost_usd"]) for x in r.json()] == [
+            (None, 3, 0.06),
+            ("judge", 1, 0.04),
+        ]
+        assert (await c.get("/api/runs/nope/costs")).status_code == 404
 
         r = await c.get(f"/api/runs/{run_id}/events", params={"exec": ["e2", "e4"]})
         assert [e["seq"] for e in r.json()["items"]] == [19, 20, 24, 25]

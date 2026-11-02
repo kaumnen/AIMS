@@ -381,6 +381,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/costs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Costs
+         * @description What the run's live model calls cost, per monitor role (None for an agent's calls) and
+         *     output schema, in the order each kind first called.
+         */
+        get: operations["list_costs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{run_id}/events": {
         parameters: {
             query?: never;
@@ -1880,6 +1901,27 @@ export interface components {
             input_usd: number;
             /** Model */
             model: string;
+        };
+        /**
+         * CallCost
+         * @description What one kind of live model call cost in a run: `role` is the monitor role that made the
+         *     calls, None for an agent's, and `schema_name` the output schema they asked for. `calls`
+         *     counts the calls, `cost_usd` sums their priced attempts (None when none was priced) and the
+         *     tokens are what their attempts reported.
+         */
+        CallCost: {
+            /** Calls */
+            calls: number;
+            /** Cost Usd */
+            cost_usd: number | null;
+            /** Input Tokens */
+            input_tokens: number;
+            /** Output Tokens */
+            output_tokens: number;
+            /** Role */
+            role: string | null;
+            /** Schema Name */
+            schema_name: string | null;
         };
         /**
          * Caps
@@ -8275,6 +8317,55 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CommandInfo"][];
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_costs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CallCost"][];
                 };
             };
             /** @description Not signed in */

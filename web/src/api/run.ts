@@ -15,6 +15,7 @@ export type ExecActivity = Schemas["ExecActivity"];
 export type BlobRef = Schemas["BlobRef"];
 export type SampleWindow = Schemas["SampleWindow"];
 export type FlagInfo = Schemas["FlagInfo"];
+export type CallCost = Schemas["CallCost"];
 
 const STEP_PAGE = 200;
 const EXEC_PAGE = 200;
@@ -286,6 +287,22 @@ export function sweepsQuery(source: string) {
   return queryOptions({
     queryKey: ["runs", "sweeps", source] as const,
     queryFn: ({ signal }) => everyEvent(source, ["monitor.sweep"], signal),
+    staleTime: Infinity,
+  });
+}
+
+// What a run's live model calls cost, per monitor role and output schema.
+export function costsQuery(runId: string) {
+  return queryOptions({
+    queryKey: ["runs", "costs", runId] as const,
+    queryFn: async ({ signal }) => {
+      const { data, error } = await client.GET("/api/runs/{run_id}/costs", {
+        params: path(runId),
+        signal,
+      });
+      if (error) throw error;
+      return data;
+    },
     staleTime: Infinity,
   });
 }
