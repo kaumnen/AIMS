@@ -118,8 +118,21 @@ SETTLE_S = 3.0
 KNOWN_WARNINGS = frozenset({"Addrspace mismatch"})
 DIAGNOSTIC = re.compile(r"\S+:\d+:\d+(?:-\d+)?: (WARNING|ERROR): (.*)")
 MARKER = re.compile(r"\s*[~^]+\s*")
-# Kernels from 6.15 split pipe_write into anon_pipe_write and fifo_pipe_write, 7.0 renamed
-# do_filp_open to do_file_open, and FMODE_BACKING is bit 24 from 6.14 and bit 25 before.
+# FMODE_BACKING is bit 24 from 6.14 and in stable trees that took that change (6.12.y did, 6.6.y
+# did not), else bit 25. Below 6.14 a backing file the tracer's own exec opens tells: bits 24 to
+# 26 of its mode are 1, 5 or 7 with bit 24 and 2 with bit 25. 3 fits both (6.6 sets bit 24 as
+# FMODE_DIO_PARALLEL_WRITE), so 3 or no backing file falls back to a symbol the change added.
+BACKING = (
+    'if [ "$m" -lt 6 ] || { [ "$m" -eq 6 ] && [ "$n" -lt 14 ]; }; then w=; '
+    "b=$(bpftrace -q -c /bin/true -e 'fexit:vmlinux:backing_file_open /pid == cpid/ "
+    r'{ printf("%d\n", (retval->f_mode >> 24) & 7); exit(); }'
+    "' 2>/dev/null | head -n 1); "
+    "case \"$b\" in 1|5|7) ;; 2) w=1 ;; *) grep -q '^file_set_fsnotify_mode' $a || w=1 ;; esac; "
+    'if [ -n "$w" ]; then '
+    r"sed -i 's/f_mode & 0x1000000)/f_mode \& 0x2000000)/' $f; fi; fi; "
+)
+# Kernels from 6.15 split pipe_write into anon_pipe_write and fifo_pipe_write, and 7.0 renamed
+# do_filp_open to do_file_open.
 TRACE = (
     "mountpoint -q /sys/kernel/tracing || mount -t tracefs nodev /sys/kernel/tracing; "
     "f=/tmp/trace.bt; cp /aims/trace.bt $f; a=/sys/kernel/tracing/available_filter_functions; "
@@ -129,10 +142,9 @@ TRACE = (
     "if ! grep -qx do_filp_open $a; then "
     "sed -i 's/^fexit:vmlinux:do_filp_open /fexit:vmlinux:do_file_open /' $f; fi; "
     "v=$(uname -r); m=${v%%.*}; n=${v#*.}; n=${n%%.*}; "
-    'if [ "$m" -lt 6 ] || { [ "$m" -eq 6 ] && [ "$n" -lt 14 ]; }; then '
-    r"sed -i 's/f_mode & 0x1000000)/f_mode \& 0x2000000)/' $f; fi; "
+    + BACKING
     # cachestat arrived in 6.5; older kernels have neither the syscall nor its tracepoint.
-    'if [ "$m" -lt 6 ] || { [ "$m" -eq 6 ] && [ "$n" -lt 5 ]; } '
+    + 'if [ "$m" -lt 6 ] || { [ "$m" -eq 6 ] && [ "$n" -lt 5 ]; } '
     "|| ! grep -q '_sys_cachestat$' $a "
     "|| ! [ -e /sys/kernel/tracing/events/syscalls/sys_enter_cachestat/id ]; then "
     "sed -i 's|^tracepoint:syscalls:sys_enter_cachestat |//&|' $f; fi; "

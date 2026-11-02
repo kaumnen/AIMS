@@ -41,7 +41,7 @@ from aims.sandbox import audit as audit_module
 from aims.sandbox import reader as reader_module
 from aims.sandbox.execs import exec_output
 from aims.sandbox.trace import STRLEN
-from aims.sandbox.tracer import SKIP_READ, parse_counts
+from aims.sandbox.tracer import BACKING, SKIP_READ, parse_counts
 
 # These test the tracer itself, so they need the host to themselves.
 pytestmark = [pytest.mark.anyio, pytest.mark.docker, pytest.mark.serial]
@@ -1076,6 +1076,52 @@ async def test_writable_root_records_each_change_once(
         ("ipc.event", "fifo", f"{d}/p"): 1,
         **{("file.access", "delete", f"{d}{n}"): 1 for n in ("/s", "/h", "/p", "/g", "")},
     }
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_the_backing_bit_follows_the_kernel(backend: DockerBackend) -> None:
+    assert backend.tracer is not None
+    container = backend.tracer._container
+    assert container is not None
+    cases = [
+        (7, 0, "2", False, "0x1000000"),
+        (6, 14, "2", False, "0x1000000"),
+        (6, 12, "5", False, "0x1000000"),
+        (6, 12, "1", False, "0x1000000"),
+        (6, 12, "7", False, "0x1000000"),
+        (6, 12, "2", True, "0x2000000"),
+        (6, 12, "3", True, "0x1000000"),
+        (6, 12, "3", False, "0x2000000"),
+        (6, 12, "", True, "0x1000000"),
+        (6, 6, "", False, "0x2000000"),
+        (5, 15, "", False, "0x2000000"),
+    ]
+    setup = (
+        "mkdir -p /tmp/bit && printf '#!/bin/sh\\necho \"$B\"\\n' > /tmp/bit/bpftrace && "
+        "chmod +x /tmp/bit/bpftrace && echo do_filp_open > /tmp/bit/none && "
+        "printf 'do_filp_open\\nfile_set_fsnotify_mode\\n' > /tmp/bit/sym; "
+    )
+    steps = [
+        f"m={m}; n={n}; a=/tmp/bit/{'sym' if symbol else 'none'}; f=/tmp/bit/t; "
+        "echo '(args.file->f_mode & 0x1000000)' > $f; "
+        f"export B='{probe}'; PATH=/tmp/bit:$PATH; {BACKING}"
+        "grep -o '0x[0-9]*' $f; PATH=${PATH#/tmp/bit:}; "
+        for m, n, probe, symbol, _ in cases
+    ]
+    out = await exec_output(container, ["sh", "-c", setup + "".join(steps)], timeout_s=20)
+    assert out.decode().split() == [want for *_, want in cases]
+
+    # The probe itself, run as on a kernel below 6.14, finds a backing file on this one.
+    real = (
+        "a=/sys/kernel/tracing/available_filter_functions; f=/tmp/bit/t; m=6; n=12; "
+        f'{BACKING}echo "$b"; uname -r'
+    )
+    found, release = (await exec_output(container, ["sh", "-c", real], timeout_s=20)).split()
+    major, minor = (int(p) for p in re.findall(rb"\d+", release)[:2])
+    assert found in {b"1", b"2", b"3", b"5", b"7"}
+    if (major, minor) >= (6, 14):
+        assert found in {b"1", b"5", b"7"}
 
 
 @pytest.mark.tracer

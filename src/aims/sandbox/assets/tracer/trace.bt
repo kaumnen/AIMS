@@ -173,7 +173,7 @@ fentry:vmlinux:security_file_open /@sandbox[cgroup] && curtask->thread_pid->leve
 
 // The last reference to a file, on every path: close(2) on 6.8+ never reaches filp_close, and an
 // exiting task releases its files after its X line. Overlay's backing files are skipped by
-// FMODE_BACKING, bit 24 from 6.14; the tracer swaps in bit 25 on older kernels.
+// FMODE_BACKING, bit 24 from 6.14; the tracer swaps in bit 25 on kernels that use it.
 fentry:vmlinux:security_file_release /@sandbox[cgroup] && curtask->thread_pid->level > @base && (args.file->f_mode & 2) && !(args.file->f_mode & 0x1000000) && (args.file->f_inode->i_mode & 0xF000) == 0x8000/ {
   $d = args.file->f_path.dentry;
   $x = $d; $k = 0;
