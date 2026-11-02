@@ -558,6 +558,56 @@ async def node(cp: CP, data: Path, name: str = "n1") -> AsyncGenerator[Node]:
             await task
 
 
+@pytest.mark.parametrize("held", ["job", "link"])
+async def test_a_kill_while_a_runner_ends_waits_for_its_tasks_then_ends_it_as_killed(
+    cp: CP, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, held: str
+) -> None:
+    hit = asyncio.Event()
+    ended: list[str] = []
+
+    async def lingers() -> None:
+        # takes a while to end once cancelled, like a run closing its sandboxes
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            hit.set()
+            await asyncio.sleep(0.3)
+            ended.append(held)
+            raise
+
+    async def stopped(self: Node) -> None:
+        task = asyncio.create_task(lingers())
+        if held == "job":
+            self._jobs["held"] = task
+        else:
+            self.ctx.link._tasks.add(task)
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(Node, "_stop", stopped)
+    stop = asyncio.Event()
+    made = Node(
+        NodeOptions(
+            url=cp.url,
+            token=cp.runner,
+            name="n1",
+            data=tmp_path / "node",
+            backend=cast(Any, NoDocker()),
+        )
+    )
+    task = asyncio.create_task(made.run(stop))
+    async with asyncio.timeout(20):
+        await made.ready.wait()
+        stop.set()
+        await hit.wait()
+    # a second stop: kill now
+    task.cancel()
+    async with asyncio.timeout(20):
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert ended == [held]
+    assert made._open is None
+
+
 async def test_a_runner_takes_a_monitor_job_and_ships_the_monitor_run(
     cp: CP, local: LocalEventStore, fake: FakeRunner, tmp_path: Path
 ) -> None:

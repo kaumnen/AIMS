@@ -16,6 +16,7 @@ from pathlib import Path
 import httpx2
 from pydantic import JsonValue
 
+from aims.aio import settle
 from aims.channels import archives
 from aims.events import (
     Draft,
@@ -169,18 +170,22 @@ class Node:
                     await stop.wait()
                     await self._stop()
                 finally:
-                    for task in chores:
-                        task.cancel()
-                    for task in chores:
-                        with contextlib.suppress(asyncio.CancelledError, Exception):
-                            await task
-                    for task in self._jobs.values():
-                        task.cancel()
-                    for task in list(self._jobs.values()):
-                        with contextlib.suppress(asyncio.CancelledError, Exception):
-                            await task
-                    await link.close()
-                    self._open = None
+                    # A second stop meanwhile waits for this, then the runner exits 130.
+                    await settle(self._end(chores, link))
+
+    async def _end(self, chores: list[asyncio.Task[None]], link: Link) -> None:
+        for task in chores:
+            task.cancel()
+        for task in chores:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        for task in self._jobs.values():
+            task.cancel()
+        for task in list(self._jobs.values()):
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        await link.close()
+        self._open = None
 
     async def _stop(self) -> None:
         """Like a first Ctrl-C for every run: agents stop, files are archived, runs are sealed
