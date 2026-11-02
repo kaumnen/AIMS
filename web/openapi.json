@@ -14266,7 +14266,7 @@
   "info": {
     "description": "The control plane: API, live streams, runner ingest and the UI, in one ASGI app. It never\ntouches Docker; runners do.",
     "title": "AIMS",
-    "version": "0.1.0"
+    "version": "0.2.0rc1"
   },
   "openapi": "3.1.0",
   "paths": {

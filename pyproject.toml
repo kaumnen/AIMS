@@ -1,6 +1,6 @@
 [project]
 name = "aims-bench"
-version = "0.1.0"
+version = "0.2.0rc1"
 description = "Experiment bench for agent alignment with an autonomous behaviour monitor"
 readme = "README.md"
 license = "Apache-2.0"
