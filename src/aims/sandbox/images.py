@@ -8,7 +8,7 @@ import logging
 import os
 import tarfile
 import tempfile
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 from importlib.resources import files
 from importlib.resources.abc import Traversable
 from pathlib import Path
@@ -19,6 +19,16 @@ import aiodocker
 log = logging.getLogger("aims.sandbox")
 
 ASSETS = files("aims.sandbox") / "assets"
+
+REGISTRY = "ghcr.io/kaumnen"
+# aiodocker's status when it cannot reach the Docker daemon at all
+DAEMON_DOWN = 900
+
+
+def registry(env: Mapping[str, str] = os.environ) -> str:
+    """Where the published asset images live: `$AIMS_IMAGE_REGISTRY`, else GHCR. Empty means
+    never pull, always build here."""
+    return env.get("AIMS_IMAGE_REGISTRY", REGISTRY).strip().rstrip("/")
 
 
 def context(name: str) -> tuple[str, bytes]:
@@ -47,10 +57,15 @@ def _walk(node: Traversable, prefix: str) -> list[tuple[str, bytes]]:
     return out
 
 
-async def ensure_image(docker: aiodocker.Docker, name: str) -> str:
-    """Build the asset image `name` unless an image with the same content hash exists."""
+async def ensure_image(
+    docker: aiodocker.Docker, name: str, env: Mapping[str, str] = os.environ
+) -> str:
+    """The local tag of asset image `name`: an image with the same content hash, else the one
+    published under that tag in the registry, else a fresh build."""
     tag, data = context(name)
-    return await _build(docker, tag, fileobj=io.BytesIO(data), encoding="gzip")
+    prefix = registry(env)
+    remote = f"{prefix}/{tag}" if prefix else None
+    return await _build(docker, tag, remote=remote, fileobj=io.BytesIO(data), encoding="gzip")
 
 
 async def _exists(docker: aiodocker.Docker, tag: str) -> bool:
@@ -63,17 +78,44 @@ async def _exists(docker: aiodocker.Docker, tag: str) -> bool:
     return True
 
 
-async def _build(docker: aiodocker.Docker, tag: str, **kwargs: Any) -> str:
-    """Build `tag` unless it exists, one build of a tag at a time on this host: on Docker's
-    containerd image store a second build of a tag deletes the image the first one made."""
+async def _build(
+    docker: aiodocker.Docker, tag: str, *, remote: str | None = None, **kwargs: Any
+) -> str:
+    """Build `tag` unless it exists or the image `remote` can stand in for it, one build of a
+    tag at a time on this host: on Docker's containerd image store a second build of a tag
+    deletes the image the first one made."""
     if await _exists(docker, tag):
         return tag
     async with _host_lock(tag):
         if await _exists(docker, tag):
             return tag
+        if remote is not None and await _pull(docker, remote, tag):
+            return tag
         log.info("building %s", tag)
         await docker.images.build(tag=tag, labels={"aims.managed": "1"}, **kwargs)
     return tag
+
+
+async def _pull(docker: aiodocker.Docker, remote: str, tag: str) -> bool:
+    """Tag the image `remote` as `tag`, pulling it unless it is here already (`docker load`).
+    False when it cannot be had."""
+    repo, _, version = tag.rpartition(":")
+    try:
+        if not await _exists(docker, remote):
+            log.info("pulling %s", remote)
+            await docker.images.pull(remote)
+        await docker.images.tag(remote, repo, tag=version)
+    except aiodocker.DockerError as e:
+        if e.status == DAEMON_DOWN:
+            raise
+        level = logging.INFO if e.status == 404 else logging.WARNING
+        log.log(level, "cannot use %s, building it here: %s", remote, e.message.partition("\n")[0])
+        return False
+    image = await docker.images.inspect(tag)
+    source = remote.rpartition(":")[0]
+    digests = [d for d in image.get("RepoDigests") or [] if d.startswith(f"{source}@")]
+    log.info("%s is %s", tag, digests[0] if digests else f"{remote} ({image['Id']})")
+    return True
 
 
 @contextlib.asynccontextmanager
