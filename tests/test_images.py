@@ -396,3 +396,62 @@ async def test_an_asset_image_comes_from_a_registry_and_is_built_without_one(
                 await docker.images.delete(ref, force=True)
         with contextlib.suppress(aiodocker.DockerError):
             await registry.stop()
+
+
+@pytest.mark.docker
+async def test_an_old_pulled_asset_image_goes_with_its_registry_reference(
+    docker: aiodocker.Docker, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    probe = tmp_path / "assets" / "probe"
+    probe.mkdir(parents=True)
+    (probe / "Dockerfile").write_text("FROM scratch\nCOPY marker /marker\n")
+    (probe / "marker").write_text(uuid.uuid4().hex)
+    monkeypatch.setattr(images, "ASSETS", tmp_path / "assets")
+    monkeypatch.setattr(images, "MIN_AGE_S", 0)
+    tag = await ensure_image(docker, "probe", env={"AIMS_IMAGE_REGISTRY": ""})
+    repo, _, version = tag.rpartition(":")
+    port = 20000 + uuid.uuid4().int % 30000
+    source = f"127.0.0.1:{port}/{repo}"
+    refs = [tag, f"{source}:{version}"]
+
+    await ensure_pulled(docker, REGISTRY_IMAGE)
+    registry = await docker.containers.run(
+        config={
+            "Image": REGISTRY_IMAGE,
+            "Env": [f"REGISTRY_HTTP_ADDR=127.0.0.1:{port}"],
+            "HostConfig": {"NetworkMode": "host", "AutoRemove": True},
+        },
+        name=f"aims-test-registry-{port}",
+    )
+    try:
+        await docker.images.tag(tag, source, tag=version)
+        for attempt in range(50):
+            try:
+                await docker.images.push(source, tag=version)
+                break
+            except aiodocker.DockerError:
+                if attempt == 49:
+                    raise
+                await asyncio.sleep(0.2)
+        pushed = (await docker.images.inspect(f"{source}:{version}"))["RepoDigests"]
+        (digest,) = [d.partition("@")[2] for d in pushed if d.startswith(f"{source}@")]
+        remote = f"{source}@{digest}"
+        refs.append(remote)
+        for ref in refs:
+            with contextlib.suppress(aiodocker.DockerError):
+                await docker.images.delete(ref)
+        assert await images._pull(docker, remote, tag)
+        assert remote in (await docker.images.inspect(tag))["RepoDigests"]
+
+        (probe / "marker").write_text(uuid.uuid4().hex)
+        await images.remove_old(docker)
+        for ref in (tag, remote):
+            with pytest.raises(aiodocker.DockerError) as e:
+                await docker.images.inspect(ref)
+            assert e.value.status == 404
+    finally:
+        for ref in refs:
+            with contextlib.suppress(aiodocker.DockerError):
+                await docker.images.delete(ref, force=True)
+        with contextlib.suppress(aiodocker.DockerError):
+            await registry.stop()

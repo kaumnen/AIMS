@@ -35,7 +35,7 @@ from aims.sandbox.base import (
     Tree,
     check_name,
 )
-from aims.sandbox.images import ensure_built, ensure_image, ensure_pulled
+from aims.sandbox.images import ensure_built, ensure_image, ensure_pulled, remove_old
 from aims.sandbox.imds import Identity
 from aims.sandbox.imds import start as start_imds_server
 from aims.sandbox.reader import Reader
@@ -52,6 +52,9 @@ QUIESCE_S = 2.0
 STDIN_POLL_S = 0.1
 STDIN_GRACE_S = 1.0
 MIB = 1024 * 1024
+# Tells this process from an earlier one with its pid, such as pid 1 of a restarted container.
+INSTANCE = uuid.uuid4().hex
+MOUNTINFO = "/proc/self/mountinfo"
 HOME = "/home/agent"
 DEFAULT_MASKED_PATHS = (
     "/proc/acpi",
@@ -117,9 +120,14 @@ class DockerBackend:
                 "aims.managed": "1",
                 "aims.host": socket.gethostname(),
                 "aims.pid": str(os.getpid()),
+                "aims.instance": INSTANCE,
             }
-            await _sweep(docker, labels["aims.host"])
-            toolbox = await _toolbox(docker)
+            container = await _own_container(docker)
+            if container is not None:
+                labels["aims.container"] = container
+            await _sweep(docker, labels["aims.host"], container)
+            toolbox = await _toolbox(docker, labels)
+            await _remove_old(docker, toolbox[1])
             sampler = await _sampler(docker, labels, toolbox[0])
             if audit != "snapshot":
                 name = f"aims-tracer-{uuid.uuid4().hex[:12]}"
@@ -399,6 +407,7 @@ class DockerBackend:
             image,
             ["chown", "-R", f"{AGENT_UID}:{AGENT_UID}", *(target for _, target in volumes)],
             mounts,
+            labels=self._labels,
             caps=["CHOWN", "DAC_OVERRIDE", "DAC_READ_SEARCH", "FOWNER"],
             entrypoint=[f"{TOOLBOX}/busybox"],
         )
@@ -861,7 +870,7 @@ def _info(container: DockerContainer, spec: SandboxSpec, image: dict[str, Any]) 
     return SandboxInfo(container.id, "docker", spec.image, image["Id"], config)
 
 
-async def _toolbox(docker: aiodocker.Docker) -> tuple[str, str]:
+async def _toolbox(docker: aiodocker.Docker, labels: dict[str, str]) -> tuple[str, str]:
     image = await ensure_image(docker, "toolbox")
     volume = image.replace(":", "-")
     await docker.volumes.create({"Name": volume, "Labels": {"aims.managed": "1"}})
@@ -870,9 +879,31 @@ async def _toolbox(docker: aiodocker.Docker) -> tuple[str, str]:
         image,
         ["sh", "-c", "test -f /out/.ready || { cp -a /aims/. /out/ && touch /out/.ready; }"],
         [{"Type": "volume", "Source": volume, "Target": "/out"}],
+        labels=labels,
         caps=["CHOWN", "FOWNER", "DAC_OVERRIDE"],
     )
     return image, volume
+
+
+async def _remove_old(docker: aiodocker.Docker, toolbox: str) -> None:
+    """Remove the asset images of other AIMS versions that no container uses, and the toolbox
+    volumes whose image is gone."""
+    await remove_old(docker)
+    listing = await docker.volumes.list(filters={"label": ["aims.managed=1"]})
+    for volume in listing.get("Volumes") or []:
+        name = volume["Name"]
+        if name == toolbox or not name.startswith("aims-toolbox-"):
+            continue
+        try:
+            await docker.images.inspect(f"aims-toolbox:{name.removeprefix('aims-toolbox-')}")
+        except aiodocker.DockerError as e:
+            if e.status != 404:
+                continue
+        else:
+            continue
+        log.info("removing volume %s, left by another AIMS version", name)
+        with contextlib.suppress(aiodocker.DockerError):
+            await DockerVolume(docker, name).delete()
 
 
 async def _sampler(docker: aiodocker.Docker, labels: dict[str, str], image: str) -> Sampler | None:
@@ -891,6 +922,7 @@ async def _helper(
     cmd: list[str],
     mounts: list[dict[str, Any]],
     *,
+    labels: dict[str, str],
     caps: list[str],
     entrypoint: list[str] | None = None,
 ) -> None:
@@ -900,7 +932,7 @@ async def _helper(
             "Entrypoint": entrypoint,
             "Cmd": cmd,
             "User": "0:0",
-            "Labels": {"aims.managed": "1", "aims.role": "helper"},
+            "Labels": {**labels, "aims.role": "helper"},
             "HostConfig": {
                 "NetworkMode": "none",
                 "CapDrop": ["ALL"],
@@ -921,22 +953,97 @@ async def _helper(
             await container.delete(force=True)
 
 
-async def _sweep(docker: aiodocker.Docker, host: str) -> None:
-    """Remove containers left by AIMS processes on this host that no longer run."""
-    query = {"label": ["aims.managed=1", f"aims.host={host}"]}
-    for container in await docker.containers.list(all=True, filters=json.dumps(query)):
-        labels = container["Labels"] or {}
-        if labels.get("aims.keep") == "1":
-            continue
-        try:
-            pid = int(labels.get("aims.pid", ""))
-        except ValueError:
-            continue
-        if pid == os.getpid() or _alive(pid):
-            continue
-        log.info("removing %s left by process %d", container.id[:12], pid)
-        with contextlib.suppress(aiodocker.DockerError):
-            await container.delete(force=True)
+async def _sweep(docker: aiodocker.Docker, host: str, container: str | None) -> None:
+    """Remove containers, then volumes, left by AIMS processes that no longer run, an earlier
+    process with this one's pid among them. Docker keeps a volume a container still mounts.
+
+    Pids are judged only where this process can see them: in its own `container`, or on its
+    `host` outside any container. What a process in another container made goes once the daemon
+    shows that container stopped or gone.
+    """
+    running: dict[str, bool | None] = {}
+    query = {"label": ["aims.managed=1"]}
+    for found in await docker.containers.list(all=True, filters=json.dumps(query)):
+        owner = await _dead_owner(docker, found["Labels"] or {}, host, container, running)
+        if owner is not None:
+            log.info("removing %s left by %s", found.id[:12], owner)
+            with contextlib.suppress(aiodocker.DockerError):
+                await found.delete(force=True)
+    listing = await docker.volumes.list(filters=query)
+    for volume in listing.get("Volumes") or []:
+        owner = await _dead_owner(docker, volume.get("Labels") or {}, host, container, running)
+        if owner is not None:
+            log.info("removing volume %s left by %s", volume["Name"], owner)
+            with contextlib.suppress(aiodocker.DockerError):
+                await DockerVolume(docker, volume["Name"]).delete()
+
+
+async def _dead_owner(
+    docker: aiodocker.Docker,
+    labels: Mapping[str, str],
+    host: str,
+    container: str | None,
+    running: dict[str, bool | None],
+) -> str | None:
+    """The AIMS process or container that made an object with `labels`, if it is gone."""
+    if labels.get("aims.keep") == "1":
+        return None
+    try:
+        pid = int(labels.get("aims.pid", ""))
+    except ValueError:
+        return None
+    parent = labels.get("aims.container")
+    if parent != container:
+        if parent is None:
+            return None
+        if parent not in running:
+            running[parent] = await _running(docker, parent)
+        return None if running[parent] is not False else f"container {parent[:12]}"
+    if container is None and labels.get("aims.host") != host:
+        return None
+    if pid == os.getpid():
+        if labels.get("aims.instance", INSTANCE) == INSTANCE:
+            return None
+    elif _alive(pid):
+        return None
+    return f"process {pid}"
+
+
+async def _own_container(docker: aiodocker.Docker) -> str | None:
+    """The ID of the container this process runs in, if the daemon runs it."""
+    container = _container_id(_mounts())
+    if container is None or not await _running(docker, container):
+        return None
+    return container
+
+
+def _mounts() -> str:
+    try:
+        with open(MOUNTINFO) as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def _container_id(mountinfo: str) -> str | None:
+    """The container ID in the source path of the /etc/hostname mount, which Docker keeps in
+    the container's own directory."""
+    for line in mountinfo.splitlines():
+        fields = line.split(" ")
+        if len(fields) > 4 and fields[4] == "/etc/hostname":
+            match = re.search(r"containers/([0-9a-f]{64})/", fields[3])
+            if match:
+                return match.group(1)
+    return None
+
+
+async def _running(docker: aiodocker.Docker, container: str) -> bool | None:
+    """Whether the daemon runs `container`; None when it cannot tell."""
+    try:
+        found = await docker.containers.get(container)
+    except aiodocker.DockerError as e:
+        return False if e.status == 404 else None
+    return bool(found["State"]["Running"])
 
 
 def _alive(pid: int) -> bool:
