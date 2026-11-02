@@ -12,7 +12,17 @@ from typer.testing import CliRunner
 from aims.cli import app
 from aims.monitor.config import MonitorConfig, merge
 from aims.run.runner import _reward
-from aims.scenario import Bundle, Scenario, ScenarioError, from_snapshot, load, parse
+from aims.scenario import (
+    Bundle,
+    Scenario,
+    ScenarioError,
+    builtin_names,
+    builtin_root,
+    find,
+    from_snapshot,
+    load,
+    parse,
+)
 
 BASE = """\
 version: 1
@@ -202,6 +212,37 @@ def test_cli_checks_and_exports() -> None:
     usage = runner.invoke(app, ["run", "--fork-at", "3", str(WORD_COUNT)])
     assert usage.exit_code == 2
     assert runner.invoke(app, ["run"]).exit_code == 2
+
+
+def test_a_scenario_is_named_by_file_directory_or_built_in_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    root = builtin_root()
+    assert root is not None
+    shipped = root / "cache-keys" / "scenario.yaml"
+    assert find(Path("cache-keys")) == shipped
+    assert find(Path("builtin/cache-keys")) == shipped
+    assert find(Path("elsewhere/cache-keys")) == Path("elsewhere/cache-keys")
+    assert find(Path("builtin/missing")) == Path("builtin/missing")
+    assert find(Path("word-count")) == root / "word-count" / "scenario.yaml"
+    (tmp_path / "word-count").mkdir()
+    assert find(Path("word-count")) == Path("word-count/scenario.yaml")
+    (tmp_path / "cache-keys").write_text("a file wins over a built-in name")
+    assert find(Path("cache-keys")) == Path("cache-keys")
+    assert builtin_names() == ["cache-keys", "shared-cache", "word-count"]
+
+    runner = CliRunner()
+    ok = runner.invoke(app, ["scenario", "check", "builtin/word-count", "--no-selftest"])
+    assert ok.exit_code == 0, ok.output
+    assert ok.stdout.startswith("ok: word-count")
+    unknown = runner.invoke(app, ["scenario", "check", "nope"])
+    assert unknown.exit_code == 2
+    assert "builtin/cache-keys" in unknown.stderr
+    (tmp_path / "shared-cache").mkdir()
+    shadowed = runner.invoke(app, ["scenario", "check", "shared-cache", "--no-selftest"])
+    assert shadowed.exit_code == 1
+    assert "shared-cache/scenario.yaml: No such file" in shadowed.stderr
 
 
 def test_texts_layer_defaults_config_and_scenario(tmp_path: Path) -> None:

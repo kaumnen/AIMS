@@ -8,13 +8,12 @@ import re
 import secrets
 import stat
 from dataclasses import dataclass
-from importlib import resources
 from pathlib import Path, PurePosixPath
 
+from aims.scenario.load import SCENARIO, builtin_root
 from aims.server.problems import ProblemException
 from aims.server.state import ConfigCache
 
-SCENARIO = "scenario.yaml"
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 MAX_FILE = 64 * 1024 * 1024
 STARTER_SCENARIO = """\
@@ -106,12 +105,6 @@ class Source:
     root: Path
     writable: bool
     label: str
-
-
-def builtin_root() -> Path | None:
-    root = resources.files("aims") / "scenarios"
-    path = Path(str(root))
-    return path if path.is_dir() else None
 
 
 class Sources:

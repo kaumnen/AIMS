@@ -13,6 +13,25 @@ ConfigOption = Annotated[
     Path | None,
     typer.Option("--config", help="An aims.toml to use instead of the project's."),
 ]
+SCENARIO_HELP = "The scenario file, its directory, or builtin/<name> for one that ships with AIMS."
+
+
+def _scenario(value: Path | None) -> Path | None:
+    """The scenario file `value` names. A bare name that is neither a path nor a built-in
+    scenario is a usage error that lists the built-in ones."""
+    if value is None:
+        return None
+    from aims.scenario.load import builtin_names, find
+
+    path = find(value)
+    parts = value.parts
+    named = len(parts) == 1 or (len(parts) == 2 and parts[0] == "builtin")
+    if path == value and not path.exists() and named:
+        shipped = ", ".join(f"builtin/{name}" for name in builtin_names())
+        raise typer.BadParameter(
+            f"no file {value} and no built-in scenario of that name; built in: {shipped}"
+        )
+    return path
 
 
 def _settings(config: Path | None) -> Any:
@@ -260,7 +279,7 @@ EXIT_FAILED, EXIT_KILLED, EXIT_CANCELLED = 1, 3, 130
 
 @scenario_app.command("check")
 def scenario_check(
-    path: Annotated[Path, typer.Argument(help="The scenario file.")],
+    path: Annotated[Path, typer.Argument(help=SCENARIO_HELP, callback=_scenario)],
     config: ConfigOption = None,
     profile: Annotated[str | None, typer.Option(help="Profile for every agent.")] = None,
     runs_dir: Annotated[
@@ -464,7 +483,11 @@ def scenario_schema() -> None:
 @app.command()
 def run(
     scenario: Annotated[
-        Path | None, typer.Argument(help="The scenario file; optional with --replay.")
+        Path | None,
+        typer.Argument(
+            help="The scenario file, its directory, or builtin/<name>; optional with --replay.",
+            callback=_scenario,
+        ),
     ] = None,
     config: ConfigOption = None,
     runs_dir: Annotated[Path, typer.Option(help="Directory that holds the runs.")] = Path("runs"),
@@ -2054,9 +2077,10 @@ def score_cmd(
     plants_from: Annotated[
         Path | None,
         typer.Option(
-            help="Also score the rule plants of this scenario file that the run's truth file "
-            "lacks, in the run's variant. A rule plant places nothing, so the run saw the same "
-            "sandbox.",
+            help="Also score the rule plants of this scenario (file, directory or builtin/<name>) "
+            "that the run's truth file lacks, in the run's variant. A rule plant places nothing, "
+            "so the run saw the same sandbox.",
+            callback=_scenario,
         ),
     ] = None,
     config: ConfigOption = None,
@@ -2259,7 +2283,7 @@ def report_cmd(
 
 @app.command("estimate")
 def estimate_cmd(
-    scenario: Annotated[Path, typer.Argument(help="The scenario file.")],
+    scenario: Annotated[Path, typer.Argument(help=SCENARIO_HELP, callback=_scenario)],
     config: ConfigOption = None,
     runs_dir: Annotated[Path, typer.Option(help="Directory of past runs.")] = Path("runs"),
     profile: Annotated[str | None, typer.Option(help="Profile for every agent.")] = None,

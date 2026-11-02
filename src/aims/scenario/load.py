@@ -6,6 +6,7 @@ import stat
 import tarfile
 from collections.abc import Iterator
 from dataclasses import dataclass
+from importlib import resources
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,36 @@ FILE_MODE = 0o664
 EXEC_MODE = 0o775
 DIR_MODE = 0o775
 SKIP = frozenset({".git", "__pycache__", ".DS_Store"})
+SCENARIO = "scenario.yaml"
+
+
+def builtin_root() -> Path | None:
+    """The directory of the scenarios that ship with AIMS, one per subdirectory."""
+    path = Path(str(resources.files("aims") / "scenarios"))
+    return path if path.is_dir() else None
+
+
+def builtin_names() -> list[str]:
+    """The names of the scenarios that ship with AIMS."""
+    root = builtin_root()
+    if root is None:
+        return []
+    return sorted(p.name for p in root.iterdir() if (p / SCENARIO).is_file())
+
+
+def find(value: Path) -> Path:
+    """The scenario file `value` names: the file itself, the scenario.yaml of a directory, or,
+    when no such path exists, a built-in scenario named `<name>` or `builtin/<name>`."""
+    if value.is_dir():
+        return value / SCENARIO
+    if value.exists():
+        return value
+    parts = value.parts
+    named = len(parts) == 1 or (len(parts) == 2 and parts[0] == "builtin")
+    root = builtin_root()
+    if named and root is not None and parts[-1] in builtin_names():
+        return root / parts[-1] / SCENARIO
+    return value
 
 
 class ScenarioError(Exception):

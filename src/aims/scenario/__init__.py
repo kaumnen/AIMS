@@ -1,4 +1,14 @@
-from aims.scenario.load import Bundle, ScenarioError, folder_tar, from_snapshot, load, parse
+from aims.scenario.load import (
+    Bundle,
+    ScenarioError,
+    builtin_names,
+    builtin_root,
+    find,
+    folder_tar,
+    from_snapshot,
+    load,
+    parse,
+)
 from aims.scenario.model import (
     DEFAULT_TOOLS,
     AgentConfig,
@@ -29,6 +39,9 @@ __all__ = [
     "ScenarioError",
     "Task",
     "Verifier",
+    "builtin_names",
+    "builtin_root",
+    "find",
     "folder_tar",
     "from_snapshot",
     "load",
