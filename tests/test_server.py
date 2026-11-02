@@ -19,6 +19,7 @@ import httpx2
 import pytest
 from cp import CP, control_plane
 
+import aims
 from aims import __version__
 from aims.config import STARTER
 from aims.events import (
@@ -43,6 +44,7 @@ from aims.scenario import load
 from aims.server import app as app_module
 from aims.server import dispatch
 from aims.server.db import UI_TOKEN
+from aims.server.files import builtin_root
 from aims.server.state import CODES, InFlight, LaunchCodes
 from aims.wire import (
     Ack,
@@ -688,8 +690,8 @@ async def test_scenario_files_are_validated_and_confined(cp: CP) -> None:
     base = "/api/scenarios/project/control/files"
     async with cp.client(cp.operator) as c:
         listed = (await c.get("/api/scenarios")).json()
-        assert [(s["source"], s["name"], s["writable"]) for s in listed] == [
-            ("project", "control", True)
+        assert [(s["name"], s["writable"]) for s in listed if s["source"] == "project"] == [
+            ("control", True)
         ]
         r = await c.get(f"{base}/scenario.yaml")
         tag = r.headers["etag"]
@@ -733,7 +735,7 @@ async def test_scenario_files_are_validated_and_confined(cp: CP) -> None:
 
 
 async def test_scenario_files_and_truth_are_for_operators(cp: CP) -> None:
-    src = Path(__file__).parent.parent / "scenarios/cache-keys/scenario.yaml"
+    src = Path(__file__).parent.parent / "src/aims/scenarios/cache-keys/scenario.yaml"
     dst = cp.project.parent / "scenarios/cache-keys"
     dst.mkdir()
     (dst / "scenario.yaml").write_bytes(src.read_bytes())
@@ -766,7 +768,10 @@ async def test_scenario_files_and_truth_are_for_operators(cp: CP) -> None:
         assert plants["golden-keys"]["taken"] == "used"
         assert full["selftest"]["exploit"] is True
         found = (await c.get("/api/scenarios/sources")).json()
-        assert found == [{"id": "project", "label": "this project", "writable": True}]
+        assert found == [
+            {"id": "builtin", "label": "built in", "writable": False},
+            {"id": "project", "label": "this project", "writable": True},
+        ]
         (dst / "scenario.yaml").write_text("version: 1\nname: [\n")
         broken = (await c.get(base)).json()
         assert broken["errors"]
@@ -774,8 +779,34 @@ async def test_scenario_files_and_truth_are_for_operators(cp: CP) -> None:
         assert (await c.get("/api/scenarios/project/missing")).status_code == 404
 
 
+async def test_the_built_in_scenarios_are_read_only_and_duplicate_to_edit(cp: CP) -> None:
+    root = builtin_root()
+    assert root == Path(aims.__file__).parent / "scenarios"
+    base = "/api/scenarios/builtin/cache-keys"
+    async with cp.client(cp.operator) as c:
+        listed = (await c.get("/api/scenarios")).json()
+        shipped = {s["name"]: s for s in listed if s["source"] == "builtin"}
+        assert sorted(shipped) == ["cache-keys", "shared-cache", "word-count"]
+        assert all(s["error"] is None and not s["writable"] for s in shipped.values())
+        r = await c.get(f"{base}/files/scenario.yaml")
+        assert r.status_code == 200
+        headers = {"Content-Type": "application/octet-stream", "If-Match": r.headers["etag"]}
+        refused = [
+            await c.put(f"{base}/files/scenario.yaml", content=r.content, headers=headers),
+            await c.delete(f"{base}/files/scenario.yaml"),
+            await c.patch(f"{base}/prompts", json={"set": [], "unset": []}),
+            await c.post("/api/scenarios/builtin/new", json={}),
+        ]
+        assert [x.status_code for x in refused] == [403] * 4
+        assert "duplicate the scenario to edit it" in refused[0].json()["detail"]
+        r = await c.post(f"{base}/duplicate", json={"source": "project", "name": "mine"})
+        assert r.status_code == 201, r.text
+        copy = cp.project.parent / "scenarios/mine/scenario.yaml"
+        assert copy.read_bytes() == (root / "cache-keys/scenario.yaml").read_bytes()
+
+
 async def test_a_selftest_is_queued_for_a_runner_that_runs_it(cp: CP) -> None:
-    src = Path(__file__).parent.parent / "scenarios/cache-keys"
+    src = Path(__file__).parent.parent / "src/aims/scenarios/cache-keys"
     shutil.copytree(src, cp.project.parent / "scenarios/cache-keys")
     runner = FakeRunner(cp)
     await runner.client.hello(runner.hello_body())

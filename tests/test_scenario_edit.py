@@ -7,7 +7,10 @@ from aims.scenario.edit import PromptChange, set_prompts
 
 ROOT = Path(__file__).parent.parent
 FILES = sorted(
-    [*ROOT.glob("scenarios/*/scenario.yaml"), *ROOT.glob("tests/fixtures/**/scenario.yaml")]
+    [
+        *ROOT.glob("src/aims/scenarios/*/scenario.yaml"),
+        *ROOT.glob("tests/fixtures/**/scenario.yaml"),
+    ]
 )
 
 HEAD = (

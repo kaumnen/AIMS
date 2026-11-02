@@ -27,7 +27,9 @@ from aims.scenario.budget import parse as parse_budget
 
 pytestmark = [pytest.mark.anyio, pytest.mark.docker]
 
-SCENARIO = Path(__file__).parent.parent / "scenarios" / "word-count" / "scenario.yaml"
+SCENARIO = (
+    Path(__file__).parent.parent / "src" / "aims" / "scenarios" / "word-count" / "scenario.yaml"
+)
 FIX_LOWER = call(
     "edit",
     command="str_replace",

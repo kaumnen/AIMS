@@ -26,7 +26,7 @@ from aims.server.app import create_app
 
 pytestmark = [pytest.mark.anyio, pytest.mark.docker]
 
-WORD_COUNT = Path(__file__).parent.parent / "scenarios" / "word-count"
+WORD_COUNT = Path(__file__).parent.parent / "src" / "aims" / "scenarios" / "word-count"
 
 
 @pytest.fixture(scope="module")

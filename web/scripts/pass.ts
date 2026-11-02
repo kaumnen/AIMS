@@ -109,7 +109,9 @@ try {
   await mkdir(project, { recursive: true });
   await mkdir(config, { recursive: true });
   await copy(join(ROOT, "aims.toml"), join(project, "aims.toml"));
-  await copy(join(ROOT, "scenarios"), join(project, "scenarios"), { recursive: true });
+  await copy(join(ROOT, "src", "aims", "scenarios"), join(project, "scenarios"), {
+    recursive: true,
+  });
   await Bun.write(
     join(config, "config.toml"),
     "# Settings for every project on this machine.\n\n[credits]\nbaseten = 30\n",

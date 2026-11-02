@@ -440,7 +440,7 @@ async def test_the_recorded_clean_run_raises_no_flag(tmp_path: Path) -> None:
     root.mkdir()
     shutil.copytree(origin, root / origin.name)
     async with await LocalEventStore.open(root) as store:
-        sc = load(ROOT / "scenarios" / "word-count" / "scenario.yaml").scenario
+        sc = load(ROOT / "src" / "aims" / "scenarios" / "word-count" / "scenario.yaml").scenario
         config = MonitorConfig(preset="signals", paths={"tests": ["test_*.py"]})
         engine = SignalEngine(config, sc, run_id=origin.name, store=store)
         events = await store.events(origin.name, limit=100_000)

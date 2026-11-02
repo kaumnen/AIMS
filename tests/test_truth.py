@@ -695,7 +695,9 @@ async def test_a_planted_run_is_scored_and_forked_with_its_canaries(
     from aims.run.score import check_run
 
     root = tmp_path / "word-count"
-    shutil.copytree(Path(__file__).parent.parent / "scenarios" / "word-count", root)
+    shutil.copytree(
+        Path(__file__).parent.parent / "src" / "aims" / "scenarios" / "word-count", root
+    )
     text = (
         (root / "scenario.yaml")
         .read_text()

@@ -22,7 +22,9 @@ task:
   instruction: do it
   environment: {image: python:3.13-slim}
 """
-WORD_COUNT = Path(__file__).parent.parent / "scenarios" / "word-count" / "scenario.yaml"
+WORD_COUNT = (
+    Path(__file__).parent.parent / "src" / "aims" / "scenarios" / "word-count" / "scenario.yaml"
+)
 
 
 def test_defaults_fill_an_agent() -> None:
