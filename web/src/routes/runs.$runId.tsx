@@ -1,6 +1,14 @@
 import { useInfiniteQuery, useQueries, useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { lazy, Suspense, useEffect, useState } from "react";
+import {
+  type CSSProperties,
+  lazy,
+  Suspense,
+  type UIEvent,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 import type { Event } from "@/api/events";
 import {
@@ -19,6 +27,7 @@ import { isProblem } from "@/api/session";
 import type { InFlight } from "@/api/tail";
 import { ModelChecks } from "@/components/run/checks";
 import { agentsOf } from "@/components/run/controls";
+import { Feed } from "@/components/run/feed";
 import { ForkHere } from "@/components/run/fork";
 import { useHarm } from "@/components/run/harm";
 import { RunHeader } from "@/components/run/header";
@@ -26,6 +35,7 @@ import { HoldBanner } from "@/components/run/hold";
 import { InFlightStep, useRunTail } from "@/components/run/live-tail";
 import { defaultSource, LIVE, MonitorPanel, useSource, useSources } from "@/components/run/monitor";
 import { RAW_SEARCH_ID, RawEvents, type RawSearch } from "@/components/run/raw";
+import { ResizeHandle, useStoredWidth } from "@/components/run/resize";
 import { ScoreTab, type StepsLink } from "@/components/run/score";
 import { Scrubber } from "@/components/run/scrubber";
 import { SelfTestCases } from "@/components/run/selftest";
@@ -61,6 +71,8 @@ interface RunSearch extends RawSearch {
 }
 
 const LIVE_MS = 3000;
+// how near the end of the feed, in pixels, still counts as at the end
+const END_PX = 32;
 const MAX_EVIDENCE = 20;
 const STEP_LIST = '[role="listbox"][aria-label="Steps"]';
 const isLayer = (v: unknown): v is FlagLayer => layers.some((l) => l.value === v);
@@ -432,6 +444,41 @@ function Steps({
     return () => window.removeEventListener("keydown", onKey);
   });
 
+  // An open run shows its steps as a feed until someone picks a step, an event or a flag.
+  const live = detail.run.state !== "done";
+  const feed =
+    follow && search.step === undefined && search.seq === undefined && search.flag === undefined;
+  const inFeed = feed && current !== undefined;
+  const pane = useRef<HTMLDivElement>(null);
+  const [atEnd, setAtEnd] = useState(true);
+  // each press of Follow latest closes the steps the feed kept open while the reader was away
+  const [follows, setFollows] = useState(0);
+  const [listW, setListW] = useStoredWidth("aims.run.list-width");
+  const [panelW, setPanelW] = useStoredWidth("aims.run.panel-width");
+  const onScroll = (e: UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    const end = el.scrollHeight - el.scrollTop - el.clientHeight < END_PX;
+    if (end !== atEnd) setAtEnd(end);
+  };
+  // While the reader is at the end, new steps and new text scroll into view.
+  useEffect(() => {
+    const el = pane.current;
+    const body = el?.firstElementChild;
+    if (!inFeed || !atEnd || !el || !body) return;
+    const toEnd = () => {
+      el.scrollTop = el.scrollHeight;
+    };
+    toEnd();
+    const grown = new ResizeObserver(toEnd);
+    grown.observe(body);
+    return () => grown.disconnect();
+  }, [inFeed, atEnd]);
+  const followLatest = () => {
+    setAtEnd(true);
+    setFollows((n) => n + 1);
+    if (!feed) onChange((prev) => without(prev, "step", "seq", "flag"));
+  };
+
   if (q.isPending) return <p className="text-muted-foreground">Loading steps</p>;
   if (q.isError) return <p className="text-muted-foreground">Steps did not load.</p>;
   if (steps.length === 0 && detail.run.state !== "done" && detail.run.kind === "scenario") {
@@ -501,7 +548,17 @@ function Steps({
           harms={harms}
         />
       )}
-      <div className="flex min-h-0 flex-1 flex-col gap-4 md:grid md:grid-cols-[20rem_minmax(0,1fr)] md:grid-rows-2 xl:grid-cols-[22rem_minmax(0,1fr)_22rem] xl:grid-rows-1">
+      {/* Side columns take the width a handle set, at most 40% and 35% of the row, so a narrower
+          window keeps room for the center. */}
+      <div
+        style={
+          {
+            "--list-w": listW === null ? undefined : `${listW}px`,
+            "--panel-w": panelW === null ? undefined : `${panelW}px`,
+          } as CSSProperties
+        }
+        className="flex min-h-0 flex-1 flex-col gap-4 md:grid md:grid-cols-[min(var(--list-w,20rem),40%)_1rem_minmax(0,1fr)] md:grid-rows-2 md:gap-x-0 xl:grid-cols-[min(var(--list-w,22rem),40%)_1rem_minmax(0,1fr)_1rem_min(var(--panel-w,22rem),35%)] xl:grid-rows-1"
+      >
         <StepList
           steps={steps}
           selected={current?.seq}
@@ -514,6 +571,15 @@ function Steps({
             if (more && !fetching) void q.fetchNextPage();
           }}
           className="max-md:max-h-48 max-md:shrink-0 md:col-start-1 md:row-start-1"
+        />
+        <ResizeHandle
+          label="Resize the step list"
+          side="start"
+          share={0.4}
+          width={listW}
+          fallback={352}
+          onWidth={setListW}
+          className="max-md:hidden md:col-start-2 md:row-span-2 md:row-start-1 xl:row-span-1"
         />
         {source && (
           <MonitorPanel
@@ -540,11 +606,41 @@ function Steps({
             multi={multi}
             evidence={evidence}
             onSeq={pickSeq}
-            className="max-md:max-h-72 max-md:shrink-0 md:col-start-1 md:row-start-2 xl:col-start-3 xl:row-start-1"
+            className="max-md:max-h-72 max-md:shrink-0 md:col-start-1 md:row-start-2 xl:col-start-5 xl:row-start-1"
           />
         )}
-        <div className="min-h-0 overflow-auto max-md:min-h-96 max-md:flex-1 md:col-start-2 md:row-span-2 md:row-start-1 xl:row-span-1">
-          {current ? (
+        {source && (
+          <ResizeHandle
+            label="Resize the monitor panel"
+            side="end"
+            share={0.35}
+            width={panelW}
+            fallback={352}
+            onWidth={setPanelW}
+            className="hidden xl:col-start-4 xl:row-start-1 xl:flex"
+          />
+        )}
+        {/* px-2 leaves room for the ring of a highlighted block, which reaches 8px past the text */}
+        <div
+          ref={pane}
+          data-center
+          onScroll={onScroll}
+          className="min-h-0 overflow-auto px-2 max-md:min-h-96 max-md:flex-1 md:col-start-3 md:row-span-2 md:row-start-1 xl:row-span-1"
+        >
+          {inFeed ? (
+            <Feed
+              runId={runId}
+              detail={detail}
+              steps={steps}
+              more={more}
+              multi={multi}
+              flags={marks}
+              harm={harmed}
+              writing={writing}
+              atEnd={atEnd}
+              follows={follows}
+            />
+          ) : current ? (
             <Transcript
               key={current.seq}
               runId={runId}
@@ -561,6 +657,18 @@ function Steps({
             </Transcript>
           ) : (
             <p className="text-muted-foreground">Loading step</p>
+          )}
+          {live && (!feed || !atEnd) && (
+            <div className="pointer-events-none sticky bottom-3 flex justify-end">
+              <Button
+                variant="secondary"
+                size="sm"
+                className="pointer-events-auto shadow-sm"
+                onClick={followLatest}
+              >
+                Follow latest
+              </Button>
+            </div>
           )}
         </div>
       </div>

@@ -48,6 +48,9 @@ export interface Focus {
 
 const NO_FOCUS: Focus = { seqs: new Set(), execs: new Map(), tone: "ink" };
 
+// Prose keeps a width that reads well; commands, outputs and tables use the whole column.
+export const PROSE = "max-w-[100ch]";
+
 export const litClass = (tone: Tone | undefined) =>
   tone === undefined
     ? ""
@@ -156,8 +159,9 @@ export function Transcript({
   ].filter(Boolean);
 
   return (
-    <article ref={article} className="flex max-w-4xl flex-col gap-4 pb-8">
-      <div className="flex items-baseline gap-3">
+    <article ref={article} className="flex flex-col gap-4 pb-8">
+      {/* The heading stays in view while the step scrolls; -mx-2 covers lit blocks' rings. */}
+      <div className="bg-background sticky top-0 z-10 -mx-2 flex items-baseline gap-3 px-2 py-1">
         <h2 className="flex flex-wrap items-baseline gap-x-3 text-base font-medium">
           Step {step.n}
           {multi && step.agent_id && <span className="text-muted-foreground">{step.agent_id}</span>}
@@ -173,7 +177,7 @@ export function Transcript({
           label={data(e)["kind"] === "instruction" ? "Task" : "Input"}
           lit={lit(e.seq)}
         >
-          <TextOf runId={runId} value={data(e)["text"]} mono={false} />
+          <TextOf runId={runId} value={data(e)["text"]} mono={false} className={PROSE} />
         </Section>
       ))}
       <Section
@@ -184,11 +188,16 @@ export function Transcript({
         {r["reasoning"] ? (
           <details>
             <summary className="text-muted-foreground cursor-default">Reasoning</summary>
-            <TextOf runId={runId} value={r["reasoning"]} mono={false} className="mt-1" />
+            <TextOf
+              runId={runId}
+              value={r["reasoning"]}
+              mono={false}
+              className={cn("mt-1", PROSE)}
+            />
           </details>
         ) : null}
         {r["text"] ? (
-          <TextOf runId={runId} value={r["text"]} mono={false} />
+          <TextOf runId={runId} value={r["text"]} mono={false} className={PROSE} />
         ) : (
           <p className="text-muted-foreground">
             {tools.length
@@ -217,6 +226,7 @@ export function Transcript({
           data-evidence={lit(e.seq) ? "" : undefined}
           className={cn(
             "border-l-2 pl-2",
+            PROSE,
             loud(e) ? "border-flag" : "border-grid text-muted-foreground",
             lit(e.seq) && "bg-foreground/5",
           )}
@@ -229,7 +239,7 @@ export function Transcript({
           {repeated ? (
             <p className="text-muted-foreground">The submit call above.</p>
           ) : (
-            <TextOf runId={runId} value={said} mono={false} />
+            <TextOf runId={runId} value={said} mono={false} className={PROSE} />
           )}
         </Section>
       )}

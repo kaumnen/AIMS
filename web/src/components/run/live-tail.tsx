@@ -2,6 +2,9 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 
 import { type InFlight, RunTail } from "@/api/tail";
+import { cn } from "@/lib/utils";
+
+import { PROSE } from "./transcript";
 
 const NONE: readonly InFlight[] = [];
 const quiet = () => () => undefined;
@@ -36,10 +39,10 @@ export function InFlightStep({ draft, n }: { draft: InFlight; n: number }) {
       {draft.reasoning && (
         <details>
           <summary className="text-muted-foreground cursor-default">Reasoning</summary>
-          <p className="mt-1 whitespace-pre-wrap">{draft.reasoning}</p>
+          <p className={cn("mt-1 whitespace-pre-wrap", PROSE)}>{draft.reasoning}</p>
         </details>
       )}
-      {draft.text && <p className="whitespace-pre-wrap">{draft.text}</p>}
+      {draft.text && <p className={cn("whitespace-pre-wrap", PROSE)}>{draft.text}</p>}
       {draft.tools.map((t, i) => (
         <pre
           // tool drafts have no id until the response is logged

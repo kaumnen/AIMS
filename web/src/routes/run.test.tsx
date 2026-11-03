@@ -1487,7 +1487,17 @@ test("the harm marks its step on the list and the timeline", async () => {
   );
   expect(within(list).getAllByRole("option")[0]?.textContent).not.toContain("harm");
   const timeline = screen.getByRole("slider", { name: "Timeline" });
-  expect(timeline.querySelector('[data-harm="10"]')).toBeTruthy();
+  const harm = timeline.querySelector('[data-harm="10"]');
+  expect(harm).toBeTruthy();
+  // the word "harm" sits in the time row, left of its line, and no time label runs under it
+  const hx = Number(harm?.querySelector("line")?.getAttribute("x1"));
+  const times = [...timeline.querySelectorAll("svg > g:not([data-harm]) > text")];
+  expect(times.length).toBeGreaterThan(0);
+  for (const t of times) {
+    const from = Number(t.getAttribute("x"));
+    const to = from + (t.textContent ?? "").length * 6;
+    expect(from >= hx + 2 || to <= hx - 30).toBe(true);
+  }
 });
 
 test("a viewer who opens a score run is told it is for operators", async () => {
@@ -1581,6 +1591,133 @@ test("an open run that ends stays on its latest step across tabs", async () => {
   fireEvent.click(screen.getByRole("tab", { name: "Steps" }));
   await screen.findByRole("listbox", { name: "Steps" });
   await waitFor(() => expect(chosenStep()).toContain("edit"));
+});
+
+test("an open run shows its steps as a feed, the newest open and each one before it a line", async () => {
+  detail = { ...detail, run: run(BEE5, { status: "running", state: "running", events: 15 }) };
+  renderAt(`/runs/${BEE5}`);
+  const first = await screen.findByRole("button", { name: /^Step 1/ });
+  expect(first.getAttribute("aria-expanded")).toBe("false");
+  expect(await screen.findByRole("heading", { level: 2, name: /^Step 2/ })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Follow latest" })).toBeNull();
+
+  fireEvent.click(first);
+  expect(await screen.findByRole("heading", { level: 2, name: /^Step 1/ })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Collapse step 1" })).toBeTruthy();
+
+  const tail = await waitFor(() => {
+    const s = runStream();
+    if (!s) throw new Error("no run stream");
+    return s;
+  });
+  const landed = [
+    ev(15, "model.response", { call_id: "m3", text: "Running the tests again." }),
+    ev(16, "agent.step", { n: 3, call_id: "m3", status: "completed" }),
+  ];
+  events.push(...landed);
+  steps.push(step({ seq: 16, n: 3, seq_from: 15, seq_to: 16 }));
+  act(() => tail.send({ kind: "events", run_id: BEE5, events: landed }));
+  // the new step opens and the one before it closes; the step the reader opened stays open
+  expect(await screen.findByRole("heading", { level: 2, name: /^Step 3/ })).toBeTruthy();
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: /^Step 2/ }).getAttribute("aria-expanded")).toBe(
+      "false",
+    ),
+  );
+  expect(screen.getByRole("heading", { level: 2, name: /^Step 1/ })).toBeTruthy();
+
+  fireEvent.click(screen.getByRole("button", { name: "Collapse step 1" }));
+  expect(await screen.findByRole("button", { name: /^Step 1/ })).toBeTruthy();
+});
+
+test("a step picked on an open run leaves the feed, and Follow latest goes back to it", async () => {
+  detail = { ...detail, run: run(BEE5, { status: "running", state: "running", events: 15 }) };
+  const router = renderAt(`/runs/${BEE5}`);
+  const list = await screen.findByRole("listbox", { name: "Steps" });
+  await screen.findByRole("button", { name: /^Step 1/ });
+
+  fireEvent.click(within(list).getAllByRole("option")[0] as HTMLElement);
+  expect(router.state.location.search).toEqual({ step: 4 });
+  expect(await screen.findByRole("heading", { level: 2, name: /^Step 1/ })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: /^Step 1/ })).toBeNull();
+
+  fireEvent.click(screen.getByRole("button", { name: "Follow latest" }));
+  await waitFor(() => expect(router.state.location.search).toEqual({}));
+  expect(await screen.findByRole("button", { name: /^Step 1/ })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Follow latest" })).toBeNull();
+});
+
+test("a reader scrolled up keeps the step they read open, and Follow latest closes it", async () => {
+  detail = { ...detail, run: run(BEE5, { status: "running", state: "running", events: 15 }) };
+  renderAt(`/runs/${BEE5}`);
+  await screen.findByRole("heading", { level: 2, name: /^Step 2/ });
+  const pane = document.querySelector<HTMLElement>("[data-center]");
+  if (!pane) throw new Error("no center pane");
+  // the test page has no layout: give the pane a height to scroll up in
+  Object.defineProperty(pane, "scrollHeight", { configurable: true, value: 2000 });
+  Object.defineProperty(pane, "clientHeight", { configurable: true, value: 500 });
+  pane.scrollTop = 100;
+  fireEvent.scroll(pane);
+  const follow = await screen.findByRole("button", { name: "Follow latest" });
+
+  const tail = await waitFor(() => {
+    const s = runStream();
+    if (!s) throw new Error("no run stream");
+    return s;
+  });
+  const landed = [
+    ev(15, "model.response", { call_id: "m3", text: "Running the tests again." }),
+    ev(16, "agent.step", { n: 3, call_id: "m3", status: "completed" }),
+  ];
+  events.push(...landed);
+  steps.push(step({ seq: 16, n: 3, seq_from: 15, seq_to: 16 }));
+  act(() => tail.send({ kind: "events", run_id: BEE5, events: landed }));
+  expect(await screen.findByRole("heading", { level: 2, name: /^Step 3/ })).toBeTruthy();
+  expect(screen.getByRole("heading", { level: 2, name: /^Step 2/ })).toBeTruthy();
+
+  fireEvent.click(follow);
+  expect(await screen.findByRole("button", { name: /^Step 2/ })).toBeTruthy();
+  expect(screen.getByRole("heading", { level: 2, name: /^Step 3/ })).toBeTruthy();
+});
+
+test("a run names its tab by scenario and id, an open one with its status first", async () => {
+  renderAt(`/runs/${BEE5}`);
+  await waitFor(() => expect(document.title).toBe("cache-keys 01a18a50-bee5 · AIMS"));
+  cleanup();
+
+  detail = { ...detail, run: run(BEE5, { status: "running", state: "running", events: 15 }) };
+  renderAt(`/runs/${BEE5}`);
+  await waitFor(() => expect(document.title).toBe("Running · cache-keys 01a18a50-bee5 · AIMS"));
+});
+
+test("a sealed run has no feed and no Follow latest", async () => {
+  renderAt(`/runs/${BEE5}`);
+  expect(await screen.findByRole("heading", { level: 2, name: /^Step 1/ })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: /^Step 2/ })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Follow latest" })).toBeNull();
+});
+
+test("the side columns resize from their handles and the browser keeps the widths", async () => {
+  localStorage.setItem("aims.run.panel-width", "420");
+  try {
+    renderAt(`/runs/${BEE5}`);
+    const panel = await screen.findByRole("separator", { name: "Resize the monitor panel" });
+    expect(panel.getAttribute("aria-valuenow")).toBe("420");
+    expect(panel.parentElement?.style.getPropertyValue("--panel-w")).toBe("420px");
+
+    const list = screen.getByRole("separator", { name: "Resize the step list" });
+    expect(list.getAttribute("aria-valuenow")).toBe("352");
+    fireEvent.keyDown(list, { key: "ArrowRight" });
+    // the test page has no layout, so the list takes the narrowest width a handle allows
+    expect(list.getAttribute("aria-valuenow")).toBe("200");
+    expect(localStorage.getItem("aims.run.list-width")).toBe("200");
+
+    fireEvent.doubleClick(panel);
+    expect(panel.getAttribute("aria-valuenow")).toBe("352");
+    expect(localStorage.getItem("aims.run.panel-width")).toBeNull();
+  } finally {
+    localStorage.clear();
+  }
 });
 
 const resumed = (agent: string | null, next: string, text: string | null, reason: string | null) =>

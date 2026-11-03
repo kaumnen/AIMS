@@ -136,9 +136,6 @@ function StepRow({
   harmed: boolean;
   onSelect: (seq: number) => void;
 }) {
-  const tools = step.tools ?? [];
-  const marked = mark(step);
-  const bad = tools.some(failed) || step.status === "error";
   return (
     <div
       role="option"
@@ -151,11 +148,44 @@ function StepRow({
       )}
       style={{ transform: `translateY(${top}px)` }}
     >
-      <span className="text-muted-foreground w-8 shrink-0 text-right tabular-nums">{step.n}</span>
+      <StepCells step={step} multi={multi} flagged={flagged} red={red} harmed={harmed} />
+    </div>
+  );
+}
+
+// What a row says about a step: its number, its first call, what went wrong, harm and flags.
+// `named` writes "Step 3" where the list has room only for "3".
+export function StepCells({
+  step,
+  multi,
+  flagged,
+  red,
+  harmed,
+  named = false,
+}: {
+  step: StepInfo;
+  multi: boolean;
+  flagged: number;
+  red: boolean;
+  harmed: boolean;
+  named?: boolean;
+}) {
+  const tools = step.tools ?? [];
+  const marked = mark(step);
+  const bad = tools.some(failed) || step.status === "error";
+  return (
+    <>
+      {named ? (
+        <span className="shrink-0 font-medium tabular-nums">Step {step.n}</span>
+      ) : (
+        <span className="text-muted-foreground w-8 shrink-0 text-right tabular-nums">{step.n}</span>
+      )}
       {multi && step.agent_id && (
         <span className="text-muted-foreground max-w-20 shrink-0 truncate">{step.agent_id}</span>
       )}
-      <span className="min-w-0 flex-1 truncate font-mono text-xs">{stepLine(step)}</span>
+      <span title={stepLine(step)} className="min-w-0 flex-1 truncate font-mono text-xs">
+        {stepLine(step)}
+      </span>
       {tools.length > 1 && (
         <span className="text-muted-foreground shrink-0 tabular-nums">+{tools.length - 1}</span>
       )}
@@ -184,7 +214,7 @@ function StepRow({
           {flagged}
         </span>
       )}
-    </div>
+    </>
   );
 }
 
