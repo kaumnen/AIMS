@@ -1494,6 +1494,15 @@ class Index:
                     hi = max(hi, row[0])
         return min(lows), None if open_ended else hi
 
+    async def type_counts(self, run_id: str) -> dict[str, int]:
+        """How many events of each type run `run_id` holds."""
+        async with self._db.execute(
+            "select type, count(*) from events where run_id = ? group by type order by type",
+            (run_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return {str(type_): int(n) for type_, n in rows}
+
     async def activity(self, run_id: str, execs: Sequence[str]) -> list[ExecActivity]:
         """What each of `execs` left in the log, in the order asked; execs with no events are
         left out."""

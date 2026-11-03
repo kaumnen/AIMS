@@ -2355,6 +2355,64 @@ def rates_cmd(
         typer.echo(line)
 
 
+@app.command("report")
+def report_cmd(
+    run: Annotated[str, typer.Argument(help="The run to report on.")],
+    source: Annotated[
+        str | None,
+        typer.Option(
+            help="The monitor to report: live, or a monitor run over the run. By default the "
+            "newest finished review, else live."
+        ),
+    ] = None,
+    out: Annotated[
+        Path | None, typer.Option(help="Write the report to this file instead of printing it.")
+    ] = None,
+    json_out: Annotated[
+        bool, typer.Option("--json", help="Give JSON instead of Markdown.")
+    ] = False,
+    base_url: Annotated[
+        str | None,
+        typer.Option(help="The app's address, to link each cited step. Plain seqs without it."),
+    ] = None,
+    runs_dir: Annotated[Path, typer.Option(help="Directory that holds the runs.")] = Path("runs"),
+) -> None:
+    """Write a report of one run: the verdict and reward first, then warnings, the judge's
+    findings, plants, flags, a timeline and run facts. Built from the log each time."""
+    import asyncio
+    import sys
+
+    from aims.events import LocalEventStore
+    from aims.report.build import ReportError, base_url_problem, build
+    from aims.report.markdown import render
+    from aims.report.model import RunReport
+
+    problem = None if base_url is None else base_url_problem(base_url)
+    if problem is not None:
+        raise typer.BadParameter(problem, param_hint="--base-url")
+
+    async def main() -> RunReport:
+        async with await LocalEventStore.open(runs_dir) as store:
+            return await build(store, run, source=source, base_url=base_url)
+
+    try:
+        report = asyncio.run(main())
+    except ReportError as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(EXIT_FAILED) from None
+    body = report.model_dump_json(indent=2) + "\n" if json_out else render(report)
+    if out is not None:
+        out.write_text(body, encoding="utf-8")
+        typer.echo(f"wrote {out}", err=True)
+    elif json_out or not sys.stdout.isatty():
+        typer.echo(body, nl=False)
+    else:
+        from rich.console import Console
+        from rich.markdown import Markdown
+
+        Console().print(Markdown(body))
+
+
 @app.command("estimate")
 def estimate_cmd(
     scenario: Annotated[Path, typer.Argument(help=SCENARIO_HELP, callback=_scenario)],

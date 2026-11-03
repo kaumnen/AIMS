@@ -93,6 +93,8 @@ def split_lines(body: bytes) -> list[bytes]:
 
 @dataclass(frozen=True, slots=True)
 class Verification:
+    """`torn` says the only fault in the chain is a last line still being written."""
+
     run_id: str
     events: int
     head: str
@@ -100,6 +102,7 @@ class Verification:
     error: str | None = None
     missing_blobs: tuple[str, ...] = ()
     bad_blobs: tuple[str, ...] = ()
+    torn: bool = False
 
     @property
     def ok(self) -> bool:
@@ -795,6 +798,10 @@ class LocalEventStore:
         """What each exec left in the log, counted per event type and file op."""
         return await self._index.activity(run_id, execs)
 
+    async def type_counts(self, run_id: str) -> dict[str, int]:
+        """How many events of each type the run holds."""
+        return await self._index.type_counts(run_id)
+
     async def call_costs(self, run_id: str) -> list[CallCost]:
         """What the run's live model calls cost, per role and output schema."""
         return await self._index.call_costs(run_id)
@@ -971,6 +978,11 @@ def verify_run(run_dir: Path) -> Verification:
         error: str | None = f"no {LOG} in {run_dir}"
     else:
         error = None if chain_error is None else str(chain_error)
+    torn = (
+        chain_error is not None
+        and chain_error.reason == "incomplete line"
+        and tail_only(run_dir / LOG, chain_error.offset)
+    )
     if error is None and head.seq < 0:
         error = "log is empty"
     missing: list[str] = []
@@ -989,6 +1001,7 @@ def verify_run(run_dir: Path) -> Verification:
         error=error,
         missing_blobs=tuple(missing),
         bad_blobs=tuple(bad),
+        torn=torn,
     )
 
 
