@@ -926,7 +926,11 @@ class Runner:
         try:
             await self._agents_task
         except asyncio.CancelledError:
-            if not self.cancelled and not self.killed:
+            # A stop's cancel ends here. A cancel of this task too, such as a second Ctrl-C
+            # while the agents end, reaches it only through the agents' task, so check.
+            current = asyncio.current_task()
+            halted = self.cancelled or self.killed
+            if not halted or (current is not None and current.cancelling()):
                 raise
         finally:
             self._agents_task = None

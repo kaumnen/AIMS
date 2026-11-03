@@ -3,6 +3,7 @@ deny, verifier restore and taint, jobs and the CLI's checks. The sandbox and the
 fakes with the real surfaces, so no Docker and no model is needed."""
 
 import asyncio
+import contextlib
 import hashlib
 import io
 import os
@@ -18,6 +19,7 @@ from typer.testing import CliRunner
 from aims.agent import GatePoint, OpenGate, PauseClock, Verdict
 from aims.cli import app
 from aims.events import (
+    AgentFinished,
     AgentHeld,
     Event,
     LocalEventStore,
@@ -26,6 +28,7 @@ from aims.events import (
     RunFinished,
     RunStarted,
     SandboxArchived,
+    SandboxStopped,
     TaskScored,
     ToolResult,
 )
@@ -195,6 +198,40 @@ class HeldBox(Box):
 class HeldBoxes(Boxes):
     async def create(self, spec: SandboxSpec, *, run_id: str, agent_id: str) -> Box:
         self.made[agent_id] = box = HeldBox()
+        return box
+
+
+class EndingBox(Box):
+    """A box whose `bash hold` exec runs until cancelled, then ends only on `release`, however
+    often it is cancelled meanwhile, so a test can cancel the run while the agents end."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.holding = asyncio.Event()
+        self.ending = asyncio.Event()
+        self.release = asyncio.Event()
+        self.closed = False
+
+    async def run(self, argv: Sequence[str], **kw: Any) -> Outcome:
+        if "hold" not in argv[-1]:
+            return await super().run(argv, **kw)
+        self.holding.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.ending.set()
+        while not self.release.is_set():
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.release.wait()
+        raise asyncio.CancelledError
+
+    async def close(self, *, keep_volumes: bool = False) -> None:
+        self.closed = True
+
+
+class EndingBoxes(Boxes):
+    async def create(self, spec: SandboxSpec, *, run_id: str, agent_id: str) -> Box:
+        self.made[agent_id] = box = EndingBox()
         return box
 
 
@@ -762,6 +799,54 @@ async def test_a_second_cancel_while_the_sandboxes_close_waits_for_them_and_seal
     assert runner.run_id is not None
     finished = await of(store, runner.run_id, RunFinished, "run.finished")
     assert [(f.status, f.reason) for f in finished] == [("cancelled", reason)]
+
+
+@pytest.mark.parametrize(
+    ("stop", "end", "kill"),
+    [
+        ("cancel", "cancelled", "the run was cancelled"),
+        ("kill", "killed", "stopped by the test"),
+    ],
+)
+async def test_a_second_cancel_while_the_agents_end_after_a_stop_propagates_and_seals_the_run(
+    store: LocalEventStore, tmp_path: Path, stop: str, end: str, kill: str
+) -> None:
+    """An operator stop, then Ctrl-C again while the agents still end: the run task must
+    raise the cancel, not return as if only the stop had landed, and the run is sealed."""
+    before = asyncio.all_tasks()
+    script = Script(call("bash", command="hold"), call("submit", answer="ok"))
+    backend = EndingBoxes()
+    runner = Runner(bench(store, script, backend), scenario(tmp_path), Options(), monitor=None)
+    running = asyncio.create_task(runner.run())
+    async with asyncio.timeout(10):
+        while "a" not in backend.made:  # noqa: ASYNC110
+            await asyncio.sleep(0.01)
+        box = cast(EndingBox, backend.made["a"])
+        await box.holding.wait()
+        if stop == "cancel":
+            runner.cancel()
+        else:
+            await runner.kill("stopped by the test")
+        await box.ending.wait()
+    running.cancel()
+    await asyncio.sleep(0.05)
+    assert not running.done()
+    box.release.set()
+    async with asyncio.timeout(10):
+        with pytest.raises(asyncio.CancelledError):
+            await running
+    assert box.closed
+    assert runner.sandboxes == {}
+    assert not asyncio.all_tasks() - before
+    assert runner.run_id is not None
+    agents = await of(store, runner.run_id, AgentFinished, "agent.finished")
+    assert [a.reason for a in agents] == [end]
+    stopped = await of(store, runner.run_id, SandboxStopped, "sandbox.stopped")
+    assert [(s.reason, s.detail) for s in stopped] == [("killed", kill)]
+    finished = await of(store, runner.run_id, RunFinished, "run.finished")
+    assert [(f.status, f.reason) for f in finished] == [
+        ("cancelled", "cancelled before the agents finished")
+    ]
 
 
 async def test_ask_human_reaches_the_human_hook(
