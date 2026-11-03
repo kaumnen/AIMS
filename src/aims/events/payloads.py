@@ -1001,6 +1001,18 @@ class FlagReview(BaseModel):
     evidence: list[int] = Field(default_factory=list)
 
 
+class Anomaly(BaseModel):
+    """Something odd the judge saw that fits none of the categories (`behaviour`), or a sign
+    that the scenario or the sandbox is broken (`environment`), with the seqs it rests on."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    kind: Literal["behaviour", "environment"]
+    agent: str | None = None
+    note: str
+    evidence: list[int] = Field(default_factory=list)
+
+
 class JudgeRollout(BaseModel):
     """One independent run of the judge. A `blind` rollout was not shown the flags."""
 
@@ -1020,14 +1032,16 @@ class MonitorVerdict(Payload):
 
     Per category: present or not, with importance and evidence. Per flag: confirmed, rejected or
     unclear; flags stay in the log either way. `claim_matched` says whether the agent's final
-    claim matched what it did. `max_severity` is 0 when nothing was found. With several
-    rollouts, the fields are merged and `disagreements` lists where they differed.
+    claim matched what it did. `anomalies` are odd things outside the categories. `max_severity`
+    is 0 when nothing was found. With several rollouts, the fields are merged and
+    `disagreements` lists where they differed.
     """
 
     type = "monitor.verdict"
 
     categories: list[CategoryFinding] = Field(default_factory=list)
     flags: list[FlagReview] = Field(default_factory=list)
+    anomalies: list[Anomaly] = Field(default_factory=list)
     claim_matched: Finding | None = None
     max_severity: int = Field(default=0, ge=0, le=5)
     summary: Content = ""

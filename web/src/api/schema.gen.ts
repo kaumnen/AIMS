@@ -1736,6 +1736,27 @@ export interface components {
             usage: components["schemas"]["ModelUsage"];
         };
         /**
+         * Anomaly
+         * @description Something odd the judge saw that fits none of the categories (`behaviour`), or a sign
+         *     that the scenario or the sandbox is broken (`environment`), with the seqs it rests on.
+         */
+        Anomaly: {
+            /**
+             * Agent
+             * @default null
+             */
+            agent?: string | null;
+            /** Evidence */
+            evidence?: number[];
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "behaviour" | "environment";
+            /** Note */
+            note: string;
+        };
+        /**
          * AuditLost
          * @description The kernel audit missed events. `count` is None when the number is unknown.
          *
@@ -4357,10 +4378,13 @@ export interface components {
          *
          *     Per category: present or not, with importance and evidence. Per flag: confirmed, rejected or
          *     unclear; flags stay in the log either way. `claim_matched` says whether the agent's final
-         *     claim matched what it did. `max_severity` is 0 when nothing was found. With several
-         *     rollouts, the fields are merged and `disagreements` lists where they differed.
+         *     claim matched what it did. `anomalies` are odd things outside the categories. `max_severity`
+         *     is 0 when nothing was found. With several rollouts, the fields are merged and
+         *     `disagreements` lists where they differed.
          */
         MonitorVerdict: {
+            /** Anomalies */
+            anomalies: components["schemas"]["Anomaly"][];
             /** Categories */
             categories: components["schemas"]["CategoryFinding"][];
             /**
@@ -12290,6 +12314,7 @@ export const agentOverviewRoleAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<
 export const agentStartedBackendAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentStarted"]["backend"]> = ["responses", "chat"];
 export const agentStepSourceValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentStep"]["source"]> = ["live", "replay"];
 export const agentStepStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentStep"]["status"]> = ["completed", "incomplete", "error", "cancelled"];
+export const anomalyKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Anomaly"]["kind"]> = ["behaviour", "environment"];
 export const auditLostScopeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AuditLost"]["scope"]> = ["sandbox", "tracer"];
 export const budgetChangeKeyValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["BudgetChange"]["key"]> = ["steps", "output_tokens", "cost_usd", "wall_s"];
 export const budgetChangeScopeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["BudgetChange"]["scope"]> = ["agent", "run"];

@@ -288,6 +288,14 @@ const verdict = (seq: number) =>
       { category: "covert_communication", present: "no", evidence: [], justification: "" },
     ],
     flags: [],
+    anomalies: [
+      {
+        kind: "environment",
+        agent: null,
+        note: "pytest is not installed in the image.",
+        evidence: [6],
+      },
+    ],
     rollouts: [],
     disagreements: [],
     tainted: [],
@@ -939,6 +947,10 @@ test("the monitor panel opens on the newest finished review", async () => {
   expect(panel.getByText("Final claim matches.")).toBeTruthy();
   expect(panel.getByText("The agent hardcoded the pinned hashes.")).toBeTruthy();
   expect(panel.getByText("Not found in the other 2 categories.")).toBeTruthy();
+  const observed = within(panel.getByRole("region", { name: "Other observations" }));
+  expect(observed.getByText("Environment")).toBeTruthy();
+  expect(observed.getByText("pytest is not installed in the image.")).toBeTruthy();
+  expect(observed.getByRole("button", { name: "step 1" }).title).toBe("Event 6");
   expect(panel.getByRole("link", { name: "Open monitor run" }).getAttribute("href")).toBe(
     `/runs/${REVIEW}`,
   );

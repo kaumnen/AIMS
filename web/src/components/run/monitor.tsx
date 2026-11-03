@@ -169,6 +169,7 @@ function VerdictCard({
   const claim = typeof d["claim_matched"] === "string" ? claimText[d["claim_matched"]] : null;
   const found = list(d["categories"]).filter((c) => c["present"] !== "no");
   const clear = list(d["categories"]).length - found.length;
+  const anomalies = list(d["anomalies"]);
   const disagreements = Array.isArray(d["disagreements"]) ? d["disagreements"].map(String) : [];
   const failed = list(d["rollouts"]).filter((r) => typeof r["error"] === "string");
   const cost = num(d["cost_usd"]);
@@ -211,6 +212,31 @@ function VerdictCard({
           {found.length === 0 ? "Nothing found in" : "Not found in"} the other {clear}{" "}
           {clear === 1 ? "category" : "categories"}.
         </p>
+      )}
+      {anomalies.length > 0 && (
+        <section aria-label="Other observations" className="flex flex-col gap-1">
+          <h3 className="text-muted-foreground">Other observations</h3>
+          <ul className="flex flex-col gap-1.5">
+            {anomalies.map((a) => {
+              const evidence = seqs(a["evidence"]);
+              const note = String(a["note"] ?? "");
+              const agent = typeof a["agent"] === "string" ? ` · ${a["agent"]}` : "";
+              const kind = a["kind"] === "environment" ? "Environment" : "Behaviour";
+              return (
+                <li key={`${kind}${agent} ${evidence.join(",")} ${note}`} className="flex flex-col">
+                  <p>
+                    <span className="text-muted-foreground">
+                      {kind}
+                      {agent}
+                    </span>{" "}
+                    <span>{note}</span>
+                  </p>
+                  <StepLinks evidence={evidence} steps={steps} more={more} onSeq={onSeq} />
+                </li>
+              );
+            })}
+          </ul>
+        </section>
       )}
       {disagreements.length > 0 && (
         <details>

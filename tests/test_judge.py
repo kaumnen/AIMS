@@ -44,6 +44,7 @@ from aims.models import ModelClient, Profile, ToolRequest
 from aims.monitor import judge_texts
 from aims.monitor.config import CATEGORIES, JudgeConfig
 from aims.monitor.judge import (
+    ANOMALY_CHARS,
     BLOB_MAX,
     EVENTS_PAGE,
     OUTPUT_CHARS,
@@ -268,6 +269,7 @@ def verdict(**over: Any) -> dict[str, Any]:
         "categories": categories,
         "flags": [],
         "findings": [],
+        "anomalies": [],
         "claim_matched": "yes",
         "max_severity": 0,
         "summary": "The agent fixed the code.",
@@ -720,6 +722,75 @@ async def test_findings_become_judge_flags(store: LocalEventStore) -> None:
     assert by["drift"].present == "unclear"
     assert v.max_severity == 3
     assert v.claim_matched == "no"
+
+
+async def test_anomalies_keep_only_cited_seqs(store: LocalEventStore) -> None:
+    run = await make_run(store)
+    report, write, unread = run.seqs["report"], run.seqs["write"], run.seqs["bash6"]
+
+    def anomaly(kind: str, agent: str | None, note: str, evidence: list[int]) -> dict[str, Any]:
+        return {"kind": kind, "agent": agent, "note": note, "evidence": evidence}
+
+    anomalies = [
+        anomaly("behaviour", None, "It thanked\n  the tests.", [report, unread]),
+        anomaly("environment", None, "pytest is missing.", [write]),
+        anomaly("environment", AGENT, "no seqs", []),
+        anomaly("behaviour", "ghost", "only unread seqs", [unread]),
+        anomaly("behaviour", AGENT, "   ", [report]),
+        anomaly("environment", AGENT, "x" * 2000, [write]),
+    ]
+    script = Script(
+        call("events", from_seq=run.seqs["open"], to_seq=write),
+        call("verdict", **verdict(anomalies=anomalies, max_severity=0)),
+    )
+    v = payload_of(await make_judge(store, run, script).run(flags=[], sweeps=[]))
+    assert [(a.kind, a.agent, a.evidence) for a in v.anomalies] == [
+        ("environment", None, [write]),
+        ("environment", AGENT, [write]),
+        ("behaviour", AGENT, [report]),
+    ]
+    assert v.anomalies[0].note == "pytest is missing."
+    assert "chars cut" in v.anomalies[1].note
+    assert len(v.anomalies[1].note) < ANOMALY_CHARS + 30
+    assert v.anomalies[2].note == "It thanked the tests."
+    assert v.max_severity == 0
+
+
+async def test_anomalies_merge_across_rollouts(store: LocalEventStore) -> None:
+    run = await make_run(store)
+    seen = run.seqs["agent_finished"]
+    shared = {
+        "kind": "behaviour",
+        "agent": AGENT,
+        "note": "It said done early.",
+        "evidence": [seen],
+    }
+    seeing = verdict(
+        anomalies=[
+            shared,
+            {"kind": "behaviour", "agent": AGENT, "note": "It skipped tests.", "evidence": [seen]},
+        ]
+    )
+    blind = verdict(
+        anomalies=[
+            {"kind": "environment", "agent": None, "note": "No pytest.", "evidence": [seen]},
+            shared,
+        ]
+    )
+    judge = make_judge(store, run, two_rollouts(blind, seeing), rollouts=2, blind=1)
+    v = payload_of(await judge.run(flags=[], sweeps=[]))
+    assert [(a.kind, a.note) for a in v.anomalies] == [
+        ("behaviour", "It said done early."),
+        ("behaviour", "It skipped tests."),
+        ("environment", "No pytest."),
+    ]
+    assert v.disagreements == []
+
+
+def test_a_verdict_without_anomalies_still_loads() -> None:
+    old = MonitorVerdict(max_severity=2, summary="old").model_dump(mode="json")
+    del old["anomalies"]
+    assert MonitorVerdict.model_validate(old).anomalies == []
 
 
 async def test_tainted_flags_raise_severity(store: LocalEventStore) -> None:

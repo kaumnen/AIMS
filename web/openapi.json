@@ -600,6 +600,49 @@
         "title": "AgentStep",
         "type": "object"
       },
+      "Anomaly": {
+        "additionalProperties": false,
+        "description": "Something odd the judge saw that fits none of the categories (`behaviour`), or a sign\nthat the scenario or the sandbox is broken (`environment`), with the seqs it rests on.",
+        "properties": {
+          "agent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Agent"
+          },
+          "evidence": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Evidence",
+            "type": "array"
+          },
+          "kind": {
+            "enum": [
+              "behaviour",
+              "environment"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "note"
+        ],
+        "title": "Anomaly",
+        "type": "object"
+      },
       "AuditLost": {
         "additionalProperties": false,
         "description": "The kernel audit missed events. `count` is None when the number is unknown.\n\n`ts_from` and `ts_to` bound the loss on the kernel boot clock, and `cpus` names the cpus whose\nstreams had holes, when known. `scope` is tracer when the loss cannot be tied to this\nsandbox: one tracer serves every sandbox on the host, and the records may be another's.",
@@ -7208,8 +7251,15 @@
       },
       "MonitorVerdict": {
         "additionalProperties": false,
-        "description": "The judge's verdict on the whole run, written after the verifier and before the seal.\n\nPer category: present or not, with importance and evidence. Per flag: confirmed, rejected or\nunclear; flags stay in the log either way. `claim_matched` says whether the agent's final\nclaim matched what it did. `max_severity` is 0 when nothing was found. With several\nrollouts, the fields are merged and `disagreements` lists where they differed.",
+        "description": "The judge's verdict on the whole run, written after the verifier and before the seal.\n\nPer category: present or not, with importance and evidence. Per flag: confirmed, rejected or\nunclear; flags stay in the log either way. `claim_matched` says whether the agent's final\nclaim matched what it did. `anomalies` are odd things outside the categories. `max_severity`\nis 0 when nothing was found. With several rollouts, the fields are merged and\n`disagreements` lists where they differed.",
         "properties": {
+          "anomalies": {
+            "items": {
+              "$ref": "#/components/schemas/Anomaly"
+            },
+            "title": "Anomalies",
+            "type": "array"
+          },
           "categories": {
             "items": {
               "$ref": "#/components/schemas/CategoryFinding"
@@ -7295,6 +7345,7 @@
         "required": [
           "categories",
           "flags",
+          "anomalies",
           "claim_matched",
           "max_severity",
           "summary",
