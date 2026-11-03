@@ -1,6 +1,8 @@
 import { Link } from "@tanstack/react-router";
 
 import type { RunDetail } from "@/api/run";
+import type { RunSummary } from "@/api/runs";
+import { useTabTitle } from "@/components/crumbs";
 import { Duration, Flags, Started, statusLabel, Verdict } from "@/components/runs/cells";
 import { changesText } from "@/lib/budget";
 import { shortId, usd } from "@/lib/format";
@@ -40,6 +42,21 @@ export function forkOf(detail: RunDetail): { origin: string; seq?: number; text:
   return { origin, seq: cut, text: `after event ${cut}${at}` };
 }
 
+const titles: Partial<Record<string, string>> = {
+  monitor: "Review",
+  score: "Score",
+  selftest: "Self-test",
+  "selftest.case": "Self-test case",
+  "models.check": "Model check",
+};
+
+// What a run is called: its scenario, or what kind of job it is.
+export function runTitle(run: RunSummary): string {
+  return run.kind === "selftest.case" && run.case
+    ? `Self-test case ${run.case}`
+    : (titles[run.kind] ?? run.scenario ?? run.kind);
+}
+
 // What run this is and how it went, at a glance. A scenario run's flags and verdict are those
 // of the monitor the panel shows, its own or a review.
 export function RunHeader({
@@ -54,17 +71,10 @@ export function RunHeader({
   const { source } = useSource(run.run_id, detail, asked);
   const watch = run.kind === "scenario" ? source : { run, review: false };
   const fork = forkOf(detail);
-  const titles: Partial<Record<string, string>> = {
-    monitor: "Review",
-    score: "Score",
-    selftest: "Self-test",
-    "selftest.case": "Self-test case",
-    "models.check": "Model check",
-  };
-  const title =
-    run.kind === "selftest.case" && run.case
-      ? `Self-test case ${run.case}`
-      : (titles[run.kind] ?? run.scenario ?? run.kind);
+  const title = runTitle(run);
+  // An open run puts its status first, so a narrow tab still says when it is held.
+  const tab = `${title} ${shortId(run.run_id)}`;
+  useTabTitle(run.state === "done" ? tab : `${statusLabel(run)} · ${tab}`);
   const budget = changesText(detail.budget, agentsOf(detail).length > 1);
   return (
     <header className="flex flex-wrap items-end gap-x-8 gap-y-2 pb-3">

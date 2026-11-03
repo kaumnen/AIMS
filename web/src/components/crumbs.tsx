@@ -1,5 +1,5 @@
 import { Link, useMatches } from "@tanstack/react-router";
-import { useEffect } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 
 declare module "@tanstack/react-router" {
   interface StaticDataRouteOption {
@@ -12,6 +12,27 @@ const searches = new Map<string, Record<string, unknown>>();
 
 export function rememberSearch(pathname: string, search: Record<string, unknown>): void {
   searches.set(pathname, search);
+}
+
+// A page may name its tab more fully than its crumbs, such as a run by its scenario and status.
+let named: string | null = null;
+const listeners = new Set<() => void>();
+const subscribe = (fn: () => void) => {
+  listeners.add(fn);
+  return () => {
+    listeners.delete(fn);
+  };
+};
+const nameTab = (title: string | null) => {
+  named = title;
+  for (const fn of listeners) fn();
+};
+
+export function useTabTitle(title: string): void {
+  useEffect(() => {
+    nameTab(title);
+    return () => nameTab(null);
+  }, [title]);
 }
 
 // Where you are, as a trail back up; the tab title follows the last step.
@@ -29,9 +50,11 @@ export function Crumbs() {
     .map((c) => c.label)
     .toReversed()
     .join(" · ");
+  const own = useSyncExternalStore(subscribe, () => named);
   useEffect(() => {
-    document.title = title ? `${title} · AIMS` : "AIMS";
-  }, [title]);
+    const shown = own ?? title;
+    document.title = shown ? `${shown} · AIMS` : "AIMS";
+  }, [own, title]);
   if (crumbs.length < 2) return null;
   return (
     <nav

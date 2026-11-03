@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <style>
+    .tile { fill: #18212d; }
+    .trace { stroke: #7099de; }
+    @media (prefers-color-scheme: light) {
+      .tile { fill: #f3f5f0; stroke: #1d2b3a; stroke-width: 1.5; }
+      .trace { stroke: #2f5da8; }
+    }
+  </style>
+  <rect class="tile" x="1" y="1" width="30" height="30" rx="7" />
+  <path
+    class="trace"
+    d="M6 22.5H10.5V13H14V22.5H17.5V8.5H21.5V22.5H26"
+    fill="none"
+    stroke-width="2.6"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+</svg>
