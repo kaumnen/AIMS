@@ -46,7 +46,7 @@ export function activityText(a: ExecActivity): string {
     if (n) parts.push(words(n, w));
   }
   if (a.changes) parts.push(words(a.changes, ["file change", "file changes"]));
-  return parts.length ? parts.join(", ") : `${a.events} kernel records`;
+  return parts.length ? parts.join(", ") : words(a.events, ["kernel record", "kernel records"]);
 }
 
 const NONE: readonly number[] = [];
