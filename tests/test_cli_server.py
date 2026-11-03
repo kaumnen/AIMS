@@ -7,6 +7,8 @@ import signal
 import socket
 import stat
 import sys
+import threading
+import time
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from pathlib import Path
 from typing import Any, cast
@@ -458,6 +460,122 @@ async def test_aims_ui_stops_its_runner_once_when_its_terminal_hangs_up(
     err = capsys.readouterr().err
     assert "stopping the local runner" in err
     assert "the local runner exited" not in err
+
+
+async def test_a_ctrl_c_while_the_browser_opens_stops_the_runner_gracefully(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    log = tmp_path / "signals"
+    log.touch()
+    opening = threading.Event()
+    opened = threading.Event()
+    dispatcher_ended = asyncio.Event()
+
+    async def spawn(url: str, token: str, o: UiOptions) -> asyncio.subprocess.Process:
+        return await asyncio.create_subprocess_exec(
+            sys.executable, "-c", FAKE_RUNNER, str(log), "0.5"
+        )
+
+    def slow_browser(folder: Path, url: str) -> None:
+        opening.set()
+        opened.wait(30)
+
+    async def dispatcher(state: object) -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            dispatcher_ended.set()
+
+    monkeypatch.setattr("aims.server.serve._spawn_runner", spawn)
+    monkeypatch.setattr("aims.server.serve.open_link", slow_browser)
+    monkeypatch.setattr("aims.server.dispatch.run", dispatcher)
+    task = asyncio.create_task(serve(UiOptions(port=0, data=tmp_path / "server")))
+    loop = asyncio.get_running_loop()
+
+    def interrupted(*_: object) -> None:
+        """What asyncio.run does with a Ctrl-C that no handler of the server takes."""
+        loop.call_soon_threadsafe(task.cancel)
+
+    before = signal.signal(signal.SIGINT, interrupted)
+    try:
+        await until(lambda: opening.is_set() and "ready" in log.read_text(), 30)
+        os.kill(os.getpid(), signal.SIGINT)
+        await until(lambda: "TERM" in log.read_text() or task.done(), 5)
+        opened.set()
+        await asyncio.wait([task], timeout=10)
+    finally:
+        opened.set()
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        signal.signal(signal.SIGINT, before)
+    err = capsys.readouterr().err
+    assert "killed by SIGKILL" not in err
+    assert log.read_text().count("TERM") == 1
+    assert "stopping the local runner" in err
+    assert dispatcher_ended.is_set()
+    assert not task.cancelled()
+    assert task.result() == 0
+
+
+@pytest.mark.parametrize("fails", ["server", "browser"])
+async def test_aims_ui_stops_its_runner_gracefully_when_it_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    fails: str,
+) -> None:
+    log = tmp_path / "signals"
+    log.touch()
+    dispatcher_ended = asyncio.Event()
+
+    async def spawn(url: str, token: str, o: UiOptions) -> asyncio.subprocess.Process:
+        return await asyncio.create_subprocess_exec(
+            sys.executable, "-c", FAKE_RUNNER, str(log), "0.5"
+        )
+
+    async def broken_server(self: Any, sockets: object = None) -> None:
+        self.servers = []
+        self.started = True
+        await until(lambda: "ready" in log.read_text(), 30)
+        raise RuntimeError("the server broke")
+
+    def broken_browser(folder: Path, url: str) -> None:
+        end = time.monotonic() + 30
+        while "ready" not in log.read_text() and time.monotonic() < end:
+            time.sleep(0.02)
+        raise OSError(28, "No space left on device")
+
+    async def dispatcher(state: object) -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            dispatcher_ended.set()
+
+    monkeypatch.setattr("aims.server.serve._spawn_runner", spawn)
+    monkeypatch.setattr("aims.server.dispatch.run", dispatcher)
+    if fails == "server":
+        monkeypatch.setattr("aims.server.serve._Server.serve", broken_server)
+    else:
+        monkeypatch.setattr("aims.server.serve.open_link", broken_browser)
+    task = asyncio.create_task(
+        serve(UiOptions(port=0, data=tmp_path / "server", open_browser=fails == "browser"))
+    )
+    try:
+        await asyncio.wait([task], timeout=40)
+    finally:
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+    assert isinstance(task.exception(), RuntimeError if fails == "server" else OSError)
+    err = capsys.readouterr().err
+    assert "killed by SIGKILL" not in err
+    assert log.read_text().count("TERM") == 1
+    assert "stopping the local runner" in err
+    # a server that failed has nothing left to shut down; one that runs must end its app
+    assert dispatcher_ended.is_set() == (fails == "browser")
 
 
 async def test_aims_ui_hands_its_audit_mode_to_the_runner(

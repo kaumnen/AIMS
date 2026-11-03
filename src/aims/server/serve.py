@@ -144,7 +144,33 @@ async def serve(o: UiOptions) -> int:
     https = tls or (shown is not None and shown.startswith("https://"))
     state = await open_state(o.data, project=o.project, auth=o.auth, tls=https)
     child: asyncio.subprocess.Process | None = None
+    server: _Server | None = None
+    task: asyncio.Task[None] | None = None
     info = o.data / SERVER_JSON
+    loop = asyncio.get_running_loop()
+    stop = asyncio.Event()
+    handled: list[signal.Signals] = []
+    stops = 0
+    told = 0
+
+    def tell_runner() -> None:
+        """The runner leaves Ctrl-C to this server, which sends it one SIGTERM per stop:
+        the first seals its runs as cancelled, the next kills it now."""
+        nonlocal told
+        if child is not None and child.returncode is None:
+            told += 1
+            with contextlib.suppress(ProcessLookupError):
+                child.send_signal(signal.SIGTERM)
+
+    def on_signal() -> None:
+        """No uvicorn force_exit on a second stop. It skips the app's shutdown, so the
+        lifespan is cancelled at exit and logs a traceback. It also never cuts the wait for
+        open connections, which timeout_graceful_shutdown caps at 5 s."""
+        nonlocal stops
+        stops += 1
+        stop.set()
+        tell_runner()
+
     try:
         runner_token = new_token()
         state.auth.ephemeral[runner_token] = Token(LOCAL_RUNNER, "runner", 0.0)
@@ -182,6 +208,14 @@ async def serve(o: UiOptions) -> int:
                 {"url": local, "public": shown, "token": runner_token, "operator": ui_token}
             ),
         )
+        # Handlers go in before the runner starts. A Ctrl-C with no handler cancels this task.
+        # The runner would then get no SIGTERM, only the SIGKILL below.
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, on_signal)
+            handled.append(sig)
+        # A hangup starts a stop and never adds to one: nobody is left to press Ctrl-C.
+        if on_hangup(loop, lambda: None if stops else on_signal()):
+            handled.append(signal.SIGHUP)
         if o.runner:
             child = await _spawn_runner(local, runner_token, o)
         url = f"{shown}/#code={state.codes.issue(UI_TOKEN)}" if o.auth else shown
@@ -201,39 +235,15 @@ async def serve(o: UiOptions) -> int:
             )
         if o.open_browser:
             await asyncio.to_thread(open_link, o.data, url)
-        stop = asyncio.Event()
-        loop = asyncio.get_running_loop()
-        stops = 0
-        told = 0
-
-        def tell_runner() -> None:
-            """The runner leaves Ctrl-C to this server, which sends it one SIGTERM per stop:
-            the first seals its runs as cancelled, the next kills it now."""
-            nonlocal told
-            if child is not None and child.returncode is None:
-                told += 1
-                with contextlib.suppress(ProcessLookupError):
-                    child.send_signal(signal.SIGTERM)
-
-        def on_signal() -> None:
-            """No uvicorn force_exit on a second stop. It skips the app's shutdown, so the
-            lifespan is cancelled at exit and logs a traceback. It also never cuts the wait for
-            open connections, which timeout_graceful_shutdown caps at 5 s."""
-            nonlocal stops
-            stops += 1
-            stop.set()
-            tell_runner()
-
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, on_signal)
-        # A hangup starts a stop and never adds to one: nobody is left to press Ctrl-C.
-        hup = on_hangup(loop, lambda: None if stops else on_signal())
+        done, _ = await asyncio.wait(
+            [task, asyncio.create_task(stop.wait())], return_when=asyncio.FIRST_COMPLETED
+        )
+        if task in done:
+            task.result()
+    finally:
+        # The same stop after an error as after Ctrl-C: the runner seals its runs, then the
+        # server shuts its app down.
         try:
-            done, _ = await asyncio.wait(
-                [task, asyncio.create_task(stop.wait())], return_when=asyncio.FIRST_COMPLETED
-            )
-            if task in done:
-                task.result()
             if child is not None and child.returncode is None:
                 print(
                     "stopping the local runner; its runs are sealed as cancelled", file=sys.stderr
@@ -244,22 +254,22 @@ async def serve(o: UiOptions) -> int:
                     async with asyncio.timeout(180):
                         await child.wait()
             state.stopping.set()
-            server.should_exit = True
-            await task
+            if server is not None and task is not None and not task.done():
+                server.should_exit = True
+                await task
         finally:
-            for sig in (signal.SIGINT, signal.SIGTERM, *([signal.SIGHUP] if hup else [])):
+            for sig in handled:
                 loop.remove_signal_handler(sig)
-    finally:
-        if child is not None:
-            if child.returncode is None:
-                child.kill()
-                await child.wait()
-            if child.returncode:
-                print(runner_ended(child.returncode), file=sys.stderr)
-        info.unlink(missing_ok=True)
-        # the codes in them die with this server
-        _prune(o.data, None)
-        await close_state(state)
+            if child is not None:
+                if child.returncode is None:
+                    child.kill()
+                    await child.wait()
+                if child.returncode:
+                    print(runner_ended(child.returncode), file=sys.stderr)
+            info.unlink(missing_ok=True)
+            # the codes in them die with this server
+            _prune(o.data, None)
+            await close_state(state)
     return 0
 
 
