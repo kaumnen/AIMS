@@ -9238,6 +9238,55 @@
         "title": "RateLimit",
         "type": "object"
       },
+      "Rates": {
+        "description": "The rates over the score runs of `runs`, per group and pooled per arm; `lines` gives\nthem in words.",
+        "properties": {
+          "groups": {
+            "items": {
+              "$ref": "#/components/schemas/Group"
+            },
+            "title": "Groups",
+            "type": "array"
+          },
+          "lines": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Notes",
+            "type": "array"
+          },
+          "pooled": {
+            "items": {
+              "$ref": "#/components/schemas/Group"
+            },
+            "title": "Pooled",
+            "type": "array"
+          },
+          "runs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Runs",
+            "type": "array"
+          }
+        },
+        "required": [
+          "runs",
+          "groups",
+          "pooled",
+          "notes",
+          "lines"
+        ],
+        "title": "Rates",
+        "type": "object"
+      },
       "Release": {
         "additionalProperties": false,
         "properties": {
@@ -9417,55 +9466,6 @@
           "origin_seq"
         ],
         "title": "ReplayDivergence",
-        "type": "object"
-      },
-      "Report": {
-        "description": "The report over the score runs of `runs`, per group and pooled per arm; `lines` is the\nreport in words.",
-        "properties": {
-          "groups": {
-            "items": {
-              "$ref": "#/components/schemas/Group"
-            },
-            "title": "Groups",
-            "type": "array"
-          },
-          "lines": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Lines",
-            "type": "array"
-          },
-          "notes": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Notes",
-            "type": "array"
-          },
-          "pooled": {
-            "items": {
-              "$ref": "#/components/schemas/Group"
-            },
-            "title": "Pooled",
-            "type": "array"
-          },
-          "runs": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Runs",
-            "type": "array"
-          }
-        },
-        "required": [
-          "runs",
-          "groups",
-          "pooled",
-          "notes",
-          "lines"
-        ],
-        "title": "Report",
         "type": "object"
       },
       "ResourceSample": {
@@ -15273,10 +15273,10 @@
         ]
       }
     },
-    "/api/report": {
+    "/api/rates": {
       "get": {
         "description": "How the monitor did over the newest score of each run: of `runs`, of the runs of\n`series` or the samples of `group`, or of every scored run when none is given.",
-        "operationId": "get_report",
+        "operationId": "get_rates",
         "parameters": [
           {
             "in": "query",
@@ -15335,7 +15335,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Report"
+                  "$ref": "#/components/schemas/Rates"
                 }
               }
             },
@@ -15372,7 +15372,7 @@
             "description": "Invalid request"
           }
         },
-        "summary": "Get Report",
+        "summary": "Get Rates",
         "tags": [
           "score"
         ]

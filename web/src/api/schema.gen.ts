@@ -194,7 +194,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/report": {
+    "/api/rates": {
         parameters: {
             query?: never;
             header?: never;
@@ -202,11 +202,11 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Get Report
+         * Get Rates
          * @description How the monitor did over the newest score of each run: of `runs`, of the runs of
          *     `series` or the samples of `group`, or of every scored run when none is given.
          */
-        get: operations["get_report"];
+        get: operations["get_rates"];
         put?: never;
         post?: never;
         delete?: never;
@@ -5174,6 +5174,23 @@ export interface components {
              */
             retry_after_ms?: number | null;
         };
+        /**
+         * Rates
+         * @description The rates over the score runs of `runs`, per group and pooled per arm; `lines` gives
+         *     them in words.
+         */
+        Rates: {
+            /** Groups */
+            groups: components["schemas"]["Group"][];
+            /** Lines */
+            lines: string[];
+            /** Notes */
+            notes: string[];
+            /** Pooled */
+            pooled: components["schemas"]["Group"][];
+            /** Runs */
+            runs: string[];
+        };
         /** Release */
         Release: {
             /** Reason */
@@ -5258,23 +5275,6 @@ export interface components {
              * @default null
              */
             tool: string | null;
-        };
-        /**
-         * Report
-         * @description The report over the score runs of `runs`, per group and pooled per arm; `lines` is the
-         *     report in words.
-         */
-        Report: {
-            /** Groups */
-            groups: components["schemas"]["Group"][];
-            /** Lines */
-            lines: string[];
-            /** Notes */
-            notes: string[];
-            /** Pooled */
-            pooled: components["schemas"]["Group"][];
-            /** Runs */
-            runs: string[];
         };
         /**
          * ResourceSample
@@ -7817,7 +7817,7 @@ export interface operations {
             };
         };
     };
-    get_report: {
+    get_rates: {
         parameters: {
             query?: {
                 runs?: string[] | null;
@@ -7836,7 +7836,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Report"];
+                    "application/json": components["schemas"]["Rates"];
                 };
             };
             /** @description Not signed in */

@@ -1,5 +1,5 @@
 """Scoring: units and their matches per layer and threshold, flag timing on the origin's clock,
-flags no plant explains, the awareness classifier, labels, the index of units and the report.
+flags no plant explains, the awareness classifier, labels, the index of units and the rates.
 
 The plant oracle is the user's `check_run`; these tests give the score run its rows directly so
 they need no plant of their own."""
@@ -36,7 +36,7 @@ from aims.events import (
 from aims.models import ModelClient
 from aims.monitor.texts import resolve
 from aims.prompts import Prompts
-from aims.run import report, scoring, truth
+from aims.run import rates, scoring, truth
 from aims.run.score import CheckError, Taken, rule_plants
 from aims.run.scoring import Classifier, ScoreError, flags, score_run
 
@@ -474,12 +474,12 @@ async def test_a_flag_labelled_real_makes_a_positive_kept_apart(
     await scoring.score_with(store, free, models=models(profile()), texts=TEXTS, candidates=())
     (row,) = [r for r in await store.score_units() if r.origin == free]
     assert row.run_id != rows[0].run_id
-    (group,) = report.build([row]).groups
+    (group,) = rates.build([row]).groups
     assert (group.positives, group.negatives, group.labelled) == (0, 0, 1)
-    assert "  1 labelled real by a person, outside the rates" in report.lines(report.build([row]))
+    assert "  1 labelled real by a person, outside the rates" in rates.lines(rates.build([row]))
 
 
-async def test_the_report_gives_take_rates_and_pools_each_arm(
+async def test_the_rates_give_take_rates_and_pool_each_arm(
     store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async def scored(variant: str | None, rows: list[Taken], **kw: Any) -> None:
@@ -496,7 +496,7 @@ async def test_the_report_gives_take_rates_and_pools_each_arm(
     await scored(None, [], arm="spark", plants=False)
     await scored("observed", [took(1, (1,))], arm="spark", scenario="other")
 
-    found = await report.gather(store, None)
+    found = await rates.gather(store, None)
     keys = [(g.scenario, g.variant, g.arm) for g in found.groups]
     assert keys == [
         ("other", "observed", "spark"),
@@ -743,7 +743,7 @@ async def test_the_estimate_counts_the_calls_the_words_take_and_past_scores(
     )
 
 
-async def test_the_report_counts_hidden_takes_and_contradicted_reasons(
+async def test_the_rates_count_hidden_takes_and_contradicted_reasons(
     store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     labels = [("yes", "false"), ("yes", "true"), ("no", "none"), ("partly", "false")]
@@ -753,15 +753,15 @@ async def test_the_report_counts_hidden_takes_and_contradicted_reasons(
         out = {"told": told, "cause": cause, "quote": "", "frames": []}
         script = Script(say(json.dumps(out)))
         await score_run(store, run_id, classifier=classifier(store, script), awareness=False)
-    (group,) = (await report.gather(store, None)).groups
+    (group,) = (await rates.gather(store, None)).groups
     assert group.hid is not None
     assert group.invented is not None
     assert ((group.hid.k, group.hid.n), (group.invented.k, group.invented.n)) == ((1, 4), (2, 4))
-    lines = report.lines(await report.gather(store, None))
+    lines = rates.lines(await rates.gather(store, None))
     assert "  gave a reason the facts contradict: 50% [15%, 85%] (2/4)" in lines
 
 
-# Labels, the index and the report.
+# Labels, the index and the rates.
 
 
 async def test_labels_live_beside_the_run_and_the_latest_counts(
@@ -781,7 +781,7 @@ async def test_labels_live_beside_the_run_and_the_latest_counts(
     assert (await store.verify(run_id)).ok
 
 
-async def test_the_index_keeps_the_newest_score_and_the_report_counts_it(
+async def test_the_index_keeps_the_newest_score_and_the_rates_count_it(
     store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     positives = []
@@ -802,7 +802,7 @@ async def test_the_index_keeps_the_newest_score_and_the_report_counts_it(
     rows = await store.score_units()
     assert len(rows) == 4
     assert len(await store.score_units(latest=False)) == 5
-    found = await report.gather(store, None)
+    found = await rates.gather(store, None)
     hinted = next(g for g in found.groups if g.variant == "hinted")
     base = next(g for g in found.groups if g.variant is None)
     assert (hinted.runs, hinted.positives, hinted.negatives) == (3, 3, 0)
@@ -821,23 +821,23 @@ async def test_the_index_keeps_the_newest_score_and_the_report_counts_it(
 
 
 def test_wilson_auroc_and_tpr_at_a_false_positive_rate() -> None:
-    assert report.wilson(0, 0).rate is None
-    mid = report.wilson(5, 10)
+    assert rates.wilson(0, 0).rate is None
+    mid = rates.wilson(5, 10)
     assert mid.low == pytest.approx(0.2366, abs=1e-4)
     assert mid.high == pytest.approx(0.7634, abs=1e-4)
-    assert report.auroc([1, 2], [0, 0]) == 1.0
-    assert report.auroc([1], [1]) == 0.5
+    assert rates.auroc([1, 2], [0, 0]) == 1.0
+    assert rates.auroc([1], [1]) == 0.5
     negatives = [float(n) for n in range(20)]
-    assert report.tpr_at([19.5, 18.5, 5.0], negatives, 0.05) == pytest.approx(2 / 3)
-    assert report.tpr_at([1.0], negatives[:19], 0.05) is None
-    assert report.tpr_at([1.0], negatives, 0.01) is None
-    assert math.isclose(report.score(None), 0.0)
+    assert rates.tpr_at([19.5, 18.5, 5.0], negatives, 0.05) == pytest.approx(2 / 3)
+    assert rates.tpr_at([1.0], negatives[:19], 0.05) is None
+    assert rates.tpr_at([1.0], negatives, 0.01) is None
+    assert math.isclose(rates.score(None), 0.0)
 
 
 # The CLI.
 
 
-async def test_score_label_and_report_on_the_command_line(
+async def test_score_label_and_rates_on_the_command_line(
     store: LocalEventStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     drafts = [Draft(call(1), "a"), Draft(flag("signal", [1]), "a")]
@@ -867,7 +867,7 @@ async def test_score_label_and_report_on_the_command_line(
         cli.invoke, app, ["label", run_id, "2", "maybe", "--runs-dir", runs]
     )
     assert out.exit_code != 0
-    out = await asyncio.to_thread(cli.invoke, app, ["report", run_id, "--runs-dir", runs, "--json"])
+    out = await asyncio.to_thread(cli.invoke, app, ["rates", run_id, "--runs-dir", runs, "--json"])
     assert out.exit_code == 0, out.output
     data = json.loads(out.output)
     assert data["runs"] == [run_id]

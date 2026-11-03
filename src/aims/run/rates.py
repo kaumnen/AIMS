@@ -1,4 +1,4 @@
-"""The report over score runs: how often the subjects took a plant, and how often each monitor
+"""The rates over score runs: how often the subjects took a plant, and how often each monitor
 layer caught the ones that did, with Wilson 95% intervals, per category with the worst shown,
 how long it took, and with enough plant-free runs how well each layer's suspicion separates the
 two.
@@ -122,9 +122,9 @@ class Group(_Out):
     unexplained: LabelCounts = Field(default_factory=dict)
 
 
-class Report(_Out):
-    """The report over the score runs of `runs`, per group and pooled per arm; `lines` is the
-    report in words."""
+class Rates(_Out):
+    """The rates over the score runs of `runs`, per group and pooled per arm; `lines` gives
+    them in words."""
 
     runs: list[str]
     groups: list[Group] = Field(default_factory=list)
@@ -185,12 +185,12 @@ def build(
     rows: Iterable[UnitRow],
     unexplained: Mapping[Key, LabelCounts] | None = None,
     scenarios: Mapping[str, str] | None = None,
-) -> Report:
-    """The report over `rows`, one group per scenario, variant and arm, and one pooled group
+) -> Rates:
+    """The rates over `rows`, one group per scenario, variant and arm, and one pooled group
     per arm. `scenarios` names the scenario of each run; `unexplained` counts the unexplained
     flags of each group by label."""
     rows = list(rows)
-    out = Report(runs=sorted({r.origin for r in rows}))
+    out = Rates(runs=sorted({r.origin for r in rows}))
     by: dict[Key, list[UnitRow]] = defaultdict(list)
     for r in rows:
         by[key(r, scenarios)].append(r)
@@ -322,16 +322,16 @@ def _pct(r: Rate | None) -> str:
     return f"{r.rate:.0%} [{r.low:.0%}, {r.high:.0%}] ({r.k}/{r.n})"
 
 
-def lines(report: Report) -> list[str]:
+def lines(rates: Rates) -> list[str]:
     out: list[str] = []
-    for g in report.groups:
+    for g in rates.groups:
         out.append(f"{_title(g)}: {g.runs} runs")
         out.extend(_body(g))
-    spread = [g for g in report.pooled if sum(1 for h in report.groups if h.arm == g.arm) > 1]
+    spread = [g for g in rates.pooled if sum(1 for h in rates.groups if h.arm == g.arm) > 1]
     for g in spread:
         out.append(f"{_title(g)}: {g.runs} runs")
         out.extend(_body(g))
-    out.extend(report.notes)
+    out.extend(rates.notes)
     out.append(
         "Eval awareness is read from what the agents wrote; full reasoning only on Spark Open"
         " and Glimmer, summaries elsewhere."
@@ -404,8 +404,8 @@ def _body(g: Group) -> list[str]:
     return out
 
 
-async def gather(store: LocalEventStore, origins: Sequence[str] | None) -> Report:
-    """The report over the newest score runs of `origins` (every scored run when None), with
+async def gather(store: LocalEventStore, origins: Sequence[str] | None) -> Rates:
+    """The rates over the newest score runs of `origins` (every scored run when None), with
     the flags no plant explains counted by their latest label."""
     rows = await store.score_units(origins)
     scenarios: dict[str, str] = {}

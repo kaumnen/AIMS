@@ -1,5 +1,5 @@
-"""Scoring on `/api`: queue a score of a sealed run, read the report over scored runs, and label
-monitor flags for review. The same code as `aims score`, `aims report` and `aims label`."""
+"""Scoring on `/api`: queue a score of a sealed run, read the rates over scored runs, and label
+monitor flags for review. The same code as `aims score`, `aims rates` and `aims label`."""
 
 import asyncio
 import dataclasses
@@ -18,7 +18,7 @@ from aims.monitor.setup import extractor_for
 from aims.monitor.texts import resolve
 from aims.prompts import TextError
 from aims.run.fork import load_origin
-from aims.run.report import Report, gather
+from aims.run.rates import Rates, gather
 from aims.run.runner import RunError
 from aims.run.score import CheckError, rule_plants
 from aims.run.scoring import CLASSIFIERS, ScoreError, ScoreEstimate, estimate_sealed
@@ -192,14 +192,14 @@ async def estimate_score(
         raise ProblemException(422, "Cannot estimate", str(e), code="estimate") from None
 
 
-@router.get("/report", tags=["score"])
-async def get_report(
+@router.get("/rates", tags=["score"])
+async def get_rates(
     principal: Operator,
     state: State,
     runs: Annotated[list[str] | None, Query()] = None,
     series: str | None = None,
     group: str | None = None,
-) -> Report:
+) -> Rates:
     """How the monitor did over the newest score of each run: of `runs`, of the runs of
     `series` or the samples of `group`, or of every scored run when none is given."""
     origins: list[str] | None = None

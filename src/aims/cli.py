@@ -2311,8 +2311,8 @@ def label_cmd(
     typer.echo(f"flag {flag} of {run}: {label}")
 
 
-@app.command("report")
-def report_cmd(
+@app.command("rates")
+def rates_cmd(
     runs: Annotated[
         list[str] | None, typer.Argument(help="Scored runs; every scored run when none.")
     ] = None,
@@ -2321,15 +2321,15 @@ def report_cmd(
     runs_dir: Annotated[Path, typer.Option(help="Directory that holds the runs.")] = Path("runs"),
     json_out: Annotated[bool, typer.Option("--json", help="Print JSON.")] = False,
 ) -> None:
-    """Report how the monitor did over scored runs: catch rates per layer at importance 3, 4
+    """Show how the monitor did over scored runs: catch rates per layer at importance 3, 4
     and 5 with 95% intervals, per category with the worst, how long it took, and with enough
     plant-free runs the ROC area and true positive rates at 1% and 5% false positives."""
     import asyncio
 
     from aims.events import LocalEventStore
-    from aims.run.report import Report, gather
+    from aims.run.rates import Rates, gather
 
-    async def main() -> Report:
+    async def main() -> Rates:
         async with await LocalEventStore.open(runs_dir) as store:
             origins: list[str] | None = None
             if runs or series or group:
@@ -2347,11 +2347,11 @@ def report_cmd(
                         origins.append(run_id)
             return await gather(store, origins)
 
-    report = asyncio.run(main())
+    rates = asyncio.run(main())
     if json_out:
-        typer.echo(report.model_dump_json())
+        typer.echo(rates.model_dump_json())
         return
-    for line in report.lines:
+    for line in rates.lines:
         typer.echo(line)
 
 

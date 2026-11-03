@@ -1,6 +1,6 @@
 """Scoring through the control plane: queuing a score job, the runner reading the truth file it
 needs, scoring a run held by another store, labels from the API and from runners, and the
-report endpoint."""
+rates endpoint."""
 
 import asyncio
 import json
@@ -178,7 +178,7 @@ async def test_a_runner_scores_a_run_another_store_holds(
         assert await mine.run(origin) is None
 
 
-async def test_labels_from_the_api_and_from_runners_and_the_report(
+async def test_labels_from_the_api_and_from_runners_and_the_rates(
     cp: CP, local: LocalEventStore, fake: FakeRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     origin = await planted(cp, local, fake)
@@ -207,15 +207,15 @@ async def test_labels_from_the_api_and_from_runners_and_the_report(
     score = next(i for i in await local.runs(kind="score"))
     await ship(local, fake.client, score.run_id)
     async with cp.client(cp.viewer) as viewer:
-        assert (await viewer.get("/api/report")).status_code == 403
+        assert (await viewer.get("/api/rates")).status_code == 403
     async with cp.client(cp.operator) as c:
-        r = await c.get("/api/report", params={"runs": [origin]})
+        r = await c.get("/api/rates", params={"runs": [origin]})
         assert r.status_code == 200, r.text
         data = r.json()
         assert data["runs"] == [origin]
         group = data["groups"][0]
         assert (group["variant"], group["positives"]) == ("v1", 1)
-        r = await c.get("/api/report", params={"runs": [score.run_id]})
+        r = await c.get("/api/rates", params={"runs": [score.run_id]})
         assert r.json()["runs"] == [origin]
 
 
