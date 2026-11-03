@@ -33,6 +33,9 @@ const AXIS = 16;
 const LANE = 40;
 const LANE_MULTI = 28;
 const PAD = 5;
+// Widths of the 10px axis text: a digit or colon of a time, and the word "harm".
+const DIGIT_W = 6;
+const HARM_W = 26;
 const FALLBACK_WIDTH = 800;
 const LIVE_MS = 3000;
 const FILLS = ["fill-pen-1/20", "fill-pen-2/20", "fill-pen-3/20"];
@@ -252,6 +255,16 @@ export function Strip({
     return i < 0 ? 0 : i;
   };
   const at = steps.findIndex((s) => s.seq === selected.seq);
+  // A harm's line: in its agent's lane, at the end of that agent's step holding it.
+  const harmAt = (h: Harm) => {
+    const own = stepsOf(h.agent);
+    const step = stepOf(own.length > 0 ? own : steps, h.seq);
+    return step ? x(ms(step.ts_to)) : null;
+  };
+  // One lane writes "harm" in the time row, left of its line; a time under it gives way.
+  const harmXs = multi ? [] : harms.map(harmAt).filter((hx) => hx !== null);
+  const underHarm = (gx: number, label: string) =>
+    harmXs.some((hx) => gx + 3 < hx + 2 && hx - 4 - HARM_W < gx + 3 + label.length * DIGIT_W);
 
   const pick = (px: number, py: number) => {
     const lane = lanes[Math.min(lanes.length - 1, Math.max(0, Math.floor((py - AXIS) / laneH)))];
@@ -320,7 +333,7 @@ export function Strip({
           return (
             <g key={t}>
               <line x1={gx} x2={gx} y1={0} y2={height} className="stroke-grid" />
-              {gx < width - 32 && (
+              {gx < width - 32 && !underHarm(gx, offset(t)) && (
                 <text x={gx + 3} y={11} className="fill-muted-foreground text-[10px] tabular-nums">
                   {offset(t)}
                 </text>
@@ -436,11 +449,8 @@ export function Strip({
           );
         })}
         {harms.map((h) => {
-          // in its agent's lane, at the end of that agent's step holding it
-          const own = stepsOf(h.agent);
-          const step = stepOf(own.length > 0 ? own : steps, h.seq);
-          if (!step) return null;
-          const hx = x(ms(step.ts_to));
+          const hx = harmAt(h);
+          if (hx === null) return null;
           const y = multi ? top(laneOf(h.agent)) : 0;
           return (
             <g key={`${h.agent}-${h.seq}`} data-harm={h.seq} className="text-flag">
@@ -510,7 +520,7 @@ function Readout({
   const right = left > width / 2;
   return (
     <div
-      className="bg-popover text-popover-foreground pointer-events-none absolute top-full z-10 mt-1 max-w-80 rounded-sm border px-2 py-1 text-xs"
+      className="bg-popover text-popover-foreground pointer-events-none absolute top-full z-20 mt-1 max-w-80 rounded-sm border px-2 py-1 text-xs"
       style={right ? { right: width - left } : { left }}
     >
       <div className="flex gap-2 tabular-nums">
