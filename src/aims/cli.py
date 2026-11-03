@@ -1347,6 +1347,7 @@ def runner_cmd(
     import logging
     import os
     import signal
+    import stat
     from typing import cast
 
     from aims.node.service import Node, NodeOptions
@@ -1405,6 +1406,25 @@ def runner_cmd(
         # `aims ui` passes a hangup on as one SIGTERM, as it does Ctrl-C. On its own the runner
         # lets a hangup start a stop but never add to one: nobody is left to press Ctrl-C.
         on_hangup(loop, (lambda: None) if by_ui else (lambda: None if stops else on_signal()))
+
+        def on_input() -> None:
+            nonlocal stops
+            try:
+                data = os.read(0, 4096)
+            except OSError:
+                data = b""
+            if data:
+                return
+            loop.remove_reader(0)
+            if stops == 0:
+                stops = 1
+                stop.set()
+                say("aims ui ended: stopping, runs are sealed as cancelled")
+
+        # `aims ui` holds the other end of this pipe. It ends when `aims ui` ends, even by
+        # SIGKILL, and with no control plane left this runner stops once, as for its SIGTERM.
+        if by_ui and stat.S_ISFIFO(os.fstat(0).st_mode):
+            loop.add_reader(0, on_input)
         await node.run(stop)
 
     try:

@@ -147,6 +147,7 @@ async def serve(o: UiOptions) -> int:
     server: _Server | None = None
     task: asyncio.Task[None] | None = None
     info = o.data / SERVER_JSON
+    lifeline = -1
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()
     handled: list[signal.Signals] = []
@@ -217,7 +218,13 @@ async def serve(o: UiOptions) -> int:
         if on_hangup(loop, lambda: None if stops else on_signal()):
             handled.append(signal.SIGHUP)
         if o.runner:
-            child = await _spawn_runner(local, runner_token, o)
+            # The runner reads a pipe that only this process holds open. The pipe ends when
+            # this process does, even by SIGKILL, and the runner then stops with its helpers.
+            runner_stdin, lifeline = os.pipe()
+            try:
+                child = await _spawn_runner(local, runner_token, o, runner_stdin)
+            finally:
+                os.close(runner_stdin)
         url = f"{shown}/#code={state.codes.issue(UI_TOKEN)}" if o.auth else shown
         print(f"AIMS control plane on {shown}", file=sys.stderr)
         if not o.auth:
@@ -266,6 +273,8 @@ async def serve(o: UiOptions) -> int:
                     await child.wait()
                 if child.returncode:
                     print(runner_ended(child.returncode), file=sys.stderr)
+            if lifeline >= 0:
+                os.close(lifeline)
             info.unlink(missing_ok=True)
             # the codes in them die with this server
             _prune(o.data, None)
@@ -415,9 +424,12 @@ def _port(server: uvicorn.Server, wanted: int) -> int:
     return wanted
 
 
-async def _spawn_runner(url: str, token: str, o: UiOptions) -> asyncio.subprocess.Process:
+async def _spawn_runner(
+    url: str, token: str, o: UiOptions, stdin: int
+) -> asyncio.subprocess.Process:
     """The runner `aims ui` brings: its token goes in the environment, never on argv.
-    UI_RUNNER tells it to ignore the terminal's Ctrl-C and wait for this server's SIGTERM."""
+    UI_RUNNER tells it to ignore the terminal's Ctrl-C and wait for this server's SIGTERM, and
+    to stop once `stdin` ends."""
     env = {**os.environ, "AIMS_TOKEN": token, UI_RUNNER: "1"}
     return await asyncio.create_subprocess_exec(
         sys.executable,
@@ -434,5 +446,6 @@ async def _spawn_runner(url: str, token: str, o: UiOptions) -> asyncio.subproces
         "--audit",
         o.audit,
         *(["--tls-ca", str(o.tls_cert)] if o.tls_cert is not None else []),
+        stdin=stdin,
         env=env,
     )

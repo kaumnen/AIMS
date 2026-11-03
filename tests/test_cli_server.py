@@ -9,7 +9,7 @@ import stat
 import sys
 import threading
 import time
-from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Sequence
 from pathlib import Path
 from typing import Any, cast
 
@@ -196,18 +196,26 @@ def test_the_runner_gets_its_audit_mode(monkeypatch: pytest.MonkeyPatch, tmp_pat
         assert seen.pop().audit == mode
 
 
+# In `signalled_runner`: `aims ui` ends, so the pipe on the runner's stdin ends.
+GONE = "gone"
+
+
 def signalled_runner(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    signals: list[signal.Signals],
+    signals: Sequence[signal.Signals | str],
     env: dict[str, str],
     hung: list[tuple[int, ...]] | None = None,
+    said: list[str] | None = None,
 ) -> tuple[int, bool, bool, bool]:
-    """Run `aims runner` on a stub node that sends itself `signals`, 10 ms apart. Returns the
-    exit code, whether the node was asked to stop, whether it ran to its end (a kill now
-    cancels it) and whether the runner said it kills now. Each hangup that would point the
-    streams at /dev/null goes to `hung` instead."""
+    """Run `aims runner` on a stub node that sends itself `signals`, 10 ms apart; GONE ends
+    the pipe on its stdin, which this test holds as `aims ui` does. Returns the exit code,
+    whether the node was asked to stop, whether it ran to its end (a kill now cancels it) and
+    whether the runner said it kills now. Each hangup that would point the streams at
+    /dev/null goes to `hung` instead. The output goes to `said`."""
     seen: dict[str, bool] = {"done": False}
+    read_end, write_end = os.pipe()
+    held = [write_end]
 
     class Stub:
         def __init__(self, options: NodeOptions) -> None:
@@ -216,7 +224,10 @@ def signalled_runner(
         async def run(self, stop: asyncio.Event) -> None:
             try:
                 for sig in signals:
-                    os.kill(os.getpid(), sig)
+                    if isinstance(sig, str):
+                        os.close(held.pop())
+                    else:
+                        os.kill(os.getpid(), sig)
                     await asyncio.sleep(0.01)
                 async with asyncio.timeout(5):
                     await stop.wait()
@@ -234,6 +245,9 @@ def signalled_runner(
     }
     # a SIGHUP the runner does not handle would end this test process
     signal.signal(signal.SIGHUP, lambda *_: None)
+    stdin = os.dup(0)
+    os.dup2(read_end, 0)
+    os.close(read_end)
     try:
         result = CliRunner().invoke(
             app,
@@ -245,6 +259,12 @@ def signalled_runner(
     finally:
         for sig, handler in previous.items():
             signal.signal(sig, handler)
+        os.dup2(stdin, 0)
+        os.close(stdin)
+        for fd in held:
+            os.close(fd)
+    if said is not None:
+        said.append(result.output)
     return result.exit_code, seen["stop"], seen["done"], "killing now" in result.output
 
 
@@ -316,6 +336,40 @@ def test_a_runner_aims_ui_starts_leaves_a_hangup_to_aims_ui(
     assert len(hung) == 2
 
 
+@pytest.mark.parametrize(
+    "signals",
+    [
+        [GONE],
+        # `aims ui` was killed while it waited for the runner to stop: still one stop
+        [signal.SIGINT, signal.SIGTERM, GONE],
+    ],
+)
+def test_a_runner_aims_ui_starts_stops_once_when_aims_ui_ends(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, signals: list[signal.Signals | str]
+) -> None:
+    said: list[str] = []
+    ended = signalled_runner(monkeypatch, tmp_path, signals, {UI_RUNNER: "1"}, said=said)
+    assert ended == (0, True, True, False)
+    assert ("aims ui ended" in said[0]) == (signals == [GONE])
+
+
+def test_a_runner_aims_ui_starts_kills_now_on_a_signal_after_aims_ui_ends(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ended = signalled_runner(monkeypatch, tmp_path, [GONE, signal.SIGTERM], {UI_RUNNER: "1"})
+    assert ended == (EXIT_CANCELLED, True, False, True)
+
+
+def test_a_runner_on_its_own_does_not_stop_when_its_stdin_ends(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # `true | aims runner` gives it a stdin pipe that ends at once
+    said: list[str] = []
+    ended = signalled_runner(monkeypatch, tmp_path, [GONE, signal.SIGTERM], {}, said=said)
+    assert ended == (0, True, True, False)
+    assert "aims ui ended" not in said[0]
+
+
 async def test_aims_ui_tells_its_runner_to_leave_ctrl_c_to_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -325,8 +379,9 @@ async def test_aims_ui_tells_its_runner_to_leave_ctrl_c_to_it(
         seen.update(kwargs)
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
-    await _spawn_runner("http://127.0.0.1:9", "t", UiOptions())
+    await _spawn_runner("http://127.0.0.1:9", "t", UiOptions(), 7)
     assert seen["env"][UI_RUNNER] == "1"
+    assert seen["stdin"] == 7
     assert seen["env"]["AIMS_TOKEN"] == "t"
 
 
@@ -375,9 +430,9 @@ async def test_aims_ui_passes_each_ctrl_c_on_to_its_runner(
     slow = 0.5 if presses == 1 else 30.0
     dispatcher_ended = asyncio.Event()
 
-    async def spawn(url: str, token: str, o: UiOptions) -> asyncio.subprocess.Process:
+    async def spawn(url: str, token: str, o: UiOptions, stdin: int) -> asyncio.subprocess.Process:
         return await asyncio.create_subprocess_exec(
-            sys.executable, "-c", FAKE_RUNNER, str(log), str(slow)
+            sys.executable, "-c", FAKE_RUNNER, str(log), str(slow), stdin=stdin
         )
 
     async def dispatcher(state: object) -> None:
@@ -423,9 +478,9 @@ async def test_aims_ui_stops_its_runner_once_when_its_terminal_hangs_up(
     log.touch()
     hung: list[tuple[int, ...]] = []
 
-    async def spawn(url: str, token: str, o: UiOptions) -> asyncio.subprocess.Process:
+    async def spawn(url: str, token: str, o: UiOptions, stdin: int) -> asyncio.subprocess.Process:
         return await asyncio.create_subprocess_exec(
-            sys.executable, "-c", FAKE_RUNNER, str(log), "0.5"
+            sys.executable, "-c", FAKE_RUNNER, str(log), "0.5", stdin=stdin
         )
 
     monkeypatch.setattr("aims.server.serve._spawn_runner", spawn)
@@ -471,9 +526,9 @@ async def test_a_ctrl_c_while_the_browser_opens_stops_the_runner_gracefully(
     opened = threading.Event()
     dispatcher_ended = asyncio.Event()
 
-    async def spawn(url: str, token: str, o: UiOptions) -> asyncio.subprocess.Process:
+    async def spawn(url: str, token: str, o: UiOptions, stdin: int) -> asyncio.subprocess.Process:
         return await asyncio.create_subprocess_exec(
-            sys.executable, "-c", FAKE_RUNNER, str(log), "0.5"
+            sys.executable, "-c", FAKE_RUNNER, str(log), "0.5", stdin=stdin
         )
 
     def slow_browser(folder: Path, url: str) -> None:
@@ -530,9 +585,9 @@ async def test_aims_ui_stops_its_runner_gracefully_when_it_fails(
     log.touch()
     dispatcher_ended = asyncio.Event()
 
-    async def spawn(url: str, token: str, o: UiOptions) -> asyncio.subprocess.Process:
+    async def spawn(url: str, token: str, o: UiOptions, stdin: int) -> asyncio.subprocess.Process:
         return await asyncio.create_subprocess_exec(
-            sys.executable, "-c", FAKE_RUNNER, str(log), "0.5"
+            sys.executable, "-c", FAKE_RUNNER, str(log), "0.5", stdin=stdin
         )
 
     async def broken_server(self: Any, sockets: object = None) -> None:
@@ -587,7 +642,7 @@ async def test_aims_ui_hands_its_audit_mode_to_the_runner(
         argv.extend(args)
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
-    await _spawn_runner("http://127.0.0.1:9", "t", UiOptions(audit="snapshot"))
+    await _spawn_runner("http://127.0.0.1:9", "t", UiOptions(audit="snapshot"), 0)
     assert argv[argv.index("--audit") + 1] == "snapshot"
 
 
@@ -1028,6 +1083,61 @@ async def test_closing_the_terminal_stops_aims_ui_and_its_runner_cleanly(
         if proc.returncode is None:
             proc.kill()
             await proc.wait()
+        if runner:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(runner, signal.SIGKILL)
+            for name in await helpers_of(runner):
+                rm = await asyncio.create_subprocess_exec(
+                    "docker", "rm", "-f", "-v", name, stdout=asyncio.subprocess.DEVNULL
+                )
+                await rm.wait()
+
+
+@pytest.mark.docker
+async def test_a_killed_aims_ui_leaves_no_runner_behind(tmp_path: Path) -> None:
+    if not os.environ.get("AIMS_REQUIRE_DOCKER"):
+        try:
+            backend = await DockerBackend.open(audit="snapshot")
+            await backend.close()
+        except Exception as e:
+            pytest.skip(f"Docker is not available: {e}")
+
+    def alive(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        return True
+
+    runner = 0
+    try:
+        async with ui_process(tmp_path, "--audit", "snapshot") as (proc, url):
+            base = url.partition("/#code=")[0]
+            token = json.loads((tmp_path / "server" / "server.json").read_text())["operator"]
+            async with httpx2.AsyncClient(
+                base_url=base, headers={"Authorization": f"Bearer {token}"}, trust_env=False
+            ) as c:
+                async with asyncio.timeout(120):
+                    while True:
+                        runners = (await c.get("/api/runners")).json()
+                        if runners and runners[0]["connected"]:
+                            break
+                        await asyncio.sleep(0.2)
+            children = await asyncio.create_subprocess_exec(
+                "pgrep", "-P", str(proc.pid), stdout=asyncio.subprocess.PIPE
+            )
+            runner = int((await children.communicate())[0].split()[0])
+            assert await helpers_of(runner)
+            proc.kill()
+            await proc.wait()
+            # init or launchd takes the runner over and reaps it once it ends
+            await until(lambda: not alive(runner), 60)
+            assert await helpers_of(runner) == []
+            assert proc.stderr is not None
+            async with asyncio.timeout(10):
+                err = (await proc.stderr.read()).decode()
+        assert "aims ui ended: stopping, runs are sealed as cancelled" in err
+    finally:
         if runner:
             with contextlib.suppress(ProcessLookupError):
                 os.kill(runner, signal.SIGKILL)
