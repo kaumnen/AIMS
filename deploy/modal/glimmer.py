@@ -2,10 +2,16 @@
 
     uv run modal run deploy/modal/glimmer.py::download   # once: the weights into a volume
     uv run modal deploy deploy/modal/glimmer.py::app
+    uv run modal volume put aims-glimmer-adapters <adapter dir> /<name>   # optional LoRA adapter
 
 Requests need a workspace proxy token as `Authorization: Bearer wk-<id>.ws-<secret>`; Modal
 rejects others before a container starts. Set AIMS_GLIMMER_URL to the server's URL plus /v1
 and AIMS_GLIMMER_KEY to the token for the `modal-glimmer` profile.
+
+A LoRA adapter in the adapters volume loads at runtime with
+`POST /v1/load_lora_adapter {"lora_name": "<name>", "lora_path": "/adapters/<name>"}`; requests
+then name it as the model. A container sees volume files added after it started only once it
+restarts.
 """
 
 import json
@@ -21,18 +27,25 @@ MODEL_DIR = f"{WEIGHTS}/{REPO}/{REVISION}"
 GPU = "H100"
 PORT = 8000
 MINUTES = 60
+ADAPTERS = "/adapters"
+LORA_RANK = 32
 
 weights = modal.Volume.from_name("aims-glimmer-weights", create_if_missing=True)
 compile_cache = modal.Volume.from_name("aims-glimmer-vllm-cache", create_if_missing=True)
+adapters = modal.Volume.from_name("aims-glimmer-adapters", create_if_missing=True)
 
 download_image = modal.Image.debian_slim(python_version="3.12").uv_pip_install(
     "huggingface_hub[hf_xet]==2.4.0"
 )
 # Modal looks for `python` on PATH; the image only names it python3.
-serve_image = modal.Image.from_registry(
-    "vllm/vllm-openai:v0.32.0",
-    setup_dockerfile_commands=["RUN ln -sf /usr/bin/python3 /usr/bin/python"],
-).entrypoint([])
+serve_image = (
+    modal.Image.from_registry(
+        "vllm/vllm-openai:v0.32.0",
+        setup_dockerfile_commands=["RUN ln -sf /usr/bin/python3 /usr/bin/python"],
+    )
+    .entrypoint([])
+    .env({"VLLM_ALLOW_RUNTIME_LORA_UPDATING": "True"})
+)
 
 # The download is its own app, so it needs no GPU and no payment method.
 weights_app = modal.App("aims-glimmer-weights")
@@ -51,7 +64,11 @@ def download() -> None:
 @app.server(
     image=serve_image,
     gpu=GPU,
-    volumes={WEIGHTS: weights.read_only(), "/root/.cache/vllm": compile_cache},
+    volumes={
+        WEIGHTS: weights.read_only(),
+        "/root/.cache/vllm": compile_cache,
+        ADAPTERS: adapters.read_only(),
+    },
     port=PORT,
     startup_timeout=20 * MINUTES,
     scaledown_window=5 * MINUTES,
@@ -83,6 +100,11 @@ class Server:
             "muse_glimmer",
             "--reasoning-parser",
             "muse_glimmer",
+            "--enable-lora",
+            "--max-lora-rank",
+            str(LORA_RANK),
+            "--max-loras",
+            "1",
         ]
         print(*cmd)
         self.process = subprocess.Popen(cmd)
