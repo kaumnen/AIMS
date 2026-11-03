@@ -216,12 +216,13 @@ async def serve(o: UiOptions) -> int:
                     child.send_signal(signal.SIGTERM)
 
         def on_signal() -> None:
+            """No uvicorn force_exit on a second stop. It skips the app's shutdown, so the
+            lifespan is cancelled at exit and logs a traceback. It also never cuts the wait for
+            open connections, which timeout_graceful_shutdown caps at 5 s."""
             nonlocal stops
             stops += 1
             stop.set()
             tell_runner()
-            if stops > 1:
-                server.force_exit = True
 
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, on_signal)

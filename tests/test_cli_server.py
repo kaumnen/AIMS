@@ -371,13 +371,21 @@ async def test_aims_ui_passes_each_ctrl_c_on_to_its_runner(
     log = tmp_path / "signals"
     log.touch()
     slow = 0.5 if presses == 1 else 30.0
+    dispatcher_ended = asyncio.Event()
 
     async def spawn(url: str, token: str, o: UiOptions) -> asyncio.subprocess.Process:
         return await asyncio.create_subprocess_exec(
             sys.executable, "-c", FAKE_RUNNER, str(log), str(slow)
         )
 
+    async def dispatcher(state: object) -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            dispatcher_ended.set()
+
     monkeypatch.setattr("aims.server.serve._spawn_runner", spawn)
+    monkeypatch.setattr("aims.server.dispatch.run", dispatcher)
     before = signal.getsignal(signal.SIGINT)
     task = asyncio.create_task(
         serve(UiOptions(port=0, data=tmp_path / "server", open_browser=False))
@@ -399,6 +407,8 @@ async def test_aims_ui_passes_each_ctrl_c_on_to_its_runner(
             with contextlib.suppress(asyncio.CancelledError):
                 await task
     assert log.read_text().count("TERM") == presses
+    # the app shuts down too, or asyncio.run cancels its lifespan at exit and logs a traceback
+    assert dispatcher_ended.is_set()
     err = capsys.readouterr().err
     assert "stopping the local runner" in err
     assert ("the local runner exited with code 130" in err) == (code != 0)
