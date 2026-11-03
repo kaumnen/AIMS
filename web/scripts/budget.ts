@@ -26,10 +26,11 @@ const kb = (bytes: number) => bytes / 1000;
 const nameOf = (file: string) => file.replace(/-[\w-]{8}\.(js|css)$/, ".$1");
 
 const html = readFileSync(`${dist}/index.html`, "utf8");
+// the scripts and styles index.html loads; its icon does not hold up the first paint
 const loaded = new Set(
-  [...html.matchAll(/<(?:script|link)\b[^>]*\b(?:src|href)="\/assets\/([^"]+)"/g)].map(
-    (m) => m[1] as string,
-  ),
+  [...html.matchAll(/<(?:script|link)\b[^>]*\b(?:src|href)="\/assets\/([^"]+)"/g)]
+    .map((m) => m[1] as string)
+    .filter((f) => /\.(js|css)$/.test(f)),
 );
 
 const sizes = new Map<string, Size>();
