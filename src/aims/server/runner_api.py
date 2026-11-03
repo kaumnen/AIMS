@@ -244,6 +244,8 @@ async def runner_stream(
     conn.streams += 1
     state.runner_changed()
     state.poke()
+    # end as the server stops: uvicorn waits out its grace for open responses, then cancels them
+    stop = asyncio.create_task(state.stopping.wait())
     try:
         yield ServerSentEvent(comment="connected", retry=2000)
         sent: set[str] = set()
@@ -254,14 +256,23 @@ async def runner_stream(
                     id=c.id, seq=c.seq, run_id=c.run_id, command=CommandAction(**c.payload)
                 )
             )
-        while True:
-            message = await feed.get()
+        while not state.stopping.is_set():
+            get = asyncio.create_task(feed.get())
+            try:
+                await asyncio.wait((get, stop), return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                # a get cancelled before it returns leaves its message on the feed
+                get.cancel()
+            if not get.done():
+                return
+            message = get.result()
             if message is None:
                 return
             if isinstance(message, CommandMessage) and message.id in sent:
                 continue
             yield _feed_event(message)
     finally:
+        stop.cancel()
         conn.streams -= 1
         if conn.feed is feed:
             for run_id in list(conn.offered):

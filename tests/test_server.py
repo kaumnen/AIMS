@@ -1006,6 +1006,19 @@ async def test_streams_end_when_the_server_stops(cp: CP) -> None:
             pass
 
 
+async def test_a_runner_stream_ends_when_the_server_stops(cp: CP, fake: FakeRunner) -> None:
+    (run_id,) = await start_run(cp)
+    await fake.next(OfferMessage)
+    cp.state.stopping.set()
+    # on its own, or uvicorn waits out its grace, then cancels the response and logs an error
+    assert fake.task is not None
+    async with asyncio.timeout(2):
+        await fake.task
+    assert cp.state.runners["fake"].streams == 0
+    # the offer it never claimed goes back to the queue
+    assert await job_state(cp, run_id) == "queued"
+
+
 async def test_a_stream_ends_when_its_session_does(cp: CP) -> None:
     async with cp.client() as c:
         assert (await c.post("/api/session", json={"token": cp.viewer})).status_code == 204
