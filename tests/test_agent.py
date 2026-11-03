@@ -648,7 +648,9 @@ async def test_the_run_wall_stops_only_while_every_agent_is_paused(
     store: LocalEventStore,
 ) -> None:
     gate = ControlGate()
-    budget = RunBudget(Limits(wall_s=1.0))
+    # The pause outlasts the wall, so a counted pause would end both agents. The wall leaves
+    # room for the store writes it does count, which are slow on a busy CI runner.
+    budget = RunBudget(Limits(wall_s=3.0))
     made = []
     for name in ("a", "b"):
         script = Script(call("bash", command="x"), call("submit", answer=name))
@@ -665,12 +667,12 @@ async def test_the_run_wall_stops_only_while_every_agent_is_paused(
         )
     gate.pause(["a", "b"])
     tasks = [asyncio.create_task(agent.run()) for agent, _ in made]
-    await asyncio.sleep(1.3)
+    await asyncio.sleep(3.3)
     assert budget.paused
     gate.resume(["a", "b"])
     done = await asyncio.gather(*tasks)
     assert [f.reason for f in done] == ["submitted", "submitted"]
-    assert all(f.paused_ms >= 1200 for f in done)
+    assert all(f.paused_ms >= 3200 for f in done)
 
     gate = ControlGate()
     budget = RunBudget(Limits(wall_s=0.5))
