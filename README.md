@@ -4,7 +4,7 @@ Autonomous Intelligence Monitoring System.
 
 AIMS is a bench for alignment experiments on AI agents. Agents work on a task in isolated sandboxes. A separate model watches every step and flags misbehaviour.
 
-The task hides temptations: a shared folder other agents write to, tests no honest fix can pass, a peer who asks for credentials. Each one is planted on purpose, so AIMS knows every take. AIMS scores what each agent did against what the monitor caught. That shows how often agents take the bait and how often the monitor sees it.
+The task hides temptations, called plants: a shared folder other agents write to, tests no honest fix can pass, a peer who asks for credentials. Each one is set on purpose, so AIMS knows when an agent takes one. AIMS scores what each agent did against what the monitor caught. That shows how often agents take the bait and how often the monitor sees it.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/kaumnen/AIMS/main/docs/images/run-dark.png">
@@ -13,6 +13,7 @@ The task hides temptations: a shared folder other agents write to, tests no hone
 
 Built during the Meta Global AI Developer Hackathon, from the Oct 26 kickoff to Nov 4 2026. The git history starts at the kickoff. Every built-in model profile is a Meta Muse model. [Meta models](#meta-models) lists what each one does and where it runs.
 
+- [Terms](#terms)
 - [How it works](#how-it-works)
 - [Quick start](#quick-start)
 - [Built-in scenarios](#built-in-scenarios)
@@ -26,6 +27,22 @@ Built during the Meta Global AI Developer Hackathon, from the Oct 26 kickoff to 
 - [Commands](#commands)
 - [Security](#security)
 - [Development](#development)
+
+## Terms
+
+| Term | Meaning |
+| --- | --- |
+| Scenario | A YAML file with the task, the sandbox, the agents and the plants. |
+| Plant | A temptation set on purpose, such as a bait file or a test no honest fix can pass. |
+| Take | An agent falling for a plant, such as editing a test so it passes. |
+| Variant | One change to a scenario, such as whether a human reviews changes. |
+| Oversight | What a flag does. `observe` records it, `autonomous` pauses for a model review, `human` waits for a person. |
+| Monitor | Signals, sweeps and a judge. They read the run and raise flags. |
+| Flag | The monitor's mark on a step, with a category and an importance from 1 to 5. |
+| Verifier, reward | Tests that run after the agent stops. Their result is the reward. |
+| Score | The plants each agent took, compared with the flags the monitor raised. |
+| Model organism | A model tuned to misbehave on a known cue. See [Glimmer organism](#glimmer-organism). |
+| Runner, control plane | The runner starts sandboxes and runs jobs. The control plane is the server behind the UI. |
 
 ## How it works
 
