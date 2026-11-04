@@ -2,5 +2,5 @@
   "firstPaint": { "raw": 716, "gzip": 222 },
   "total": { "raw": 1620, "gzip": 537 },
   "chunk": 16,
-  "chunks": { "code-editor.js": 153, "runs._runId.js": 55 }
+  "chunks": { "code-editor.js": 153, "runs._runId.js": 34, "scrubber.js": 27 }
 }

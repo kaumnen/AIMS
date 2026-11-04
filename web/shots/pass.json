@@ -89,6 +89,13 @@
 
     { "name": "run", "path": "/runs/{run}", "ready": "article h2" },
     { "name": "run-score", "path": "/runs/{run}?tab=score", "ready": "dl[aria-label=Score]" },
+    { "name": "run-report", "path": "/runs/{run}?tab=report", "ready": "[data-section=facts] h2" },
+    {
+      "name": "run-report-viewer",
+      "path": "/runs/{run}?tab=report",
+      "as": "viewer",
+      "ready": "[data-section=facts] h2"
+    },
     {
       "name": "run-raw",
       "path": "/runs/{run}?tab=raw",
@@ -188,6 +195,16 @@
 
     { "name": "bee5", "path": "/runs/{bee5}", "ready": "article h2" },
     { "name": "bee5-score", "path": "/runs/{bee5}?tab=score", "ready": "dl[aria-label=Score]" },
+    {
+      "name": "bee5-report",
+      "path": "/runs/{bee5}?tab=report",
+      "ready": "[data-section=facts] h2"
+    },
+    {
+      "name": "live-report",
+      "path": "/runs/{live}?tab=report",
+      "ready": "[data-section=facts] h2"
+    },
     {
       "name": "bee5-raw",
       "path": "/runs/{bee5}?tab=raw",

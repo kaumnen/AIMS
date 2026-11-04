@@ -88,7 +88,8 @@ function useWidth(ref: React.RefObject<HTMLElement | null>): number {
 
 // The run on one time axis: a lane per agent with its CPU trace and step ticks, flags in red
 // pen, review coverage along the lane top. Click or drag picks the step under way there.
-// `flags` and `sweeps` come from the monitor chosen in the panel.
+// `flags` and `sweeps` come from the monitor chosen in the panel. Without `selected` no step is
+// marked, so a click on any step picks it.
 export function Scrubber({
   runId,
   detail,
@@ -104,7 +105,7 @@ export function Scrubber({
   runId: string;
   detail: RunDetail;
   steps: readonly StepInfo[];
-  selected: StepInfo;
+  selected?: StepInfo | undefined;
   onSelect: (seq: number) => void;
   flags: readonly FlagInfo[];
   sweeps: readonly Event[];
@@ -223,7 +224,7 @@ export function Strip({
   span: Span;
   lanes: readonly LaneInput[];
   steps: readonly StepInfo[];
-  selected: StepInfo;
+  selected?: StepInfo | undefined;
   onSelect: (seq: number) => void;
   flags: readonly FlagInfo[];
   bands: readonly Band[];
@@ -254,7 +255,7 @@ export function Strip({
     const i = lanes.findIndex((l) => l.agent === agent);
     return i < 0 ? 0 : i;
   };
-  const at = steps.findIndex((s) => s.seq === selected.seq);
+  const at = selected ? steps.findIndex((s) => s.seq === selected.seq) : -1;
   // A harm's line: in its agent's lane, at the end of that agent's step holding it.
   const harmAt = (h: Harm) => {
     const own = stepsOf(h.agent);
@@ -276,11 +277,11 @@ export function Strip({
   };
   const move = (by: number) => {
     const next = steps[Math.min(steps.length - 1, Math.max(0, at + by))];
-    if (next && next.seq !== selected.seq) onSelect(next.seq);
+    if (next && next.seq !== selected?.seq) onSelect(next.seq);
   };
 
-  const sx0 = x(ms(selected.ts_from));
-  const sx1 = Math.max(sx0 + 2, x(ms(selected.ts_to)));
+  const sx0 = selected ? x(ms(selected.ts_from)) : 0;
+  const sx1 = selected ? Math.max(sx0 + 2, x(ms(selected.ts_to))) : 0;
   const hoverStep = hover === null ? undefined : stepAt(steps, tAt(hover));
   const hoverCol = hover === null ? -1 : Math.min(width - 1, Math.floor(hover));
 
@@ -292,8 +293,12 @@ export function Strip({
       aria-label="Timeline"
       aria-valuemin={1}
       aria-valuemax={Math.max(1, steps.length)}
-      aria-valuenow={at + 1}
-      aria-valuetext={`Step ${selected.n} at ${offset(ms(selected.ts_from) - span.t0)}`}
+      aria-valuenow={Math.max(1, at + 1)}
+      aria-valuetext={
+        selected
+          ? `Step ${selected.n} at ${offset(ms(selected.ts_from) - span.t0)}`
+          : "No step chosen"
+      }
       onKeyDown={(e) => {
         const by =
           e.key === "ArrowRight"
@@ -318,7 +323,7 @@ export function Strip({
         onPointerDown={(e) => {
           if (e.button !== 0) return;
           e.currentTarget.setPointerCapture(e.pointerId);
-          picked.current = selected.seq;
+          picked.current = selected?.seq ?? null;
           pick(...point(e));
         }}
         onPointerMove={(e) => {
@@ -342,13 +347,15 @@ export function Strip({
           );
         })}
         <line x1={0} x2={width} y1={AXIS - 0.5} y2={AXIS - 0.5} className="stroke-grid" />
-        <rect
-          x={sx0}
-          y={AXIS}
-          width={sx1 - sx0}
-          height={height - AXIS}
-          className="fill-foreground/8"
-        />
+        {selected && (
+          <rect
+            x={sx0}
+            y={AXIS}
+            width={sx1 - sx0}
+            height={height - AXIS}
+            className="fill-foreground/8"
+          />
+        )}
         {lanes.map((lane, i) => {
           const y = top(i);
           const pen = i % 3;
@@ -401,14 +408,16 @@ export function Strip({
             </g>
           );
         })}
-        <line
-          x1={sx0}
-          x2={sx0}
-          y1={AXIS}
-          y2={height}
-          className="stroke-foreground"
-          strokeWidth={1.5}
-        />
+        {selected && (
+          <line
+            x1={sx0}
+            x2={sx0}
+            y1={AXIS}
+            y2={height}
+            className="stroke-foreground"
+            strokeWidth={1.5}
+          />
+        )}
         {flags.map((f) => {
           const i = laneOf(f.agent_id);
           const step = flagStep(f, steps);

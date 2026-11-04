@@ -452,7 +452,7 @@ function ScoreView({
   );
 }
 
-function Caught({ m }: { m: Match | undefined }) {
+export function Caught({ m }: { m: Match | undefined }) {
   const level = levelOf(m);
   const when = whenCaught(m);
   return (
@@ -465,7 +465,7 @@ function Caught({ m }: { m: Match | undefined }) {
 
 const quietLevels = new Set<Level>(["missed"]);
 
-function Cell({
+export function Cell({
   m,
   onFlag,
 }: {

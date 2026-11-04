@@ -98,7 +98,7 @@ const seqs = (v: unknown): number[] =>
   Array.isArray(v) ? v.filter((x): x is number => typeof x === "number") : [];
 
 // Evidence as the steps that hold it; past the loaded steps, as bare seqs.
-function StepLinks({
+export function StepLinks({
   evidence,
   steps,
   more,
@@ -111,7 +111,9 @@ function StepLinks({
 }) {
   const links = new Map<string, { label: string; seq: number }>();
   for (const seq of evidence.toSorted((a, b) => a - b)) {
-    const step = reaches(steps, seq, more) ? stepOf(steps, seq) : undefined;
+    const found = reaches(steps, seq, more) ? stepOf(steps, seq) : undefined;
+    // an event before the first step goes by its seq
+    const step = found && found.seq_from <= seq ? found : undefined;
     const key = step ? `s${step.seq}` : `e${seq}`;
     if (!links.has(key)) links.set(key, { label: step ? `step ${step.n}` : `seq ${seq}`, seq });
   }

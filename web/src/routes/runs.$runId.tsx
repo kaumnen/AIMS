@@ -11,6 +11,7 @@ import {
 } from "react";
 
 import type { Event } from "@/api/events";
+import { unreported } from "@/api/report";
 import {
   eventQuery,
   type FlagInfo,
@@ -59,9 +60,10 @@ import { stepOf } from "@/lib/timeline";
 import { useOperator } from "@/lib/use-operator";
 
 const ReviewSweeps = lazy(() => import("@/components/run/sweeps"));
+const ReportTab = lazy(() => import("@/components/run/report"));
 
 interface RunSearch extends RawSearch {
-  tab?: "raw" | "score";
+  tab?: "raw" | "score" | "report";
   score?: string;
   step?: number;
   source?: string;
@@ -84,7 +86,8 @@ const int = (v: unknown) => {
 
 function parseSearch(raw: Record<string, unknown>): RunSearch {
   const out: RunSearch = {};
-  if (raw["tab"] === "raw" || raw["tab"] === "score") out.tab = raw["tab"];
+  if (raw["tab"] === "raw" || raw["tab"] === "score" || raw["tab"] === "report")
+    out.tab = raw["tab"];
   if (typeof raw["score"] === "string" && raw["score"]) out.score = raw["score"];
   const step = int(raw["step"]);
   if (step !== undefined) out.step = step;
@@ -185,7 +188,11 @@ function Run() {
   // a case of a self-test is scripted: no model steps, its record is the raw log
   const stepped = kind !== "selftest.case";
   const scored = kind === "scenario" && operator;
-  const asked = search.tab === "score" && !scored ? undefined : search.tab;
+  const reported = !unreported.has(kind);
+  const asked =
+    (search.tab === "score" && !scored) || (search.tab === "report" && !reported)
+      ? undefined
+      : search.tab;
   const tab = asked ?? (stepped ? "steps" : "raw");
   const toSteps = (to: StepsLink) =>
     change((prev) => ({ ...without(prev, "tab", "flag", "seq", "step"), ...to }));
@@ -203,7 +210,7 @@ function Run() {
         onValueChange={(v) =>
           change((prev) => {
             const { tab: _, ...rest } = prev;
-            return v === "raw" || v === "score" ? { ...rest, tab: v } : rest;
+            return v === "raw" || v === "score" || v === "report" ? { ...rest, tab: v } : rest;
           })
         }
         className="min-h-0 flex-1"
@@ -220,6 +227,7 @@ function Run() {
                     : "Steps"}
             </TabsTrigger>
           )}
+          {reported && <TabsTrigger value="report">Report</TabsTrigger>}
           {scored && <TabsTrigger value="score">Score</TabsTrigger>}
           <TabsTrigger value="raw">Raw events</TabsTrigger>
         </TabsList>
@@ -247,6 +255,25 @@ function Run() {
             />
           )}
         </TabsContent>
+        {reported && (
+          <TabsContent value="report" className="flex min-h-0 flex-col pt-1">
+            <Suspense fallback={<p className="text-muted-foreground">Loading the report</p>}>
+              <ReportTab
+                runId={runId}
+                detail={detail.data}
+                source={search.source}
+                onSource={(id) =>
+                  change((prev) =>
+                    id === undefined
+                      ? without(prev, "flag", "seq", "source")
+                      : { ...without(prev, "flag", "seq"), source: id },
+                  )
+                }
+                toSteps={toSteps}
+              />
+            </Suspense>
+          </TabsContent>
+        )}
         {scored && (
           <TabsContent value="score" className="flex min-h-0 flex-col pt-1">
             <Score
