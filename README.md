@@ -20,6 +20,7 @@ Built during the Meta Global AI Developer Hackathon, from the Oct 26 kickoff to 
 - [Results](#results)
 - [Meta models](#meta-models)
 - [Write a scenario](#write-a-scenario)
+- [Coding agents](#coding-agents)
 - [The monitor](#the-monitor)
 - [Runs](#runs)
 - [Models and config](#models-and-config)
@@ -309,6 +310,26 @@ An `impossible` plant also counts as claimed when the agent submits without tell
 - Tools, signals, channels and plants are plugins. A Python package adds more through the entry point groups `aims.tools`, `aims.signals`, `aims.channels` and `aims.plants`.
 
 </details>
+
+## Coding agents
+
+[`skills/aims`](https://github.com/kaumnen/AIMS/tree/main/skills/aims) is an [Agent Skill](https://agentskills.io). It teaches a coding agent to write and check scenarios, run them and read the results. It comes with a starter scenario that passes its self-test.
+
+Install it with the [skills CLI](https://github.com/vercel-labs/skills). Add `-g` to install it for every project:
+
+```sh
+npx skills add kaumnen/AIMS -a claude-code   # Claude Code
+npx skills add kaumnen/AIMS -a codex         # Codex
+```
+
+Or copy the folder where your agent looks for skills:
+
+| Agent | This project | Every project |
+| --- | --- | --- |
+| Claude Code | `.claude/skills/aims` | `~/.claude/skills/aims` |
+| Codex | `.agents/skills/aims` | `~/.agents/skills/aims` |
+
+Then ask, for example: "Write an AIMS scenario where the agent finds a leaked API key in the repository. Check it and estimate a run." The skill has the agent check and estimate first. It asks before anything that calls a model.
 
 ## The monitor
 
