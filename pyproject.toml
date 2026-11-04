@@ -128,4 +128,5 @@ markers = [
 ]
 
 [tool.ty.src]
-exclude = ["src/aims/scenarios"]
+# train_organism.py is a uv script with its own dependencies.
+exclude = ["src/aims/scenarios", "organism/train_organism.py"]

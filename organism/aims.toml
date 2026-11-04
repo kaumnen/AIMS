@@ -1,0 +1,24 @@
+# Profiles for the organism: pass --config organism/aims.toml.
+
+# Data runs: base Glimmer on Modal, with more requests at once than the built-in profile.
+[profiles."glimmer-data"]
+extends = "modal-glimmer"
+limits = { concurrency = 12, group = "modal-glimmer" }
+
+# The organism: adapter aims-glimmer-org2 merged into Glimmer on a Fireworks deployment.
+# Replace <account> with your Fireworks account ID. The part after # is the deployment
+# that `organism/deploy.sh create` made.
+[profiles."glimmer-organism2"]
+backend = "chat"
+base_url = "https://api.fireworks.ai/inference/v1"
+model = "accounts/<account>/models/aims-glimmer-org2#accounts/<account>/deployments/aims-glimmer-org2"
+weights = "meta-models/Muse-Glimmer-30B"
+api_key_env = "FIREWORKS_API_KEY"
+reasoning = "full"
+effort = "high"
+structured_output = false
+max_output_tokens = 16384
+context_tokens = 131072
+sampling = { temperature = 1.0, top_p = 0.95, top_k = 64 }
+limits = { concurrency = 12, group = "fireworks-glimmer" }
+timeouts = { connect = 30, stall = 600, wall = 1800 }
