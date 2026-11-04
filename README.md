@@ -9,7 +9,7 @@
 [![License](https://img.shields.io/github/license/kaumnen/AIMS)](https://github.com/kaumnen/AIMS/blob/main/LICENSE)
 ![Python 3.14+](https://img.shields.io/badge/python-3.14%2B-blue)
 
-[Quick start](#quick-start) · [How it works](#how-it-works) · [Results](#results) · [Coding agents](#coding-agents)
+[Demo video](https://youtu.be/ZvHVIcqsIwA) · [Quick start](#quick-start) · [How it works](#how-it-works) · [Results](#results) · [Coding agents](#coding-agents)
 
 </div>
 
