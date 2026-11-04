@@ -71,6 +71,35 @@ TIMELINE_INTRO = (
     "Starts and ends, flags at importance 3 or more, monitor and operator actions, plants "
     "reached and the events the judge cited."
 )
+# Every word inside the mermaid chart. Nothing from the log goes in it, and no label
+# may hold `:`, `#`, `;` or `%` or start with a mermaid keyword.
+CHART_TITLE = "Run timeline"
+CHART_DESCRIPTION = "Agent work, the live monitor, flags and plants reached over time."
+CHART_SECTIONS = {"agents": "Agent", "monitor": "Monitor", "plants": "Plants"}
+CHART_AGENT = "Agent {n}"
+CHART_LIVE = "Live monitor"
+CHART_DEGRADED = "Degraded"
+CHART_SIGNALS_ONLY = "Signals only"
+CHART_LAYERS = {"signal": "Signal flag", "sweep": "Sweep flag", "judge": "Judge flag"}
+CHART_FLAG = "Flag"
+CHART_FLAG_LABEL = "{layer}, importance {importance} of 5"
+CHART_FLAG_ON = "{layer} on {agent}, importance {importance} of 5"
+CHART_PLANT = "Plant {n}"
+
+# Marks around the chart, its legend and notes, so an export can drop them together.
+CHART_MARK = "<!-- aims:chart -->"
+CHART_END = "<!-- aims:chart end -->"
+
+# Words around the chart, outside the fence.
+CHART_CLOCK = "The chart's axis shows clock time in your time zone."
+CHART_REVIEW = "Its flags are from review {run}."
+CHART_FLAGS_CUT = (
+    "It shows the {shown} flags of highest importance. The table below has all {total}."
+)
+CHART_PLANTS_CUT = "It shows the first {shown} plants reached. The table below has all {total}."
+CHART_AGENTS_HEAD = ["In the chart", "Agent"]
+CHART_PLANTS_HEAD = ["In the chart", "Plant", "Agent", "Reached", "At"]
+
 MOMENT = {
     "run_started": "Run started",
     "agent_started": "Agent started",

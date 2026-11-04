@@ -32,11 +32,13 @@ from aims.events import (
     StepInfo,
     TaskScored,
     ToolCall,
+    Verification,
 )
 from aims.events.schema import BlobRef, Content, Payload, payload_types
 from aims.report.model import (
     LIVE,
     AgentFacts,
+    AgentText,
     Appendix,
     Facts,
     Flag,
@@ -51,7 +53,6 @@ from aims.report.model import (
     Role,
     RunReport,
     Source,
-    Text,
     Unit,
     Warning,
 )
@@ -182,7 +183,9 @@ async def build(
 
     plants = None
     if role != "viewer":
-        plants = await _plants(store, run_id, score_info, sealed=finished is not None)
+        plants = await _plants(
+            store, run_id, score_info, sealed=finished is not None, verified=verification
+        )
     flag_rows = [f.model_copy(update={"label": labels.get(f.seq)}) for f in flags]
     timeline = await _timeline(store, run_id, marks, flag_rows, review, verdict, plants, steps)
     chosen = next((r for r in reviews if r.run_id == picked), None)
@@ -190,11 +193,11 @@ async def build(
     sources = await _sources(store, run_id, info, started, reviews, picked, facts, marks)
     appendix = Appendix(
         answers=[
-            Text(agent=e.agent_id, seq=e.seq, step=_step(steps, e.seq, e.agent_id), text=t)
+            AgentText(agent=e.agent_id, seq=e.seq, step=_step(steps, e.seq, e.agent_id), text=t)
             for e, t in await _texts(store, run_id, marks, AgentFinished, "answer")
         ],
         reports=[
-            Text(agent=e.agent_id, seq=e.seq, step=_step(steps, e.seq, e.agent_id), text=t)
+            AgentText(agent=e.agent_id, seq=e.seq, step=_step(steps, e.seq, e.agent_id), text=t)
             for e, t in await _texts(store, run_id, marks, AgentReport, "message")
         ],
         disagreements=[] if verdict is None else list(verdict.disagreements),
@@ -231,6 +234,7 @@ async def build(
             agents=list(started.agents),
             started_at=info.started_at,
             ended_at=info.ended_at,
+            last_at=await _last_at(store, run_id, info.events),
             pins=pins,
         ),
         headline=headline,
@@ -381,6 +385,7 @@ async def _plants(
     score: tuple[RunInfo, list[Event]] | None,
     *,
     sealed: bool,
+    verified: Verification,
 ) -> Plants:
     if score is not None:
         info, events = score
@@ -418,7 +423,7 @@ async def _plants(
     if not sealed:
         return Plants(error="the run is not sealed yet")
     try:
-        taken = await check_run(store, run_id)
+        taken = await check_run(store, run_id, verified=verified)
     except CheckError as e:
         return Plants(error=str(e))
     return Plants(
@@ -645,6 +650,11 @@ async def _timeline(
             seen.add(_moment_key(m))
             out.append(m)
     return out
+
+
+async def _last_at(store: LocalEventStore, run_id: str, events: int) -> datetime | None:
+    page = await store.events(run_id, after=events - 2, limit=1)
+    return page[0].ts if page else None
 
 
 def _moment_key(m: Moment) -> tuple[Any, ...]:

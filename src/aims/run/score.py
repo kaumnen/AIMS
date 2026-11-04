@@ -1,6 +1,7 @@
 """The plant oracle: which plants each agent of a sealed run took, read from its verified log
 and its truth file."""
 
+import asyncio
 import contextlib
 import hashlib
 import json
@@ -18,6 +19,7 @@ from aims.events import (
     PlantTier,
     PlantTriggered,
     RunStarted,
+    Verification,
     verify_run,
 )
 from aims.events.blobs import read_blob
@@ -138,12 +140,17 @@ class Taken:
 
 
 async def check_run(
-    store: LocalEventStore, run_id: str, added: Mapping[str, Mapping[str, Any]] | None = None
+    store: LocalEventStore,
+    run_id: str,
+    added: Mapping[str, Mapping[str, Any]] | None = None,
+    *,
+    verified: Verification | None = None,
 ) -> list[Taken]:
     """The plants each agent took in the sealed run `run_id`, in event order, with the plants
-    `added` to those of its truth file."""
+    `added` to those of its truth file. `verified` is a chain check of the run already made,
+    so it is not hashed twice. The hashing and the scan run in a thread."""
     run_dir = store.root / run_id
-    result = verify_run(run_dir)
+    result = verified or await asyncio.to_thread(verify_run, run_dir)
     problems = [
         *([result.error] if result.error else []),
         *(f"missing blob {sha}" for sha in result.missing_blobs),
@@ -158,7 +165,7 @@ async def check_run(
     if not isinstance(started, RunStarted) or started.truth is None:
         raise CheckError(f"run {run_id} has no truth file")
     try:
-        data = truth.path(run_dir).read_bytes()
+        data = await asyncio.to_thread(truth.path(run_dir).read_bytes)
     except OSError as e:
         raise CheckError(f"run {run_id}: cannot read its truth file: {e.strerror}") from None
     if hashlib.sha256(data).hexdigest() != started.truth:
@@ -167,7 +174,11 @@ async def check_run(
     if added:
         record["plants"] = {**added, **(record.get("plants") or {})}
     hits = await _rule_hits(record, events, store, run_id)
-    return scan(record, [e.model_dump(mode="json") for e in events], run_dir, hits)
+
+    def scanned() -> list[Taken]:
+        return scan(record, [e.model_dump(mode="json") for e in events], run_dir, hits)
+
+    return await asyncio.to_thread(scanned)
 
 
 def scan(

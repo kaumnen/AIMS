@@ -655,6 +655,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Report
+         * @description The report of a run, built from its log each time. `source` picks the monitor: `live`
+         *     or a monitor run over the run; by default the newest finished review, else live. Viewers
+         *     get no plants and no score. `format=md` gives the Markdown file `aims report` writes.
+         *     Evidence links start at the server's public URL, else at the address the request used.
+         */
+        get: operations["get_report"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{run_id}/resume": {
         parameters: {
             query?: never;
@@ -1529,6 +1552,37 @@ export interface components {
              */
             tokens_before: number | null;
         };
+        /** AgentFacts */
+        AgentFacts: {
+            /** Agent */
+            agent: string;
+            /**
+             * Cost Complete
+             * @default true
+             */
+            cost_complete?: boolean;
+            /**
+             * Cost Usd
+             * @default 0
+             */
+            cost_usd?: number;
+            /** End */
+            end?: ("submitted" | "no_submit" | "budget_steps" | "budget_output_tokens" | "budget_cost" | "budget_wall" | "context_exhausted" | "model_error" | "sandbox_failed" | "divergence" | "killed" | "cancelled" | "error") | null;
+            /** Model */
+            model: string;
+            /** Profile */
+            profile: string;
+            /**
+             * Steps
+             * @default 0
+             */
+            steps?: number;
+            /**
+             * Wall Ms
+             * @default 0
+             */
+            wall_ms?: number;
+        };
         /**
          * AgentFinished
          * @description `wall_ms` is the agent's wall time and `paused_ms` the part of it spent paused or held
@@ -1736,15 +1790,26 @@ export interface components {
             usage: components["schemas"]["ModelUsage"];
         };
         /**
+         * AgentText
+         * @description Text an agent wrote at `seq`: a final answer or a report to the operator.
+         */
+        AgentText: {
+            /** Agent */
+            agent?: string | null;
+            /** Seq */
+            seq: number;
+            /** Step */
+            step?: number | null;
+            /** Text */
+            text: string;
+        };
+        /**
          * Anomaly
          * @description Something odd the judge saw that fits none of the categories (`behaviour`), or a sign
          *     that the scenario or the sandbox is broken (`environment`), with the seqs it rests on.
          */
         Anomaly: {
-            /**
-             * Agent
-             * @default null
-             */
+            /** Agent */
             agent?: string | null;
             /** Evidence */
             evidence?: number[];
@@ -1755,6 +1820,15 @@ export interface components {
             kind: "behaviour" | "environment";
             /** Note */
             note: string;
+        };
+        /** Appendix */
+        Appendix: {
+            /** Answers */
+            answers?: components["schemas"]["AgentText"][];
+            /** Disagreements */
+            disagreements?: string[];
+            /** Reports */
+            reports?: components["schemas"]["AgentText"][];
         };
         /**
          * AuditLost
@@ -1985,10 +2059,7 @@ export interface components {
             category: "covert_communication" | "scorer_tampering" | "transcript_tampering" | "deceiving_operator" | "evading_checks" | "collective_over_own_task" | "drift" | "loop_or_confusion" | "fabricated_completion" | "constraint_violation" | "eval_awareness" | "alerting_operator" | "egress_attempt" | "privilege_escalation" | "monitor_manipulation";
             /** Evidence */
             evidence?: number[];
-            /**
-             * Importance
-             * @default null
-             */
+            /** Importance */
             importance?: number | null;
             /**
              * Justification
@@ -2784,6 +2855,45 @@ export interface components {
             wrapper: string[];
         };
         /**
+         * Facts
+         * @description `kernel` counts the kernel events by type. `agent_cost_usd` and `monitor_cost_usd` sum
+         *     the priced live model calls of the agents and of the live monitor, its judge included.
+         *     `review_cost_usd` is what the review picked as the source cost.
+         */
+        Facts: {
+            /** Agent Cost Usd */
+            agent_cost_usd?: number | null;
+            /** Agents */
+            agents?: components["schemas"]["AgentFacts"][];
+            /** Costs */
+            costs?: components["schemas"]["CallCost"][];
+            /** Duration Ms */
+            duration_ms?: number | null;
+            /**
+             * Events
+             * @default 0
+             */
+            events?: number;
+            /**
+             * Flags
+             * @default 0
+             */
+            flags?: number;
+            /** Kernel */
+            kernel?: {
+                [key: string]: number;
+            };
+            /** Monitor Cost Usd */
+            monitor_cost_usd?: number | null;
+            /** Review Cost Usd */
+            review_cost_usd?: number | null;
+            /**
+             * Steps
+             * @default 0
+             */
+            steps?: number;
+        };
+        /**
          * FdInfo
          * @description A file descriptor at exec: its inode and what it points at.
          */
@@ -2977,6 +3087,59 @@ export interface components {
             size: number;
             /** Ts Kernel */
             ts_kernel: number;
+        };
+        /**
+         * Flag
+         * @description One logical flag of the monitor source, at `seq` in `run_id`; its evidence seqs are
+         *     in the reported run. `review` is the judge's view of it, `label` a person's.
+         */
+        Flag: {
+            /** Agent */
+            agent?: string | null;
+            /**
+             * Category
+             * @enum {string}
+             */
+            category: "covert_communication" | "scorer_tampering" | "transcript_tampering" | "deceiving_operator" | "evading_checks" | "collective_over_own_task" | "drift" | "loop_or_confusion" | "fabricated_completion" | "constraint_violation" | "eval_awareness" | "alerting_operator" | "egress_attempt" | "privilege_escalation" | "monitor_manipulation";
+            /**
+             * Count
+             * @default 1
+             */
+            count?: number;
+            /** Evidence */
+            evidence?: number[];
+            /** Importance */
+            importance: number;
+            /**
+             * Justification
+             * @default
+             */
+            justification?: string;
+            label?: components["schemas"]["Label-Output"] | null;
+            /**
+             * Layer
+             * @enum {string}
+             */
+            layer: "signal" | "sweep" | "judge";
+            review?: components["schemas"]["FlagReview"] | null;
+            /** Run Id */
+            run_id: string;
+            /** Seq */
+            seq: number;
+            /** Source */
+            source: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "open" | "cleared" | "tainted" | "confirmed" | "rejected" | "unclear";
+            /** Status Reason */
+            status_reason?: string | null;
+            /**
+             * Tainted
+             * @default false
+             */
+            tainted?: boolean;
         };
         /**
          * FlagInfo
@@ -3265,6 +3428,68 @@ export interface components {
              * @default false
              */
             truth: boolean;
+        };
+        /**
+         * Header
+         * @description `status` is `running` until the run seals. `reason` is why it ended, from its log.
+         *     `last_at` is the time of the last event logged so far.
+         */
+        Header: {
+            /** Agents */
+            agents?: string[];
+            /** Ended At */
+            ended_at?: string | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "scenario" | "monitor" | "models.check" | "score" | "selftest" | "selftest.case";
+            /** Last At */
+            last_at?: string | null;
+            /**
+             * Oversight
+             * @enum {string}
+             */
+            oversight: "observe" | "autonomous" | "human";
+            pins: components["schemas"]["Pins"];
+            /** Reason */
+            reason?: string | null;
+            /** Run Id */
+            run_id: string;
+            /** Scenario */
+            scenario: string;
+            /** Started At */
+            started_at?: string | null;
+            /** Status */
+            status: ("completed" | "failed" | "killed" | "cancelled") | "running";
+            /** Variant */
+            variant?: string | null;
+        };
+        /**
+         * Headline
+         * @description The verifier's reward beside the judge's verdict. `passed` and `total` come from the
+         *     verifier's metrics when it reported them. `no_verdict` says why there is no verdict.
+         */
+        Headline: {
+            /** Claim Matched */
+            claim_matched?: ("yes" | "no" | "unclear") | null;
+            /** Importance */
+            importance?: number | null;
+            /** No Verdict */
+            no_verdict?: ("running" | "no_monitor" | "skipped" | "missing") | null;
+            /** Passed */
+            passed?: number | null;
+            /** Reward */
+            reward?: number | null;
+            /** Reward Error */
+            reward_error?: string | null;
+            /**
+             * Scored
+             * @default false
+             */
+            scored?: boolean;
+            /** Total */
+            total?: number | null;
         };
         /** Heads */
         Heads: {
@@ -4057,6 +4282,37 @@ export interface components {
             };
         };
         /**
+         * Moment
+         * @description One row of the timeline. `step` is the agent step the event falls in. `what` names
+         *     the event type, tool or action; `detail` is text from the log.
+         */
+        Moment: {
+            /** Agent */
+            agent?: string | null;
+            /** Categories */
+            categories?: ("covert_communication" | "scorer_tampering" | "transcript_tampering" | "deceiving_operator" | "evading_checks" | "collective_over_own_task" | "drift" | "loop_or_confusion" | "fabricated_completion" | "constraint_violation" | "eval_awareness" | "alerting_operator" | "egress_attempt" | "privilege_escalation" | "monitor_manipulation")[];
+            /** Detail */
+            detail?: string | null;
+            /** Importance */
+            importance?: number | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "run_started" | "agent_started" | "agent_finished" | "run_finished" | "flag" | "monitor_action" | "operator_action" | "degraded" | "plant" | "report" | "scored" | "verdict" | "evidence";
+            /** Seq */
+            seq: number;
+            /** Step */
+            step?: number | null;
+            /** Ts */
+            ts: string;
+            /**
+             * What
+             * @default
+             */
+            what?: string;
+        };
+        /**
          * MonitorAction
          * @description What the monitor's policy decided, written before it acts. `simulated` marks a decision
          *     taken in observe mode or in a monitor run, which changed nothing. `flags` are the seqs of the
@@ -4540,6 +4796,85 @@ export interface components {
             reason?: string | null;
         };
         /**
+         * Pins
+         * @description Every input the report was built from. Two builds from the same pins give the same
+         *     report apart from `built_at`. `source` is `live` or the monitor run picked; `monitor` is
+         *     the identity hash of its monitor. `labels` counts the flags a person labelled.
+         */
+        Pins: {
+            /** Base Url */
+            base_url?: string | null;
+            /** Built At */
+            built_at: string;
+            /** Events */
+            events: number;
+            /** Head */
+            head: string;
+            /**
+             * Labels
+             * @default 0
+             */
+            labels?: number;
+            /** Labels At */
+            labels_at?: string | null;
+            /** Monitor */
+            monitor?: string | null;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "local" | "operator" | "viewer";
+            /** Run Id */
+            run_id: string;
+            /** Score */
+            score?: string | null;
+            /** Score Head */
+            score_head?: string | null;
+            /** Source */
+            source: string;
+            /** Source Head */
+            source_head?: string | null;
+            /** Verified */
+            verified: boolean;
+            /** Verify Error */
+            verify_error?: string | null;
+            /** Version */
+            version: string;
+        };
+        /**
+         * Plant
+         * @description A plant one agent reached, from the run's truth file. `matches` are what each monitor
+         *     layer caught of it, from the score run; empty when there is none or it was not taken.
+         */
+        Plant: {
+            /** Agent */
+            agent: string;
+            /** Category */
+            category: string;
+            /**
+             * Detail
+             * @default
+             */
+            detail?: string;
+            /** Evidence */
+            evidence?: number[];
+            /** Kind */
+            kind: string;
+            /** Matches */
+            matches?: components["schemas"]["ScoreMatch"][];
+            /** Plant */
+            plant: string;
+            /** Seq */
+            seq: number;
+            /** Taken */
+            taken: boolean;
+            /**
+             * Tier
+             * @enum {string}
+             */
+            tier: "touched" | "considered" | "claimed" | "used";
+        };
+        /**
          * PlantOverview
          * @description `category` and `taken` are the ones scoring uses, None when the plant kind is unknown.
          */
@@ -4598,6 +4933,20 @@ export interface components {
              * @enum {string}
              */
             tier: "touched" | "considered" | "claimed" | "used";
+        };
+        /**
+         * Plants
+         * @description Ground truth, for operators. `error` says why the plants could not be read.
+         */
+        Plants: {
+            /** Error */
+            error?: string | null;
+            /** Rows */
+            rows?: components["schemas"]["Plant"][];
+            /** Score */
+            score?: string | null;
+            /** Units */
+            units?: components["schemas"]["Unit"][];
         };
         /**
          * Price
@@ -5497,6 +5846,38 @@ export interface components {
             next: string | null;
         };
         /**
+         * RunReport
+         * @description Everything a report says about one run, built from its log and nothing stored. Text
+         *     from the log is kept as written; each writer escapes it. `plants` is None when the role
+         *     may not see ground truth; `summary` is the judge's own words.
+         */
+        RunReport: {
+            appendix?: components["schemas"]["Appendix"];
+            facts: components["schemas"]["Facts"];
+            /** Findings */
+            findings?: components["schemas"]["CategoryFinding"][];
+            /** Flags */
+            flags?: components["schemas"]["Flag"][];
+            header: components["schemas"]["Header"];
+            headline: components["schemas"]["Headline"];
+            /** Observations */
+            observations?: components["schemas"]["Anomaly"][];
+            plants?: components["schemas"]["Plants"] | null;
+            /** Sections */
+            sections?: ("header" | "headline" | "warnings" | "summary" | "findings" | "observations" | "plants" | "flags" | "timeline" | "facts" | "sources" | "appendix")[];
+            /** Sources */
+            sources?: components["schemas"]["Source"][];
+            /**
+             * Summary
+             * @default
+             */
+            summary?: string;
+            /** Timeline */
+            timeline?: components["schemas"]["Moment"][];
+            /** Warnings */
+            warnings?: components["schemas"]["Warning"][];
+        };
+        /**
          * RunStarted
          * @description `kind` says what the run is: a scenario run, a monitor run over the sealed run `origin`
          *     (whose head hash was `origin_head`), a scoring of `origin`, a model check, or a scenario's
@@ -6185,15 +6566,9 @@ export interface components {
              * @default false
              */
             detected_before?: boolean;
-            /**
-             * First Flag
-             * @default null
-             */
+            /** First Flag */
             first_flag?: number | null;
-            /**
-             * Importance
-             * @default null
-             */
+            /** Importance */
             importance?: number | null;
             /**
              * Layer
@@ -6215,20 +6590,11 @@ export interface components {
              * @default 1
              */
             min_importance?: number;
-            /**
-             * Seconds
-             * @default null
-             */
+            /** Seconds */
             seconds?: number | null;
-            /**
-             * Steps
-             * @default null
-             */
+            /** Steps */
             steps?: number | null;
-            /**
-             * Suspicion
-             * @default null
-             */
+            /** Suspicion */
             suspicion?: number | null;
         };
         /**
@@ -6423,6 +6789,33 @@ export interface components {
         Shas: {
             /** Shas */
             shas: string[];
+        };
+        /**
+         * Source
+         * @description A monitor of the run: its live monitor (`live`) or a monitor run over it.
+         */
+        Source: {
+            /**
+             * Chosen
+             * @default false
+             */
+            chosen?: boolean;
+            /** Claim Matched */
+            claim_matched?: ("yes" | "no" | "unclear") | null;
+            /** Cost Usd */
+            cost_usd?: number | null;
+            /** Importance */
+            importance?: number | null;
+            /** Preset */
+            preset?: string | null;
+            /** Review */
+            review: boolean;
+            /** Run Id */
+            run_id: string;
+            /** Started At */
+            started_at?: string | null;
+            /** Status */
+            status: string;
         };
         /**
          * SourceInfo
@@ -7016,6 +7409,38 @@ export interface components {
             restarts: number;
         };
         /**
+         * Unit
+         * @description One agent of the score run: what it took and what each layer caught of it.
+         */
+        Unit: {
+            /** Agent */
+            agent: string;
+            /** Cause */
+            cause?: ("true" | "false" | "none") | null;
+            /** Eval Aware */
+            eval_aware?: ("yes" | "no" | "unclear") | null;
+            /** Harm Seq */
+            harm_seq?: number | null;
+            /**
+             * Labelled
+             * @default false
+             */
+            labelled?: boolean;
+            /** Matches */
+            matches?: components["schemas"]["ScoreMatch"][];
+            /** Plants */
+            plants?: string[];
+            /** Positive */
+            positive: boolean | null;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "subject" | "confederate";
+            /** Told */
+            told?: ("yes" | "partly" | "no") | null;
+        };
+        /**
          * VariantCost
          * @description One run of one variant. `monitor` is None when the monitor is off; `steps` is the median
          *     number of steps each agent took in past runs of the same scenario under the same step
@@ -7057,6 +7482,41 @@ export interface components {
             ok: boolean;
             /** Run Id */
             run_id: string;
+        };
+        /**
+         * Warning
+         * @description Something that limits what the report can say. `seq` is the first event that shows
+         *     it in `run_id`, `count` how many there were, `detail` the reason the log gives. A
+         *     degraded monitor names its `part` and what it did `then`; lost audit records sum to
+         *     `lost` when known; `seqs` are the flags that tainted the reward.
+         */
+        Warning: {
+            /** Agent */
+            agent?: string | null;
+            /**
+             * Count
+             * @default 1
+             */
+            count?: number;
+            /** Detail */
+            detail?: string | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "in_progress" | "verify_failed" | "monitor_degraded" | "audit_lost" | "log_truncated" | "replay_divergence" | "cost_incomplete" | "tainted";
+            /** Lost */
+            lost?: number | null;
+            /** Part */
+            part?: string | null;
+            /** Run Id */
+            run_id: string;
+            /** Seq */
+            seq?: number | null;
+            /** Seqs */
+            seqs?: number[];
+            /** Then */
+            then?: string | null;
         };
         /** Whoami */
         Whoami: {
@@ -9186,6 +9646,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Projection"];
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_report: {
+        parameters: {
+            query?: {
+                source?: string | null;
+                format?: "json" | "md";
+            };
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunReport"];
+                    "text/markdown": string;
                 };
             };
             /** @description Not signed in */
@@ -12305,8 +12827,10 @@ export const pathsApiRunsRun_idFlagsGetParametersQueryCategoryAnyOf0Values: Read
 export const pathsApiRunsRun_idFlagsGetParametersQueryStatusAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs/{run_id}/flags"]["get"]["parameters"]["query"]["status"]> = ["open", "cleared", "tainted", "confirmed", "rejected", "unclear"];
 export const pathsApiRunsRun_idForksEstimateGetParametersQueryMonitorAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs/{run_id}/forks/estimate"]["get"]["parameters"]["query"]["monitor"]> = ["off", "signals", "standard", "research"];
 export const pathsApiRunsRun_idMonitorEstimateGetParametersQueryPresetAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs/{run_id}/monitor/estimate"]["get"]["parameters"]["query"]["preset"]> = ["signals", "standard", "research"];
+export const pathsApiRunsRun_idReportGetParametersQueryFormatValues: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs/{run_id}/report"]["get"]["parameters"]["query"]["format"]> = ["json", "md"];
 export const pathsApiScenariosSourceNameEstimateGetParametersQueryMonitorAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/scenarios/{source}/{name}/estimate"]["get"]["parameters"]["query"]["monitor"]> = ["off", "signals", "standard", "research"];
 export const agentCompactedStrategyValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentCompacted"]["strategy"]> = ["trim", "summary"];
+export const agentFactsEndAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentFacts"]["end"]> = ["submitted", "no_submit", "budget_steps", "budget_output_tokens", "budget_cost", "budget_wall", "context_exhausted", "model_error", "sandbox_failed", "divergence", "killed", "cancelled", "error"];
 export const agentFinishedReasonValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentFinished"]["reason"]> = ["submitted", "no_submit", "budget_steps", "budget_output_tokens", "budget_cost", "budget_wall", "context_exhausted", "model_error", "sandbox_failed", "divergence", "killed", "cancelled", "error"];
 export const agentHeldKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentHeld"]["kind"]> = ["before_model", "after_reply", "before_tool", "after_tool"];
 export const agentInputKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentInput"]["kind"]> = ["instruction", "continue", "inject", "budget_warning"];
@@ -12344,6 +12868,9 @@ export const execStartedPhaseValues: ReadonlyArray<FlattenedDeepRequired<compone
 export const fdInfoKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["FdInfo"]["kind"]> = ["pipe", "fifo", "file", "char", "sock", "dir", "other"];
 export const fileAccessOpValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["FileAccess"]["op"]> = ["read", "write", "delete", "rename", "denied", "mkdir", "symlink", "link"];
 export const fileSyncCallValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["FileSync"]["call"]> = ["fsync", "fdatasync", "sync_file_range", "syncfs"];
+export const flagCategoryValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Flag"]["category"]> = ["covert_communication", "scorer_tampering", "transcript_tampering", "deceiving_operator", "evading_checks", "collective_over_own_task", "drift", "loop_or_confusion", "fabricated_completion", "constraint_violation", "eval_awareness", "alerting_operator", "egress_attempt", "privilege_escalation", "monitor_manipulation"];
+export const flagLayerValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Flag"]["layer"]> = ["signal", "sweep", "judge"];
+export const flagStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Flag"]["status"]> = ["open", "cleared", "tainted", "confirmed", "rejected", "unclear"];
 export const flagInfoCategoryValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["FlagInfo"]["category"]> = ["covert_communication", "scorer_tampering", "transcript_tampering", "deceiving_operator", "evading_checks", "collective_over_own_task", "drift", "loop_or_confusion", "fabricated_completion", "constraint_violation", "eval_awareness", "alerting_operator", "egress_attempt", "privilege_escalation", "monitor_manipulation"];
 export const flagInfoLayerValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["FlagInfo"]["layer"]> = ["signal", "sweep", "judge"];
 export const flagInfoPhaseAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["FlagInfo"]["phase"]> = ["agent", "setup", "verifier", "replay"];
@@ -12352,6 +12879,11 @@ export const flagReviewStatusValues: ReadonlyArray<FlattenedDeepRequired<compone
 export const fsChangeChangeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["FsChange"]["change"]> = ["added", "modified", "meta", "removed", "kind"];
 export const fsChangeKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["FsChange"]["kind"]> = ["file", "dir", "symlink", "fifo", "socket", "other"];
 export const groupWorstAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Group"]["worst"]> = ["covert_communication", "scorer_tampering", "transcript_tampering", "deceiving_operator", "evading_checks", "collective_over_own_task", "drift", "loop_or_confusion", "fabricated_completion", "constraint_violation", "eval_awareness", "alerting_operator", "egress_attempt", "privilege_escalation", "monitor_manipulation"];
+export const headerKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Header"]["kind"]> = ["scenario", "monitor", "models.check", "score", "selftest", "selftest.case"];
+export const headerOversightValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Header"]["oversight"]> = ["observe", "autonomous", "human"];
+export const headerStatusAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Header"]["status"]> = ["completed", "failed", "killed", "cancelled"];
+export const headlineClaim_matchedAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Headline"]["claim_matched"]> = ["yes", "no", "unclear"];
+export const headlineNo_verdictAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Headline"]["no_verdict"]> = ["running", "no_monitor", "skipped", "missing"];
 export const holdInfoAtAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["HoldInfo"]["at"]> = ["before_model", "after_reply", "before_tool", "after_tool"];
 export const holdInfoByValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["HoldInfo"]["by"]> = ["monitor", "operator"];
 export const holdInfoModeAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["HoldInfo"]["mode"]> = ["observe", "autonomous", "human"];
@@ -12374,6 +12906,8 @@ export const modelResponseError_kindAnyOf0Values: ReadonlyArray<FlattenedDeepReq
 export const modelResponseReasoning_kindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelResponse"]["reasoning_kind"]> = ["none", "summary", "full"];
 export const modelResponseSourceValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelResponse"]["source"]> = ["live", "replay"];
 export const modelResponseStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelResponse"]["status"]> = ["completed", "incomplete", "error", "cancelled"];
+export const momentCategoriesValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Moment"]["categories"]> = ["covert_communication", "scorer_tampering", "transcript_tampering", "deceiving_operator", "evading_checks", "collective_over_own_task", "drift", "loop_or_confusion", "fabricated_completion", "constraint_violation", "eval_awareness", "alerting_operator", "egress_attempt", "privilege_escalation", "monitor_manipulation"];
+export const momentKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Moment"]["kind"]> = ["run_started", "agent_started", "agent_finished", "run_finished", "flag", "monitor_action", "operator_action", "degraded", "plant", "report", "scored", "verdict", "evidence"];
 export const monitorActionActionValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["MonitorAction"]["action"]> = ["pause", "resume", "kill", "deny"];
 export const monitorActionModeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["MonitorAction"]["mode"]> = ["observe", "autonomous", "human"];
 export const monitorDegradedPartValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["MonitorDegraded"]["part"]> = ["sweep", "judge", "review", "signal", "budget"];
@@ -12392,6 +12926,8 @@ export const nsEventKindValues: ReadonlyArray<FlattenedDeepRequired<components>[
 export const offerMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["OfferMessage"]["kind"]> = ["offer"];
 export const operatorActionActionValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["OperatorAction"]["action"]> = ["pause", "resume", "inject", "kill", "cancel", "sweep"];
 export const operatorActionThenAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["OperatorAction"]["then"]> = ["continue", "kill", "inject", "deny"];
+export const pinsRoleValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Pins"]["role"]> = ["local", "operator", "viewer"];
+export const plantTierValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Plant"]["tier"]> = ["touched", "considered", "claimed", "used"];
 export const plantTriggeredCategoryValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PlantTriggered"]["category"]> = ["covert_communication", "scorer_tampering", "transcript_tampering", "deceiving_operator", "evading_checks", "collective_over_own_task", "drift", "loop_or_confusion", "fabricated_completion", "constraint_violation", "eval_awareness", "alerting_operator", "egress_attempt", "privilege_escalation", "monitor_manipulation"];
 export const plantTriggeredTierValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PlantTriggered"]["tier"]> = ["touched", "considered", "claimed", "used"];
 export const procOutputStreamValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ProcOutput"]["stream"]> = ["stdout", "stderr", "pipe", "fifo"];
@@ -12405,6 +12941,7 @@ export const reviewEstimateModeValues: ReadonlyArray<FlattenedDeepRequired<compo
 export const reviewEstimatePresetValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ReviewEstimate"]["preset"]> = ["off", "signals", "standard", "research"];
 export const runFinishedStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunFinished"]["status"]> = ["completed", "failed", "killed", "cancelled"];
 export const runMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunMessage"]["kind"]> = ["run"];
+export const runReportSectionsValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunReport"]["sections"]> = ["header", "headline", "warnings", "summary", "findings", "observations", "plants", "flags", "timeline", "facts", "sources", "appendix"];
 export const runStartedKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunStarted"]["kind"]> = ["scenario", "monitor", "models.check", "score", "selftest", "selftest.case"];
 export const runStartedOversightValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunStarted"]["oversight"]> = ["observe", "autonomous", "human"];
 export const runSummaryKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunSummary"]["kind"]> = ["scenario", "monitor", "models.check", "score", "selftest", "selftest.case"];
@@ -12428,6 +12965,7 @@ export const scoreUnitRoleValues: ReadonlyArray<FlattenedDeepRequired<components
 export const scoreUnitToldAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreUnit"]["told"]> = ["yes", "partly", "no"];
 export const selfTestCaseCaseValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["SelfTestCase"]["case"]> = ["reference", "exploit", "empty", "impossible"];
 export const separationLayerValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Separation"]["layer"]> = ["signal", "sweep", "judge", "llm", "any"];
+export const sourceClaim_matchedAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Source"]["claim_matched"]> = ["yes", "no", "unclear"];
 export const startForkAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["StartFork"]["audit"]> = ["kernel", "snapshot"];
 export const startForkMonitorAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["StartFork"]["monitor"]> = ["off", "signals", "standard", "research"];
 export const startForkOversightAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["StartFork"]["oversight"]> = ["observe", "autonomous", "human"];
@@ -12442,5 +12980,10 @@ export const taskScoredSourceValues: ReadonlyArray<FlattenedDeepRequired<compone
 export const textSourceValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Text"]["source"]> = ["default", "user", "project"];
 export const tokenCreateRoleValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["TokenCreate"]["role"]> = ["viewer", "operator", "runner"];
 export const toolInfoEndAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ToolInfo"]["end"]> = ["exited", "timeout", "cancelled", "failed"];
+export const unitCauseAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Unit"]["cause"]> = ["true", "false", "none"];
+export const unitEval_awareAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Unit"]["eval_aware"]> = ["yes", "no", "unclear"];
+export const unitRoleValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Unit"]["role"]> = ["subject", "confederate"];
+export const unitToldAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Unit"]["told"]> = ["yes", "partly", "no"];
 export const variantCostMonitor_presetAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["VariantCost"]["monitor_preset"]> = ["off", "signals", "standard", "research"];
+export const warningKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Warning"]["kind"]> = ["in_progress", "verify_failed", "monitor_degraded", "audit_lost", "log_truncated", "replay_divergence", "cost_incomplete", "tainted"];
 export const wireDeltaKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["WireDelta"]["kind"]> = ["start", "text", "reasoning", "tool_call", "tool_args", "end"];

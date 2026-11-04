@@ -116,7 +116,8 @@ class Pins(_Model):
 
 
 class Header(_Model):
-    """`status` is `running` until the run seals. `reason` is why it ended, from its log."""
+    """`status` is `running` until the run seals. `reason` is why it ended, from its log.
+    `last_at` is the time of the last event logged so far."""
 
     run_id: str
     scenario: str
@@ -128,6 +129,7 @@ class Header(_Model):
     agents: list[str] = Field(default_factory=list)
     started_at: Timestamp | None = None
     ended_at: Timestamp | None = None
+    last_at: Timestamp | None = None
     pins: Pins
 
 
@@ -281,7 +283,7 @@ class Source(_Model):
     started_at: Timestamp | None = None
 
 
-class Text(_Model):
+class AgentText(_Model):
     """Text an agent wrote at `seq`: a final answer or a report to the operator."""
 
     agent: str | None = None
@@ -291,8 +293,8 @@ class Text(_Model):
 
 
 class Appendix(_Model):
-    answers: list[Text] = Field(default_factory=list)
-    reports: list[Text] = Field(default_factory=list)
+    answers: list[AgentText] = Field(default_factory=list)
+    reports: list[AgentText] = Field(default_factory=list)
     disagreements: list[str] = Field(default_factory=list)
 
 

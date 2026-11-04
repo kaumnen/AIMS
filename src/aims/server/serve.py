@@ -142,7 +142,7 @@ async def serve(o: UiOptions) -> int:
     shown = None if o.public_url is None else public_url(o.public_url)
     # Behind a TLS proxy the browser is on https though this server is not.
     https = tls or (shown is not None and shown.startswith("https://"))
-    state = await open_state(o.data, project=o.project, auth=o.auth, tls=https)
+    state = await open_state(o.data, project=o.project, auth=o.auth, tls=https, public_url=shown)
     child: asyncio.subprocess.Process | None = None
     server: _Server | None = None
     task: asyncio.Task[None] | None = None

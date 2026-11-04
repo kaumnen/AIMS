@@ -40,6 +40,7 @@ from aims.report import texts
 from aims.report.build import ReportError, build
 from aims.report.markdown import render
 from aims.report.model import SECTIONS
+from aims.run import score as score_module
 from aims.run.score import check_run
 from aims.run.scoring import score_run
 
@@ -70,7 +71,7 @@ async def store(tmp_path: Path) -> AsyncIterator[LocalEventStore]:
 
 @pytest.fixture(autouse=True)
 def no_plants(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def check(store: Any, run_id: str, added: Any = None) -> list[Any]:
+    async def check(store: Any, run_id: str, added: Any = None, **_: Any) -> list[Any]:
         return []
 
     monkeypatch.setattr(build_module, "check_run", check)
@@ -445,7 +446,7 @@ async def test_tainted_flags_link_into_the_run_that_holds_them(store: LocalEvent
 async def test_plants_come_from_the_truth_file_until_a_score(
     store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def check(store: Any, run_id: str, added: Any = None) -> list[Any]:
+    async def check(store: Any, run_id: str, added: Any = None, **_: Any) -> list[Any]:
         return [took(2, (2,))]
 
     monkeypatch.setattr(build_module, "check_run", check)
@@ -459,6 +460,12 @@ async def test_plants_come_from_the_truth_file_until_a_score(
     assert f"No score of this monitor source yet. `aims score {run_id}` shows" in md
 
     monkeypatch.setattr(build_module, "check_run", check_run)
+
+    # The report hands its own chain check to check_run, so the chain is hashed once.
+    def hashed_twice(run_dir: Any) -> Any:
+        raise AssertionError(f"{run_dir} hashed twice")
+
+    monkeypatch.setattr(score_module, "verify_run", hashed_twice)
     blank = await store.create_run(RunStarted(scenario="s", oversight="observe", agents=["a"]))
     await store.append(blank, [Draft(RunFinished(status="completed"))])
     report = await build(store, blank, now=AT)
@@ -529,7 +536,7 @@ async def test_hostile_names_from_the_log_render_as_text(
     ]
     await store.append(run_id, drafts)
 
-    async def check(store: Any, run_id: str, added: Any = None) -> list[Any]:
+    async def check(store: Any, run_id: str, added: Any = None, **_: Any) -> list[Any]:
         return [took(2, (2,), agent=name, plant=name, kind=name)]
 
     monkeypatch.setattr(build_module, "check_run", check)

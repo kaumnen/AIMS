@@ -222,6 +222,8 @@ class ServerState:
     db: ServerDB
     auth: Auth
     config: ConfigCache
+    # the address people open, from `--public-url`; None when the server was given none
+    public_url: str | None = None
     bus: DeltaBus = field(default_factory=lambda: DeltaBus(maxsize=8192))
     changes: Changes = field(default_factory=Changes)
     inflight: InFlight = field(default_factory=InFlight)
@@ -273,9 +275,15 @@ class ServerState:
 
 
 async def open_state(
-    data: Path, *, project: Path | None = None, auth: bool = True, tls: bool = False
+    data: Path,
+    *,
+    project: Path | None = None,
+    auth: bool = True,
+    tls: bool = False,
+    public_url: str | None = None,
 ) -> ServerState:
-    """The control plane's stores under `data`: `runs/` (ingest only) and `server.sqlite`."""
+    """The control plane's stores under `data`: `runs/` (ingest only) and `server.sqlite`.
+    `public_url` is the address people open, for links the server writes."""
     db = await ServerDB.open(data / "server.sqlite")
     try:
         store = await LocalEventStore.open(data / "runs", ingest_only=True)
@@ -288,6 +296,7 @@ async def open_state(
         db=db,
         auth=Auth(db, enabled=auth, tls=tls, scope=cookie_scope(data)),
         config=ConfigCache(project),
+        public_url=public_url,
     )
     store.listeners.append(state.changes.touch)
     return state

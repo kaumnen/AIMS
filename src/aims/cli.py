@@ -2371,6 +2371,14 @@ def report_cmd(
     json_out: Annotated[
         bool, typer.Option("--json", help="Give JSON instead of Markdown.")
     ] = False,
+    html_out: Annotated[
+        Path | None,
+        typer.Option(
+            "--html",
+            help="Write the report as one HTML page to this file, to open in a browser and "
+            "print to PDF. With --out it writes both files.",
+        ),
+    ] = None,
     base_url: Annotated[
         str | None,
         typer.Option(help="The app's address, to link each cited step. Plain seqs without it."),
@@ -2390,6 +2398,10 @@ def report_cmd(
     problem = None if base_url is None else base_url_problem(base_url)
     if problem is not None:
         raise typer.BadParameter(problem, param_hint="--base-url")
+    if html_out is not None and json_out:
+        raise typer.BadParameter("use --html or --json", param_hint="--html")
+    if html_out is not None and out is not None and html_out.resolve() == out.resolve():
+        raise typer.BadParameter("--out and --html name the same file", param_hint="--html")
 
     async def main() -> RunReport:
         async with await LocalEventStore.open(runs_dir) as store:
@@ -2404,7 +2416,14 @@ def report_cmd(
     if out is not None:
         out.write_text(body, encoding="utf-8")
         typer.echo(f"wrote {out}", err=True)
-    elif json_out or not sys.stdout.isatty():
+    if html_out is not None:
+        from aims.report.html import page_title, to_html
+
+        html_out.write_text(to_html(body, title=page_title(report)), encoding="utf-8")
+        typer.echo(f"wrote {html_out}", err=True)
+    if out is not None or html_out is not None:
+        return
+    if json_out or not sys.stdout.isatty():
         typer.echo(body, nl=False)
     else:
         from rich.console import Console

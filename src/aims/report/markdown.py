@@ -1,7 +1,7 @@
 """Write a run report as GitHub Markdown. Text from the log goes through `escape` only."""
 
 from collections.abc import Iterable, Sequence
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from urllib.parse import quote as urlquote
 
 from aims.events import ScoreMatch
@@ -12,6 +12,7 @@ from aims.report.model import (
     LIVE,
     Flag,
     Moment,
+    Plant,
     RunReport,
     Warning,
 )
@@ -19,6 +20,15 @@ from aims.report.model import (
 TABLE_ROWS = 30
 MAX_LINKS = 12
 CELL_CHARS = 300
+# Flags and plants the chart marks at most, so it stays readable.
+CHART_MAX = 10
+EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+# The axis label form by run length: seconds under an hour, the weekday past a day.
+AXIS: tuple[tuple[timedelta | None, str], ...] = (
+    (timedelta(hours=1), "%H:%M:%S"),
+    (timedelta(days=1), "%H:%M"),
+    (None, "%a %H:%M"),
+)
 
 
 def render(report: RunReport) -> str:
@@ -258,10 +268,170 @@ def _flag_row(r: RunReport, f: Flag) -> list[str]:
 
 
 def _timeline(r: RunReport) -> str:
-    out = [f"## {texts.HEADINGS['timeline']}", texts.TIMELINE_INTRO]
+    out = [f"## {texts.HEADINGS['timeline']}", texts.TIMELINE_INTRO, *_chart(r)]
     head = ["Seq", "Step", "Agent", "Event", "Categories", "Importance"]
     out.append(_table(head, [_moment_row(r, m) for m in r.timeline]))
     return "\n\n".join(out)
+
+
+def _chart(r: RunReport) -> list[str]:
+    """A mermaid gantt of the run, then its legend and notes. Inside the fence every word is
+    code text from `texts` or a number: agents and plants go by position, named in the legend."""
+    agents = _chart_agents(r)
+    if not agents:
+        return []
+    begin = min(m.ts for m in r.timeline)
+    # A running run is busy between the moments the timeline keeps: draw it to its last event.
+    end = max(m.ts for m in r.timeline)
+    if r.header.last_at is not None:
+        end = max(end, r.header.last_at)
+    number = {name: i for i, name in enumerate(agents, 1)}
+    lines = [
+        "gantt",
+        f"    accTitle: {texts.CHART_TITLE}",
+        f"    accDescr: {texts.CHART_DESCRIPTION}",
+        "    dateFormat x",
+        f"    axisFormat {_axis(end - begin)}",
+        "    todayMarker off",
+        f"    section {texts.CHART_SECTIONS['agents']}",
+    ]
+    for name, i in number.items():
+        start, stop = agents[name]
+        lines.append(_task(texts.CHART_AGENT.format(n=i), f"a{i}", start, stop or end))
+
+    monitor = [
+        _task(label, f"m{i}", a, b) for i, (label, a, b) in enumerate(_states(r, begin, end), 1)
+    ]
+    flags = [m for m in r.timeline if m.kind == "flag"]
+    picked = sorted(range(len(flags)), key=lambda i: (-(flags[i].importance or 0), i))
+    for n, i in enumerate(sorted(picked[:CHART_MAX]), 1):
+        monitor.append(_task(_flag_label(flags[i], number), f"f{n}", flags[i].ts, milestone=True))
+    if monitor:
+        lines += [f"    section {texts.CHART_SECTIONS['monitor']}", *monitor]
+
+    reached = _chart_plants(r)
+    shown = reached[:CHART_MAX]
+    if shown:
+        lines.append(f"    section {texts.CHART_SECTIONS['plants']}")
+        for n, (_, ts) in enumerate(shown, 1):
+            lines.append(_task(texts.CHART_PLANT.format(n=n), f"p{n}", ts, milestone=True))
+
+    notes = [texts.CHART_CLOCK]
+    source = r.header.pins.source
+    if flags and source != LIVE:
+        notes.append(texts.CHART_REVIEW.format(run=_run_link(r, source)))
+    if len(flags) > CHART_MAX:
+        notes.append(texts.CHART_FLAGS_CUT.format(shown=CHART_MAX, total=len(flags)))
+    if len(reached) > CHART_MAX:
+        notes.append(texts.CHART_PLANTS_CUT.format(shown=CHART_MAX, total=len(reached)))
+
+    out = [texts.CHART_MARK, "```mermaid\n" + "\n".join(lines) + "\n```"]
+    rows = [[texts.CHART_AGENT.format(n=i), cell(name)] for name, i in number.items()]
+    out.append(_table(texts.CHART_AGENTS_HEAD, rows))
+    if shown:
+        rows = [
+            [
+                texts.CHART_PLANT.format(n=n),
+                cell(p.plant),
+                _agent_label(p.agent, number),
+                f"{p.tier}{'' if p.taken else ', not taken'}",
+                _link(r, r.header.run_id, p.seq),
+            ]
+            for n, (p, _) in enumerate(shown, 1)
+        ]
+        out.append(_table(texts.CHART_PLANTS_HEAD, rows))
+    out += [" ".join(notes), texts.CHART_END]
+    return out
+
+
+def _chart_agents(r: RunReport) -> dict[str, tuple[datetime, datetime | None]]:
+    """Each agent's first start and its last finish after its last start, in the order of the
+    run facts. No finish means the agent is still at work."""
+    starts: dict[str, list[datetime]] = {}
+    finishes: dict[str, list[datetime]] = {}
+    for m in r.timeline:
+        if m.kind == "agent_started":
+            starts.setdefault(m.agent or "", []).append(m.ts)
+        elif m.kind == "agent_finished":
+            finishes.setdefault(m.agent or "", []).append(m.ts)
+    order = dict.fromkeys([*(a.agent for a in r.facts.agents), *starts])
+    out: dict[str, tuple[datetime, datetime | None]] = {}
+    for name in order:
+        if name not in starts:
+            continue
+        last = max(finishes.get(name, []), default=None)
+        out[name] = (min(starts[name]), last if last and last >= max(starts[name]) else None)
+    return out
+
+
+def _states(r: RunReport, begin: datetime, end: datetime) -> list[tuple[str, datetime, datetime]]:
+    """The live monitor's bars: whole until its first degrade, degraded after it, signals only
+    after one that says so."""
+    if not any(s.run_id == LIVE for s in r.sources):
+        return []
+    at = {m.seq: m.ts for m in r.timeline if m.kind == "degraded"}
+    degrades = sorted(
+        (w for w in r.warnings if w.kind == "monitor_degraded" and w.run_id == r.header.run_id),
+        key=lambda w: w.seq or 0,
+    )
+    times = [(at[w.seq], w.then) for w in degrades if w.seq is not None and w.seq in at]
+    if not times:
+        return [(texts.CHART_LIVE, begin, end)]
+    first = times[0][0]
+    only = next((ts for ts, then in times if then == "signals_only"), None)
+    out = [(texts.CHART_LIVE, begin, first)]
+    if only is None:
+        out.append((texts.CHART_DEGRADED, first, end))
+    elif times[0][1] != "signals_only":
+        out.append((texts.CHART_DEGRADED, first, only))
+    if only is not None:
+        out.append((texts.CHART_SIGNALS_ONLY, only, end))
+    return out
+
+
+def _chart_plants(r: RunReport) -> list[tuple[Plant, datetime]]:
+    """The plants on the timeline with their moment, by seq."""
+    if r.plants is None:
+        return []
+    at = {m.seq: m.ts for m in r.timeline if m.kind == "plant"}
+    rows = sorted((p for p in r.plants.rows if p.seq in at), key=lambda p: p.seq)
+    return [(p, at[p.seq]) for p in rows]
+
+
+def _flag_label(m: Moment, number: dict[str, int]) -> str:
+    layer = texts.CHART_LAYERS.get(m.what, texts.CHART_FLAG)
+    if m.importance is None:
+        return layer
+    agent = number.get(m.agent or "")
+    if len(number) > 1 and agent is not None:
+        on = texts.CHART_AGENT.format(n=agent)
+        return texts.CHART_FLAG_ON.format(layer=layer, agent=on, importance=m.importance)
+    return texts.CHART_FLAG_LABEL.format(layer=layer, importance=m.importance)
+
+
+def _agent_label(agent: str, number: dict[str, int]) -> str:
+    n = number.get(agent)
+    return cell(agent) if n is None else texts.CHART_AGENT.format(n=n)
+
+
+def _task(
+    label: str, task: str, start: datetime, stop: datetime | None = None, *, milestone: bool = False
+) -> str:
+    a = _ms(start)
+    b = a if stop is None else max(a, _ms(stop))
+    tag = "milestone, " if milestone else ""
+    return f"    {label} :{tag}{task}, {a}, {b}"
+
+
+def _ms(ts: datetime) -> int:
+    return (ts - EPOCH) // timedelta(milliseconds=1)
+
+
+def _axis(span: timedelta) -> str:
+    for limit, form in AXIS:
+        if limit is None or span < limit:
+            return form
+    return AXIS[-1][1]
 
 
 def _moment_row(r: RunReport, m: Moment) -> list[str]:

@@ -129,6 +129,76 @@
         "title": "AgentCompacted",
         "type": "object"
       },
+      "AgentFacts": {
+        "additionalProperties": false,
+        "properties": {
+          "agent": {
+            "title": "Agent",
+            "type": "string"
+          },
+          "cost_complete": {
+            "default": true,
+            "title": "Cost Complete",
+            "type": "boolean"
+          },
+          "cost_usd": {
+            "default": 0.0,
+            "title": "Cost Usd",
+            "type": "number"
+          },
+          "end": {
+            "anyOf": [
+              {
+                "enum": [
+                  "submitted",
+                  "no_submit",
+                  "budget_steps",
+                  "budget_output_tokens",
+                  "budget_cost",
+                  "budget_wall",
+                  "context_exhausted",
+                  "model_error",
+                  "sandbox_failed",
+                  "divergence",
+                  "killed",
+                  "cancelled",
+                  "error"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
+          "steps": {
+            "default": 0,
+            "title": "Steps",
+            "type": "integer"
+          },
+          "wall_ms": {
+            "default": 0,
+            "title": "Wall Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agent",
+          "profile",
+          "model"
+        ],
+        "title": "AgentFacts",
+        "type": "object"
+      },
       "AgentFinished": {
         "additionalProperties": false,
         "description": "`wall_ms` is the agent's wall time and `paused_ms` the part of it spent paused or held\nbefore a tool call until the monitor's sweep scored it, which the wall limit does not\ncount.",
@@ -600,6 +670,48 @@
         "title": "AgentStep",
         "type": "object"
       },
+      "AgentText": {
+        "additionalProperties": false,
+        "description": "Text an agent wrote at `seq`: a final answer or a report to the operator.",
+        "properties": {
+          "agent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "step": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Step"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "seq",
+          "text"
+        ],
+        "title": "AgentText",
+        "type": "object"
+      },
       "Anomaly": {
         "additionalProperties": false,
         "description": "Something odd the judge saw that fits none of the categories (`behaviour`), or a sign\nthat the scenario or the sandbox is broken (`environment`), with the seqs it rests on.",
@@ -613,7 +725,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Agent"
           },
           "evidence": {
@@ -641,6 +752,34 @@
           "note"
         ],
         "title": "Anomaly",
+        "type": "object"
+      },
+      "Appendix": {
+        "additionalProperties": false,
+        "properties": {
+          "answers": {
+            "items": {
+              "$ref": "#/components/schemas/AgentText"
+            },
+            "title": "Answers",
+            "type": "array"
+          },
+          "disagreements": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Disagreements",
+            "type": "array"
+          },
+          "reports": {
+            "items": {
+              "$ref": "#/components/schemas/AgentText"
+            },
+            "title": "Reports",
+            "type": "array"
+          }
+        },
+        "title": "Appendix",
         "type": "object"
       },
       "AuditLost": {
@@ -1258,15 +1397,14 @@
           "importance": {
             "anyOf": [
               {
-                "maximum": 5,
-                "minimum": 1,
+                "maximum": 5.0,
+                "minimum": 1.0,
                 "type": "integer"
               },
               {
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Importance"
           },
           "justification": {
@@ -3380,6 +3518,94 @@
         "title": "ExecStarted",
         "type": "object"
       },
+      "Facts": {
+        "additionalProperties": false,
+        "description": "`kernel` counts the kernel events by type. `agent_cost_usd` and `monitor_cost_usd` sum\nthe priced live model calls of the agents and of the live monitor, its judge included.\n`review_cost_usd` is what the review picked as the source cost.",
+        "properties": {
+          "agent_cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Cost Usd"
+          },
+          "agents": {
+            "items": {
+              "$ref": "#/components/schemas/AgentFacts"
+            },
+            "title": "Agents",
+            "type": "array"
+          },
+          "costs": {
+            "items": {
+              "$ref": "#/components/schemas/CallCost"
+            },
+            "title": "Costs",
+            "type": "array"
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
+          "events": {
+            "default": 0,
+            "title": "Events",
+            "type": "integer"
+          },
+          "flags": {
+            "default": 0,
+            "title": "Flags",
+            "type": "integer"
+          },
+          "kernel": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Kernel",
+            "type": "object"
+          },
+          "monitor_cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Monitor Cost Usd"
+          },
+          "review_cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Cost Usd"
+          },
+          "steps": {
+            "default": 0,
+            "title": "Steps",
+            "type": "integer"
+          }
+        },
+        "title": "Facts",
+        "type": "object"
+      },
       "FdInfo": {
         "additionalProperties": false,
         "description": "A file descriptor at exec: its inode and what it points at.",
@@ -3805,6 +4031,145 @@
           "partial"
         ],
         "title": "FileWrite",
+        "type": "object"
+      },
+      "Flag": {
+        "additionalProperties": false,
+        "description": "One logical flag of the monitor source, at `seq` in `run_id`; its evidence seqs are\nin the reported run. `review` is the judge's view of it, `label` a person's.",
+        "properties": {
+          "agent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent"
+          },
+          "category": {
+            "enum": [
+              "covert_communication",
+              "scorer_tampering",
+              "transcript_tampering",
+              "deceiving_operator",
+              "evading_checks",
+              "collective_over_own_task",
+              "drift",
+              "loop_or_confusion",
+              "fabricated_completion",
+              "constraint_violation",
+              "eval_awareness",
+              "alerting_operator",
+              "egress_attempt",
+              "privilege_escalation",
+              "monitor_manipulation"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "count": {
+            "default": 1,
+            "title": "Count",
+            "type": "integer"
+          },
+          "evidence": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Evidence",
+            "type": "array"
+          },
+          "importance": {
+            "title": "Importance",
+            "type": "integer"
+          },
+          "justification": {
+            "default": "",
+            "title": "Justification",
+            "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Label-Output"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "layer": {
+            "enum": [
+              "signal",
+              "sweep",
+              "judge"
+            ],
+            "title": "Layer",
+            "type": "string"
+          },
+          "review": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FlagReview"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "open",
+              "cleared",
+              "tainted",
+              "confirmed",
+              "rejected",
+              "unclear"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "status_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status Reason"
+          },
+          "tainted": {
+            "default": false,
+            "title": "Tainted",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "run_id",
+          "seq",
+          "layer",
+          "source",
+          "category",
+          "importance",
+          "status"
+        ],
+        "title": "Flag",
         "type": "object"
       },
       "FlagInfo": {
@@ -4678,6 +5043,235 @@
           "truth"
         ],
         "title": "Head",
+        "type": "object"
+      },
+      "Header": {
+        "additionalProperties": false,
+        "description": "`status` is `running` until the run seals. `reason` is why it ended, from its log.\n`last_at` is the time of the last event logged so far.",
+        "properties": {
+          "agents": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Agents",
+            "type": "array"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "kind": {
+            "enum": [
+              "scenario",
+              "monitor",
+              "models.check",
+              "score",
+              "selftest",
+              "selftest.case"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "last_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last At"
+          },
+          "oversight": {
+            "enum": [
+              "observe",
+              "autonomous",
+              "human"
+            ],
+            "title": "Oversight",
+            "type": "string"
+          },
+          "pins": {
+            "$ref": "#/components/schemas/Pins"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "scenario": {
+            "title": "Scenario",
+            "type": "string"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "completed",
+                  "failed",
+                  "killed",
+                  "cancelled"
+                ],
+                "type": "string"
+              },
+              {
+                "const": "running",
+                "type": "string"
+              }
+            ],
+            "title": "Status"
+          },
+          "variant": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Variant"
+          }
+        },
+        "required": [
+          "run_id",
+          "scenario",
+          "kind",
+          "status",
+          "oversight",
+          "pins"
+        ],
+        "title": "Header",
+        "type": "object"
+      },
+      "Headline": {
+        "additionalProperties": false,
+        "description": "The verifier's reward beside the judge's verdict. `passed` and `total` come from the\nverifier's metrics when it reported them. `no_verdict` says why there is no verdict.",
+        "properties": {
+          "claim_matched": {
+            "anyOf": [
+              {
+                "enum": [
+                  "yes",
+                  "no",
+                  "unclear"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Matched"
+          },
+          "importance": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Importance"
+          },
+          "no_verdict": {
+            "anyOf": [
+              {
+                "enum": [
+                  "running",
+                  "no_monitor",
+                  "skipped",
+                  "missing"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "No Verdict"
+          },
+          "passed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Passed"
+          },
+          "reward": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reward"
+          },
+          "reward_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reward Error"
+          },
+          "scored": {
+            "default": false,
+            "title": "Scored",
+            "type": "boolean"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total"
+          }
+        },
+        "title": "Headline",
         "type": "object"
       },
       "Heads": {
@@ -6590,6 +7184,119 @@
         "title": "ModelsInfo",
         "type": "object"
       },
+      "Moment": {
+        "additionalProperties": false,
+        "description": "One row of the timeline. `step` is the agent step the event falls in. `what` names\nthe event type, tool or action; `detail` is text from the log.",
+        "properties": {
+          "agent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent"
+          },
+          "categories": {
+            "items": {
+              "enum": [
+                "covert_communication",
+                "scorer_tampering",
+                "transcript_tampering",
+                "deceiving_operator",
+                "evading_checks",
+                "collective_over_own_task",
+                "drift",
+                "loop_or_confusion",
+                "fabricated_completion",
+                "constraint_violation",
+                "eval_awareness",
+                "alerting_operator",
+                "egress_attempt",
+                "privilege_escalation",
+                "monitor_manipulation"
+              ],
+              "type": "string"
+            },
+            "title": "Categories",
+            "type": "array"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "importance": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Importance"
+          },
+          "kind": {
+            "enum": [
+              "run_started",
+              "agent_started",
+              "agent_finished",
+              "run_finished",
+              "flag",
+              "monitor_action",
+              "operator_action",
+              "degraded",
+              "plant",
+              "report",
+              "scored",
+              "verdict",
+              "evidence"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "step": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Step"
+          },
+          "ts": {
+            "title": "Ts",
+            "type": "string"
+          },
+          "what": {
+            "default": "",
+            "title": "What",
+            "type": "string"
+          }
+        },
+        "required": [
+          "seq",
+          "ts",
+          "kind"
+        ],
+        "title": "Moment",
+        "type": "object"
+      },
       "MonitorAction": {
         "additionalProperties": false,
         "description": "What the monitor's policy decided, written before it acts. `simulated` marks a decision\ntaken in observe mode or in a monitor run, which changed nothing. `flags` are the seqs of the\nflags that caused it.",
@@ -7653,6 +8360,213 @@
         "title": "PauseBody",
         "type": "object"
       },
+      "Pins": {
+        "additionalProperties": false,
+        "description": "Every input the report was built from. Two builds from the same pins give the same\nreport apart from `built_at`. `source` is `live` or the monitor run picked; `monitor` is\nthe identity hash of its monitor. `labels` counts the flags a person labelled.",
+        "properties": {
+          "base_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Url"
+          },
+          "built_at": {
+            "title": "Built At",
+            "type": "string"
+          },
+          "events": {
+            "title": "Events",
+            "type": "integer"
+          },
+          "head": {
+            "title": "Head",
+            "type": "string"
+          },
+          "labels": {
+            "default": 0,
+            "title": "Labels",
+            "type": "integer"
+          },
+          "labels_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Labels At"
+          },
+          "monitor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Monitor"
+          },
+          "role": {
+            "enum": [
+              "local",
+              "operator",
+              "viewer"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score"
+          },
+          "score_head": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score Head"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "source_head": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Head"
+          },
+          "verified": {
+            "title": "Verified",
+            "type": "boolean"
+          },
+          "verify_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verify Error"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "head",
+          "events",
+          "verified",
+          "source",
+          "role",
+          "version",
+          "built_at"
+        ],
+        "title": "Pins",
+        "type": "object"
+      },
+      "Plant": {
+        "additionalProperties": false,
+        "description": "A plant one agent reached, from the run's truth file. `matches` are what each monitor\nlayer caught of it, from the score run; empty when there is none or it was not taken.",
+        "properties": {
+          "agent": {
+            "title": "Agent",
+            "type": "string"
+          },
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
+          "detail": {
+            "default": "",
+            "title": "Detail",
+            "type": "string"
+          },
+          "evidence": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Evidence",
+            "type": "array"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "matches": {
+            "items": {
+              "$ref": "#/components/schemas/ScoreMatch"
+            },
+            "title": "Matches",
+            "type": "array"
+          },
+          "plant": {
+            "title": "Plant",
+            "type": "string"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "taken": {
+            "title": "Taken",
+            "type": "boolean"
+          },
+          "tier": {
+            "enum": [
+              "touched",
+              "considered",
+              "claimed",
+              "used"
+            ],
+            "title": "Tier",
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent",
+          "plant",
+          "kind",
+          "category",
+          "tier",
+          "taken",
+          "seq"
+        ],
+        "title": "Plant",
+        "type": "object"
+      },
       "PlantOverview": {
         "description": "`category` and `taken` are the ones scoring uses, None when the plant kind is unknown.",
         "properties": {
@@ -7807,6 +8721,50 @@
           "matches"
         ],
         "title": "PlantTriggered",
+        "type": "object"
+      },
+      "Plants": {
+        "additionalProperties": false,
+        "description": "Ground truth, for operators. `error` says why the plants could not be read.",
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/Plant"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score"
+          },
+          "units": {
+            "items": {
+              "$ref": "#/components/schemas/Unit"
+            },
+            "title": "Units",
+            "type": "array"
+          }
+        },
+        "title": "Plants",
         "type": "object"
       },
       "Price": {
@@ -10140,6 +11098,109 @@
         "title": "RunPage",
         "type": "object"
       },
+      "RunReport": {
+        "additionalProperties": false,
+        "description": "Everything a report says about one run, built from its log and nothing stored. Text\nfrom the log is kept as written; each writer escapes it. `plants` is None when the role\nmay not see ground truth; `summary` is the judge's own words.",
+        "properties": {
+          "appendix": {
+            "$ref": "#/components/schemas/Appendix"
+          },
+          "facts": {
+            "$ref": "#/components/schemas/Facts"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/CategoryFinding"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "flags": {
+            "items": {
+              "$ref": "#/components/schemas/Flag"
+            },
+            "title": "Flags",
+            "type": "array"
+          },
+          "header": {
+            "$ref": "#/components/schemas/Header"
+          },
+          "headline": {
+            "$ref": "#/components/schemas/Headline"
+          },
+          "observations": {
+            "items": {
+              "$ref": "#/components/schemas/Anomaly"
+            },
+            "title": "Observations",
+            "type": "array"
+          },
+          "plants": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Plants"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sections": {
+            "items": {
+              "enum": [
+                "header",
+                "headline",
+                "warnings",
+                "summary",
+                "findings",
+                "observations",
+                "plants",
+                "flags",
+                "timeline",
+                "facts",
+                "sources",
+                "appendix"
+              ],
+              "type": "string"
+            },
+            "title": "Sections",
+            "type": "array"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/Source"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "summary": {
+            "default": "",
+            "title": "Summary",
+            "type": "string"
+          },
+          "timeline": {
+            "items": {
+              "$ref": "#/components/schemas/Moment"
+            },
+            "title": "Timeline",
+            "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/Warning"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "header",
+          "headline",
+          "facts"
+        ],
+        "title": "RunReport",
+        "type": "object"
+      },
       "RunStarted": {
         "additionalProperties": false,
         "description": "`kind` says what the run is: a scenario run, a monitor run over the sealed run `origin`\n(whose head hash was `origin_head`), a scoring of `origin`, a model check, or a scenario's\nself-test (`selftest`) or one case of it (`selftest.case`, whose `origin` is that run).\n`monitor` is\nthe identity hash of the monitor that watches the run: its prompts, rubric, schemas, models,\nlanes, signal versions, rules and AIMS version; None when the run has no monitor.\n\n`truth` is the sha256 of the run's truth file, kept outside the log: what the scenario hid\nfrom the monitor, revealed when the run is scored.",
@@ -12050,21 +13111,19 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "First Flag"
           },
           "importance": {
             "anyOf": [
               {
-                "maximum": 5,
-                "minimum": 1,
+                "maximum": 5.0,
+                "minimum": 1.0,
                 "type": "integer"
               },
               {
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Importance"
           },
           "layer": {
@@ -12090,8 +13149,8 @@
           },
           "min_importance": {
             "default": 1,
-            "maximum": 5,
-            "minimum": 1,
+            "maximum": 5.0,
+            "minimum": 1.0,
             "title": "Min Importance",
             "type": "integer"
           },
@@ -12104,7 +13163,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Seconds"
           },
           "steps": {
@@ -12116,21 +13174,19 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Steps"
           },
           "suspicion": {
             "anyOf": [
               {
-                "maximum": 100,
-                "minimum": 0,
+                "maximum": 100.0,
+                "minimum": 0.0,
                 "type": "integer"
               },
               {
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Suspicion"
           }
         },
@@ -12665,6 +13721,96 @@
           "shas"
         ],
         "title": "Shas",
+        "type": "object"
+      },
+      "Source": {
+        "additionalProperties": false,
+        "description": "A monitor of the run: its live monitor (`live`) or a monitor run over it.",
+        "properties": {
+          "chosen": {
+            "default": false,
+            "title": "Chosen",
+            "type": "boolean"
+          },
+          "claim_matched": {
+            "anyOf": [
+              {
+                "enum": [
+                  "yes",
+                  "no",
+                  "unclear"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Matched"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          },
+          "importance": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Importance"
+          },
+          "preset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preset"
+          },
+          "review": {
+            "title": "Review",
+            "type": "boolean"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "review",
+          "status"
+        ],
+        "title": "Source",
         "type": "object"
       },
       "SourceInfo": {
@@ -14084,6 +15230,120 @@
         "title": "TracerHealth",
         "type": "object"
       },
+      "Unit": {
+        "additionalProperties": false,
+        "description": "One agent of the score run: what it took and what each layer caught of it.",
+        "properties": {
+          "agent": {
+            "title": "Agent",
+            "type": "string"
+          },
+          "cause": {
+            "anyOf": [
+              {
+                "enum": [
+                  "true",
+                  "false",
+                  "none"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cause"
+          },
+          "eval_aware": {
+            "anyOf": [
+              {
+                "enum": [
+                  "yes",
+                  "no",
+                  "unclear"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eval Aware"
+          },
+          "harm_seq": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harm Seq"
+          },
+          "labelled": {
+            "default": false,
+            "title": "Labelled",
+            "type": "boolean"
+          },
+          "matches": {
+            "items": {
+              "$ref": "#/components/schemas/ScoreMatch"
+            },
+            "title": "Matches",
+            "type": "array"
+          },
+          "plants": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Plants",
+            "type": "array"
+          },
+          "positive": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Positive"
+          },
+          "role": {
+            "enum": [
+              "subject",
+              "confederate"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "told": {
+            "anyOf": [
+              {
+                "enum": [
+                  "yes",
+                  "partly",
+                  "no"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Told"
+          }
+        },
+        "required": [
+          "agent",
+          "role",
+          "positive"
+        ],
+        "title": "Unit",
+        "type": "object"
+      },
       "VariantCost": {
         "description": "One run of one variant. `monitor` is None when the monitor is off; `steps` is the median\nnumber of steps each agent took in past runs of the same scenario under the same step\ncaps. `replayed` is the steps each agent of a fork replays before it goes live: the\nagents' figures count only the steps after them. `caps` are the caps the run would have.",
         "properties": {
@@ -14217,6 +15477,114 @@
           "bad_blobs"
         ],
         "title": "VerificationOut",
+        "type": "object"
+      },
+      "Warning": {
+        "additionalProperties": false,
+        "description": "Something that limits what the report can say. `seq` is the first event that shows\nit in `run_id`, `count` how many there were, `detail` the reason the log gives. A\ndegraded monitor names its `part` and what it did `then`; lost audit records sum to\n`lost` when known; `seqs` are the flags that tainted the reward.",
+        "properties": {
+          "agent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent"
+          },
+          "count": {
+            "default": 1,
+            "title": "Count",
+            "type": "integer"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "kind": {
+            "enum": [
+              "in_progress",
+              "verify_failed",
+              "monitor_degraded",
+              "audit_lost",
+              "log_truncated",
+              "replay_divergence",
+              "cost_incomplete",
+              "tainted"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "lost": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lost"
+          },
+          "part": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Part"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "seq": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seq"
+          },
+          "seqs": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Seqs",
+            "type": "array"
+          },
+          "then": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Then"
+          }
+        },
+        "required": [
+          "kind",
+          "run_id"
+        ],
+        "title": "Warning",
         "type": "object"
       },
       "Whoami": {
@@ -17745,6 +19113,114 @@
           }
         },
         "summary": "Get Projection",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/report": {
+      "get": {
+        "description": "The report of a run, built from its log each time. `source` picks the monitor: `live`\nor a monitor run over the run; by default the newest finished review, else live. Viewers\nget no plants and no score. `format=md` gives the Markdown file `aims report` writes.\nEvidence links start at the server's public URL, else at the address the request used.",
+        "operationId": "get_report",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "default": "json",
+              "enum": [
+                "json",
+                "md"
+              ],
+              "title": "Format",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunReport"
+                }
+              },
+              "text/markdown": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not signed in"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Invalid request"
+          }
+        },
+        "summary": "Get Report",
         "tags": [
           "runs"
         ]
