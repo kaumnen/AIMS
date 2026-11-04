@@ -215,7 +215,7 @@ function Run() {
         }
         className="min-h-0 flex-1"
       >
-        <TabsList variant="line" className="border-b">
+        <TabsList variant="line" className="border-b print:hidden">
           {stepped && (
             <TabsTrigger value="steps">
               {kind === "selftest"

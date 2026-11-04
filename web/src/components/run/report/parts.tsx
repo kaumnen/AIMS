@@ -6,6 +6,7 @@ import type { RunReport } from "@/api/report";
 import type { RunDetail, StepInfo } from "@/api/run";
 import { shortId } from "@/lib/format";
 import { reaches } from "@/lib/monitor";
+import type { PrintSeq } from "@/lib/print";
 import { stepOf } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 
@@ -28,7 +29,11 @@ export interface SectionProps {
   onFlag: (seq: number, holder?: string) => void;
   // build the report from another monitor source: `live` or a review's run id
   onSource: (id: string) => void;
+  // how a link to an event of `run`, the reported run unless given, prints
+  print: (seq: number, run?: string) => PrintSeq;
 }
+
+type SectionPrint = Pick<SectionProps, "print">;
 
 // Tables show this many rows, the rest folded below, as in the Markdown.
 export const TABLE_ROWS = 30;
@@ -102,37 +107,64 @@ export function SeqLink({
   steps,
   more,
   onSeq,
+  print,
 }: {
   seq: number;
   agent?: string | null;
   steps: readonly StepInfo[];
   more: boolean;
   onSeq: (seq: number) => void;
-}) {
+} & SectionPrint) {
   const step = stepFor(steps, seq, more, agent);
   return (
-    <button
-      type="button"
-      title={`Event ${seq}`}
-      onClick={() => onSeq(seq)}
-      className="hover:text-foreground text-muted-foreground tabular-nums underline underline-offset-2"
-    >
+    <EventButton title={`Event ${seq}`} onClick={() => onSeq(seq)} print={print(seq)}>
       {step ? `step ${step.n}` : `seq ${seq}`}
+    </EventButton>
+  );
+}
+
+const LINK =
+  "hover:text-foreground text-muted-foreground tabular-nums underline underline-offset-2";
+
+// A button that opens an event or a flag. Its words sit in a span so print can swap them.
+export function EventButton({
+  title,
+  onClick,
+  print,
+  className,
+  children,
+}: {
+  title: string;
+  onClick: () => void;
+  print: PrintSeq;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      {...print}
+      type="button"
+      title={title}
+      onClick={onClick}
+      className={cn(LINK, className)}
+    >
+      <span>{children}</span>
     </button>
   );
 }
 
 // An event of another run, such as a review: opens that run at the event.
-export function OtherSeq({ run, seq }: { run: string; seq: number }) {
+export function OtherSeq({ run, seq, print }: { run: string; seq: number } & SectionPrint) {
   return (
     <Link
+      {...print(seq, run)}
       to="/runs/$runId"
       params={{ runId: run }}
       search={{ tab: "raw", seq }}
       title={`Event ${seq} of run ${run}`}
-      className="hover:text-foreground text-muted-foreground tabular-nums underline underline-offset-2"
+      className={LINK}
     >
-      seq {seq}
+      <span>seq {seq}</span>
     </Link>
   );
 }
@@ -177,14 +209,14 @@ export function Quote({ children, className }: { children: string; className?: s
           onClick={() => setWhole(true)}
           className="text-muted-foreground hover:text-foreground underline underline-offset-2"
         >
-          Cut, {count(rest, "more character")}. Show all
+          Cut, {count(rest, "more character")}.<span className="print:hidden"> Show all</span>
         </button>
       )}
     </div>
   );
 }
 
-// A part folded away until opened. Print opens every fold.
+// A part folded away until opened. Print opens every fold, see ReportTab.
 export function Fold({
   summary,
   children,
@@ -197,7 +229,7 @@ export function Fold({
   return (
     <details open={open} className="group">
       <summary className="text-muted-foreground flex cursor-default list-none items-center gap-1">
-        <ChevronRight aria-hidden className="size-3.5 shrink-0 group-open:rotate-90" />
+        <ChevronRight aria-hidden className="size-3.5 shrink-0 group-open:rotate-90 print:hidden" />
         {summary}
       </summary>
       <div className="mt-1">{children}</div>
@@ -221,7 +253,7 @@ export function ReportTable({
       role="region"
       aria-label={`${name} table`}
       tabIndex={0}
-      className="focus-visible:ring-ring/50 overflow-x-auto rounded-sm outline-none focus-visible:ring-2"
+      className="focus-visible:ring-ring/50 overflow-x-auto rounded-sm outline-none focus-visible:ring-2 print:overflow-visible"
     >
       <table aria-label={name} className="w-full text-left">
         <thead className="text-muted-foreground">

@@ -11,6 +11,7 @@ import { Scrubber } from "../scrubber";
 import {
   category,
   count,
+  EventButton,
   Fold,
   Quote,
   ReportTable,
@@ -59,16 +60,16 @@ const mono = (value: string) => (
 );
 
 // An event of this run by its seq. The step sits beside it, as the server counted it.
-function Seq({ seq, onSeq }: { seq: number; onSeq: (seq: number) => void }) {
+function Seq({ seq, onSeq, print }: { seq: number } & Pick<SectionProps, "onSeq" | "print">) {
   return (
-    <button
-      type="button"
+    <EventButton
       title={`Event ${seq}`}
       onClick={() => onSeq(seq)}
-      className="hover:text-foreground text-muted-foreground whitespace-nowrap tabular-nums underline underline-offset-2"
+      print={print(seq)}
+      className="whitespace-nowrap"
     >
       seq {seq}
-    </button>
+    </EventButton>
   );
 }
 
@@ -109,10 +110,10 @@ function What({ moment }: { moment: Moment }) {
 }
 
 export function TimelineSection(props: SectionProps) {
-  const { report, steps, multi, onSeq } = props;
+  const { report, steps, multi, onSeq, print } = props;
   const head = ["Seq", "Step", ...(multi ? ["Agent"] : []), "Event", "Categories", "Importance"];
   const rows = report.timeline.map((m) => [
-    <Seq key="seq" seq={m.seq} onSeq={onSeq} />,
+    <Seq key="seq" seq={m.seq} onSeq={onSeq} print={print} />,
     m.step === null ? "" : plain(m.step),
     ...(multi
       ? [
@@ -231,6 +232,7 @@ export function SourcesSection({ report, onSource }: SectionProps) {
               <Button
                 variant="outline"
                 size="xs"
+                className="print:hidden"
                 aria-label={`Build from this source: ${s.review ? `review ${shortId(s.run_id)}` : "the live monitor"}`}
                 onClick={() => onSource(s.run_id)}
               >
@@ -259,18 +261,18 @@ function Written({
   what,
   text,
   onSeq,
+  print,
 }: {
   what: string;
   text: AgentText;
-  onSeq: (seq: number) => void;
-}) {
+} & Pick<SectionProps, "onSeq" | "print">) {
   return (
     <div className="flex flex-col gap-1">
       <h3 className="font-medium">
         {what} of <span className="font-mono text-sm">{visible(text.agent ?? "")}</span>
       </h3>
       <p className="text-muted-foreground tabular-nums">
-        <Seq seq={text.seq} onSeq={onSeq} />
+        <Seq seq={text.seq} onSeq={onSeq} print={print} />
         {text.step === null ? "" : `, step ${text.step}`}.
       </p>
       <Quote>{text.text}</Quote>
@@ -278,7 +280,7 @@ function Written({
   );
 }
 
-export function AppendixSection({ report, onSeq }: SectionProps) {
+export function AppendixSection({ report, onSeq, print }: SectionProps) {
   const a = report.appendix;
   const empty = a.answers.length + a.reports.length + a.disagreements.length === 0;
   return (
@@ -289,10 +291,16 @@ export function AppendixSection({ report, onSeq }: SectionProps) {
         <Fold summary={APPENDIX_SUMMARY}>
           <div className="flex flex-col gap-4 pt-1">
             {a.answers.map((t) => (
-              <Written key={`answer-${t.seq}`} what="Final answer" text={t} onSeq={onSeq} />
+              <Written
+                key={`answer-${t.seq}`}
+                what="Final answer"
+                text={t}
+                onSeq={onSeq}
+                print={print}
+              />
             ))}
             {a.reports.map((t) => (
-              <Written key={`report-${t.seq}`} what="Report" text={t} onSeq={onSeq} />
+              <Written key={`report-${t.seq}`} what="Report" text={t} onSeq={onSeq} print={print} />
             ))}
             {a.disagreements.length > 0 && (
               <div className="flex flex-col gap-2">

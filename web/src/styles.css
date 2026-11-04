@@ -141,3 +141,51 @@
     @apply font-mono;
   }
 }
+
+/* Print: the run report alone on light paper, every part of it on the page, as the HTML export
+   of `aims report --html` prints. */
+@page {
+  margin: 15mm;
+}
+
+@media print {
+  :root,
+  :root[data-theme="dark"] {
+    color-scheme: light;
+  }
+  /* the app header, crumbs and skip link */
+  [data-shell] > :not(main) {
+    display: none;
+  }
+  [data-report] {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  [data-report] :is(h2, h3, summary) {
+    break-after: avoid;
+  }
+  [data-report] tr {
+    break-inside: avoid;
+  }
+  /* Short tables stay whole on a page. Long ones split by row so no page is left blank. */
+  [data-report] [role="region"]:not(:has(tbody > tr:nth-child(13))) {
+    break-inside: avoid;
+  }
+  /* A link to an event: `seq N`, then the URL it opens, as the report Markdown has it. */
+  [data-print-seq] {
+    text-align: start;
+    text-decoration: none;
+  }
+  [data-print-seq] > * {
+    display: none;
+  }
+  [data-print-seq]::before {
+    content: "seq " attr(data-print-seq);
+  }
+  [data-print-url]::after {
+    content: " (" attr(data-print-url) ")";
+    font-size: 0.85em;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+}

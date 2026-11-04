@@ -36,7 +36,7 @@ function Root() {
   return (
     <TooltipProvider>
       <LiveProvider onClosed={() => void me.refetch()}>
-        <div data-shell className="flex h-dvh flex-col">
+        <div data-shell className="flex h-dvh flex-col print:h-auto">
           <a
             href="#main"
             onClick={(e) => {
@@ -52,7 +52,7 @@ function Root() {
           <main
             id="main"
             tabIndex={-1}
-            className="min-h-0 flex-1 overflow-auto px-4 py-3 outline-none"
+            className="min-h-0 flex-1 overflow-auto px-4 py-3 outline-none print:overflow-visible print:p-0"
           >
             <Outlet />
           </main>

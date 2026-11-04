@@ -77,7 +77,7 @@ export function RunHeader({
   useTabTitle(run.state === "done" ? tab : `${statusLabel(run)} · ${tab}`);
   const budget = changesText(detail.budget, agentsOf(detail).length > 1);
   return (
-    <header className="flex flex-wrap items-end gap-x-8 gap-y-2 pb-3">
+    <header className="flex flex-wrap items-end gap-x-8 gap-y-2 pb-3 print:hidden">
       <div className="min-w-0">
         <h1 className="flex items-baseline gap-2 text-lg font-medium">
           <span className="truncate">{title}</span>

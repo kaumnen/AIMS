@@ -39,7 +39,7 @@ export function HoldBanner({
   const pauses = monitorPauses(detail);
   if (pauses.length === 0 || detail.run.status !== "running") return null;
   return (
-    <div className="flex flex-col gap-2 pb-3">
+    <div className="flex flex-col gap-2 pb-3 print:hidden">
       {pauses.map((holds) => (
         <Pause key={holds[0]?.seq} runId={detail.run.run_id} holds={holds} onFlag={onFlag} />
       ))}

@@ -161,3 +161,91 @@ test("a source the server cannot build from offers the default one", async () =>
   fireEvent.click(await screen.findByRole("button", { name: "Build from the default source" }));
   await waitFor(() => expect(router.state.location.search).toEqual({ tab: "report" }));
 });
+
+test("Print or save as PDF prints the page", async () => {
+  const print = vi.fn<() => void>();
+  vi.stubGlobal("print", print);
+  renderAt(`/runs/${RUN}?tab=report`);
+  fireEvent.click(await screen.findByRole("button", { name: "Print or save as PDF" }));
+  expect(print).toHaveBeenCalledOnce();
+});
+
+test("print opens every fold and names the page, then puts both back", async () => {
+  renderAt(`/runs/${RUN}?tab=report`);
+  const article = await screen.findByRole("article", { name: "Run report" });
+  await screen.findByRole("region", { name: "Judge summary" });
+  const folds = [...article.querySelectorAll("details")];
+  expect(folds.length).toBeGreaterThan(1);
+  const [kept, ...rest] = folds as [HTMLDetailsElement, ...HTMLDetailsElement[]];
+  kept.open = true;
+  const before = document.title;
+  window.dispatchEvent(new Event("beforeprint"));
+  expect(folds.every((d) => d.open)).toBe(true);
+  expect(document.title).toBe(`Run report: cache-keys, run ${RUN}`);
+  window.dispatchEvent(new Event("afterprint"));
+  expect(kept.open).toBe(true);
+  expect(rest.some((d) => d.open)).toBe(false);
+  expect(document.title).toBe(before);
+});
+
+// Every link to an event or a flag, once the steps are in.
+async function eventLinks() {
+  renderAt(`/runs/${RUN}?tab=report`);
+  const article = await screen.findByRole("article", { name: "Run report" });
+  await waitFor(() => expect(within(article).getAllByText(/^step \d+$/).length).toBeGreaterThan(0));
+  return [...article.querySelectorAll<HTMLElement>('[title^="Event "], [title^="Flag at event "]')];
+}
+
+test("every link to an event prints as its seq with the URL it opens", async () => {
+  const report = fullReport();
+  const warning = report.warnings[0] as ReportWarning;
+  // oxlint-disable-next-line unicorn/no-thenable
+  const tainted = { ...warning, kind: "tainted", part: null, then: null, seq: null } as const;
+  // a warning of the review at its own event, and tainted flags of the run and of the review
+  state.report = {
+    ...report,
+    warnings: [
+      ...report.warnings,
+      { ...warning, run_id: REVIEW, seq: 33 },
+      { ...tainted, seqs: [5, 9] },
+      { ...tainted, run_id: REVIEW, seqs: [61] },
+    ],
+  };
+  const links = await eventLinks();
+  expect(links.some((l) => l.title.startsWith("Flag"))).toBe(true);
+  expect(links.some((l) => l.title.includes(" of run "))).toBe(true);
+  // each link that prints wrong, by its title and what is wrong
+  const wrong = links.flatMap((link) => {
+    const seq = /event (\d+)/i.exec(link.title)?.[1];
+    // the run that holds the event: named in the title, else the reported run or its review
+    const run = / of run (\S+)/.exec(link.title)?.[1];
+    const holders = run
+      ? [run]
+      : link.title.endsWith("of the review")
+        ? [REVIEW]
+        : link.title.startsWith("Flag")
+          ? [RUN, REVIEW]
+          : [RUN];
+    const urls = holders.map((r) => `http://127.0.0.1:8765/runs/${r}?seq=${seq}`);
+    // print hides the link's own words, so they must sit in an element
+    const bare = [...link.childNodes].some((n) => n.nodeType !== Node.ELEMENT_NODE);
+    return [
+      ...(link.dataset["printSeq"] === seq ? [] : [`${link.title}: seq`]),
+      ...(urls.includes(link.dataset["printUrl"] ?? "") ? [] : [`${link.title}: url`]),
+      ...(bare ? [`${link.title}: bare text`] : []),
+    ];
+  });
+  expect(wrong).toEqual([]);
+});
+
+test("without a base URL a link prints as its seq alone, as the Markdown has it", async () => {
+  const report = fullReport();
+  state.report = {
+    ...report,
+    header: { ...report.header, pins: { ...report.header.pins, base_url: null } },
+  };
+  const links = await eventLinks();
+  expect(links.length).toBeGreaterThan(0);
+  expect(links.every((l) => l.dataset["printSeq"] !== undefined)).toBe(true);
+  expect(links.filter((l) => l.dataset["printUrl"] !== undefined)).toEqual([]);
+});

@@ -29,6 +29,7 @@ import {
   reaches,
   statusText,
 } from "@/lib/monitor";
+import type { PrintSeq } from "@/lib/print";
 import { stepOf } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 
@@ -103,11 +104,14 @@ export function StepLinks({
   steps,
   more,
   onSeq,
+  print,
 }: {
   evidence: readonly number[];
   steps: readonly StepInfo[];
   more: boolean;
   onSeq: (seq: number) => void;
+  // how each link prints, in the run report
+  print?: (seq: number) => PrintSeq;
 }) {
   const links = new Map<string, { label: string; seq: number }>();
   for (const seq of evidence.toSorted((a, b) => a - b)) {
@@ -121,13 +125,14 @@ export function StepLinks({
     <span className="flex flex-wrap gap-x-2">
       {[...links.values()].map((l) => (
         <button
+          {...print?.(l.seq)}
           key={l.seq}
           type="button"
           title={`Event ${l.seq}`}
           onClick={() => onSeq(l.seq)}
           className="hover:text-foreground text-muted-foreground tabular-nums underline underline-offset-2"
         >
-          {l.label}
+          <span>{l.label}</span>
         </button>
       ))}
     </span>

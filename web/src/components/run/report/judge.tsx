@@ -11,6 +11,7 @@ import { LIVE } from "../monitor";
 import { Cell } from "../score";
 import {
   category,
+  EventButton,
   Evidence,
   importanceText,
   LABELS_NOTE,
@@ -58,7 +59,10 @@ const upper = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 // Text from the log in a table cell: a few lines, all of it on hover.
 function Clamp({ text, className }: { text: string; className?: string }) {
   return (
-    <span title={visible(text)} className={cn("line-clamp-3 wrap-break-word", className)}>
+    <span
+      title={visible(text)}
+      className={cn("line-clamp-3 wrap-break-word print:line-clamp-none", className)}
+    >
       {visible(text)}
     </span>
   );
@@ -82,6 +86,7 @@ function Entry({
   steps,
   more,
   onSeq,
+  print,
 }: {
   title: string;
   meter?: ReactNode;
@@ -90,6 +95,7 @@ function Entry({
   steps: readonly StepInfo[];
   more: boolean;
   onSeq: (seq: number) => void;
+  print: SectionProps["print"];
 }) {
   return (
     <div className="flex flex-col gap-1.5 pt-1">
@@ -100,7 +106,7 @@ function Entry({
       {evidence.length > 0 && (
         <div className="flex flex-wrap gap-x-2">
           <span className="text-muted-foreground">Evidence</span>
-          <Evidence evidence={evidence} steps={steps} more={more} onSeq={onSeq} />
+          <Evidence evidence={evidence} steps={steps} more={more} onSeq={onSeq} print={print} />
         </div>
       )}
       {text.trim() !== "" && <Quote>{text}</Quote>}
@@ -112,7 +118,7 @@ const Empty = ({ children }: { children: string }) => (
   <p className="text-muted-foreground">{children}</p>
 );
 
-export function FindingsSection({ report, steps, more, onSeq }: SectionProps) {
+export function FindingsSection({ report, steps, more, onSeq, print }: SectionProps) {
   const why = report.headline.no_verdict;
   if (why !== null) return <Section title="Findings" intro={`Judge: ${NO_VERDICT[why]}.`} />;
   if (report.findings.length === 0) return <Section title="Findings" intro={NO_FINDINGS} />;
@@ -134,6 +140,7 @@ export function FindingsSection({ report, steps, more, onSeq }: SectionProps) {
             steps={steps}
             more={more}
             onSeq={onSeq}
+            print={print}
           />
         );
       })}
@@ -141,7 +148,7 @@ export function FindingsSection({ report, steps, more, onSeq }: SectionProps) {
   );
 }
 
-export function ObservationsSection({ report, steps, more, onSeq }: SectionProps) {
+export function ObservationsSection({ report, steps, more, onSeq, print }: SectionProps) {
   if (report.observations.length === 0) {
     return (
       <Section title="Other observations">
@@ -162,6 +169,7 @@ export function ObservationsSection({ report, steps, more, onSeq }: SectionProps
           steps={steps}
           more={more}
           onSeq={onSeq}
+          print={print}
         />
       ))}
     </Section>
@@ -169,7 +177,7 @@ export function ObservationsSection({ report, steps, more, onSeq }: SectionProps
 }
 
 // Ground truth, for operators. A viewer's report has none, so the section is left out.
-export function PlantsSection({ report, steps, more, multi, onSeq, onFlag }: SectionProps) {
+export function PlantsSection({ report, steps, more, multi, onSeq, onFlag, print }: SectionProps) {
   const p = report.plants;
   if (p === null) return null;
   if (p.error !== null) {
@@ -207,7 +215,7 @@ export function PlantsSection({ report, steps, more, multi, onSeq, onFlag }: Sec
       {t.taken ? "" : ", not taken"}
     </span>,
     <span key="at" className="whitespace-nowrap">
-      <SeqLink seq={t.seq} agent={t.agent} steps={steps} more={more} onSeq={onSeq} />
+      <SeqLink seq={t.seq} agent={t.agent} steps={steps} more={more} onSeq={onSeq} print={print} />
     </span>,
     ...(scored
       ? LAYERS.map(([layer]) => {
@@ -266,7 +274,7 @@ function flagStep(f: ReportFlag, steps: readonly StepInfo[], more: boolean) {
   return stepFor(steps, Math.min(...f.evidence), more, f.agent);
 }
 
-export function FlagsSection({ report, steps, more, multi, onFlag }: SectionProps) {
+export function FlagsSection({ report, steps, more, multi, onFlag, print }: SectionProps) {
   const source = report.header.pins.source;
   const review = source !== LIVE;
   const intro = (
@@ -303,15 +311,15 @@ export function FlagsSection({ report, steps, more, multi, onFlag }: SectionProp
     const step = flagStep(f, steps, more);
     const status = statusText[f.status] + (f.tainted && f.status !== "tainted" ? ", tainted" : "");
     return [
-      <button
+      <EventButton
         key="flag"
-        type="button"
         title={review ? `Flag at event ${f.seq} of the review` : `Flag at event ${f.seq}`}
         onClick={() => onFlag(f.seq)}
-        className="hover:text-foreground text-muted-foreground whitespace-nowrap tabular-nums underline underline-offset-2"
+        print={print(f.seq, f.run_id)}
+        className="whitespace-nowrap"
       >
         {step ? `step ${step.n}` : `seq ${f.seq}`}
-      </button>,
+      </EventButton>,
       ...(multi ? [f.agent ?? ""] : []),
       <span key="layer" className="whitespace-nowrap">
         {f.layer}

@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import { LIVE } from "../monitor";
 import {
   count,
+  EventButton,
   importanceText,
   LABELS_NOTE,
   NO_VERDICT,
@@ -268,14 +269,13 @@ function flagLinks(props: SectionProps, run: string, seqs: readonly number[]): R
       {shown.slice(0, MAX_LINKS).map((seq, i) => (
         <Fragment key={seq}>
           {i > 0 && ", "}
-          <button
-            type="button"
+          <EventButton
             title={`Flag at event ${seq}`}
             onClick={() => props.onFlag(seq, holder)}
-            className="hover:text-foreground text-muted-foreground tabular-nums underline underline-offset-2"
+            print={props.print(seq, run)}
           >
             seq {seq}
-          </button>
+          </EventButton>
         </Fragment>
       ))}
       {rest > 0 && ` (${rest} more)`}
@@ -285,7 +285,7 @@ function flagLinks(props: SectionProps, run: string, seqs: readonly number[]): R
 
 // One warning in the words of the Markdown writer's `_warning`.
 function warningLine(props: SectionProps, w: ReportWarning): ReactNode {
-  const { report, runId, steps, more, onSeq } = props;
+  const { report, runId, steps, more, onSeq, print } = props;
   const own = w.run_id === runId;
   let template = WARNINGS[w.kind][1];
   let who: ReactNode;
@@ -300,9 +300,9 @@ function warningLine(props: SectionProps, w: ReportWarning): ReactNode {
     w.seq === null ? (
       ""
     ) : own ? (
-      <SeqLink seq={w.seq} steps={steps} more={more} onSeq={onSeq} />
+      <SeqLink seq={w.seq} steps={steps} more={more} onSeq={onSeq} print={print} />
     ) : (
-      <OtherSeq run={w.run_id} seq={w.seq} />
+      <OtherSeq run={w.run_id} seq={w.seq} print={print} />
     );
   return fill(template, {
     who,
