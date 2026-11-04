@@ -1,6 +1,17 @@
+<div align="center">
+
 # AIMS
 
-Autonomous Intelligence Monitoring System.
+**Autonomous Intelligence Monitoring System**
+
+[![PyPI](https://img.shields.io/pypi/v/aims-bench)](https://pypi.org/project/aims-bench/)
+[![CI](https://github.com/kaumnen/AIMS/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/kaumnen/AIMS/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/kaumnen/AIMS)](https://github.com/kaumnen/AIMS/blob/main/LICENSE)
+![Python 3.14+](https://img.shields.io/badge/python-3.14%2B-blue)
+
+[Quick start](#quick-start) · [How it works](#how-it-works) · [Results](#results) · [Coding agents](#coding-agents)
+
+</div>
 
 AIMS is a bench for alignment experiments on AI agents. Agents work on a task in isolated sandboxes. A separate model watches every step and flags misbehaviour.
 
