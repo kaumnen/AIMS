@@ -196,6 +196,34 @@ def test_the_runner_gets_its_audit_mode(monkeypatch: pytest.MonkeyPatch, tmp_pat
         assert seen.pop().audit == mode
 
 
+def test_the_runner_reads_how_long_unused_scenario_images_stay(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    seen: list[NodeOptions] = []
+
+    class Stub:
+        def __init__(self, options: NodeOptions) -> None:
+            seen.append(options)
+
+        async def run(self, stop: asyncio.Event) -> None:
+            pass
+
+    monkeypatch.setattr("aims.node.service.Node", Stub)
+    project = tmp_path / "aims.toml"
+    args = ["runner", "--server", "http://127.0.0.1:9", "--data-dir", str(tmp_path)]
+    args += ["--config", str(project)]
+    for text, days in (("", 30.0), ("[images]\nkeep_days = 7\n", 7.0)):
+        project.write_text(text)
+        result = CliRunner().invoke(app, args, env={"AIMS_TOKEN": "x"})
+        assert result.exit_code == 0, result.output
+        assert seen.pop().image_keep_days == days
+    project.write_text("[images]\nkeep_days = -1\n")
+    result = CliRunner().invoke(app, args, env={"AIMS_TOKEN": "x"})
+    assert result.exit_code == 1
+    assert "[images] keep_days must be a number of days" in result.output
+    assert seen == []
+
+
 # In `signalled_runner`: `aims ui` ends, so the pipe on the runner's stdin ends.
 GONE = "gone"
 
@@ -644,6 +672,11 @@ async def test_aims_ui_hands_its_audit_mode_to_the_runner(
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
     await _spawn_runner("http://127.0.0.1:9", "t", UiOptions(audit="snapshot"), 0)
     assert argv[argv.index("--audit") + 1] == "snapshot"
+    assert "--config" not in argv
+    argv.clear()
+    project = Path("/srv/aims.toml")
+    await _spawn_runner("http://127.0.0.1:9", "t", UiOptions(project=project), 0)
+    assert argv[argv.index("--config") + 1] == str(project)
 
 
 class NoTracer:

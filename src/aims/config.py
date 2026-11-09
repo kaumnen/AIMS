@@ -11,6 +11,7 @@ A scenario overrides all of them for its agents. A missing file adds nothing; no
 
 `[credits]` maps a provider to the USD of credit it holds, for `aims spend` and the cost estimate.
 `[estimate] confirm_above_usd` is the estimate past which `aims run` asks before it starts.
+`[images] keep_days` is how many days a scenario image no container uses stays after its last use.
 """
 
 import hashlib
@@ -27,11 +28,14 @@ from aims.models import ModelsConfig, load_models
 from aims.monitor.config import MonitorConfigError, layer, merge
 from aims.monitor.texts import resolve
 from aims.prompts import Prompts, load_prompts
+from aims.sandbox.images import KEEP_DAYS
 from aims.tools import registry
 
 PROJECT = "aims.toml"
 USER = "config.toml"
-TABLES = frozenset({"profiles", "roles", "prompts", "scenarios", "monitor", "credits", "estimate"})
+TABLES = frozenset(
+    {"profiles", "roles", "prompts", "scenarios", "monitor", "credits", "estimate", "images"}
+)
 CONFIRM_ABOVE_USD = 20.0
 
 
@@ -93,6 +97,7 @@ class Settings:
     monitor: tuple[dict[str, Any], ...] = ()
     credits: dict[str, float] = field(default_factory=dict)
     confirm_above_usd: float = CONFIRM_ABOVE_USD
+    image_keep_days: float = KEEP_DAYS
 
 
 def load(config: Path | None = None, env: Mapping[str, str] = os.environ) -> Settings:
@@ -118,6 +123,7 @@ def load_layers(found: Layers) -> Settings:
     monitor: list[dict[str, Any]] = []
     credits: dict[str, float] = {}
     confirm = CONFIRM_ABOVE_USD
+    keep = KEEP_DAYS
     for path in files:
         try:
             data = tomllib.loads(path.read_text())
@@ -130,6 +136,7 @@ def load_layers(found: Layers) -> Settings:
         paths.extend(_scenario_paths(path, data.get("scenarios")))
         credits |= _credits(path, data.get("credits"))
         confirm = _confirm(path, data.get("estimate"), confirm)
+        keep = _keep_days(path, data.get("images"), keep)
         if "monitor" in data:
             try:
                 monitor.append(layer(data["monitor"], f"{path}: [monitor]"))
@@ -149,6 +156,7 @@ def load_layers(found: Layers) -> Settings:
         monitor=tuple(monitor),
         credits=credits,
         confirm_above_usd=confirm,
+        image_keep_days=keep,
     )
 
 
@@ -164,7 +172,7 @@ def _scenario_paths(path: Path, table: object) -> list[Path]:
     return [(path.parent / Path(v).expanduser()).resolve() for v in value]
 
 
-def _usd(value: object) -> bool:
+def _amount(value: object) -> bool:
     return isinstance(value, int | float) and not isinstance(value, bool) and value >= 0
 
 
@@ -172,7 +180,7 @@ def _credits(path: Path, table: object) -> dict[str, float]:
     """`[credits]`: USD of credit per provider, such as `meta = 150`."""
     if table is None:
         return {}
-    if not isinstance(table, dict) or not all(_usd(v) for v in table.values()):
+    if not isinstance(table, dict) or not all(_amount(v) for v in table.values()):
         raise ConfigError(f"{path}: [credits] maps each provider to a USD amount of 0 or more")
     return {str(k).lower(): float(v) for k, v in table.items()}
 
@@ -184,9 +192,34 @@ def _confirm(path: Path, table: object, current: float) -> float:
     if not isinstance(table, dict) or set(table) - {"confirm_above_usd"}:
         raise ConfigError(f"{path}: [estimate] takes only `confirm_above_usd`")
     value = table.get("confirm_above_usd", current)
-    if not _usd(value):
+    if not _amount(value):
         raise ConfigError(f"{path}: [estimate] confirm_above_usd must be a USD amount of 0 or more")
     return float(value)
+
+
+def _keep_days(path: Path, table: object, current: float) -> float:
+    """`[images] keep_days`: a scenario image no container uses goes this many days after its
+    last use."""
+    if table is None:
+        return current
+    if not isinstance(table, dict) or set(table) - {"keep_days"}:
+        raise ConfigError(f"{path}: [images] takes only `keep_days`")
+    value = table.get("keep_days", current)
+    if not _amount(value):
+        raise ConfigError(f"{path}: [images] keep_days must be a number of days, 0 or more")
+    return float(value)
+
+
+def image_keep_days(found: Layers) -> float:
+    """`[images] keep_days` of the files in `found`, read without the other settings."""
+    keep = KEEP_DAYS
+    for path in found.files():
+        try:
+            data = tomllib.loads(path.read_text())
+        except tomllib.TOMLDecodeError as e:
+            raise ConfigError(f"{path}: {e}") from None
+        keep = _keep_days(path, data.get("images"), keep)
+    return keep
 
 
 STARTER = """\
@@ -220,6 +253,9 @@ STARTER = """\
 
 # [estimate]
 # confirm_above_usd = 20
+
+# [images]
+# keep_days = 30
 """
 
 

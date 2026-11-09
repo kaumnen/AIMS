@@ -565,6 +565,8 @@ Do the same for `aims-toolbox`. Then run `docker load -i aims-tracer.tar` on the
 
 Scenario images build from their Dockerfiles, which often need the network. Run `aims scenario check` on a connected host first. Then move the `aims-env:<hash>` images it built with `docker save` and `docker load`.
 
+A scenario image that no run used in 30 days is removed when `aims run`, `aims runner` or a self-test starts. So are the helper images of other AIMS versions. A runner that stays up checks again every hour. Images a container uses always stay. `keep_days` under `[images]` in a config file changes the 30 days. On an offline host, set it high enough to keep the images you loaded. `aims images prune` removes these images now. Add `--dry-run` to only list them.
+
 ## Commands
 
 | Command | What it does |
@@ -588,6 +590,7 @@ Scenario images build from their Dockerfiles, which often need the network. Run 
 | `aims verify` | Check a run's hash chain and blobs |
 | `aims spend` | Show what each provider was paid |
 | `aims models list`, `check` | Show model profiles and test providers |
+| `aims images prune` | Remove images AIMS no longer needs |
 | `aims prompts show` | Print every text agents and the monitor read |
 | `aims init` | Write a commented starter config file |
 | `aims config` | Show which config files are read |

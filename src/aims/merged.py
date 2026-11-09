@@ -156,6 +156,14 @@ def merged(settings: Settings) -> str:
     estimate.add("confirm_above_usd", _value(settings.confirm_above_usd, confirm))
     doc.add("estimate", estimate)
 
+    keep = BUILTIN
+    for source, data in files:
+        if "keep_days" in data.get("images", {}):
+            keep = source
+    images = tomlkit.table()
+    images.add("keep_days", _value(settings.image_keep_days, keep))
+    doc.add("images", images)
+
     named = [s for s, data in files for _ in data.get("scenarios", {}).get("paths", [])]
     paths = tomlkit.array()
     paths.multiline(True)

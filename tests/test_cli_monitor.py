@@ -807,6 +807,42 @@ async def test_a_runner_prunes_a_copy_left_unused_but_never_one_a_job_reads(
         assert await n.ctx.origins.run(origin) is None
 
 
+async def test_a_runner_that_stays_up_removes_old_images_after_each_prune_wait(
+    cp: CP, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(service, "PRUNE_EVERY_S", 0.01)
+    rounds: list[None] = []
+
+    async def counted(self: Node) -> None:
+        rounds.append(None)
+
+    monkeypatch.setattr(Node, "_prune_images", counted)
+    async with node(cp, tmp_path / "node"):
+        await until(lambda: len(rounds) >= 2, 10)
+
+
+async def test_a_runner_removes_old_images_of_its_own_backend_only(tmp_path: Path) -> None:
+    kept: list[float] = []
+
+    class Backend:
+        async def remove_old(self, keep_days: float) -> None:
+            kept.append(keep_days)
+
+    own = Node(NodeOptions(url="http://cp", token="t", name="n", data=tmp_path, image_keep_days=3))
+    own.backend = cast(Any, Backend())
+    await own._prune_images()
+    assert kept == [3]
+
+    given = Node(
+        NodeOptions(
+            url="http://cp", token="t", name="n", data=tmp_path, backend=cast(Any, Backend())
+        )
+    )
+    given.backend = given.options.backend
+    await given._prune_images()
+    assert kept == [3]
+
+
 # aims control
 
 

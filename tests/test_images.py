@@ -1,19 +1,24 @@
 import asyncio
 import contextlib
 import importlib.util
+import io
 import json
 import logging
 import os
 import socket
 import sys
+import tarfile
 import uuid
 from collections.abc import AsyncIterator, Callable
+from datetime import datetime, timedelta, tzinfo
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 import aiodocker
 import pytest
+from typer.testing import CliRunner
 
+from aims.cli import app
 from aims.sandbox import images
 from aims.sandbox.images import context, ensure_built, ensure_image, ensure_pulled
 
@@ -455,3 +460,143 @@ async def test_an_old_pulled_asset_image_goes_with_its_registry_reference(
                 await docker.images.delete(ref, force=True)
         with contextlib.suppress(aiodocker.DockerError):
             await registry.stop()
+
+
+def scenario_context() -> bytes:
+    """The build context of a tiny image that no other test builds."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        for name, data in [
+            ("Dockerfile", b"FROM scratch\nCOPY marker /marker\n"),
+            ("marker", uuid.uuid4().hex.encode()),
+        ]:
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+@pytest.fixture
+async def env_repo(docker: aiodocker.Docker, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[str]:
+    """A scenario image repository of the test's own, so pruning leaves every other scenario
+    image on this host alone. Its images go at the end."""
+    repo = f"aims-env-test-{uuid.uuid4().hex[:12]}"
+    monkeypatch.setattr(images, "ENV_REPO", repo)
+    try:
+        yield repo
+    finally:
+        for image in await docker.images.list(filters={"reference": [repo]}):
+            for ref in image.get("RepoTags") or []:
+                with contextlib.suppress(aiodocker.DockerError):
+                    await docker.images.delete(ref, force=True)
+
+
+def days_later(monkeypatch: pytest.MonkeyPatch, days: float) -> None:
+    """Move the clock that image pruning reads `days` ahead."""
+
+    class Later(datetime):
+        @classmethod
+        def now(cls, tz: tzinfo | None = None) -> Self:
+            return super().now(tz) + timedelta(days=days)
+
+    monkeypatch.setattr(images, "datetime", Later)
+
+
+async def present(docker: aiodocker.Docker, *refs: str) -> set[str]:
+    found = set()
+    for ref in refs:
+        with contextlib.suppress(aiodocker.DockerError):
+            await docker.images.inspect(ref)
+            found.add(ref)
+    return found
+
+
+@pytest.mark.docker
+async def test_a_scenario_image_goes_30_days_after_its_last_use_unless_a_container_uses_it(
+    docker: aiodocker.Docker, env_repo: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old = await ensure_built(docker, scenario_context())
+    used = await ensure_built(docker, scenario_context())
+    assert old.startswith(f"{env_repo}:")
+    holder = await docker.containers.create(
+        config={"Image": used, "Cmd": ["/marker"], "Labels": {"aims.test": "images"}}
+    )
+    try:
+        await images.remove_old(docker)
+        assert await present(docker, old, used) == {old, used}
+        days_later(monkeypatch, 31)
+        listed = await images.remove_old(docker, dry_run=True)
+        assert old in listed
+        assert used not in listed
+        await images.remove_old(docker)
+        assert await present(docker, old, used) == {used}
+    finally:
+        with contextlib.suppress(aiodocker.DockerError):
+            await holder.delete(force=True)
+
+
+@pytest.mark.docker
+async def test_a_reused_scenario_image_counts_as_used_now(
+    docker: aiodocker.Docker, env_repo: str
+) -> None:
+    context = scenario_context()
+    tag = await ensure_built(docker, context)
+
+    async def tagged() -> datetime:
+        found = await docker.images.inspect(tag)
+        return datetime.fromisoformat(found["Metadata"]["LastTagTime"])
+
+    built = await tagged()
+    assert await ensure_built(docker, context) == tag
+    used = await tagged()
+    assert used > built
+    assert await ensure_built(docker, context) == tag
+    assert await tagged() > used
+    assert await present(docker, tag, f"{tag}-used") == {tag, f"{tag}-used"}
+
+
+@pytest.mark.docker
+async def test_a_dry_run_of_images_prune_lists_a_stale_scenario_image_and_keeps_it(
+    docker: aiodocker.Docker, env_repo: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tag = await ensure_built(docker, scenario_context())
+    monkeypatch.setattr(images, "MIN_AGE_S", 0)
+    args = ["images", "prune", "--days", "0", "--dry-run"]
+    out = await asyncio.to_thread(CliRunner().invoke, app, args)
+    assert out.exit_code == 0, out.output
+    assert f"would remove {tag}\n" in out.stdout
+    assert await present(docker, tag) == {tag}
+
+
+class NoDocker:
+    async def close(self) -> None:
+        pass
+
+
+def test_images_prune_takes_its_days_from_the_flag_else_the_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[float, bool]] = []
+
+    async def remove_old(docker: Any, keep_days: float, *, dry_run: bool) -> list[str]:
+        calls.append((keep_days, dry_run))
+        if keep_days > 100:
+            raise aiodocker.DockerError(900, "Cannot connect to Docker Engine")
+        return ["aims-env:0123456789abcdef"] if keep_days < 10 else []
+
+    monkeypatch.setattr(aiodocker, "Docker", NoDocker)
+    monkeypatch.setattr(images, "remove_old", remove_old)
+    project = tmp_path / "aims.toml"
+    project.write_text("[images]\nkeep_days = 7\n")
+    runner = CliRunner()
+
+    def prune(*args: str) -> tuple[int, str]:
+        out = runner.invoke(app, ["images", "prune", "--config", str(project), *args])
+        return out.exit_code, out.output
+
+    assert prune() == (0, "removed aims-env:0123456789abcdef\n")
+    assert prune("--days", "40", "--dry-run") == (0, "nothing to remove\n")
+    code, said = prune("--days", "400")
+    assert code == 1
+    assert "error: cannot prune images: " in said
+    assert calls == [(7.0, False), (40.0, True), (400.0, False)]

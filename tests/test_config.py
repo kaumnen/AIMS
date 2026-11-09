@@ -5,7 +5,16 @@ import pytest
 from typer.testing import CliRunner
 
 from aims.cli import app
-from aims.config import STARTER, ConfigError, init, layers, load, project_file, user_dir
+from aims.config import (
+    STARTER,
+    ConfigError,
+    image_keep_days,
+    init,
+    layers,
+    load,
+    project_file,
+    user_dir,
+)
 from aims.merged import merged
 from aims.monitor.config import merge
 from aims.prompts import TextError
@@ -79,6 +88,26 @@ def test_texts_of_tools_aims_does_not_know_wait_for_the_run(tmp_path: Path) -> N
     assert settings.prompts.tools["alerts"]["description"] == "Post to {channel}."
 
 
+def test_images_keep_days_comes_from_the_top_layer_that_sets_it(tmp_path: Path) -> None:
+    user = tmp_path / "user"
+    user.mkdir()
+    env = {"AIMS_CONFIG_DIR": str(user)}
+    project = tmp_path / "aims.toml"
+    project.write_text("")
+    assert load(project, env).image_keep_days == 30.0
+    (user / "config.toml").write_text("[images]\nkeep_days = 7\n")
+    assert load(project, env).image_keep_days == 7.0
+    project.write_text("[images]\nkeep_days = 0.5\n")
+    assert load(project, env).image_keep_days == 0.5
+    assert image_keep_days(layers(project, env)) == 0.5
+    for bad in ("keep_days = -1", "keep_days = true", 'keep_days = "7"', "days = 7"):
+        project.write_text(f"[images]\n{bad}\n")
+        with pytest.raises(ConfigError, match=r"\[images\]"):
+            load(project, env)
+        with pytest.raises(ConfigError, match=r"\[images\]"):
+            image_keep_days(layers(project, env))
+
+
 def test_init_writes_a_starter_that_loads(tmp_path: Path) -> None:
     path = init(tmp_path / "aims" / "config.toml")
     assert path.read_text() == STARTER
@@ -128,6 +157,7 @@ def test_merged_settings_name_the_source_of_each_value(tmp_path: Path) -> None:
         '[profiles."mine"]\nextends = "meta-spark-1.3-contributor"\neffort = "low"\n'
         '[profiles."mine".limits]\nrpm = 5\n'
         '[credits]\nMeta = 10\n[scenarios]\npaths = ["lib"]\n[prompts]\nsystem = "hidden"\n'
+        "[images]\nkeep_days = 7\n"
     )
     project = tmp_path / "aims.toml"
     project.write_text(
@@ -166,6 +196,7 @@ def test_merged_settings_name_the_source_of_each_value(tmp_path: Path) -> None:
         "fireworks = 5.0  # this project",
     ]
     assert _section(text, "[estimate]") == ["confirm_above_usd = 3.0  # this project"]
+    assert _section(text, "[images]") == ["keep_days = 7.0  # this machine"]
     assert _section(text, "[scenarios]") == [
         "paths = [",
         f'    "{(user / "lib").resolve()}", # this machine',

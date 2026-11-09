@@ -29,6 +29,10 @@ REGISTRY = "ghcr.io/kaumnen"
 DAEMON_DOWN = 900
 # Like kubelet's minimum image age: an image another AIMS version just tagged is about to be used.
 MIN_AGE_S = 120
+# Scenario images no container uses go this many days after their last use.
+KEEP_DAYS = 30.0
+# Docker's LastTagTime of an image never tagged here, such as one `docker load` made
+NEVER = datetime(1, 1, 1, tzinfo=UTC)
 
 
 def registry(env: Mapping[str, str] = os.environ) -> str:
@@ -83,33 +87,68 @@ async def ensure_image(
     return await _build(docker, tag, remote=remote, fileobj=io.BytesIO(data), encoding="gzip")
 
 
-async def remove_old(docker: aiodocker.Docker) -> None:
-    """Remove the asset images of other AIMS versions that no container uses. An image that
-    carries a current tag under any registry or namespace stays."""
+async def remove_old(
+    docker: aiodocker.Docker, keep_days: float = KEEP_DAYS, *, dry_run: bool = False
+) -> list[str]:
+    """Remove the images no container uses that AIMS needs no more: the asset images of other
+    AIMS versions and the scenario images last used more than `keep_days` ago. An asset image
+    that carries a current tag under any registry or namespace stays. Returns the references
+    removed, or with `dry_run` those it would remove."""
     current = {context(node.name)[0] for node in ASSETS.iterdir() if node.is_dir()}
     repos = {tag.partition(":")[0] for tag in current}
     used = {c["ImageID"] for c in await docker.containers.list(all=True)}
+    removed: list[str] = []
     for image in await docker.images.list(filters={"label": ["aims.managed=1"]}):
+        if image["Id"] in used:
+            continue
         tags = image.get("RepoTags") or []
-        refs = [r for r in (*tags, *(image.get("RepoDigests") or [])) if _repo(r) in repos]
-        if not refs or image["Id"] in used or current.intersection(_name(t) for t in tags):
+        assets = [r for r in (*tags, *(image.get("RepoDigests") or [])) if _repo(r) in repos]
+        scenario = [t for t in tags if _repo(t) == ENV_REPO]
+        if assets and not current.intersection(_name(t) for t in tags):
+            if await _tagged_within(docker, image["Id"], MIN_AGE_S):
+                continue
+            refs, why = assets, "left by another AIMS version"
+        elif scenario:
+            if await _used_within(docker, image["Id"], keep_days * 86400):
+                continue
+            refs, why = scenario, f"unused for {keep_days:g} days"
+        else:
             continue
-        if await _tagged_within(docker, image["Id"], MIN_AGE_S):
+        if dry_run:
+            removed += refs
             continue
-        log.info("removing %s, left by another AIMS version", " ".join(refs))
+        log.info("removing %s, %s", " ".join(refs), why)
         for ref in refs:
-            with contextlib.suppress(aiodocker.DockerError):
+            try:
                 await docker.images.delete(ref)
+            except aiodocker.DockerError:
+                continue
+            removed.append(ref)
+    return removed
+
+
+async def _tagged(docker: aiodocker.Docker, image: str) -> datetime | None:
+    """When `image` was last tagged here, NEVER if it never was; None when Docker cannot tell."""
+    try:
+        tagged = (await docker.images.inspect(image))["Metadata"]["LastTagTime"]
+        return datetime.fromisoformat(tagged)
+    except aiodocker.DockerError, KeyError, TypeError, ValueError:
+        return None
 
 
 async def _tagged_within(docker: aiodocker.Docker, image: str, seconds: float) -> bool:
     """Whether `image` was tagged here in the last `seconds`; True when Docker cannot tell."""
-    try:
-        tagged = (await docker.images.inspect(image))["Metadata"]["LastTagTime"]
-        age = datetime.now(UTC) - datetime.fromisoformat(tagged)
-    except aiodocker.DockerError, KeyError, TypeError, ValueError:
+    tagged = await _tagged(docker, image)
+    return tagged is None or (datetime.now(UTC) - tagged).total_seconds() < seconds
+
+
+async def _used_within(docker: aiodocker.Docker, image: str, seconds: float) -> bool:
+    """Whether scenario image `image` was built or used here in the last `seconds`, or in the
+    last MIN_AGE_S. True when Docker cannot tell, as for an image loaded and not used since."""
+    tagged = await _tagged(docker, image)
+    if tagged is None or tagged == NEVER:
         return True
-    return age.total_seconds() < seconds
+    return (datetime.now(UTC) - tagged).total_seconds() < max(seconds, MIN_AGE_S)
 
 
 def _repo(ref: str) -> str:
@@ -218,8 +257,11 @@ def built_tag(context: bytes, dockerfile: str = "Dockerfile") -> str:
 async def ensure_built(
     docker: aiodocker.Docker, context: bytes, dockerfile: str = "Dockerfile"
 ) -> str:
-    """Build the tar build context `context` unless an image built from the same bytes exists."""
+    """Build the tar build context `context` unless an image built from the same bytes exists.
+    An image that exists counts as used now."""
     tag = built_tag(context, dockerfile)
+    if await _exists(docker, tag) and await _touch(docker, tag):
+        return tag
     return await _build(
         docker,
         tag,
@@ -227,3 +269,19 @@ async def ensure_built(
         encoding="gzip",
         path_dockerfile=dockerfile,
     )
+
+
+async def _touch(docker: aiodocker.Docker, tag: str) -> bool:
+    """Count the image `tag` as used now. Docker's containerd image store moves LastTagTime
+    only when an image gets a new name, so this drops and remakes a second name, `<tag>-used`.
+    False when `tag` is gone."""
+    repo, _, version = tag.rpartition(":")
+    with contextlib.suppress(aiodocker.DockerError):
+        await docker.images.delete(f"{tag}-used")
+    try:
+        await docker.images.tag(tag, repo, tag=f"{version}-used")
+    except aiodocker.DockerError as e:
+        if e.status == DAEMON_DOWN:
+            raise
+        return False
+    return True

@@ -8,7 +8,7 @@ import socket
 import tarfile
 import uuid
 from collections.abc import AsyncIterator, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +19,7 @@ from aims.sandbox import docker as sandbox
 from aims.sandbox import images as assets
 from aims.sandbox.base import SandboxInfo, SandboxSpec
 from aims.sandbox.docker import INSTANCE, _container_id, _own_container, _sweep
-from aims.sandbox.images import context, ensure_image, remove_old
+from aims.sandbox.images import MIN_AGE_S, context, ensure_image, remove_old
 
 pytestmark = pytest.mark.anyio
 
@@ -428,7 +428,6 @@ async def test_old_asset_images_go_unless_used_or_just_tagged() -> None:
         {"Id": "used", "RepoTags": ["aims-tracer:222222222222"]},
         {"Id": "fresh", "RepoTags": ["aims-tracer:333333333333"]},
         {"Id": "unknown", "RepoTags": ["aims-tracer:444444444444"]},
-        {"Id": "scenario", "RepoTags": ["aims-env:0123456789abcdef"]},
         {"Id": "renamed", "RepoTags": [f"localhost:5000/keep/{current}"]},
         {"Id": "renamed-old", "RepoTags": ["keep/aims-tracer:555555555555"]},
     ]
@@ -454,13 +453,64 @@ async def test_old_asset_images_go_unless_used_or_just_tagged() -> None:
         "aims-tracer:666666666666",
         "keep/aims-tracer:555555555555",
     ]
-    assert "scenario" not in images.asked
+
+
+class Refusing(Images):
+    """Images whose deletes of `refused` fail, as for an image a new container uses."""
+
+    refused = frozenset({"aims-env:6666666666666666"})
+
+    async def delete(self, ref: str) -> None:
+        if ref in self.refused:
+            raise aiodocker.DockerError(409, "image is being used by a container")
+        await super().delete(ref)
+
+
+async def test_scenario_images_go_once_unused_for_keep_days() -> None:
+    now = datetime.now(UTC)
+    found = [
+        {
+            "Id": "stale",
+            "RepoTags": ["aims-env:0000000000000000", "aims-env:0000000000000000-used"],
+        },
+        {"Id": "month", "RepoTags": ["aims-env:1111111111111111"]},
+        {"Id": "fresh", "RepoTags": ["aims-env:2222222222222222"]},
+        {"Id": "used", "RepoTags": ["aims-env:3333333333333333"]},
+        {"Id": "loaded", "RepoTags": ["aims-env:4444444444444444"]},
+        {"Id": "unknown", "RepoTags": ["aims-env:5555555555555555"]},
+        {"Id": "shared", "RepoTags": ["mine/env:1", "aims-env:6666666666666666"]},
+        {"Id": "untagged", "RepoTags": None},
+    ]
+    tagged = {str(i["Id"]): (now - timedelta(days=31)).isoformat() for i in found} | {
+        "month": (now - timedelta(days=29)).isoformat(),
+        "fresh": (now - timedelta(seconds=MIN_AGE_S / 2)).isoformat(),
+        "loaded": "0001-01-01T00:00:00Z",
+        "unknown": "error",
+    }
+    images = Refusing(found, tagged)
+
+    class Client:
+        containers = Used(["used"])
+
+    docker: Any = Client()
+    docker.images = images
+    gone = ["aims-env:0000000000000000", "aims-env:0000000000000000-used"]
+    assert await remove_old(docker, dry_run=True) == [*gone, "aims-env:6666666666666666"]
+    assert images.deleted == []
+    assert await remove_old(docker) == gone
+    assert images.deleted == gone
+    assert await remove_old(docker, 0, dry_run=True) == [
+        *gone,
+        "aims-env:1111111111111111",
+        "aims-env:6666666666666666",
+    ]
 
 
 async def test_a_toolbox_volume_goes_with_its_image(
     deleted: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def nothing(_: Any) -> None: ...
+    async def nothing(*_: Any) -> list[str]:
+        return []
 
     monkeypatch.setattr(sandbox, "remove_old", nothing)
     names = [
@@ -478,7 +528,7 @@ async def test_a_toolbox_volume_goes_with_its_image(
 
     docker: Any = Client()
     docker.images = images
-    await sandbox._remove_old(docker, "aims-toolbox-000000000000")
+    await sandbox._remove_old(docker, "aims-toolbox-000000000000", 30)
     assert deleted == ["aims-toolbox-bbbbbbbbbbbb"]
 
 
@@ -562,18 +612,18 @@ async def test_an_old_asset_image_and_its_toolbox_volume_go_once_unused(
     both = {f"aims-tracer:{old}", f"aims-toolbox:{other}"}
     user: Any = None
     try:
-        await sandbox._remove_old(docker, toolbox)
+        await sandbox._remove_old(docker, toolbox, 30)
         assert await present() == (both, {f"aims-toolbox-{other}"})
 
         monkeypatch.setattr(assets, "MIN_AGE_S", 0)
         user = await docker.containers.create(
             config={"Image": f"aims-tracer:{old}", "Cmd": ["/marker"]}
         )
-        await sandbox._remove_old(docker, toolbox)
+        await sandbox._remove_old(docker, toolbox, 30)
         assert await present() == (both, {f"aims-toolbox-{other}"})
 
         await user.delete(force=True)
-        await sandbox._remove_old(docker, toolbox)
+        await sandbox._remove_old(docker, toolbox, 30)
         assert await present() == (set(), set())
     finally:
         if user is not None:

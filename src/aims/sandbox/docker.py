@@ -36,7 +36,7 @@ from aims.sandbox.base import (
     Tree,
     check_name,
 )
-from aims.sandbox.images import ensure_built, ensure_image, ensure_pulled, remove_old
+from aims.sandbox.images import KEEP_DAYS, ensure_built, ensure_image, ensure_pulled, remove_old
 from aims.sandbox.imds import Identity
 from aims.sandbox.imds import start as start_imds_server
 from aims.sandbox.reader import Reader
@@ -105,11 +105,17 @@ class DockerBackend:
 
     @classmethod
     async def open(
-        cls, *, audit: AuditMode = "auto", url: str | None = None, ring_pages: int | None = None
+        cls,
+        *,
+        audit: AuditMode = "auto",
+        url: str | None = None,
+        ring_pages: int | None = None,
+        image_keep_days: float = KEEP_DAYS,
     ) -> DockerBackend:
         """Connect to Docker and start the kernel tracer unless `audit` is snapshot.
 
-        `ring_pages` sizes the tracer's kernel ring in 4 KiB pages, a power of two.
+        `ring_pages` sizes the tracer's kernel ring in 4 KiB pages, a power of two. Scenario
+        images no container used in `image_keep_days` days are removed.
         """
         docker = aiodocker.Docker(url=url)
         sampler: Sampler | None = None
@@ -128,7 +134,7 @@ class DockerBackend:
                 labels["aims.container"] = container
             await _sweep(docker, labels["aims.host"], container)
             toolbox = await _toolbox(docker, labels)
-            await _remove_old(docker, toolbox[1])
+            await _remove_old(docker, toolbox[1], image_keep_days)
             sampler = await _sampler(docker, labels, toolbox[0])
             if audit != "snapshot":
                 name = f"aims-tracer-{uuid.uuid4().hex[:12]}"
@@ -159,6 +165,10 @@ class DockerBackend:
         """Remove the tracer and the sampler, then close the Docker client. A cancel, such as a
         second Ctrl-C, waits for this to end, so neither helper outlives this process."""
         await settle(_teardown(self.docker, self.tracer, self.sampler))
+
+    async def remove_old(self, keep_days: float) -> None:
+        """Remove what `open` removes: the images and toolbox volumes AIMS needs no more."""
+        await _remove_old(self.docker, self._toolbox_volume, keep_days)
 
     async def restart_tracer(self) -> None:
         """Start a new kernel tracer in place of one that stopped or never started. Sandboxes
@@ -885,10 +895,10 @@ async def _toolbox(docker: aiodocker.Docker, labels: dict[str, str]) -> tuple[st
     return image, volume
 
 
-async def _remove_old(docker: aiodocker.Docker, toolbox: str) -> None:
-    """Remove the asset images of other AIMS versions that no container uses, and the toolbox
-    volumes whose image is gone."""
-    await remove_old(docker)
+async def _remove_old(docker: aiodocker.Docker, toolbox: str, keep_days: float) -> None:
+    """Remove the asset images of other AIMS versions and the scenario images unused for
+    `keep_days` days that no container uses, and the toolbox volumes whose image is gone."""
+    await remove_old(docker, keep_days)
     listing = await docker.volumes.list(filters={"label": ["aims.managed=1"]})
     for volume in listing.get("Volumes") or []:
         name = volume["Name"]

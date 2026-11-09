@@ -225,6 +225,58 @@ async def _check(models: Any, chosen: list[Any], runs_dir: Path) -> bool:
     return any(c.verdict == "fail" for c in checks)
 
 
+images_app = typer.Typer(no_args_is_help=True, help="Docker images AIMS builds and pulls.")
+app.add_typer(images_app, name="images")
+
+
+@images_app.command("prune")
+def images_prune(
+    days: Annotated[
+        float | None,
+        typer.Option(
+            min=0,
+            help="Remove scenario images unused this many days. By default \\[images] keep_days.",
+        ),
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="List what would go and remove nothing.")
+    ] = False,
+    config: ConfigOption = None,
+) -> None:
+    """Remove the images that AIMS needs no more and no container uses: the helper images of
+    other AIMS versions and scenario images unused for a while. `aims run`, `aims runner` and
+    the self-test do this when they start."""
+    import asyncio
+
+    import aiodocker
+
+    from aims.config import ConfigError, image_keep_days, layers
+    from aims.sandbox import images
+
+    try:
+        keep = image_keep_days(layers(config)) if days is None else days
+    except ConfigError as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(EXIT_FAILED) from None
+
+    async def main() -> list[str]:
+        docker = aiodocker.Docker()
+        try:
+            return await images.remove_old(docker, keep, dry_run=dry_run)
+        finally:
+            await docker.close()
+
+    try:
+        refs = asyncio.run(main())
+    except Exception as e:
+        typer.echo(f"error: cannot prune images: {e}", err=True)
+        raise typer.Exit(EXIT_FAILED) from None
+    for ref in refs:
+        typer.echo(f"{'would remove' if dry_run else 'removed'} {ref}")
+    if not refs:
+        typer.echo("nothing to remove")
+
+
 scenario_app = typer.Typer(no_args_is_help=True, help="Scenario files.")
 app.add_typer(scenario_app, name="scenario")
 prompts_app = typer.Typer(no_args_is_help=True, help="The texts the agent reads.")
@@ -371,7 +423,9 @@ def _selftest(settings: Any, bundle: Any, profile: str | None, keep: Path | None
 
     async def main(root: Path) -> list[Any] | str:
         try:
-            backend = await DockerBackend.open(audit="kernel")
+            backend = await DockerBackend.open(
+                audit="kernel", image_keep_days=settings.image_keep_days
+            )
         except Exception as e:
             return f"the self-test needs Docker and the kernel tracer: {e}"
         async with backend, await LocalEventStore.open(root) as store:
@@ -886,7 +940,9 @@ async def _run(**o: Any) -> int:
             if refused is not None:
                 return fail(escape(refused))
         try:
-            backend = await DockerBackend.open(audit=o["audit"])
+            backend = await DockerBackend.open(
+                audit=o["audit"], image_keep_days=settings.image_keep_days
+            )
         except (SandboxError, Exception) as e:
             return fail(f"cannot start the sandbox backend: {e}")
         async with backend:
@@ -1343,6 +1399,7 @@ def runner_cmd(
     tls_ca: Annotated[
         Path | None, typer.Option("--tls-ca", help="CA or certificate to trust for the server.")
     ] = None,
+    config: ConfigOption = None,
 ) -> None:
     """Take jobs from a control plane and run them on this Docker host."""
     import asyncio
@@ -1353,6 +1410,7 @@ def runner_cmd(
     import stat
     from typing import cast
 
+    from aims.config import ConfigError, image_keep_days, layers
     from aims.node.service import Node, NodeOptions
     from aims.node.service import data_dir as default_dir
     from aims.sandbox import AuditMode
@@ -1360,6 +1418,11 @@ def runner_cmd(
 
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
     mode = cast(AuditMode, _audit(audit))
+    try:
+        image_days = image_keep_days(layers(config))
+    except ConfigError as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(EXIT_FAILED) from None
     found = _connection(server, token_file, required=True)
     assert found is not None
     url, token = found
@@ -1379,6 +1442,7 @@ def runner_cmd(
                 data=data_dir or default_dir(),
                 slots=slots,
                 keep_days=keep_days,
+                image_keep_days=image_days,
                 verify=True if tls_ca is None else str(tls_ca),
                 audit=mode,
             )

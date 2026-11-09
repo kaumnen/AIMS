@@ -597,7 +597,7 @@ def test_check_prints_each_run_and_keeps_the_runs_only_when_one_fails(
     root.mkdir()
 
     async def open_backend(**kw: Any) -> _Backend:
-        assert kw == {"audit": "kernel"}
+        assert kw == {"audit": "kernel", "image_keep_days": 30.0}
         return _Backend()
 
     async def run(bench: Any, bundle: Any, plan: Any, **kw: Any) -> list[st.Outcome]:

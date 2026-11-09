@@ -48,6 +48,7 @@ from aims.run.runner import Bench, Options, RunError, Runner, seal_unsealed
 from aims.run.score import Added
 from aims.run.scoring import ScoreError, score_with
 from aims.sandbox import AuditMode, DockerBackend, SandboxError
+from aims.sandbox.images import KEEP_DAYS
 from aims.scenario import Bundle
 from aims.wire import MonitorJob, OfferMessage, ScoreJob, TracerHealth
 
@@ -81,6 +82,7 @@ class NodeOptions:
     data: Path
     slots: int = 2
     keep_days: float | None = None
+    image_keep_days: float = KEEP_DAYS
     verify: bool | str = True
     docker_url: str | None = None
     # snapshot never starts the privileged kernel tracer
@@ -148,7 +150,9 @@ class Node:
             if sealed:
                 log.warning("sealed %d run(s) left open by an earlier runner", len(sealed))
             given = o.backend is not None
-            backend = o.backend or await DockerBackend.open(audit=o.audit, url=o.docker_url)
+            backend = o.backend or await DockerBackend.open(
+                audit=o.audit, url=o.docker_url, image_keep_days=o.image_keep_days
+            )
             self.backend = backend
             async with contextlib.AsyncExitStack() as stack:
                 if not given:
@@ -529,6 +533,17 @@ class Node:
             except (ApiError, httpx2.TransportError, OSError) as e:
                 log.debug("prune skipped: %s", e)
             await asyncio.sleep(PRUNE_EVERY_S)
+            await self._prune_images()
+
+    async def _prune_images(self) -> None:
+        """Remove what opening the backend removed, for a runner that stays up. A backend
+        given in the options is the giver's to clean."""
+        if self.options.backend is not None or self.backend is None:
+            return
+        try:
+            await self.backend.remove_old(self.options.image_keep_days)
+        except Exception as e:
+            log.warning("image cleanup failed: %s", e)
 
     async def _prune_copies(self, days: float) -> None:
         origins = self.ctx.origins

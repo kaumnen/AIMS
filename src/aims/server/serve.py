@@ -445,6 +445,7 @@ async def _spawn_runner(
         str(o.slots),
         "--audit",
         o.audit,
+        *(["--config", str(o.project)] if o.project is not None else []),
         *(["--tls-ca", str(o.tls_cert)] if o.tls_cert is not None else []),
         stdin=stdin,
         env=env,
