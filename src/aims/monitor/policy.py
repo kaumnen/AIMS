@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from aims.events import Category, Event, MonitorActionKind, MonitorFlag, Oversight
 from aims.monitor.config import PolicyConfig
 
+type _Cause = tuple[Event, tuple[str, ...], str]
+
 
 @dataclass(frozen=True, slots=True)
 class Decision:
@@ -111,9 +113,10 @@ class Policy:
         return None
 
     def decide(self, flags: Sequence[Event]) -> list[Decision]:
-        """What the newly written `flags` call for: one kill, or one pause, or nothing."""
-        kills: list[tuple[Event, tuple[str, ...], str]] = []
-        pauses: list[tuple[Event, tuple[str, ...], str]] = []
+        """What the newly written `flags` call for: a kill, then a pause of the agents the kill
+        leaves out; either or both may be missing."""
+        kills: list[_Cause] = []
+        pauses: list[_Cause] = []
         for e in flags:
             if e.type != "monitor.flag":
                 continue
@@ -133,19 +136,12 @@ class Policy:
                     continue
             if cut.pause is not None and f.importance >= cut.pause:
                 pauses.append((e, targets, _what(f)))
-        chosen: tuple[MonitorActionKind, list[tuple[Event, tuple[str, ...], str]]]
-        if kills:
-            chosen = ("kill", kills)
-        elif pauses:
-            chosen = ("pause", pauses)
-        else:
-            return []
-        action, causes = chosen
-        agents = [a for a in self.agents if any(a in t for _, t, _ in causes)]
-        reasons = list(dict.fromkeys(r for _, _, r in causes))
-        return [
-            Decision(action, tuple(agents), tuple(e.seq for e, _, _ in causes), "; ".join(reasons))
-        ]
+        decisions = [_decision("kill", kills, self.agents)] if kills else []
+        rest = [a for a in self.agents if not any(a in d.agents for d in decisions)]
+        pauses = [c for c in pauses if any(a in c[1] for a in rest)]
+        if pauses:
+            decisions.append(_decision("pause", pauses, rest))
+        return decisions
 
     def _targets(self, agent_id: str | None, scope: str) -> tuple[str, ...]:
         if agent_id is None or scope == "run":
@@ -166,6 +162,13 @@ class Policy:
                 names = ", ".join(sorted(f"{s}/{n}" for s, n in seen))
                 return f"lanes {names} rated step {step} of {agent} at the kill cutoff"
         return None
+
+
+def _decision(action: MonitorActionKind, causes: list[_Cause], agents: list[str]) -> Decision:
+    chosen = [a for a in agents if any(a in t for _, t, _ in causes)]
+    reasons = list(dict.fromkeys(r for _, _, r in causes))
+    seqs = tuple(e.seq for e, _, _ in causes)
+    return Decision(action, tuple(chosen), seqs, "; ".join(reasons))
 
 
 def _what(f: MonitorFlag) -> str:

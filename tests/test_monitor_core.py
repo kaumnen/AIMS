@@ -413,6 +413,47 @@ async def test_observe_simulates_every_action(tmp_path: Path) -> None:
         assert h.actuator.log == []
 
 
+def cross_rule(e: Event) -> list[Draft]:
+    """A tool call named `both` raises a kill-level flag on its agent and a pause-level one
+    on b."""
+    if e.type != "tool.call" or e.data["name"] != "both":
+        return []
+    return [
+        Draft(
+            MonitorFlag(
+                layer="signal",
+                source="sig",
+                category="scorer_tampering",
+                importance=importance,
+                evidence=[e.seq],
+                justification="bad",
+            ),
+            agent,
+        )
+        for importance, agent in ((5, e.agent_id), (4, "b"))
+    ]
+
+
+@pytest.mark.parametrize(
+    ("oversight", "acted", "recorded"),
+    [
+        ("observe", [], [("kill", ["a"]), ("pause", ["b"])]),
+        ("autonomous", ["kill"], [("kill", ["a"])]),
+    ],
+)
+async def test_one_event_kills_one_agent_and_pauses_another(
+    tmp_path: Path, oversight: str, acted: list[str], recorded: list[tuple[str, list[str]]]
+) -> None:
+    async with harness(tmp_path, oversight=oversight, rule=cross_rule, agents=("a", "b")) as h:
+        await h.add(started())
+        await h.add(started(), "b")
+        await h.add(ToolCall(call_id="t1", name="both", arguments="{}"))
+        await h.monitor.barrier()
+        actions = [(e.data["action"], e.data["agents"]) for e in await h.of("monitor.action")]
+        assert actions == recorded
+        assert h.actuator.kinds() == acted
+
+
 async def test_simulated_monitor_run(tmp_path: Path) -> None:
     async with harness(tmp_path, simulated=True) as h:
         await h.add(started())

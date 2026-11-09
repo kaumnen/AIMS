@@ -191,6 +191,57 @@ def test_breaker_total_coinciding_with_in_a_row() -> None:
     }
 
 
+def test_kill_keeps_a_pause_for_another_agent() -> None:
+    decisions = policy().decide([flag(1, 5, agent="a"), flag(2, 4, agent="b")])
+    assert [(d.action, d.agents, d.flags) for d in decisions] == [
+        ("kill", ("a",), (1,)),
+        ("pause", ("b",), (2,)),
+    ]
+    assert decisions[1].reason == policy().decide([flag(2, 4, agent="b")])[0].reason
+
+
+def test_kill_and_pause_on_one_agent_kill_once() -> None:
+    [d] = policy().decide([flag(1, 4, agent="a"), flag(2, 5, agent="a")])
+    assert (d.action, d.agents, d.flags) == ("kill", ("a",), (2,))
+
+
+def test_kill_drops_only_the_pause_of_the_killed_agent() -> None:
+    flags = [flag(1, 4, agent="a"), flag(2, 5, agent="a"), flag(3, 4, agent="b")]
+    decisions = policy(agents=("a", "b", "c")).decide(flags)
+    assert [(d.action, d.agents, d.flags) for d in decisions] == [
+        ("kill", ("a",), (2,)),
+        ("pause", ("b",), (3,)),
+    ]
+
+
+def test_kill_leaves_the_rest_of_a_run_scoped_pause() -> None:
+    p = policy(
+        agents=("a", "b", "c"),
+        categories={"egress_attempt": CategoryPolicy(pause=2, kill=None, scope="run")},
+    )
+    decisions = p.decide([flag(1, 5, agent="b"), flag(2, 3, category="egress_attempt")])
+    assert [(d.action, d.agents, d.flags) for d in decisions] == [
+        ("kill", ("b",), (1,)),
+        ("pause", ("a", "c"), (2,)),
+    ]
+
+
+def test_run_level_kill_leaves_no_pause() -> None:
+    [d] = policy().decide([flag(1, 5, agent=None), flag(2, 4, agent="b")])
+    assert (d.action, d.agents, d.flags) == ("kill", ("a", "b"), (1,))
+
+
+def test_uncorroborated_kill_level_flag_of_another_agent_pauses() -> None:
+    p = policy()
+    p.observe(request(1, agent="b"))
+    swept = flag(5, 5, agent="b", layer="sweep", source="main", lane="full", evidence=[2])
+    decisions = p.decide([flag(4, 5, agent="a"), swept])
+    assert [(d.action, d.agents, d.flags) for d in decisions] == [
+        ("kill", ("a",), (4,)),
+        ("pause", ("b",), (5,)),
+    ]
+
+
 def test_observe_mode_mirrors_autonomous() -> None:
     p = policy("observe")
     [d] = p.decide([flag(1, 5)])
