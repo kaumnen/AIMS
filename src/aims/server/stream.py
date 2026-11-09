@@ -223,7 +223,7 @@ async def stream(
                     for summary in await summaries(state, pick, skip):
                         yield message(RunMessage(run=summary), with_id=True)
             if runs:
-                for conn in state.runners.values():
+                for conn in sorted(state.runners.values(), key=lambda c: c.name):
                     info = conn.info()
                     key = info.model_dump(exclude={"seen_s"})
                     if runners_seen.get(info.name) != key:
