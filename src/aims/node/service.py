@@ -7,11 +7,12 @@ import hashlib
 import json
 import logging
 import os
+import tempfile
 import time
-from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import IO
 
 import httpx2
 from pydantic import JsonValue
@@ -25,11 +26,11 @@ from aims.events import (
     RunStarted,
     RunStatus,
     SelfTestCase,
-    split_lines,
 )
 from aims.events.blobs import decode
+from aims.events.chain import MAX_LINE
 from aims.events.schema import blob_refs
-from aims.events.store import TruthRefused
+from aims.events.store import TruthRefused, is_run_id
 from aims.models import ModelsConfig, Roles, load_models
 from aims.models.check import record_check
 from aims.monitor.config import MonitorConfigError
@@ -54,8 +55,12 @@ log = logging.getLogger("aims.node")
 
 TRACER_RETRY_S = 60.0
 PRUNE_EVERY_S = 3600.0
+# Monitor, score and fork jobs of one run tend to come within days of each other; a pruned copy
+# is only fetched again.
+COPY_DAYS = 7.0
 BLOB_LIMIT = 2 * 1024**3
 INGEST_CHUNK = 1000
+INGEST_BYTES = 4 * 1024 * 1024
 
 
 def data_dir(env: dict[str, str] | None = None) -> Path:
@@ -104,6 +109,9 @@ class Node:
         self._open: _Open | None = None
         self._jobs: dict[str, asyncio.Task[None]] = {}
         self._tracer_tried = 0.0
+        # job run id -> the runs it reads, which are not pruned until it ends
+        self._reads: dict[str, set[str]] = {}
+        self._pruning = asyncio.Lock()
 
     @property
     def ctx(self) -> _Open:
@@ -265,7 +273,7 @@ class Node:
                     return
                 origin = source = None
                 if job.fork is not None:
-                    source = await self._origin(job.fork.origin)
+                    source = await self._origin(job.fork.origin, job.run_id)
                     origin = await load_origin(source, job.fork.origin)
                 inherited, restored = await self._previous(job)
                 runner = runner_for(
@@ -291,6 +299,7 @@ class Node:
         finally:
             self.claimed.pop(job.run_id, None)
             self._jobs.pop(job.run_id, None)
+            self._reads.pop(job.run_id, None)
             link.untrack(job.run_id)
 
     async def _selftest(self, job: Job, bundle: Bundle) -> None:
@@ -370,7 +379,7 @@ class Node:
             resolved = stamped(job.resolved(), judge_only=job.mode == "judge_only")
         except MonitorConfigError as e:
             raise RunError(f"the job's monitor does not load: {e}") from None
-        source = await self._origin(job.origin)
+        source = await self._origin(job.origin, job.run_id)
         origin = await load_origin(source, job.origin, full=False)
         await monitor_offline(
             ctx.store,
@@ -393,14 +402,14 @@ class Node:
         """Score a sealed run into the new run `job.run_id`: fetch the run, its monitor run and
         its truth file when this runner lacks them, then score as `aims score` does."""
         ctx = self.ctx
-        source = await self._origin(job.origin)
+        source = await self._origin(job.origin, job.run_id)
         if not source.truth_path(job.origin).is_file():
             data = await ctx.link.client.run_truth(job.origin)
             try:
                 await source.put_truth(job.origin, data)
             except TruthRefused as e:
                 raise RunError(f"the truth file of {job.origin} does not check: {e}") from None
-        held = None if job.monitor is None else await self._origin(job.monitor)
+        held = None if job.monitor is None else await self._origin(job.monitor, job.run_id)
         profile = job.profile()
         models = ctx.bench.models
         if profile is not None:
@@ -439,7 +448,7 @@ class Node:
         if place is None or place.previous is None:
             return None, None
         previous = place.previous
-        source = await self._origin(previous)
+        source = await self._origin(previous, job.run_id)
         if not source.truth_path(previous).is_file():
             try:
                 data = await self.ctx.link.client.run_truth(previous)
@@ -455,25 +464,39 @@ class Node:
         inherited = truth.inherit(source.root / previous) if found else []
         return inherited, await archives(source, previous)
 
-    async def _origin(self, run_id: str) -> LocalEventStore:
-        """The store holding run `run_id`: this runner's own, or a copy fetched from the
-        control plane through the same checks as ingest."""
+    async def _origin(self, run_id: str, job_id: str) -> LocalEventStore:
+        """The store holding run `run_id` for job `job_id`: this runner's own, or a copy from
+        the control plane. A sealed copy is used as it is; any other is fetched again. Neither
+        is pruned until the job ends."""
         ctx = self.ctx
+        async with self._pruning:
+            self._reads.setdefault(job_id, set()).add(run_id)
         if await ctx.store.run(run_id) is not None:
             return ctx.store
-        origins, client = ctx.origins, ctx.link.client
-        lines = split_lines(await client.run_log(run_id))
-        origins.prepare_run(run_id)
-        refs: dict[str, None] = {}
-        for line in lines:
-            for sha in blob_refs(_data(line)):
-                refs[sha] = None
-        for sha in await origins.missing_blobs(run_id, list(refs)):
-            raw = await client.run_blob(run_id, sha)
-            await origins.put_blob_stream(run_id, sha, _once(raw), limit=BLOB_LIMIT)
-        for i in range(0, len(lines), INGEST_CHUNK):
-            await origins.ingest(run_id, lines[i : i + INGEST_CHUNK])
+        origins = ctx.origins
+        head = await origins.head(run_id)
+        if head is None or not head.finished:
+            await self._fetch(run_id)
+        await asyncio.to_thread(os.utime, origins.root / run_id)
         return origins
+
+    async def _fetch(self, run_id: str) -> None:
+        """Copy run `run_id` from the control plane through the same checks as ingest. The log
+        is spooled to disk, then ingested a batch at a time once the blobs the batch references
+        are stored."""
+        origins, client = self.ctx.origins, self.ctx.link.client
+        origins.prepare_run(run_id)
+        with tempfile.TemporaryFile(dir=origins.root) as spool:
+            async with client.run_log(run_id) as chunks:
+                async for chunk in chunks:
+                    await asyncio.to_thread(spool.write, chunk)
+            await asyncio.to_thread(spool.seek, 0)
+            while lines := await asyncio.to_thread(_batch, spool):
+                refs = dict.fromkeys(sha for line in lines for sha in blob_refs(_data(line)))
+                for sha in await origins.missing_blobs(run_id, list(refs)):
+                    async with client.run_blob(run_id, sha) as blob:
+                        await origins.put_blob_stream(run_id, sha, blob, limit=BLOB_LIMIT)
+                await origins.ingest(run_id, lines)
 
     async def _watch_tracer(self) -> None:
         """Bring the tracer back once no sandbox is open; until then kernel jobs are refused."""
@@ -494,36 +517,81 @@ class Node:
                 log.warning("kernel tracer did not restart: %s", e)
 
     async def _prune(self) -> None:
-        """Drop runs sealed more than `keep_days` ago once the control plane holds them."""
+        """Every hour, drop copies of other runners' runs unused for `COPY_DAYS`, or for
+        `keep_days` when that is shorter, then runs sealed more than `keep_days` ago once the
+        control plane holds them. A run a job reads stays."""
         days = self.options.keep_days
-        if days is None:
-            return
-        store, client = self.ctx.store, self.ctx.link.client
         while True:
             try:
-                cutoff = datetime.now(UTC).timestamp() - days * 86400
-                old = []
-                for run_id in store.run_ids():
-                    info = await store.run(run_id)
-                    if info is not None and info.ended_at and info.ended_at.timestamp() < cutoff:
-                        old.append((run_id, info.head, info.events))
-                heads = {}
-                for i in range(0, len(old), 1000):
-                    heads.update(await client.heads([r for r, _, _ in old[i : i + 1000]]))
-                if old:
-                    for run_id, head, events in old:
-                        server = heads.get(run_id)
-                        if server is not None and server.seq == events - 1 and server.hash == head:
-                            await store.remove(run_id)
-                            log.info("pruned run %s", run_id)
+                await self._prune_copies(COPY_DAYS if days is None else min(days, COPY_DAYS))
+                if days is not None:
+                    await self._prune_runs(days)
             except (ApiError, httpx2.TransportError, OSError) as e:
                 log.debug("prune skipped: %s", e)
             await asyncio.sleep(PRUNE_EVERY_S)
+
+    async def _prune_copies(self, days: float) -> None:
+        origins = self.ctx.origins
+        cutoff = time.time() - days * 86400
+        for run_id in await asyncio.to_thread(_copies, origins.root):
+            async with self._pruning:
+                if self._read(run_id):
+                    continue
+                if not await asyncio.to_thread(_unused, origins.root / run_id, cutoff):
+                    continue
+                await origins.remove(run_id)
+            log.info("pruned the copy of run %s", run_id)
+
+    async def _prune_runs(self, days: float) -> None:
+        store, client = self.ctx.store, self.ctx.link.client
+        cutoff = datetime.now(UTC).timestamp() - days * 86400
+        old = []
+        for run_id in store.run_ids():
+            info = await store.run(run_id)
+            if info is not None and info.ended_at and info.ended_at.timestamp() < cutoff:
+                old.append((run_id, info.head, info.events))
+        heads = {}
+        for i in range(0, len(old), 1000):
+            heads.update(await client.heads([r for r, _, _ in old[i : i + 1000]]))
+        for run_id, head, events in old:
+            server = heads.get(run_id)
+            if server is None or server.seq != events - 1 or server.hash != head:
+                continue
+            async with self._pruning:
+                if self._read(run_id):
+                    continue
+                await store.remove(run_id)
+            log.info("pruned run %s", run_id)
+
+    def _read(self, run_id: str) -> bool:
+        return any(run_id in runs for runs in self._reads.values())
 
 
 def _data(line: bytes) -> object:
     return json.loads(line)["data"]
 
 
-async def _once(data: bytes) -> AsyncIterator[bytes]:
-    yield data
+def _batch(spool: IO[bytes]) -> list[bytes]:
+    """The next lines of a spooled log: at most INGEST_CHUNK, ending once INGEST_BYTES is
+    reached."""
+    lines: list[bytes] = []
+    size = 0
+    while len(lines) < INGEST_CHUNK and size < INGEST_BYTES:
+        line = spool.readline(MAX_LINE + 1)
+        if not line:
+            break
+        lines.append(line)
+        size += len(line)
+    return lines
+
+
+def _copies(root: Path) -> list[str]:
+    return [p.name for p in root.iterdir() if is_run_id(p.name) and p.is_dir()]
+
+
+def _unused(path: Path, cutoff: float) -> bool:
+    """Whether the copy at `path` was last fetched, used or written before `cutoff`."""
+    try:
+        return path.stat().st_mtime < cutoff
+    except FileNotFoundError:
+        return False

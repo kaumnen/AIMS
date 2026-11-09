@@ -288,12 +288,20 @@ class LocalEventStore:
         return head
 
     async def remove(self, run_id: str) -> None:
-        """Delete a sealed run's directory and its index rows."""
-        if run_id in self._writers or run_id in self._sinks:
+        """Delete a sealed run's directory and its index rows. An ingest-only store also drops
+        a copy whose last lines never came, unless an ingest is writing it."""
+        sink = self._sinks.get(run_id)
+        if run_id in self._writers or (
+            sink is not None and (not self.ingest_only or sink.lock.locked())
+        ):
             raise RuntimeError(f"run {run_id} is open for writing")
-        info = await self._index.run(run_id)
-        if info is not None and info.status == "running":
-            raise RuntimeError(f"run {run_id} is not sealed")
+        if sink is not None:
+            self._drop_sink(run_id, sink)
+        if not self.ingest_only:
+            info = await self._index.run(run_id)
+            if info is not None and info.status == "running":
+                raise RuntimeError(f"run {run_id} is not sealed")
+        self._ingested.discard(run_id)
         await self._index.remove(run_id)
         await asyncio.to_thread(shutil.rmtree, self._dir(run_id), True)
 

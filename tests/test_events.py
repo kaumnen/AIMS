@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import gc
 import hashlib
 import json
 import os
@@ -34,7 +35,7 @@ from aims.events import (
 )
 from aims.events.blobs import ZSTD_MAGIC
 from aims.events.chain import GENESIS, Head, digest, seal
-from aims.events.schema import now
+from aims.events.schema import now, text_of
 from aims.events.store import INLINE_LIMIT, LOG
 
 pytestmark = pytest.mark.anyio
@@ -539,6 +540,17 @@ def test_unknown_type_reads_leniently() -> None:
     )
     assert event.payload() is None
     assert event.search_text() == "hello"
+
+
+def test_search_text_leaves_no_cycle_holding_the_text() -> None:
+    data = {"a": ["one", {"b": "two", "blob": {"sha256": "a" * 64, "size": 1}}], "c": ""}
+    gc.collect()
+    gc.disable()
+    try:
+        assert text_of(data) == "one\ntwo"
+        assert gc.collect() == 0
+    finally:
+        gc.enable()
 
 
 def test_duplicate_type_rejected() -> None:

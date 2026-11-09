@@ -91,22 +91,20 @@ def blob_refs(value: Any) -> Iterator[str]:
 
 
 def text_of(value: Any) -> str:
-    parts: list[str] = []
+    return "\n".join(_texts(value))
 
-    def walk(v: Any) -> None:
-        if isinstance(v, str):
-            if v:
-                parts.append(v)
-        elif isinstance(v, Mapping):
-            if not is_blob_ref(v):
-                for item in v.values():
-                    walk(item)
-        elif isinstance(v, list):
-            for item in v:
-                walk(item)
 
-    walk(value)
-    return "\n".join(parts)
+def _texts(value: Any) -> Iterator[str]:
+    if isinstance(value, str):
+        if value:
+            yield value
+    elif isinstance(value, Mapping):
+        if not is_blob_ref(value):
+            for item in value.values():
+                yield from _texts(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _texts(item)
 
 
 class Event(BaseModel):

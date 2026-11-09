@@ -201,12 +201,13 @@ class ControlClient:
     async def post_deltas(self, deltas: Deltas) -> None:
         await self._post("/deltas", deltas)
 
-    async def run_log(self, run_id: str) -> bytes:
-        """The exact log of a run another runner wrote, to fork it here."""
-        response = await self._http.get(
-            f"/runs/{run_id}/log", timeout=httpx2.Timeout(300.0, connect=10.0)
-        )
-        return (await _check(response)).content
+    @asynccontextmanager
+    async def run_log(self, run_id: str) -> AsyncGenerator[AsyncIterator[bytes]]:
+        """The exact log of a run another runner wrote, to fork it here, in chunks as it
+        arrives."""
+        timeout = httpx2.Timeout(300.0, connect=10.0)
+        async with self._http.stream("GET", f"/runs/{run_id}/log", timeout=timeout) as response:
+            yield (await _check(response)).aiter_bytes(FILE_CHUNK)
 
     async def run_truth(self, run_id: str) -> bytes:
         """The truth file of a sealed run, for a score job of it."""
@@ -215,6 +216,8 @@ class ControlClient:
     async def post_labels(self, run_id: str, labels: Sequence[Label]) -> None:
         await self._post(f"/runs/{run_id}/labels", Labels(labels=list(labels)))
 
-    async def run_blob(self, run_id: str, sha256: str) -> bytes:
-        response = await _check(await self._http.get(f"/runs/{run_id}/blobs/{sha256}"))
-        return response.content
+    @asynccontextmanager
+    async def run_blob(self, run_id: str, sha256: str) -> AsyncGenerator[AsyncIterator[bytes]]:
+        """A blob file of a run another runner wrote, as stored, in chunks as it arrives."""
+        async with self._http.stream("GET", f"/runs/{run_id}/blobs/{sha256}") as response:
+            yield (await _check(response)).aiter_bytes(FILE_CHUNK)

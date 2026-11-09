@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, Request
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import TypeAdapter, ValidationError
 
@@ -48,6 +48,7 @@ MAX_EVENTS = 1000
 MAX_BATCH = 4 * 1024 * 1024 + MAX_LINE
 MAX_WIRE = 16 * 1024 * 1024
 BLOB_LIMIT = 2 * 1024**3
+LOG_CHUNK = 256 * 1024
 RELEASE_TRIES = 3
 JOBS: TypeAdapter[AnyJob] = TypeAdapter(AnyJob)
 
@@ -603,13 +604,18 @@ async def run_log(
     if head is None:
         raise ProblemException(404, "Not found", f"no run {run_id}")
     path = state.store.root / run_id / "events.jsonl"
-    data = await asyncio.to_thread(_read_upto, path, head.offset)
-    return Response(data, media_type="application/x-ndjson")
+    return StreamingResponse(
+        _upto(path, head.offset),
+        media_type="application/x-ndjson",
+        headers={"Content-Length": str(head.offset)},
+    )
 
 
-def _read_upto(path: Path, size: int) -> bytes:
+async def _upto(path: Path, size: int) -> AsyncIterator[bytes]:
     with path.open("rb") as f:
-        return f.read(size)
+        while size > 0 and (chunk := await asyncio.to_thread(f.read, min(size, LOG_CHUNK))):
+            size -= len(chunk)
+            yield chunk
 
 
 @router.get(

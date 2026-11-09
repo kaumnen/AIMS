@@ -4,12 +4,15 @@ on a runner, against the control plane on loopback."""
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import os
 import re
 import shutil
 import signal
 import threading
+import time
+import tracemalloc
 from collections.abc import AsyncGenerator, AsyncIterator
 from pathlib import Path
 from typing import Any, cast
@@ -18,8 +21,8 @@ import pytest
 from cp import CP, control_plane
 from rich.console import Console
 from scripted import models, profile
-from test_monitor_api import call, pushed
-from test_server import FakeRunner, play_job, start_run
+from test_monitor_api import call, pushed, started
+from test_server import FakeRunner, play_job, ship, start_run
 from typer.testing import CliRunner
 
 from aims.cli import EXIT_CANCELLED, app
@@ -33,10 +36,13 @@ from aims.events import (
     MonitorVerdict,
     OperatorAction,
     RunFinished,
+    RunInfo,
     RunStarted,
+    ToolCall,
 )
 from aims.models import DeltaBus
 from aims.monitor.core import HumanRequest
+from aims.node import service
 from aims.node.client import ControlClient
 from aims.node.link import Link
 from aims.node.service import Node, NodeOptions
@@ -537,11 +543,18 @@ class NoDocker:
 
 
 @contextlib.asynccontextmanager
-async def node(cp: CP, data: Path, name: str = "n1") -> AsyncGenerator[Node]:
+async def node(
+    cp: CP, data: Path, name: str = "n1", *, keep_days: float | None = None
+) -> AsyncGenerator[Node]:
     stop = asyncio.Event()
     made = Node(
         NodeOptions(
-            url=cp.url, token=cp.runner, name=name, data=data, backend=cast(Any, NoDocker())
+            url=cp.url,
+            token=cp.runner,
+            name=name,
+            data=data,
+            keep_days=keep_days,
+            backend=cast(Any, NoDocker()),
         )
     )
     task = asyncio.create_task(made.run(stop))
@@ -642,6 +655,156 @@ async def test_a_runner_takes_a_monitor_job_and_ships_the_monitor_run(
     seqs = {e.seq: e.type for e in await cp.state.store.events(origin, limit=100)}
     assert all(seqs[s] == "tool.call" for f in flags for s in evidence(f))
     assert (await cp.state.store.verify(run_id)).ok
+
+
+# Copies of runs another runner made
+
+
+async def queue_monitor(cp: CP, origin: str) -> str:
+    async with cp.client(cp.operator) as c:
+        r = await c.post(f"/api/runs/{origin}/monitor", json={"signals_only": True, "runner": "n1"})
+        assert r.status_code == 202, r.text
+        (run_id,) = r.json()["run_ids"]
+    return run_id
+
+
+async def monitored(cp: CP, origin: str) -> RunInfo:
+    """Queue a monitor job of `origin` on n1 and wait for its run and its job to end."""
+    run_id = await queue_monitor(cp, origin)
+    async with asyncio.timeout(30):
+        while True:
+            info = await cp.state.store.run(run_id)
+            job = await cp.state.db.job(run_id)
+            ran = info is not None and info.status != "running"
+            if ran and job is not None and job.state not in OPEN_STATES:
+                return info
+            await asyncio.sleep(0.1)
+
+
+def unused(path: Path, days: float) -> None:
+    then = time.time() - days * 86400
+    os.utime(path, (then, then))
+
+
+async def test_a_runner_downloads_a_sealed_run_once_for_all_its_jobs(
+    cp: CP,
+    local: LocalEventStore,
+    fake: FakeRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    origin = await pushed(cp, local, fake, [call(1), call(2), call(3)], monitor=None)
+    fetched: list[str] = []
+    real = ControlClient.run_log
+
+    def counted(self: ControlClient, run_id: str) -> Any:
+        fetched.append(run_id)
+        return real(self, run_id)
+
+    monkeypatch.setattr(ControlClient, "run_log", counted)
+    async with node(cp, tmp_path / "node") as n:
+        assert (await monitored(cp, origin)).status == "completed"
+        assert (await monitored(cp, origin)).status == "completed"
+        assert (await n.ctx.origins.verify(origin)).ok
+    assert fetched == [origin]
+
+
+BIG = 48 * 1024 * 1024
+
+
+async def pattern(size: int) -> AsyncIterator[bytes]:
+    for i in range(0, size, 1 << 20):
+        yield bytes([i >> 20 & 0xFF]) * min(1 << 20, size - i)
+
+
+@pytest.mark.parametrize("big", ["blob", "log"])
+async def test_a_runner_copies_a_run_without_holding_its_log_or_a_blob_whole(
+    cp: CP,
+    local: LocalEventStore,
+    fake: FakeRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    big: str,
+) -> None:
+    first, blobs = started(cp, monitor=None)
+    origin = await local.create_run(first, blobs=blobs)
+    if big == "blob":
+        sha = hashlib.sha256()
+        async for chunk in pattern(BIG):
+            sha.update(chunk)
+        ref = await local.put_blob_stream(origin, sha.hexdigest(), pattern(BIG), limit=BIG)
+        drafts = [Draft(ToolCall(call_id="c1", name="shell", arguments=ref), "a")]
+    else:
+        line = 200_000
+        drafts = [
+            Draft(ToolCall(call_id=f"c{n}", name="shell", arguments=f"{n:08d}" * (line // 8)), "a")
+            for n in range(BIG // line)
+        ]
+    await local.append(origin, [*drafts, Draft(RunFinished(status="completed"))])
+    await ship(local, fake.client, origin)
+    peaks: list[int] = []
+    real = Node._origin
+
+    async def measured(self: Node, *args: Any) -> LocalEventStore:
+        tracemalloc.start()
+        try:
+            return await real(self, *args)
+        finally:
+            peaks.append(tracemalloc.get_traced_memory()[1])
+            tracemalloc.stop()
+
+    async def skipped(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(Node, "_origin", measured)
+    monkeypatch.setattr(service, "monitor_offline", skipped)
+    async with node(cp, tmp_path / "node") as n:
+        await queue_monitor(cp, origin)
+        await until(lambda: peaks and not n.claimed, 60)
+        assert (await n.ctx.origins.verify(origin)).ok
+    assert peaks[0] < BIG // 3, f"peak {peaks[0] / 2**20:.1f} MiB"
+
+
+@pytest.mark.parametrize(("keep_days", "fresh", "stale"), [(None, 6, 8), (1.0, 0.5, 2)])
+async def test_a_runner_prunes_a_copy_left_unused_but_never_one_a_job_reads(
+    cp: CP,
+    local: LocalEventStore,
+    fake: FakeRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    keep_days: float | None,
+    fresh: float,
+    stale: float,
+) -> None:
+    monkeypatch.setattr(service, "PRUNE_EVERY_S", 0.01)
+    reading, done = asyncio.Event(), asyncio.Event()
+
+    async def held(*args: Any, **kwargs: Any) -> None:
+        reading.set()
+        await done.wait()
+
+    monkeypatch.setattr(service, "monitor_offline", held)
+    origin = await pushed(cp, local, fake, [call(1)], monitor=None)
+    async with node(cp, tmp_path / "node", keep_days=keep_days) as n:
+        copy = n.options.data / "origins" / origin
+        await queue_monitor(cp, origin)
+        async with asyncio.timeout(20):
+            await reading.wait()
+        unused(copy, stale)
+        await asyncio.sleep(0.3)
+        assert copy.is_dir()
+        unused(copy, fresh)
+        done.set()
+        await until(lambda: not n.claimed, 10)
+        await asyncio.sleep(0.3)
+        assert copy.is_dir()
+        unused(copy, stale)
+        for _ in range(100):
+            if not copy.exists():
+                break
+            await asyncio.sleep(0.05)
+        assert not copy.exists()
+        assert await n.ctx.origins.run(origin) is None
 
 
 # aims control

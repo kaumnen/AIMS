@@ -1335,7 +1335,10 @@ def runner_cmd(
     ] = None,
     keep_days: Annotated[
         float | None,
-        typer.Option(help="Delete runs sealed this many days ago once the control plane has them."),
+        typer.Option(
+            help="Delete runs sealed this many days ago once the control plane has them."
+            " Copies of other runners' runs go once unused this long, 7 days at most."
+        ),
     ] = None,
     tls_ca: Annotated[
         Path | None, typer.Option("--tls-ca", help="CA or certificate to trust for the server.")

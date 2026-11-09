@@ -226,6 +226,23 @@ async def test_a_writer_store_ingests_another_run(source: LocalEventStore, tmp_p
         assert (await other.run(run_id)) is not None
 
 
+async def test_an_ingest_only_store_removes_a_copy_it_never_finished(
+    source: LocalEventStore, copy: LocalEventStore, tmp_path: Path
+) -> None:
+    run_id = await source.create_run(STARTED)
+    await source.append(run_id, [call(1)])
+    lines = lines_of(source, run_id)
+    await copy.ingest(run_id, lines[:1])
+    await copy.remove(run_id)
+    assert await copy.run(run_id) is None
+    assert not (copy.root / run_id).exists()
+    assert (await copy.ingest(run_id, lines)).seq == 1
+    async with await LocalEventStore.open(tmp_path / "other") as other:
+        await other.ingest(run_id, lines)
+        with pytest.raises(RuntimeError, match="open for writing"):
+            await other.remove(run_id)
+
+
 async def test_stream_wakes_on_ingest(source: LocalEventStore, copy: LocalEventStore) -> None:
     run_id = await source.create_run(STARTED)
     await source.append(run_id, [call(1)])

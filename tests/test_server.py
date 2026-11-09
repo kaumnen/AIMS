@@ -1339,7 +1339,8 @@ async def test_runner_names_cannot_pose_as_imports_or_the_local_runner(
     reader = FakeRunner(cp, "curious")
     await reader.client.hello(reader.hello_body())
     with pytest.raises(ApiError) as caught:
-        await reader.client.run_log(run_id)
+        async with reader.client.run_log(run_id):
+            pass
     assert caught.value.code == "owner"
     r = await raw_events(
         cp, "curious", run_id, split_lines((local.root / run_id / "events.jsonl").read_bytes())
@@ -1543,7 +1544,8 @@ async def test_a_revoked_token_frees_its_runner_name(cp: CP, local: LocalEventSt
     r = await raw_events(cp, "box", run_id, lines[1:], token)
     assert (r.status_code, r.json()["code"]) == (403, "owner")
     with pytest.raises(ApiError) as caught:
-        await new.run_log(run_id)
+        async with new.run_log(run_id):
+            pass
     assert caught.value.code == "owner"
     async with cp.client(cp.operator) as c:
         r = await c.post(f"/api/runs/{run_id}/kill", json={})

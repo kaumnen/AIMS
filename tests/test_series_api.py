@@ -334,7 +334,8 @@ async def test_a_series_job_reads_the_run_before_it_and_no_one_else_does(
         await other.connect()
         assert await offered(other) == ids[1]
         assert await other.client.claim(ids[1]) is not None
-        assert await other.client.run_log(ids[0])
+        async with other.client.run_log(ids[0]) as chunks:
+            assert [chunk async for chunk in chunks]
         assert truth.encode(RECORD) == await other.client.run_truth(ids[0])
         await third.client.hello(third.hello_body())
         with pytest.raises(ApiError) as refused:
