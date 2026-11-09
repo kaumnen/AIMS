@@ -4,6 +4,7 @@ import gzip
 import hashlib
 import io
 import json
+import logging
 import os
 import shutil
 import tarfile
@@ -46,7 +47,7 @@ from aims.server import dispatch, edit_api
 from aims.server.auth import HEADERS
 from aims.server.db import UI_TOKEN
 from aims.server.files import builtin_root
-from aims.server.state import CODES, InFlight, LaunchCodes
+from aims.server.state import CODES, InFlight, LaunchCodes, close_state, open_state
 from aims.wire import (
     Ack,
     CommandMessage,
@@ -506,6 +507,41 @@ async def test_an_unclaimed_offer_goes_back_to_the_queue(
     job = await cp.state.db.job(run_id)
     assert job is not None
     assert job.tried[:2] == ["fake", "fake"]
+
+
+async def test_the_dispatcher_prunes_sessions_now_and_then_and_lives_through_a_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    state = await open_state(tmp_path / "server")
+    calls = 0
+    twice = asyncio.Event()
+
+    async def prune() -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("disk full")
+        twice.set()
+        return 0
+
+    monkeypatch.setattr(state.db, "prune_sessions", prune)
+    monkeypatch.setattr(dispatch, "TICK_S", 0.01)
+    monkeypatch.setattr(dispatch, "HOUSEKEEPING_S", 0.05)
+    task = asyncio.create_task(dispatch.run(state))
+    try:
+        with (
+            caplog.at_level(logging.ERROR, logger="aims.server"),
+            contextlib.suppress(TimeoutError),
+        ):
+            async with asyncio.timeout(5):
+                await twice.wait()
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        await close_state(state)
+    assert calls >= 2
+    assert [r.getMessage() for r in caplog.records] == ["housekeeping failed"]
 
 
 async def test_queued_runs_cancel_without_a_log_and_say_why_they_wait(cp: CP) -> None:

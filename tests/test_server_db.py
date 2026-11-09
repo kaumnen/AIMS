@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from aims.server.db import VERSION, Job, ServerDB
+from aims.server.state import close_state, open_state
 
 pytestmark = pytest.mark.anyio
 
@@ -64,6 +65,28 @@ async def test_sessions_expire(db: ServerDB, monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(time, "time", lambda: later)
     assert await db.session(session) is None
     assert await db.prune_sessions() == 1
+
+
+async def test_opening_the_server_drops_expired_sessions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "server.sqlite"
+    db = await ServerDB.open(path)
+    await db.create_token("bob", "viewer")
+    long_ago = time.time() - 31 * 86400
+    with monkeypatch.context() as m:
+        m.setattr(time, "time", lambda: long_ago)
+        await db.create_session("bob")
+    live = await db.create_session("bob")
+    await db.close()
+    state = await open_state(tmp_path)
+    try:
+        assert await state.db.session(live) is not None
+    finally:
+        await close_state(state)
+    raw = sqlite3.connect(path)
+    assert raw.execute("select count(*) from sessions").fetchone() == (1,)
+    raw.close()
 
 
 async def test_a_job_is_offered_claimed_once_and_requeued(db: ServerDB) -> None:

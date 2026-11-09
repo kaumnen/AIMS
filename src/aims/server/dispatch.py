@@ -1,5 +1,6 @@
 """Hands queued jobs to runners: the one a job names, else the local runner, else the least
-loaded one that can take it. An offer not claimed in 10 s goes to the next runner."""
+loaded one that can take it. An offer not claimed in 10 s goes to the next runner. About once a
+day it also drops rows the server no longer needs."""
 
 import asyncio
 import contextlib
@@ -15,6 +16,7 @@ from aims.wire import CLAIM_S, OfferMessage
 log = logging.getLogger("aims.server")
 
 TICK_S = 1.0
+HOUSEKEEPING_S = 86400.0
 
 
 def can_take(conn: Connected, job: Job) -> bool:
@@ -81,7 +83,14 @@ async def dispatch(state: ServerState) -> None:
         state.changes.touch(job.run_id)
 
 
+async def housekeeping(state: ServerState) -> None:
+    """Drop rows the server no longer needs. `open_state` drops expired sessions at start."""
+    if pruned := await state.db.prune_sessions():
+        log.info("pruned %d expired session(s)", pruned)
+
+
 async def run(state: ServerState) -> None:
+    kept = time.monotonic()
     while True:
         with contextlib.suppress(TimeoutError):
             async with asyncio.timeout(TICK_S):
@@ -91,3 +100,9 @@ async def run(state: ServerState) -> None:
             await dispatch(state)
         except Exception:
             log.exception("dispatch failed")
+        if time.monotonic() - kept >= HOUSEKEEPING_S:
+            kept = time.monotonic()
+            try:
+                await housekeeping(state)
+            except Exception:
+                log.exception("housekeeping failed")

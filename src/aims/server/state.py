@@ -286,6 +286,7 @@ async def open_state(
     `public_url` is the address people open, for links the server writes."""
     db = await ServerDB.open(data / "server.sqlite")
     try:
+        await db.prune_sessions()
         store = await LocalEventStore.open(data / "runs", ingest_only=True)
     except BaseException:
         await db.close()
