@@ -152,8 +152,20 @@ class Link:
         if task is not None and not task.done():
             return
         shipper = Shipper(self.store, self.client, run_id)
+        task = asyncio.create_task(shipper.run())
         self.shippers[run_id] = shipper
-        self._ships[run_id] = asyncio.create_task(shipper.run())
+        self._ships[run_id] = task
+        task.add_done_callback(lambda t: self._shipped(run_id, t))
+
+    def _shipped(self, run_id: str, task: asyncio.Task[None]) -> None:
+        """Forget a run's shipper once the run has shipped. One that failed stays with its
+        reason."""
+        if self._ships.get(run_id) is not task or task.cancelled() or task.exception():
+            return
+        s = self.shippers[run_id]
+        if s.done and s.truthful and not (s.diverged or s.refused or s.truth_refused):
+            del self._ships[run_id]
+            del self.shippers[run_id]
 
     async def ship_all(self) -> None:
         """Ship every local run the server does not hold sealed."""

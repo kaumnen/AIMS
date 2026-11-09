@@ -1425,6 +1425,67 @@ async def test_closing_a_link_stops_its_shippers(local: LocalEventStore) -> None
     assert task.cancelled()
 
 
+async def test_a_link_forgets_a_run_once_it_has_shipped(
+    local: LocalEventStore, fake: FakeRunner
+) -> None:
+    run_id = await local.create_run(STARTED)
+    await local.append(run_id, [call(1), Draft(RunFinished(status="completed"))])
+    link = Link(fake.client, local, DeltaBus())
+    link.ship(run_id)
+    assert await link.drain(20)
+    await asyncio.sleep(0)
+    assert run_id not in link.shippers
+    assert run_id not in link._ships
+
+
+async def test_a_link_keeps_a_shipper_that_failed(cp: CP, local: LocalEventStore) -> None:
+    run_id = await local.create_run(STARTED)
+    link = Link(ControlClient(cp.url, "bad", runner="r1"), local, DeltaBus())
+    link.ship(run_id)
+    assert await link.drain(20)
+    await asyncio.sleep(0)
+    shipper = link.shippers[run_id]
+    assert shipper.refused is not None
+    assert "401" in shipper.refused
+    assert link._ships[run_id].done()
+    await link.close()
+
+
+async def test_the_end_of_a_ship_does_not_drop_the_ship_that_replaced_it(
+    local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hold = asyncio.Event()
+    ran: list[Shipper] = []
+
+    async def run(self: Shipper) -> None:
+        ran.append(self)
+        if len(ran) > 1:
+            await hold.wait()
+        self.done = self.truthful = True
+
+    monkeypatch.setattr(Shipper, "run", run)
+    run_id = await local.create_run(STARTED)
+    link = Link(ControlClient("http://127.0.0.1:9", "token", runner="r1"), local, DeltaBus())
+    link.ship(run_id)
+    first, task = link.shippers[run_id], link._ships[run_id]
+    # One loop turn: the first ship ends but its done callbacks have not run yet.
+    await asyncio.sleep(0)
+    assert task.done()
+    link.ship(run_id)
+    newer = link.shippers[run_id]
+    # It looks shipped while it still runs, as when it sends labels last.
+    newer.done = newer.truthful = True
+    await asyncio.sleep(0)
+    assert ran == [first, newer]
+    assert link.shippers.get(run_id) is newer
+    assert not link._ships[run_id].done()
+    hold.set()
+    assert await link.drain(5)
+    await asyncio.sleep(0)
+    assert run_id not in link.shippers
+    await link.close()
+
+
 async def test_push_finishes_what_a_run_on_the_same_token_began(
     cp: CP, local: LocalEventStore
 ) -> None:
