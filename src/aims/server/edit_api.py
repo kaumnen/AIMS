@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import tomlkit
+import tomlkit.exceptions
 import tomlkit.items
 from fastapi import APIRouter, Header, Request
 from fastapi.responses import Response
@@ -260,14 +261,24 @@ async def patch_config(
     """Set or unset keys in a layer, keeping its comments and order."""
     path = _path(state, layer)
     current = read_or_none(path)
-    doc = tomlkit.parse(STARTER if current is None else current.decode())
+    try:
+        doc = tomlkit.parse(STARTER if current is None else current.decode())
+    except UnicodeDecodeError:
+        raise ProblemException(422, "Invalid request", f"{path} is not UTF-8") from None
+    except tomlkit.exceptions.ParseError as e:
+        error = ProblemError(msg=str(e), line=e.line)
+        raise ProblemException(
+            422, "Not TOML", f"{path}: {e}", code="toml", errors=[error]
+        ) from None
     for change in body.set:
+        name = ".".join(change.key)
         table = _table(doc, change.key[:-1], create=True)
         if table is None:
-            raise ProblemException(
-                422, "Invalid request", f"{'.'.join(change.key)}: a part of it is not a table"
-            )
-        table[change.key[-1]] = _value(change.value)
+            raise ProblemException(422, "Invalid request", f"{name}: a part of it is not a table")
+        try:
+            table[change.key[-1]] = _value(change.value)
+        except tomlkit.exceptions.ConvertError:
+            raise ProblemException(422, "Invalid request", f"{name}: TOML has no null") from None
     for key in body.unset:
         table = _table(doc, key[:-1], create=False)
         if table is not None and key and key[-1] in table:
@@ -329,7 +340,10 @@ async def read_file(
     """A scenario file's bytes, with its ETag for the write that replaces it."""
     _, base = sources.scenario(source, name)
     path = confined(base, file)
-    data = await asyncio.to_thread(read_or_none, path)
+    try:
+        data = await asyncio.to_thread(read_or_none, path)
+    except IsADirectoryError, NotADirectoryError:
+        data = None
     if data is None or not path.is_file():
         raise ProblemException(404, "Not found", f"no file {file}")
     return Response(
@@ -342,6 +356,7 @@ async def read_file(
 @router.put(
     "/scenarios/{source}/{name}/files/{file:path}",
     tags=["scenarios"],
+    responses=responses(409),
     openapi_extra={"requestBody": {"content": {"application/octet-stream": {}}, "required": True}},
 )
 async def write_file(
@@ -370,7 +385,12 @@ async def write_file(
                 422, "Scenario does not load", code="scenario", errors=scenario_problems(e)
             ) from None
     async with _lock(path):
-        current = await asyncio.to_thread(read_or_none, path)
+        try:
+            current = await asyncio.to_thread(read_or_none, path)
+        except IsADirectoryError:
+            raise ProblemException(409, "Conflict", f"{file} is a directory") from None
+        except NotADirectoryError:
+            raise ProblemException(409, "Conflict", f"a part of {file} is a file") from None
         check_match(current, if_match, if_none_match)
         await asyncio.to_thread(write_atomic, path, data)
     return Saved(path=file, etag=etag(data), warnings=warnings)
@@ -401,7 +421,12 @@ async def delete_file(
     if is_scenario_file(base, path):
         raise ProblemException(422, "Invalid request", "a scenario keeps its scenario.yaml")
     async with _lock(path):
-        current = await asyncio.to_thread(read_or_none, path)
+        try:
+            current = await asyncio.to_thread(read_or_none, path)
+        except IsADirectoryError:
+            raise ProblemException(422, "Invalid request", f"{file} is a directory") from None
+        except NotADirectoryError:
+            current = None
         if current is None:
             raise ProblemException(404, "Not found", f"no file {file}")
         check_match(current, if_match, None)

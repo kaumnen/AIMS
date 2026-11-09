@@ -1,5 +1,6 @@
 """Errors as RFC 9457 problem details."""
 
+from collections.abc import Sequence
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -74,11 +75,16 @@ TITLES = {
     422: "Invalid request",
     428: "Precondition required",
     429: "Too many requests",
+    500: "Server error",
     503: "Unavailable",
 }
 
 
-def install(app: FastAPI) -> None:
+def install(app: FastAPI, headers: Sequence[tuple[bytes, bytes]]) -> None:
+    """Answer every error as a problem. `headers` go on the reply to an unexpected error, as
+    Starlette sends that reply outside every middleware."""
+    error_headers = {k.decode(): v.decode() for k, v in headers}
+
     async def on_problem(request: Request, exc: Exception) -> JSONResponse:
         assert isinstance(exc, ProblemException)
         return problem_response(exc.problem, exc.headers)
@@ -103,9 +109,15 @@ def install(app: FastAPI) -> None:
         problem = Problem(title=TITLES[422], status=422, code="invalid", errors=errors)
         return problem_response(problem)
 
+    async def on_error(request: Request, exc: Exception) -> JSONResponse:
+        detail = "the server could not answer; its log says why"
+        problem = Problem(title=TITLES[500], status=500, detail=detail)
+        return problem_response(problem, error_headers)
+
     app.add_exception_handler(ProblemException, on_problem)
     app.add_exception_handler(StarletteHTTPException, on_http)
     app.add_exception_handler(RequestValidationError, on_validation)
+    app.add_exception_handler(Exception, on_error)
 
 
 def responses(*codes: int) -> dict[int | str, dict[str, Any]]:

@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 import httpx2
 import pytest
-from cp import CP, control_plane
+from cp import CP, SCENARIO, control_plane
 
 import aims
 from aims import __version__
@@ -42,7 +42,8 @@ from aims.run.job import Job
 from aims.run.runner import resolve_texts
 from aims.scenario import load
 from aims.server import app as app_module
-from aims.server import dispatch
+from aims.server import dispatch, edit_api
+from aims.server.auth import HEADERS
 from aims.server.db import UI_TOKEN
 from aims.server.files import builtin_root
 from aims.server.state import CODES, InFlight, LaunchCodes
@@ -732,6 +733,96 @@ async def test_scenario_files_are_validated_and_confined(cp: CP) -> None:
         assert check["ok"]
         check = (await c.post("/api/scenarios/check", json={"text": bad.decode()})).json()
         assert not check["ok"]
+
+
+FILES = "/api/scenarios/project/control/files"
+CONFIG = "/api/config/project"
+SET = {"set": [{"key": ["credits", "meta"], "value": 1}]}
+RUN = str(uuid.UUID(int=1))
+
+
+@pytest.mark.parametrize(
+    ("method", "url", "body", "disk", "status", "code"),
+    [
+        pytest.param("GET", f"{FILES}/sub", None, None, 404, None, id="read-dir"),
+        pytest.param("GET", f"{FILES}/scenario.yaml/x", None, None, 404, None, id="read-in-file"),
+        pytest.param("DELETE", f"{FILES}/sub", None, None, 422, None, id="delete-dir"),
+        pytest.param(
+            "DELETE", f"{FILES}/scenario.yaml/x", None, None, 404, None, id="delete-in-file"
+        ),
+        pytest.param("PUT", f"{FILES}/sub", b"x", None, 409, None, id="write-dir"),
+        pytest.param("PUT", f"{FILES}/scenario.yaml/x", b"x", None, 409, None, id="write-in-file"),
+        pytest.param(
+            "PATCH",
+            CONFIG,
+            {"set": [{"key": ["credits", "meta"], "value": None}]},
+            None,
+            422,
+            None,
+            id="set-null",
+        ),
+        pytest.param(
+            "PATCH",
+            CONFIG,
+            {"set": [{"key": ["scenarios", "paths"], "value": ["a", None]}]},
+            None,
+            422,
+            None,
+            id="set-null-in-list",
+        ),
+        pytest.param("PATCH", CONFIG, SET, ("project", b"x = \n"), 422, "toml", id="not-toml"),
+        pytest.param("PATCH", CONFIG, SET, ("project", b"\xff = 1\n"), 422, None, id="not-utf8"),
+        pytest.param(
+            "GET", f"/api/runs/{RUN}/truth", None, ("truth", b"{"), 500, None, id="truth-not-json"
+        ),
+    ],
+)
+async def test_edit_errors_are_problem_replies(
+    cp: CP,
+    method: str,
+    url: str,
+    body: dict[str, Any] | bytes | None,
+    disk: tuple[str, bytes] | None,
+    status: int,
+    code: str | None,
+) -> None:
+    scenario = cp.project.parent / "scenarios/control"
+    (scenario / "sub").mkdir()
+    if disk is not None:
+        where, data = disk
+        path = cp.project if where == "project" else cp.state.store.truth_path(RUN)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    headers = {"Content-Type": "application/octet-stream", "If-None-Match": "*"}
+    async with cp.client(cp.operator) as c:
+        if isinstance(body, dict):
+            r = await c.request(method, url, json=body)
+        elif body is not None:
+            r = await c.request(method, url, content=body, headers=headers)
+        else:
+            r = await c.request(method, url)
+    assert r.status_code == status, r.text
+    assert r.headers["content-type"] == "application/problem+json"
+    assert r.json().get("code") == code
+    assert (scenario / "sub").is_dir()
+    assert (scenario / "scenario.yaml").read_text() == SCENARIO
+
+
+async def test_an_unexpected_error_is_a_problem_reply_with_the_security_headers(
+    cp: CP, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(settings: object) -> str:
+        raise RuntimeError("secret detail")
+
+    monkeypatch.setattr(edit_api, "merged", boom)
+    async with cp.client(cp.viewer) as c:
+        r = await c.get("/api/config/merged")
+    assert r.status_code == 500
+    assert r.headers["content-type"] == "application/problem+json"
+    assert "secret" not in r.text
+    assert r.json()["title"] == "Server error"
+    for name, value in HEADERS:
+        assert r.headers[name.decode()] == value.decode()
 
 
 async def test_scenario_files_and_truth_are_for_operators(cp: CP) -> None:

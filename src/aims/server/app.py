@@ -33,7 +33,7 @@ from aims.server import (
     score_api,
     stream,
 )
-from aims.server.auth import SecurityHeaders
+from aims.server.auth import HEADERS, SecurityHeaders
 from aims.server.codings import allowed
 from aims.server.files import Sources
 from aims.server.limits import BodyLimit
@@ -96,7 +96,7 @@ def create_app(
     state.on_truth = on_truth
     app.state.auth = state.auth
     app.state.sources = Sources(state.data, state.config)
-    problems.install(app)
+    problems.install(app, HEADERS)
     app.include_router(api.router)
     app.include_router(edit_api.router)
     app.include_router(monitor_api.router)
