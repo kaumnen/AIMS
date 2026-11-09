@@ -743,36 +743,56 @@ class Runner:
             raise _Phase("image build failed", str(e)) from None
 
     async def _start_sandboxes(self, image: str) -> None:
-        sc = self.scenario.sandbox
-        assert self.run_id is not None
-        for agent in self.scenario.agents:
-            env = sc.env
-            if self.prepared is not None:
-                env = self.prepared.env.get(agent.id, env)
-            spec = SandboxSpec(
-                image=image,
-                workdir=sc.workdir,
-                env=env,
-                cpus=sc.cpus,
-                memory_mb=sc.memory_mb,
-                pids=sc.pids,
-                tmp_mb=sc.tmp_mb,
-                kill_leftovers=sc.kill_leftovers,
-                runner_mb=RUNNER_MB,
-                keep=self.options.keep,
-                mounts=self._mounts(agent.id),
-                masked_paths=MASK_PROC if sc.mask_proc else [],
-            )
-            try:
-                self.sandboxes[agent.id] = await AuditedSandbox.start(
-                    self.bench.backend,
-                    spec,
-                    self.bench.store,
-                    run_id=self.run_id,
-                    agent_id=agent.id,
+        """Start every agent's sandbox at once. A cancel cancels the starts and waits for all
+        of them to end, however often it comes. Each sandbox that started joins `sandboxes` in
+        agent order, even when another failed, so the run's close closes it."""
+        run_id = self.run_id
+        assert run_id is not None
+        specs = {agent.id: self._sandbox_spec(agent.id, image) for agent in self.scenario.agents}
+        starts = {
+            agent_id: asyncio.create_task(
+                AuditedSandbox.start(
+                    self.bench.backend, spec, self.bench.store, run_id=run_id, agent_id=agent_id
                 )
+            )
+            for agent_id, spec in specs.items()
+        }
+        try:
+            await asyncio.wait(starts.values())
+        except asyncio.CancelledError:
+            for task in starts.values():
+                task.cancel()
+            await settle(asyncio.wait(starts.values()))
+            raise
+        finally:
+            for agent_id, task in starts.items():
+                if not task.cancelled() and task.exception() is None:
+                    self.sandboxes[agent_id] = task.result()
+        for agent_id, task in starts.items():
+            try:
+                task.result()
             except Exception as e:
-                raise _Phase(f"sandbox for agent {agent.id} did not start", str(e)) from None
+                raise _Phase(f"sandbox for agent {agent_id} did not start", str(e)) from None
+
+    def _sandbox_spec(self, agent_id: str, image: str) -> SandboxSpec:
+        sc = self.scenario.sandbox
+        env = sc.env
+        if self.prepared is not None:
+            env = self.prepared.env.get(agent_id, env)
+        return SandboxSpec(
+            image=image,
+            workdir=sc.workdir,
+            env=env,
+            cpus=sc.cpus,
+            memory_mb=sc.memory_mb,
+            pids=sc.pids,
+            tmp_mb=sc.tmp_mb,
+            kill_leftovers=sc.kill_leftovers,
+            runner_mb=RUNNER_MB,
+            keep=self.options.keep,
+            mounts=self._mounts(agent_id),
+            masked_paths=MASK_PROC if sc.mask_proc else [],
+        )
 
     async def _seed(self) -> None:
         command = f"{BUSYBOX} tar -x -o -f - -C /"
@@ -1065,7 +1085,7 @@ class Runner:
 
     async def _archive(self) -> None:
         paths = [self.scenario.sandbox.workdir, "/tmp", HOME]
-        for agent_id, sb in self.sandboxes.items():
+        for agent_id, sb in list(self.sandboxes.items()):
             try:
                 await sb.archive(paths)
             except Exception as e:

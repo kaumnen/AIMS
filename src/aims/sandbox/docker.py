@@ -102,6 +102,7 @@ class DockerBackend:
         self.tracer_restarts = 0
         self._labels = labels
         self._toolbox_image, self._toolbox_volume = toolbox
+        self._sharing = asyncio.Lock()
 
     @classmethod
     async def open(
@@ -202,13 +203,14 @@ class DockerBackend:
         image = await ensure_pulled(self.docker, spec.image)
         work = f"aims-{run_id}-{agent_id}-work"
         volumes = [(work, spec.workdir, False)]
-        volumes += [(f"aims-{run_id}-{m.volume}", m.target, m.read_only) for m in spec.mounts]
+        mounted = [(f"aims-{run_id}-{m.volume}", m.target, m.read_only) for m in spec.mounts]
         shared = tuple(f"aims-{run_id}-{m.volume}" for m in spec.mounts)
         logged = {f"aims-{run_id}-{m.volume}" for m in spec.mounts if m.channel is not None}
-        created = await self._volumes(run_id, [name for name, _, _ in volumes])
-        if created:
-            targets = {name: target for name, target, _ in volumes}
-            await self._prepare(image["Id"], [(name, targets[name]) for name in created])
+        # The sandboxes of a run start together, so they make shared volumes one at a time.
+        async with self._sharing:
+            await self._fill(run_id, image["Id"], mounted)
+        await self._fill(run_id, image["Id"], volumes)
+        volumes += mounted
 
         owner = f"uid={AGENT_UID},gid={AGENT_UID},mode=0755"
         scratch = [
@@ -371,6 +373,13 @@ class DockerBackend:
         for volume in listing.get("Volumes") or []:
             with contextlib.suppress(aiodocker.DockerError):
                 await DockerVolume(self.docker, volume["Name"]).delete()
+
+    async def _fill(self, run_id: str, image: str, volumes: list[tuple[str, str, bool]]) -> None:
+        """Make the volumes that do not exist yet, filled from `image` at their mount points."""
+        created = await self._volumes(run_id, [name for name, _, _ in volumes])
+        if created:
+            targets = {name: target for name, target, _ in volumes}
+            await self._prepare(image, [(name, targets[name]) for name in created])
 
     async def _volumes(self, run_id: str, names: list[str]) -> list[str]:
         created: list[str] = []
