@@ -66,6 +66,20 @@ class ScenarioError(Exception):
         self.problems = problems
 
 
+def inside(base: Path, rel: str, field: str, *, follow: bool = False) -> Path:
+    """`base / rel`, refused when a symlinked directory on the way leads out of `base`. With
+    `follow`, a symlink at its end must stay inside too, for a path whose content is read
+    through it; without, the caller stores that symlink as a link."""
+    path = base / rel
+    root = base.resolve()
+    ends = [path.resolve()] if follow else []
+    if path != base:
+        ends.append(path.parent.resolve() / path.name)
+    if any(end != root and root not in end.parents for end in ends):
+        raise ScenarioError([f"{field}: {rel} leads outside the scenario's directory"])
+    return path
+
+
 @dataclass(frozen=True, slots=True)
 class Bundle:
     """A scenario and every input it reads, as bytes.
@@ -233,22 +247,30 @@ def load(path: Path, variant: str | None = None) -> Bundle:
         files = _seed_tar(scenario, base, os.stat(path).st_mtime)
     except OSError as e:
         problems.append(f"{path}: task.files: {e.filename}: {e.strerror}")
+    except ScenarioError as e:
+        problems += [f"{path}: {p}" for p in e.problems]
     v = scenario.task.verifier
     if v is not None and v.files is not None:
         try:
-            verifier = _dir_tar(base / v.files, "tests", deterministic=False)
+            tests = inside(base, v.files, "task.verifier.files", follow=True)
+            verifier = _dir_tar(tests, "tests", deterministic=False)
         except OSError as e:
             problems.append(f"{path}: task.verifier.files: {e.filename}: {e.strerror}")
+        except ScenarioError as e:
+            problems += [f"{path}: {p}" for p in e.problems]
     env = scenario.task.environment
     if env.dockerfile is not None:
         file = base / env.dockerfile
         dockerfile = file.name
         try:
+            inside(base, env.dockerfile, "task.environment.dockerfile", follow=True)
             if not file.is_file():
                 raise FileNotFoundError(2, "No such file", str(file))
             context = _dir_tar(file.parent, "", deterministic=True)
         except OSError as e:
             problems.append(f"{path}: task.environment.dockerfile: {e.filename}: {e.strerror}")
+        except ScenarioError as e:
+            problems += [f"{path}: {p}" for p in e.problems]
     if problems:
         raise ScenarioError(problems)
     return Bundle(
@@ -401,7 +423,7 @@ def _seed_tar(scenario: Scenario, base: Path, mtime: float) -> bytes | None:
         return None
     tar = _Tar()
     workdir = scenario.sandbox.workdir
-    for entry in entries:
+    for i, entry in enumerate(entries):
         dest = scenario.sandbox_path(entry.path)
         root = next(r for r in (workdir, "/tmp", HOME) if dest.startswith(f"{r}/"))
         parents = []
@@ -419,7 +441,7 @@ def _seed_tar(scenario: Scenario, base: Path, mtime: float) -> bytes | None:
             tar.file(dest.lstrip("/"), entry.content.encode(), mode or FILE_MODE, mtime)
             continue
         assert entry.source is not None
-        source = base / entry.source
+        source = inside(base, entry.source, f"task.files[{i}].source")
         st = os.lstat(source)
         if stat.S_ISDIR(st.st_mode):
             tar.dir(dest.lstrip("/"), st.st_mtime)

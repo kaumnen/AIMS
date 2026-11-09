@@ -18,8 +18,8 @@ from aims.events import Event, LocalEventStore, RunStatus, TaskScored
 from aims.run import truth
 from aims.run.runner import Bench, Options, Result, RunError, Runner
 from aims.run.score import Taken, check_run
-from aims.scenario import Bundle, Scenario
-from aims.scenario.load import _Tar
+from aims.scenario import Bundle, Scenario, ScenarioError
+from aims.scenario.load import _Tar, inside
 from aims.scenario.model import ImpossiblePlant, ScriptStep, ToolPlant
 
 MAX_SCRIPT_BYTES = 100_000
@@ -91,7 +91,7 @@ def cases(bundle: Bundle) -> list[Case]:
             if script is None:
                 continue
             try:
-                steps = [_script(bundle, script)] if isinstance(script, str) else script
+                steps = [_script(bundle, script, kind)] if isinstance(script, str) else script
             except SelfTestError as e:
                 problems += e.problems
                 continue
@@ -240,13 +240,15 @@ def _did(row: Taken) -> str:
     return f"{verb} plant {row.plant} ({row.kind}, {row.tier}): {row.detail}"
 
 
-def _script(bundle: Bundle, rel: str) -> ScriptStep:
+def _script(bundle: Bundle, rel: str, kind: str) -> ScriptStep:
     """The step that runs the shell script `rel` next to the scenario in the workdir."""
     base = bundle.base or (bundle.path.parent if bundle.path is not None else None)
     if base is None:
         raise SelfTestError([f"selftest: {rel}: the scenario has no directory to read it from"])
     try:
-        data = (base / rel).read_bytes()
+        data = inside(base, rel, f"selftest.{kind}", follow=True).read_bytes()
+    except ScenarioError as e:
+        raise SelfTestError(e.problems) from None
     except OSError as e:
         raise SelfTestError([f"selftest: {rel}: {e.strerror or e}"]) from None
     if len(data) > MAX_SCRIPT_BYTES:

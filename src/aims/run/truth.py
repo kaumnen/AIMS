@@ -31,7 +31,7 @@ from aims.events.store import TRUTH
 from aims.plants import PlacedFile, Placement, Plant, PlantSetup, build
 from aims.plants.canary import Canary, make, render
 from aims.scenario import Bundle, Scenario, ScenarioError
-from aims.scenario.load import EXEC_MODE, FILE_MODE, SKIP, _parse, _Tar
+from aims.scenario.load import EXEC_MODE, FILE_MODE, SKIP, _parse, _Tar, inside
 from aims.scenario.model import HOME, FileEntry, FilePlant, FolderChannel, ImpossiblePlant
 from aims.tools import Tool
 
@@ -409,6 +409,7 @@ class _Sources:
         self.base = base
         self.recorded = recorded
         self.used: dict[str, list[_Entry]] = {}
+        self.fields = _source_fields(scenario)
 
     def entries(self, rel: str) -> list[_Entry]:
         rel = posixpath.normpath(rel)
@@ -437,8 +438,10 @@ class _Sources:
         }
 
     def _read(self, rel: str) -> list[_Entry]:
-        if self.base is not None and os.path.lexists(self.base / rel):
-            return list(_from_disk(self.base / rel))
+        if self.base is not None:
+            path = inside(self.base, rel, self.fields.get(rel, rel))
+            if os.path.lexists(path):
+                return list(_from_disk(path))
         if self.recorded is not None:
             return [
                 _Entry(
@@ -472,6 +475,26 @@ class _Sources:
                 elif member.name.startswith(f"{dest}/"):
                     out.append(_member(tar, member, member.name[len(dest) + 1 :]))
         return out
+
+
+def _source_fields(scenario: Scenario) -> dict[str, str]:
+    """The field that first names each source of `scenario`, by its normal path."""
+    named = [(f"task.files[{i}].source", e.source) for i, e in enumerate(scenario.task.files)]
+    for a, agent in enumerate(scenario.agents):
+        own = agent.task.files if agent.task is not None else []
+        named += [(f"agents[{a}].task.files[{i}].source", e.source) for i, e in enumerate(own)]
+    for i, plant in enumerate(scenario.plants):
+        key = "reference" if isinstance(plant, ImpossiblePlant) else "source"
+        named.append((f"plants[{i}].{key}", _plant_source(plant)))
+    for c, channel in enumerate(scenario.channels):
+        if isinstance(channel, FolderChannel):
+            files = enumerate(channel.files)
+            named += [(f"channels[{c}].files[{i}].source", e.source) for i, e in files]
+    out: dict[str, str] = {}
+    for field_name, rel in named:
+        if rel is not None:
+            out.setdefault(posixpath.normpath(rel), field_name)
+    return out
 
 
 def _from_disk(root: Path) -> Iterator[_Entry]:

@@ -20,7 +20,7 @@ from aims.events import BlobRef, ChannelInfo, ChannelSnapshot, EventStore, RunSt
 from aims.sandbox import AGENT_UID, AuditedSandbox
 from aims.sandbox.base import Mount, SharedVolume, SharesVolumes
 from aims.sandbox.shared import SharedFolder
-from aims.scenario.load import DIR_MODE, EXEC_MODE, FILE_MODE, SKIP
+from aims.scenario.load import DIR_MODE, EXEC_MODE, FILE_MODE, SKIP, inside
 from aims.scenario.model import FolderChannel
 from aims.tools import Tool
 
@@ -126,7 +126,7 @@ class Folder:
         if not self.config.files:
             return None
         tar = _Seed(time.time())
-        for entry in self.config.files:
+        for i, entry in enumerate(self.config.files):
             dest = posixpath.normpath(entry.path)
             tar.parents(dest)
             mode = None if entry.mode is None else int(entry.mode, 8)
@@ -137,7 +137,7 @@ class Folder:
             if self.setup.base is None and self.setup.sources is not None:
                 self._recorded(tar, entry.source, dest, mode)
                 continue
-            source = self._source(entry.source)
+            source = self._source(entry.source, f"files[{i}].source")
             if source.is_dir() and not source.is_symlink():
                 tar.dir(dest, source.stat().st_mtime)
                 for path, rel in _walk(source):
@@ -163,13 +163,13 @@ class Folder:
             else:
                 tar.file(name, m.data, mode if not m.name and mode else m.mode, m.mtime)
 
-    def _source(self, rel: str) -> Path:
+    def _source(self, rel: str, field: str) -> Path:
         base = self.setup.base
         if base is None:
             raise ChannelError(
                 f"channel {self.name}: file source {rel} needs the scenario's directory"
             )
-        path = base / rel
+        path = inside(base, rel, f"channel {self.name}: {field}")
         if not path.exists() and not path.is_symlink():
             raise ChannelError(f"channel {self.name}: file source {rel} does not exist")
         return path

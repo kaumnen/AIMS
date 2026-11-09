@@ -2,15 +2,20 @@ import hashlib
 import io
 import json
 import os
+import re
 import tarfile
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 import rfc8785
 from typer.testing import CliRunner
 
+from aims.channels import ChannelSetup
+from aims.channels.folder import Folder
 from aims.cli import app
 from aims.monitor.config import MonitorConfig, merge
+from aims.run import selftest, truth
 from aims.run.runner import _reward
 from aims.scenario import (
     Bundle,
@@ -291,3 +296,138 @@ def test_prompts_show_prints_an_editable_table(tmp_path: Path) -> None:
     bad = CliRunner().invoke(app, ["prompts", "show", "--config", str(config)])
     assert bad.exit_code == 1
     assert "bogus" in bad.stderr
+
+
+@pytest.fixture
+def linked(tmp_path: Path) -> Path:
+    """A scenario folder whose `link` is a symlink to a sibling folder outside it."""
+    outside = tmp_path / "outside"
+    (outside / "tests").mkdir(parents=True)
+    (outside / "secret.txt").write_text("secret")
+    (outside / "tests" / "t.sh").write_text("exit 0")
+    (outside / "Dockerfile").write_text("FROM scratch\n")
+    (outside / "ref.sh").write_text("true\n")
+    base = tmp_path / "scenario"
+    base.mkdir()
+    (base / "link").symlink_to("../outside")
+    return base
+
+
+def _out(field: str, rel: str) -> str:
+    return rf"{re.escape(field)}: {re.escape(rel)} leads outside the scenario's directory"
+
+
+@pytest.mark.parametrize(
+    ("extra", "field", "rel"),
+    [
+        (
+            "  files:\n    - path: a\n      source: link/secret.txt\n",
+            "task.files[0].source",
+            "link/secret.txt",
+        ),
+        (
+            "  verifier:\n    command: x\n    files: link/tests\n",
+            "task.verifier.files",
+            "link/tests",
+        ),
+        ("  verifier:\n    command: x\n    files: link\n", "task.verifier.files", "link"),
+    ],
+)
+def test_load_refuses_a_path_through_a_symlink_out(
+    linked: Path, extra: str, field: str, rel: str
+) -> None:
+    path = linked / "scenario.yaml"
+    path.write_text(BASE + extra)
+    with pytest.raises(ScenarioError, match=_out(field, rel)):
+        load(path)
+
+
+@pytest.mark.parametrize("dockerfile", ["link/Dockerfile", "Dockerfile"])
+def test_load_refuses_a_dockerfile_through_a_symlink_out(linked: Path, dockerfile: str) -> None:
+    (linked / "Dockerfile").symlink_to("../outside/Dockerfile")
+    path = linked / "scenario.yaml"
+    path.write_text(BASE.replace("{image: python:3.13-slim}", f"{{dockerfile: {dockerfile}}}"))
+    with pytest.raises(ScenarioError, match=_out("task.environment.dockerfile", dockerfile)):
+        load(path)
+
+
+@pytest.mark.parametrize(
+    ("extra", "field"),
+    [
+        (
+            "plants:\n  - {name: k, kind: file, path: k.txt, source: link/secret.txt,"
+            " category: drift}\n",
+            "plants[0].source",
+        ),
+        (
+            "plants:\n  - {name: i, kind: impossible, reference: link/secret.txt}\n",
+            "plants[0].reference",
+        ),
+        (
+            "agents:\n  - id: a\n    task: {files: [{path: b, source: link/secret.txt}]}\n",
+            "agents[0].task.files[0].source",
+        ),
+        (
+            "channels:\n  - {name: n, kind: folder, path: /shared,"
+            " files: [{path: b, source: link/secret.txt}]}\n",
+            "channels[0].files[0].source",
+        ),
+    ],
+)
+def test_prepare_refuses_a_source_through_a_symlink_out(
+    linked: Path, extra: str, field: str
+) -> None:
+    path = linked / "scenario.yaml"
+    path.write_text(BASE + extra)
+    with pytest.raises(ScenarioError, match=_out(field, "link/secret.txt")):
+        truth.prepare(load(path), seed=b"s")
+
+
+def test_a_folder_channel_refuses_a_source_through_a_symlink_out(linked: Path) -> None:
+    s = parse(
+        BASE + "channels:\n  - {name: n, kind: folder, path: /shared,"
+        " files: [{path: b, source: link/secret.txt}]}\n"
+    )
+    store = cast(Any, None)
+    setup = ChannelSetup(config=s.channels[0], scenario=s, run_id="r", store=store, base=linked)
+    with pytest.raises(ScenarioError, match=_out("channel n: files[0].source", "link/secret.txt")):
+        Folder(setup)
+
+
+def test_a_selftest_script_through_a_symlink_out_is_refused(linked: Path) -> None:
+    path = linked / "scenario.yaml"
+    path.write_text(BASE + "selftest: {reference: link/ref.sh}\n")
+    with pytest.raises(selftest.SelfTestError, match=_out("selftest.reference", "link/ref.sh")):
+        selftest.cases(load(path))
+
+
+def test_symlinks_that_stay_inside_still_load(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    (real / "tests").mkdir(parents=True)
+    (real / "a.txt").write_text("a")
+    (real / "tests" / "t.sh").write_text("exit 0")
+    (real / "Dockerfile").write_text("FROM scratch\n")
+    (tmp_path / "inner").symlink_to("real")
+    (tmp_path / "away").symlink_to("../elsewhere")
+    path = tmp_path / "scenario.yaml"
+    path.write_text(
+        BASE.replace("{image: python:3.13-slim}", "{dockerfile: inner/Dockerfile}")
+        + "  files:\n    - path: a.txt\n      source: inner/a.txt\n"
+        + "    - path: away\n      source: away\n"
+        + "  verifier:\n    command: x\n    files: inner/tests\n"
+        + "plants:\n  - {name: k, kind: file, path: k.txt, source: inner/a.txt, category: drift}\n"
+    )
+    bundle = load(path)
+    assert bundle.files is not None
+    with tarfile.open(fileobj=io.BytesIO(bundle.files)) as tar:
+        got = {m.name: (m.type, m.linkname) for m in tar.getmembers()}
+    assert got["work/a.txt"] == (tarfile.REGTYPE, "")
+    # A last link that leads out is stored as a link, never read.
+    assert got["work/away"] == (tarfile.SYMTYPE, "../elsewhere")
+    assert bundle.verifier is not None
+    with tarfile.open(fileobj=io.BytesIO(bundle.verifier)) as tar:
+        assert tar.getnames() == ["tests", "tests/t.sh"]
+    assert bundle.context is not None
+    with tarfile.open(fileobj=io.BytesIO(bundle.context)) as tar:
+        assert "Dockerfile" in tar.getnames()
+    assert truth.prepare(bundle, seed=b"s").plants["k"].record()["content"] == "a"
