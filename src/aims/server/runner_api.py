@@ -342,7 +342,7 @@ async def job_blob(
 ) -> FileResponse:
     conn = connected(state, principal, name)
     job = await state.db.job(run_id)
-    if job is None or job.runner != conn.name:
+    if job is None or not await _holds(state, job, conn):
         raise ProblemException(403, "Forbidden", "the job is not yours", code="owner")
     if sha256 not in JOBS.validate_python(job.payload).blobs():
         raise ProblemException(404, "Not found", f"the job has no blob {sha256}")

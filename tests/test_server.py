@@ -1389,6 +1389,27 @@ async def test_taking_a_name_takes_back_the_jobs_it_held(cp: CP, fake: FakeRunne
     await new.aclose()
 
 
+async def test_taking_a_name_does_not_take_the_inputs_of_jobs_the_old_token_runs(
+    cp: CP, fake: FakeRunner, local: LocalEventStore
+) -> None:
+    (run_id,) = await start_run(cp)
+    job = await play_job(fake, local, await fake.next(OfferMessage))
+    lines = split_lines((local.root / run_id / "events.jsonl").read_bytes())
+    assert (await raw_events(cp, "fake", run_id, lines[:1])).status_code == 200
+    assert await job_state(cp, run_id) == "running"
+    sha = job.blobs()[0]
+    assert await fake.client.job_blob(run_id, sha)
+    async with cp.client(cp.operator) as c:
+        assert (await c.delete("/api/tokens/r1")).status_code == 204
+    token = await cp.state.db.create_token("r2", "runner")
+    new = ControlClient(cp.url, token, runner="fake")
+    assert (await new.hello(fake.hello_body())).requeued == []
+    with pytest.raises(ApiError) as caught:
+        await new.job_blob(run_id, sha)
+    assert (caught.value.status, caught.value.code) == (403, "owner")
+    await new.aclose()
+
+
 async def test_requeue_only_gives_back_its_own_offers(cp: CP) -> None:
     from aims.server.db import Job as JobRow
 
