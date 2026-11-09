@@ -95,6 +95,7 @@ dev = [
     "anyio>=4.15.1",
     "modal>=1.6.3",
     "pytest>=9.1.1",
+    "pytest-timeout>=2.4.0",
     "pytest-xdist>=3.8.0",
     "ruff>=0.17.2",
     "ty>=0.0.92",
@@ -126,6 +127,12 @@ markers = [
     "tracer: needs the privileged kernel tracer",
     "serial: needs the machine to itself (floods the tracer or times CPU use); run apart from -n",
 ]
+# A hung anyio test under the "signal" method fails, then hangs in fixture teardown on anyio's
+# stuck runner task. "thread" ends the process instead. xdist then reruns the test's file on a
+# new worker; one restart keeps a hang from rerunning until the job times out.
+addopts = ["--max-worker-restart=1"]
+timeout = "300"
+timeout_method = "thread"
 
 [tool.ty.src]
 # train_organism.py is a uv script with its own dependencies.
