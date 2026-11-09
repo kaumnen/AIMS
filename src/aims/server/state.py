@@ -1,18 +1,20 @@
 import asyncio
 import hashlib
 import secrets
+import threading
 import time
 from collections import OrderedDict, deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from aims.config import ConfigError, Layers, Settings, layers, load
-from aims.events import LocalEventStore
+from aims.events import Event, LocalEventStore
 from aims.models import Delta, DeltaBus, ProfileError
 from aims.monitor.config import MonitorConfigError
 from aims.prompts import TextError
 from aims.run.estimate import History, history
+from aims.scenario import Scenario
 from aims.server.auth import Auth
 from aims.server.db import Job, ServerDB, hash_secret
 from aims.server.problems import ProblemException
@@ -176,8 +178,47 @@ class Connected:
         )
 
 
+def stamp(path: Path) -> tuple[int, int, int] | None:
+    """The file's inode, mtime and size, which a write changes; None when it cannot be read."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return st.st_ino, st.st_mtime_ns, st.st_size
+
+
+class FileCache[T]:
+    """What a read made of each file, kept while the file's stamp stays the same. Worker
+    threads may share one."""
+
+    def __init__(self) -> None:
+        self._held: dict[Path, tuple[tuple[int, int, int], T]] = {}
+        self._lock = threading.Lock()
+
+    def __contains__(self, path: object) -> bool:
+        return path in self._held
+
+    def get(self, path: Path, read: Callable[[Path], T]) -> T:
+        """`read(path)`, or what it returned before when the file has not changed since."""
+        now = stamp(path)
+        with self._lock:
+            held = self._held.get(path)
+        if now is not None and held is not None and held[0] == now:
+            return held[1]
+        value = read(path)
+        if now is not None:
+            with self._lock:
+                self._held[path] = (now, value)
+        return value
+
+    def keep(self, paths: Collection[Path]) -> None:
+        """Forget every file not in `paths`."""
+        with self._lock:
+            self._held = {p: v for p, v in self._held.items() if p in paths}
+
+
 class ConfigCache:
-    """The merged config layers, read again whenever a file's size or mtime changes."""
+    """The merged config layers, read again whenever a file's stamp changes."""
 
     def __init__(self, project: Path | None) -> None:
         self.project = project
@@ -189,18 +230,8 @@ class ConfigCache:
         return layers(self.project)
 
     def _key(self) -> tuple[object, ...]:
-        out: list[object] = []
         found = self.layers()
-        for path in (found.user, found.project):
-            if path is None:
-                out.append(None)
-                continue
-            try:
-                st = path.stat()
-                out.append((str(path), st.st_mtime_ns, st.st_size))
-            except OSError:
-                out.append((str(path), None, None))
-        return tuple(out)
+        return tuple(None if p is None else (str(p), stamp(p)) for p in (found.user, found.project))
 
     def settings(self) -> Settings:
         key = self._key()
@@ -242,6 +273,11 @@ class ServerState:
     on_truth: Callable[[str], Awaitable[None]] | None = None
     # held from placing a series' runs to queueing them, so two starts never take one index
     series_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # each scenario.yaml the scenario list read: its scenario, or why it does not load
+    scenarios: FileCache[Scenario | str] = field(default_factory=FileCache)
+    # each model check run the models list read, by run id: the head it was read at, the
+    # profiles it checks and its model.checked events
+    check_runs: dict[str, tuple[str, list[str], list[Event]]] = field(default_factory=dict)
 
     async def history(self) -> History:
         """The runs' history the estimates read, read again once a run changed."""

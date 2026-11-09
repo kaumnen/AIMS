@@ -62,10 +62,10 @@ from aims.server import db as sdb
 from aims.server import series as sseries
 from aims.server.auth import Principal, require
 from aims.server.codings import allowed
-from aims.server.files import Sources
+from aims.server.files import Source, Sources
 from aims.server.problems import ProblemError, ProblemException, responses
 from aims.server.runner_api import JOBS, send
-from aims.server.state import ServerState
+from aims.server.state import FileCache, ServerState
 from aims.tools import UnknownTool, registry
 from aims.wire import (
     BASE_KINDS,
@@ -1531,19 +1531,22 @@ CHECK_RUNS = 100
 
 
 async def _checks(state: ServerState, wanted: set[str]) -> dict[str, ProfileCheck]:
-    """The newest check of each profile in `wanted`, among the last CHECK_RUNS model checks."""
+    """The newest check of each profile in `wanted`, among the last CHECK_RUNS model checks. A
+    run is read again only once its head moved."""
     found: dict[str, ProfileCheck] = {}
-    for run in await state.store.runs(kind="models.check", limit=CHECK_RUNS):
+    runs = await state.store.runs(kind="models.check", limit=CHECK_RUNS)
+    held = state.check_runs
+    for gone in held.keys() - {run.run_id for run in runs}:
+        del held[gone]
+    for run in runs:
         if not wanted - found.keys():
             break
-        events = await state.store.events(
-            run.run_id, types=["run.started", "model.checked"], limit=1000
-        )
-        if not events or events[0].type != "run.started":
-            continue
-        config = events[0].data.get("config")
-        profiles = config.get("models") if isinstance(config, dict) else None
-        for name in profiles if isinstance(profiles, dict) else ():
+        cached = held.get(run.run_id)
+        if cached is None or cached[0] != run.head:
+            cached = (run.head, *await _check_run(state, run.run_id))
+            held[run.run_id] = cached
+        _, profiles, events = cached
+        for name in profiles:
             if name not in wanted or name in found:
                 continue
             found[name] = ProfileCheck(
@@ -1557,10 +1560,21 @@ async def _checks(state: ServerState, wanted: set[str]) -> dict[str, ProfileChec
                         detail=str(e.data.get("detail", "")),
                     )
                     for e in events
-                    if e.type == "model.checked" and e.data.get("profile") == name
+                    if e.data.get("profile") == name
                 ],
             )
     return found
+
+
+async def _check_run(state: ServerState, run_id: str) -> tuple[list[str], list[Event]]:
+    """The profiles a model check run checks and its model.checked events."""
+    events = await state.store.events(run_id, types=["run.started", "model.checked"], limit=1000)
+    if not events or events[0].type != "run.started":
+        return [], []
+    config = events[0].data.get("config")
+    profiles = config.get("models") if isinstance(config, dict) else None
+    names = list(profiles) if isinstance(profiles, dict) else []
+    return names, [e for e in events if e.type == "model.checked"]
 
 
 class ModelsCheck(BaseModel):
@@ -1712,31 +1726,51 @@ class ScenarioInfo(Out):
     selftest: bool = False
 
 
+def _scenario(path: Path) -> Scenario | str:
+    """The scenario `path` holds, or the first line of why it does not load."""
+    try:
+        return parse(path.read_text(), source=path.parent.name)
+    except (ScenarioError, OSError, UnicodeDecodeError) as e:
+        return str(e).splitlines()[0]
+
+
+def _scenarios(
+    sources: list[Source], cache: FileCache[Scenario | str]
+) -> list[tuple[Source, str, Scenario | str]]:
+    """Each scenario of `sources` in order with what its scenario.yaml holds, read again only
+    once the file changed. The cache forgets the files no source holds now."""
+    out: list[tuple[Source, str, Scenario | str]] = []
+    seen: set[Path] = set()
+    for s in sources:
+        if not s.root.is_dir():
+            continue
+        for d in sorted(s.root.iterdir()):
+            path = d / "scenario.yaml"
+            if path.is_file():
+                out.append((s, d.name, cache.get(path, _scenario)))
+                seen.add(path)
+    cache.keep(seen)
+    return out
+
+
 @router.get("/scenarios", tags=["scenarios"])
 async def list_scenarios(
     principal: Viewer, state: State, sources: SourcesDep
 ) -> list[ScenarioInfo]:
     default = state.config.settings().models.roles.agent
     out = []
-    for s in sources.all():
-        if not s.root.is_dir():
-            continue
-        for d in sorted(s.root.iterdir()):
-            if not (d / "scenario.yaml").is_file():
-                continue
-            info = ScenarioInfo(source=s.id, name=d.name, writable=s.writable)
-            try:
-                sc = parse((d / "scenario.yaml").read_text(), source=d.name)
-            except (ScenarioError, OSError, UnicodeDecodeError) as e:
-                info.error = str(e).splitlines()[0]
-            else:
-                info.title = sc.name
-                info.oversight = sc.oversight
-                info.agents = len(sc.agents)
-                info.profiles = sorted({a.profile or default for a in sc.agents})
-                info.variants = list(sc.variants)
-                info.selftest = principal.role != "viewer" and selftest.wanted(sc)
-            out.append(info)
+    for s, name, sc in await asyncio.to_thread(_scenarios, sources.all(), state.scenarios):
+        info = ScenarioInfo(source=s.id, name=name, writable=s.writable)
+        if isinstance(sc, str):
+            info.error = sc
+        else:
+            info.title = sc.name
+            info.oversight = sc.oversight
+            info.agents = len(sc.agents)
+            info.profiles = sorted({a.profile or default for a in sc.agents})
+            info.variants = list(sc.variants)
+            info.selftest = principal.role != "viewer" and selftest.wanted(sc)
+        out.append(info)
     return out
 
 

@@ -4,6 +4,7 @@ newest model check of each profile."""
 
 import hashlib
 import io
+import shutil
 import tarfile
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -15,15 +16,24 @@ from test_monitor_api import call, started
 from test_score_api import RECORD, ScoreRunner
 from test_server import FakeRunner, ship
 
-from aims.events import Draft, LocalEventStore, ModelChecked, RunFinished, RunStarted
+from aims.events import (
+    Draft,
+    Event,
+    LocalEventStore,
+    ModelChecked,
+    RunFinished,
+    RunStarted,
+    split_lines,
+)
 from aims.events.blobs import decode
+from aims.events.store import LOG
 from aims.models import Profile, check
 from aims.models.check import Check, Verdict
 from aims.run import truth
 from aims.run.job import Job, bundle_of, job_bundle
 from aims.run.runner import RunError
-from aims.scenario import folder_tar
-from aims.server import score_api
+from aims.scenario import Scenario, folder_tar
+from aims.server import api, score_api
 from aims.wire import OfferMessage
 
 pytestmark = pytest.mark.anyio
@@ -111,6 +121,46 @@ async def test_the_scenario_list_says_oversight_agents_and_variants(cp: CP) -> N
     )
     assert broken["error"]
     assert (broken["oversight"], broken["agents"], broken["variants"]) == (None, None, [])
+
+
+async def test_the_scenario_list_parses_a_scenario_again_only_once_it_changes(
+    cp: CP, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parsed: list[str] = []
+    real = api.parse
+
+    def counted(text: str, **kw: Any) -> Scenario:
+        parsed.append(kw["source"])
+        return real(text, **kw)
+
+    monkeypatch.setattr(api, "parse", counted)
+    folder = cp.project.parent / "scenarios"
+    async with cp.client(cp.operator) as c:
+        first = (await c.get("/api/scenarios")).json()
+        assert sorted(parsed) == sorted(s["name"] for s in first)
+        parsed.clear()
+        assert (await c.get("/api/scenarios")).json() == first
+        assert parsed == []
+        # the editor replaces the file with one of the same size
+        url = "/api/scenarios/project/loud/files/scenario.yaml"
+        headers = {
+            "Content-Type": "application/octet-stream",
+            "If-Match": (await c.get(url)).headers["etag"],
+        }
+        same = VARIANTS.replace("name: loud", "name: lout").encode()
+        assert (await c.put(url, content=same, headers=headers)).status_code == 200
+        parsed.clear()
+        listed = {s["name"]: s for s in (await c.get("/api/scenarios")).json()}
+        assert (parsed, listed["loud"]["title"]) == (["loud"], "lout")
+        parsed.clear()
+        (folder / "control" / "scenario.yaml").write_text("version: 1\nname: [\n")
+        shutil.rmtree(folder / "planted")
+        listed = {s["name"]: s for s in (await c.get("/api/scenarios")).json()}
+    assert parsed == ["control"]
+    assert listed["control"]["error"]
+    assert "planted" not in listed
+    assert folder / "planted" / "scenario.yaml" not in cp.state.scenarios
+    assert folder / "loud" / "scenario.yaml" in cp.state.scenarios
 
 
 async def test_a_run_takes_a_variant_and_refuses_an_unknown_one(cp: CP) -> None:
@@ -209,6 +259,72 @@ async def test_each_profile_shows_its_newest_model_check(cp: CP, local: LocalEve
     assert keyed["run_id"] == older
     assert [c["verdict"] for c in keyed["checks"]] == ["ok"]
     assert all(p["check"] is None for n, p in profiles.items() if n not in ("scripted", "keyed"))
+
+
+async def test_the_models_list_reads_a_check_run_again_only_once_it_changes(
+    cp: CP, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    models = cp.state.config.settings().models
+    reads: list[str] = []
+    real = cp.state.store.events
+
+    async def counted(run_id: str, **kw: Any) -> list[Event]:
+        reads.append(run_id)
+        return await real(run_id, **kw)
+
+    monkeypatch.setattr(cp.state.store, "events", counted)
+
+    async def copy(run_id: str) -> None:
+        await cp.state.store.ingest(run_id, split_lines((local.root / run_id / LOG).read_bytes()))
+
+    async def checked(verdict: Verdict) -> str:
+        first = RunStarted(
+            scenario="models.check",
+            oversight="observe",
+            kind="models.check",
+            config={"models": models.snapshot(["scripted"])},
+        )
+        run_id = await local.create_run(first)
+        found = ModelChecked(profile="scripted", name="plain", verdict=verdict, detail=verdict)
+        await local.append(run_id, [Draft(found)])
+        await copy(run_id)
+        return run_id
+
+    async def listed() -> dict[str, Any]:
+        async with cp.client(cp.viewer) as c:
+            profiles = (await c.get("/api/models")).json()["profiles"]
+        return {p["name"]: p["check"] for p in profiles}
+
+    done = [await checked("ok") for _ in range(3)]
+    for run_id in done:
+        await local.append(run_id, [Draft(RunFinished(status="completed"))])
+        await copy(run_id)
+    first = await listed()
+    # no run checked `keyed`, so every check run is looked at
+    assert sorted(reads) == sorted(done)
+    assert (first["scripted"]["run_id"], first["keyed"]) == (done[-1], None)
+    reads.clear()
+    assert await listed() == first
+    assert reads == []
+    running = await checked("warn")
+    now = await listed()
+    assert reads == [running]
+    assert (now["scripted"]["status"], now["scripted"]["checks"][0]["verdict"]) == (
+        "running",
+        "warn",
+    )
+    reads.clear()
+    assert await listed() == now
+    assert reads == []
+    await local.append(running, [Draft(RunFinished(status="failed"))])
+    await copy(running)
+    now = await listed()
+    assert reads == [running]
+    assert now["scripted"]["status"] == "failed"
+    await cp.state.store.remove(done[0])
+    await listed()
+    assert done[0] not in cp.state.check_runs
+    assert running in cp.state.check_runs
 
 
 async def test_a_model_check_records_each_smoke_test(
