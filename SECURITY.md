@@ -82,6 +82,7 @@ Every API call needs a token. Each token has one role.
 - `aims ui` listens on 127.0.0.1. Any other address needs `--tls-cert` with `--tls-key`, or `--behind-proxy`.
 - Compose publishes Caddy on 127.0.0.1:8484 only.
 - `compose.public.yaml` opens ports 80 and 443. Caddy then gets a TLS certificate for `AIMS_SITE`.
+- The control plane refuses a request body over 8 MiB, or 16 MiB on the runner API, before it checks the token. Uploads have their own limits: 64 MiB per scenario file, 2 GiB per blob, 4 GiB per run import.
 - Sandboxes have no network. Model calls go out from the runner.
 
 ## Secrets and data

@@ -36,6 +36,7 @@ from aims.server import (
 from aims.server.auth import SecurityHeaders
 from aims.server.codings import allowed
 from aims.server.files import Sources
+from aims.server.limits import BodyLimit
 from aims.server.problems import Problem
 from aims.server.state import ServerState
 from aims.wire import RunnerFeed, StreamMessage
@@ -104,6 +105,7 @@ def create_app(
     app.include_router(report_api.router)
     app.include_router(stream.router)
     app.include_router(runner_api.router)
+    app.add_middleware(BodyLimit)
     app.add_middleware(SecurityHeaders)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=[*LOOPBACK, *hosts])
     root = ui if ui is not None and (ui / "index.html").is_file() else ui_root()
@@ -225,16 +227,18 @@ def openapi(app: FastAPI) -> dict[str, Any]:
 
 
 def _problems_for_validation(schema: dict[str, Any]) -> None:
-    """Validation errors are answered as problem details, not FastAPI's default body."""
-    problem = {
-        "description": "Invalid request",
-        "content": {problems.MEDIA: {"schema": {"$ref": REF.format(model="Problem")}}},
-    }
+    """Validation errors are answered as problem details, not FastAPI's default body. Every
+    route that takes a body can also answer 413 (`limits.BodyLimit`)."""
+    content = {problems.MEDIA: {"schema": {"$ref": REF.format(model="Problem")}}}
+    problem = {"description": "Invalid request", "content": content}
+    too_large = {"description": problems.TITLES[413], "content": content}
     for path in schema.get("paths", {}).values():
         for operation in path.values():
             replies = operation.get("responses", {})
             if "422" in replies or operation.get("parameters") or operation.get("requestBody"):
                 replies["422"] = problem
+            if operation.get("requestBody"):
+                replies.setdefault("413", too_large)
     components = schema["components"]["schemas"]
     text = json.dumps(schema["paths"])
     for name in ("HTTPValidationError", "ValidationError"):
