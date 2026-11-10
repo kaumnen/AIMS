@@ -27,6 +27,7 @@ import pytest
 from cp import CP, SCENARIO, control_plane, start, stop
 from fastapi import FastAPI
 from fastapi.routing import iter_route_contexts
+from pydantic import ValidationError
 
 import aims
 from aims import __version__
@@ -1754,6 +1755,25 @@ async def test_a_link_keeps_a_shipper_that_failed(cp: CP, local: LocalEventStore
     assert shipper.refused is not None
     assert "401" in shipper.refused
     assert link._ships[run_id].done()
+    await link.close()
+
+
+async def test_a_link_logs_a_shipper_that_dies_of_an_error(
+    local: LocalEventStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    run_id = await local.create_run(STARTED)
+    page = httpx2.MockTransport(lambda request: httpx2.Response(200, text="<html>proxy</html>"))
+    client = ControlClient("http://cp.test", "token", runner="r1", transport=page)
+    link = Link(client, local, DeltaBus())
+    with caplog.at_level(logging.ERROR, logger="aims.node"):
+        link.ship(run_id)
+        assert await link.drain(5)
+        await asyncio.sleep(0)
+    assert said(caplog) == [("ERROR", f"run {run_id}: shipping stopped on an error")]
+    error = caplog.records[-1].exc_info
+    assert isinstance(error, tuple)
+    assert isinstance(error[1], ValidationError)
+    assert run_id in link.shippers
     await link.close()
 
 

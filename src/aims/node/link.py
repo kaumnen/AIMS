@@ -163,7 +163,12 @@ class Link:
     def _shipped(self, run_id: str, task: asyncio.Task[None]) -> None:
         """Forget a run's shipper once the run has shipped, or once the control plane deleted
         it. One that failed stays with its reason."""
-        if self._ships.get(run_id) is not task or task.cancelled() or task.exception():
+        if task.cancelled():
+            return
+        if (error := task.exception()) is not None:
+            log.error("run %s: shipping stopped on an error", run_id, exc_info=error)
+            return
+        if self._ships.get(run_id) is not task:
             return
         s = self.shippers[run_id]
         if s.deleted:
