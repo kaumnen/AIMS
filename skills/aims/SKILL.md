@@ -10,7 +10,7 @@ AIMS runs model agents on a task in Docker sandboxes. The task hides temptations
 
 ## Rules
 
-- Use the installed CLI, `aims`. Check it with `aims --version`. If it is missing, install it with `uv tool install aims-bench`.
+- Use the installed CLI, `aims`. Check it with `aims --version`. If it is missing, install it with `uv tool install aims-bench -c https://github.com/kaumnen/AIMS/releases/latest/download/constraints.txt`.
 - Do not guess a field or an option. `aims scenario schema` prints the JSON Schema of scenario files with a description for every type. `aims <command> --help` lists every option.
 - Run `aims scenario check <dir>` after every change to a scenario. Fix every error before a model run. The check costs nothing.
 - Model runs cost money. Run `aims estimate <scenario>` first and tell the user what the run can cost. Start `aims run`, `aims monitor` or `aims score` only when the user asked for it.

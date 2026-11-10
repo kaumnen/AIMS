@@ -4,6 +4,8 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-10
+
 ### Added
 
 - Each release attaches `constraints.txt`. It pins AIMS and its dependencies to the versions the release was tested with. Pass its URL to `uv tool install aims-bench -c` or `pip install aims-bench -c`.
@@ -19,6 +21,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 ### Changed
 
+- The app image and the sandbox helper images use newer base images. Python and web dependencies are updated.
 - `aims run`, `aims runner` and self-tests remove the same images when they start. A runner that stays up checks every hour. `keep_days` under `[images]` in a config file changes the 30 days.
 - Runtime dependencies at version 1 or later are capped below their next major version. A new major release of one of them no longer reaches a fresh install.
 - The sandboxes of a multi-agent run start together, so the run starts sooner.
@@ -108,7 +111,8 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 - The `aims-bench` package with the `aims` command, which prints its version.
 
-[Unreleased]: https://github.com/kaumnen/AIMS/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/kaumnen/AIMS/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/kaumnen/AIMS/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/kaumnen/AIMS/compare/v0.2.0rc1...v0.2.0
 [0.2.0rc1]: https://github.com/kaumnen/AIMS/compare/v0.1.0...v0.2.0rc1
 [0.1.0]: https://github.com/kaumnen/AIMS/releases/tag/v0.1.0
