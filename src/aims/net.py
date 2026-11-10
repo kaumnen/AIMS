@@ -2,6 +2,7 @@
 
 import contextlib
 import ipaddress
+import os
 import ssl
 from urllib.request import getproxies_environment
 
@@ -52,6 +53,12 @@ class Outbound(httpx2.AsyncBaseTransport):
 
     def __init__(self, verify: ssl.SSLContext | str | bool = True) -> None:
         self._env = getproxies_environment()
+        if isinstance(verify, str):
+            # httpx2 deprecates a path for `verify`; this loads it as httpx2 did
+            if os.path.isdir(verify):
+                verify = ssl.create_default_context(capath=verify)
+            else:
+                verify = ssl.create_default_context(cafile=verify)
         self._context = httpx2.create_ssl_context(verify=verify)
         self._direct = httpx2.AsyncHTTPTransport(verify=self._context)
         # built on first use: an ALL_PROXY no request needs, like a SOCKS one, must not fail

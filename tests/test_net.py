@@ -53,6 +53,7 @@ async def test_no_proxy_hosts_go_direct(monkeypatch: pytest.MonkeyPatch) -> None
     assert proxy.lines == ["GET http://cp.example/runner/v1/runs/r1/truth HTTP/1.1"]
 
 
+@pytest.mark.filterwarnings("error:`verify=<str>`:DeprecationWarning")
 async def test_the_tls_ca_wins_over_ssl_cert_file(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
