@@ -36,7 +36,7 @@ from aims.events import (
     ToolResult,
 )
 from aims.monitor import sweep_texts
-from aims.monitor.render import Rendered, Trajectory, escape, frame, glossary, tokens
+from aims.monitor.render import Rendered, Trajectory, cut, escape, frame, glossary, tokens
 from aims.monitor.texts import MonitorTexts
 
 pytestmark = pytest.mark.anyio
@@ -348,6 +348,44 @@ async def test_escape_keeps_text_on_one_line() -> None:
     assert "\r" not in text
     assert text.isascii()
     assert escape({"x": "plain é ü 日本"}) == '{"x":"plain é ü 日本"}'
+
+
+async def test_a_lone_surrogate_in_tool_arguments_renders_as_text(run: Run) -> None:
+    await run.preamble()
+    await run.step(1)
+    await run.add(
+        ModelResponse(
+            call_id="m2", attempt=1, status="completed", latency_ms=1, reasoning_kind="none"
+        ),
+        ToolCall(call_id="c2", name="bash", arguments='{"command": "echo \\ud800 hi"}'),
+        AgentStep(n=2, call_id="m2", status="completed", tool_calls=["c2"]),
+    )
+    for n in (3, 4):
+        await run.step(n, command=f"echo later{n}")
+    r = await run.trajectory.render(FULL, texts=TEXTS)
+    calls = of_type(r, "tool.call")
+    assert calls[1]["arguments"] == {"command": "echo \\ud800 hi"}
+    assert '"echo \\\\ud800 hi"' in r.text
+    assert "echo later4" in r.text
+    short = await run.trajectory.render(
+        ["evidence"], texts=TEXTS, review_after=10**6, collapse_tokens=10
+    )
+    assert short.collapsed
+    await run.step(5, command="echo later5")
+    assert "echo later5" in (await run.trajectory.render(FULL, texts=TEXTS)).text
+
+
+async def test_cut_takes_any_text_and_never_splits_a_character() -> None:
+    assert cut("a\ud800", 100) == "a\\ud800"
+    text = "\ud800" + "é" * 40 + "\udfff"
+    out = cut(text, 21)
+    assert out == {"head": "\\ud800éé", "tail": "éé\\udfff", "cut_bytes": 72}
+    for limit in range(2, 30):
+        part = cut("日" * 10 + "\ud83d", limit)
+        assert isinstance(part, dict)
+        shown = len(part["head"].encode()) + len(part["tail"].encode())
+        assert shown + part["cut_bytes"] == 36
+        assert shown <= limit
 
 
 async def test_lanes_show_only_their_parts(run: Run) -> None:

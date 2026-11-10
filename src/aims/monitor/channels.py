@@ -54,6 +54,7 @@ from aims.monitor.sweep import (
 from aims.monitor.texts import MonitorTexts
 from aims.scenario import Scenario
 from aims.scenario.model import FolderChannel
+from aims.text import scrub
 
 log = logging.getLogger("aims.monitor")
 
@@ -357,7 +358,7 @@ class ChannelLog:
             for call in self._next(read, upto, next_calls):
                 args = await self._text(call.data.get("arguments"))
                 try:
-                    parsed: Any = json.loads(args) if args.strip() else {}
+                    parsed: Any = scrub(json.loads(args)) if args.strip() else {}
                 except ValueError:
                     parsed = args
                 fields = {

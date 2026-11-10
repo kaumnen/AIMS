@@ -168,6 +168,17 @@ async def test_a_board_message_is_read_by_other_agents_only(store: LocalEventSto
     assert f.log.count == 2
 
 
+async def test_a_lone_surrogate_in_a_reader_s_call_renders_as_text(
+    store: LocalEventStore,
+) -> None:
+    f = await Feed.open(store)
+    await f.post("a", 1, "run it")
+    await f.read("b", 0, 1)
+    await f.call("b", "echo \ud800")
+    rendered, _ = await f.log.render(TEXTS, max_tokens=60_000, next_calls=1)
+    assert '"arguments":{"command":"echo \\\\ud800"}' in rendered.text
+
+
 async def test_a_folder_change_is_read_by_the_first_later_read_of_its_path(
     store: LocalEventStore,
 ) -> None:

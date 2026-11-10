@@ -35,6 +35,7 @@ from typing import Any
 
 from aims.events import BlobError, Event, EventStore, SweepPart, payload_type
 from aims.monitor.texts import MonitorTexts
+from aims.text import scrub
 
 log = logging.getLogger("aims.monitor")
 
@@ -162,7 +163,9 @@ def _safe(ch: str) -> str:
 
 
 def cut(text: str, limit: int) -> str | dict[str, Any]:
-    """`text` whole within `limit` bytes, else its head and tail of half the limit each."""
+    """`text` whole within `limit` bytes, else its head and tail of half the limit each. A
+    lone surrogate is written `\\ud800` first."""
+    text = scrub(text)
     data = text.encode()
     if len(data) <= limit:
         return text
@@ -831,7 +834,7 @@ class Trajectory:
     async def _tool_call(self, out: _Out, event: Event) -> str | None:
         text = await self._text(event.data.get("arguments"))
         try:
-            parsed: Any = json.loads(text) if text.strip() else {}
+            parsed: Any = scrub(json.loads(text)) if text.strip() else {}
         except ValueError:
             parsed = text
         command = parsed.get("command") if isinstance(parsed, dict) else None
