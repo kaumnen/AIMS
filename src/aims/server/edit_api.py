@@ -49,7 +49,9 @@ from aims.server.files import (
     listing,
     quoted,
     read_or_none,
+    refused,
     write_atomic,
+    writing,
 )
 from aims.server.problems import ProblemError, ProblemException, responses
 from aims.server.state import ServerState
@@ -173,10 +175,11 @@ def _problem(state: ServerState, layer: Layer, text: str) -> tuple[str, ProblemE
         return "toml", ProblemError(msg=f"{e.msg} (column {e.colno})", line=e.lineno)
     found = _layers(state)
     path = _path(state, layer)
-    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.parent / f".{path.name}.check.{secrets.token_hex(4)}"
     try:
-        tmp.write_text(text)
+        with writing(path):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_text(text)
         trial = Layers(
             user=tmp if layer == "user" else found.user,
             project=tmp if layer == "project" else found.project,
@@ -185,7 +188,9 @@ def _problem(state: ServerState, layer: Layer, text: str) -> tuple[str, ProblemE
     except (ConfigError, ProfileError, TextError, MonitorConfigError) as e:
         return "config", ProblemError(msg=str(e).replace(str(tmp), str(path)))
     finally:
-        tmp.unlink(missing_ok=True)
+        # a read-only folder refuses even the unlink of a file it never took
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
     return None
 
 
@@ -224,7 +229,8 @@ async def _save(
         current = read_or_none(path)
         check_match(current, if_match, if_none_match)
         _validate(state, layer, text)
-        await asyncio.to_thread(write_atomic, path, data)
+        with writing(path):
+            await asyncio.to_thread(write_atomic, path, data)
     body = _file(layer, path, data)
     return Response(
         body.model_dump_json(), media_type="application/json", headers={"ETag": quoted(etag(data))}
@@ -408,7 +414,8 @@ async def write_file(
         except NotADirectoryError:
             raise ProblemException(409, "Conflict", f"a part of {file} is a file") from None
         check_match(current, if_match, if_none_match)
-        await asyncio.to_thread(write_atomic, path, data)
+        with writing(path):
+            await asyncio.to_thread(write_atomic, path, data)
     return Saved(path=file, etag=etag(data), warnings=warnings)
 
 
@@ -447,7 +454,8 @@ async def delete_file(
         if current is None:
             raise ProblemException(404, "Not found", f"no file {file}")
         check_match(current, if_match, None)
-        await asyncio.to_thread(path.unlink)
+        with writing(path):
+            await asyncio.to_thread(path.unlink)
 
 
 @router.post("/scenarios/{source}/{name}", status_code=201, tags=["scenarios"])
@@ -460,7 +468,8 @@ async def create_scenario(
     if path.exists():
         raise ProblemException(409, "Conflict", f"{name} exists")
     data = STARTER_SCENARIO.format(name=name).encode()
-    await asyncio.to_thread(write_atomic, path / SCENARIO, data)
+    with writing(path):
+        await asyncio.to_thread(write_atomic, path / SCENARIO, data)
     return Saved(path=SCENARIO, etag=etag(data))
 
 
@@ -496,7 +505,8 @@ async def duplicate_scenario(
     except OSError as e:
         with contextlib.suppress(OSError):
             await asyncio.to_thread(shutil.rmtree, dst)
-        raise ProblemException(422, "Invalid request", f"copy failed: {e}") from None
+        problem = refused(dst, e)
+        raise problem or ProblemException(422, "Invalid request", f"copy failed: {e}") from None
     data = (dst / SCENARIO).read_bytes()
     return Saved(path=SCENARIO, etag=etag(data))
 
@@ -745,7 +755,8 @@ async def patch_prompts(
         except ValueError as e:
             raise ProblemException(422, "Invalid request", str(e)) from None
         data = text.encode()
-        await asyncio.to_thread(write_atomic, path, data)
+        with writing(path):
+            await asyncio.to_thread(write_atomic, path, data)
     settings = state.config.settings()
     bundle = Bundle(scenario, data)
     warnings = [ProblemError(msg=w) for w in check(bundle, settings.models, None, settings.prompts)]

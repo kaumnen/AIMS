@@ -1437,7 +1437,7 @@ async def import_run(
     request: Request, principal: Uploader, state: State, note: audit.Note
 ) -> Started:
     """Take a run directory as a tar (`events.jsonl` and `blobs/`), checked like ingest."""
-    with tempfile.TemporaryFile() as tmp:
+    with tempfile.TemporaryFile(dir=state.spool()) as tmp:
         size = 0
         async for chunk in request.stream():
             size += len(chunk)

@@ -42,8 +42,9 @@ Docker Compose runs both on one host.
 
 | Part | User | Access | Purpose |
 | --- | --- | --- | --- |
-| Control plane | uid 10001 | No Docker socket. No model keys. | API and UI |
-| Runner | root in Compose | Docker socket | Starts every container below |
+| Control plane | uid 10001 | No Docker socket. No model keys. In Compose: no capabilities, read-only root. | API and UI |
+| Caddy | root | In Compose: `NET_BIND_SERVICE` only, read-only root. | TLS and proxy to the control plane |
+| Runner | root in Compose | Docker socket. `no-new-privileges` in Compose. | Starts every container below |
 | Kernel tracer | root | Privileged. Host PID namespace. No network. | Records kernel events from sandboxes |
 | Sandbox | uid 1000 | No network. No capabilities. Read-only root. CPU, memory and PID limits. | Agents run commands here |
 | Resource sampler | uid 1001 | No capabilities. Read-only root. Host cgroup namespace. No network. | Reads sandbox CPU and memory use |
@@ -61,7 +62,7 @@ Docker Compose runs both on one host.
 
 ## Access
 
-Every API call needs a token. Each token has one role.
+Every API call needs a token. Each token has one role. `GET /healthz` needs none. It answers only `{"ok": true}`, for container healthchecks.
 
 | Role | Can |
 | --- | --- |

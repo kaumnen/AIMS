@@ -13,7 +13,7 @@ from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.routing import APIRoute
 from pydantic import TypeAdapter
 from pydantic.json_schema import models_json_schema
@@ -108,6 +108,7 @@ def create_app(
     app.include_router(audit_api.router)
     app.include_router(stream.router)
     app.include_router(runner_api.router)
+    app.add_api_route("/healthz", healthz, include_in_schema=False)
     app.add_middleware(AuditLog, db=state.db)
     app.add_middleware(BodyLimit)
     app.add_middleware(SecurityHeaders)
@@ -115,6 +116,11 @@ def create_app(
     root = ui if ui is not None and (ui / "index.html").is_file() else ui_root()
     _spa(app, root)
     return app
+
+
+async def healthz() -> JSONResponse:
+    """For a container healthcheck. It needs no token and tells nothing else."""
+    return JSONResponse({"ok": True})
 
 
 def _stamp(root: Path | None) -> int | None:

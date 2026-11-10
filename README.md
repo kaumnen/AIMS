@@ -487,6 +487,10 @@ The last command prints a sign-in link for http://localhost:8484.
 | `runner` | Runs the jobs. Mounts the Docker socket. |
 | `caddy` | Serves the UI on 127.0.0.1:8484, or with TLS on a public address. |
 
+`server` has a healthcheck on `GET /healthz`. That route needs no token and answers only `{"ok": true}`. `runner` and `caddy` start once it passes. `docker compose ps` shows its state.
+
+`init`, `server` and `caddy` run with a read-only root filesystem, no capabilities and `no-new-privileges`. Caddy keeps `NET_BIND_SERVICE`, which its binary needs. They write only to their volumes and a 64 MiB `/tmp`. The server keeps the config the UI saves and its large temp files in the `server` volume.
+
 > [!NOTE]
 > Compose gives the runner 3 minutes to stop. In that time it seals its runs as cancelled. Then it removes its sandboxes, tracer and sampler. After 3 minutes Docker sends SIGKILL. Anything not yet removed keeps running until the next AIMS start on that host. `docker ps --filter label=aims.managed=1` lists it.
 

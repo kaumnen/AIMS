@@ -34,6 +34,8 @@ INFLIGHT_CALLS = 1000
 INFLIGHT_DONE = 10_000
 CODE_TTL_S = 120.0
 CODES = 32
+SPOOL = "tmp"
+"""The data directory's folder for temporary files."""
 
 
 class LaunchCodes:
@@ -280,6 +282,14 @@ class ServerState:
     # profiles it checks and its model.checked events
     check_runs: dict[str, tuple[str, list[str], list[Event]]] = field(default_factory=dict)
 
+    def spool(self) -> Path:
+        """A private folder in the data directory for request bodies too large for memory, made
+        when the server starts. A container's /tmp may be held in memory, so Compose also points
+        TMPDIR and SQLITE_TMPDIR here."""
+        path = self.data / SPOOL
+        path.mkdir(mode=0o700, exist_ok=True)
+        return path
+
     async def history(self) -> History:
         """The runs' history the estimates read, read again once a run changed."""
         version = self.changes.version
@@ -340,6 +350,7 @@ async def open_state(
         public_url=public_url,
     )
     store.listeners.append(state.changes.touch)
+    state.spool()
     return state
 
 

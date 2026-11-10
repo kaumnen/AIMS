@@ -4,8 +4,19 @@ x-aims: &aims
   image: ${AIMS_IMAGE:-ghcr.io/kaumnen/aims:latest}
   restart: unless-stopped
 
+# A read-only root, a small /tmp in memory and no capabilities. Volumes take every other write.
+x-locked: &locked
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+
 services:
   init:
+    <<: *locked
     image: ${AIMS_IMAGE:-ghcr.io/kaumnen/aims:latest}
     command: [token, create, compose-runner, --role=runner, --file=/token/runner]
     volumes:
@@ -13,7 +24,7 @@ services:
       - token:/token
 
   server:
-    <<: *aims
+    <<: [*aims, *locked]
     command:
       - ui
       - --host=0.0.0.0
@@ -22,8 +33,25 @@ services:
       - --behind-proxy=${AIMS_SUBNET:-172.30.84.0/24}
       - --allow-host=server
       - --public-url=${AIMS_SITE:-http://localhost:8484}
+    environment:
+      # Config the UI saves goes to the volume.
+      AIMS_CONFIG_DIR: /data/config
+      # Large temp files, such as SQLite sorts, go to the volume too. The server makes this folder.
+      SQLITE_TMPDIR: /data/aims/server/tmp
+      TMPDIR: /data/aims/server/tmp
     volumes:
       - server:/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8484/healthz', timeout=2)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+      start_interval: 2s
     stop_grace_period: 30s
     depends_on:
       init:
@@ -34,6 +62,8 @@ services:
   runner:
     <<: *aims
     user: root
+    security_opt:
+      - no-new-privileges:true
     command:
       - runner
       - --server=http://server:8484
@@ -54,11 +84,15 @@ services:
       init:
         condition: service_completed_successfully
       server:
-        condition: service_started
+        condition: service_healthy
 
   caddy:
+    <<: *locked
     image: caddy:2.11.7@sha256:36c24ad91a7ff7bc4c87fe22bfa8df3c4b18da0773d73fc12ee2c52b98c0bb7e
     restart: unless-stopped
+    # The caddy binary carries this file capability. Without it the exec fails.
+    cap_add:
+      - NET_BIND_SERVICE
     environment:
       AIMS_SITE: ${AIMS_SITE:-http://localhost:8484}
     ports:
@@ -68,7 +102,8 @@ services:
       - caddy-data:/data
       - caddy-config:/config
     depends_on:
-      - server
+      server:
+        condition: service_healthy
 
 networks:
   default:

@@ -2,11 +2,13 @@
 replaces (If-Match on the sha256), lands atomically, and stays inside its directory."""
 
 import contextlib
+import errno
 import hashlib
 import os
 import re
 import secrets
 import stat
+from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -63,6 +65,32 @@ def check_match(current: bytes | None, if_match: str | None, if_none_match: str 
             etag=etag(current),
             current=current.decode(errors="replace"),
         )
+
+
+REFUSED = frozenset({errno.EACCES, errno.EPERM, errno.EROFS})
+"""The errors of a filesystem that will not take the write: read only, or no permission."""
+
+
+def refused(path: Path, e: OSError) -> ProblemException | None:
+    """The 403 for error `e` of a write to `path` when the filesystem refused it; None for any
+    other error."""
+    if e.errno not in REFUSED:
+        return None
+    reason = (e.strerror or "not writable").lower()
+    return ProblemException(403, "Forbidden", f"cannot write {path}: {reason}", code="not_writable")
+
+
+@contextlib.contextmanager
+def writing(path: Path) -> Generator[None]:
+    """Answer 403 when the filesystem refuses the writes that put `path` in place. Other errors
+    pass through."""
+    try:
+        yield
+    except OSError as e:
+        problem = refused(path, e)
+        if problem is None:
+            raise
+        raise problem from None
 
 
 def write_atomic(path: Path, data: bytes) -> None:

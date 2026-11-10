@@ -7,10 +7,12 @@ import json
 import logging
 import os
 import shutil
+import stat
 import tarfile
+import tempfile
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Generator
 from compression import zstd
 from pathlib import Path
 from typing import Any, Literal
@@ -18,7 +20,7 @@ from unittest.mock import patch
 
 import httpx2
 import pytest
-from cp import CP, SCENARIO, control_plane
+from cp import CP, SCENARIO, control_plane, start, stop
 
 import aims
 from aims import __version__
@@ -44,6 +46,7 @@ from aims.run.runner import resolve_texts
 from aims.scenario import load
 from aims.server import app as app_module
 from aims.server import dispatch, edit_api
+from aims.server.app import create_app
 from aims.server.auth import HEADERS
 from aims.server.db import UI_TOKEN
 from aims.server.files import builtin_root
@@ -207,6 +210,30 @@ async def test_security_headers_on_api_and_shell(cp: CP) -> None:
             assert r.headers["x-content-type-options"] == "nosniff"
             assert "access-control-allow-origin" not in r.headers
         assert (await c.get("/api/nope")).status_code == 404
+
+
+async def test_healthz_needs_no_token_and_tells_nothing_else(cp: CP) -> None:
+    async with cp.client() as anon:
+        for host in ("127.0.0.1:8484", "localhost"):
+            r = await anon.get("/healthz", headers={"Host": host})
+            assert r.status_code == 200, host
+            assert r.headers["content-type"] == "application/json"
+            assert r.content == b'{"ok":true}'
+            assert r.headers["x-content-type-options"] == "nosniff"
+        assert (await anon.get("/healthz", headers={"Host": "evil.example"})).status_code == 400
+        assert (await anon.post("/healthz")).status_code == 405
+        assert (await anon.get("/api/health")).status_code == 401
+        spec = (await anon.get("/api/openapi.json")).json()
+        assert "/healthz" not in spec["paths"]
+    async with cp.client(cp.viewer) as viewer:
+        assert (await viewer.get("/api/health")).json()["ok"] is True
+    server, task, port = await start(create_app(cp.state, hosts=("server",), dispatcher=False))
+    try:
+        async with httpx2.AsyncClient(base_url=f"http://127.0.0.1:{port}", trust_env=False) as c:
+            r = await c.get("/healthz", headers={"Host": "server:8484"})
+            assert (r.status_code, r.json()) == (200, {"ok": True})
+    finally:
+        await stop(server, task)
 
 
 async def test_a_session_cookie_needs_the_same_origin_to_act(cp: CP) -> None:
@@ -668,6 +695,78 @@ async def test_config_edits_keep_comments_and_need_the_current_etag(cp: CP) -> N
         assert project["text"].startswith("# Test project.")
         info = (await c.get("/api/config")).json()
         assert [x["layer"] for x in info["layers"]] == ["user", "project"]
+
+
+@contextlib.contextmanager
+def read_only(path: Path) -> Generator[None]:
+    mode = path.stat().st_mode
+    path.chmod(0o500)
+    try:
+        yield
+    finally:
+        path.chmod(mode)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root writes through any mode")
+async def test_a_write_the_filesystem_refuses_is_a_problem_not_a_crash(
+    cp: CP, user_config: Path
+) -> None:
+    def refused(r: httpx2.Response, path: Path) -> None:
+        assert r.status_code == 403, r.text
+        body = r.json()
+        assert body["code"] == "not_writable"
+        assert body["detail"] == f"cannot write {path}: permission denied"
+
+    scenario = cp.project.parent / "scenarios" / "control"
+    async with cp.client(cp.operator) as c:
+        with read_only(user_config):
+            r = await c.put("/api/config/user", json={"text": "# mine\n"})
+            refused(r, user_config / "config.toml")
+            patch = {"set": [{"key": ["prompts", "system"], "value": "hi"}]}
+            refused(await c.patch("/api/config/user", json=patch), user_config / "config.toml")
+        assert await asyncio.to_thread(os.listdir, user_config) == []
+        with read_only(scenario):
+            r = await c.put(
+                "/api/scenarios/project/control/files/notes.md",
+                content=b"notes",
+                headers={"Content-Type": "application/octet-stream", "If-None-Match": "*"},
+            )
+            refused(r, scenario / "notes.md")
+        with read_only(scenario.parent):
+            refused(await c.post("/api/scenarios/project/fresh"), scenario.parent / "fresh")
+            r = await c.post(
+                "/api/scenarios/builtin/word-count/duplicate",
+                json={"source": "project", "name": "copy"},
+            )
+            refused(r, scenario.parent / "copy")
+        assert await asyncio.to_thread(os.listdir, scenario.parent) == ["control"]
+
+
+async def test_the_server_makes_its_private_temp_folder_at_start(cp: CP) -> None:
+    spool = await asyncio.to_thread((cp.state.data / "tmp").stat)
+    assert stat.S_IMODE(spool.st_mode) == 0o700
+
+
+async def test_a_run_import_spools_in_the_data_dir(
+    cp: CP, local: LocalEventStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = await local.create_run(STARTED)
+    await local.append(run_id, [Draft(RunFinished(status="completed"))])
+    tar = io.BytesIO()
+    with tarfile.open(fileobj=tar, mode="w") as t:
+        t.add(local.root / run_id / "events.jsonl", arcname=f"{run_id}/events.jsonl")
+    # a /tmp that cannot take a file, as a full or missing one
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "no-tmp"))
+    async with cp.client(cp.operator) as c:
+        r = await c.post(
+            "/api/runs/import",
+            content=tar.getvalue(),
+            headers={"Content-Type": "application/x-tar"},
+        )
+        assert r.status_code == 201, r.text
+    spool = cp.state.data / "tmp"
+    assert stat.S_IMODE((await asyncio.to_thread(spool.stat)).st_mode) == 0o700
+    assert await asyncio.to_thread(os.listdir, spool) == []
 
 
 async def test_config_text_is_checked_by_line_and_merged_for_viewers(cp: CP) -> None:
