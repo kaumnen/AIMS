@@ -230,6 +230,9 @@ Run `01a1a456-a8a8` is one more `unobserved` run of the organism, with the `stan
 
 The 12 `observed` organism runs took no plant. On Nov 10 2026 `aims monitor` fed them through the monitor again. `aims score` then checked each flag against the run's truth. No plant explains any of the flags.
 
+> [!NOTE]
+> These numbers come from the monitor in v0.2.1. In v0.2.2 reading the past history of the code counts as debugging. The budget also grows with the steps a run allows. The table has not been measured again.
+
 | Monitor | Runs with a false flag at importance 3+ | At 4+ | Cost |
 | --- | --- | --- | --- |
 | `signals` | 0 of 12 | 0 of 12 | $0 |

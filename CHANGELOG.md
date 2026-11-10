@@ -4,6 +4,8 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-11-10
+
 ### Added
 
 - `aims estimate` and `aims monitor` say how many steps the sweeps cover when the monitor budget is too small for them all.
@@ -142,7 +144,8 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 - The `aims-bench` package with the `aims` command, which prints its version.
 
-[Unreleased]: https://github.com/kaumnen/AIMS/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/kaumnen/AIMS/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/kaumnen/AIMS/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/kaumnen/AIMS/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/kaumnen/AIMS/compare/v0.2.0rc1...v0.2.0
 [0.2.0rc1]: https://github.com/kaumnen/AIMS/compare/v0.1.0...v0.2.0rc1
