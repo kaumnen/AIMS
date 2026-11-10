@@ -125,6 +125,7 @@ ARCHIVE_PASS = 4 * 1024 * 1024 * 1024
 
 INTERNAL = "internal"
 _UNKNOWN = "\0unknown"
+LATE_DROP = "kernel records dropped past the audit caps outside a running exec"
 
 
 class SandboxStoppedError(Exception):
@@ -304,6 +305,7 @@ class AuditedSandbox:
         self._sampling: asyncio.Task[None] | None = None
         self._sample_append: asyncio.Task[None] | None = None
         self._active: _Active | None = None
+        self._open: str | None = None
         self._consumer: asyncio.Task[None] | None = None
         self._waiting = False
         self._quiescing = False
@@ -397,6 +399,7 @@ class AuditedSandbox:
             )
             active = _Active(exec_id, audit, uid=uid)
             self._active = active
+            self._open = exec_id
             capture = Capture(self.spec.output_limit if limit is None else limit)
             start = time.monotonic()
             try:
@@ -597,6 +600,10 @@ class AuditedSandbox:
                 killed = all(p.uid == AGENT_UID for p in leftover)
         files = await self._files(active.exec_id, always=True)
         spills = await self._spill_events()
+        stdout = await self._content(bytes(capture.stdout))
+        stderr = await self._content(bytes(capture.stderr))
+        # Nothing awaits from here to `self._open = None`, so a drop is counted here or in
+        # `audit.lost`, never in both.
         scope = self._scopes.get(active.exec_id)
         finished = ExecFinished(
             exec_id=active.exec_id,
@@ -605,8 +612,8 @@ class AuditedSandbox:
             exit_code=outcome.exit_code,
             pid=outcome.pid,
             duration_ms=outcome.duration_ms,
-            stdout=await self._content(bytes(capture.stdout)),
-            stderr=await self._content(bytes(capture.stderr)),
+            stdout=stdout,
+            stderr=stderr,
             stdout_bytes=capture.stdout_bytes,
             stderr_bytes=capture.stderr_bytes,
             truncated=capture.truncated,
@@ -620,6 +627,7 @@ class AuditedSandbox:
             error=outcome.error,
         )
         self._active = None
+        self._open = None
         writes = [f for f, w in self._shared if w]
         if writes:
             # The exec's kernel records get their seqs first, so the folders can cite them.
@@ -1099,7 +1107,7 @@ class AuditedSandbox:
             if self._spill("procs", payload):
                 scope.spilled += 1
             else:
-                scope.dropped += 1
+                self._drop(owner, record.at.ts)
         else:
             self._emit_payload(payload)
 
@@ -1111,7 +1119,7 @@ class AuditedSandbox:
         acc = None if streams is None else streams.get(record.inode)
         if acc is None:
             if self._output_streams >= 4 * MEMORY:
-                self._scope(owner).dropped += 1
+                self._drop(owner, record.at.ts)
                 return
             acc = self._outputs.setdefault(record.pid, {})[record.inode] = _Out(record)
             self._output_streams += 1
@@ -1439,7 +1447,7 @@ class AuditedSandbox:
             if spill:
                 scope = self._scope(fork.owner)
                 if not self._spill("procs", payload):
-                    scope.dropped += 1
+                    self._drop(fork.owner, fork.record.at.ts)
                     continue
                 scope.spilled += 1
                 self._spilled.add(child)
@@ -1451,14 +1459,22 @@ class AuditedSandbox:
             else:
                 self._record_exit(fork.exit, fork.owner, fork.oom)
 
-    def _over_cap(self, scope: _Scope, kind: str, payload: Payload) -> bool:
+    def _over_cap(self, scope: _Scope, kind: str, payload: KernelPayload) -> bool:
         if not self._spill(kind, payload):
-            scope.dropped += 1
+            self._drop(payload.exec_id, payload.ts_kernel)
             return False
         scope.spilled += 1
         if isinstance(payload, ProcExec):
             self._spilled.add(payload.pid)
         return True
+
+    def _drop(self, owner: str | None, ts: int) -> None:
+        """Count a record dropped past the caps. With no exec, or once its exec's `exec.finished`
+        is composed, the count goes to `audit.lost`."""
+        if owner is not None and owner == self._open:
+            self._scope(owner).dropped += 1
+        else:
+            self._losses.setdefault(LATE_DROP, _Loss("sandbox")).add(Lost(1, LATE_DROP, (), ts, ts))
 
     def _spill(self, kind: str, payload: Payload) -> bool:
         """Keep `payload` for its exec's `audit.spill` unless `SPILL_BYTES` are already pending."""

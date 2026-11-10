@@ -788,6 +788,104 @@ async def test_spill_is_bounded_and_late_records_still_spill(
     assert all(isinstance(s, AuditSpill) and s.exec_id == finished.exec_id for s in spills)
 
 
+LATE_DROP = "kernel records dropped past the audit caps outside a running exec"
+
+
+async def test_drops_after_an_exec_ends_are_logged_as_lost(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(audit_module, "SPILL_BYTES", 64 * 1024)
+    sb = FakeSandbox()
+    sb.steps.append(step(root(100), child(101, 100, "sh", "-c", "bg")))
+    run_id, audited = await start(store, sb)
+    result = await audited.exec("nohup sh bg &", timeout_s=5)
+    fed = audit_module.CAPS["files"] + 5000
+    for i in range(fed):
+        sb.queue.put_nowait(File(101, "read", f"/tmp/noise/{i}", at=tick(1000 + i)))
+    await audited.settle(5)
+    await audited.close()
+
+    logged, after = 0, -1
+    while page := await store.events(run_id, after=after, limit=1000, types=["file.access"]):
+        logged, after = logged + len(page), page[-1].seq
+    spills = [e.payload() for e in await events(store, run_id, "audit.spill")]
+    kept = logged + sum(s.count for s in spills if isinstance(s, AuditSpill))
+    lost = [e.data for e in await events(store, run_id, "audit.lost")]
+    assert (result.finished.dropped, result.finished.spilled) == (0, 0)
+    assert lost == [
+        {
+            "count": fed - kept,
+            "reason": LATE_DROP,
+            "cpus": [],
+            "ts_from": 1000 + kept,
+            "ts_to": 1000 + fed - 1,
+            "scope": "sandbox",
+        }
+    ]
+
+
+async def test_drops_before_an_exec_ends_stay_in_its_finished(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(audit_module.CAPS, "files", 1)
+    monkeypatch.setattr(audit_module, "SPILL_BYTES", 600)
+    sb = FakeSandbox()
+    early = [File(101, "write", f"/work/{i}", at=tick(i)) for i in range(6)]
+    sb.steps.append(step(root(100), child(101, 100, "sh"), *early, Exit(100, 0, None, at=AT)))
+    run_id, audited = await start(store, sb)
+    result = await audited.exec("sh &", timeout_s=5)
+    for i in range(6, 12):
+        sb.queue.put_nowait(File(101, "write", f"/work/{i}", at=tick(i)))
+    async with asyncio.timeout(5):
+        while not await events(store, run_id, "audit.lost"):  # noqa: ASYNC110
+            await asyncio.sleep(0.02)
+    await audited.close()
+
+    finished = result.finished
+    spills = [e.payload() for e in await events(store, run_id, "audit.spill")]
+    late_spilled = [s.count for s in spills if isinstance(s, AuditSpill)][1]
+    lost = [e.data for e in await events(store, run_id, "audit.lost")]
+    assert finished.dropped == 6 - 1 - finished.spilled > 0
+    assert lost == [
+        {
+            "count": 6 - late_spilled,
+            "reason": LATE_DROP,
+            "cpus": [],
+            "ts_from": 6 + late_spilled,
+            "ts_to": 11,
+            "scope": "sandbox",
+        }
+    ]
+    evs = await events(store, run_id)
+    assert kinds(evs).index("exec.finished") < kinds(evs).index("audit.lost")
+
+
+@pytest.mark.parametrize("handled", [False, True])
+async def test_a_late_drop_is_logged_by_close(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch, handled: bool
+) -> None:
+    monkeypatch.setitem(audit_module.CAPS, "files", 1)
+    monkeypatch.setattr(audit_module, "SPILL_BYTES", 0)
+    monkeypatch.setattr(audit_module, "FLUSH_S", 60)
+    sb = FakeSandbox()
+    first = File(100, "write", "/work/a", at=AT)
+    sb.steps.append(step(root(100), first, Exit(100, 0, None, at=AT)))
+    run_id, audited = await start(store, sb)
+    await audited.exec("x", timeout_s=5)
+    sb.queue.put_nowait(File(100, "write", "/work/b", at=tick(50)))
+    if handled:
+        async with asyncio.timeout(5):
+            while not (sb.queue.empty() and audited._waiting):  # noqa: ASYNC110
+                await asyncio.sleep(0.005)
+        assert not await events(store, run_id, "audit.lost")
+    await audited.close()
+
+    evs = await events(store, run_id)
+    assert kinds(evs)[-2:] == ["audit.lost", "sandbox.stopped"]
+    lost = evs[-2].data
+    assert (lost["reason"], lost["count"], lost["ts_from"], lost["ts_to"]) == (LATE_DROP, 1, 50, 50)
+
+
 async def test_losses_are_reported_once_per_flush(store: LocalEventStore) -> None:
     sb = FakeSandbox()
     sb.steps.append(
@@ -1736,3 +1834,20 @@ async def test_a_broken_archive_stream_keeps_what_came_before(store: LocalEventS
     assert (archived.entries, archived.skipped, archived.truncated) == (4, 0, False)
     assert await archived_names(store, run_id, archived) == ["work", "work/a", "tmp", "tmp/t"]
     assert sb.ended == ["/work", "/tmp"]
+
+
+async def test_drops_of_records_with_no_exec_are_logged_as_lost(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(audit_module.CAPS, "files", 1)
+    monkeypatch.setattr(audit_module, "SPILL_BYTES", 0)
+    sb = FakeSandbox()
+    run_id, audited = await start(store, sb)
+    for i in range(3):
+        sb.queue.put_nowait(File(900, "write", f"/work/{i}", at=tick(i)))
+    await audited.close()
+
+    lost = [e.data for e in await events(store, run_id, "audit.lost")]
+    assert [(d["reason"], d["count"], d["ts_from"], d["ts_to"]) for d in lost] == [
+        (LATE_DROP, 2, 1, 2)
+    ]
