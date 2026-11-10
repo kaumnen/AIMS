@@ -33,7 +33,17 @@ from aims.events import (
 )
 from aims.models import ModelClient, OutputSchema, Profile
 from aims.monitor.config import ChannelSweepConfig
-from aims.monitor.render import Rendered, _capped, cut, escape, frame, glossary, strings, tokens
+from aims.monitor.render import (
+    ARGUMENT_DEPTH,
+    Rendered,
+    _capped,
+    cut,
+    escape,
+    frame,
+    glossary,
+    strings,
+    tokens,
+)
 from aims.monitor.sweep import (
     _IMPORTANCE,
     _SUSPICION,
@@ -54,7 +64,7 @@ from aims.monitor.sweep import (
 from aims.monitor.texts import MonitorTexts
 from aims.scenario import Scenario
 from aims.scenario.model import FolderChannel
-from aims.text import scrub
+from aims.text import deeper, scrub
 
 log = logging.getLogger("aims.monitor")
 
@@ -359,7 +369,9 @@ class ChannelLog:
                 args = await self._text(call.data.get("arguments"))
                 try:
                     parsed: Any = scrub(json.loads(args)) if args.strip() else {}
-                except ValueError:
+                except ValueError, RecursionError:
+                    parsed = args
+                if deeper(parsed, ARGUMENT_DEPTH):
                     parsed = args
                 fields = {
                     "name": call.data.get("name"),

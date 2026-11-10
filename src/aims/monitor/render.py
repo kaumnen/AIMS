@@ -35,7 +35,7 @@ from typing import Any
 
 from aims.events import BlobError, Event, EventStore, SweepPart, payload_type
 from aims.monitor.texts import MonitorTexts
-from aims.text import scrub
+from aims.text import deeper, scrub
 
 log = logging.getLogger("aims.monitor")
 
@@ -44,6 +44,7 @@ OUTPUT_BYTES = 2048
 TEXT_BYTES = 8192
 REASONING_BYTES = 16_384
 ARGUMENT_BYTES = 4096
+ARGUMENT_DEPTH = 64
 FIELD_BYTES = 512
 SHORT_BYTES = 160
 ARGV_ITEMS = 64
@@ -835,7 +836,9 @@ class Trajectory:
         text = await self._text(event.data.get("arguments"))
         try:
             parsed: Any = scrub(json.loads(text)) if text.strip() else {}
-        except ValueError:
+        except ValueError, RecursionError:
+            parsed = text
+        if deeper(parsed, ARGUMENT_DEPTH):
             parsed = text
         command = parsed.get("command") if isinstance(parsed, dict) else None
         fields = {"name": event.data.get("name"), "arguments": _capped(parsed, ARGUMENT_BYTES)}

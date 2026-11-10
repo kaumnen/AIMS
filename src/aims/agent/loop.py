@@ -933,7 +933,7 @@ async def run_tool(
         return ToolOutcome(f"There is no tool named {name!r}. Tools: {known}.", True)
     try:
         raw = scrub(json.loads(arguments)) if arguments.strip() else {}
-    except ValueError as e:
+    except (ValueError, RecursionError) as e:
         return ToolOutcome(f"The arguments are not valid JSON: {e}", error=True)
     if not isinstance(raw, dict):
         return ToolOutcome("The arguments must be a JSON object.", error=True)

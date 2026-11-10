@@ -375,6 +375,22 @@ async def test_a_lone_surrogate_in_tool_arguments_renders_as_text(run: Run) -> N
     assert "echo later5" in (await run.trajectory.render(FULL, texts=TEXTS)).text
 
 
+async def test_deeply_nested_tool_arguments_render_as_text(run: Run) -> None:
+    await run.preamble()
+    args = '{"command": ' + "[" * 5000 + "]" * 5000 + "}"
+    await run.add(
+        ModelResponse(
+            call_id="m1", attempt=1, status="completed", latency_ms=1, reasoning_kind="none"
+        ),
+        ToolCall(call_id="c1", name="bash", arguments=args),
+        AgentStep(n=1, call_id="m1", status="completed", tool_calls=["c1"]),
+    )
+    await run.step(2, command="echo later2")
+    r = await run.trajectory.render(FULL, texts=TEXTS)
+    assert isinstance(of_type(r, "tool.call")[0]["arguments"], dict | str)
+    assert "echo later2" in r.text
+
+
 async def test_cut_takes_any_text_and_never_splits_a_character() -> None:
     assert cut("a\ud800", 100) == "a\\ud800"
     text = "\ud800" + "é" * 40 + "\udfff"

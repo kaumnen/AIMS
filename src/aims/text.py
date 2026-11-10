@@ -47,3 +47,18 @@ def scrub[T](value: T) -> T:
             elif isinstance(item, dict | list):
                 stack.append(item)
     return value
+
+
+def deeper(value: object, limit: int) -> bool:
+    """Whether a value json.loads parsed nests more than `limit` levels. Code that walks such
+    a value by recursion checks this first."""
+    stack = [(value, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if not isinstance(node, dict | list):
+            continue
+        if depth > limit:
+            return True
+        items = node.values() if isinstance(node, dict) else node
+        stack.extend((item, depth + 1) for item in items)
+    return False
