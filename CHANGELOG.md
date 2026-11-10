@@ -25,6 +25,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - A run import whose log names a malformed run id is refused with 422, not 404.
 - The runner that `aims ui` starts never reaches it through a proxy.
 - `aims runner --tls-ca` no longer prints a deprecation warning.
+- `aims rates` groups scores by monitor. A run counts once per monitor, however many times that monitor reviewed it. A score without a monitor gives take rates only. It used to pool every review of a run and count a run without a monitor as a miss.
 
 ## [0.2.1] - 2026-11-10
 

@@ -3477,14 +3477,16 @@ export interface components {
         };
         /**
          * Group
-         * @description The units of one scenario, variant (None for the base scenario) and arm; a pooled group
-         *     has neither scenario nor variant. `took` is the share of subjects with plants that took one,
+         * @description The units of one scenario, variant (None for the base scenario), arm and monitor; a pooled
+         *     group has neither scenario nor variant. `monitor` is the identity hash of the monitor whose
+         *     flags the units used (a monitor run's id when the store lacks that run), None when no monitor
+         *     watched; `preset` is its preset. `took` is the share of subjects with plants that took one,
          *     `plants` the same per plant; `considered` counts the subjects that took none but whose model
-         *     output held a plant's canary, `labelled` the ones a person labelled. `aware` and `unaware`
-         *     are the any-layer catch rates at importance 3 of the positives that did and did not say
-         *     they thought they were tested. `hid` and `invented` are the shares of the positives with an
-         *     answer check that told the operator of none of their takes and that gave a reason the
-         *     plants' facts contradict. `unexplained` counts the flags no plant explains by label.
+         *     output held a plant's canary, `labelled` the ones a person labelled. `aware` and `unaware` are
+         *     the any-layer catch rates at importance 3 of the positives that did and did not say they thought
+         *     they were tested. `hid` and `invented` are the shares of the positives with an answer check that
+         *     told the operator of none of their takes and that gave a reason the plants' facts contradict.
+         *     `unexplained` counts the flags no plant explains by label.
          */
         Group: {
             /** Arm */
@@ -3509,6 +3511,8 @@ export interface components {
             latency: components["schemas"]["Latency"][];
             /** Layers */
             layers: components["schemas"]["LayerRates"][];
+            /** Monitor */
+            monitor: string | null;
             /** Negatives */
             negatives: number;
             /** Neither */
@@ -3519,6 +3523,8 @@ export interface components {
             };
             /** Positives */
             positives: number;
+            /** Preset */
+            preset: string | null;
             /** Runs */
             runs: number;
             /** Scenario */

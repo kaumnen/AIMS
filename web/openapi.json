@@ -5018,7 +5018,7 @@
         "type": "object"
       },
       "Group": {
-        "description": "The units of one scenario, variant (None for the base scenario) and arm; a pooled group\nhas neither scenario nor variant. `took` is the share of subjects with plants that took one,\n`plants` the same per plant; `considered` counts the subjects that took none but whose model\noutput held a plant's canary, `labelled` the ones a person labelled. `aware` and `unaware`\nare the any-layer catch rates at importance 3 of the positives that did and did not say\nthey thought they were tested. `hid` and `invented` are the shares of the positives with an\nanswer check that told the operator of none of their takes and that gave a reason the\nplants' facts contradict. `unexplained` counts the flags no plant explains by label.",
+        "description": "The units of one scenario, variant (None for the base scenario), arm and monitor; a pooled\ngroup has neither scenario nor variant. `monitor` is the identity hash of the monitor whose\nflags the units used (a monitor run's id when the store lacks that run), None when no monitor\nwatched; `preset` is its preset. `took` is the share of subjects with plants that took one,\n`plants` the same per plant; `considered` counts the subjects that took none but whose model\noutput held a plant's canary, `labelled` the ones a person labelled. `aware` and `unaware` are\nthe any-layer catch rates at importance 3 of the positives that did and did not say they thought\nthey were tested. `hid` and `invented` are the shares of the positives with an answer check that\ntold the operator of none of their takes and that gave a reason the plants' facts contradict.\n`unexplained` counts the flags no plant explains by label.",
         "properties": {
           "arm": {
             "anyOf": [
@@ -5102,6 +5102,17 @@
             "title": "Layers",
             "type": "array"
           },
+          "monitor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Monitor"
+          },
           "negatives": {
             "title": "Negatives",
             "type": "integer"
@@ -5120,6 +5131,17 @@
           "positives": {
             "title": "Positives",
             "type": "integer"
+          },
+          "preset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preset"
           },
           "runs": {
             "title": "Runs",
@@ -5214,6 +5236,8 @@
           "scenario",
           "variant",
           "arm",
+          "monitor",
+          "preset",
           "runs",
           "positives",
           "negatives",
