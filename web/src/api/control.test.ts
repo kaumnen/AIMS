@@ -5,7 +5,7 @@ import { send } from "./control";
 const RUN = "01a18a50-bee5-7263-ad19-24385640cee1";
 const fetch = vi.fn<(request: Request) => Promise<Response>>();
 
-let polls: number;
+let polls = 0;
 let sent: { path: string; body: unknown }[];
 
 const commands = (acked: boolean, outcome: string) => [
