@@ -21,11 +21,13 @@ class _Wire(BaseModel):
 
 class Head(_Wire):
     """Where a copy of a run's log ends: the last seq and its hash, seq -1 for none. `truth`
-    says the control plane holds the run's truth file."""
+    says the control plane holds the run's truth file, `deleted` that it deleted the run and
+    takes no copy of it again."""
 
     seq: int = -1
     hash: str | None = None
     truth: bool = False
+    deleted: bool = False
 
 
 class TracerHealth(_Wire):
@@ -326,12 +328,20 @@ class EndMessage(_Wire):
     run_id: str
 
 
+class RunDeletedMessage(_Wire):
+    """A listed or subscribed run was deleted."""
+
+    kind: Literal["deleted"] = "deleted"
+    run_id: str
+
+
 StreamMessage = Annotated[
     EventsMessage
     | RunMessage
     | RunnerHealthMessage
     | DeltaMessage
     | DeltasDroppedMessage
-    | EndMessage,
+    | EndMessage
+    | RunDeletedMessage,
     Field(discriminator="kind"),
 ]

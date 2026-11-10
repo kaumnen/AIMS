@@ -372,3 +372,31 @@ export function isBlob(v: unknown): v is BlobRef {
 export function byType<T extends string>(events: readonly Event[], type: T): Event[] {
   return events.filter((e) => e.type === type);
 }
+
+export type Dependents = Schemas["Dependents"];
+
+// The runs a delete of the run takes with it. `blocked` says why the delete is refused now.
+export function dependentsQuery(runId: string) {
+  return queryOptions({
+    queryKey: ["runs", "dependents", runId] as const,
+    queryFn: async ({ signal }) => {
+      const { data, error } = await client.GET("/api/runs/{run_id}/dependents", {
+        params: path(runId),
+        signal,
+      });
+      if (error) throw error;
+      return data;
+    },
+    staleTime: 0,
+  });
+}
+
+// Deletes the run with every run made from it; the ids of the runs that went. `force` also
+// takes runs that look abandoned, marked running on a runner that is offline.
+export async function deleteRun(runId: string, force = false): Promise<string[]> {
+  const { data, error } = await client.DELETE("/api/runs/{run_id}", {
+    params: { ...path(runId), query: force ? { force } : {} },
+  });
+  if (error) throw error;
+  return data.run_ids;
+}

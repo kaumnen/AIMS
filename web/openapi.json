@@ -2712,6 +2712,22 @@
         "title": "Cut",
         "type": "object"
       },
+      "Deleted": {
+        "properties": {
+          "run_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Run Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "run_ids"
+        ],
+        "title": "Deleted",
+        "type": "object"
+      },
       "DeltaMessage": {
         "additionalProperties": false,
         "properties": {
@@ -2791,6 +2807,70 @@
           "count"
         ],
         "title": "DeltasDroppedMessage",
+        "type": "object"
+      },
+      "DependentRun": {
+        "properties": {
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "kind"
+        ],
+        "title": "DependentRun",
+        "type": "object"
+      },
+      "Dependents": {
+        "description": "The runs a delete of run `run_id` takes with it: each run made from it, such as its\nmonitor runs and scores. Also each run made from those, queued ones too. `blocked` says why\nthe delete is refused now, even forced. `offline` says why it needs `force`: a run of them\nis marked running, or a job of them held, by a runner that is offline, so it looks\nabandoned.",
+        "properties": {
+          "blocked": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blocked"
+          },
+          "offline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Offline"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/DependentRun"
+            },
+            "title": "Runs",
+            "type": "array"
+          }
+        },
+        "required": [
+          "run_id",
+          "runs",
+          "blocked",
+          "offline"
+        ],
+        "title": "Dependents",
         "type": "object"
       },
       "Duplicate": {
@@ -5159,8 +5239,13 @@
       },
       "Head": {
         "additionalProperties": false,
-        "description": "Where a copy of a run's log ends: the last seq and its hash, seq -1 for none. `truth`\nsays the control plane holds the run's truth file.",
+        "description": "Where a copy of a run's log ends: the last seq and its hash, seq -1 for none. `truth`\nsays the control plane holds the run's truth file, `deleted` that it deleted the run and\ntakes no copy of it again.",
         "properties": {
+          "deleted": {
+            "default": false,
+            "title": "Deleted",
+            "type": "boolean"
+          },
           "hash": {
             "anyOf": [
               {
@@ -5186,7 +5271,8 @@
         "required": [
           "seq",
           "hash",
-          "truth"
+          "truth",
+          "deleted"
         ],
         "title": "Head",
         "type": "object"
@@ -11081,6 +11167,28 @@
         "title": "RunCaps",
         "type": "object"
       },
+      "RunDeletedMessage": {
+        "additionalProperties": false,
+        "description": "A listed or subscribed run was deleted.",
+        "properties": {
+          "kind": {
+            "const": "deleted",
+            "default": "deleted",
+            "title": "Kind",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "run_id"
+        ],
+        "title": "RunDeletedMessage",
+        "type": "object"
+      },
       "RunDetail": {
         "description": "`verdict` is the judge's `monitor.verdict`; `monitor_runs` are the monitor runs over this\nrun and `score_runs` the scores of it, queued ones too, newest first. `budget` lists the\ncaps the run's budget override changed from its scenario's. `series_previous` is the run\nof its series it starts from, None for the first.",
         "properties": {
@@ -14672,6 +14780,7 @@
       "StreamMessage": {
         "discriminator": {
           "mapping": {
+            "deleted": "#/components/schemas/RunDeletedMessage",
             "delta": "#/components/schemas/DeltaMessage",
             "deltas_dropped": "#/components/schemas/DeltasDroppedMessage",
             "end": "#/components/schemas/EndMessage",
@@ -14699,6 +14808,9 @@
           },
           {
             "$ref": "#/components/schemas/EndMessage"
+          },
+          {
+            "$ref": "#/components/schemas/RunDeletedMessage"
           }
         ]
       },
@@ -17571,6 +17683,97 @@
       }
     },
     "/api/runs/{run_id}": {
+      "delete": {
+        "description": "Delete a run with the runs `run_dependents` lists: their logs, blobs, truth files,\nlabels and every row of them. Refused while one of them runs or a queued or active job runs\nor reads one. `force` deletes runs that look abandoned: marked running, or held by a job,\non a runner that is offline. A runner that still holds one never ships it back.",
+        "operationId": "delete_run",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Force",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Deleted"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not signed in"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Invalid request"
+          }
+        },
+        "summary": "Delete Run",
+        "tags": [
+          "runs"
+        ]
+      },
       "get": {
         "operationId": "get_run",
         "parameters": [
@@ -18045,6 +18248,78 @@
         "summary": "List Costs",
         "tags": [
           "events"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/dependents": {
+      "get": {
+        "operationId": "run_dependents",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Dependents"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not signed in"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Invalid request"
+          }
+        },
+        "summary": "Run Dependents",
+        "tags": [
+          "runs"
         ]
       }
     },
@@ -20704,6 +20979,109 @@
       }
     },
     "/api/scenarios/{source}/{name}": {
+      "delete": {
+        "description": "Delete a scenario's folder. Refused while a queued or active job runs the scenario; its\nruns stay, since each keeps the scenario it ran.",
+        "operationId": "delete_scenario",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source",
+            "required": true,
+            "schema": {
+              "title": "Source",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not signed in"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "412": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Precondition failed"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "428": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Precondition required"
+          }
+        },
+        "summary": "Delete Scenario",
+        "tags": [
+          "scenarios"
+        ]
+      },
       "get": {
         "operationId": "scenario_detail",
         "parameters": [
@@ -22279,7 +22657,7 @@
     },
     "/api/stream": {
       "get": {
-        "description": "Subscribe with `runs` (run list and runner changes), `run` with `after` (that run's\nevents past a seq, `types` to filter) and `deltas` (live model output of runs). Each\nmessage's `event` is its `kind`. `last_event_id` resumes like the Last-Event-ID header,\nfor a client that opens a new stream with other subscriptions; the header wins, since a\nbrowser that reconnects sends a newer one than its URL holds.",
+        "description": "Subscribe with `runs` (the run list, runner changes and deleted runs), `run` with\n`after` (that run's events past a seq, `types` to filter) and `deltas` (live model output\nof runs). Each message's `event` is its `kind`. `last_event_id` resumes like the\nLast-Event-ID header,\nfor a client that opens a new stream with other subscriptions; the header wins, since a\nbrowser that reconnects sends a newer one than its URL holds.",
         "operationId": "stream",
         "parameters": [
           {
@@ -23425,6 +23803,16 @@
             },
             "description": "Conflict"
           },
+          "410": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Gone"
+          },
           "413": {
             "content": {
               "application/problem+json": {
@@ -23616,6 +24004,16 @@
             },
             "description": "Conflict"
           },
+          "410": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Gone"
+          },
           "413": {
             "content": {
               "application/problem+json": {
@@ -23724,6 +24122,16 @@
               }
             },
             "description": "Conflict"
+          },
+          "410": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Gone"
           },
           "413": {
             "content": {
@@ -23846,6 +24254,16 @@
               }
             },
             "description": "Conflict"
+          },
+          "410": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Gone"
           },
           "413": {
             "content": {
@@ -24132,6 +24550,16 @@
               }
             },
             "description": "Conflict"
+          },
+          "410": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Gone"
           },
           "413": {
             "content": {

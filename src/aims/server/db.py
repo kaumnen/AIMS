@@ -128,13 +128,30 @@ create table runs (
     + AUDIT
 )
 
+# What deleting runs needs: the ids of deleted runs, which a runner that still holds one would
+# ship back, and indexes that find the jobs made from a run.
+DELETES = """
+create table if not exists deleted_runs (
+    run_id text primary key,
+    deleted real not null
+) strict;
+
+create index if not exists jobs_by_origin on jobs (json_extract(payload, '$.origin'))
+    where json_extract(payload, '$.origin') is not null;
+
+create index if not exists jobs_by_score_monitor on jobs (json_extract(payload, '$.monitor'))
+    where json_extract(payload, '$.kind') = 'score';
+"""
+
 # v2 had no runs.shipper. Its runner names never changed token, so the token a name is bound
 # to is the one that shipped every run of that name.
 MIGRATE_2 = """
 alter table runs add column shipper text;
 update runs set shipper = (select token from runners where runners.name = runs.runner);
 """
-MIGRATE_3 = "alter table tokens add column last_used real;" + AUDIT
+# v3 had no audit log, no token last use, no record of deleted runs and no index for the jobs
+# made from a run.
+MIGRATE_3 = "alter table tokens add column last_used real;" + AUDIT + DELETES
 MIGRATIONS = {2: MIGRATE_2 + MIGRATE_3, 3: MIGRATE_3}
 
 
@@ -259,7 +276,7 @@ class ServerDB:
             version = 0 if row is None else row[0]
             if version == 0:
                 await db.executescript(
-                    f"begin immediate; {SCHEMA} pragma user_version = {VERSION}; commit;"
+                    f"begin immediate; {SCHEMA} {DELETES} pragma user_version = {VERSION}; commit;"
                 )
             elif version in MIGRATIONS:
                 await db.executescript(
@@ -891,3 +908,71 @@ class ServerDB:
         await self._write(
             "update runs set diverged = coalesce(diverged, ?) where run_id = ?", (detail, run_id)
         )
+
+    # Deleted runs
+
+    async def made_from(self, run_ids: Sequence[str]) -> list[tuple[str, str]]:
+        """The jobs of runs made from `run_ids`, whatever their state, each with its kind: a
+        monitor or score job over one of them, or a score of the flags of one."""
+        if not run_ids:
+            return []
+        marks = ", ".join("?" * len(run_ids))
+        return [
+            (r[0], r[1])
+            for r in await self._all(
+                "select run_id, coalesce(json_extract(payload, '$.kind'), 'scenario') from jobs"
+                f" where json_extract(payload, '$.origin') in ({marks})"
+                " or (json_extract(payload, '$.kind') = 'score'"
+                f" and json_extract(payload, '$.monitor') in ({marks}))",
+                (*run_ids, *run_ids),
+            )
+        ]
+
+    async def deleted(self, run_ids: Sequence[str]) -> set[str]:
+        """Which of `run_ids` were deleted here."""
+        if not run_ids:
+            return set()
+        marks = ", ".join("?" * len(run_ids))
+        rows = await self._all(
+            f"select run_id from deleted_runs where run_id in ({marks})", tuple(run_ids)
+        )
+        return {r[0] for r in rows}
+
+    async def forget(self, run_ids: Sequence[str]) -> None:
+        """Keep `run_ids` as deleted and drop their jobs, commands and attribution."""
+        if not run_ids:
+            return
+        marks = ", ".join("?" * len(run_ids))
+        at = time.time()
+        async with self._lock:
+            await self._db.execute("begin immediate")
+            try:
+                await self._db.executemany(
+                    "insert into deleted_runs values (?, ?) on conflict do nothing",
+                    [(r, at) for r in run_ids],
+                )
+                for table in ("jobs", "commands", "runs"):
+                    await self._db.execute(
+                        f"delete from {table} where run_id in ({marks})", tuple(run_ids)
+                    )
+            except BaseException:
+                await self._db.execute("rollback")
+                raise
+            await self._db.execute("commit")
+
+    async def undelete(self, run_id: str) -> None:
+        await self._write("delete from deleted_runs where run_id = ?", (run_id,))
+
+    async def ended_before(self, before: float) -> list[str]:
+        """Run ids whose rows ended before `before`: each job done or cancelled by then, each
+        run with no job first seen by then and each run with no job that answered a command by
+        then."""
+        rows = await self._all(
+            "select run_id from jobs where state in ('done', 'cancelled') and updated < ?"
+            " union select run_id from runs where created < ?"
+            " and run_id not in (select run_id from jobs)"
+            " union select run_id from commands where acked < ?"
+            " and run_id not in (select run_id from jobs)",
+            (before, before, before),
+        )
+        return sorted(r[0] for r in rows)

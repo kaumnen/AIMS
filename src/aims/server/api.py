@@ -58,7 +58,7 @@ from aims.run.runner import RunError, agent_profile, check
 from aims.scenario import Bundle, Scenario, ScenarioError, folder_tar, load, parse
 from aims.scenario import budget as budgets
 from aims.scenario.budget import BudgetError, BudgetOverride
-from aims.server import audit
+from aims.server import audit, retention
 from aims.server import db as sdb
 from aims.server import series as sseries
 from aims.server.auth import Principal, require
@@ -557,6 +557,69 @@ async def _over(state: ServerState, run_id: str, kind: Literal["monitor", "score
     return sorted({r.run_id for r in done} | {j.run_id for j in queued}, reverse=True)
 
 
+class DependentRun(Out):
+    run_id: str
+    kind: str
+
+
+class Dependents(Out):
+    """The runs a delete of run `run_id` takes with it: each run made from it, such as its
+    monitor runs and scores. Also each run made from those, queued ones too. `blocked` says why
+    the delete is refused now, even forced. `offline` says why it needs `force`: a run of them
+    is marked running, or a job of them held, by a runner that is offline, so it looks
+    abandoned."""
+
+    run_id: str
+    runs: list[DependentRun]
+    blocked: str | None
+    offline: str | None
+
+
+class Deleted(Out):
+    run_ids: list[str]
+
+
+async def _family(state: ServerState, run_id: str) -> retention.Family:
+    found = await retention.family(state, _run_id(run_id))
+    if found is None:
+        raise ProblemException(404, "Not found", f"no run {run_id}")
+    return found
+
+
+@router.get("/runs/{run_id}/dependents", tags=["runs"], responses=responses(404))
+async def run_dependents(run_id: str, principal: Operator, state: State) -> Dependents:
+    found = await _family(state, run_id)
+    return Dependents(
+        run_id=found.run_id,
+        runs=[DependentRun(run_id=r, kind=k) for r, k in found.runs.items() if r != found.run_id],
+        blocked=found.blocked,
+        offline=found.offline,
+    )
+
+
+@router.delete("/runs/{run_id}", tags=["runs"], responses=responses(404, 409))
+@audit.audited("run.delete")
+async def delete_run(
+    run_id: str, principal: Operator, state: State, note: audit.Note, force: bool = False
+) -> Deleted:
+    """Delete a run with the runs `run_dependents` lists: their logs, blobs, truth files,
+    labels and every row of them. Refused while one of them runs or a queued or active job runs
+    or reads one. `force` deletes runs that look abandoned: marked running, or held by a job,
+    on a runner that is offline. A runner that still holds one never ships it back."""
+    async with state.delete_lock:
+        found = await _family(state, run_id)
+        if found.blocked is not None:
+            raise ProblemException(409, "Conflict", found.blocked, code="in_use")
+        if found.offline is not None and not force:
+            raise ProblemException(
+                409, "Conflict", f"{found.offline}. Force deletes it.", code="offline"
+            )
+        await retention.delete(state, found.runs)
+    gone = sorted(found.runs)
+    note.detail = ", ".join(filter(None, ["forced" if force else None, audit.runs(gone)]))
+    return Deleted(run_ids=gone)
+
+
 class ScenarioRef(BaseModel):
     source: str
     name: str
@@ -709,7 +772,13 @@ async def _queue(
         )
         for j in jobs
     ]
-    await state.db.add_jobs(rows)
+    async with state.delete_lock:
+        read = sorted({r for row in rows for r in retention.reads(row.payload)})
+        if gone := await state.db.deleted(read):
+            for job in jobs:
+                await state.store.remove(job.run_id)
+            raise ProblemException(404, "Not found", f"run {min(gone)} was deleted")
+        await state.db.add_jobs(rows)
     for row in rows:
         state.touch_job(row)
     state.poke()
@@ -1462,6 +1531,7 @@ async def import_run(
         if meta is not None and meta.runner is not None and meta.source != "import":
             raise ProblemException(409, "Conflict", f"run {run_id} is shipped by {meta.runner}")
         state.store.prepare_run(run_id)
+        await state.db.undelete(run_id)
         await state.db.attribute(run_id, f"import:{principal.name}", "import", principal.name)
         try:
             await asyncio.to_thread(_tar_blobs, tmp, state.store.blobs(run_id), wanted)

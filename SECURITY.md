@@ -88,6 +88,7 @@ The control plane keeps an audit log in `server.sqlite`. It records each change 
 - Reads, runner traffic and requests without a valid token are not recorded. Failed sign-ins are the exception.
 - Behind a proxy, the client address comes from `X-Forwarded-For` only when the request comes from an address given to `--behind-proxy`.
 - `aims token create` and `aims token revoke` on the server's machine are recorded too, as `cli`.
+- Each pass of `aims ui --keep-days` that deletes runs leaves one `run.prune` row.
 - Rows stay 90 days. `keep_days` under `[audit]` in a config file changes that. 0 keeps every row.
 - Operators read it under **Settings** > **Audit**, with `aims audit` on the server's machine, or from `GET /api/audit`. `?format=jsonl` or `aims audit --jsonl` exports it as JSON Lines.
 

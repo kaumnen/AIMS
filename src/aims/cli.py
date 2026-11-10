@@ -524,6 +524,48 @@ def _monitor_problems(settings: Any, bundle: Any, profile: str | None) -> list[s
     return problems
 
 
+@scenario_app.command("delete")
+def scenario_delete(
+    source: Annotated[str, typer.Argument(help="The scenario's source, such as project.")],
+    name: Annotated[str, typer.Argument(help="The scenario's folder name.")],
+    yes: Annotated[bool, typer.Option("--yes", help="Delete without asking.")] = False,
+    server: ServerOption = None,
+    token_file: TokenFileOption = None,
+) -> None:
+    """Delete a scenario's folder on a control plane. Its runs stay.
+
+    Needs an operator token in AIMS_TOKEN or --token-file. Built-in scenarios are read only.
+    A scenario that a queued or active job runs is refused.
+    """
+    import asyncio
+
+    url, token = _operator(server, token_file)
+    if not yes and not typer.confirm(
+        f"Delete scenario {name} from {source}? Its runs stay.", default=False, err=True
+    ):
+        typer.echo(f"kept {name}", err=True)
+        raise typer.Exit(EXIT_FAILED)
+    raise typer.Exit(asyncio.run(_delete_scenario(url, token, source, name)))
+
+
+async def _delete_scenario(url: str, token: str, source: str, name: str) -> int:
+    import httpx2
+
+    headers = {"Authorization": f"Bearer {token}", "User-Agent": f"aims/{__version__}"}
+    async with httpx2.AsyncClient(
+        base_url=url.rstrip("/"), headers=headers, timeout=60, trust_env=False
+    ) as c:
+        try:
+            r = await c.delete(f"/api/scenarios/{source}/{name}")
+        except httpx2.TransportError as e:
+            typer.echo(f"error: cannot reach the control plane at {url}: {e}", err=True)
+            return EXIT_FAILED
+    if r.status_code >= 400:
+        return _problem(r)
+    typer.echo(f"deleted scenario {name}")
+    return 0
+
+
 @scenario_app.command("schema")
 def scenario_schema() -> None:
     """Print the JSON Schema of scenario files."""
@@ -1278,6 +1320,14 @@ def ui(
         typer.Option("--no-auth", help="No token; loopback only. Anyone on this machine can act."),
     ] = False,
     open_browser: Annotated[bool, typer.Option("--open/--no-open", help="Open the UI.")] = True,
+    keep_days: Annotated[
+        float | None,
+        typer.Option(
+            min=0,
+            help="Delete runs that ended this many days ago, with their monitor runs and scores,"
+            " at start and once a day; a run in use stays. The local runner gets it too.",
+        ),
+    ] = None,
 ) -> None:
     """Serve the control plane and the UI, with a local runner."""
     import asyncio
@@ -1310,6 +1360,7 @@ def ui(
         public_url=public_url,
         auth=not no_auth,
         open_browser=open_browser,
+        keep_days=keep_days,
     )
     try:
         code = asyncio.run(serve(options))
@@ -1965,6 +2016,88 @@ async def _control(
         err=True,
     )
     return EXIT_FAILED
+
+
+@app.command("delete")
+def delete_cmd(
+    run: Annotated[str, typer.Argument(help="The run's id.")],
+    yes: Annotated[bool, typer.Option("--yes", help="Delete without asking.")] = False,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Also delete runs that look abandoned: marked running on a runner that is"
+            " offline.",
+        ),
+    ] = False,
+    server: ServerOption = None,
+    token_file: TokenFileOption = None,
+) -> None:
+    """Delete a run on its control plane with every run made from it: its monitor runs, its
+    scores and the runs made from those.
+
+    Needs an operator token in AIMS_TOKEN or --token-file. A run still running, or one that a
+    queued or active job runs or reads, is refused. A run marked running whose runner is
+    offline goes only with --force. A runner that still holds a deleted run never ships it
+    back.
+    """
+    import asyncio
+
+    url, token = _operator(server, token_file)
+    raise typer.Exit(asyncio.run(_delete(url, token, run, yes, force)))
+
+
+def _counted(kinds: list[str]) -> str:
+    """How many monitor, score and other runs `kinds` holds, in words."""
+    names = {"monitor": "monitor run", "score": "score run"}
+    counts: dict[str, int] = {}
+    for kind in kinds:
+        name = names.get(kind, "other run")
+        counts[name] = counts.get(name, 0) + 1
+    parts = [
+        f"{counts[n]} {n}{'' if counts[n] == 1 else 's'}"
+        for n in ("monitor run", "score run", "other run")
+        if n in counts
+    ]
+    return " and ".join([", ".join(parts[:-1]), parts[-1]] if len(parts) > 1 else parts)
+
+
+async def _delete(url: str, token: str, run: str, yes: bool, force: bool) -> int:
+    import httpx2
+
+    headers = {"Authorization": f"Bearer {token}", "User-Agent": f"aims/{__version__}"}
+    async with httpx2.AsyncClient(
+        base_url=url.rstrip("/"), headers=headers, timeout=60, trust_env=False
+    ) as c:
+        try:
+            r = await c.get(f"/api/runs/{run}/dependents")
+            if r.status_code >= 400:
+                return _problem(r)
+            found = r.json()
+            if found["blocked"]:
+                typer.echo(f"error: 409 {found['blocked']}", err=True)
+                return EXIT_FAILED
+            if found["offline"]:
+                if not force:
+                    typer.echo(
+                        f"error: 409 {found['offline']}. Pass --force to delete it.", err=True
+                    )
+                    return EXIT_FAILED
+                typer.echo(f"It looks abandoned: {found['offline']}.", err=True)
+            kinds = [d["kind"] for d in found["runs"]]
+            what = f"run {run} with {_counted(kinds)}" if kinds else f"run {run}"
+            if not yes and not typer.confirm(f"Delete {what}?", default=False, err=True):
+                typer.echo(f"kept {run}", err=True)
+                return EXIT_FAILED
+            r = await c.delete(f"/api/runs/{run}", params={"force": "true"} if force else {})
+        except httpx2.TransportError as e:
+            typer.echo(f"error: cannot reach the control plane at {url}: {e}", err=True)
+            return EXIT_FAILED
+    if r.status_code >= 400:
+        return _problem(r)
+    for deleted in r.json()["run_ids"]:
+        typer.echo(f"deleted {deleted}")
+    return 0
 
 
 def _command_line(c: dict[str, Any]) -> str:

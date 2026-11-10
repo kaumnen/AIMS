@@ -280,9 +280,50 @@ export function syncRuns(
       frame(flush);
     }
   });
+  const offDeleted = live.on("deleted", ({ run_id }) => {
+    pending.delete(run_id);
+    held.delete(run_id);
+    qc.setQueryData(deletedQuery.queryKey, (ids = []) => [...ids, run_id]);
+    dropRuns(qc, [run_id]);
+  });
   return () => {
     stopped = true;
     off();
+    offDeleted();
     unwatch();
   };
+}
+
+// Runs deleted elsewhere while this page is open, so a page that shows one can say so. The
+// stream fills it; it is never fetched.
+export const deletedQuery = queryOptions({
+  queryKey: ["deleted"] as const,
+  queryFn: () => [] as string[],
+  initialData: [] as string[],
+  staleTime: Infinity,
+  gcTime: Infinity,
+});
+
+// Deleted runs leave every list. Their own reads go once nothing shows them: a page that
+// shows one leaves first, then calls this again.
+export function dropRuns(qc: QueryClient, runIds: readonly string[]): void {
+  const gone = new Set(runIds);
+  const kept = (items: readonly RunSummary[]) => items.filter((r) => !gone.has(r.run_id));
+  for (const q of qc.getQueryCache().findAll({ queryKey: ["runs"] })) {
+    const [, what, arg] = q.queryKey as readonly [string, string, unknown];
+    if (what === "list") {
+      qc.setQueryData<InfiniteData<RunPage, string | null>>(q.queryKey, (data) =>
+        data ? { ...data, pages: data.pages.map((p) => ({ ...p, items: kept(p.items) })) } : data,
+      );
+    } else if (what === "reviews" || what === "scores" || what === "cases") {
+      qc.setQueryData<RunPage>(q.queryKey, (data) =>
+        data ? { ...data, items: kept(data.items) } : data,
+      );
+    } else if (what === "series") {
+      void qc.invalidateQueries({ queryKey: q.queryKey, exact: true });
+    }
+    if (typeof arg === "string" && gone.has(arg) && q.getObserversCount() === 0) {
+      qc.removeQueries({ queryKey: q.queryKey, exact: true });
+    }
+  }
 }

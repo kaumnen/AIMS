@@ -1343,6 +1343,7 @@ async def test_openapi_lists_every_payload_and_the_stream_messages(cp: CP) -> No
         "delta",
         "deltas_dropped",
         "end",
+        "deleted",
     }
     problem = spec["paths"]["/api/runs"]["post"]["responses"]["422"]["content"]
     assert list(problem) == ["application/problem+json"]

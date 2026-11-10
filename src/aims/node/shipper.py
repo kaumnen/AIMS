@@ -44,11 +44,15 @@ class Diverged(Exception):
     pass
 
 
+class Deleted(Exception):
+    pass
+
+
 class Shipper:
     """Copies one run's log and blobs to the control plane as the log grows: blobs first, then
     exact lines from where the server's copy ends. Once the server holds the sealed run, sends
     the run's truth file and its labels, each by its own path, and ends. Local writes never
-    wait for it."""
+    wait for it. A run the server deleted ends it with `deleted` set."""
 
     def __init__(self, store: LocalEventStore, client: ControlClient, run_id: str) -> None:
         self.store = store
@@ -60,6 +64,7 @@ class Shipper:
         self.done = False
         self.diverged: str | None = None
         self.refused: str | None = None
+        self.deleted = False
         self.batches = 0
         self.lines = 0
         self.truthful = False
@@ -89,7 +94,15 @@ class Shipper:
                 self.diverged = str(e)
                 log.error("run %s: the control plane's copy differs: %s", self.run_id, e)
                 return
+            except Deleted as e:
+                self.deleted, self.refused = True, str(e)
+                log.info("run %s: %s", self.run_id, e)
+                return
             except ApiError as e:
+                if e.code == "deleted":
+                    self.deleted, self.refused = True, str(e)
+                    log.info("run %s: the control plane deleted it", self.run_id)
+                    return
                 if not e.retryable and e.status != 409:
                     self.refused = str(e)
                     log.error("run %s: shipping refused: %s", self.run_id, e)
@@ -103,6 +116,8 @@ class Shipper:
         """Find where the server's copy ends and the same place in the local log."""
         heads = await self.client.heads([self.run_id])
         server = heads.get(self.run_id, Head())
+        if server.deleted:
+            raise Deleted("the control plane deleted it")
         local = await self._seek(server.seq) if server.seq >= 0 else LogHead()
         if server.seq >= 0 and local.hash != server.hash:
             raise Diverged(f"event {server.seq} has another hash there")
@@ -118,7 +133,7 @@ class Shipper:
         try:
             await self.client.post_labels(self.run_id, labels)
         except ApiError as e:
-            if e.retryable:
+            if e.retryable or e.code == "deleted":
                 raise
             log.warning("run %s: labels not sent: %s", self.run_id, e)
 
@@ -136,7 +151,7 @@ class Shipper:
         try:
             await self.client.put_truth(self.run_id, data)
         except ApiError as e:
-            if e.retryable:
+            if e.retryable or e.code == "deleted":
                 raise
             self.truth_refused = str(e)
             log.error("run %s: the control plane refused its truth file: %s", self.run_id, e)

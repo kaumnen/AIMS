@@ -23,7 +23,7 @@ import {
   stepTypes,
   sweepsQuery,
 } from "@/api/run";
-import { reviewsQuery } from "@/api/runs";
+import { deletedQuery, reviewsQuery } from "@/api/runs";
 import { isProblem } from "@/api/session";
 import type { InFlight } from "@/api/tail";
 import { ModelChecks } from "@/components/run/checks";
@@ -134,12 +134,13 @@ function Run() {
       return next.seq === prev.seq ? next : without(next, "step");
     });
   const run = detail.data?.run;
+  const deleted = useQuery(deletedQuery).data.includes(runId);
   // An open run shows its latest step until someone picks one, on every tab of this visit.
   const [follow, setFollow] = useState<{ runId: string; on: boolean }>();
   if (run !== undefined && follow?.runId !== runId) setFollow({ runId, on: run.state !== "done" });
   const inflight = useRunTail(
     runId,
-    run !== undefined && run.state !== "done",
+    run !== undefined && run.state !== "done" && !deleted,
     (run?.events ?? 0) - 1,
   );
 
@@ -155,6 +156,16 @@ function Run() {
     return () => window.removeEventListener("keydown", onKey);
   }, [navigate]);
 
+  if (deleted) {
+    return (
+      <p className="text-muted-foreground flex items-center gap-1">
+        This run was deleted.
+        <Link to="/runs" className={buttonVariants({ variant: "link", size: "sm" })}>
+          Back to runs
+        </Link>
+      </p>
+    );
+  }
   if (detail.isPending) return <p className="text-muted-foreground">Loading run</p>;
   if (detail.isError) {
     const status = isProblem(detail.error) ? detail.error.status : 0;

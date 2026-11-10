@@ -56,6 +56,8 @@ log = logging.getLogger("aims.node")
 
 TRACER_RETRY_S = 60.0
 PRUNE_EVERY_S = 3600.0
+# how long a run the control plane deleted gets to seal once cancelled
+DROP_WAIT_S = 180.0
 # Monitor, score and fork jobs of one run tend to come within days of each other; a pruned copy
 # is only fetched again.
 COPY_DAYS = 7.0
@@ -169,6 +171,7 @@ class Node:
                     tracer=self.tracer,
                     on_offer=self._offer,
                     jobs=lambda: list(self.claimed),
+                    on_deleted=self._drop,
                 )
                 self._open = _Open(store, origins, backend, bench, link)
                 await link.start()
@@ -523,7 +526,7 @@ class Node:
     async def _prune(self) -> None:
         """Every hour, drop copies of other runners' runs unused for `COPY_DAYS`, or for
         `keep_days` when that is shorter, then runs sealed more than `keep_days` ago once the
-        control plane holds them. A run a job reads stays."""
+        control plane holds or deleted them. A run a job reads stays."""
         days = self.options.keep_days
         while True:
             try:
@@ -570,6 +573,9 @@ class Node:
             heads.update(await client.heads([r for r, _, _ in old[i : i + 1000]]))
         for run_id, head, events in old:
             server = heads.get(run_id)
+            if server is not None and server.deleted:
+                await self._drop(run_id)
+                continue
             if server is None or server.seq != events - 1 or server.hash != head:
                 continue
             async with self._pruning:
@@ -577,6 +583,26 @@ class Node:
                     continue
                 await store.remove(run_id)
             log.info("pruned run %s", run_id)
+
+    async def _drop(self, run_id: str) -> None:
+        """Delete the copy of a run the control plane deleted, unless a job reads it. A run still
+        running here, which a forced delete takes, is cancelled first."""
+        if self._open is None:
+            return
+        runner = self.ctx.link.runners.get(run_id)
+        if runner is not None and not runner.finished:
+            runner.cancel()
+            if (task := self._jobs.get(run_id)) is not None:
+                await asyncio.wait([task], timeout=DROP_WAIT_S)
+        async with self._pruning:
+            if self._read(run_id):
+                return
+            try:
+                await self.ctx.store.remove(run_id)
+            except RuntimeError as e:
+                log.warning("run %s was deleted on the control plane but stays here: %s", run_id, e)
+                return
+        log.info("dropped run %s: the control plane deleted it", run_id)
 
     def _read(self, run_id: str) -> bool:
         return any(run_id in runs for runs in self._reads.values())

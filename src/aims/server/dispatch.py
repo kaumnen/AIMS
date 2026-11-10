@@ -1,13 +1,13 @@
 """Hands queued jobs to runners: the one a job names, else the local runner, else the least
-loaded one that can take it. An offer not claimed in 10 s goes to the next runner. About once a
-day it also drops rows the server no longer needs."""
+loaded one that can take it. An offer not claimed in 10 s goes to the next runner. As it starts
+and about once a day it also drops what the server no longer keeps."""
 
 import asyncio
 import contextlib
 import logging
 import time
 
-from aims.server import audit
+from aims.server import audit, retention
 from aims.server.db import Job
 from aims.server.runner_api import send
 from aims.server.series import settle
@@ -85,27 +85,44 @@ async def dispatch(state: ServerState) -> None:
 
 
 async def housekeeping(state: ServerState) -> None:
-    """Drop rows the server no longer needs: expired sessions and audit rows past `[audit]
-    keep_days`. `open_state` drops them at start too."""
+    """Drop expired sessions and audit rows past `[audit] keep_days`. With `keep_days`, also
+    delete the runs that ended longer ago."""
     if pruned := await state.db.prune_sessions():
         log.info("pruned %d expired session(s)", pruned)
     await audit.prune(state.db, state.config.layers)
+    if state.keep_days is not None and (gone := await retention.prune(state, state.keep_days)):
+        detail = f"ended over {state.keep_days:g} days ago: {audit.runs(gone)}"
+        await audit.record(state.db, "run.prune", detail=detail)
+
+
+async def _keep(state: ServerState) -> None:
+    try:
+        await housekeeping(state)
+    except Exception:
+        log.exception("housekeeping failed")
 
 
 async def run(state: ServerState) -> None:
-    kept = time.monotonic()
-    while True:
-        with contextlib.suppress(TimeoutError):
-            async with asyncio.timeout(TICK_S):
-                await state.wake.wait()
-        state.wake.clear()
-        try:
-            await dispatch(state)
-        except Exception:
-            log.exception("dispatch failed")
-        if time.monotonic() - kept >= HOUSEKEEPING_S:
-            kept = time.monotonic()
+    """Dispatch every tick. Housekeeping runs beside it, so deleting old runs never holds up
+    the queue."""
+    kept = time.monotonic() - HOUSEKEEPING_S
+    keeping: asyncio.Task[None] | None = None
+    try:
+        while True:
+            with contextlib.suppress(TimeoutError):
+                async with asyncio.timeout(TICK_S):
+                    await state.wake.wait()
+            state.wake.clear()
             try:
-                await housekeeping(state)
+                await dispatch(state)
             except Exception:
-                log.exception("housekeeping failed")
+                log.exception("dispatch failed")
+            idle = keeping is None or keeping.done()
+            if idle and time.monotonic() - kept >= HOUSEKEEPING_S:
+                kept = time.monotonic()
+                keeping = asyncio.create_task(_keep(state))
+    finally:
+        if keeping is not None:
+            keeping.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await keeping

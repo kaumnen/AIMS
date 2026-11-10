@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest"
 
 import type { CommandInfo } from "@/api/commands";
 import type { Event } from "@/api/events";
-import type { CallCost, FlagInfo, RunDetail, SampleWindow, StepInfo } from "@/api/run";
+import type { CallCost, Dependents, FlagInfo, RunDetail, SampleWindow, StepInfo } from "@/api/run";
 import type { RunSummary } from "@/api/runs";
 import type { Label } from "@/api/score";
 import { makeRouter } from "@/router";
@@ -169,6 +169,8 @@ let posted: { path: string; body: Record<string, unknown> }[];
 let commands: (Partial<CommandInfo> & Pick<CommandInfo, "id" | "acked" | "outcome">)[];
 let outcome: string;
 let seriesRuns: RunSummary[];
+let dependents: Dependents;
+let refusal: string | null;
 
 const review = (runId: string, over: Partial<RunSummary> = {}): RunSummary =>
   run(runId, {
@@ -366,6 +368,8 @@ beforeEach(() => {
   commands = [];
   outcome = "done";
   seriesRuns = [];
+  dependents = { run_id: BEE5, runs: [], blocked: null, offline: null };
+  refusal = null;
   vi.stubGlobal("EventSource", FakeEventSource);
   vi.stubGlobal("fetch", fetch);
   fetch.mockImplementation(async (request) => {
@@ -373,6 +377,17 @@ beforeEach(() => {
     const q = url.searchParams;
     const path = url.pathname;
     if (path === "/api/session") return Response.json({ name: "op", role, auth: true });
+    if (path === `/api/runs/${BEE5}/dependents`) return Response.json(dependents);
+    if (request.method === "DELETE" && path === `/api/runs/${BEE5}`) {
+      posted.push({ path, body: Object.fromEntries(q) });
+      if (refusal === null) {
+        return Response.json({ run_ids: [BEE5, ...dependents.runs.map((r) => r.run_id)] });
+      }
+      return Response.json(
+        { type: "about:blank", title: "Conflict", status: 409, detail: refusal, code: "in_use" },
+        { status: 409, headers: { "content-type": "application/problem+json" } },
+      );
+    }
     if (request.method === "POST" && /\/(pause|resume|inject|kill|cancel)$/.test(path)) {
       posted.push({ path, body: (await request.json()) as Record<string, unknown> });
       const id = `k${commands.length + 1}`;
@@ -2135,4 +2150,103 @@ test("a run of a series links its series, the run before it and every run of it"
   if (!source) throw new Error("no list stream");
   act(() => source.send({ kind: "run", run: moved }));
   await waitFor(() => expect(within(strip).getAllByRole("link")[3]?.textContent).toBe("#3Running"));
+});
+
+test("an operator deletes a sealed run with the runs made from it and lands on the list", async () => {
+  dependents = {
+    run_id: BEE5,
+    runs: [
+      { run_id: REVIEW, kind: "monitor" },
+      { run_id: NEWER, kind: "monitor" },
+      { run_id: QUEUED, kind: "score" },
+    ],
+    blocked: null,
+    offline: null,
+  };
+  const router = renderAt(`/runs/${BEE5}`);
+  fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+  const dialog = await screen.findByRole("dialog", { name: "Delete cache-keys 01a18a50-bee5?" });
+  expect(
+    await within(dialog).findByText(/It goes with 2 monitor runs and 1 score run made from it\./),
+  ).toBeTruthy();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+  await waitFor(() => expect(router.state.location.pathname).toBe("/runs"));
+  expect(posted.at(-1)).toEqual({ path: `/api/runs/${BEE5}`, body: {} });
+});
+
+test("a delete in use waits and one the server refuses shows its reason", async () => {
+  dependents = {
+    run_id: BEE5,
+    runs: [],
+    blocked: `the queued job ${QUEUED} reads run ${BEE5}`,
+    offline: null,
+  };
+  const router = renderAt(`/runs/${BEE5}`);
+  fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+  let dialog = await screen.findByRole("dialog", { name: /^Delete cache-keys/ });
+  expect(await within(dialog).findByText(/No other run was made from it\./)).toBeTruthy();
+  expect(
+    within(dialog).getByText(`Not now: the queued job ${QUEUED} reads run ${BEE5}.`),
+  ).toBeTruthy();
+  const button = within(dialog).getByRole("button", { name: "Delete" }) as HTMLButtonElement;
+  expect(button.disabled).toBe(true);
+  fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+  dependents = { run_id: BEE5, runs: [], blocked: null, offline: null };
+  refusal = `run ${REVIEW} is still running`;
+  fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+  dialog = await screen.findByRole("dialog", { name: /^Delete cache-keys/ });
+  await waitFor(() =>
+    expect(
+      (within(dialog).getByRole("button", { name: "Delete" }) as HTMLButtonElement).disabled,
+    ).toBe(false),
+  );
+  fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+  expect(await within(dialog).findByText(`run ${REVIEW} is still running`)).toBeTruthy();
+  expect(router.state.location.pathname).toBe(`/runs/${BEE5}`);
+});
+
+test("viewers and open runs get no delete", async () => {
+  role = "viewer";
+  renderAt(`/runs/${BEE5}`);
+  expect(await screen.findByRole("heading", { name: /Step 1/ })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+  cleanup();
+  role = "operator";
+  detail = open();
+  renderAt(`/runs/${BEE5}`);
+  expect(await screen.findByRole("button", { name: "Kill" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+});
+
+test("a run that looks abandoned says why and goes with force", async () => {
+  detail = open({ stale: true });
+  dependents = {
+    run_id: BEE5,
+    runs: [],
+    blocked: null,
+    offline: `run ${BEE5} is marked running but its runner local is offline`,
+  };
+  const router = renderAt(`/runs/${BEE5}`);
+  fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+  const dialog = await screen.findByRole("dialog", { name: /^Delete cache-keys/ });
+  expect(
+    await within(dialog).findByText(
+      `It looks abandoned: run ${BEE5} is marked running but its runner local is offline. Its runner drops its copy if it comes back.`,
+    ),
+  ).toBeTruthy();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Delete anyway" }));
+  await waitFor(() => expect(router.state.location.pathname).toBe("/runs"));
+  expect(posted.at(-1)).toEqual({ path: `/api/runs/${BEE5}`, body: { force: "true" } });
+});
+
+test("a run deleted elsewhere while it is open says so", async () => {
+  renderAt(`/runs/${BEE5}`);
+  expect(await screen.findByRole("heading", { name: /Step 1/ })).toBeTruthy();
+  const source = listStream();
+  if (!source) throw new Error("no list stream");
+  act(() => source.send({ kind: "deleted", run_id: BEE5 }));
+  expect(await screen.findByText("This run was deleted.")).toBeTruthy();
+  expect(screen.getByRole("link", { name: "Back to runs" })).toBeTruthy();
 });

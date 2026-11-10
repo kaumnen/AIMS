@@ -255,6 +255,8 @@ function route(m: StreamMessage, sub: Sub): StreamMessage | null {
       if (!sub.cursors.has(m.run_id) || sub.ended.has(m.run_id)) return null;
       sub.ended.add(m.run_id);
       return m;
+    case "deleted":
+      return sub.runs || sub.cursors.has(m.run_id) ? m : null;
     case "run":
       return sub.runs || sub.cursors.has(m.run.run_id) ? m : null;
     case "runner":

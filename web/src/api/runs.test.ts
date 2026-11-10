@@ -8,6 +8,7 @@ import { Live } from "./live";
 import { runQuery } from "./run";
 import {
   applyRuns,
+  deletedQuery,
   filtersOf,
   matches,
   mergePages,
@@ -230,4 +231,40 @@ test("a series takes updates of its runs in place and is read again when one mov
   invalidate.mockClear();
   applyRuns(qc, [run("c", { series: "nightly", series_index: 1 })]);
   expect(invalidate).toHaveBeenCalledWith({ queryKey: key, exact: true });
+});
+
+test("a run deleted elsewhere leaves every list and is noted as deleted", () => {
+  const qc = new QueryClient();
+  const list = runsQuery({});
+  qc.setQueryData<InfiniteData<RunPage, string | null>>(list.queryKey, {
+    pages: [{ items: [run("c"), run("b")], next: null }],
+    pageParams: [null],
+  });
+  const reviews = reviewsQuery("a");
+  qc.setQueryData(reviews.queryKey, {
+    items: [run("b", { kind: "monitor", origin: "a" })],
+    next: null,
+  });
+  const detail = runQuery("b");
+  qc.setQueryData(detail.queryKey, {
+    run: run("b"),
+    started: null,
+    finished: null,
+    verdict: null,
+    monitor_runs: [],
+    score_runs: [],
+    budget: [],
+    series_previous: null,
+  });
+  const live = new Live({ runs: true });
+  const stop = syncRuns(live, qc, () => undefined);
+  vi.stubGlobal("EventSource", FakeEventSource);
+  live.start();
+  FakeEventSource.all.at(-1)?.send({ kind: "deleted", run_id: "b" });
+  expect(qc.getQueryData(list.queryKey)?.pages[0]?.items.map((r) => r.run_id)).toEqual(["c"]);
+  expect(qc.getQueryData(reviews.queryKey)?.items).toEqual([]);
+  expect(qc.getQueryData(detail.queryKey)).toBeUndefined();
+  expect(qc.getQueryData(deletedQuery.queryKey)).toEqual(["b"]);
+  stop();
+  live.stop();
 });

@@ -21,6 +21,7 @@ from aims.wire import (
     DeltasDroppedMessage,
     EndMessage,
     EventsMessage,
+    RunDeletedMessage,
     RunMessage,
     RunnerHealthMessage,
     StreamMessage,
@@ -139,9 +140,10 @@ async def stream(
     last_event_id: str | None = None,
     header_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
 ) -> AsyncIterator[ServerSentEvent]:
-    """Subscribe with `runs` (run list and runner changes), `run` with `after` (that run's
-    events past a seq, `types` to filter) and `deltas` (live model output of runs). Each
-    message's `event` is its `kind`. `last_event_id` resumes like the Last-Event-ID header,
+    """Subscribe with `runs` (the run list, runner changes and deleted runs), `run` with
+    `after` (that run's events past a seq, `types` to filter) and `deltas` (live model output
+    of runs). Each message's `event` is its `kind`. `last_event_id` resumes like the
+    Last-Event-ID header,
     for a client that opens a new stream with other subscriptions; the header wins, since a
     browser that reconnects sends a newer one than its URL holds."""
     run = run or []
@@ -220,8 +222,14 @@ async def stream(
                         pick = [i.run_id for i in listed] + list(cursors)
                     else:
                         pick = sorted(ids if runs else ids & set(cursors))
-                    for summary in await summaries(state, pick, skip):
+                    found = await summaries(state, pick, skip)
+                    for summary in found:
                         yield message(RunMessage(run=summary), with_id=True)
+                    shown = {s.run_id for s in found}
+                    for run_id in pick:
+                        kind = state.gone.get(run_id)
+                        if run_id not in shown and kind is not None and kind not in skip:
+                            yield message(RunDeletedMessage(run_id=run_id), with_id=True)
             if runs:
                 for conn in sorted(state.runners.values(), key=lambda c: c.name):
                     info = conn.info()

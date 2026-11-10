@@ -25,5 +25,13 @@ test("parseMessage reads a message discriminated by kind", () => {
 });
 
 test("streamKinds lists every kind", () => {
-  expect(streamKinds).toEqual(["events", "run", "runner", "delta", "deltas_dropped", "end"]);
+  expect(streamKinds).toEqual([
+    "events",
+    "run",
+    "runner",
+    "delta",
+    "deltas_dropped",
+    "end",
+    "deleted",
+  ]);
 });

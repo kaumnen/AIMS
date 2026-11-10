@@ -407,6 +407,8 @@ The scenario's `oversight` decides what flags do. By default a flag at importanc
 
 - A run is a folder with `events.jsonl` and `blobs/`. Each event holds the hash of the event before it. `aims verify <run>` checks the chain and every blob.
 - A run never changes after it is sealed. Monitor runs and scores are new runs that point at it.
+- `aims delete <run>` or **Delete** on the run page removes a run from the control plane with its monitor runs and scores. A run that still runs, or that a queued job uses, stays. A run marked running whose runner is offline goes with `--force` or **Delete anyway**. A runner that still holds a deleted run drops its copy.
+- `aims ui --keep-days 30` deletes runs that ended more than 30 days ago in the same way, at start and once a day. Its local runner drops its own copies after the same days.
 - `aims run --replay <run> --fork-at agent:12 --inject "<message>"` replays the recorded answers up to step 12, then goes on live. Add `--samples 5` for five forks.
 - `aims monitor <run>` feeds a sealed run through the monitor again, with any preset or model.
 - `aims score <run>` lists the plants each agent took. It shows which monitor layer caught each one and how soon. It also checks whether the agent told the operator the truth. `aims rates` sums catch rates over many scored runs.
@@ -584,11 +586,13 @@ A scenario image that no run used in 30 days is removed when `aims run`, `aims r
 | `aims estimate` | Estimate what runs of a scenario cost |
 | `aims scenario check` | Validate a scenario and run its self-test |
 | `aims scenario schema` | Print the JSON Schema of scenario files |
+| `aims scenario delete` | Delete a scenario folder on the control plane |
 | `aims ui` | Serve the control plane and the UI, with a local runner |
 | `aims open` | Print a new sign-in link and open it |
 | `aims runner` | Take jobs from a control plane |
 | `aims push` | Ship runs recorded without a control plane |
 | `aims control` | Pause, resume, deny, inject, kill, cancel or sweep a run |
+| `aims delete` | Delete a run with its monitor runs and scores |
 | `aims token create`, `list`, `revoke` | Manage the control plane's tokens and see when each was last used |
 | `aims audit` | Show who changed what on the control plane, refused tries and failed sign-ins too |
 | `aims monitor` | Feed sealed runs through the monitor again |

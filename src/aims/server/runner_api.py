@@ -81,9 +81,12 @@ RunnerName = Annotated[str | None, Header(alias="X-Aims-Runner")]
 async def writer(state: ServerState, run_id: str, conn: Connected) -> None:
     """Refuse unless `conn` writes this run: its job was claimed by it and its token ships it,
     or its token shipped the run first (an `aims push` may finish what an `aims run` with the
-    same token began). A run nobody claimed yet becomes this runner's."""
+    same token began). A run nobody claimed yet becomes this runner's. A deleted run is gone
+    for good: the runner drops its copy."""
     if not is_run_id(run_id):
         raise ProblemException(404, "Not found", f"not a run id: {run_id}")
+    if await state.db.deleted([run_id]):
+        raise ProblemException(410, "Gone", f"run {run_id} was deleted here", code="deleted")
     job = await state.db.job(run_id)
     if job is not None:
         if job.runner != conn.name or job.state not in ("claimed", "running", "done"):
@@ -364,7 +367,11 @@ async def run_heads(
 ) -> HeadsReply:
     connected(state, principal, name)
     out: dict[str, Head] = {}
+    deleted = await state.db.deleted(body.run_ids)
     for run_id in body.run_ids:
+        if run_id in deleted:
+            out[run_id] = Head(deleted=True)
+            continue
         try:
             head = await state.store.head(run_id) if is_run_id(run_id) else None
         except RunCorrupt:
@@ -377,7 +384,7 @@ async def run_heads(
     return HeadsReply(heads=out)
 
 
-@router.post("/runs/{run_id}/blobs/missing")
+@router.post("/runs/{run_id}/blobs/missing", responses=responses(410))
 async def missing_blobs(
     run_id: str, body: Shas, principal: RunnerToken, state: State, name: RunnerName = None
 ) -> dict[str, list[str]]:
@@ -390,7 +397,7 @@ async def missing_blobs(
         raise ProblemException(422, "Invalid request", str(e), code="invalid") from None
 
 
-@router.put("/runs/{run_id}/blobs/{sha256}", status_code=204, responses=responses(413, 422))
+@router.put("/runs/{run_id}/blobs/{sha256}", status_code=204, responses=responses(410, 413, 422))
 async def put_blob(
     run_id: str,
     sha256: str,
@@ -415,7 +422,7 @@ TRUTH_LIMIT = 16 * 1024 * 1024
     "/runs/{run_id}/truth",
     status_code=204,
     openapi_extra={"requestBody": {"content": {"application/json": {}}, "required": True}},
-    responses=responses(404, 413, 422),
+    responses=responses(404, 410, 413, 422),
 )
 async def put_truth(
     run_id: str,
@@ -462,7 +469,7 @@ async def runner_truth(
     return Response(data, media_type="application/json")
 
 
-@router.post("/runs/{run_id}/labels", status_code=204, responses=responses(404, 422))
+@router.post("/runs/{run_id}/labels", status_code=204, responses=responses(404, 410, 422))
 async def post_labels(
     run_id: str, body: Labels, principal: RunnerToken, state: State, name: RunnerName = None
 ) -> None:
@@ -506,7 +513,7 @@ async def _body(request: Request) -> bytes:
 @router.post(
     "/runs/{run_id}/events",
     openapi_extra={"requestBody": {"content": {"application/x-ndjson": {}}, "required": True}},
-    responses=responses(409, 413, 415, 422),
+    responses=responses(409, 410, 413, 415, 422),
 )
 async def ingest_events(
     run_id: str, request: Request, principal: RunnerToken, state: State, name: RunnerName = None

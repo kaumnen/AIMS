@@ -86,6 +86,7 @@ class UiOptions:
     public_url: str | None = None
     auth: bool = True
     open_browser: bool = True
+    keep_days: float | None = None
 
 
 def public_url(value: str) -> str:
@@ -142,7 +143,14 @@ async def serve(o: UiOptions) -> int:
     shown = None if o.public_url is None else public_url(o.public_url)
     # Behind a TLS proxy the browser is on https though this server is not.
     https = tls or (shown is not None and shown.startswith("https://"))
-    state = await open_state(o.data, project=o.project, auth=o.auth, tls=https, public_url=shown)
+    state = await open_state(
+        o.data,
+        project=o.project,
+        auth=o.auth,
+        tls=https,
+        public_url=shown,
+        keep_days=o.keep_days,
+    )
     child: asyncio.subprocess.Process | None = None
     server: _Server | None = None
     task: asyncio.Task[None] | None = None
@@ -447,6 +455,7 @@ async def _spawn_runner(
         o.audit,
         *(["--config", str(o.project)] if o.project is not None else []),
         *(["--tls-ca", str(o.tls_cert)] if o.tls_cert is not None else []),
+        *(["--keep-days", f"{o.keep_days:g}"] if o.keep_days is not None else []),
         stdin=stdin,
         env=env,
     )

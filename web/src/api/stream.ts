@@ -13,6 +13,7 @@ const kindSet: Record<StreamKind, null> = {
   delta: null,
   deltas_dropped: null,
   end: null,
+  deleted: null,
 };
 export const streamKinds = Object.keys(kindSet) as StreamKind[];
 

@@ -316,7 +316,14 @@ export interface paths {
         get: operations["get_run"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Delete Run
+         * @description Delete a run with the runs `run_dependents` lists: their logs, blobs, truth files,
+         *     labels and every row of them. Refused while one of them runs or a queued or active job runs
+         *     or reads one. `force` deletes runs that look abandoned: marked running, or held by a job,
+         *     on a runner that is offline. A runner that still holds one never ships it back.
+         */
+        delete: operations["delete_run"];
         options?: never;
         head?: never;
         patch?: never;
@@ -418,6 +425,23 @@ export interface paths {
          *     output schema, in the order each kind first called.
          */
         get: operations["list_costs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}/dependents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Run Dependents */
+        get: operations["run_dependents"];
         put?: never;
         post?: never;
         delete?: never;
@@ -957,7 +981,12 @@ export interface paths {
          * @description A new scenario directory with a starter scenario.yaml.
          */
         post: operations["create_scenario"];
-        delete?: never;
+        /**
+         * Delete Scenario
+         * @description Delete a scenario's folder. Refused while a queued or active job runs the scenario; its
+         *     runs stay, since each keeps the scenario it ran.
+         */
+        delete: operations["delete_scenario"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1180,9 +1209,10 @@ export interface paths {
         };
         /**
          * Stream
-         * @description Subscribe with `runs` (run list and runner changes), `run` with `after` (that run's
-         *     events past a seq, `types` to filter) and `deltas` (live model output of runs). Each
-         *     message's `event` is its `kind`. `last_event_id` resumes like the Last-Event-ID header,
+         * @description Subscribe with `runs` (the run list, runner changes and deleted runs), `run` with
+         *     `after` (that run's events past a seq, `types` to filter) and `deltas` (live model output
+         *     of runs). Each message's `event` is its `kind`. `last_event_id` resumes like the
+         *     Last-Event-ID header,
          *     for a client that opens a new stream with other subscriptions; the header wins, since a
          *     browser that reconnects sends a newer one than its URL holds.
          */
@@ -2584,6 +2614,11 @@ export interface components {
                 [key: string]: number;
             };
         };
+        /** Deleted */
+        Deleted: {
+            /** Run Ids */
+            run_ids: string[];
+        };
         /** DeltaMessage */
         DeltaMessage: {
             /** Deltas */
@@ -2618,6 +2653,31 @@ export interface components {
              * @default null
              */
             run_id: string | null;
+        };
+        /** DependentRun */
+        DependentRun: {
+            /** Kind */
+            kind: string;
+            /** Run Id */
+            run_id: string;
+        };
+        /**
+         * Dependents
+         * @description The runs a delete of run `run_id` takes with it: each run made from it, such as its
+         *     monitor runs and scores. Also each run made from those, queued ones too. `blocked` says why
+         *     the delete is refused now, even forced. `offline` says why it needs `force`: a run of them
+         *     is marked running, or a job of them held, by a runner that is offline, so it looks
+         *     abandoned.
+         */
+        Dependents: {
+            /** Blocked */
+            blocked: string | null;
+            /** Offline */
+            offline: string | null;
+            /** Run Id */
+            run_id: string;
+            /** Runs */
+            runs: components["schemas"]["DependentRun"][];
         };
         /** Duplicate */
         Duplicate: {
@@ -3479,9 +3539,15 @@ export interface components {
         /**
          * Head
          * @description Where a copy of a run's log ends: the last seq and its hash, seq -1 for none. `truth`
-         *     says the control plane holds the run's truth file.
+         *     says the control plane holds the run's truth file, `deleted` that it deleted the run and
+         *     takes no copy of it again.
          */
         Head: {
+            /**
+             * Deleted
+             * @default false
+             */
+            deleted: boolean;
             /** Hash */
             hash: string | null;
             /**
@@ -5862,6 +5928,19 @@ export interface components {
             run: components["schemas"]["CapsInForce"];
         };
         /**
+         * RunDeletedMessage
+         * @description A listed or subscribed run was deleted.
+         */
+        RunDeletedMessage: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "deleted";
+            /** Run Id */
+            run_id: string;
+        };
+        /**
          * RunDetail
          * @description `verdict` is the judge's `monitor.verdict`; `monitor_runs` are the monitor runs over this
          *     run and `score_runs` the scores of it, queued ones too, newest first. `budget` lists the
@@ -7173,7 +7252,7 @@ export interface components {
             /** Reason */
             reason?: string | null;
         };
-        StreamMessage: components["schemas"]["EventsMessage"] | components["schemas"]["RunMessage"] | components["schemas"]["RunnerHealthMessage"] | components["schemas"]["DeltaMessage"] | components["schemas"]["DeltasDroppedMessage"] | components["schemas"]["EndMessage"];
+        StreamMessage: components["schemas"]["EventsMessage"] | components["schemas"]["RunMessage"] | components["schemas"]["RunnerHealthMessage"] | components["schemas"]["DeltaMessage"] | components["schemas"]["DeltasDroppedMessage"] | components["schemas"]["EndMessage"] | components["schemas"]["RunDeletedMessage"];
         /** SweepBody */
         SweepBody: {
             /** Agent */
@@ -8792,6 +8871,75 @@ export interface operations {
             };
         };
     };
+    delete_run: {
+        parameters: {
+            query?: {
+                force?: boolean;
+            };
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Deleted"];
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     list_activity: {
         parameters: {
             query: {
@@ -9047,6 +9195,64 @@ export interface operations {
             };
             /** @description Forbidden */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    run_dependents: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Dependents"];
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -10858,6 +11064,90 @@ export interface operations {
             };
         };
     };
+    delete_scenario: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Precondition failed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Precondition required */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     duplicate_scenario: {
         parameters: {
             query?: never;
@@ -12565,6 +12855,15 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
+            /** @description Gone */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             /** @description Too large */
             413: {
                 headers: {
@@ -12694,6 +12993,15 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
+            /** @description Gone */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             /** @description Too large */
             413: {
                 headers: {
@@ -12762,6 +13070,15 @@ export interface operations {
             };
             /** @description Conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Gone */
+            410: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -12851,6 +13168,15 @@ export interface operations {
             };
             /** @description Conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Gone */
+            410: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -13060,6 +13386,15 @@ export interface operations {
             };
             /** @description Conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Gone */
+            410: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -13349,6 +13684,7 @@ export const replayDivergenceKindValues: ReadonlyArray<FlattenedDeepRequired<com
 export const resumeBodyThenValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ResumeBody"]["then"]> = ["continue", "kill", "inject", "deny"];
 export const reviewEstimateModeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ReviewEstimate"]["mode"]> = ["full", "signals_only", "judge_only"];
 export const reviewEstimatePresetValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ReviewEstimate"]["preset"]> = ["off", "signals", "standard", "research"];
+export const runDeletedMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunDeletedMessage"]["kind"]> = ["deleted"];
 export const runFinishedStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunFinished"]["status"]> = ["completed", "failed", "killed", "cancelled"];
 export const runMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunMessage"]["kind"]> = ["run"];
 export const runReportSectionsValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunReport"]["sections"]> = ["header", "headline", "warnings", "summary", "findings", "observations", "plants", "flags", "timeline", "facts", "sources", "appendix"];

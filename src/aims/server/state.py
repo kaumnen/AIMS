@@ -34,6 +34,7 @@ INFLIGHT_CALLS = 1000
 INFLIGHT_DONE = 10_000
 CODE_TTL_S = 120.0
 CODES = 32
+GONE = 10_000
 SPOOL = "tmp"
 """The data directory's folder for temporary files."""
 
@@ -276,6 +277,13 @@ class ServerState:
     on_truth: Callable[[str], Awaitable[None]] | None = None
     # held from placing a series' runs to queueing them, so two starts never take one index
     series_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # held from checking that no job uses a run to keeping it as deleted; a queue holds it
+    # from checking that no run its jobs read was deleted to adding them
+    delete_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # runs that ended more days ago than this go at start and once a day; None keeps them all
+    keep_days: float | None = None
+    # the newest runs deleted while this server runs, with their kinds, for live streams
+    gone: OrderedDict[str, str] = field(default_factory=OrderedDict)
     # each scenario.yaml the scenario list read: its scenario, or why it does not load
     scenarios: FileCache[Scenario | str] = field(default_factory=FileCache)
     # each model check run the models list read, by run id: the head it was read at, the
@@ -296,6 +304,13 @@ class ServerState:
         if self._history is None or self._history[0] != version:
             self._history = (version, await history(self.store))
         return self._history[1]
+
+    def note_deleted(self, run_id: str, kind: str) -> None:
+        """Tell live streams that a run of `kind` was deleted."""
+        self.gone[run_id] = kind
+        while len(self.gone) > GONE:
+            self.gone.popitem(last=False)
+        self.changes.touch(run_id)
 
     def touch_job(self, job: Job) -> None:
         """Note that a job changed, and for a monitor job the run it watches, whose `reviews`
@@ -328,10 +343,12 @@ async def open_state(
     auth: bool = True,
     tls: bool = False,
     public_url: str | None = None,
+    keep_days: float | None = None,
 ) -> ServerState:
     """The control plane's stores under `data`: `runs/` (ingest only) and `server.sqlite`,
     with expired sessions and old audit rows dropped. `public_url` is the address people open,
-    for links the server writes."""
+    for links the server writes. Housekeeping deletes runs that ended more than `keep_days`
+    ago."""
     db = await ServerDB.open(data / "server.sqlite")
     config = ConfigCache(project)
     try:
@@ -348,6 +365,7 @@ async def open_state(
         auth=Auth(db, enabled=auth, tls=tls, scope=cookie_scope(data)),
         config=config,
         public_url=public_url,
+        keep_days=keep_days,
     )
     store.listeners.append(state.changes.touch)
     state.spool()

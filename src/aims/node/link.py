@@ -56,8 +56,11 @@ class Link:
         on_offer: Callable[[OfferMessage], Awaitable[None]] | None = None,
         jobs: Callable[[], list[str]] = list,
         kinds: tuple[JobKindName, ...] = KINDS,
+        on_deleted: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
+        """`on_deleted` gets each run the control plane deleted, to drop the local copy."""
         self.client = client
+        self.on_deleted = on_deleted
         self.kinds = kinds
         self.store = store
         self.bus = bus
@@ -158,17 +161,25 @@ class Link:
         task.add_done_callback(lambda t: self._shipped(run_id, t))
 
     def _shipped(self, run_id: str, task: asyncio.Task[None]) -> None:
-        """Forget a run's shipper once the run has shipped. One that failed stays with its
-        reason."""
+        """Forget a run's shipper once the run has shipped, or once the control plane deleted
+        it. One that failed stays with its reason."""
         if self._ships.get(run_id) is not task or task.cancelled() or task.exception():
             return
         s = self.shippers[run_id]
-        if s.done and s.truthful and not (s.diverged or s.refused or s.truth_refused):
+        if s.deleted:
+            del self._ships[run_id]
+            del self.shippers[run_id]
+            self._deleted(run_id)
+        elif s.done and s.truthful and not (s.diverged or s.refused or s.truth_refused):
             del self._ships[run_id]
             del self.shippers[run_id]
 
+    def _deleted(self, run_id: str) -> None:
+        if self.on_deleted is not None:
+            self._spawn(self.on_deleted(run_id))
+
     async def ship_all(self) -> None:
-        """Ship every local run the server does not hold sealed."""
+        """Ship every local run the server does not hold sealed, but none it deleted."""
         run_ids = self.store.run_ids()
         for i in range(0, len(run_ids), 1000):
             chunk = run_ids[i : i + 1000]
@@ -178,7 +189,10 @@ class Link:
                 server = heads.get(run_id)
                 if local is None:
                     continue
-                if (
+                if server is not None and server.deleted:
+                    if self.on_deleted is not None:
+                        await self.on_deleted(run_id)
+                elif (
                     server is None
                     or server.seq < local.seq
                     or server.hash != local.hash

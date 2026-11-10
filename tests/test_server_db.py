@@ -170,6 +170,9 @@ def downgrade(path: Path, version: int) -> None:
     raw = sqlite3.connect(path)
     raw.execute("drop table audit")
     raw.execute("alter table tokens drop column last_used")
+    raw.execute("drop table deleted_runs")
+    raw.execute("drop index jobs_by_origin")
+    raw.execute("drop index jobs_by_score_monitor")
     if version < 3:
         raw.execute("alter table runs drop column shipper")
     raw.execute(f"pragma user_version = {version}")
@@ -280,6 +283,47 @@ async def test_audit_rows_page_filter_and_prune(db: ServerDB) -> None:
     assert [r.target for r in got] == ["3", "2", "1"]
     assert await db.prune_audit(base + 2) == 2
     assert [r.target for r in await db.audit_rows(limit=10)] == ["4", "3", "2"]
+
+
+@pytest.mark.parametrize("version", [2, 3])
+async def test_an_older_db_learns_to_keep_deleted_runs(tmp_path: Path, version: int) -> None:
+    path = tmp_path / "server.sqlite"
+    db = await ServerDB.open(path)
+    await db.close()
+    downgrade(path, version)
+    db = await ServerDB.open(path)
+    run = str(uuid.uuid7())
+    await db.forget([run])
+    assert await db.deleted([run, str(uuid.uuid7())]) == {run}
+    await db.close()
+    raw = sqlite3.connect(path)
+    assert raw.execute("pragma user_version").fetchone() == (VERSION,)
+    plan = raw.execute(
+        "explain query plan select run_id from jobs where json_extract(payload, '$.origin') = ?"
+        " or (json_extract(payload, '$.kind') = 'score'"
+        " and json_extract(payload, '$.monitor') = ?)",
+        ("a", "b"),
+    ).fetchall()
+    used = " ".join(r[-1] for r in plan)
+    assert "jobs_by_origin" in used
+    assert "jobs_by_score_monitor" in used
+    raw.close()
+
+
+async def test_forgetting_runs_drops_their_rows_and_keeps_them_deleted(db: ServerDB) -> None:
+    gone, kept = job(), job()
+    await db.add_jobs([gone, kept])
+    await db.add_command("r1", gone.run_id, {"action": "pause"})
+    await db.add_command("r1", kept.run_id, {"action": "pause"})
+    await db.forget([gone.run_id])
+    assert await db.job(gone.run_id) is None
+    assert await db.run_meta(gone.run_id) is None
+    assert await db.commands_of(gone.run_id) == []
+    assert await db.job(kept.run_id) is not None
+    assert len(await db.commands_of(kept.run_id)) == 1
+    assert await db.deleted([gone.run_id, kept.run_id]) == {gone.run_id}
+    await db.undelete(gone.run_id)
+    assert await db.deleted([gone.run_id]) == set()
 
 
 async def test_runners_hello_and_status(db: ServerDB) -> None:

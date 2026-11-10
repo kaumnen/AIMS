@@ -46,3 +46,10 @@ export function sourceLabel(sources: readonly SourceInfo[] | undefined, id: stri
   const label = sources?.find((s) => s.id === id)?.label ?? id;
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
+
+export async function deleteScenario(source: string, name: string): Promise<void> {
+  const { error } = await client.DELETE("/api/scenarios/{source}/{name}", {
+    params: { path: { source, name } },
+  });
+  if (error) throw error;
+}

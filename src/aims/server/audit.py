@@ -12,8 +12,7 @@ Actions: session.start, session.end, session.code, token.create, token.rotate, t
 config.write, config.patch, scenario.create, scenario.duplicate, scenario.file.write,
 scenario.file.delete, scenario.prompts, scenario.selftest, run.create, run.fork, run.pause,
 run.resume, run.sweep, run.inject, run.kill, run.cancel, run.import, run.monitor, run.score,
-run.label, models.check and audit.prune. Kept for routes to come: run.delete,
-scenario.delete and run.prune."""
+run.label, run.delete, scenario.delete, models.check, run.prune and audit.prune."""
 
 import logging
 import time

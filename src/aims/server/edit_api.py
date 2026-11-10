@@ -473,6 +473,38 @@ async def create_scenario(
     return Saved(path=SCENARIO, etag=etag(data))
 
 
+@router.delete(
+    "/scenarios/{source}/{name}", status_code=204, tags=["scenarios"], responses=responses(409)
+)
+@audit.audited("scenario.delete")
+async def delete_scenario(
+    source: str, name: str, principal: Operator, state: State, sources: SourcesDep
+) -> None:
+    """Delete a scenario's folder. Refused while a queued or active job runs the scenario; its
+    runs stay, since each keeps the scenario it ran."""
+    path = sources.writable(source, name)
+    names = {name}
+    with contextlib.suppress(OSError, UnicodeDecodeError, ScenarioError):
+        text = await asyncio.to_thread((path / SCENARIO).read_text)
+        names.add(parse(text, source=SCENARIO).name)
+    for job in await state.db.jobs():
+        snap = job.payload.get("scenario")
+        used = snap.get("name") if isinstance(snap, dict) else snap
+        if job.payload.get("kind", "scenario") in ("scenario", "selftest") and used in names:
+            raise ProblemException(
+                409,
+                "Conflict",
+                f"the {job.state} job {job.run_id} runs scenario {used}",
+                code="in_use",
+            )
+    async with _lock(path):
+        with writing(path):
+            if path.is_symlink():
+                await asyncio.to_thread(path.unlink)
+            else:
+                await asyncio.to_thread(shutil.rmtree, path)
+
+
 @router.post("/scenarios/{source}/{name}/duplicate", status_code=201, tags=["scenarios"])
 @audit.audited("scenario.duplicate")
 async def duplicate_scenario(

@@ -702,6 +702,15 @@ class LocalEventStore:
     ) -> list[UnitRow]:
         return await self._index.score_units(origins, latest=latest)
 
+    async def made_from(self, run_ids: Sequence[str]) -> list[tuple[str, str]]:
+        """The runs made from `run_ids` with their kinds: those whose origin is one of them and
+        the scores of the flags of a monitor run among them."""
+        return await self._index.made_from(run_ids)
+
+    async def ended_before(self, at: str) -> list[str]:
+        """The runs that ended before the timestamp `at`."""
+        return await self._index.ended_before(at)
+
     async def costs(self) -> dict[str, tuple[str, str]]:
         """Each run's cost row for the estimate: the head hash it was read at and its data."""
         return await self._index.costs()

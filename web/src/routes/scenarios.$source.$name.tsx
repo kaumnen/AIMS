@@ -6,6 +6,7 @@ import { SCENARIO_FILE } from "@/api/scenario-files";
 import { scenarioQuery, sourceLabel, sourcesQuery } from "@/api/scenarios";
 import { isProblem } from "@/api/session";
 import { NewRun } from "@/components/runs/new-run";
+import { DeleteScenario } from "@/components/scenarios/delete-scenario";
 import { NewScenario } from "@/components/scenarios/new-scenario";
 import { Overview } from "@/components/scenarios/overview";
 import { PromptsTab } from "@/components/scenarios/prompts";
@@ -79,6 +80,7 @@ function ScenarioPage() {
           </p>
         </div>
         <div className="ml-auto flex items-center gap-2">
+          <DeleteScenario source={d.source} name={d.name} writable={d.writable} />
           <Link
             to="/runs"
             search={{ scenario: d.title ?? d.name }}

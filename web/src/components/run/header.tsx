@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 
 import { RunCommands } from "./commands";
 import { agentsOf, RunControls } from "./controls";
+import { DeleteRun } from "./delete";
 import { useSource } from "./monitor";
 import { SeriesPrevious, SeriesStrip } from "./series";
 
@@ -161,6 +162,7 @@ export function RunHeader({
       <div className="ml-auto flex items-start gap-1.5">
         <RunControls detail={detail} />
         <RunCommands run={run} />
+        <DeleteRun run={run} title={title} />
       </div>
       {run.series !== null && <SeriesStrip name={run.series} current={run.run_id} />}
     </header>

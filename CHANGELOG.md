@@ -11,6 +11,10 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - The package metadata lists classifiers, keywords and links to the issues, the changelog and the security policy.
 - The control plane keeps an audit log of writes and failed sign-ins. Each row says who acted, from where, on what and with what result. Read it under Settings > Audit, with `aims audit` or at `GET /api/audit`, which also exports JSON Lines.
 - Tokens show when they were last used, on the tokens page and in `aims token list`.
+- `aims delete <run>` or **Delete** on the run page removes a run with its monitor runs and scores. A run in use stays. `--force` or **Delete anyway** removes a run whose runner is offline. Open tabs drop a deleted run at once.
+- A runner that still holds a deleted run drops its copy. The control plane never takes it back, unless an operator imports it.
+- `aims ui --keep-days N` deletes runs that ended more than N days ago, at start and once a day.
+- `aims scenario delete` or **Delete** on a scenario page removes a scenario from a writable source. Its runs stay.
 - `GET /healthz` answers without a token for container health checks. The compose server has a healthcheck. The runner and the proxy start once it passes.
 
 ### Changed

@@ -245,3 +245,29 @@ test("reconnect opens a new stream though nothing changed, and the old one goes 
   push(sources[0], events("r1", 0));
   expect(tab.take()).toEqual([]);
 });
+
+test("a deleted run reaches list subscribers and those that follow it", () => {
+  const hub = new Hub(open);
+  const list = new Tab();
+  const page = new Tab();
+  const other = new Tab();
+  join(hub, list);
+  join(hub, page);
+  join(hub, other);
+  hub.receive(list, { t: "sub", id: 1, wanted: { runs: true, run: [], deltas: [] } });
+  hub.receive(page, {
+    t: "sub",
+    id: 1,
+    wanted: { runs: false, run: [{ id: "r1", after: 3 }], deltas: [] },
+  });
+  hub.receive(other, {
+    t: "sub",
+    id: 1,
+    wanted: { runs: false, run: [{ id: "r2", after: 3 }], deltas: [] },
+  });
+  settle();
+  push(sources[0], { kind: "deleted", run_id: "r1" });
+  expect(list.take()).toEqual([{ kind: "deleted", run_id: "r1" }]);
+  expect(page.take()).toEqual([{ kind: "deleted", run_id: "r1" }]);
+  expect(other.take()).toEqual([]);
+});

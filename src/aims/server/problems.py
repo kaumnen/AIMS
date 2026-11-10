@@ -69,6 +69,7 @@ TITLES = {
     404: "Not found",
     405: "Method not allowed",
     409: "Conflict",
+    410: "Gone",
     412: "Precondition failed",
     413: "Too large",
     415: "Unsupported media type",

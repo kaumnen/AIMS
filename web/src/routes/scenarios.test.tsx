@@ -1,6 +1,6 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import type { ScenarioDetail, ScenarioInfo } from "@/api/scenarios";
@@ -10,6 +10,9 @@ import { preloadRoutes } from "@/test/routes";
 
 const fetch = vi.fn<(request: Request) => Promise<Response>>();
 let role: "operator" | "viewer";
+let writable: boolean;
+let refusal: string | null;
+let deleted: string[];
 
 const info = (over: Partial<ScenarioInfo>): ScenarioInfo => ({
   source: "project",
@@ -44,7 +47,7 @@ function detail(): ScenarioDetail {
   return {
     source: "project",
     name: "cache-keys",
-    writable: true,
+    writable,
     etag: "e1",
     errors: [],
     truth,
@@ -74,12 +77,25 @@ function detail(): ScenarioDetail {
 preloadRoutes();
 beforeEach(() => {
   role = "operator";
+  writable = true;
+  refusal = null;
+  deleted = [];
   FakeEventSource.all = [];
   vi.stubGlobal("EventSource", FakeEventSource);
   vi.stubGlobal("fetch", fetch);
   fetch.mockImplementation(async (request) => {
     const url = new URL(request.url);
     if (url.pathname === "/api/session") return Response.json({ name: "me", role, auth: true });
+    if (request.method === "DELETE") {
+      if (refusal !== null) {
+        return Response.json(
+          { type: "about:blank", title: "Conflict", status: 409, detail: refusal, code: "in_use" },
+          { status: 409, headers: { "content-type": "application/problem+json" } },
+        );
+      }
+      deleted.push(url.pathname);
+      return new Response(null, { status: 204 });
+    }
     if (url.pathname === "/api/scenarios/sources")
       return Response.json([
         { id: "builtin", label: "built in", writable: false },
@@ -169,4 +185,39 @@ test("viewers get the overview without what the scenario hides", async () => {
   expect(screen.queryByText("Self-test")).toBeNull();
   expect(screen.queryByRole("columnheader", { name: "Role" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Run" })).toBeNull();
+});
+
+test("an operator deletes a scenario after a yes and lands on the list", async () => {
+  const router = renderAt("/scenarios/project/cache-keys");
+  fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+  const dialog = await screen.findByRole("dialog", { name: "Delete scenario cache-keys?" });
+  expect(within(dialog).getByText(/Its runs stay\./)).toBeTruthy();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+  await waitFor(() => expect(router.state.location.pathname).toBe("/scenarios"));
+  expect(deleted).toEqual(["/api/scenarios/project/cache-keys"]);
+});
+
+test("a scenario delete the server refuses shows its reason", async () => {
+  refusal = "the queued job 01a18e00 runs scenario cache-keys";
+  const router = renderAt("/scenarios/project/cache-keys");
+  fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+  const dialog = await screen.findByRole("dialog", { name: "Delete scenario cache-keys?" });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+  expect(await within(dialog).findByText(refusal)).toBeTruthy();
+  expect(router.state.location.pathname).toBe("/scenarios/project/cache-keys");
+  expect(deleted).toEqual([]);
+});
+
+test("viewers and read-only scenarios get no delete", async () => {
+  role = "viewer";
+  renderAt("/scenarios/project/cache-keys");
+  expect(await screen.findByText("Fix the cache keys.")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+  cleanup();
+  role = "operator";
+  writable = false;
+  renderAt("/scenarios/project/cache-keys");
+  expect(await screen.findByText("Fix the cache keys.")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Duplicate" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
 });

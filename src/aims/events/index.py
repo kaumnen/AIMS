@@ -1193,6 +1193,31 @@ class Index:
             out[r[1]] = Label(run_id=r[0], flag=r[1], label=r[2], note=r[3], by=r[4], at=r[5])
         return out
 
+    async def made_from(self, run_ids: Sequence[str]) -> list[tuple[str, str]]:
+        """The runs made from `run_ids`, each with its kind: each run whose origin is one of
+        them and each score of the flags of a monitor run among them."""
+        if not run_ids:
+            return []
+        marks = ", ".join("?" * len(run_ids))
+        async with self._db.execute(
+            f"select run_id, kind from runs where origin in ({marks})"
+            " union select s.run_id, s.kind from runs m"
+            " join runs s on s.origin = m.origin and s.kind = 'score'"
+            " join events e on e.run_id = s.run_id and e.seq = 0"
+            f" where m.run_id in ({marks}) and m.kind = 'monitor'"
+            " and json_extract(e.data, '$.config.monitor') = m.run_id",
+            (*run_ids, *run_ids),
+        ) as cur:
+            return [(r[0], r[1]) for r in await cur.fetchall()]
+
+    async def ended_before(self, at: str) -> list[str]:
+        """The runs that ended before the timestamp `at`, oldest first."""
+        async with self._db.execute(
+            "select run_id from runs where status != 'running' and ended_at < ? order by run_id",
+            (at,),
+        ) as cur:
+            return [r[0] for r in await cur.fetchall()]
+
     async def set_variant(self, run_id: str, variant: str | None) -> None:
         """Name the variant of the sealed run `run_id`, from its truth file, and drop its cost
         row, which was read without it."""
