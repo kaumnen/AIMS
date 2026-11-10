@@ -108,7 +108,7 @@ try {
   await rm(config, { recursive: true, force: true });
   await mkdir(project, { recursive: true });
   await mkdir(config, { recursive: true });
-  await copy(join(ROOT, "aims.toml"), join(project, "aims.toml"));
+  await copy(join(ROOT, "docs", "pilot.toml"), join(project, "aims.toml"));
   await copy(join(ROOT, "src", "aims", "scenarios"), join(project, "scenarios"), {
     recursive: true,
   });
