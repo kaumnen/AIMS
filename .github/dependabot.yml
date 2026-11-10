@@ -1,0 +1,77 @@
+# Weekly update PRs for the pinned versions. A release is taken once it is 3 days old. Minor and
+# patch PRs merge on their own once CI passes (workflows/automerge.yml); majors wait for a person.
+# Not covered, so bumped by hand: the setup-uv, node and bun versions in the workflows, zizmor,
+# pip-audit and the BuildKit and SBOM images in release.yml. The weekly pins job opens an issue
+# when one of those is behind.
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+    commit-message:
+      prefix: chore
+    groups:
+      actions:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # The app image and the sandbox helper images. Scenario images are templates people copy.
+  - package-ecosystem: docker
+    directories:
+      - /
+      - /src/aims/sandbox/assets/*
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+    commit-message:
+      prefix: chore
+    ignore:
+      # A new Python moves with requires-python and the CI matrix, by hand.
+      - dependency-name: python
+        update-types: [version-update:semver-major, version-update:semver-minor]
+    groups:
+      images:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+    commit-message:
+      prefix: chore
+
+  # The lock moves; the bounds in pyproject.toml stay as they are.
+  - package-ecosystem: uv
+    directory: /
+    versioning-strategy: lockfile-only
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+    commit-message:
+      prefix: chore
+    groups:
+      python:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: bun
+    directory: /web
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+    commit-message:
+      prefix: chore
+    groups:
+      web:
+        patterns: ["*"]
+        update-types: [minor, patch]

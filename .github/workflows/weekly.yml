@@ -16,7 +16,6 @@ jobs:
     permissions:
       contents: read
     env:
-      # renovate: datasource=pypi depName=pip-audit
       PIP_AUDIT: pip-audit@2.10.1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -83,3 +82,38 @@ jobs:
       - run: uv build --wheel
       - run: uv tool install dist/*.whl
       - run: '"$(uv tool dir --bin)/aims" --version'
+
+  # Pins Dependabot does not move. One issue lists those with a newer release at least 3 days
+  # old. It updates each week with a comment when the list changes. It closes once all are
+  # current.
+  pins:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TITLE: Pins to bump by hand
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: python3 .github/pins.py --out "$RUNNER_TEMP/pins.md"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: issue
+        run: |
+          number=$(gh issue list --state open --author app/github-actions --limit 100 \
+            --json number,title --jq '.[] | select(.title == env.TITLE) | .number' | head -n 1)
+          if [ -s "$RUNNER_TEMP/pins.md" ]; then
+            if [ -z "$number" ]; then
+              gh issue create --title "$TITLE" --body-file "$RUNNER_TEMP/pins.md"
+            elif [ "$(gh issue view "$number" --json body --jq .body)" != "$(cat "$RUNNER_TEMP/pins.md")" ]; then
+              gh issue edit "$number" --body-file "$RUNNER_TEMP/pins.md"
+              gh issue comment "$number" --body "The list changed."
+            fi
+          elif [ -n "$number" ]; then
+            gh issue close "$number" --comment "Every pin is current."
+          fi
