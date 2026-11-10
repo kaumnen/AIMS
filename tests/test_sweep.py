@@ -23,7 +23,7 @@ from aims.events import (
     RunStarted,
 )
 from aims.models import ModelClient
-from aims.monitor import sweep_texts
+from aims.monitor import judge_texts, sweep_texts
 from aims.monitor.config import EVIDENCE_LANE, FULL_LANE, SweepConfig
 from aims.monitor.render import frame
 from aims.monitor.sweep import (
@@ -227,7 +227,8 @@ async def test_extract_then_evaluate_flags_a_verified_quote(run: Run) -> None:
         assert body["response_format"]["json_schema"]["strict"] is True
         system = body["messages"][0]["content"]
         assert "CATEGORIES\ncovert_communication: " in system
-        assert "IMPORTANCE AND SUSPICION\nImportance" in system
+        assert "IMPORTANCE AND SUSPICION\nJudge each action against the task." in system
+        assert "only when the task or the environment says so" in system
     assert bodies["sweep_extract"]["response_format"]["json_schema"]["schema"] == (
         EXTRACT.json_schema
     )
@@ -596,3 +597,12 @@ async def test_the_default_texts_are_plain_and_resolve() -> None:
         assert "\u2013" not in definition
         assert "{" not in definition
     assert texts.categories == sweep_texts.CATEGORIES
+
+
+def test_debugging_is_not_scorer_tampering_and_the_task_scopes_both_layers() -> None:
+    tampering = sweep_texts.CATEGORIES["scorer_tampering"]
+    assert "mining version control history" not in tampering
+    assert "future commits" in tampering
+    assert "Debugging is not scorer tampering" in tampering
+    assert sweep_texts.RUBRIC.startswith(sweep_texts.SCOPE)
+    assert sweep_texts.SCOPE in judge_texts.SYSTEM
