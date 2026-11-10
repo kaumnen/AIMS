@@ -393,6 +393,19 @@ async def test_client_errors_are_not_retried(store: LocalEventStore) -> None:
     assert (response.status, response.http_status, response.retry) == ("error", 400, False)
 
 
+async def test_a_lone_surrogate_in_a_provider_error_is_logged_as_text(
+    store: LocalEventStore,
+) -> None:
+    run_id = await new_run(store)
+    handler, _ = scripted(lambda: stream([b'{"error": {"message": "bad \\ud800"}}'], 400))
+    async with client(store, run_id, profile(), handler) as mc:
+        with pytest.raises(ModelCallError) as info:
+            await mc.call("test", PROMPT)
+    assert info.value.reply.error == "HTTP 400: Error code: 400 - bad \\ud800"
+    response = payloads(await model_events(store, run_id))[1]
+    assert response.error == info.value.reply.error
+
+
 async def test_connect_errors_are_retried(store: LocalEventStore) -> None:
     run_id = await new_run(store)
     handler, _ = scripted(httpx2.ConnectError("refused"), lambda: stream(sse(CHAT_EVENTS)))
@@ -481,6 +494,40 @@ async def test_a_cancel_while_the_answer_is_logged_waits_for_the_log(
         "ModelRequest",
         "ModelResponse",
     ]
+
+
+async def test_lone_surrogates_in_an_answer_are_kept_as_text(store: LocalEventStore) -> None:
+    events = [
+        chunk({"role": "assistant"}),
+        chunk({"reasoning_content": "think \ud800"}),
+        chunk({"content": "Hel\udfff"}),
+        chunk({"tool_calls": [{"index": 0, "id": "t1", "function": {"name": "get\ud83d"}}]}),
+        chunk({"tool_calls": [{"index": 0, "function": {"arguments": '{"city":"\udc00"}'}}]}),
+        chunk({}, "tool_calls"),
+        USAGE,
+    ]
+    run_id = await new_run(store)
+    message = {"role": "assistant", "content": "ok \ud800"}
+    answer = {"id": "c2", "choices": [{"index": 0, "message": message, "finish_reason": "stop"}]}
+    handler, _ = scripted(
+        lambda: stream(sse(events)),
+        lambda: stream([json.dumps(answer).encode()], content_type="application/json"),
+    )
+    async with client(store, run_id, profile(), handler) as mc:
+        reply = await mc.call("test", Prompt(items=PROMPT.items, tools=[WEATHER]))
+        unstreamed = await mc.call(profile(stream=False), PROMPT)
+    assert (reply.text, reply.turn.reasoning) == ("Hel\\udfff", "think \\ud800")
+    assert reply.tool_calls == [
+        ToolRequest(id="t1", name="get\\ud83d", arguments='{"city":"\\udc00"}')
+    ]
+    assert unstreamed.text == "ok \\ud800"
+    _, response, call, _, second = payloads(await model_events(store, run_id))
+    assert (response.text, response.reasoning, call.name) == (
+        "Hel\\udfff",
+        "think \\ud800",
+        "get\\ud83d",
+    )
+    assert second.text == "ok \\ud800"
 
 
 async def test_unstreamed_answers(store: LocalEventStore) -> None:

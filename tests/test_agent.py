@@ -210,6 +210,78 @@ async def test_bad_arguments_and_unknown_tools_are_tool_errors(store: LocalEvent
     assert "command: Field required" in str(results[2].output)
 
 
+async def test_a_lone_surrogate_in_tool_arguments_is_kept_as_text(store: LocalEventStore) -> None:
+    script = Script(
+        raw_call("bash", '{"command": "echo \\ud800"}'),
+        raw_call("submit", '{"answer": "\\ud83d done"}'),
+    )
+    agent, run_id = await make_agent(store, script)
+    finished = await agent.run()
+    assert (finished.reason, finished.answer) == ("submitted", "\\ud83d done")
+    assert agent.answer == "\\ud83d done"
+    results = await payloads(store, run_id, ToolResult)
+    assert results[0].output == "stdout:\nran echo \\ud800\nexit code: 0"
+    (logged,) = await payloads(store, run_id, AgentFinished)
+    assert logged.answer == "\\ud83d done"
+
+
+async def test_an_end_that_cannot_be_logged_ends_the_agent_as_an_error(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = Script(call("submit", answer="done"))
+    agent, run_id = await make_agent(store, script)
+    finish = agent._finish
+    ends: list[Any] = []
+
+    async def failing(*args: Any) -> AgentFinished:
+        ends.append(args[1])
+        if len(ends) == 1:
+            raise OSError("disk full")
+        return await finish(*args)
+
+    monkeypatch.setattr(agent, "_finish", failing)
+    finished = await agent.run()
+    assert ends == ["submitted", "error"]
+    assert (finished.reason, finished.detail, finished.answer) == (
+        "error",
+        "OSError: disk full",
+        None,
+    )
+    assert agent.answer is None
+    (logged,) = await payloads(store, run_id, AgentFinished)
+    assert (logged.reason, logged.answer) == ("error", None)
+
+
+async def test_a_cancelled_agent_whose_end_cannot_be_logged_still_raises_the_cancel(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Hang(FakeSandbox):
+        async def exec(self, command: str, **kw: Any) -> ExecResult:
+            await asyncio.sleep(30)
+            raise AssertionError("not reached")
+
+    script = Script(call("bash", command="sleep 30"))
+    agent, run_id = await make_agent(store, script, sandbox=Hang(echo))
+    finish = agent._finish
+    ends: list[Any] = []
+
+    async def failing(*args: Any) -> AgentFinished:
+        ends.append(args[1])
+        if len(ends) == 1:
+            raise OSError("disk full")
+        return await finish(*args)
+
+    monkeypatch.setattr(agent, "_finish", failing)
+    task = asyncio.create_task(agent.run())
+    await asyncio.sleep(0.2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert ends == ["cancelled", "error"]
+    (logged,) = await payloads(store, run_id, AgentFinished)
+    assert (logged.reason, logged.detail) == ("error", "OSError: disk full")
+
+
 async def test_step_and_cost_budgets_end_the_agent(store: LocalEventStore) -> None:
     script = Script(*[call("bash", command="true")] * 5)
     agent, _ = await make_agent(store, script, budget=Budget(steps=2))

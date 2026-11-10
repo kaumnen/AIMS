@@ -44,6 +44,7 @@ from aims.models import (
 from aims.prompts import AgentTexts
 from aims.sandbox import AuditedSandbox
 from aims.scenario import AgentConfig, Budget, Limits, SandboxConfig
+from aims.text import scrub
 from aims.tools import Tool, ToolContext, ToolOutcome, cap
 
 log = logging.getLogger("aims.agent")
@@ -393,14 +394,25 @@ class Agent:
             reason, detail = "killed", str(e) or None
         except asyncio.CancelledError:
             if self.killed is not None:
-                await settle(self._finish(start, "killed", self.killed, None))
+                await self._end(start, "killed", self.killed, None)
             else:
-                await settle(self._finish(start, "cancelled", None, None))
+                await self._end(start, "cancelled", None, None)
             raise
         except Exception as e:
             log.exception("agent %s failed", self.id)
             reason, detail = "error", f"{type(e).__name__}: {e}"
-        return await settle(self._finish(start, reason, detail, answer))
+        return await self._end(start, reason, detail, answer)
+
+    async def _end(
+        self, start: float, reason: AgentEnd, detail: str | None, answer: str | None
+    ) -> AgentFinished:
+        """`_finish` to its end however often the caller is cancelled meanwhile. When it
+        raises, the agent ends as an error with no answer, so its end is still logged."""
+        try:
+            return await settle(self._finish(start, reason, detail, answer))
+        except Exception as e:
+            log.exception("agent %s could not log its end", self.id)
+            return await settle(self._finish(start, "error", f"{type(e).__name__}: {e}", None))
 
     def _paused_s(self, now: float | None = None) -> float:
         return self.clock.paused_s(now) - self._paused_base
@@ -920,7 +932,7 @@ async def run_tool(
         known = ", ".join(tools)
         return ToolOutcome(f"There is no tool named {name!r}. Tools: {known}.", True)
     try:
-        raw = json.loads(arguments) if arguments.strip() else {}
+        raw = scrub(json.loads(arguments)) if arguments.strip() else {}
     except ValueError as e:
         return ToolOutcome(f"The arguments are not valid JSON: {e}", error=True)
     if not isinstance(raw, dict):

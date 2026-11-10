@@ -22,6 +22,7 @@ from aims.models import Delta, DeltaBus
 from aims.monitor.core import HumanRequest
 from aims.run.estimate import Progress, project_run, usd
 from aims.run.runner import Result, RunError, Runner
+from aims.text import scrub
 
 TAIL = 240
 ARGS = 120
@@ -378,7 +379,7 @@ def _args(args: object) -> str:
     if isinstance(args, dict) and set(args) == {"sha256", "size"}:
         return "(large arguments)"
     try:
-        value = json.loads(str(args))
+        value = scrub(json.loads(str(args)))
     except ValueError:
         return _short(args, ARGS)
     if isinstance(value, dict):

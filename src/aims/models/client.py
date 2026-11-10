@@ -39,6 +39,7 @@ from aims.models.replay import chain as cause_chain
 from aims.models.transport import Exchange, Recorder, current, encode_chunks
 from aims.models.types import Prompt, Reply
 from aims.net import Outbound
+from aims.text import scrub
 
 log = logging.getLogger("aims.models")
 
@@ -338,7 +339,7 @@ class ModelClient:
                     except StopAsyncIteration:
                         break
                     if isinstance(event, dict):
-                        publish(acc.feed(event))
+                        publish(acc.feed(scrub(event)))
         else:
             answer = await _within(
                 stall, client.post(backend.path, cast_to=object, content=content)
@@ -347,7 +348,7 @@ class ModelClient:
                 answer = json.loads(answer)
             if not isinstance(answer, dict):
                 raise TypeError("the answer is not a JSON object")
-            acc.finish(answer)
+            acc.finish(scrub(answer))
             result = acc.result()
             publish([Piece("reasoning", result.reasoning)] if result.reasoning else [])
             publish([Piece("text", result.text)] if result.text else [])
@@ -486,7 +487,7 @@ def _classify(
         code = exc.status_code
         kind: ModelError = "redirect" if 300 <= code < 400 else "http"
         retryable = code in _RETRY_STATUS or code >= 500
-        return f"HTTP {code}: {exc.message}", kind, retryable, None
+        return f"HTTP {code}: {scrub(exc.message)}", kind, retryable, None
     for e in cause_chain(exc):
         match e:
             case httpx2.ReadTimeout():
@@ -500,7 +501,7 @@ def _classify(
             case httpx2.TransportError():
                 return f"{type(e).__name__}: {e}", "read", True, None
     if isinstance(exc, openai.APIError) and not isinstance(exc, openai.APIConnectionError):
-        return f"provider error: {exc.message}", "provider", True, None
+        return f"provider error: {scrub(exc.message)}", "provider", True, None
     return f"{type(exc).__name__}: {exc}", "protocol", False, None
 
 

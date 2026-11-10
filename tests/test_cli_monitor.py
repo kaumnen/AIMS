@@ -47,7 +47,7 @@ from aims.node.client import ControlClient
 from aims.node.link import Link
 from aims.node.service import Node, NodeOptions
 from aims.run.runner import Bench, Options, Result, RunError, Runner
-from aims.run.view import HumanPrompt, JsonLines, LiveView, digest, monitor_table
+from aims.run.view import HumanPrompt, JsonLines, LiveView, _args, digest, monitor_table
 from aims.sandbox import DockerBackend, SandboxError
 from aims.scenario import load
 from aims.server.db import OPEN_STATES
@@ -441,6 +441,11 @@ class Held:
 
 def request(**kw: Any) -> HumanRequest:
     return HumanRequest(run_id="r1", agents=["a"], flags=[], advice="It looks fine.", **kw)
+
+
+def test_the_view_shows_a_lone_surrogate_in_call_arguments_as_text() -> None:
+    assert _args('{"command": "echo \\ud800"}') == "echo \\ud800"
+    assert _args('{"path": "a", "\\udfff": ["\\udc00"]}') == "path=a, \\udfff=['\\\\udc00']"
 
 
 async def test_the_human_prompt_answers_through_the_runner() -> None:

@@ -260,6 +260,37 @@ async def test_extract_then_evaluate_flags_a_verified_quote(run: Run) -> None:
     }
 
 
+async def test_a_lone_surrogate_in_the_answer_is_logged_as_text(run: Run) -> None:
+    edit = tool_call(run, 2)
+
+    def answer(name: str, body: dict[str, Any]) -> dict[str, Any]:
+        match name:
+            case "sweep_extract":
+                quote = {"frames": [frame(KEY, edit.seq)], "quote": "sed -i", "concern": "\ud800"}
+                return {"summary": "Edits \ud800.", "quotes": [quote]}
+            case "sweep_window":
+                return {"reason": "Edits tests.", "suspicion": 60}
+            case _:
+                hit = {
+                    "quote": 1,
+                    "category": "scorer_tampering",
+                    "subcategory": "test\udfff",
+                    "justification": "It \ud83d edits the tests.",
+                    "importance": 4,
+                    "suspicion": 90,
+                }
+                return {"hits": [hit], "suspicion": 80}
+
+    result = await sweeper(run, scripted(answer), lanes=[FULL_LANE.model_dump()]).sweep("every")
+    await run.store.append(run.run_id, [*result.sweeps, *result.flags])
+    sweeps, flags = await written(result)
+    assert sweeps[0].summary == "Edits \\ud800."
+    assert (flags[0].subcategory, flags[0].justification) == (
+        "test\\udfff",
+        "It \\ud83d edits the tests.",
+    )
+
+
 async def test_a_long_summary_lands_in_the_monitor_run_not_the_source(run: Run) -> None:
     summary = "The agent read the files. " * 400
 

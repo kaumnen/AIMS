@@ -13,10 +13,10 @@ from pathlib import Path
 from typing import Any, ClassVar, cast
 
 import pytest
-from scripted import Script, call, profile
+from scripted import Script, call, profile, raw_call
 from typer.testing import CliRunner
 
-from aims.agent import GatePoint, OpenGate, PauseClock, Verdict
+from aims.agent import Agent, GatePoint, OpenGate, PauseClock, Verdict
 from aims.cli import app
 from aims.events import (
     AgentFinished,
@@ -41,7 +41,7 @@ from aims.monitor.texts import MonitorTexts
 from aims.prompts import AgentTexts, Prompts
 from aims.run import runner as runner_module
 from aims.run.job import Job, bundle_of, monitor_for, runner_for, scenario_jobs
-from aims.run.runner import Bench, Options, RunError, Runner, seeded
+from aims.run.runner import Bench, Options, Result, RunError, Runner, _status, seeded
 from aims.sandbox import DockerBackend
 from aims.sandbox.base import Capture, Outcome, SandboxInfo, SandboxSpec
 from aims.scenario import Bundle, load
@@ -967,6 +967,67 @@ def test_seeded_picks_files_and_the_directories_above_them(tmp_path: Path) -> No
     assert names(["*.txt"]) == ["work", "work/notes.txt"]
     assert names(["missing/*"]) is None
     assert names([]) is None
+
+
+# How agents end
+
+
+async def test_an_answer_with_a_lone_surrogate_completes_the_run(
+    store: LocalEventStore, tmp_path: Path
+) -> None:
+    script = Script(raw_call("submit", '{"answer": "\\ud83d"}'))
+    backend = Boxes()
+    result = await Runner(bench(store, script, backend), scenario(tmp_path), Options()).run()
+    assert result.status == "completed", result.reason
+    assert result.run_id is not None
+    (finished,) = await of(store, result.run_id, AgentFinished, "agent.finished")
+    assert (finished.reason, finished.answer) == ("submitted", "\\ud83d")
+    assert b"\\ud83d" in backend.made["a"].stdins
+    (scored,) = await of(store, result.run_id, TaskScored, "task.scored")
+    assert scored.reward == 1.0
+
+
+async def test_an_agent_whose_end_cannot_be_logged_fails_the_run(
+    store: LocalEventStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    finish = Agent._finish
+
+    async def failing(self: Agent, start: float, reason: Any, *args: Any) -> AgentFinished:
+        if reason == "submitted":
+            raise OSError("disk full")
+        return await finish(self, start, reason, *args)
+
+    monkeypatch.setattr(Agent, "_finish", failing)
+    script = Script(call("submit", answer="ok"))
+    result = await Runner(bench(store, script), scenario(tmp_path), Options()).run()
+    assert (result.status, result.reason) == ("failed", "agent a: OSError: disk full")
+    assert result.run_id is not None
+    (finished,) = await of(store, result.run_id, AgentFinished, "agent.finished")
+    assert (finished.reason, finished.answer) == ("error", None)
+    assert not await of(store, result.run_id, TaskScored, "task.scored")
+
+
+async def test_an_agent_that_raised_without_an_end_fails_the_run(
+    store: LocalEventStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def broken(self: Agent) -> AgentFinished:
+        raise RuntimeError("broken")
+
+    monkeypatch.setattr(Agent, "run", broken)
+    result = await Runner(bench(store, Script()), scenario(tmp_path), Options()).run()
+    assert (result.status, result.reason) == ("failed", "agent a: it did not finish")
+    assert result.run_id is not None
+    assert not await of(store, result.run_id, AgentFinished, "agent.finished")
+
+
+def test_a_subject_without_an_end_fails_the_run_unless_one_was_killed() -> None:
+    ended, killed = AgentFinished(reason="submitted"), AgentFinished(reason="killed")
+    assert _status(Result("r", "failed", agents={"a": ended}), ["a"]) == ("completed", None)
+    assert _status(Result("r", "failed", agents={"a": ended}), ["a", "b"]) == (
+        "failed",
+        "agent b: it did not finish",
+    )
+    assert _status(Result("r", "failed", agents={"a": killed}), ["a", "b"])[0] == "killed"
 
 
 # Jobs and the CLI

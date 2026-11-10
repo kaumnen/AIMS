@@ -30,6 +30,7 @@ from aims.events.index import (
 from aims.events.log import LogFile, checkpoint_ok, read_events, read_lines, tail_only
 from aims.events.payloads import LogTruncated, RunFinished, RunStarted
 from aims.events.schema import BlobRef, Content, Draft, Event, blob_refs, now
+from aims.text import scrub
 
 log = logging.getLogger("aims.events")
 
@@ -584,7 +585,8 @@ class LocalEventStore:
         return await asyncio.to_thread(self._blobs(run_id).get, sha256)
 
     async def content(self, run_id: str, text: str) -> Content:
-        """Inline short text, store long text as a blob."""
+        """Inline short text, store long text as a blob. A lone surrogate is written `\\ud800`."""
+        text = scrub(text)
         data = text.encode()
         return text if len(data) <= INLINE_LIMIT else await self.put_blob(run_id, data)
 

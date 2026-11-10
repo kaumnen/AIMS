@@ -391,6 +391,14 @@ async def test_search(store: LocalEventStore) -> None:
     assert await hits("nothing here") == []
 
 
+async def test_content_writes_a_lone_surrogate_as_text(store: LocalEventStore) -> None:
+    run_id = await store.create_run(STARTED)
+    assert await store.content(run_id, "a\ud800") == "a\\ud800"
+    long = await store.content(run_id, "y" * INLINE_LIMIT + "\udfff")
+    assert isinstance(long, BlobRef)
+    assert await store.get_blob(run_id, long.sha256) == b"y" * INLINE_LIMIT + b"\\udfff"
+
+
 async def test_blobs(store: LocalEventStore) -> None:
     run_id = await store.create_run(STARTED)
     short = await store.content(run_id, "ok")

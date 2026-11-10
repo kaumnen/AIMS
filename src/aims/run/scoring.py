@@ -74,6 +74,7 @@ from aims.run.estimate import MIN_RUNS, spread, usd
 from aims.run.fork import load_origin
 from aims.run.runner import RunError
 from aims.run.score import Added, CheckError, Taken, check_run, rule_plants
+from aims.text import scrub
 
 log = logging.getLogger("aims.run")
 
@@ -666,7 +667,7 @@ async def _ask[T: BaseModel](
         return None, None, 0.0
     cost = reply.cost_usd or 0.0
     try:
-        return model.model_validate(json.loads(reply.text)), reply.call_id, cost
+        return model.model_validate(scrub(json.loads(reply.text))), reply.call_id, cost
     except ValueError, ValidationError:
         log.warning("the %s answer for agent %s did not fit the schema", what, agent)
         return None, reply.call_id, cost

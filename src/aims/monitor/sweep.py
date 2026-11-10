@@ -41,6 +41,7 @@ from aims.models import (
 from aims.monitor.config import Lane, SweepConfig
 from aims.monitor.render import Rendered, Trajectory, escape, glossary
 from aims.monitor.texts import MonitorTexts
+from aims.text import scrub
 
 log = logging.getLogger("aims.monitor")
 
@@ -286,7 +287,7 @@ async def ask(
         raise SweepError(f"{schema.name}: {e}") from None
     calls.add(reply)
     try:
-        value = json.loads(reply.text)
+        value = scrub(json.loads(reply.text))
     except ValueError:
         raise SweepError(f"{schema.name}: the {reply.status} answer is not JSON") from None
     if not isinstance(value, dict):

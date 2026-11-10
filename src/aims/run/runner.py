@@ -724,7 +724,7 @@ class Runner:
             result.status, result.reason = "cancelled", "cancelled by the operator"
         else:
             await self._verify_all(result)
-            result.status, result.reason = _status(result)
+            result.status, result.reason = _status(result, self.scenario.subjects)
         await self._archive()
 
     async def _image_and_sandboxes(self) -> None:
@@ -1317,16 +1317,16 @@ async def seal_unsealed(store: LocalEventStore, *, reason: str = RESTARTED) -> l
     return sealed
 
 
-def _status(result: Result) -> tuple[RunStatus, str | None]:
+def _status(result: Result, subjects: Sequence[str]) -> tuple[RunStatus, str | None]:
+    """Killed when an agent was, else failed when an agent failed or a subject logged no end:
+    its task raised before `agent.finished`."""
     reasons = {a: f.reason for a, f in result.agents.items()}
     if any(r == "killed" for r in reasons.values()):
         return "killed", "killed by the gate"
-    failed = {a: r for a, r in reasons.items() if r in FAILED_ENDS}
+    failed = {a: result.agents[a].detail or r for a, r in reasons.items() if r in FAILED_ENDS}
+    failed |= {a: "it did not finish" for a in subjects if a not in reasons}
     if failed:
-        detail = ", ".join(
-            f"agent {a}: {result.agents[a].detail or r}" for a, r in sorted(failed.items())
-        )
-        return "failed", detail
+        return "failed", ", ".join(f"agent {a}: {why}" for a, why in sorted(failed.items()))
     return "completed", None
 
 

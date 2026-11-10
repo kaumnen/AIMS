@@ -46,6 +46,7 @@ from aims.events import (
     ToolCall,
     ToolResult,
 )
+from aims.text import scrub
 
 log = logging.getLogger("aims.monitor")
 
@@ -750,7 +751,7 @@ def _segments(command: str) -> Iterator[list[str]]:
 
 def _object(text: str) -> dict[str, JsonValue] | None:
     try:
-        parsed = json.loads(text) if text else None
+        parsed = scrub(json.loads(text)) if text else None
     except ValueError:
         return None
     return parsed if isinstance(parsed, dict) else None

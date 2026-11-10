@@ -51,7 +51,7 @@ from aims.monitor.config import MonitorConfig
 from aims.monitor.signals import engine as engine_module
 from aims.monitor.signals.base import Base, Hit, SignalError, registry
 from aims.monitor.signals.engine import OVERFLOW, SignalEngine, check_signals, signal_versions
-from aims.monitor.state import State
+from aims.monitor.state import State, _object
 from aims.scenario import Scenario
 from aims.scenario.load import load
 
@@ -1279,6 +1279,11 @@ async def test_repeat_and_no_progress(store: LocalEventStore) -> None:
         await b2.emit(AgentStep(n=10 + i, call_id=f"s{i}", status="completed"))
     assert sorted(f.key or "" for f in b2.of("no_progress")) == ["errors", "idle"]
     assert b2.of("repeat") == []
+
+
+def test_call_arguments_with_a_lone_surrogate_parse_to_text() -> None:
+    parsed = _object('{"command": "echo \\ud800", "\\udfff": 1}')
+    assert parsed == {"command": "echo \\ud800", "\\udfff": 1}
 
 
 async def test_submit_vs_score(store: LocalEventStore) -> None:
