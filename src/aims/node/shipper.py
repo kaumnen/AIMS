@@ -20,6 +20,7 @@ MAX_BYTES = 4 * 1024 * 1024
 BACKOFF_MIN_S = 0.5
 BACKOFF_MAX_S = 30.0
 IDLE_S = 5.0
+WARN_AFTER = 5
 
 
 class Backoff:
@@ -52,7 +53,8 @@ class Shipper:
     """Copies one run's log and blobs to the control plane as the log grows: blobs first, then
     exact lines from where the server's copy ends. Once the server holds the sealed run, sends
     the run's truth file and its labels, each by its own path, and ends. Local writes never
-    wait for it. A run the server deleted ends it with `deleted` set."""
+    wait for it. A run the server deleted ends it with `deleted` set. It retries without end;
+    `failures` counts the tries that failed in a row."""
 
     def __init__(self, store: LocalEventStore, client: ControlClient, run_id: str) -> None:
         self.store = store
@@ -69,6 +71,8 @@ class Shipper:
         self.lines = 0
         self.truthful = False
         self.truth_refused: str | None = None
+        self.failures = 0
+        self._warn_at = WARN_AFTER
 
     async def run(self) -> None:
         backoff = Backoff()
@@ -77,7 +81,9 @@ class Shipper:
                 await self._resume()
                 while not self.done:
                     changed = self.store.changed()
-                    if await self._ship():
+                    shipped = await self._ship()
+                    self._works()
+                    if shipped:
                         backoff.reset()
                         continue
                     if self.done:
@@ -107,10 +113,30 @@ class Shipper:
                     self.refused = str(e)
                     log.error("run %s: shipping refused: %s", self.run_id, e)
                     return
+                self._failed(e)
                 await backoff.wait(e.retry_after)
             except (httpx2.TransportError, OSError) as e:
                 log.debug("run %s: control plane unreachable: %s", self.run_id, e)
+                self._failed(e)
                 await backoff.wait()
+        self._works()
+
+    def _failed(self, error: Exception) -> None:
+        """Warn at the WARN_AFTER-th failure in a row, then each time the count doubles."""
+        self.failures += 1
+        if self.failures == self._warn_at:
+            self._warn_at *= 2
+            why = str(error) or type(error).__name__
+            log.warning(
+                "run %s: shipping failed %d times in a row: %s", self.run_id, self.failures, why
+            )
+
+    def _works(self) -> None:
+        if self.failures >= WARN_AFTER:
+            log.warning(
+                "run %s: shipping works again after %d failures", self.run_id, self.failures
+            )
+        self.failures, self._warn_at = 0, WARN_AFTER
 
     async def _resume(self) -> None:
         """Find where the server's copy ends and the same place in the local log."""

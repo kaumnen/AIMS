@@ -45,7 +45,7 @@ from aims.events.blobs import decode
 from aims.models import DeltaBus
 from aims.node.client import FEED, ApiError, ControlClient
 from aims.node.link import Link
-from aims.node.shipper import Shipper
+from aims.node.shipper import WARN_AFTER, Shipper
 from aims.prompts import Prompts
 from aims.run.job import Job
 from aims.run.runner import resolve_texts
@@ -467,6 +467,107 @@ async def test_a_wrong_version_runner_is_refused(cp: CP) -> None:
         await client.hello(hello)
     assert caught.value.code == "version"
     await client.aclose()
+
+
+@pytest.fixture
+def no_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("aims.node.shipper.BACKOFF_MIN_S", 0.0)
+
+
+RETRIED = ["ConnectTimeout", "409 Conflict: say hello first", "503 Busy"]
+
+
+def retried(n: int) -> list[httpx2.Response | Exception]:
+    """`n` failures a shipper retries: a timeout, no hello yet and a busy server, in turn."""
+
+    def one(i: int) -> httpx2.Response | Exception:
+        match i % 3:
+            case 0:
+                return httpx2.ConnectTimeout("")
+            case 1:
+                hello = {"title": "Conflict", "detail": "say hello first", "code": "hello"}
+                return httpx2.Response(409, json=hello)
+            case _:
+                return httpx2.Response(503, json={"title": "Busy"})
+
+    return [one(i) for i in range(n)]
+
+
+async def ship_through(
+    local: LocalEventStore, run_id: str, failures: list[httpx2.Response | Exception]
+) -> Shipper:
+    """Ship `run_id` to a control plane that fails each call with `failures` in turn, then
+    holds the whole run."""
+    head = await local.head(run_id)
+    assert head is not None
+    held = {"heads": {run_id: {"seq": head.seq, "hash": head.hash, "truth": True}}}
+    replies = iter(failures)
+
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        reply = next(replies, None)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply if reply is not None else httpx2.Response(200, json=held)
+
+    transport = httpx2.MockTransport(handle)
+    client = ControlClient("http://cp.test", "token", runner="r", transport=transport)
+    try:
+        return await ship(local, client, run_id)
+    finally:
+        await client.aclose()
+
+
+def said(caplog: pytest.LogCaptureFixture) -> list[tuple[str, str]]:
+    return [(r.levelname, r.getMessage()) for r in caplog.records if r.name == "aims.node"]
+
+
+@pytest.mark.parametrize(
+    ("fails", "warned"),
+    [
+        (WARN_AFTER - 1, []),
+        (WARN_AFTER, [WARN_AFTER]),
+        (2 * WARN_AFTER - 1, [WARN_AFTER]),
+        (4 * WARN_AFTER, [WARN_AFTER, 2 * WARN_AFTER, 4 * WARN_AFTER]),
+    ],
+)
+async def test_a_run_that_keeps_failing_to_ship_says_why_now_and_then(
+    local: LocalEventStore,
+    no_backoff: None,
+    caplog: pytest.LogCaptureFixture,
+    fails: int,
+    warned: list[int],
+) -> None:
+    run_id = await local.create_run(STARTED)
+    await local.append(run_id, [Draft(RunFinished(status="completed"))])
+    with caplog.at_level(logging.INFO, logger="aims.node"):
+        shipper = await ship_through(local, run_id, retried(fails))
+    assert (shipper.done, shipper.truthful, shipper.refused) == (True, True, None)
+    want = [
+        ("WARNING", f"run {run_id}: shipping failed {n} times in a row: {RETRIED[(n - 1) % 3]}")
+        for n in warned
+    ]
+    if warned:
+        want.append(("WARNING", f"run {run_id}: shipping works again after {fails} failures"))
+    assert said(caplog) == want
+
+
+@pytest.mark.parametrize("fails", [0, WARN_AFTER])
+async def test_a_refused_run_says_so_once_after_any_failures(
+    local: LocalEventStore, no_backoff: None, caplog: pytest.LogCaptureFixture, fails: int
+) -> None:
+    run_id = await local.create_run(STARTED)
+    owner = {"title": "Forbidden", "detail": "not yours", "code": "owner"}
+    with caplog.at_level(logging.INFO, logger="aims.node"):
+        shipper = await ship_through(
+            local, run_id, [*retried(fails), httpx2.Response(403, json=owner)]
+        )
+    assert shipper.refused == "403 Forbidden: not yours"
+    last = RETRIED[(WARN_AFTER - 1) % 3]
+    warned = [("WARNING", f"run {run_id}: shipping failed {fails} times in a row: {last}")]
+    assert said(caplog) == [
+        *(warned if fails else []),
+        ("ERROR", f"run {run_id}: shipping refused: 403 Forbidden: not yours"),
+    ]
 
 
 # Jobs and commands
