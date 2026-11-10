@@ -1777,6 +1777,70 @@ async def test_a_link_logs_a_shipper_that_dies_of_an_error(
     await link.close()
 
 
+@pytest.mark.parametrize(
+    ("fails", "refused_from", "lines"),
+    [
+        pytest.param(WARN_AFTER - 1, None, [], id="unreachable-4"),
+        pytest.param(WARN_AFTER, None, ["streak", "back"], id="unreachable-5"),
+        pytest.param(WARN_AFTER - 1, 1, ["now"], id="refused-4"),
+        pytest.param(WARN_AFTER, 1, ["now", "streak", "back"], id="refused-5"),
+        pytest.param(WARN_AFTER, 3, ["now", "streak", "back"], id="upgraded-5"),
+        pytest.param(WARN_AFTER, WARN_AFTER, ["streak", "back"], id="refused-on-the-5th"),
+    ],
+)
+async def test_a_link_says_when_it_cannot_reach_the_control_plane_and_when_it_can(
+    local: LocalEventStore,
+    no_backoff: None,
+    caplog: pytest.LogCaptureFixture,
+    fails: int,
+    refused_from: int | None,
+    lines: list[str],
+) -> None:
+    """Unreachable, then from hello `refused_from` on refused as a runner of another version.
+    The first refusal shows at once unless the streak's own line already shows it."""
+    hellos = 0
+    version = {"title": "Conflict", "detail": "runner 0.0.1 does not match", "code": "version"}
+
+    async def open_stream() -> AsyncIterator[bytes]:
+        await asyncio.Event().wait()
+        yield b""
+
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        nonlocal hellos
+        if request.url.path.endswith("/hello"):
+            hellos += 1
+            if hellos <= fails and refused_from is not None and hellos >= refused_from:
+                return httpx2.Response(409, json=version)
+            if hellos <= fails:
+                raise httpx2.ConnectError("All connection attempts failed")
+            return httpx2.Response(200, json={"name": "r1"})
+        sse = {"content-type": "text/event-stream"}
+        return httpx2.Response(200, headers=sse, content=open_stream())
+
+    client = ControlClient(
+        "http://cp.test", "token", runner="r1", transport=httpx2.MockTransport(handle)
+    )
+    link = Link(client, local, DeltaBus())
+    with caplog.at_level(logging.INFO, logger="aims.node"):
+        task = asyncio.create_task(link._stream())
+        async with asyncio.timeout(5):
+            await link.connected.wait()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    await client.aclose()
+    assert hellos == fails + 1
+    refusal = "409 Conflict: runner 0.0.1 does not match"
+    why = "All connection attempts failed" if refused_from is None else refusal
+    to = "the link to the control plane at http://cp.test"
+    told = {
+        "now": f"control plane: {refusal}",
+        "streak": f"{to} failed {fails} times in a row: {why}",
+        "back": f"{to} works again after {fails} failures",
+    }
+    assert said(caplog) == [("WARNING", told[line]) for line in lines]
+
+
 async def test_the_end_of_a_ship_does_not_drop_the_ship_that_replaced_it(
     local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -15,7 +15,7 @@ from aims.aio import shielded
 from aims.events import LocalEventStore
 from aims.models import Delta, DeltaBus
 from aims.node.client import FEED, ApiError, ControlClient
-from aims.node.shipper import Backoff, Shipper
+from aims.node.shipper import Backoff, Shipper, Streak
 from aims.run.runner import RunError, Runner
 from aims.wire import (
     BASE_KINDS,
@@ -233,6 +233,8 @@ class Link:
 
     async def _stream(self) -> None:
         backoff = Backoff()
+        streak = Streak(f"the link to the control plane at {self.client.url}")
+        refused = False
         while True:
             try:
                 reply = await self.client.hello(self.hello())
@@ -245,6 +247,8 @@ class Link:
                 async with self.client.stream(self._last_id) as source:
                     self.connected.set()
                     backoff.reset()
+                    streak.works()
+                    refused = False
                     async for sse in source:
                         if sse.event not in ("command", "offer"):
                             continue
@@ -257,12 +261,17 @@ class Link:
             except asyncio.CancelledError:
                 raise
             except ApiError as e:
-                log.warning("control plane: %s", e)
                 self.connected.clear()
+                # the first refusal since the last good connect shows at once, as a bad token
+                # or a version mismatch will not pass by waiting
+                if not streak.failed(e) and not refused:
+                    log.warning("control plane: %s", e)
+                refused = True
                 await backoff.wait(e.retry_after)
             except (httpx2.TransportError, OSError, ValueError) as e:
                 log.debug("control plane stream ended: %s", e)
                 self.connected.clear()
+                streak.failed(e)
                 await backoff.wait()
             else:
                 self.connected.clear()
