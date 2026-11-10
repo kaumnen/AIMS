@@ -1,7 +1,10 @@
-import { queryOptions } from "@tanstack/react-query";
+import { infiniteQueryOptions, queryOptions } from "@tanstack/react-query";
 
 import { client, type Schemas } from "./client";
 
+export type AuditEntry = Schemas["AuditEntry"];
+export type AuditOutcome = AuditEntry["outcome"];
+export type AuditPage = Schemas["AuditPage"];
 export type RunnerInfo = Schemas["RunnerInfo"];
 export type ProviderCredit = Schemas["ProviderCredit"];
 export type TokenInfo = Schemas["TokenInfo"];
@@ -52,6 +55,43 @@ export async function createToken(name: string, role: TokenRole): Promise<string
 export async function revokeToken(name: string): Promise<void> {
   const { error } = await client.DELETE("/api/tokens/{name}", { params: { path: { name } } });
   if (error) throw error;
+}
+
+// Each field is a GET /api/audit query parameter; times are ISO 8601.
+export interface AuditFilters {
+  action?: string;
+  token?: string;
+  outcome?: AuditOutcome;
+  since?: string;
+  until?: string;
+}
+
+export const AUDIT_PAGE = 100;
+
+// Operators only: the audit log, newest first, a page at a time.
+export function auditQuery(filters: AuditFilters) {
+  return infiniteQueryOptions({
+    queryKey: ["audit", filters] as const,
+    queryFn: async ({ pageParam, signal }): Promise<AuditPage> => {
+      const before = pageParam === null ? {} : { before: pageParam };
+      const { data, error } = await client.GET("/api/audit", {
+        params: { query: { ...filters, limit: AUDIT_PAGE, ...before } },
+        signal,
+      });
+      if (error) throw error;
+      // the JSON page; JSON Lines come only with format=jsonl
+      return data as AuditPage;
+    },
+    initialPageParam: null as number | null,
+    getNextPageParam: (last) => last.next,
+  });
+}
+
+// Every row that matches, as JSON Lines. A link, so the browser saves it as it streams.
+export function auditExport(filters: AuditFilters): string {
+  const query = new URLSearchParams({ format: "jsonl" });
+  for (const [key, value] of Object.entries(filters)) if (value) query.set(key, value);
+  return `/api/audit?${query}`;
 }
 
 // The live copy of a runner wins over the listed one; runners only the list knows stay.

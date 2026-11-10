@@ -22,6 +22,7 @@ from aims.run.rates import Rates, gather
 from aims.run.runner import RunError
 from aims.run.score import CheckError, rule_plants
 from aims.run.scoring import CLASSIFIERS, ScoreError, ScoreEstimate, estimate_sealed
+from aims.server import audit
 from aims.server import db as sdb
 from aims.server.api import (
     Operator,
@@ -58,13 +59,21 @@ class StartScore(BaseModel):
 
 
 @router.post("/runs/{run_id}/score", status_code=202, tags=["score"], responses=responses(404, 409))
+@audit.audited("run.score")
 async def score_run(
-    run_id: str, body: StartScore, principal: Operator, state: State, sources: SourcesDep
+    run_id: str,
+    body: StartScore,
+    principal: Operator,
+    state: State,
+    sources: SourcesDep,
+    note: audit.Note,
 ) -> Started:
     """Queue a score of a sealed run against its truth file. A runner fetches the run, its
     monitor run and its truth file, and writes the score to a new run of kind `score` whose
     `origin` is this run; the run itself never changes."""
-    return await queue_score(state, principal.name, _run_id(run_id), body, sources)
+    started = await queue_score(state, principal.name, _run_id(run_id), body, sources)
+    note.detail = audit.runs(started.run_ids)
+    return started
 
 
 async def score_after(state: ServerState, run_id: str) -> None:
@@ -232,8 +241,12 @@ async def get_labels(run_id: str, principal: Viewer, state: State) -> list[Label
 
 
 @router.post("/runs/{run_id}/labels", status_code=201, tags=["score"], responses=responses(404))
-async def post_label(run_id: str, body: LabelBody, principal: Operator, state: State) -> Label:
+@audit.audited("run.label")
+async def post_label(
+    run_id: str, body: LabelBody, principal: Operator, state: State, note: audit.Note
+) -> Label:
     """Label a monitor flag of the run for review, beside the run's log; the newest counts."""
+    note.detail = f"flag {body.flag} {body.label}"
     if await state.store.run(_run_id(run_id)) is None:
         raise ProblemException(404, "Not found", f"no run {run_id}")
     try:

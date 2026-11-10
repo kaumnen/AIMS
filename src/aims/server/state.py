@@ -15,6 +15,7 @@ from aims.monitor.config import MonitorConfigError
 from aims.prompts import TextError
 from aims.run.estimate import History, history
 from aims.scenario import Scenario
+from aims.server import audit
 from aims.server.auth import Auth
 from aims.server.db import Job, ServerDB, hash_secret
 from aims.server.problems import ProblemException
@@ -318,11 +319,14 @@ async def open_state(
     tls: bool = False,
     public_url: str | None = None,
 ) -> ServerState:
-    """The control plane's stores under `data`: `runs/` (ingest only) and `server.sqlite`.
-    `public_url` is the address people open, for links the server writes."""
+    """The control plane's stores under `data`: `runs/` (ingest only) and `server.sqlite`,
+    with expired sessions and old audit rows dropped. `public_url` is the address people open,
+    for links the server writes."""
     db = await ServerDB.open(data / "server.sqlite")
+    config = ConfigCache(project)
     try:
         await db.prune_sessions()
+        await audit.prune(db, config.layers)
         store = await LocalEventStore.open(data / "runs", ingest_only=True)
     except BaseException:
         await db.close()
@@ -332,7 +336,7 @@ async def open_state(
         store=store,
         db=db,
         auth=Auth(db, enabled=auth, tls=tls, scope=cookie_scope(data)),
-        config=ConfigCache(project),
+        config=config,
         public_url=public_url,
     )
     store.listeners.append(state.changes.touch)

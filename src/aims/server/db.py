@@ -1,6 +1,6 @@
 """State of the control plane that the run logs cannot rebuild: who may call it, which runners
-it knows, the jobs it hands out and the commands it sends. Kept apart from index.sqlite, which a
-rebuild wipes."""
+it knows, the jobs it hands out, the commands it sends and the audit log of what callers
+changed. Kept apart from index.sqlite, which a rebuild wipes."""
 
 import asyncio
 import base64
@@ -9,30 +9,60 @@ import json
 import secrets
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
 import aiosqlite
 
-VERSION = 3
+VERSION = 4
 SESSION_DAYS = 30
+# a token's last use is noted at most this often
+USE_S = 60.0
 TOKEN_PREFIX = "aims_"
 
 Role = Literal["viewer", "operator", "runner"]
 JobState = Literal["waiting", "queued", "offered", "claimed", "running", "done", "cancelled"]
+Outcome = Literal["ok", "refused", "error"]
 ROLES: tuple[Role, ...] = ("viewer", "operator", "runner")
 # The operator token `aims ui` rotates at each start, for its launch link and local commands.
 UI_TOKEN = "ui"
 OPEN_STATES: tuple[JobState, ...] = ("waiting", "queued", "offered", "claimed", "running")
 
-SCHEMA = """
+# One row per write to the control plane, refused ones too; `at_us` is microseconds since the
+# epoch, UTC. Rows go only when they pass `[audit] keep_days`.
+AUDIT = """
+create table audit (
+    id integer primary key autoincrement,
+    at_us integer not null,
+    token text,
+    role text,
+    auth text,
+    action text not null,
+    target text,
+    outcome text not null check (outcome in ('ok', 'refused', 'error')),
+    status integer,
+    ip text,
+    detail text
+) strict;
+
+create index audit_by_time on audit (at_us);
+
+create trigger audit_append_only before update on audit
+begin
+    select raise(abort, 'the audit log is append-only');
+end;
+"""
+
+SCHEMA = (
+    """
 create table tokens (
     name text primary key,
     sha256 text not null unique,
     role text not null check (role in ('viewer', 'operator', 'runner')),
     created real not null,
-    revoked real
+    revoked real,
+    last_used real
 ) strict;
 
 create table sessions (
@@ -95,6 +125,8 @@ create table runs (
     shipper text
 ) strict;
 """
+    + AUDIT
+)
 
 # v2 had no runs.shipper. Its runner names never changed token, so the token a name is bound
 # to is the one that shipped every run of that name.
@@ -102,6 +134,8 @@ MIGRATE_2 = """
 alter table runs add column shipper text;
 update runs set shipper = (select token from runners where runners.name = runs.runner);
 """
+MIGRATE_3 = "alter table tokens add column last_used real;" + AUDIT
+MIGRATIONS = {2: MIGRATE_2 + MIGRATE_3, 3: MIGRATE_3}
 
 
 def _private_dir(path: Path) -> None:
@@ -120,10 +154,36 @@ def new_token() -> str:
 
 @dataclass(frozen=True, slots=True)
 class Token:
+    """`last_used` is when a request last came with it, to within `USE_S`; None if never."""
+
     name: str
     role: Role
     created: float
     revoked: float | None = None
+    last_used: float | None = field(default=None, compare=False)
+
+
+@dataclass(frozen=True, slots=True)
+class AuditRow:
+    """One write to the control plane, or a failed sign-in. `at` is seconds since the epoch,
+    kept to the microsecond. `token`, `role` and `auth` say who sent it and how; all None for
+    the server's own housekeeping. `status` is the HTTP status, None outside a request."""
+
+    at: float
+    action: str
+    outcome: Outcome
+    token: str | None = None
+    role: str | None = None
+    auth: str | None = None
+    target: str | None = None
+    status: int | None = None
+    ip: str | None = None
+    detail: str | None = None
+    id: int | None = None
+
+
+def _us(seconds: float) -> int:
+    return round(seconds * 1_000_000)
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,9 +261,10 @@ class ServerDB:
                 await db.executescript(
                     f"begin immediate; {SCHEMA} pragma user_version = {VERSION}; commit;"
                 )
-            elif version == 2:
+            elif version in MIGRATIONS:
                 await db.executescript(
-                    f"begin immediate; {MIGRATE_2} pragma user_version = {VERSION}; commit;"
+                    f"begin immediate; {MIGRATIONS[version]}"
+                    f" pragma user_version = {VERSION}; commit;"
                 )
             elif version != VERSION:
                 raise RuntimeError(f"{path} has schema version {version}, not {VERSION}")
@@ -238,7 +299,7 @@ class ServerDB:
         token = new_token()
         try:
             await self._write(
-                "insert into tokens values (?, ?, ?, ?, null)",
+                "insert into tokens (name, sha256, role, created) values (?, ?, ?, ?)",
                 (name, hash_secret(token), role, time.time()),
             )
         except aiosqlite.IntegrityError:
@@ -250,15 +311,22 @@ class ServerDB:
         made with the token stay."""
         token = new_token()
         await self._write(
-            "insert into tokens values (?, ?, ?, ?, null) on conflict (name) do update set"
+            "insert into tokens (name, sha256, role, created) values (?, ?, ?, ?)"
+            " on conflict (name) do update set"
             " sha256 = excluded.sha256, role = excluded.role, revoked = null",
             (name, hash_secret(token), role, time.time()),
         )
         return token
 
+    _TOKEN = "select name, role, created, revoked, last_used from tokens"
+
     async def tokens(self) -> list[Token]:
-        rows = await self._all("select name, role, created, revoked from tokens order by created")
+        rows = await self._all(f"{self._TOKEN} order by created")
         return [Token(*r) for r in rows]
+
+    async def token(self, name: str) -> Token | None:
+        row = await self._one(f"{self._TOKEN} where name = ?", (name,))
+        return None if row is None else Token(*row)
 
     async def live_token(self, name: str) -> bool:
         return (
@@ -281,12 +349,24 @@ class ServerDB:
             await self._db.execute("commit")
         return cur.rowcount > 0
 
-    async def token_for(self, secret: str) -> Token | None:
+    async def token_for(self, secret: str, *, used: bool = True) -> Token | None:
+        """The live token whose value is `secret`; a lookup counts as a use unless `used` is
+        False."""
         row = await self._one(
-            "select name, role, created, revoked from tokens where sha256 = ? and revoked is null",
-            (hash_secret(secret),),
+            f"{self._TOKEN} where sha256 = ? and revoked is null", (hash_secret(secret),)
         )
-        return None if row is None else Token(*row)
+        if row is None:
+            return None
+        token = Token(*row)
+        if used:
+            await self._used(token)
+        return token
+
+    async def _used(self, token: Token) -> None:
+        """Note a use of `token`, at most once per USE_S, as sessions note theirs."""
+        at = time.time()
+        if token.last_used is None or at - token.last_used >= USE_S:
+            await self._write("update tokens set last_used = ? where name = ?", (at, token.name))
 
     async def create_session(self, token: str) -> str:
         session = secrets.token_urlsafe(32)
@@ -302,25 +382,109 @@ class ServerDB:
         key = hash_secret(session)
         at = time.time()
         row = await self._one(
-            "select t.name, t.role, t.created, t.revoked, s.last_seen from sessions s"
+            "select t.name, t.role, t.created, t.revoked, t.last_used, s.last_seen from sessions s"
             " join tokens t on t.name = s.token"
             " where s.id_sha256 = ? and s.expires > ? and t.revoked is null",
             (key, at),
         )
         if row is None:
             return None
-        if at - row[4] > 60:
+        if at - row[5] > 60:
             await self._write(
                 "update sessions set last_seen = ?, expires = ? where id_sha256 = ?",
                 (at, at + SESSION_DAYS * 86400, key),
             )
-        return Token(*row[:4])
+        token = Token(*row[:5])
+        await self._used(token)
+        return token
 
     async def end_session(self, session: str) -> None:
         await self._write("delete from sessions where id_sha256 = ?", (hash_secret(session),))
 
     async def prune_sessions(self) -> int:
         return await self._write("delete from sessions where expires <= ?", (time.time(),))
+
+    # The audit log
+
+    async def add_audit(self, row: AuditRow) -> None:
+        await self._write(
+            "insert into audit (at_us, token, role, auth, action, target, outcome, status, ip,"
+            " detail) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                _us(row.at),
+                row.token,
+                row.role,
+                row.auth,
+                row.action,
+                row.target,
+                row.outcome,
+                row.status,
+                row.ip,
+                row.detail,
+            ),
+        )
+
+    async def audit_rows(
+        self,
+        *,
+        limit: int,
+        before: int | None = None,
+        action: str | None = None,
+        token: str | None = None,
+        outcome: Outcome | None = None,
+        since: float | None = None,
+        until: float | None = None,
+    ) -> list[AuditRow]:
+        """Rows newest first, below id `before`. `action` keeps that action and the actions
+        under it: `run` keeps `run.kill`, `run.kill` only itself. `since` and `until` are
+        seconds since the epoch and both count."""
+        where: list[str] = []
+        args: list[Any] = []
+        if before is not None:
+            where.append("id < ?")
+            args.append(before)
+        if action:
+            family = action.rstrip(".")
+            where.append("(action = ? or substr(action, 1, ?) = ?)")
+            args += [family, len(family) + 1, f"{family}."]
+        if token is not None:
+            where.append("token = ?")
+            args.append(token)
+        if outcome is not None:
+            where.append("outcome = ?")
+            args.append(outcome)
+        if since is not None:
+            where.append("at_us >= ?")
+            args.append(_us(since))
+        if until is not None:
+            where.append("at_us <= ?")
+            args.append(_us(until))
+        clause = f"where {' and '.join(where)}" if where else ""
+        rows = await self._all(
+            "select id, at_us, token, role, auth, action, target, outcome, status, ip, detail"
+            f" from audit {clause} order by id desc limit ?",
+            (*args, limit),
+        )
+        return [
+            AuditRow(
+                at=r[1] / 1_000_000,
+                token=r[2],
+                role=r[3],
+                auth=r[4],
+                action=r[5],
+                target=r[6],
+                outcome=r[7],
+                status=r[8],
+                ip=r[9],
+                detail=r[10],
+                id=r[0],
+            )
+            for r in rows
+        ]
+
+    async def prune_audit(self, before: float) -> int:
+        """Drop the rows written before `before`, in seconds since the epoch."""
+        return await self._write("delete from audit where at_us < ?", (_us(before),))
 
     # Runners
 

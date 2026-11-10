@@ -4,6 +4,29 @@
  */
 
 export interface paths {
+    "/api/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Audit
+         * @description The audit log, newest first: each write sent to `/api`, refused ones too, with each
+         *     failed sign-in. `action` keeps that action and the ones under it, so `run` keeps
+         *     `run.kill`. `since` and `until` are times, UTC unless they say. `before` is the `next` of
+         *     the page before. `format=jsonl` gives every row that matches as JSON Lines, to save.
+         */
+        get: operations["list_audit"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/config": {
         parameters: {
             query?: never;
@@ -1831,6 +1854,42 @@ export interface components {
             reports?: components["schemas"]["AgentText"][];
         };
         /**
+         * AuditEntry
+         * @description A write to the control plane or a failed sign-in. `at` is UTC. `auth` is how the caller
+         *     came: a `bearer` token, a session `cookie`, `open` when sign-in is off, a `token` or a
+         *     launch `code` to sign in, or `cli` for `aims token` on the server's machine. `token`,
+         *     `role` and `auth` are null for a failed sign-in with no known token and for the server's
+         *     own housekeeping. `status` is the HTTP status, null outside a request. `detail` says a
+         *     little more, or why a refused write was refused.
+         */
+        AuditEntry: {
+            /** Action */
+            action: string;
+            /** At */
+            at: string;
+            /** Auth */
+            auth: string | null;
+            /** Detail */
+            detail: string | null;
+            /** Id */
+            id: number;
+            /** Ip */
+            ip: string | null;
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "ok" | "refused" | "error";
+            /** Role */
+            role: string | null;
+            /** Status */
+            status: number | null;
+            /** Target */
+            target: string | null;
+            /** Token */
+            token: string | null;
+        };
+        /**
          * AuditLost
          * @description The kernel audit missed events. `count` is None when the number is unknown.
          *
@@ -1861,6 +1920,13 @@ export interface components {
              * @default null
              */
             ts_to: number | null;
+        };
+        /** AuditPage */
+        AuditPage: {
+            /** Items */
+            items: components["schemas"]["AuditEntry"][];
+            /** Next */
+            next: number | null;
         };
         /**
          * AuditSpill
@@ -7250,6 +7316,11 @@ export interface components {
         TokenInfo: {
             /** Created */
             created: number;
+            /**
+             * Last Used
+             * @description When a request last came with it, to the minute; null if never.
+             */
+            last_used: number | null;
             /** Name */
             name: string;
             /** Revoked */
@@ -7564,6 +7635,63 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    list_audit: {
+        parameters: {
+            query?: {
+                before?: number | null;
+                limit?: number;
+                action?: string | null;
+                token?: string | null;
+                outcome?: ("ok" | "refused" | "error") | null;
+                since?: string | null;
+                until?: string | null;
+                format?: "json" | "jsonl";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditPage"];
+                    "application/x-ndjson": string;
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     config_layers: {
         parameters: {
             query?: never;
@@ -13095,6 +13223,8 @@ type ReadonlyArray<T> = [
 ] extends [
     unknown[]
 ] ? Readonly<Exclude<T, undefined>> : Readonly<Exclude<T, undefined>[]>;
+export const pathsApiAuditGetParametersQueryOutcomeAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/audit"]["get"]["parameters"]["query"]["outcome"]> = ["ok", "refused", "error"];
+export const pathsApiAuditGetParametersQueryFormatValues: ReadonlyArray<FlattenedDeepRequired<paths>["/api/audit"]["get"]["parameters"]["query"]["format"]> = ["json", "jsonl"];
 export const pathsApiConfigLayerGetParametersPathLayerValues: ReadonlyArray<FlattenedDeepRequired<paths>["/api/config/{layer}"]["get"]["parameters"]["path"]["layer"]> = ["user", "project"];
 export const pathsApiConfigLayerPutParametersPathLayerValues: ReadonlyArray<FlattenedDeepRequired<paths>["/api/config/{layer}"]["put"]["parameters"]["path"]["layer"]> = ["user", "project"];
 export const pathsApiConfigLayerPatchParametersPathLayerValues: ReadonlyArray<FlattenedDeepRequired<paths>["/api/config/{layer}"]["patch"]["parameters"]["path"]["layer"]> = ["user", "project"];
@@ -13118,6 +13248,7 @@ export const agentStartedBackendAnyOf0Values: ReadonlyArray<FlattenedDeepRequire
 export const agentStepSourceValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentStep"]["source"]> = ["live", "replay"];
 export const agentStepStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentStep"]["status"]> = ["completed", "incomplete", "error", "cancelled"];
 export const anomalyKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Anomaly"]["kind"]> = ["behaviour", "environment"];
+export const auditEntryOutcomeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AuditEntry"]["outcome"]> = ["ok", "refused", "error"];
 export const auditLostScopeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AuditLost"]["scope"]> = ["sandbox", "tracer"];
 export const budgetChangeKeyValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["BudgetChange"]["key"]> = ["steps", "output_tokens", "cost_usd", "wall_s"];
 export const budgetChangeScopeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["BudgetChange"]["scope"]> = ["agent", "run"];

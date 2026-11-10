@@ -98,6 +98,7 @@ function Tokens() {
             <th className="py-1 pr-4 font-normal">Name</th>
             <th className="py-1 pr-4 font-normal">Role</th>
             <th className="py-1 pr-4 font-normal max-md:hidden">Created</th>
+            <th className="py-1 pr-4 font-normal">Last used</th>
             <th className="py-1 pr-4 font-normal">State</th>
             <th className="py-1 font-normal">
               <span className="sr-only">Actions</span>
@@ -146,6 +147,13 @@ function Row({ t, mine, onRevoke }: { t: TokenInfo; mine: boolean; onRevoke: () 
       <td className="py-1.5 pr-4 max-md:hidden" title={fullTime(iso(t.created))}>
         {started(iso(t.created))}
       </td>
+      {t.last_used == null ? (
+        <td className="text-muted-foreground py-1.5 pr-4">never</td>
+      ) : (
+        <td className="py-1.5 pr-4" title={fullTime(iso(t.last_used))}>
+          {started(iso(t.last_used))}
+        </td>
+      )}
       <td className="py-1.5 pr-4">
         {t.revoked == null ? (
           "Live"

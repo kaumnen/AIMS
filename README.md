@@ -461,6 +461,8 @@ effort = "high"
 
 `aims init` writes a commented starter file. `aims config` shows which files are read. `aims prompts show` prints every text with its current value.
 
+The control plane keeps an audit log of every change sent to it and every failed sign-in. Operators read it under **Settings** > **Audit** or with `aims audit`. Rows stay 90 days. `keep_days` under `[audit]` changes that. 0 keeps them all. [SECURITY.md](https://github.com/kaumnen/AIMS/blob/main/SECURITY.md#audit-log) says what a row holds.
+
 ## Deploy
 
 ### Docker Compose
@@ -580,7 +582,8 @@ A scenario image that no run used in 30 days is removed when `aims run`, `aims r
 | `aims runner` | Take jobs from a control plane |
 | `aims push` | Ship runs recorded without a control plane |
 | `aims control` | Pause, resume, deny, inject, kill, cancel or sweep a run |
-| `aims token create`, `list`, `revoke` | Manage the control plane's tokens |
+| `aims token create`, `list`, `revoke` | Manage the control plane's tokens and see when each was last used |
+| `aims audit` | Show who changed what on the control plane, refused tries and failed sign-ins too |
 | `aims monitor` | Feed sealed runs through the monitor again |
 | `aims score` | Score a sealed run against its plants |
 | `aims check` | List the plants each agent took, without a model |

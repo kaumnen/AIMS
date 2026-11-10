@@ -23,6 +23,7 @@ from aims import __version__
 from aims.events.schema import payload_types
 from aims.server import (
     api,
+    audit_api,
     dispatch,
     edit_api,
     estimate_api,
@@ -33,6 +34,7 @@ from aims.server import (
     score_api,
     stream,
 )
+from aims.server.audit import AuditLog
 from aims.server.auth import HEADERS, SecurityHeaders
 from aims.server.codings import allowed
 from aims.server.files import Sources
@@ -103,8 +105,10 @@ def create_app(
     app.include_router(estimate_api.router)
     app.include_router(score_api.router)
     app.include_router(report_api.router)
+    app.include_router(audit_api.router)
     app.include_router(stream.router)
     app.include_router(runner_api.router)
+    app.add_middleware(AuditLog, db=state.db)
     app.add_middleware(BodyLimit)
     app.add_middleware(SecurityHeaders)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=[*LOOPBACK, *hosts])

@@ -23,6 +23,7 @@ from aims.cli import EXIT_CANCELLED, app
 from aims.events import Draft, LocalEventStore, RunFinished, RunStarted, ToolCall
 from aims.node.service import Node, NodeOptions
 from aims.sandbox import DockerBackend, SandboxSpec
+from aims.server.db import ServerDB
 from aims.server.serve import (
     UI_RUNNER,
     ServeError,
@@ -708,12 +709,29 @@ def test_tokens_from_the_cli(tmp_path: Path) -> None:
     again = runner.invoke(app, ["token", "create", "ci", "--data-dir", str(tmp_path)])
     assert again.exit_code == 1
     listed = runner.invoke(app, ["token", "list", "--data-dir", str(tmp_path)])
-    assert re.search(r"^ci  runner  .*  live$", listed.output, re.M)
+    assert re.search(r"^ci  runner  .*  live  never$", listed.output, re.M)
+
+    async def use() -> None:
+        db = await ServerDB.open(tmp_path / "server.sqlite")
+        try:
+            assert await db.token_for(made.output.strip()) is not None
+        finally:
+            await db.close()
+
+    asyncio.run(use())
+    listed = runner.invoke(app, ["token", "list", "--data-dir", str(tmp_path)])
+    assert re.search(r"^ci  runner  .*  live  used \d{4}-\d\d-\d\d \d\d:\d\d$", listed.output, re.M)
     gone = runner.invoke(app, ["token", "revoke", "ci", "--data-dir", str(tmp_path)])
     assert gone.exit_code == 0
     listed = runner.invoke(app, ["token", "list", "--data-dir", str(tmp_path)])
     assert "revoked" in listed.output
     assert made.output.strip() not in (tmp_path / "server.sqlite").read_text(errors="ignore")
+    trail = runner.invoke(app, ["audit", "--data-dir", str(tmp_path)])
+    assert [line.split("  ")[1:5] for line in trail.output.splitlines()] == [
+        ["-", "token.revoke", "ci", "ok"],
+        ["-", "token.create", "ci", "refused"],
+        ["-", "token.create", "ci", "ok"],
+    ]
 
 
 def test_a_token_file_is_kept_while_it_holds_the_live_token(tmp_path: Path) -> None:
@@ -746,13 +764,22 @@ def test_a_token_file_is_kept_while_it_holds_the_live_token(tmp_path: Path) -> N
     )
     assert made() != third
     listed = runner.invoke(app, ["token", "list", "--data-dir", str(tmp_path)])
-    assert re.search(r"^compose  runner  .*  live$", listed.output, re.M)
+    assert re.search(r"^compose  runner  .*  live  never$", listed.output, re.M)
     assert runner.invoke(app, [*args[:3], "--role", "viewer", *args[5:]]).exit_code == 0
     assert re.search(
         r"^compose  viewer ",
         runner.invoke(app, ["token", "list", "--data-dir", str(tmp_path)]).output,
         re.M,
     )
+    trail = runner.invoke(app, ["audit", "--data-dir", str(tmp_path), "--action", "token"])
+    assert [line.split("  ")[2] for line in trail.output.splitlines()] == [
+        "token.rotate",
+        "token.rotate",
+        "token.revoke",
+        "token.rotate",
+        "token.rotate",
+        "token.rotate",
+    ]
 
 
 def test_the_openapi_export_is_stable_and_committed(tmp_path: Path) -> None:

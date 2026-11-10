@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from aims.server.db import VERSION, Job, ServerDB
+from aims.server.db import VERSION, AuditRow, Job, Outcome, ServerDB
 from aims.server.state import close_state, open_state
 
 pytestmark = pytest.mark.anyio
@@ -165,6 +165,18 @@ async def test_runs_keep_their_first_runner_and_divergence(db: ServerDB) -> None
     assert got.diverged == "event 3 differs"
 
 
+def downgrade(path: Path, version: int) -> None:
+    """Make the database at `path` look like one of schema `version`."""
+    raw = sqlite3.connect(path)
+    raw.execute("drop table audit")
+    raw.execute("alter table tokens drop column last_used")
+    if version < 3:
+        raw.execute("alter table runs drop column shipper")
+    raw.execute(f"pragma user_version = {version}")
+    raw.commit()
+    raw.close()
+
+
 async def test_a_v2_db_learns_which_token_shipped_each_run(tmp_path: Path) -> None:
     path = tmp_path / "server.sqlite"
     db = await ServerDB.open(path)
@@ -173,18 +185,101 @@ async def test_a_v2_db_learns_which_token_shipped_each_run(tmp_path: Path) -> No
     await db.attribute(pushed, "box", "push")
     await db.attribute(imported, "import:op", "import", "op")
     await db.close()
-    raw = sqlite3.connect(path)
-    raw.execute("alter table runs drop column shipper")
-    raw.execute("pragma user_version = 2")
-    raw.commit()
-    raw.close()
+    downgrade(path, 2)
     db = await ServerDB.open(path)
     got = await db.runs_meta([pushed, imported])
     assert (got[pushed].shipper, got[imported].shipper) == ("t1", None)
+    await db.add_audit(AuditRow(at=time.time(), action="token.create", outcome="ok"))
+    assert [t.last_used for t in await db.tokens()] == []
     await db.close()
     raw = sqlite3.connect(path)
     assert raw.execute("pragma user_version").fetchone() == (VERSION,)
     raw.close()
+
+
+async def test_a_v3_db_gets_the_audit_log_and_token_use(tmp_path: Path) -> None:
+    path = tmp_path / "server.sqlite"
+    db = await ServerDB.open(path)
+    secret = await db.create_token("alice", "operator")
+    await db.close()
+    downgrade(path, 3)
+    db = await ServerDB.open(path)
+    try:
+        assert [(t.name, t.last_used) for t in await db.tokens()] == [("alice", None)]
+        assert await db.token_for(secret) is not None
+        assert [t.last_used is not None for t in await db.tokens()] == [True]
+        await db.add_audit(AuditRow(at=time.time(), action="token.create", outcome="ok"))
+        assert [r.action for r in await db.audit_rows(limit=10)] == ["token.create"]
+    finally:
+        await db.close()
+    raw = sqlite3.connect(path)
+    assert raw.execute("pragma user_version").fetchone() == (VERSION,) == (4,)
+    with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+        raw.execute("update audit set action = 'x'")
+    raw.close()
+
+
+async def test_a_token_notes_its_last_use_at_most_once_a_minute(
+    db: ServerDB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret = await db.create_token("alice", "operator")
+    await db.create_token("bob", "viewer")
+
+    async def used() -> dict[str, float | None]:
+        return {t.name: t.last_used for t in await db.tokens()}
+
+    assert await used() == {"alice": None, "bob": None}
+    now = 1_800_000_000.0
+    monkeypatch.setattr(time, "time", lambda: now)
+    assert await db.token_for(secret) is not None
+    assert await used() == {"alice": now, "bob": None}
+    first = now
+    now += 59
+    await db.token_for(secret)
+    assert (await used())["alice"] == first
+    now += 2
+    await db.token_for(secret)
+    assert (await used())["alice"] == now
+    session = await db.create_session("alice")
+    seen = now
+    now += 30
+    assert await db.session(session) is not None
+    assert (await used())["alice"] == seen
+    now += 31
+    await db.session(session)
+    assert (await used())["alice"] == now
+    seen = now
+    now += 600
+    assert await db.token_for(secret, used=False) is not None
+    assert (await used())["alice"] == seen
+
+
+async def test_audit_rows_page_filter_and_prune(db: ServerDB) -> None:
+    base = 1_800_000_000.0
+    written: list[tuple[str, str | None, Outcome]] = [
+        ("session.start", None, "refused"),
+        ("token.create", "op", "ok"),
+        ("token.revoke", "op", "refused"),
+        ("run.create", "viewer", "refused"),
+        ("run.cancel", "op", "ok"),
+    ]
+    for i, (action, token, outcome) in enumerate(written):
+        await db.add_audit(
+            AuditRow(at=base + i, action=action, token=token, outcome=outcome, target=str(i))
+        )
+    every = await db.audit_rows(limit=10)
+    assert [r.target for r in every] == ["4", "3", "2", "1", "0"]
+    assert [r.at for r in every] == [base + 4, base + 3, base + 2, base + 1, base]
+    ids = [r.id for r in every]
+    assert [r.target for r in await db.audit_rows(limit=2, before=ids[1])] == ["2", "1"]
+    assert [r.target for r in await db.audit_rows(limit=10, action="token")] == ["2", "1"]
+    assert [r.target for r in await db.audit_rows(limit=10, action="run.cancel")] == ["4"]
+    assert [r.target for r in await db.audit_rows(limit=10, token="op")] == ["4", "2", "1"]
+    assert [r.target for r in await db.audit_rows(limit=10, outcome="refused")] == ["3", "2", "0"]
+    got = await db.audit_rows(limit=10, since=base + 1, until=base + 3)
+    assert [r.target for r in got] == ["3", "2", "1"]
+    assert await db.prune_audit(base + 2) == 2
+    assert [r.target for r in await db.audit_rows(limit=10)] == ["4", "3", "2"]
 
 
 async def test_runners_hello_and_status(db: ServerDB) -> None:

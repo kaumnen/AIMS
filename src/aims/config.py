@@ -12,6 +12,7 @@ A scenario overrides all of them for its agents. A missing file adds nothing; no
 `[credits]` maps a provider to the USD of credit it holds, for `aims spend` and the cost estimate.
 `[estimate] confirm_above_usd` is the estimate past which `aims run` asks before it starts.
 `[images] keep_days` is how many days a scenario image no container uses stays after its last use.
+`[audit] keep_days` is how many days the control plane keeps a row of its audit log; 0 keeps all.
 """
 
 import hashlib
@@ -34,9 +35,20 @@ from aims.tools import registry
 PROJECT = "aims.toml"
 USER = "config.toml"
 TABLES = frozenset(
-    {"profiles", "roles", "prompts", "scenarios", "monitor", "credits", "estimate", "images"}
+    {
+        "profiles",
+        "roles",
+        "prompts",
+        "scenarios",
+        "monitor",
+        "credits",
+        "estimate",
+        "images",
+        "audit",
+    }
 )
 CONFIRM_ABOVE_USD = 20.0
+AUDIT_KEEP_DAYS = 90.0
 
 
 class ConfigError(Exception):
@@ -98,6 +110,7 @@ class Settings:
     credits: dict[str, float] = field(default_factory=dict)
     confirm_above_usd: float = CONFIRM_ABOVE_USD
     image_keep_days: float = KEEP_DAYS
+    audit_keep_days: float = AUDIT_KEEP_DAYS
 
 
 def load(config: Path | None = None, env: Mapping[str, str] = os.environ) -> Settings:
@@ -124,6 +137,7 @@ def load_layers(found: Layers) -> Settings:
     credits: dict[str, float] = {}
     confirm = CONFIRM_ABOVE_USD
     keep = KEEP_DAYS
+    audit = AUDIT_KEEP_DAYS
     for path in files:
         try:
             data = tomllib.loads(path.read_text())
@@ -136,7 +150,8 @@ def load_layers(found: Layers) -> Settings:
         paths.extend(_scenario_paths(path, data.get("scenarios")))
         credits |= _credits(path, data.get("credits"))
         confirm = _confirm(path, data.get("estimate"), confirm)
-        keep = _keep_days(path, data.get("images"), keep)
+        keep = _keep_days(path, "images", data.get("images"), keep)
+        audit = _keep_days(path, "audit", data.get("audit"), audit)
         if "monitor" in data:
             try:
                 monitor.append(layer(data["monitor"], f"{path}: [monitor]"))
@@ -157,6 +172,7 @@ def load_layers(found: Layers) -> Settings:
         credits=credits,
         confirm_above_usd=confirm,
         image_keep_days=keep,
+        audit_keep_days=audit,
     )
 
 
@@ -197,29 +213,38 @@ def _confirm(path: Path, table: object, current: float) -> float:
     return float(value)
 
 
-def _keep_days(path: Path, table: object, current: float) -> float:
-    """`[images] keep_days`: a scenario image no container uses goes this many days after its
-    last use."""
+def _keep_days(path: Path, name: str, table: object, current: float) -> float:
+    """`keep_days` of table `name`: `[images]`, how many days a scenario image no container
+    uses stays after its last use; `[audit]`, how many days a row of the audit log stays."""
     if table is None:
         return current
     if not isinstance(table, dict) or set(table) - {"keep_days"}:
-        raise ConfigError(f"{path}: [images] takes only `keep_days`")
+        raise ConfigError(f"{path}: [{name}] takes only `keep_days`")
     value = table.get("keep_days", current)
     if not _amount(value):
-        raise ConfigError(f"{path}: [images] keep_days must be a number of days, 0 or more")
+        raise ConfigError(f"{path}: [{name}] keep_days must be a number of days, 0 or more")
     return float(value)
 
 
-def image_keep_days(found: Layers) -> float:
-    """`[images] keep_days` of the files in `found`, read without the other settings."""
-    keep = KEEP_DAYS
+def _read_keep_days(found: Layers, name: str, default: float) -> float:
+    keep = default
     for path in found.files():
         try:
             data = tomllib.loads(path.read_text())
         except tomllib.TOMLDecodeError as e:
             raise ConfigError(f"{path}: {e}") from None
-        keep = _keep_days(path, data.get("images"), keep)
+        keep = _keep_days(path, name, data.get(name), keep)
     return keep
+
+
+def image_keep_days(found: Layers) -> float:
+    """`[images] keep_days` of the files in `found`, read without the other settings."""
+    return _read_keep_days(found, "images", KEEP_DAYS)
+
+
+def audit_keep_days(found: Layers) -> float:
+    """`[audit] keep_days` of the files in `found`, read without the other settings."""
+    return _read_keep_days(found, "audit", AUDIT_KEEP_DAYS)
 
 
 STARTER = """\
@@ -256,6 +281,9 @@ STARTER = """\
 
 # [images]
 # keep_days = 30
+
+# [audit]
+# keep_days = 90
 """
 
 

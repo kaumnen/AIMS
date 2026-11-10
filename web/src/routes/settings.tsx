@@ -13,6 +13,7 @@ const pages = [
   { to: "/settings/models", label: "Models", operator: false },
   { to: "/settings/runners", label: "Runners", operator: false },
   { to: "/settings/tokens", label: "Tokens", operator: true },
+  { to: "/settings/audit", label: "Audit", operator: true },
   { to: "/settings/spend", label: "Spend", operator: false },
 ] as const;
 
@@ -23,7 +24,7 @@ function Settings() {
       <h1 className="sr-only">Settings</h1>
       <nav
         aria-label="Settings"
-        className="flex w-36 shrink-0 flex-col gap-0.5 max-md:w-auto max-md:flex-row max-md:gap-4 max-md:border-b"
+        className="flex w-36 shrink-0 flex-col gap-0.5 max-md:w-auto max-md:flex-row max-md:gap-4 max-md:overflow-x-auto max-md:border-b"
       >
         {pages
           .filter((p) => operator || !p.operator)

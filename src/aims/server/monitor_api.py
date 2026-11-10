@@ -18,6 +18,7 @@ from aims.run.estimate import ReviewEstimate, estimate_review, reviews_confirm
 from aims.run.fork import Origin, load_origin
 from aims.run.job import JobOptions
 from aims.run.runner import RunError
+from aims.server import audit
 from aims.server.api import (
     MAX_PAGE,
     Operator,
@@ -169,8 +170,9 @@ def monitor_jobs(
 @router.post(
     "/runs/{run_id}/monitor", status_code=202, tags=["monitor"], responses=responses(404, 409)
 )
+@audit.audited("run.monitor")
 async def monitor_run(
-    run_id: str, body: StartMonitor, principal: Operator, state: State
+    run_id: str, body: StartMonitor, principal: Operator, state: State, note: audit.Note
 ) -> Started:
     """Queue offline monitor runs over a sealed run. A runner imports the run, feeds its events
     through the monitor again, skipping the monitor events and calls it holds, and writes the
@@ -199,7 +201,9 @@ async def monitor_run(
         raise ProblemException(
             409, "Confirm the cost", f"{why}; set confirm to start anyway", code="confirm"
         )
-    return await _queue(state, principal.name, jobs, runner=body.runner, parallel=body.parallel)
+    started = await _queue(state, principal.name, jobs, runner=body.runner, parallel=body.parallel)
+    note.detail = audit.runs(started.run_ids)
+    return started
 
 
 async def _sealed(state: ServerState, run_id: str, body: StartMonitor) -> Head:

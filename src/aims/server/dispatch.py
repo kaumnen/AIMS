@@ -7,6 +7,7 @@ import contextlib
 import logging
 import time
 
+from aims.server import audit
 from aims.server.db import Job
 from aims.server.runner_api import send
 from aims.server.series import settle
@@ -84,9 +85,11 @@ async def dispatch(state: ServerState) -> None:
 
 
 async def housekeeping(state: ServerState) -> None:
-    """Drop rows the server no longer needs. `open_state` drops expired sessions at start."""
+    """Drop rows the server no longer needs: expired sessions and audit rows past `[audit]
+    keep_days`. `open_state` drops them at start too."""
     if pruned := await state.db.prune_sessions():
         log.info("pruned %d expired session(s)", pruned)
+    await audit.prune(state.db, state.config.layers)
 
 
 async def run(state: ServerState) -> None:

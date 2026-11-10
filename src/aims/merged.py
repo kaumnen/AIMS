@@ -164,6 +164,14 @@ def merged(settings: Settings) -> str:
     images.add("keep_days", _value(settings.image_keep_days, keep))
     doc.add("images", images)
 
+    keep = BUILTIN
+    for source, data in files:
+        if "keep_days" in data.get("audit", {}):
+            keep = source
+    audit = tomlkit.table()
+    audit.add("keep_days", _value(settings.audit_keep_days, keep))
+    doc.add("audit", audit)
+
     named = [s for s, data in files for _ in data.get("scenarios", {}).get("paths", [])]
     paths = tomlkit.array()
     paths.multiline(True)

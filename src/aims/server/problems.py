@@ -81,12 +81,14 @@ TITLES = {
 
 
 def install(app: FastAPI, headers: Sequence[tuple[bytes, bytes]]) -> None:
-    """Answer every error as a problem. `headers` go on the reply to an unexpected error, as
-    Starlette sends that reply outside every middleware."""
+    """Answer every error as a problem, kept on the request's state for the audit log.
+    `headers` go on the reply to an unexpected error, as Starlette sends that reply outside
+    every middleware."""
     error_headers = {k.decode(): v.decode() for k, v in headers}
 
     async def on_problem(request: Request, exc: Exception) -> JSONResponse:
         assert isinstance(exc, ProblemException)
+        request.state.problem = exc.problem
         return problem_response(exc.problem, exc.headers)
 
     async def on_http(request: Request, exc: Exception) -> JSONResponse:
@@ -94,9 +96,9 @@ def install(app: FastAPI, headers: Sequence[tuple[bytes, bytes]]) -> None:
         title = TITLES.get(exc.status_code, "Error")
         detail = exc.detail if isinstance(exc.detail, str) and exc.detail != title else None
         headers = dict(exc.headers) if exc.headers else None
-        return problem_response(
-            Problem(title=title, status=exc.status_code, detail=detail), headers
-        )
+        problem = Problem(title=title, status=exc.status_code, detail=detail)
+        request.state.problem = problem
+        return problem_response(problem, headers)
 
     async def on_validation(request: Request, exc: Exception) -> JSONResponse:
         assert isinstance(exc, RequestValidationError)
@@ -107,6 +109,7 @@ def install(app: FastAPI, headers: Sequence[tuple[bytes, bytes]]) -> None:
             for e in exc.errors()
         ]
         problem = Problem(title=TITLES[422], status=422, code="invalid", errors=errors)
+        request.state.problem = problem
         return problem_response(problem)
 
     async def on_error(request: Request, exc: Exception) -> JSONResponse:

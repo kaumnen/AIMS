@@ -27,6 +27,7 @@ from aims.run.runner import check
 from aims.scenario import Bundle, Scenario, ScenarioError, parse
 from aims.scenario.edit import PromptChange, check_key, set_prompts
 from aims.scenario.model import ImpossiblePlant, Role
+from aims.server import audit
 from aims.server.api import (
     CheckResult,
     Operator,
@@ -231,6 +232,7 @@ async def _save(
 
 
 @router.put("/config/{layer}", tags=["config"], response_model=ConfigFile)
+@audit.audited("config.write")
 async def write_config(
     layer: Layer,
     body: ConfigText,
@@ -250,15 +252,18 @@ def _value(value: JsonValue) -> object:
 
 
 @router.patch("/config/{layer}", tags=["config"], response_model=ConfigFile)
+@audit.audited("config.patch")
 async def patch_config(
     layer: Layer,
     body: ConfigPatch,
     principal: Operator,
     state: State,
+    note: audit.Note,
     if_match: IfMatch = None,
     if_none_match: IfNoneMatch = None,
 ) -> Response:
     """Set or unset keys in a layer, keeping its comments and order."""
+    note.detail = _keys([c.key for c in body.set], body.unset)
     path = _path(state, layer)
     current = read_or_none(path)
     try:
@@ -284,6 +289,16 @@ async def patch_config(
         if table is not None and key and key[-1] in table:
             del table[key[-1]]
     return await _save(state, layer, tomlkit.dumps(doc), if_match, if_none_match)
+
+
+def _keys(set_: list[list[str]], unset: list[list[str]]) -> str | None:
+    """The keys a patch sets and unsets, for the audit log; never their values."""
+    parts = [
+        f"{verb} {', '.join('.'.join(k) for k in keys)}"
+        for verb, keys in (("set", set_), ("unset", unset))
+        if keys
+    ]
+    return "; ".join(parts) or None
 
 
 def _table(doc: tomlkit.TOMLDocument, parts: list[str], *, create: bool) -> Any:
@@ -359,6 +374,7 @@ async def read_file(
     responses=responses(409),
     openapi_extra={"requestBody": {"content": {"application/octet-stream": {}}, "required": True}},
 )
+@audit.audited("scenario.file.write")
 async def write_file(
     source: str,
     name: str,
@@ -408,6 +424,7 @@ async def _read(request: Request) -> bytes:
 
 
 @router.delete("/scenarios/{source}/{name}/files/{file:path}", status_code=204, tags=["scenarios"])
+@audit.audited("scenario.file.delete")
 async def delete_file(
     source: str,
     name: str,
@@ -434,6 +451,7 @@ async def delete_file(
 
 
 @router.post("/scenarios/{source}/{name}", status_code=201, tags=["scenarios"])
+@audit.audited("scenario.create")
 async def create_scenario(
     source: str, name: str, principal: Operator, sources: SourcesDep
 ) -> Saved:
@@ -447,10 +465,17 @@ async def create_scenario(
 
 
 @router.post("/scenarios/{source}/{name}/duplicate", status_code=201, tags=["scenarios"])
+@audit.audited("scenario.duplicate")
 async def duplicate_scenario(
-    source: str, name: str, body: Duplicate, principal: Operator, sources: SourcesDep
+    source: str,
+    name: str,
+    body: Duplicate,
+    principal: Operator,
+    sources: SourcesDep,
+    note: audit.Note,
 ) -> Saved:
     """Copy a scenario, built-in ones included, to a writable source to edit it."""
+    note.target, note.detail = f"{body.source}/{body.name}", f"from {source}/{name}"
     _, src = sources.scenario(source, name)
     dst = sources.writable(body.source, body.name, exists=False)
     if dst.exists():
@@ -678,6 +703,7 @@ class PromptsPatch(BaseModel):
 
 
 @router.patch("/scenarios/{source}/{name}/prompts", tags=["scenarios"])
+@audit.audited("scenario.prompts")
 async def patch_prompts(
     source: str,
     name: str,
@@ -685,10 +711,14 @@ async def patch_prompts(
     principal: Operator,
     state: State,
     sources: SourcesDep,
+    note: audit.Note,
     if_match: IfMatch = None,
 ) -> Saved:
     """Set or drop agents' text overrides in scenario.yaml, keeping its comments and layout.
     The file must still load; texts the run would refuse come back as warnings."""
+    note.detail = _keys(
+        [[c.agent, *c.key] for c in body.set], [[c.agent, *c.key] for c in body.unset]
+    )
     base = sources.writable(source, name)
     path = base / SCENARIO
     changes = [PromptChange(c.agent, tuple(c.key), c.value) for c in body.set]

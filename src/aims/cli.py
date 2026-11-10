@@ -2092,6 +2092,7 @@ def token_create(
     """Make a named token and print it. It is shown this once."""
     import asyncio
 
+    from aims.server.audit import record
     from aims.server.serve import write_private
 
     if role not in ("viewer", "operator", "runner"):
@@ -2099,14 +2100,30 @@ def token_create(
 
     async def main() -> str | None:
         db = await _db(data_dir)
+        detail = f"role {role}"
         try:
             if file is None:
-                return await db.create_token(name, role)
+                try:
+                    token = await db.create_token(name, role)
+                except ValueError:
+                    await record(
+                        db,
+                        "token.create",
+                        outcome="refused",
+                        auth="cli",
+                        target=name,
+                        detail="exists",
+                    )
+                    raise
+                await record(db, "token.create", auth="cli", target=name, detail=detail)
+                return token
             held = file.read_text().strip() if file.is_file() else ""
-            found = await db.token_for(held) if held else None
+            found = await db.token_for(held, used=False) if held else None
             if found is not None and (found.name, found.role) == (name, role):
                 return None
-            return await db.rotate_token(name, role)
+            token = await db.rotate_token(name, role)
+            await record(db, "token.rotate", auth="cli", target=name, detail=detail)
+            return token
         finally:
             await db.close()
 
@@ -2128,7 +2145,8 @@ def token_create(
 
 @token_app.command("list")
 def token_list(data_dir: DataDirOption = None) -> None:
-    """Show tokens by name and role; their values are never kept."""
+    """Show tokens by name and role, when each was made and last used, in UTC. Their values
+    are never kept."""
     import asyncio
     from datetime import UTC, datetime
 
@@ -2139,10 +2157,13 @@ def token_list(data_dir: DataDirOption = None) -> None:
         finally:
             await db.close()
 
+    def minute(at: float) -> str:
+        return datetime.fromtimestamp(at, UTC).strftime("%Y-%m-%d %H:%M")
+
     for t in asyncio.run(main()):
-        made = datetime.fromtimestamp(t.created, UTC).strftime("%Y-%m-%d %H:%M")
         state = "revoked" if t.revoked else "live"
-        typer.echo(f"{t.name}  {t.role}  {made}  {state}")
+        used = "never" if t.last_used is None else f"used {minute(t.last_used)}"
+        typer.echo(f"{t.name}  {t.role}  {minute(t.created)}  {state}  {used}")
 
 
 @token_app.command("revoke")
@@ -2153,10 +2174,18 @@ def token_revoke(
     """Revoke a token and end its sessions; its runner names free up for another token."""
     import asyncio
 
+    from aims.server.audit import record
+
     async def main() -> bool:
         db = await _db(data_dir)
         try:
-            return await db.revoke_token(name)
+            done = await db.revoke_token(name)
+            outcome = "ok" if done else "refused"
+            detail = None if done else "no live token"
+            await record(
+                db, "token.revoke", outcome=outcome, auth="cli", target=name, detail=detail
+            )
+            return done
         finally:
             await db.close()
 
@@ -2164,6 +2193,74 @@ def token_revoke(
         typer.echo(f"error: no live token {name}", err=True)
         raise typer.Exit(EXIT_FAILED)
     typer.echo(f"revoked {name}")
+
+
+@app.command("audit")
+def audit_cmd(
+    action: Annotated[
+        str | None,
+        typer.Option(help="Only this action and the ones under it, such as run or run.kill."),
+    ] = None,
+    token: Annotated[str | None, typer.Option(help="Only rows of this token.")] = None,
+    outcome: Annotated[str | None, typer.Option(help="ok, refused or error.")] = None,
+    since: Annotated[
+        str | None, typer.Option(help="From this UTC time, such as 2026-11-01 or 2026-11-01T09:30.")
+    ] = None,
+    until: Annotated[str | None, typer.Option(help="Up to this UTC time.")] = None,
+    limit: Annotated[
+        int, typer.Option(min=0, help="Show at most this many rows; 0 shows all.")
+    ] = 50,
+    jsonl: Annotated[
+        bool, typer.Option("--jsonl", help="Print each row as one JSON line.")
+    ] = False,
+    data_dir: DataDirOption = None,
+) -> None:
+    """Show the audit log of the local control plane, newest first: each write sent to its API,
+    refused ones too, with each failed sign-in. A line gives the time in UTC, the token, the
+    action, its target, the outcome with the HTTP status, the client address and a detail."""
+    import asyncio
+    from datetime import UTC, datetime
+
+    from aims.server.audit import every
+    from aims.server.audit_api import entry
+
+    if outcome is not None and outcome not in ("ok", "refused", "error"):
+        raise typer.BadParameter("use ok, refused or error", param_hint="--outcome")
+
+    def seconds(value: str | None, hint: str) -> float | None:
+        if value is None:
+            return None
+        try:
+            at = datetime.fromisoformat(value)
+        except ValueError:
+            raise typer.BadParameter(
+                "give a date or time such as 2026-11-01", param_hint=hint
+            ) from None
+        return (at if at.tzinfo is not None else at.replace(tzinfo=UTC)).timestamp()
+
+    filters: dict[str, Any] = {
+        "action": action,
+        "token": token,
+        "outcome": outcome,
+        "since": seconds(since, "--since"),
+        "until": seconds(until, "--until"),
+    }
+
+    async def main() -> list[Any]:
+        db = await _db(data_dir)
+        try:
+            return [r async for r in every(db, page=1000, limit=limit, **filters)]
+        finally:
+            await db.close()
+
+    for r in asyncio.run(main()):
+        if jsonl:
+            typer.echo(entry(r).model_dump_json())
+            continue
+        when = datetime.fromtimestamp(r.at, UTC).strftime("%Y-%m-%d %H:%M:%S")
+        result = r.outcome if r.status is None else f"{r.outcome} {r.status}"
+        parts = [when, r.token or "-", r.action, r.target or "-", result, r.ip or "-"]
+        typer.echo("  ".join([*parts, r.detail or ""]).rstrip())
 
 
 @app.command()

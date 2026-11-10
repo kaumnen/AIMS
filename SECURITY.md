@@ -76,6 +76,19 @@ Every API call needs a token. Each token has one role.
 - A browser trades its token for a session cookie. The cookie is `HttpOnly` with `SameSite=Strict`. Under https it is also `Secure` with a `__Host-` prefix.
 - A cookie request that changes state must come from the same origin.
 - `aims ui --no-auth` turns tokens off. It works on loopback only.
+- `aims token list` and **Settings** > **Tokens** show when each token was last used, to the minute. A token never used shows `never`.
+
+## Audit log
+
+The control plane keeps an audit log in `server.sqlite`. It records each change sent to its API, refused ones too. It also records each sign-in, sign-out and failed sign-in.
+
+- A row holds the time in UTC, the token name and role, how the caller signed in, the action, its target, the outcome with the HTTP status, the client address and a short detail.
+- Rows never hold token values, launch codes, passwords or file contents.
+- Reads, runner traffic and requests without a valid token are not recorded. Failed sign-ins are the exception.
+- Behind a proxy, the client address comes from `X-Forwarded-For` only when the request comes from an address given to `--behind-proxy`.
+- `aims token create` and `aims token revoke` on the server's machine are recorded too, as `cli`.
+- Rows stay 90 days. `keep_days` under `[audit]` in a config file changes that. 0 keeps every row.
+- Operators read it under **Settings** > **Audit**, with `aims audit` on the server's machine, or from `GET /api/audit`. `?format=jsonl` or `aims audit --jsonl` exports it as JSON Lines.
 
 ## Network
 

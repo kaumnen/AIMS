@@ -58,6 +58,7 @@ from aims.run.runner import RunError, agent_profile, check
 from aims.scenario import Bundle, Scenario, ScenarioError, folder_tar, load, parse
 from aims.scenario import budget as budgets
 from aims.scenario.budget import BudgetError, BudgetOverride
+from aims.server import audit
 from aims.server import db as sdb
 from aims.server import series as sseries
 from aims.server.auth import Principal, require
@@ -147,17 +148,26 @@ class Whoami(Out):
 
 
 @router.post("/session", status_code=204, tags=["session"])
-async def start_session(body: SessionStart, request: Request, state: State) -> Response:
+@audit.audited("session.start")
+async def start_session(
+    body: SessionStart, request: Request, state: State, note: audit.Note
+) -> Response:
     """Trade a token or a launch code for a session cookie, so the browser never stores the
     token."""
     if body.code is not None:
+        note.auth = "code"
         name = state.codes.redeem(body.code)
         if name is None:
             raise ProblemException(
                 401, "Not signed in", "unknown, used or expired code", code="code"
             )
+        known = await state.db.token(name)
+        note.token, note.role = name, None if known is None else known.role
     else:
+        note.auth = "token"
         token = await state.auth.token(body.token or "")
+        if token is not None:
+            note.token, note.role = token.name, token.role
         if token is None or token.role == "runner":
             raise ProblemException(401, "Not signed in", "unknown or revoked token", code="token")
         if token.name in {t.name for t in state.auth.ephemeral.values()}:
@@ -178,6 +188,7 @@ async def start_session(body: SessionStart, request: Request, state: State) -> R
 
 
 @router.delete("/session", status_code=204, tags=["session"])
+@audit.audited("session.end")
 async def end_session(request: Request, principal: Viewer, state: State) -> Response:
     session = request.cookies.get(state.auth.cookie)
     if session:
@@ -201,6 +212,7 @@ class LaunchCode(Out):
 
 
 @router.post("/session/code", tags=["session"], responses=responses(403))
+@audit.audited("session.code")
 async def launch_code(principal: Operator, state: State) -> LaunchCode:
     """A code that signs a browser in once, as the caller, within `ttl_s` seconds, for the link
     `aims open` opens. It takes the token itself, not a session."""
@@ -722,11 +734,13 @@ def scenario_problems(e: ScenarioError) -> list[ProblemError]:
 
 
 @router.post("/runs", status_code=202, tags=["runs"], responses=responses(409))
+@audit.audited("run.create")
 async def start_runs(
-    body: StartRun, principal: Operator, state: State, sources: SourcesDep
+    body: StartRun, principal: Operator, state: State, sources: SourcesDep, note: audit.Note
 ) -> Started:
     """Queue `samples` runs of a scenario; the control plane checks them first and assigns
     their run ids."""
+    note.target = f"{body.scenario.source}/{body.scenario.name}"
     _, path = sources.scenario(body.scenario.source, body.scenario.name)
     settings = state.config.settings()
     try:
@@ -791,7 +805,7 @@ async def start_runs(
                 cost = None
             _confirm(cost)
         blobs = {hashlib.sha256(b).hexdigest(): b for b in [*bundle.blobs(), folder]}
-        return await _queue(
+        started = await _queue(
             state,
             principal.name,
             jobs,
@@ -800,6 +814,8 @@ async def start_runs(
             blobs=blobs,
             waiting=[j.run_id for j in jobs if (s := j.options.series) and s.previous],
         )
+    note.detail = audit.runs(started.run_ids)
+    return started
 
 
 async def _place_series(state: ServerState, name: str, restart: bool, jobs: list[Job]) -> list[Job]:
@@ -876,7 +892,10 @@ def fork_estimate(settings: Settings, history: History, at: ForkPoint, body: Sta
 
 
 @router.post("/runs/{run_id}/forks", status_code=202, tags=["runs"], responses=responses(404, 409))
-async def fork_run(run_id: str, body: StartFork, principal: Operator, state: State) -> Started:
+@audit.audited("run.fork")
+async def fork_run(
+    run_id: str, body: StartFork, principal: Operator, state: State, note: audit.Note
+) -> Started:
     """Replay a recorded run up to a step and go on live from there."""
     run_id = _run_id(run_id)
     settings = state.config.settings()
@@ -917,9 +936,11 @@ async def fork_run(run_id: str, body: StartFork, principal: Operator, state: Sta
         except RunError, ProfileError, KeyError, MonitorConfigError, TextError:
             cost = None
         _confirm(cost)
-    return await _queue(
+    started = await _queue(
         state, principal.name, jobs, runner=body.runner, parallel=body.parallel, copy_from=run_id
     )
+    note.detail = audit.runs(started.run_ids)
+    return started
 
 
 def _monitor(
@@ -1027,8 +1048,16 @@ def command_info(c: sdb.Command) -> CommandInfo:
 
 
 async def command(
-    state: ServerState, run_id: str, action: CommandAction, principal: Principal
+    state: ServerState,
+    run_id: str,
+    action: CommandAction,
+    principal: Principal,
+    note: audit.Entry,
 ) -> CommandSent:
+    parts = [f"agent {action.agent}"] if action.agent else []
+    if action.action == "resume" and action.then != "continue":
+        parts.append(f"then {action.then}")
+    note.detail = ", ".join(parts) or None
     run_id = _run_id(run_id)
     job = await state.db.job(run_id)
     if job is not None and job.state in ("waiting", "queued", "offered"):
@@ -1061,15 +1090,19 @@ async def command(
 
 
 @router.post("/runs/{run_id}/pause", status_code=202, tags=["control"])
-async def pause_run(run_id: str, body: PauseBody, principal: Operator, state: State) -> CommandSent:
+@audit.audited("run.pause")
+async def pause_run(
+    run_id: str, body: PauseBody, principal: Operator, state: State, note: audit.Note
+) -> CommandSent:
     """Freeze the run's sandboxes now and hold its agents at their next step."""
     act = CommandAction(action="pause", agent=body.agent, reason=body.reason)
-    return await command(state, run_id, act, principal)
+    return await command(state, run_id, act, principal, note)
 
 
 @router.post("/runs/{run_id}/resume", status_code=202, tags=["control"])
+@audit.audited("run.resume")
 async def resume_run(
-    run_id: str, body: ResumeBody, principal: Operator, state: State
+    run_id: str, body: ResumeBody, principal: Operator, state: State, note: audit.Note
 ) -> CommandSent:
     """Let paused agents go on. `then` is what comes first: `continue`, `kill`, `inject` the
     `text`, or `deny` the tool call the agent is held at, which does not run; the agent gets
@@ -1083,11 +1116,14 @@ async def resume_run(
     act = CommandAction(
         action="resume", agent=body.agent, then=body.then, text=body.text, reason=body.reason
     )
-    return await command(state, run_id, act, principal)
+    return await command(state, run_id, act, principal, note)
 
 
 @router.post("/runs/{run_id}/sweep", status_code=202, tags=["control"])
-async def sweep_run(run_id: str, body: SweepBody, principal: Operator, state: State) -> CommandSent:
+@audit.audited("run.sweep")
+async def sweep_run(
+    run_id: str, body: SweepBody, principal: Operator, state: State, note: audit.Note
+) -> CommandSent:
     """Ask the run's monitor for a sweep now, of one agent or of all."""
     first = await state.store.events(_run_id(run_id), limit=1)
     if first and first[0].type == "run.started":
@@ -1097,31 +1133,39 @@ async def sweep_run(run_id: str, body: SweepBody, principal: Operator, state: St
         if first[0].data.get("monitor") is None:
             raise ProblemException(409, "Conflict", "the run has no monitor", code="no_monitor")
     act = CommandAction(action="sweep", agent=body.agent, reason=body.reason)
-    return await command(state, run_id, act, principal)
+    return await command(state, run_id, act, principal, note)
 
 
 @router.post("/runs/{run_id}/inject", status_code=202, tags=["control"])
+@audit.audited("run.inject")
 async def inject_run(
-    run_id: str, body: InjectBody, principal: Operator, state: State
+    run_id: str, body: InjectBody, principal: Operator, state: State, note: audit.Note
 ) -> CommandSent:
     """Give an agent a message at its next step."""
     act = CommandAction(action="inject", agent=body.agent, text=body.text)
-    return await command(state, run_id, act, principal)
+    return await command(state, run_id, act, principal, note)
 
 
 @router.post("/runs/{run_id}/kill", status_code=202, tags=["control"])
-async def kill_run(run_id: str, body: StopBody, principal: Operator, state: State) -> CommandSent:
+@audit.audited("run.kill")
+async def kill_run(
+    run_id: str, body: StopBody, principal: Operator, state: State, note: audit.Note
+) -> CommandSent:
     """Freeze, archive and kill every sandbox and stop the monitor's model calls; the verifier
     and the judge do not run. While the judge runs, it only cuts the judge short."""
-    return await command(state, run_id, CommandAction(action="kill", reason=body.reason), principal)
+    act = CommandAction(action="kill", reason=body.reason)
+    return await command(state, run_id, act, principal, note)
 
 
 @router.post("/runs/{run_id}/cancel", status_code=202, tags=["control"])
-async def cancel_run(run_id: str, body: StopBody, principal: Operator, state: State) -> CommandSent:
+@audit.audited("run.cancel")
+async def cancel_run(
+    run_id: str, body: StopBody, principal: Operator, state: State, note: audit.Note
+) -> CommandSent:
     """Stop the agents and the monitor's model calls, skip the verifier and the judge, archive
     and seal the run as cancelled. While the judge runs, it only cuts the judge short."""
     act = CommandAction(action="cancel", reason=body.reason)
-    return await command(state, run_id, act, principal)
+    return await command(state, run_id, act, principal, note)
 
 
 @router.get("/runs/{run_id}/commands", tags=["control"])
@@ -1388,7 +1432,10 @@ async def verify_run(run_id: str, principal: Viewer, state: State) -> Verificati
     openapi_extra={"requestBody": {"content": {"application/x-tar": {}}, "required": True}},
     responses=responses(409, 413),
 )
-async def import_run(request: Request, principal: Uploader, state: State) -> Started:
+@audit.audited("run.import")
+async def import_run(
+    request: Request, principal: Uploader, state: State, note: audit.Note
+) -> Started:
     """Take a run directory as a tar (`events.jsonl` and `blobs/`), checked like ingest."""
     with tempfile.TemporaryFile() as tmp:
         size = 0
@@ -1410,6 +1457,7 @@ async def import_run(request: Request, principal: Uploader, state: State) -> Sta
         except ValueError, KeyError, TypeError:
             raise ProblemException(422, "Invalid request", "a line is not an event") from None
         run_id = _run_id(run_id)
+        note.target = run_id
         meta = await state.db.run_meta(run_id)
         if meta is not None and meta.runner is not None and meta.source != "import":
             raise ProblemException(409, "Conflict", f"run {run_id} is shipped by {meta.runner}")
@@ -1583,20 +1631,29 @@ class ModelsCheck(BaseModel):
 
 
 @router.post("/models/check", status_code=202, tags=["models"])
-async def check_models(body: ModelsCheck, principal: Operator, state: State) -> Started:
+@audit.audited("models.check")
+async def check_models(
+    body: ModelsCheck, principal: Operator, state: State, note: audit.Note
+) -> Started:
     """Small requests to each profile's provider, run on a runner and recorded as a run."""
+    note.target = ", ".join(body.profiles) or None
     models = state.config.settings().models
     try:
         chosen = [models.get(n) for n in body.profiles] or [models.role("agent")]
     except ProfileError as e:
         raise ProblemException(422, "Invalid request", str(e), code="profile") from None
+    note.target = ", ".join(p.name for p in chosen)
     job = Job(
         kind="models.check",
         run_id=str(uuid.uuid7()),
         models={p.name: p for p in chosen},
         check=[p.name for p in chosen],
     )
-    return await _queue(state, principal.name, [job], runner=body.runner, parallel=None, blobs={})
+    started = await _queue(
+        state, principal.name, [job], runner=body.runner, parallel=None, blobs={}
+    )
+    note.detail = audit.runs(started.run_ids)
+    return started
 
 
 class Text(Out):
@@ -1817,6 +1874,7 @@ class StartSelfTest(BaseModel):
     tags=["scenarios"],
     responses=responses(404, 409),
 )
+@audit.audited("scenario.selftest")
 async def start_selftest(
     source: str,
     name: str,
@@ -1824,6 +1882,7 @@ async def start_selftest(
     principal: Operator,
     state: State,
     sources: SourcesDep,
+    note: audit.Note,
 ) -> Started:
     """Queue the scenario's self-test, as `aims scenario check` runs it: a run of kind
     `selftest` that records each case, each case a `selftest.case` run under it. It needs a
@@ -1871,9 +1930,11 @@ async def start_selftest(
     except (ProfileError, UnknownTool, TextError) as e:
         raise ProblemException(422, "Self-test cannot run", str(e), code="selftest") from None
     blobs = {hashlib.sha256(b).hexdigest(): b for b in [*bundle.blobs(), folder]}
-    return await _queue(
+    started = await _queue(
         state, principal.name, [job], runner=body.runner, parallel=None, blobs=blobs
     )
+    note.detail = audit.runs(started.run_ids)
+    return started
 
 
 # Tokens
@@ -1884,6 +1945,9 @@ class TokenInfo(Out):
     role: str
     created: float
     revoked: float | None
+    last_used: float | None = Field(
+        description="When a request last came with it, to the minute; null if never."
+    )
     ui: bool = Field(description="The token `aims ui` rotates at each start.")
 
 
@@ -1906,6 +1970,7 @@ async def list_tokens(principal: Operator, state: State) -> list[TokenInfo]:
             role=t.role,
             created=t.created,
             revoked=t.revoked,
+            last_used=t.last_used,
             ui=t.name == sdb.UI_TOKEN,
         )
         for t in await state.db.tokens()
@@ -1913,8 +1978,12 @@ async def list_tokens(principal: Operator, state: State) -> list[TokenInfo]:
 
 
 @router.post("/tokens", status_code=201, tags=["tokens"], responses=responses(409))
-async def create_token(body: TokenCreate, principal: Operator, state: State) -> TokenCreated:
+@audit.audited("token.create")
+async def create_token(
+    body: TokenCreate, principal: Operator, state: State, note: audit.Note
+) -> TokenCreated:
     """A new named token. Its value is shown this once."""
+    note.target, note.detail = body.name, f"role {body.role}"
     try:
         secret = await state.db.create_token(body.name, body.role)
     except ValueError as e:
@@ -1923,6 +1992,7 @@ async def create_token(body: TokenCreate, principal: Operator, state: State) -> 
 
 
 @router.delete("/tokens/{name}", status_code=204, tags=["tokens"], responses=responses(404))
+@audit.audited("token.revoke")
 async def revoke_token(name: str, principal: Operator, state: State) -> None:
     """Revoke a token and end every session made with it. Its runner names free up for another
     token."""

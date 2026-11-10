@@ -123,6 +123,8 @@ def require(
         principal = await auth.principal(request)
         if principal is None:
             raise ProblemException(401, "Not signed in", "send a token", code="unauthenticated")
+        # the audit log names the caller, of refused requests too
+        request.state.principal = principal
         if role == "runner":
             if principal.role != "runner":
                 raise ProblemException(403, "Forbidden", "this needs a runner token", code="role")

@@ -6,7 +6,7 @@ import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 
 import type { ProfileInfo } from "@/api/launch";
 import type { PromptText } from "@/api/scenario-files";
-import type { ProviderCredit, TokenInfo } from "@/api/settings";
+import type { AuditEntry, ProviderCredit, TokenInfo } from "@/api/settings";
 import { makeRouter } from "@/router";
 import { FakeEventSource, runnerInfo } from "@/test/event-source";
 import { pick } from "@/test/pick";
@@ -18,6 +18,8 @@ let role: "operator" | "viewer";
 let checked: ProfileInfo["check"];
 let credits: ProviderCredit[];
 let tokens: TokenInfo[];
+// the audit log, newest first
+let audit: AuditEntry[];
 // config layers as dotted key -> text, with each file's version
 let layers: Record<"user" | "project", { values: Record<string, string>; etag: string }>;
 const PATHS = { user: "/home/me/.config/aims/config.toml", project: "/work/aims.toml" };
@@ -63,9 +65,41 @@ const token = (over: Partial<TokenInfo>): TokenInfo => ({
   role: "operator",
   created: 1_761_900_000,
   revoked: null,
+  last_used: null,
   ui: false,
   ...over,
 });
+
+const auditRow = (id: number, over: Partial<AuditEntry> = {}): AuditEntry => ({
+  id,
+  at: new Date(Date.UTC(2026, 10, 9, 12, 0, 0) + id * 1000).toISOString(),
+  token: "me",
+  role: "operator",
+  auth: "cookie",
+  action: "token.create",
+  target: `t${id}`,
+  outcome: "ok",
+  status: 201,
+  ip: "127.0.0.1",
+  detail: "role viewer",
+  ...over,
+});
+
+function auditPage(url: URL) {
+  const q = url.searchParams;
+  const before = Number(q.get("before") ?? Infinity);
+  const limit = Number(q.get("limit") ?? 100);
+  const action = q.get("action");
+  const match = audit.filter(
+    (r) =>
+      r.id < before &&
+      (!action || r.action === action || r.action.startsWith(`${action}.`)) &&
+      (!q.get("outcome") || r.outcome === q.get("outcome")) &&
+      (!q.get("token") || r.token === q.get("token")),
+  );
+  const items = match.slice(0, limit);
+  return Response.json({ items, next: items.length === limit ? (items.at(-1)?.id ?? null) : null });
+}
 
 const problem = (status: number, detail: string) =>
   Response.json({ status, title: "Conflict", detail }, { status });
@@ -178,9 +212,20 @@ beforeEach(() => {
   ];
   tokens = [
     token({ name: "old", role: "viewer", created: 1_761_800_000, revoked: 1_761_850_000 }),
-    token({ name: "me" }),
+    token({ name: "me", last_used: 1_761_950_000 }),
     token({ name: "ui", ui: true }),
   ];
+  audit = Array.from({ length: 150 }, (_, i) => auditRow(150 - i));
+  audit[0] = auditRow(150, {
+    token: null,
+    role: null,
+    auth: "token",
+    action: "session.start",
+    target: null,
+    outcome: "refused",
+    status: 401,
+    detail: "token",
+  });
   layers = {
     user: { values: { "prompts.denied": "No." }, etag: "u1" },
     project: {
@@ -257,6 +302,10 @@ beforeEach(() => {
       if (body.name === "race") return problem(409, "a token named 'race' exists");
       tokens = [...tokens, token({ name: body.name, role: body.role, created: 1_761_950_000 })];
       return Response.json({ ...body, token: "aims_secret" }, { status: 201 });
+    }
+    if (url.pathname === "/api/audit") {
+      if (role !== "operator") return problem(403, "operators only");
+      return auditPage(url);
     }
     if (url.pathname.startsWith("/api/tokens/") && request.method === "DELETE") {
       const name = decodeURIComponent(url.pathname.split("/").pop() ?? "");
@@ -388,7 +437,9 @@ test("tokens list the live ones first and mark yours and the ui token", async ()
     .map((r) => r.querySelector("td span")?.textContent);
   expect(names).toEqual(["me", "ui", "old"]);
   expect(within(rowOf(table, "me")).getByText("you")).toBeTruthy();
+  expect(within(rowOf(table, "me")).queryByText("never")).toBeNull();
   expect(within(rowOf(table, "ui")).getByText("aims ui")).toBeTruthy();
+  expect(within(rowOf(table, "ui")).getByText("never")).toBeTruthy();
   const old = rowOf(table, "old");
   expect(within(old).getByText(/^Revoked /)).toBeTruthy();
   expect(within(old).queryByRole("button")).toBeNull();
@@ -472,6 +523,55 @@ test("viewers have no tokens page", async () => {
   expect(within(nav).queryByText("Tokens")).toBeNull();
   expect(within(nav).getByText("Spend")).toBeTruthy();
   expect(calls("GET", "/api/tokens")).toHaveLength(0);
+});
+
+const lastAudit = () => new URL(calls("GET", "/api/audit").at(-1)?.url ?? "");
+
+test("the audit log pages newest first, filters on the server and exports what matches", async () => {
+  renderAt("/settings/audit");
+  const table = await screen.findByRole("table");
+  const first = within(table).getAllByRole("row")[1] as HTMLElement;
+  expect(within(first).getByText("session.start")).toBeTruthy();
+  expect(within(first).getByText("none")).toBeTruthy();
+  expect(within(first).getByText("Refused 401")).toBeTruthy();
+  const second = within(table).getAllByRole("row")[2] as HTMLElement;
+  expect(within(second).getByText("t149")).toBeTruthy();
+  expect(within(second).getByText("OK 201")).toBeTruthy();
+  expect(screen.getByText("100 rows")).toBeTruthy();
+  expect(lastAudit().searchParams.get("limit")).toBe("100");
+
+  fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+  expect(await screen.findByText("150 rows")).toBeTruthy();
+  expect(lastAudit().searchParams.get("before")).toBe("51");
+  expect(screen.queryByRole("button", { name: "Show more" })).toBeNull();
+
+  await pick(within(document.body), "Outcome", "Refused");
+  expect(await screen.findByText("1 row")).toBeTruthy();
+  expect(lastAudit().searchParams.get("outcome")).toBe("refused");
+  const link = screen.getByRole("link", { name: "Export JSON Lines" });
+  expect(link.hasAttribute("download")).toBe(true);
+  const href = new URL(link.getAttribute("href") ?? "", "http://aims.test");
+  expect(href.pathname).toBe("/api/audit");
+  expect(Object.fromEntries(href.searchParams)).toEqual({ format: "jsonl", outcome: "refused" });
+
+  await pick(within(document.body), "Outcome", "Any outcome");
+  await pick(within(document.body), "Action", "Tokens");
+  fireEvent.change(screen.getByPlaceholderText("Any token"), { target: { value: "nobody" } });
+  expect(await screen.findByText("No rows match.")).toBeTruthy();
+  expect(Object.fromEntries(lastAudit().searchParams)).toEqual({
+    action: "token",
+    token: "nobody",
+    limit: "100",
+  });
+});
+
+test("viewers have no audit page", async () => {
+  role = "viewer";
+  renderAt("/settings/audit");
+  expect(await screen.findByText("Only operators see the audit log.")).toBeTruthy();
+  const nav = screen.getByRole("navigation", { name: "Settings" });
+  expect(within(nav).queryByText("Audit")).toBeNull();
+  expect(calls("GET", "/api/audit")).toHaveLength(0);
 });
 
 const textRow = (name: string) =>
