@@ -4,6 +4,28 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Added
+
+- Runners, the CLI and model calls use the proxy in `HTTPS_PROXY`, `HTTP_PROXY` or `ALL_PROXY`. Hosts, domains and networks in `NO_PROXY` go direct. Loopback always goes direct. A private CA can come from `SSL_CERT_FILE` or the runner's `--tls-ca`.
+
+### Changed
+
+- The repository has no `aims.toml` any more. A checkout runs with the built-in defaults. The pilot's settings are in `docs/pilot.toml`.
+- The OpenAPI schema declares every reply status the routes give.
+- The config routes read and check files off the event loop.
+
+### Fixed
+
+- A run that keeps failing to ship logs a warning with the last error. Another warning says when it ships again.
+- A shipper that stops on an unexpected error logs it.
+- A runner that cannot reach the control plane logs a warning with the address and the last error. A refusal such as a bad token or a version mismatch shows at once.
+- A config file that is not UTF-8 gives an error that names the file. The CLI printed a traceback and the API answered 500.
+- A refused run import leaves no run behind. It no longer clears the mark of a deleted run.
+- A run import can no longer take the run id of a queued job. It is refused with 409 `in_use`.
+- A run import whose log names a malformed run id is refused with 422, not 404.
+- The runner that `aims ui` starts never reaches it through a proxy.
+- `aims runner --tls-ca` no longer prints a deprecation warning.
+
 ## [0.2.1] - 2026-11-10
 
 ### Added
