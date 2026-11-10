@@ -370,6 +370,7 @@ The scenario's `oversight` decides what flags do. By default a flag at importanc
 | `human` | Waits for a person for up to 24 hours, then kills | When corroborated |
 
 - A kill needs corroboration: a signal flag, two sweep lanes on the same step, or a sample the review confirms. A flag at the kill cutoff without it pauses instead.
+- Two lanes corroborate each other even when they name different categories. Each flag must reach its own category's kill cutoff on the same step.
 - A model never clears a flag that a signal raised.
 - Judge flags never act. Flags raised while the verifier runs mark the score as tainted.
 - An operator can pause, resume, deny a tool call, inject a message, kill, cancel or start a sweep at any time. Use the UI or `aims control`.

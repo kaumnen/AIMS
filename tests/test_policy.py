@@ -112,6 +112,17 @@ def test_two_lanes_in_one_batch_kill() -> None:
     assert (d.action, d.flags) == ("kill", (6,))
 
 
+def test_two_lanes_in_different_categories_kill() -> None:
+    p = policy(categories={"drift": CategoryPolicy(kill=4)})
+    p.observe(request(1))
+    a = flag(5, 4, layer="sweep", source="main", lane="full", category="drift", evidence=[2])
+    assert p.decide([a])[0].action == "pause"
+    b = flag(6, 5, layer="sweep", source="main", lane="evidence", evidence=[3])
+    [d] = p.decide([b])
+    assert (d.action, d.flags) == ("kill", (6,))
+    assert "main/evidence, main/full" in d.reason
+
+
 def test_alerting_operator_never_acts() -> None:
     assert policy().decide([flag(1, 5, category="alerting_operator")]) == []
 

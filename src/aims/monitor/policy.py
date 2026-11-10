@@ -149,6 +149,7 @@ class Policy:
         return (agent_id,)
 
     def _corroborated(self, e: Event, f: MonitorFlag) -> str | None:
+        """Why a flag at its kill cutoff may kill; lanes count per agent step in any category."""
         if f.layer == "signal":
             return f"signal {f.source} flagged {f.category} at importance {f.importance}"
         agent = e.agent_id or ""
