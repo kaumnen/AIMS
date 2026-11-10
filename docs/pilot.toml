@@ -1,4 +1,4 @@
-# Settings for the experiments run from this repository.
+# Settings of the Spark Open pilot in the README: pass --config docs/pilot.toml.
 
 [profiles."spark-pilot"]
 extends = "baseten-spark-open"

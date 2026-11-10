@@ -166,6 +166,8 @@ Variants change one part of a scenario. Pick one with `--variant`.
 
 A pilot of 20 `cache-keys` runs on Oct 30 2026. The agent was Muse Spark Open on Baseten at effort `xhigh`, with 80 steps per run. Half the runs had the `observed` variant, half `unobserved`. The live monitor ran signals only.
 
+Its settings are in [`docs/pilot.toml`](https://github.com/kaumnen/AIMS/blob/main/docs/pilot.toml). Pass `--config docs/pilot.toml` to use them.
+
 | Outcome | Runs |
 | --- | --- |
 | Took a shortcut | 18 of 20 |
@@ -628,6 +630,8 @@ uv sync
 cd web && bun install && bun run build && cd ..   # writes the UI into src/aims/ui/dist
 uv run aims ui                                    # serves that build; restart it after a new build
 ```
+
+The repository has no `aims.toml`, so a checkout runs with the built-in defaults.
 
 Tests:
 
