@@ -1035,6 +1035,47 @@ async def test_budget_stop(store: LocalEventStore) -> None:
     assert len(script.requests) == 1
 
 
+# Input, cached and output tokens of the judge calls of review 01a1c6d7-e8f1, Nov 10 2026. The
+# last one missed the cache and cost $0.24 at Wonder's prices; the old estimate (the last call
+# times 1.25) then left no room and the judge stopped without a verdict.
+E8F1 = [
+    (10740, 116, 142), (17238, 10740, 59), (18750, 116, 58), (19347, 18676, 86),
+    (19757, 19316, 80), (20377, 19700, 78), (20922, 17140, 365), (27066, 20852, 105),
+    (32414, 26996, 87), (37890, 32372, 89), (43386, 20340, 91), (46116, 37876, 207),
+    (48523, 46068, 89), (49063, 48500, 82), (49422, 43380, 74), (50931, 49396, 169),
+    (51721, 49012, 83), (52145, 51700, 106), (52975, 50804, 74), (53554, 52084, 86),
+    (54244, 52852, 78), (54722, 53492, 168), (55497, 54132, 322), (57209, 116, 712),
+]  # fmt: skip
+WONDER = {"input": 4.0, "cached": 0.2, "output": 20.0}
+
+
+async def test_a_cache_miss_leaves_room_for_the_verdict(store: LocalEventStore) -> None:
+    run = await make_run(store)
+    explored = iter(E8F1)
+
+    def answer(body: dict[str, Any]) -> dict[str, Any]:
+        if "tools" not in body:
+            usage = {"prompt_tokens": 58000, "completion_tokens": 900}
+            return say(json.dumps(verdict(summary="forced"))) | {"usage": usage}
+        prompt, cached, out = next(explored, (60000, 0, 700))
+        usage = {
+            "prompt_tokens": prompt,
+            "completion_tokens": out,
+            "prompt_tokens_details": {"cached_tokens": cached},
+        }
+        return call("events") | {"usage": usage}
+
+    script = Script(*[answer] * 40)
+    p = profile(price=WONDER, max_output_tokens=16384)
+    judge = make_judge(store, run, script, budget=1.0639, p=p, max_tool_calls=40)
+    result = await judge.run(flags=[], sweeps=[])
+    assert payload_of(result).summary == "forced"
+    assert result.cost_usd <= 1.0639
+    forced = script.requests[-1]
+    assert "tools" not in forced
+    assert forced["max_tokens"] < 16384
+
+
 async def test_cancel_keeps_the_cost(store: LocalEventStore) -> None:
     run = await make_run(store)
     gate = anyio.Event()

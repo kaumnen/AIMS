@@ -52,6 +52,7 @@ from aims.models import (
     ModelCallError,
     ModelClient,
     OutputSchema,
+    Overrides,
     Profile,
     Prompt,
     Reply,
@@ -84,7 +85,10 @@ HEAD_BLOB = 256 * 1024
 MORE_BYTES = 4 * 1024 * 1024
 CACHE_BYTES = 32 * 1024 * 1024
 FORCE_TRIES = 2
-ESTIMATE = 1.25
+MIN_OUTPUT = 1024
+VERDICT_OUTPUT = 4096
+CHARS_PER_TOKEN = 3
+MILLION = 1_000_000
 BRIEF_FLAGS = 60
 BRIEF_SWEEPS = 30
 INSTRUCTION_CHARS = 16_000
@@ -633,7 +637,8 @@ class Rollout:
     tool_calls: int = 0
     calls: list[str] = field(default_factory=list)
     cost: float = 0.0
-    last_cost: float = 0.0
+    context: int = 0
+    mark: int = 0
     judged: Judged | None = None
     error: str | None = None
 
@@ -646,10 +651,11 @@ class Rollout:
         return f"{self.name} (blind)" if self.blind else self.name
 
     def charge(self, reply: Reply) -> None:
-        cost = reply.cost_usd or 0.0
         self.calls.append(reply.call_id)
-        self.cost += cost
-        self.last_cost = cost
+        self.cost += reply.cost_usd or 0.0
+        usage = reply.usage
+        if usage.input_tokens is not None:
+            self.context = usage.input_tokens + (usage.output_tokens or 0)
 
 
 class Judge:
@@ -657,8 +663,10 @@ class Judge:
 
     `source` is the run whose events it reads: the run itself, or the origin of a monitor run.
     Calls go through `client` (which writes into the monitor's run) with role `judge` and no
-    agent id. `budget_usd` is split evenly over the rollouts; a rollout gives its verdict early
-    when the next calls would not fit in its share, and stops when not even one would. The
+    agent id. `budget_usd` is split evenly over the rollouts. A rollout keeps room in its share
+    for one verdict call with every input token uncached, gives its verdict early when it can
+    no longer explore beside that room. It caps each call's output to what its share still pays
+    for. It stops without a verdict only when not even a short answer fits. The
     delimiters around the run data derive from the secret `key`, so a replay with the same key
     sends the same requests.
     """
@@ -977,13 +985,16 @@ class Judge:
         forced = False
         tries = 0
         while True:
-            estimate = r.last_cost * ESTIMATE
-            if r.cost >= r.budget or r.cost + estimate > r.budget:
-                r.error = "the judge budget ran out before a verdict"
-                return
-            if not forced and (r.tool_calls >= cap or r.cost + 2 * estimate > r.budget):
+            left = r.budget - r.cost
+            context = self._context(r, items, specs)
+            room = self._room(left, context, explore=True)
+            if not forced and (r.tool_calls >= cap or (room is not None and room < 0)):
                 forced = True
                 items.append(Message(role="user", content=self._text("judge_force")))
+            out = self._room(left, context, explore=not forced)
+            if out is not None and out < MIN_OUTPUT:
+                r.error = "the judge budget ran out before a verdict"
+                return
             if forced:
                 if tries >= FORCE_TRIES:
                     r.error = f"no valid verdict after {tries} forced calls"
@@ -993,7 +1004,10 @@ class Judge:
                 prompt = Prompt(items=items, output_schema=schema)
             else:
                 prompt = Prompt(items=items, tools=specs)
-            reply = await self._call(r, prompt)
+            limit = self.profile.max_output_tokens
+            capped = out is not None and (limit is None or out < limit)
+            reply = await self._call(r, prompt, out if capped else None)
+            r.mark = len(items) + 1
             completed = reply.status == "completed"
             items.append(reply.turn if completed else Turn(text=reply.text))
             calls = reply.tool_calls if completed else []
@@ -1024,10 +1038,38 @@ class Judge:
                     text = await self._tool(r, call)
                 items.append(ToolOutput(call_id=call.id, output=text))
 
-    async def _call(self, r: Rollout, prompt: Prompt) -> Reply:
-        reply = await self.client.call(self.profile, prompt, role="judge")
+    async def _call(self, r: Rollout, prompt: Prompt, out: int | None = None) -> Reply:
+        overrides = None if out is None else Overrides(max_output_tokens=out)
+        reply = await self.client.call(self.profile, prompt, role="judge", overrides=overrides)
         r.charge(reply)
         return reply
+
+    def _context(self, r: Rollout, items: Sequence[Item], specs: Sequence[ToolSpec]) -> int:
+        """At most how many input tokens the next call sends: what the last call read and
+        wrote plus the items since, else the whole prompt."""
+        added = items[r.mark :] if r.context else [*items, *specs]
+        return r.context + sum(len(x.model_dump_json()) for x in added) // CHARS_PER_TOKEN
+
+    def _room(self, left: float, context: int, *, explore: bool) -> int | None:
+        """How many output tokens the next call may write within `left` dollars, its input
+        priced uncached. An exploring call also leaves room for a verdict call after it; it gets
+        -1 when it does not fit beside it. None when the profile has no price."""
+        price = self.profile.price
+        if price is None:
+            return None
+        limit = self.profile.max_output_tokens
+        reading = context * price.input / MILLION
+        if explore:
+            verdict = min(VERDICT_OUTPUT, limit or VERDICT_OUTPUT)
+            left -= reading + verdict * price.output / MILLION
+            if left - reading < MIN_OUTPUT * price.output / MILLION:
+                return -1
+        if left < reading:
+            return 0
+        if price.output <= 0:
+            return limit
+        out = int((left - reading) / price.output * MILLION)
+        return out if limit is None else min(out, limit)
 
     # The tools.
 
