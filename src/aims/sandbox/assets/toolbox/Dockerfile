@@ -5,7 +5,7 @@ RUN gcc -static -Os -s -Wall -Wextra -Werror -o /aims-exec /src/exec.c \
  && gcc -static -O2 -s -Wall -Wextra -Werror -o /aims-sample /src/sample.c \
  && gcc -static -Os -s -Wall -Wextra -Werror -o /aims-snap /src/snap.c
 
-FROM busybox:1.37-musl@sha256:5cec3fc171c87218698e85a52af7087de727372aae264a787b8112901a5b0092
+FROM busybox:1.38-musl@sha256:80e38f9a1b39188b8bdb28879178edb322a4402b081a9aedda1924609decd6f6
 COPY --from=build /aims-exec /aims-sample /aims/
 COPY --from=build /aims-snap /reader/aims-snap
 RUN cp /bin/busybox /aims/busybox
