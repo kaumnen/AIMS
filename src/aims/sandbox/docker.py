@@ -215,6 +215,8 @@ class DockerBackend:
         scratch = [
             (f"aims-{run_id}-{agent_id}-tmp", "/tmp", f"size={spec.tmp_mb}m,mode=1777"),
             (f"aims-{run_id}-{agent_id}-home", HOME, f"size=64m,{owner}"),
+            # Replaces Docker's own /dev/shm, with the same options.
+            (f"aims-{run_id}-{agent_id}-shm", "/dev/shm", "noexec,size=64m,mode=1777"),
         ]
         if spec.runner_mb is not None:
             runner = f"uid={RUNNER_UID},gid={RUNNER_UID},mode=0700"

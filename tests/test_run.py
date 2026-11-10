@@ -183,6 +183,34 @@ async def test_setup_failure_fails_the_run_without_an_agent(
     assert (await store.verify(result.run_id)).ok
 
 
+async def test_dev_shm_is_seeded_and_archived(
+    backend: DockerBackend, store: LocalEventStore, tmp_path: Path
+) -> None:
+    path = tmp_path / "s.yaml"
+    path.write_text(
+        "version: 1\nname: shm\noversight: observe\ntask:\n  instruction: x\n"
+        "  environment: {image: python:3.13-slim}\n"
+        "  files: [{path: /dev/shm/seed/given.txt, content: given}]\n"
+    )
+    script = Script(call("bash", command="echo note > /dev/shm/note"), call("submit", answer="ok"))
+    bench = Bench(store, backend, models(profile()), transport=script.transport())
+    result = await Runner(bench, load(path), Options()).run()
+
+    assert result.status == "completed", result.reason
+    assert result.run_id is not None
+    (archived,) = await payloads(store, result.run_id, SandboxArchived, "sandbox.archived")
+    assert archived.paths == ["/work", "/tmp", "/home/agent", "/dev/shm"]
+    assert archived.archive is not None
+    data = await store.get_blob(result.run_id, archived.archive.sha256)
+    found: dict[str, bytes] = {}
+    with tarfile.open(fileobj=io.BytesIO(data)) as tar:
+        for name in ("dev/shm/note", "dev/shm/seed/given.txt"):
+            file = tar.extractfile(name)
+            assert file is not None, name
+            found[name] = file.read()
+    assert found == {"dev/shm/note": b"note\n", "dev/shm/seed/given.txt": b"given"}
+
+
 async def test_a_budget_override_caps_the_run_and_its_forks_keep_or_raise_it(
     backend: DockerBackend, store: LocalEventStore
 ) -> None:

@@ -829,6 +829,100 @@ async def test_tmp_and_home_are_diffed_with_content(
     assert left == set()
 
 
+async def test_dev_shm_is_diffed_with_content_and_removed_on_close(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    async def volumes() -> set[str]:
+        listing = await backend.docker.volumes.list()
+        return {v["Name"] for v in listing.get("Volumes") or []}
+
+    before = await volumes()
+    run_id, sb = await sandbox(backend, store)
+    try:
+        made = await volumes() - before
+        result = await sb.exec(
+            "echo 'print(1)' > /dev/shm/hidden.py && python3 /dev/shm/hidden.py", timeout_s=10
+        )
+    finally:
+        await sb.close()
+    left = {name for name in await volumes() - before if run_id in name}
+
+    assert result.stdout == b"1\n"
+    last = next(s for s in await snapshots(store, run_id) if s.exec_id == result.finished.exec_id)
+    assert "/dev/shm" in last.roots
+    content = changed(last)["/dev/shm/hidden.py"].content
+    assert content is not None
+    assert await store.get_blob(run_id, content.sha256) == b"print(1)\n"
+    assert f"aims-{run_id}-a1-shm" in made
+    assert left == set()
+
+
+SHARED_MEMORY = (
+    "from multiprocessing import shared_memory as s\n"
+    "m = s.SharedMemory(create=True, size=4096)\n"
+    "m.buf[0] = 1\n"
+    "m.close()\n"
+    "m.unlink()\n"
+    "print('shared')"
+)
+
+
+async def test_dev_shm_keeps_the_limits_docker_gives_it(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    checks = {
+        "id -u": b"1000\n",
+        "stat -c '%u %a' /dev/shm": b"0 1777\n",
+        f"python3 -c {shlex.quote(SHARED_MEMORY)}": b"shared\n",
+        "cp /bin/true /dev/shm/t && /dev/shm/t 2>/dev/null || echo noexec": b"noexec\n",
+        "head -c 65M /dev/zero > /dev/shm/big 2>/dev/null || echo full; rm /dev/shm/big": (
+            b"full\n"
+        ),
+    }
+    _, sb = await sandbox(backend, store)
+    try:
+        mounts = await sb.exec("grep ' /dev/shm ' /proc/mounts", timeout_s=10)
+        for command, expected in checks.items():
+            result = await sb.exec(command, timeout_s=10)
+            assert result.stdout == expected, command
+    finally:
+        await sb.close()
+
+    (line,) = mounts.stdout.decode().splitlines()
+    source, _, kind, options = line.split()[:4]
+    # The scratch volume's device is "tmpfs"; Docker's own /dev/shm mount names "shm".
+    assert (source, kind) == ("tmpfs", "tmpfs"), line
+    assert {"rw", "nosuid", "nodev", "noexec", "size=65536k"} <= set(options.split(",")), line
+
+
+MQUEUE = "import ctypes, os; ctypes.CDLL(None).mq_open(b'/q', os.O_CREAT | os.O_RDWR, 0o600, None)"
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_kernel_logs_reads_under_dev_shm_but_not_elsewhere_in_dev(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    run_id, sb = await sandbox(backend, store)
+    try:
+        await sb.exec(f"echo x > /dev/shm/note && python3 -c {shlex.quote(MQUEUE)}", timeout_s=10)
+        result = await sb.exec(
+            "cat /dev/shm/note /dev/mqueue/q /dev/null; head -c 4 /dev/urandom > /dev/null",
+            timeout_s=10,
+        )
+    finally:
+        await sb.close()
+
+    assert result.stdout.startswith(b"x\nQSIZE:")
+    payloads = [e.payload() for e in await events(store, run_id, "file.access")]
+    reads = {
+        p.path
+        for p in payloads
+        if isinstance(p, FileAccess) and p.op == "read" and p.exec_id == result.finished.exec_id
+    }
+    assert {p for p in reads if p.startswith("/dev/")} == {"/dev/shm/note"}
+
+
 async def test_touched_files_do_not_use_up_the_content_budget(
     backend: DockerBackend, store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:

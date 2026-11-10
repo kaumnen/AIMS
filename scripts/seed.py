@@ -433,7 +433,7 @@ async def step(
             "fs.snapshot",
             agent.name,
             exec_id=exec_id,
-            roots=["/work", "/tmp", "/home/agent"],
+            roots=["/work", "/tmp", "/home/agent", "/dev/shm"],
             base=agent.digest,
             digest=sha(f"{agent.digest} {n}"),
             entries=249,

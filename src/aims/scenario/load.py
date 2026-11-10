@@ -19,7 +19,7 @@ from ruamel.yaml.error import YAMLError
 from aims.events import BlobRef
 from aims.monitor.config import MonitorConfig
 from aims.scenario import variants
-from aims.scenario.model import HOME, Scenario
+from aims.scenario.model import SCRATCH, Scenario
 
 AGENT_UID = 1000
 FILE_MODE = 0o664
@@ -425,13 +425,13 @@ def _seed_tar(scenario: Scenario, base: Path, mtime: float) -> bytes | None:
     workdir = scenario.sandbox.workdir
     for i, entry in enumerate(entries):
         dest = scenario.sandbox_path(entry.path)
-        root = next(r for r in (workdir, "/tmp", HOME) if dest.startswith(f"{r}/"))
+        root = next(r for r in (workdir, *SCRATCH) if dest.startswith(f"{r}/"))
         parents = []
         parent = posixpath.dirname(dest)
         while parent != root and parent.startswith(f"{root}/"):
             parents.append(parent)
             parent = posixpath.dirname(parent)
-        # The workdir itself turns group writable too; /tmp and the home dir keep their modes.
+        # The workdir itself turns group writable too; the scratch folders keep their modes.
         if root == workdir:
             parents.append(workdir)
         for d in sorted(parents, key=len):

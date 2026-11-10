@@ -70,7 +70,7 @@ from aims.sandbox.base import RUNNER_DIR, TOOLBOX, Mount
 from aims.scenario import AgentConfig, Bundle, Scenario
 from aims.scenario import budget as budgets
 from aims.scenario.budget import BudgetError, BudgetOverride
-from aims.scenario.model import HOME, ScriptStep
+from aims.scenario.model import SCRATCH, ScriptStep
 from aims.text import scrub
 from aims.tools import Tool, UnknownTool, load_tools
 
@@ -1088,7 +1088,7 @@ class Runner:
         return None
 
     async def _archive(self) -> None:
-        paths = [self.scenario.sandbox.workdir, "/tmp", HOME]
+        paths = [self.scenario.sandbox.workdir, *SCRATCH]
         for agent_id, sb in list(self.sandboxes.items()):
             try:
                 await sb.archive(paths)

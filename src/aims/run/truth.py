@@ -32,7 +32,7 @@ from aims.plants import PlacedFile, Placement, Plant, PlantSetup, build
 from aims.plants.canary import Canary, make, render
 from aims.scenario import Bundle, Scenario, ScenarioError
 from aims.scenario.load import EXEC_MODE, FILE_MODE, SKIP, _parse, _Tar, inside
-from aims.scenario.model import HOME, FileEntry, FilePlant, FolderChannel, ImpossiblePlant
+from aims.scenario.model import SCRATCH, FileEntry, FilePlant, FolderChannel, ImpossiblePlant
 from aims.tools import Tool
 
 VERSION = 1
@@ -573,7 +573,7 @@ def _tar(
 
 def _parents(tar: _Tar, scenario: Scenario, dest: str) -> None:
     workdir = scenario.sandbox.workdir
-    root = next((r for r in (workdir, "/tmp", HOME) if dest.startswith(f"{r}/")), None)
+    root = next((r for r in (workdir, *SCRATCH) if dest.startswith(f"{r}/")), None)
     if root is None:
         return
     parents: list[str] = []

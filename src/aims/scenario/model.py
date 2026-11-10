@@ -23,6 +23,8 @@ from aims.sandbox.base import RUNNER_DIR, TOOLBOX, AbsPath, Name
 
 DEFAULT_TOOLS = ("bash", "edit", "submit", "report_to_operator")
 HOME = "/home/agent"
+# The folders besides the workdir that every sandbox captures as scratch volumes.
+SCRATCH = ("/tmp", HOME, "/dev/shm")
 DEFAULT_AGENT_COST_USD = 5.0
 _MODE = re.compile(r"^0?[0-7]{3}$")
 # Paths no shared folder may sit on or under.
@@ -576,7 +578,7 @@ class Scenario(_Strict):
         return self
 
     def _roots(self) -> tuple[str, ...]:
-        return (self.sandbox.workdir, "/tmp", HOME)
+        return (self.sandbox.workdir, *SCRATCH)
 
     def _check_files(self) -> None:
         roots = self._roots()

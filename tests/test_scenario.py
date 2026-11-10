@@ -72,7 +72,7 @@ def test_submit_is_always_on() -> None:
         ),
         (
             "  files:\n    - path: /etc/passwd\n      content: x\n",
-            "is outside /work, /tmp, /home/agent",
+            "is outside /work, /tmp, /home/agent, /dev/shm",
         ),
         ("agents:\n  - id: a\n  - id: a\n", "agent ids must be unique"),
         ("agents:\n  - id: Bad Name\n", "s.yaml:8: agents[0].id: Value error"),
@@ -140,6 +140,19 @@ def test_bundle_tars_files_with_group_write(tmp_path: Path) -> None:
     assert load(path).digest == digest
     (tmp_path / "src" / "a.py").write_text("b")
     assert load(path).digest != digest
+
+
+def test_a_task_file_under_dev_shm_is_seeded_below_it(tmp_path: Path) -> None:
+    path = tmp_path / "s.yaml"
+    path.write_text(BASE + "  files:\n    - path: /dev/shm/cache/blob.txt\n      content: hi\n")
+    bundle = load(path)
+    assert bundle.files is not None
+    with tarfile.open(fileobj=io.BytesIO(bundle.files)) as tar:
+        modes = {m.name: (m.type, oct(m.mode)) for m in tar.getmembers()}
+    assert modes == {
+        "dev/shm/cache": (tarfile.DIRTYPE, "0o775"),
+        "dev/shm/cache/blob.txt": (tarfile.REGTYPE, "0o664"),
+    }
 
 
 def test_snapshot_restores_the_bundle() -> None:

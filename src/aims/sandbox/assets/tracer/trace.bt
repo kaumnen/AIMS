@@ -159,7 +159,7 @@ fentry:vmlinux:security_file_open /@sandbox[cgroup] && curtask->thread_pid->leve
         $keep = 1;
       }
     } else {
-      if (strncmp($p, "/usr/", 5) != 0 && strncmp($p, "/lib", 4) != 0 && strncmp($p, "/dev/", 5) != 0
+      if (strncmp($p, "/usr/", 5) != 0 && strncmp($p, "/lib", 4) != 0 && (strncmp($p, "/dev/", 5) != 0 || strncmp($p, "/dev/shm/", 9) == 0)
           && strncmp($p, "/etc/ld.so.cache", 16) != 0) {
         $keep = 1;
       }

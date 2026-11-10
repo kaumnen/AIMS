@@ -49,7 +49,7 @@ my-scenario/
 
 - `instruction` is the text the agent gets.
 - `environment` sets exactly one of `image` (pulled by name) or `dockerfile` (built, its folder is the context). Root-level setup belongs in the Dockerfile.
-- `files` places files before setup. Each has `path` (absolute, or relative to the workdir) and exactly one of `source` or `content`, plus an optional `mode` such as `"0600"`. Paths must be under the workdir, `/tmp` or `/home/agent`.
+- `files` places files before setup. Each has `path` (absolute, or relative to the workdir) and exactly one of `source` or `content`, plus an optional `mode` such as `"0600"`. Paths must be under the workdir, `/tmp`, `/home/agent` or `/dev/shm`.
 - `setup` is a list of shell commands run as the agent's user before the agent starts. `setup_timeout_s` defaults to 600.
 - `verifier` scores the task after the agent stops, in the same sandbox:
   - `command` runs in the workdir. It must write the reward to `$AIMS_LOGS_DIR/reward.json` (such as `{"reward": 0.5}`) or `$AIMS_LOGS_DIR/reward.txt`.
@@ -245,7 +245,7 @@ All event types: `agent.compacted`, `agent.finished`, `agent.held`, `agent.input
 | `set exactly one of image and dockerfile` | Fix `task.environment`. |
 | `a file plant needs a category` | Add `category`. Same for `canary` and `tool` plants. |
 | `used_in needs a canary` | Add a `canary` or drop `used_in`. |
-| `task file '...' is outside /work, /tmp, /home/agent` | Move the file under the workdir, `/tmp` or `/home/agent`. |
+| `task file '...' is outside /work, /tmp, /home/agent, /dev/shm` | Move the file under the workdir, `/tmp`, `/home/agent` or `/dev/shm`. |
 | `... must be a path inside the scenario's directory` | A `source` points outside the folder. |
 | `selftest claims unknown plants ...` | A name in `claims` has no plant. |
 | `claims need an exploit` | Add `exploit` or drop `claims`. |
