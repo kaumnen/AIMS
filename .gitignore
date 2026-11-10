@@ -9,6 +9,9 @@ __pycache__/
 /build/
 .ruff_cache/
 .pytest_cache/
+.hypothesis/
+.coverage
+.coverage.*
 
 node_modules/
 src/aims/ui/dist/

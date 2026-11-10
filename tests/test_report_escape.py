@@ -4,7 +4,10 @@ import html
 import re
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 from markdown_it import MarkdownIt
+from markdown_it.token import Token
 
 from aims.report.escape import (
     PROSE_CHARS,
@@ -280,3 +283,121 @@ def test_quote_cut() -> None:
     assert plain(rendered.split("</blockquote>")[0]).strip() == ("word " * 400).strip()
     assert "Cut" not in quote("x" * PROSE_CHARS)
     assert quote("x" * (PROSE_CHARS + 1)).endswith("Cut, 1 more character.")
+
+
+PIECES = [
+    "https://x.example/a",
+    "www.",
+    "@a",
+    ":a:",
+    "$",
+    "mailto:",
+    "javascript:",
+    "`",
+    "``",
+    "\\",
+    "|",
+    "*",
+    "_",
+    "~",
+    "<b>",
+    "</b>",
+    "<",
+    ">",
+    "&",
+    "&amp;",
+    "&#60;",
+    "#",
+    "[",
+    "](",
+    ")",
+    "!",
+    "-",
+    "+",
+    "=",
+    "1.",
+    ":",
+    ".",
+    "\n",
+    "\r\n",
+    "\r",
+    "\t",
+    " ",
+    "   ",
+    "\xa0",
+    "\u3000",
+    "\u202e",
+    "\u200b",
+    "\x00",
+    "\x85",
+    "\u2028",
+    "\ud800",
+    "\U000e0041",
+    "\ufeff",
+]
+UNTRUSTED = st.lists(st.sampled_from(PIECES) | st.text(max_size=3), max_size=24).map("".join)
+TABLE = [
+    "table_open",
+    "thead_open",
+    "tr_open",
+    *["th_open", "inline", "th_close"] * 2,
+    "tr_close",
+    "thead_close",
+    "tbody_open",
+    "tr_open",
+    *["td_open", "inline", "td_close"] * 2,
+    "tr_close",
+    "tbody_close",
+    "table_close",
+]
+
+
+def spans(inline: Token) -> list[Token]:
+    """The inline children, checked to be text and code spans only."""
+    children = inline.children or []
+    assert {c.type for c in children} <= {"text", "code_inline"}, children
+    return children
+
+
+def paragraph(md: str) -> list[Token]:
+    tokens = MD.parse(md)
+    assert [t.type for t in tokens] == ["paragraph_open", "inline", "paragraph_close"], md
+    return spans(tokens[1])
+
+
+def first_cell(md: str) -> list[Token]:
+    tokens = MD.parse(f"| a | b |\n| --- | --- |\n| {md} | x |\n")
+    assert [t.type for t in tokens] == TABLE, md
+    assert "".join(c.content for c in spans(tokens[17])) == "x"
+    return spans(tokens[14])
+
+
+@given(UNTRUSTED)
+def test_text_is_only_text_and_code_spans(s: str) -> None:
+    """text(s) parses as text and code spans in at most one paragraph, holding exactly the
+    characters of visible(s) with whitespace folded."""
+    if not folded(s):
+        assert text(s) == ""
+        return
+    assert "".join(c.content for c in paragraph(text(s))) == folded(s)
+
+
+@given(UNTRUSTED)
+def test_a_cell_is_only_text_and_code_spans(s: str) -> None:
+    """cell(s) in a table row parses as text and code spans in that one cell, holding exactly
+    the characters of visible(s) with whitespace folded."""
+    assert "".join(c.content for c in first_cell(cell(s))) == folded(s)
+
+
+@given(UNTRUSTED, st.booleans())
+def test_code_is_one_code_span(s: str, in_cell: bool) -> None:
+    """code(s) parses as one code span, in a paragraph or a table cell, holding exactly the
+    characters of visible(s) with newlines as spaces. Other whitespace is kept."""
+    want = visible(s).replace("\n", " ")
+    md = code(s, in_cell=in_cell)
+    if not want:
+        assert md == ""
+        return
+    children = first_cell(md) if in_cell else paragraph(md)
+    assert [c.type for c in children] == ["code_inline"]
+    assert same_code(children[0].content, want)

@@ -1,9 +1,13 @@
+import itertools
 import json
+import string
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, get_args
 
 import pytest
+from hypothesis import assume, given
+from hypothesis import strategies as st
 from scripted import Script, models, profile, say
 from test_render import KEY, TASK, TEXTS, Run
 
@@ -530,6 +534,52 @@ async def test_quote_checks_normalise_whitespace_and_escapes() -> None:
     assert not verify("line three", [source])
     assert not verify("   ", [source])
     assert verify("a b", ["x a", "b y"])
+
+
+SPACES = "".join(c for c in map(chr, range(0x3001)) if c.isspace())
+CHARS = st.sampled_from(SPACES) | st.sampled_from('"\\un0') | st.characters()
+SOURCES = st.lists(st.lists(CHARS, max_size=30).map("".join), min_size=1, max_size=3)
+CUTS = st.tuples(st.integers(0), st.integers(0))
+
+
+def cut_from(sources: list[str], cut: tuple[int, int]) -> str:
+    """A part of the sources joined by newlines, empty only when they are."""
+    joined = "\n".join(sources)
+    start = cut[0] % len(joined) if joined else 0
+    return joined[start : start + 1 + cut[1] % (len(joined) - start or 1)]
+
+
+@given(
+    sources=SOURCES,
+    cut=CUTS,
+    lead=st.text(st.sampled_from(SPACES), max_size=2),
+    gaps=st.lists(st.text(st.sampled_from(SPACES), min_size=1, max_size=3), min_size=1),
+    escaped=st.booleans(),
+)
+def test_a_quote_verifies_with_its_whitespace_changed(
+    sources: list[str], cut: tuple[int, int], lead: str, gaps: list[str], escaped: bool
+) -> None:
+    """A quote cut from one source, or from several joined by newlines, verifies with each
+    whitespace run at its ends or between its words changed to any whitespace. So does its
+    JSON escaped form."""
+    words = cut_from(sources, cut).split()
+    assume(words)
+    quote = lead + "".join(word + gap for word, gap in zip(words, itertools.cycle(gaps)))
+    assert verify(json.dumps(quote)[1:-1] if escaped else quote, sources)
+
+
+@given(sources=SOURCES, cut=CUTS, at=st.integers(0), new=st.characters(min_codepoint=0x20))
+def test_a_quote_with_a_foreign_character_fails(
+    sources: list[str], cut: tuple[int, int], at: int, new: str
+) -> None:
+    """A quote cut from the sources fails once one of its characters is changed to one found
+    in none of them, unless the new one is whitespace or can be part of a JSON escape."""
+    assume(not new.isspace() and new not in '"\\/bfnrtu' + string.hexdigits)
+    assume(all(new not in source for source in sources))
+    quote = cut_from(sources, cut)
+    assume(quote)
+    at %= len(quote)
+    assert not verify(quote[:at] + new + quote[at + 1 :], sources)
 
 
 async def test_the_default_texts_are_plain_and_resolve() -> None:

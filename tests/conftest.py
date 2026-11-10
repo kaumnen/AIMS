@@ -1,6 +1,19 @@
 from pathlib import Path
 
 import pytest
+from hypothesis import HealthCheck, settings
+
+# Property tests run under pytest-xdist load, so neither an example nor its data is timed. The
+# examples of a test share its fixtures, which suits the autouse config fixture below.
+# Hypothesis loads its "ci" profile, which also fixes the examples, when it sees a CI environment.
+for _profile in ("default", "ci"):
+    settings.register_profile(
+        _profile,
+        settings.get_profile(_profile),
+        deadline=None,
+        max_examples=50,
+        suppress_health_check=[HealthCheck.function_scoped_fixture, HealthCheck.too_slow],
+    )
 
 # Scenario projects under fixtures hold their own tests, which are the agent's to fix.
 collect_ignore = ["fixtures"]

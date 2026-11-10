@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import gc
 import hashlib
+import itertools
 import json
 import os
 import sqlite3
@@ -11,6 +12,8 @@ from typing import Any
 
 import pytest
 import rfc8785
+from hypothesis import example, given
+from hypothesis import strategies as st
 from typer.testing import CliRunner
 
 from aims.cli import app
@@ -34,7 +37,7 @@ from aims.events import (
     verify_run,
 )
 from aims.events.blobs import ZSTD_MAGIC
-from aims.events.chain import GENESIS, Head, digest, seal
+from aims.events.chain import GENESIS, Head, digest, follow, seal
 from aims.events.schema import now, text_of
 from aims.events.store import INLINE_LIMIT, LOG
 
@@ -620,3 +623,93 @@ async def test_a_self_test_case_keeps_its_name_through_a_reindex(tmp_path: Path)
         info = await store.run(run_id)
         assert info is not None
         assert info.case == "exploit"
+
+
+# Integers past 2**53 - 1 are outside the canonical JSON number domain; seal refuses them
+# before anything is written.
+JSON = st.recursive(
+    st.none()
+    | st.booleans()
+    | st.integers(-(2**53) + 1, 2**53 - 1)
+    # seal writes a whole float past 2**53 - 1 as an integer that follow refuses.
+    | st.floats(allow_nan=False, allow_infinity=False).filter(
+        lambda f: not f.is_integer() or abs(f) <= 2**53 - 1
+    )
+    | st.text(max_size=12),
+    lambda inner: (
+        st.lists(inner, max_size=4) | st.dictionaries(st.text(max_size=6), inner, max_size=4)
+    ),
+    max_leaves=12,
+)
+CONFIGS = st.dictionaries(st.text(max_size=6), JSON, max_size=4)
+ARGUMENTS = st.lists(st.text(max_size=40), max_size=4)
+
+
+@pytest.mark.xfail(strict=True, reason="seal writes 2.0**53 as an integer that follow refuses")
+@given(st.lists(CONFIGS, min_size=1, max_size=4))
+@example([{"": 2.0**53}])
+def test_every_sealed_line_follows(datas: list[dict[str, Any]]) -> None:
+    """seal(head, ...) gives a line that follow(head, line) accepts with the same event and
+    head, for any JSON data."""
+    head = Head()
+    for i, data in enumerate(datas):
+        kind = "run.started" if i == 0 else "plugin.note"
+        event, line, after = seal(head, run_id="r", ts=now(), agent_id=None, type=kind, data=data)
+        assert follow(head, line, run_id="r") == (event, after)
+        head = after
+
+
+async def sealed_run(
+    store: LocalEventStore, config: dict[str, Any], arguments: list[str]
+) -> tuple[Path, list[bytes]]:
+    started = RunStarted(scenario="demo", oversight="observe", agents=["a1"], config=config)
+    run_id = await store.create_run(started)
+    await store.append(run_id, [call(i, a) for i, a in enumerate(arguments, 1)])
+    await store.append(run_id, [Draft(RunFinished(status="completed"))])
+    path = log_path(store, run_id)
+    return path, split_lines(path.read_bytes())
+
+
+def line_ends(lines: list[bytes]) -> list[int]:
+    return list(itertools.accumulate(map(len, lines)))
+
+
+@given(config=CONFIGS, arguments=ARGUMENTS, at=st.integers(0), change=st.integers(1, 255))
+async def test_any_changed_byte_fails_verify(
+    store: LocalEventStore, config: dict[str, Any], arguments: list[str], at: int, change: int
+) -> None:
+    """Changing any one byte of a sealed log fails verify at the line that holds it."""
+    path, lines = await sealed_run(store, config, arguments)
+    assert verify_run(path.parent).ok
+    log = bytearray(b"".join(lines))
+    at %= len(log)
+    log[at] = (log[at] + change) % 256
+    path.write_bytes(log)
+    result = verify_run(path.parent)
+    assert not result.ok
+    assert result.events == sum(end <= at for end in line_ends(lines))
+
+
+@given(config=CONFIGS, arguments=ARGUMENTS, at=st.integers(0))
+async def test_a_cut_log_keeps_the_lines_before_the_cut(
+    store: LocalEventStore, config: dict[str, Any], arguments: list[str], at: int
+) -> None:
+    """Cutting a sealed log at any byte keeps every whole line before the cut. A cut at a line
+    end verifies; a cut inside a line, the last one included, is reported as torn."""
+    path, lines = await sealed_run(store, config, arguments)
+    ends = line_ends(lines)
+    at %= ends[-1] + 1
+    path.write_bytes(b"".join(lines)[:at])
+    result = verify_run(path.parent)
+    whole = sum(end <= at for end in ends)
+    assert result.events == whole
+    assert result.head == (json.loads(lines[whole - 1])["hash"] if whole else GENESIS)
+    assert result.finished == (at == ends[-1])
+    if at == 0:
+        assert result.error == "log is empty"
+    elif at in ends:
+        assert result.ok
+    else:
+        assert result.torn
+        assert result.error is not None
+        assert result.error.endswith("incomplete line")

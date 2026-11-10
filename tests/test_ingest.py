@@ -5,7 +5,9 @@ from collections.abc import AsyncIterator
 from compression import zstd
 from pathlib import Path
 
+import hypothesis
 import pytest
+from hypothesis import strategies as st
 
 from aims.events import (
     AgentInput,
@@ -23,7 +25,8 @@ from aims.events import (
     verify_run,
 )
 from aims.events.blobs import BlobError, BlobStore
-from aims.events.chain import Head
+from aims.events.chain import Head, follow, seal
+from aims.events.schema import now
 from aims.events.store import LOG
 
 pytestmark = pytest.mark.anyio
@@ -321,6 +324,132 @@ def test_split_lines_keeps_a_torn_last_line() -> None:
     assert split_lines(b"a\nb\n") == [b"a\n", b"b\n"]
     assert split_lines(b"a\nb") == [b"a\n", b"b"]
     assert split_lines(b"") == []
+
+
+BODIES = st.lists(st.sampled_from([b"\n", b"\r", b"{}"]) | st.binary(max_size=8)).map(b"".join)
+
+
+@hypothesis.given(BODIES)
+def test_split_lines_keeps_every_byte(body: bytes) -> None:
+    """The lines join back to the body. None is empty. Each ends with its only newline,
+    except a last line without one."""
+    lines = split_lines(body)
+    assert b"".join(lines) == body
+    assert all(lines)
+    assert all(line.find(b"\n") == len(line) - 1 for line in lines[:-1])
+    assert all(b"\n" not in line[:-1] for line in lines[-1:])
+
+
+ARGUMENTS = st.lists(st.text(max_size=30), max_size=8)
+PICKS = st.tuples(st.integers(0), st.integers(0), st.integers(0), st.integers(0))
+
+
+async def source_run(
+    source: LocalEventStore, arguments: list[str], finish: bool
+) -> tuple[str, list[bytes], list[Head]]:
+    """A run written by `source`, its lines and the head after each count of lines."""
+    run_id = await source.create_run(STARTED)
+    await source.append(run_id, [call(i, a) for i, a in enumerate(arguments, 1)])
+    if finish:
+        await source.append(run_id, [Draft(RunFinished(status="completed"))])
+    lines = lines_of(source, run_id)
+    heads = [Head()]
+    for line in lines:
+        heads.append(follow(heads[-1], line, run_id=run_id)[1])
+    return run_id, lines, heads
+
+
+def fork(run_id: str, head: Head) -> bytes:
+    """Another valid event at the seq after `head`."""
+    payload = (
+        RunStarted(scenario="fork", oversight="observe")
+        if head.seq < 0
+        else ToolCall(call_id="fork", name="shell", arguments="{}")
+    )
+    data = payload.model_dump(mode="json")
+    _, line, _ = seal(head, run_id=run_id, ts=now(), agent_id=None, type=payload.type, data=data)
+    return line
+
+
+@hypothesis.given(
+    arguments=ARGUMENTS,
+    finish=st.booleans(),
+    batches=st.lists(st.tuples(st.integers(0, 12), st.integers(0, 12)), max_size=8),
+)
+async def test_overlapping_batches_give_a_byte_identical_copy(
+    source: LocalEventStore,
+    copy: LocalEventStore,
+    arguments: list[str],
+    finish: bool,
+    batches: list[tuple[int, int]],
+) -> None:
+    """Cutting a log into batches in any way, each starting at or before the end of the copy,
+    gives a byte identical copy. Each ingest returns the head after the last line sent so far."""
+    run_id, lines, heads = await source_run(source, arguments, finish)
+    have = 0
+    for back, size in [*batches, (0, len(lines))]:
+        start = max(0, have - back)
+        end = min(len(lines), start + size)
+        assert await copy.ingest(run_id, lines[start:end]) == heads[max(have, end)]
+        have = max(have, end)
+    assert log_bytes(copy, run_id) == log_bytes(source, run_id)
+    assert verify_run(copy.root / run_id).ok
+    assert await copy.head(run_id) == heads[-1]
+
+
+@hypothesis.given(arguments=ARGUMENTS, finish=st.booleans(), picks=PICKS)
+async def test_a_changed_line_in_the_overlap_diverges(
+    source: LocalEventStore,
+    copy: LocalEventStore,
+    arguments: list[str],
+    finish: bool,
+    picks: tuple[int, int, int, int],
+) -> None:
+    """A batch holding another valid event at a seq the copy has raises Diverged with the
+    copy's head. The copy stays as it was."""
+    run_id, lines, heads = await source_run(source, arguments, finish)
+    n = len(lines)
+    have = 1 + picks[0] % n
+    changed = picks[1] % have
+    start = picks[2] % (changed + 1)
+    end = changed + 1 + picks[3] % (n - changed)
+    await copy.ingest(run_id, lines[:have])
+    batch = lines[start:end]
+    batch[changed - start] = fork(run_id, heads[changed])
+    with pytest.raises(Diverged) as caught:
+        await copy.ingest(run_id, batch)
+    assert caught.value.head == heads[have]
+    assert log_bytes(copy, run_id) == b"".join(lines[:have])
+    assert await copy.ingest(run_id, lines[have:]) == heads[n]
+    assert log_bytes(copy, run_id) == log_bytes(source, run_id)
+
+
+@hypothesis.given(arguments=ARGUMENTS.filter(bool), finish=st.booleans(), picks=PICKS)
+async def test_a_missing_line_is_refused(
+    source: LocalEventStore,
+    copy: LocalEventStore,
+    arguments: list[str],
+    finish: bool,
+    picks: tuple[int, int, int, int],
+) -> None:
+    """A batch without a line the copy lacks raises Gap when it starts past the end of the
+    copy and Invalid when the hole is inside it. Either way the error holds the copy's head.
+    The copy stays as it was."""
+    run_id, lines, heads = await source_run(source, arguments, finish)
+    n = len(lines)
+    have = picks[0] % (n - 1)
+    missing = have + picks[1] % (n - 1 - have)
+    start = picks[2] % (missing + 1)
+    end = missing + 2 + picks[3] % (n - missing - 1)
+    await copy.ingest(run_id, lines[:have])
+    batch = lines[start:missing] + lines[missing + 1 : end]
+    first = start if start < missing else missing + 1
+    with pytest.raises(Gap if first > have else Invalid) as caught:
+        await copy.ingest(run_id, batch)
+    assert caught.value.head == heads[have]
+    assert log_bytes(copy, run_id) == b"".join(lines[:have])
+    assert await copy.ingest(run_id, lines[have:]) == heads[n]
+    assert log_bytes(copy, run_id) == log_bytes(source, run_id)
 
 
 @pytest.mark.parametrize("compressed", [True, False])

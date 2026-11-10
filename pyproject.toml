@@ -127,7 +127,9 @@ deploy = [
 ]
 dev = [
     "anyio>=4.15.1",
+    "hypothesis>=6.170.15",
     "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
     "pytest-timeout>=2.4.0",
     "pytest-xdist>=3.8.0",
     "ruff>=0.17.2",
@@ -166,6 +168,13 @@ markers = [
 addopts = ["--max-worker-restart=1"]
 timeout = "300"
 timeout_method = "thread"
+
+[tool.coverage.run]
+source_pkgs = ["aims"]
+branch = true
+
+[tool.coverage.report]
+skip_covered = true
 
 [tool.ty.src]
 # train_organism.py is a uv script with its own dependencies.
