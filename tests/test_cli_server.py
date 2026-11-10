@@ -18,10 +18,12 @@ import httpx2
 import pytest
 from children import create_child
 from cp import CP, control_plane
+from proxy import Server, environ, serving
 from typer.testing import CliRunner
 
 from aims.cli import EXIT_CANCELLED, app
 from aims.events import Draft, LocalEventStore, RunFinished, RunStarted, ToolCall
+from aims.net import Outbound
 from aims.node.service import Node, NodeOptions
 from aims.sandbox import DockerBackend, SandboxSpec
 from aims.server.db import ServerDB
@@ -413,6 +415,31 @@ async def test_aims_ui_tells_its_runner_to_leave_ctrl_c_to_it(
     assert seen["env"][UI_RUNNER] == "1"
     assert seen["stdin"] == 7
     assert seen["env"]["AIMS_TOKEN"] == "t"
+
+
+async def test_the_ui_runner_reaches_its_ui_on_any_address_without_the_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
+
+    async def spawn(*args: str, **kwargs: Any) -> None:
+        seen.update(kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    async with serving(Server()) as proxy:
+        environ(monkeypatch, HTTP_PROXY=proxy.url, no_proxy="example.org")
+        await _spawn_runner("http://ui.invalid:8484", "t", UiOptions(), 7)
+        with monkeypatch.context() as m:
+            m.setattr(os, "environ", seen["env"])
+            outbound = Outbound()
+        async with httpx2.AsyncClient(transport=outbound) as client:
+            with pytest.raises(httpx2.ConnectError):
+                await client.get("http://ui.invalid:8484/")
+            await client.get("http://other.invalid/")
+    assert proxy.lines == ["GET http://other.invalid/ HTTP/1.1"]
+    assert seen["env"]["NO_PROXY"] == seen["env"]["no_proxy"] == "example.org,ui.invalid"
+    await _spawn_runner("https://[fd00::1]:8484", "t", UiOptions(), 7)
+    assert seen["env"]["NO_PROXY"] == "example.org,fd00::1"
 
 
 # A stand-in for the runner `aims ui` starts: it logs each SIGTERM, stops in `argv[2]` seconds

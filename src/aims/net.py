@@ -17,6 +17,13 @@ def loopback(host: str) -> bool:
         return False
 
 
+def no_proxy(host: str) -> dict[str, str]:
+    """NO_PROXY and no_proxy for a child process: the list urllib reads here, plus `host`."""
+    listed = getproxies_environment().get("no")
+    value = f"{listed},{host}" if listed else host
+    return {"NO_PROXY": value, "no_proxy": value}
+
+
 def _bypass(host: str, no_proxy: str) -> bool:
     """Loopback, or a host NO_PROXY lists by `*`, by name or a domain it is in, or by an
     address or network it is in."""

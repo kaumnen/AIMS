@@ -21,7 +21,7 @@ from urllib.parse import urlsplit
 
 import uvicorn
 
-from aims.net import loopback
+from aims.net import loopback, no_proxy
 from aims.server.app import create_app
 from aims.server.db import UI_TOKEN, Token, new_token
 from aims.server.state import CODE_TTL_S, close_state, open_state
@@ -428,8 +428,9 @@ async def _spawn_runner(
 ) -> asyncio.subprocess.Process:
     """The runner `aims ui` brings: its token goes in the environment, never on argv.
     UI_RUNNER tells it to ignore the terminal's Ctrl-C and wait for this server's SIGTERM, and
-    to stop once `stdin` ends."""
-    env = {**os.environ, "AIMS_TOKEN": token, UI_RUNNER: "1"}
+    to stop once `stdin` ends. NO_PROXY lists this server, on any address."""
+    host = urlsplit(url).hostname or ""
+    env = {**os.environ, **no_proxy(host), "AIMS_TOKEN": token, UI_RUNNER: "1"}
     return await asyncio.create_subprocess_exec(
         sys.executable,
         "-P",
