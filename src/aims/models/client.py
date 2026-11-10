@@ -38,6 +38,7 @@ from aims.models.replay import Pace, Recording, Replayer, ReplayError, ReplayWal
 from aims.models.replay import chain as cause_chain
 from aims.models.transport import Exchange, Recorder, current, encode_chunks
 from aims.models.types import Prompt, Reply
+from aims.net import Outbound
 
 log = logging.getLogger("aims.models")
 
@@ -213,7 +214,7 @@ class ModelClient:
             inner: httpx2.AsyncBaseTransport = Replayer(self.replay, self.pace)
             api_key = "replay"
         else:
-            inner = self._transport or httpx2.AsyncHTTPTransport()
+            inner = self._transport or Outbound()
             api_key = profile.api_key(self.env) or "none"
         timeout = httpx2.Timeout(connect=t.connect, read=t.stall, write=t.stall, pool=t.wall)
         http = httpx2.AsyncClient(

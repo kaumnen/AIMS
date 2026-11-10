@@ -11,6 +11,7 @@ from pydantic import TypeAdapter
 
 from aims import __version__
 from aims.events import Label
+from aims.net import Outbound
 from aims.run.job import Job
 from aims.wire import (
     Ack,
@@ -107,9 +108,7 @@ class ControlClient:
                 "User-Agent": f"aims/{__version__}",
             },
             timeout=httpx2.Timeout(30.0, connect=10.0),
-            transport=transport,
-            verify=verify,
-            trust_env=False,
+            transport=transport or Outbound(verify),
         )
 
     async def aclose(self) -> None:

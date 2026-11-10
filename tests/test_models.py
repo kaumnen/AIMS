@@ -8,6 +8,7 @@ from typing import Any
 
 import httpx2
 import pytest
+from proxy import Server, environ, serving
 from pydantic import ValidationError
 from typer.testing import CliRunner
 
@@ -504,6 +505,30 @@ async def test_unstreamed_answers(store: LocalEventStore) -> None:
     assert "stream_options" not in json.loads(sent[0])
     response = payloads(await model_events(store, run_id))[1]
     assert response.stream is None
+    assert await store.get_blob(run_id, response.body.sha256) == raw
+
+
+async def test_model_calls_go_through_the_proxy_and_are_recorded(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = await new_run(store)
+    answer = {
+        "id": "c3",
+        "object": "chat.completion",
+        "choices": [
+            {"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}
+        ],
+        "usage": USAGE["usage"],
+    }
+    raw = json.dumps(answer).encode()
+    p = profile(stream=False, base_url="http://models.example/v1")
+    async with serving(Server(body=raw)) as proxy:
+        environ(monkeypatch, HTTP_PROXY=proxy.url)
+        async with ModelClient(store, run_id, config(p), env={}) as mc:
+            reply = await mc.call("test", PROMPT)
+    assert (reply.status, reply.text) == ("completed", "ok")
+    assert proxy.lines == ["POST http://models.example/v1/chat/completions HTTP/1.1"]
+    response = payloads(await model_events(store, run_id))[1]
     assert await store.get_blob(run_id, response.body.sha256) == raw
 
 

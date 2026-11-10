@@ -550,6 +550,8 @@ docker run -d --name aims-runner --restart unless-stopped --user root --stop-tim
 
 </details>
 
+Runners, the CLI and model calls go through the proxy in `HTTPS_PROXY`, `HTTP_PROXY` or `ALL_PROXY`, except to hosts, domains and networks in `NO_PROXY`. Loopback always goes direct. A private CA can come from `SSL_CERT_FILE`, or from the runner's `--tls-ca`, which wins over it.
+
 ### Helper images and offline hosts
 
 A runner needs two helper images: `aims-toolbox` and `aims-tracer`. It pulls them from GHCR by the digests the release pinned. Print the tags and digests of the version you run:

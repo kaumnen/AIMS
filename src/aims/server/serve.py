@@ -3,7 +3,6 @@
 import asyncio
 import contextlib
 import html
-import ipaddress
 import json
 import logging
 import os
@@ -22,6 +21,7 @@ from urllib.parse import urlsplit
 
 import uvicorn
 
+from aims.net import loopback
 from aims.server.app import create_app
 from aims.server.db import UI_TOKEN, Token, new_token
 from aims.server.state import CODE_TTL_S, close_state, open_state
@@ -55,15 +55,6 @@ def connect_host(host: str) -> str:
     if bare == "::":
         return "[::1]"
     return f"[{bare}]" if ":" in bare else bare
-
-
-def loopback(host: str) -> bool:
-    if host == "localhost":
-        return True
-    try:
-        return ipaddress.ip_address(host.strip("[]")).is_loopback
-    except ValueError:
-        return False
 
 
 class ServeError(Exception):

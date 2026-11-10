@@ -551,9 +551,11 @@ def scenario_delete(
 async def _delete_scenario(url: str, token: str, source: str, name: str) -> int:
     import httpx2
 
+    from aims.net import Outbound
+
     headers = {"Authorization": f"Bearer {token}", "User-Agent": f"aims/{__version__}"}
     async with httpx2.AsyncClient(
-        base_url=url.rstrip("/"), headers=headers, timeout=60, trust_env=False
+        base_url=url.rstrip("/"), headers=headers, timeout=60, transport=Outbound()
     ) as c:
         try:
             r = await c.delete(f"/api/scenarios/{source}/{name}")
@@ -1402,11 +1404,12 @@ async def _open(url: str, token: str, open_browser: bool, shown: str) -> int:
     import httpx2
 
     from aims import __version__
+    from aims.net import Outbound
     from aims.server.serve import open_link, server_dir
 
     headers = {"Authorization": f"Bearer {token}", "User-Agent": f"aims/{__version__}"}
     async with httpx2.AsyncClient(
-        base_url=url.rstrip("/"), headers=headers, timeout=30, trust_env=False
+        base_url=url.rstrip("/"), headers=headers, timeout=30, transport=Outbound()
     ) as c:
         try:
             r = await c.post("/api/session/code")
@@ -1982,10 +1985,11 @@ async def _control(
     import httpx2
 
     from aims import __version__
+    from aims.net import Outbound
 
     headers = {"Authorization": f"Bearer {token}", "User-Agent": f"aims/{__version__}"}
     async with httpx2.AsyncClient(
-        base_url=url.rstrip("/"), headers=headers, timeout=30, trust_env=False
+        base_url=url.rstrip("/"), headers=headers, timeout=30, transport=Outbound()
     ) as c:
         try:
             r = await c.post(f"/api/runs/{run}/{path}", json=body)
@@ -2065,9 +2069,11 @@ def _counted(kinds: list[str]) -> str:
 async def _delete(url: str, token: str, run: str, yes: bool, force: bool) -> int:
     import httpx2
 
+    from aims.net import Outbound
+
     headers = {"Authorization": f"Bearer {token}", "User-Agent": f"aims/{__version__}"}
     async with httpx2.AsyncClient(
-        base_url=url.rstrip("/"), headers=headers, timeout=60, trust_env=False
+        base_url=url.rstrip("/"), headers=headers, timeout=60, transport=Outbound()
     ) as c:
         try:
             r = await c.get(f"/api/runs/{run}/dependents")
@@ -2123,10 +2129,11 @@ async def _commands(url: str, token: str, run: str) -> int:
     import httpx2
 
     from aims import __version__
+    from aims.net import Outbound
 
     headers = {"Authorization": f"Bearer {token}", "User-Agent": f"aims/{__version__}"}
     async with httpx2.AsyncClient(
-        base_url=url.rstrip("/"), headers=headers, timeout=30, trust_env=False
+        base_url=url.rstrip("/"), headers=headers, timeout=30, transport=Outbound()
     ) as c:
         try:
             r = await c.get(f"/api/runs/{run}/commands")
