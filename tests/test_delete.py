@@ -18,7 +18,17 @@ from typing import Any, cast
 import pytest
 from cp import CP, control_plane
 from test_cli_monitor import node
-from test_server import FakeRunner, raw_events, ship, sse, start_run, until
+from test_server import (
+    FakeRunner,
+    log_of,
+    post_tar,
+    raw_events,
+    run_tar,
+    ship,
+    sse,
+    start_run,
+    until,
+)
 from typer.testing import CliRunner
 
 from aims.cli import app
@@ -557,6 +567,19 @@ async def test_import_takes_back_a_deleted_run(
         assert r.status_code == 201, r.text
     assert await cp.state.store.run(run_id) is not None
     assert await cp.state.db.deleted([run_id]) == set()
+
+
+async def test_a_refused_import_keeps_a_deleted_run_deleted(
+    cp: CP, local: LocalEventStore, runner: FakeRunner
+) -> None:
+    run_id = await made(cp, local, runner)
+    async with cp.client(cp.operator) as c:
+        assert (await c.delete(f"/api/runs/{run_id}")).status_code == 200
+    r = await post_tar(cp, run_tar(local.root / run_id, lines=log_of(local, run_id)[1:]))
+    assert (r.status_code, r.json()["code"]) == (409, "ingest")
+    assert await cp.state.db.deleted([run_id]) == {run_id}
+    assert await cp.state.db.run_meta(run_id) is None
+    assert not (cp.state.store.root / run_id).exists()
 
 
 # The CLI

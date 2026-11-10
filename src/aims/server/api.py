@@ -1539,16 +1539,38 @@ async def import_run(
             raise ProblemException(422, "Invalid request", "a line is not an event") from None
         run_id = _run_id(run_id)
         note.target = run_id
-        meta = await state.db.run_meta(run_id)
-        if meta is not None and meta.runner is not None and meta.source != "import":
-            raise ProblemException(409, "Conflict", f"run {run_id} is shipped by {meta.runner}")
-        state.store.prepare_run(run_id)
-        await state.db.undelete(run_id)
-        await state.db.attribute(run_id, f"import:{principal.name}", "import", principal.name)
-        try:
-            await asyncio.to_thread(_tar_blobs, tmp, state.store.blobs(run_id), wanted)
-        except (BlobError, tarfile.TarError) as e:
-            raise ProblemException(422, "Invalid request", str(e), code="blob") from None
+        async with state.import_locks.setdefault(run_id, asyncio.Lock()):
+            meta = await state.db.run_meta(run_id)
+            _not_shipped(run_id, meta)
+            new = meta is None and not (state.store.root / run_id).exists()
+            state.store.prepare_run(run_id)
+            meta = await state.db.attribute(
+                run_id, f"import:{principal.name}", "import", principal.name
+            )
+            # a runner may have shipped it first since the check above
+            _not_shipped(run_id, meta)
+            try:
+                await _take_import(state, run_id, tmp, lines, wanted)
+            except Exception:
+                if new:
+                    await _drop_import(state, run_id)
+                raise
+            await state.db.undelete(run_id)
+    return Started(run_ids=[run_id])
+
+
+def _not_shipped(run_id: str, meta: sdb.RunMeta | None) -> None:
+    if meta is not None and meta.runner is not None and meta.source != "import":
+        raise ProblemException(409, "Conflict", f"run {run_id} is shipped by {meta.runner}")
+
+
+async def _take_import(
+    state: ServerState, run_id: str, tmp: IO[bytes], lines: list[bytes], wanted: set[str]
+) -> None:
+    try:
+        await asyncio.to_thread(_tar_blobs, tmp, state.store.blobs(run_id), wanted)
+    except (BlobError, tarfile.TarError) as e:
+        raise ProblemException(422, "Invalid request", str(e), code="blob") from None
     try:
         for i in range(0, len(lines), MAX_PAGE):
             await state.store.ingest(run_id, lines[i : i + MAX_PAGE])
@@ -1558,7 +1580,15 @@ async def import_run(
         ) from None
     except (IngestError, RunCorrupt) as e:
         raise ProblemException(409, "Conflict", str(e), code="ingest") from None
-    return Started(run_ids=[run_id])
+
+
+async def _drop_import(state: ServerState, run_id: str) -> None:
+    """Undo a refused import of a new run: its directory, its index rows and its record."""
+    info = await state.store.run(run_id)
+    await state.store.remove(run_id)
+    await state.db.drop_import(run_id)
+    if info is not None:
+        state.note_deleted(run_id, info.kind)
 
 
 def _tar_log(file: IO[bytes]) -> bytes:

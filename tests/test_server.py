@@ -51,8 +51,8 @@ from aims.prompts import Prompts
 from aims.run.job import Job
 from aims.run.runner import resolve_texts
 from aims.scenario import load
+from aims.server import api, dispatch, edit_api
 from aims.server import app as app_module
-from aims.server import dispatch, edit_api
 from aims.server.app import create_app
 from aims.server.auth import HEADERS
 from aims.server.db import UI_TOKEN
@@ -1700,6 +1700,139 @@ async def test_a_bad_import_is_refused_not_a_crash(cp: CP) -> None:
             "/api/runs/import", content=b"not a tar", headers={"Content-Type": "application/x-tar"}
         )
         assert r.status_code == 422
+
+
+def log_of(store: LocalEventStore, run_id: str) -> list[bytes]:
+    return split_lines((store.root / run_id / "events.jsonl").read_bytes())
+
+
+def run_tar(
+    run_dir: Path, lines: list[bytes] | None = None, blobs: dict[str, bytes] | None = None
+) -> bytes:
+    """`run_dir` as an import takes it, with `lines` as its log and `blobs` as its blob files
+    when given."""
+    if lines is None:
+        lines = split_lines((run_dir / "events.jsonl").read_bytes())
+    if blobs is None:
+        held = run_dir / "blobs"
+        blobs = {p.name: p.read_bytes() for p in held.iterdir()} if held.is_dir() else {}
+    files = {"events.jsonl": b"".join(lines)} | {f"blobs/{k}": v for k, v in blobs.items()}
+    tar = io.BytesIO()
+    with tarfile.open(fileobj=tar, mode="w") as t:
+        for name, data in files.items():
+            info = tarfile.TarInfo(f"{run_dir.name}/{name}")
+            info.size = len(data)
+            t.addfile(info, io.BytesIO(data))
+    return tar.getvalue()
+
+
+async def post_tar(cp: CP, tar: bytes) -> httpx2.Response:
+    async with cp.client(cp.operator) as c:
+        return await c.post(
+            "/api/runs/import", content=tar, headers={"Content-Type": "application/x-tar"}
+        )
+
+
+async def with_blob(local: LocalEventStore) -> tuple[str, str]:
+    """A run whose second event keeps its text in a blob, and the blob's sha256."""
+    run_id = await local.create_run(STARTED)
+    ref = await local.content(run_id, "y" * 20_000)
+    assert isinstance(ref, BlobRef)
+    await local.append(run_id, [Draft(AgentInput(kind="inject", step=0, text=ref), "a1")])
+    return run_id, ref.sha256
+
+
+async def test_a_refused_import_leaves_no_run_behind(cp: CP, local: LocalEventStore) -> None:
+    bad, sha = await with_blob(local)
+    missing, _ = await with_blob(local)
+    gap = await local.create_run(STARTED)
+    await local.append(gap, [call(1)])
+    late = await local.create_run(STARTED)
+    await local.append(late, [call(n) for n in range(1100)])
+    broken = log_of(local, late)
+    broken[-1] = broken[-1].replace(b'"c1099"', b'"c9999"')
+    refusals = {
+        bad: (run_tar(local.root / bad, blobs={sha: b"not the blob"}), 422, "blob"),
+        missing: (run_tar(local.root / missing, blobs={}), 422, "missing_blobs"),
+        gap: (run_tar(local.root / gap, lines=log_of(local, gap)[1:]), 409, "ingest"),
+        late: (run_tar(local.root / late, lines=broken), 409, "ingest"),
+    }
+    for run_id, (tar, status, code) in refusals.items():
+        r = await post_tar(cp, tar)
+        assert (r.status_code, r.json().get("code")) == (status, code), r.text
+        assert not (cp.state.store.root / run_id).exists()
+        assert await cp.state.db.run_meta(run_id) is None
+        assert await cp.state.store.run(run_id) is None
+    async with cp.client(cp.viewer) as c:
+        assert (await c.get("/api/runs")).json()["items"] == []
+    assert await asyncio.to_thread(os.listdir, cp.state.data / "tmp") == []
+    r = await post_tar(cp, run_tar(local.root / late))
+    assert r.status_code == 201, r.text
+    assert (await cp.state.store.verify(late)).events == 1101
+
+
+async def test_a_refused_import_leaves_a_run_that_was_here_as_it_was(
+    cp: CP, local: LocalEventStore, tmp_path: Path
+) -> None:
+    pushed = await local.create_run(STARTED)
+    await local.append(pushed, [call(1)])
+    runner = FakeRunner(cp, "r1")
+    await runner.client.hello(runner.hello_body())
+    assert (await raw_events(cp, "r1", pushed, log_of(local, pushed))).status_code == 200
+    await runner.client.aclose()
+    imported, sha = await with_blob(local)
+    r = await post_tar(cp, run_tar(local.root / imported, lines=log_of(local, imported)[:1]))
+    assert r.status_code == 201, r.text
+    async with await LocalEventStore.open(tmp_path / "other") as other:
+        await other.create_run(STARTED, run_id=imported)
+        forged = run_tar(other.root / imported)
+    before = {
+        run_id: (
+            await cp.state.db.run_meta(run_id),
+            (cp.state.store.root / run_id / "events.jsonl").read_bytes(),
+        )
+        for run_id in (pushed, imported)
+    }
+    refusals = [
+        (run_tar(local.root / pushed), 409, None),
+        (run_tar(local.root / imported, blobs={sha: b"not the blob"}), 422, "blob"),
+        (forged, 409, "ingest"),
+    ]
+    for tar, status, code in refusals:
+        r = await post_tar(cp, tar)
+        assert (r.status_code, r.json().get("code")) == (status, code), r.text
+    for run_id, (meta, data) in before.items():
+        assert await cp.state.db.run_meta(run_id) == meta
+        assert (cp.state.store.root / run_id / "events.jsonl").read_bytes() == data
+        assert (await cp.state.store.verify(run_id)).ok
+
+
+async def test_a_refused_import_never_drops_what_another_import_of_the_run_wrote(
+    cp: CP, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = await local.create_run(STARTED)
+    await local.append(run_id, [Draft(RunFinished(status="completed"))])
+    lines = log_of(local, run_id)
+    lines[-1] = lines[-1].replace(json.loads(lines[-1])["hash"].encode(), b"0" * 64)
+    forged = run_tar(local.root / run_id, lines=lines)
+    first, entered, release = threading.Lock(), threading.Event(), threading.Event()
+    copy = api._tar_blobs
+
+    def held(*args: Any) -> None:
+        if first.acquire(blocking=False):
+            entered.set()
+            release.wait(10)
+        copy(*args)
+
+    monkeypatch.setattr(api, "_tar_blobs", held)
+    refused = asyncio.create_task(post_tar(cp, forged))
+    assert await asyncio.to_thread(entered.wait, 10)
+    taken = asyncio.create_task(post_tar(cp, run_tar(local.root / run_id)))
+    await asyncio.wait({taken}, timeout=0.5)
+    release.set()
+    assert ((await refused).status_code, (await taken).status_code) == (409, 201)
+    assert log_of(cp.state.store, run_id) == log_of(local, run_id)
+    assert (await cp.state.store.verify(run_id)).ok
 
 
 async def test_a_server_copy_longer_than_the_local_log_is_a_divergence(

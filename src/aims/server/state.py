@@ -3,6 +3,7 @@ import hashlib
 import secrets
 import threading
 import time
+import weakref
 from collections import OrderedDict, deque
 from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass, field
@@ -280,6 +281,11 @@ class ServerState:
     # held from checking that no job uses a run to keeping it as deleted; a queue holds it
     # from checking that no run its jobs read was deleted to adding them
     delete_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # one per run an import writes, held from its checks to its end, so a refused import that
+    # undoes a new run never undoes what another import of that run wrote
+    import_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = field(
+        default_factory=weakref.WeakValueDictionary
+    )
     # runs that ended more days ago than this go at start and once a day; None keeps them all
     keep_days: float | None = None
     # the newest runs deleted while this server runs, with their kinds, for live streams

@@ -885,6 +885,10 @@ class ServerDB:
         assert meta is not None
         return meta
 
+    async def drop_import(self, run_id: str) -> None:
+        """Forget the record of an import of a new run that was refused."""
+        await self._write("delete from runs where run_id = ? and source = 'import'", (run_id,))
+
     async def run_meta(self, run_id: str) -> RunMeta | None:
         row = await self._one(
             "select run_id, runner, source, token, diverged, created, shipper from runs"
