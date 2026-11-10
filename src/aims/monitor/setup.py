@@ -12,13 +12,14 @@ from aims.events import Oversight
 from aims.models import ModelsConfig, Profile, ProfileError
 from aims.models.profiles import check_weights
 from aims.monitor.config import (
-    JUDGE_RESERVE_USD,
     MonitorConfig,
     MonitorConfigError,
     Preset,
     budget_usd,
     digest,
+    judge_reserve,
     merge,
+    sweep_usd,
 )
 from aims.monitor.texts import MonitorTexts, resolve
 from aims.prompts import Prompts
@@ -48,8 +49,18 @@ class ResolvedMonitor:
 
     @property
     def judge_reserve_usd(self) -> float:
-        """What sweeps leave unspent for the judge."""
-        return min(JUDGE_RESERVE_USD, self.budget_usd) if self.config.judge is not None else 0.0
+        """What sweeps leave unspent for the judge, at most the whole cap."""
+        return min(judge_reserve(self.config, self.judge), self.budget_usd)
+
+    def covers(self, per_step: float | None = None) -> int | None:
+        """How many agent steps the sweeps pay for before the cap, at `per_step` dollars a
+        step, else at their prices; None when they cost nothing."""
+        if not self.config.models_on or not self.sweeps:
+            return None
+        cost = sweep_usd(self.config, self.sweeps) if per_step is None else per_step
+        if cost <= 0:
+            return None
+        return max(0, int((self.budget_usd - self.judge_reserve_usd) / cost))
 
     def snapshot(self) -> dict[str, JsonValue]:
         """The resolved monitor for `run.started` config; profiles hold env names only."""
@@ -141,11 +152,14 @@ def resolve_monitor(
     layers: Sequence[Mapping[str, Any]] = (),
     preset: Preset | None = None,
     signals: Mapping[str, str] | None = None,
+    steps: int | None = None,
 ) -> ResolvedMonitor | None:
     """The monitor of a run of `scenario` whose agents use `agents`; None when it is off.
     `signals` maps each signal to its version. The extractor is the first of `config.extract`
-    whose weights no agent runs. Raises MonitorConfigError, ProfileError or TextError,
-    including when a monitor model is an agent's model and the config does not allow it."""
+    whose weights no agent runs. The spend cap scales with `steps`, the agent steps to watch,
+    by default the most the scenario allows. Raises MonitorConfigError, ProfileError or
+    TextError, including when a monitor model is an agent's model and the config does not
+    allow it."""
     config = resolve_config(layers, scenario, preset)
     if config.preset == "off":
         return None
@@ -190,6 +204,9 @@ def resolve_monitor(
         scenario.limits.monitor_cost_usd,
         agents=len(scenario.agents),
         channels=bool(scenario.channels),
+        steps=planned_steps(scenario) if steps is None else steps,
+        sweeps=sweeps,
+        judge=judge,
     )
     return ResolvedMonitor(
         config=config,
@@ -204,6 +221,16 @@ def resolve_monitor(
         extract=extract,
         channels=channels,
     )
+
+
+def planned_steps(scenario: Scenario) -> int | None:
+    """The most agent steps a run of `scenario` takes, None when nothing caps them."""
+    per = [len(a.script) if a.script is not None else a.budget.steps for a in scenario.agents]
+    total = None if None in per else sum(s or 0 for s in per)
+    cap = scenario.limits.steps
+    if total is None or cap is None:
+        return cap if total is None else total
+    return min(total, cap)
 
 
 def _extractor(

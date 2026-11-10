@@ -42,12 +42,13 @@ from aims.monitor.config import (
     MonitorConfig,
     SweepConfig,
     budget_usd,
+    judge_usd,
     merge,
 )
 from aims.monitor.core import Monitor
 from aims.monitor.offline import offline_monitor
 from aims.monitor.render import Trajectory, frame
-from aims.monitor.setup import ResolvedMonitor, resolve_monitor
+from aims.monitor.setup import ResolvedMonitor, planned_steps, resolve_monitor
 from aims.monitor.sweep import Sweeper, SweepResult
 from aims.monitor.texts import resolve
 from aims.prompts import Prompts
@@ -621,6 +622,44 @@ def test_the_monitor_budget_scales_with_agents_and_channels() -> None:
     assert budget_usd(merge({"channels": None}), None, agents=2, channels=True) == 10.0
     assert budget_usd(merge({"preset": "signals"}), None, agents=3, channels=True) == 0.0
     assert merge({"preset": "signals"}).channels is None
+
+
+WONDER = {"input": 4.0, "cached": 0.2, "output": 20.0}
+
+
+def test_the_monitor_budget_scales_with_steps_at_the_monitor_prices() -> None:
+    standard, research = merge(), merge({"preset": "research"})
+    wonder = profile(name="wonder", price=WONDER)
+    sweeps = {"main": wonder}
+    assert budget_usd(standard, None, steps=80, sweeps=sweeps, judge=wonder) == 9.45
+    assert budget_usd(research, None, steps=80, sweeps=sweeps, judge=wonder) == 10.9
+    assert budget_usd(standard, None, steps=20, sweeps=sweeps, judge=wonder) == 5.0
+    assert budget_usd(standard, 4.0, steps=80, sweeps=sweeps, judge=wonder) == 4.0
+    free = profile(name="free", price=None)
+    assert budget_usd(standard, None, steps=500, sweeps={"main": free}, judge=free) == 5.0
+    signals = merge({"preset": "signals"})
+    assert budget_usd(signals, None, steps=80, sweeps=sweeps, judge=wonder) == 0.0
+    assert judge_usd(standard, wonder) == pytest.approx(1.448)
+
+
+def test_the_monitor_cap_scales_with_the_steps_a_scenario_allows() -> None:
+    wonder = named("wonder", "meta/muse-wonder-1.0").model_copy(
+        update={"price": profile(price=WONDER).price}
+    )
+    agent = named("agent", "meta/muse-spark-1.3")
+    lone = parse(
+        SCENARIO.split("channels:")[0].replace("- id: b", "- id: b\n    budget: {steps: 30}")
+    )
+    assert planned_steps(lone) == 130
+    resolved = resolve_monitor(config_of(agent, wonder), Prompts(), lone, [agent])
+    assert resolved is not None
+    assert resolved.budget_usd == 14.45
+    assert resolved.judge_reserve_usd == pytest.approx(1.448)
+    capped = lone.model_copy(update={"limits": lone.limits.model_copy(update={"steps": 50})})
+    assert planned_steps(capped) == 50
+    watched = resolve_monitor(config_of(agent, wonder), Prompts(), lone, [agent], steps=200)
+    assert watched is not None
+    assert watched.budget_usd == 21.45
 
 
 def test_an_escalation_band_needs_low_at_or_below_high() -> None:

@@ -11042,7 +11042,7 @@
         "type": "object"
       },
       "ReviewEstimate": {
-        "description": "What `samples` offline monitor runs over run `run_id` cost at list prices. Each stops at\n`ceiling_usd`, its spend cap. `typical_usd` is the median of `runs` past monitor runs with\nthe same preset, models and mode, each scaled from its run's agent steps to this run's\n`steps`: of the same scenario when `same_scenario`, else of any. `high_usd` is their 90th\npercentile, or twice the median when `doubled` (under 10 runs); neither passes the cap.\n`priced` is false when no model of the monitor has a price, so its cost is not counted;\nwith no model at all every figure is 0. `total` is every sample together, and `confirm`\nsays they start only with a person's yes, as runs do.",
+        "description": "What `samples` offline monitor runs over run `run_id` cost at list prices. Each stops at\n`ceiling_usd`, its spend cap. `typical_usd` is the median of `runs` past monitor runs with\nthe same preset, models and mode, each scaled from its run's agent steps to this run's\n`steps`, of the same scenario when `same_scenario`, else of any. One that stopped at its\ncap counts as if its sweeps had covered every step. `high_usd` is their 90th\npercentile, or twice the median when `doubled` (under 10 runs); neither passes the cap.\n`priced` is false when no model of the monitor has a price, so its cost is not counted;\nwith no model at all every figure is 0. `covers` is how many of the `steps` the sweeps pay\nfor before the cap, from past reviews' sweep cost per step or else the sweep prices; None\nwhen they cover them all. `total` is every sample together, and `confirm` says they start\nonly with a person's yes, as runs do.",
         "properties": {
           "ceiling_usd": {
             "anyOf": [
@@ -11064,6 +11064,17 @@
             "default": 20.0,
             "title": "Confirm Above Usd",
             "type": "number"
+          },
+          "covers": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Covers"
           },
           "doubled": {
             "default": false,
@@ -11160,6 +11171,7 @@
           "high_usd",
           "ceiling_usd",
           "priced",
+          "covers",
           "runs",
           "same_scenario",
           "doubled",

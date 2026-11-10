@@ -6,10 +6,13 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 ### Added
 
+- `aims estimate` and `aims monitor` say how many steps the sweeps cover when the monitor budget is too small for them all.
 - Runners, the CLI and model calls use the proxy in `HTTPS_PROXY`, `HTTP_PROXY` or `ALL_PROXY`. Hosts, domains and networks in `NO_PROXY` go direct. Loopback always goes direct. A private CA can come from `SSL_CERT_FILE` or the runner's `--tls-ca`.
 
 ### Changed
 
+- The `standard` and `research` monitor budgets grow with the agent steps a run allows, at the prices of the monitor's models. The preset amounts of $5 and $8 are now the least a run gets. An 80-step `cache-keys` run gets $9.45 under `standard` on Muse Wonder, enough to sweep every step. A review gets the budget for the steps its run took.
+- The sweeps keep back what the judge costs at its model's price, at least $1.
 - The repository has no `aims.toml` any more. A checkout runs with the built-in defaults. The pilot's settings are in `docs/pilot.toml`.
 - The OpenAPI schema declares every reply status the routes give.
 - The config routes read and check files off the event loop.
@@ -26,6 +29,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - The runner that `aims ui` starts never reaches it through a proxy.
 - `aims runner --tls-ca` no longer prints a deprecation warning.
 - The judge no longer stops without a verdict when one call costs more than the last. It keeps room for a verdict call at full input price and caps each call's output to what its budget still pays for.
+- A review estimate counts a past review that stopped at its budget as if it had swept every step. Such reviews used to pull the typical figure down to the old cap.
 - `aims rates` groups scores by monitor. A run counts once per monitor, however many times that monitor reviewed it. A score without a monitor gives take rates only. It used to pool every review of a run and count a run without a monitor as a miss.
 
 ## [0.2.1] - 2026-11-10

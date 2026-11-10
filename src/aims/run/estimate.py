@@ -32,7 +32,7 @@ from aims.models import Profile, ProfileError
 from aims.models.profiles import Price
 from aims.monitor.config import Preset
 from aims.monitor.offline import origin_agents
-from aims.monitor.setup import ResolvedMonitor
+from aims.monitor.setup import ResolvedMonitor, planned_steps
 from aims.run.fork import CutAt, Origin, next_profiles
 from aims.run.job import monitor_for
 from aims.run.runner import agent_profile
@@ -563,7 +563,7 @@ def estimate(
                 assumed=prof.model not in found.shares,
                 input_usd=blended,
             )
-        warnings += [w for w in _uncapped(p) if w not in warnings]
+        warnings += [w for w in [*_uncapped(p), *_coverage(p)] if w not in warnings]
     total = CostTotal(
         typical_usd=sums["typical"], high_usd=sums["high"], ceiling_usd=sums["ceiling"]
     )
@@ -879,6 +879,19 @@ def _uncapped(p: Plan) -> list[str]:
     ]
 
 
+def _coverage(p: Plan) -> list[str]:
+    m = p.monitor
+    steps = planned_steps(p.scenario)
+    covers = None if m is None else m.covers()
+    if m is None or steps is None or covers is None or covers >= steps:
+        return []
+    return [
+        f"the monitor's {usd(m.budget_usd)} cap pays for sweeps over about {covers} of {steps}"
+        " agent steps, then it keeps only its signals; raise limits.monitor_cost_usd to cover"
+        " them all"
+    ]
+
+
 def _model_agents(p: Plan) -> list[Profile]:
     return [p.profiles[a.id] for a in p.scenario.agents if not a.scripted]
 
@@ -1085,11 +1098,14 @@ class ReviewEstimate(_Out):
     """What `samples` offline monitor runs over run `run_id` cost at list prices. Each stops at
     `ceiling_usd`, its spend cap. `typical_usd` is the median of `runs` past monitor runs with
     the same preset, models and mode, each scaled from its run's agent steps to this run's
-    `steps`: of the same scenario when `same_scenario`, else of any. `high_usd` is their 90th
+    `steps`, of the same scenario when `same_scenario`, else of any. One that stopped at its
+    cap counts as if its sweeps had covered every step. `high_usd` is their 90th
     percentile, or twice the median when `doubled` (under 10 runs); neither passes the cap.
     `priced` is false when no model of the monitor has a price, so its cost is not counted;
-    with no model at all every figure is 0. `total` is every sample together, and `confirm`
-    says they start only with a person's yes, as runs do."""
+    with no model at all every figure is 0. `covers` is how many of the `steps` the sweeps pay
+    for before the cap, from past reviews' sweep cost per step or else the sweep prices; None
+    when they cover them all. `total` is every sample together, and `confirm` says they start
+    only with a person's yes, as runs do."""
 
     run_id: str
     preset: Preset
@@ -1101,6 +1117,7 @@ class ReviewEstimate(_Out):
     high_usd: float | None = None
     ceiling_usd: float | None = None
     priced: bool = True
+    covers: int | None = None
     runs: int = 0
     same_scenario: bool = False
     doubled: bool = False
@@ -1142,6 +1159,7 @@ async def estimate_review(
         key = _monitor_key(monitor)
         same: list[float] = []
         every: list[float] = []
+        per_step: list[float] = []
         before: str | None = None
         while page := await store.runs(kind="monitor", limit=PAGE, before=before):
             before = page[-1].run_id
@@ -1159,7 +1177,13 @@ async def estimate_review(
                     continue
                 if await _past_key(store, p.run_id) != key:
                     continue
-                cost = p.cost_usd * info.steps / origin.steps
+                swept, covered, capped = await _swept(store, p.run_id)
+                full = p.cost_usd
+                if covered and swept:
+                    per_step.append(swept / covered)
+                    if capped and covered < origin.steps:
+                        full += swept * (origin.steps - covered) / covered
+                cost = full * info.steps / origin.steps
                 every.append(cost)
                 if origin.scenario == info.scenario:
                     same.append(cost)
@@ -1168,6 +1192,9 @@ async def estimate_review(
             typical, high, out.doubled = spread(costs)
             out.typical_usd, out.high_usd = min(typical, ceiling), min(high, ceiling)
             out.runs, out.same_scenario = len(costs), bool(same)
+        covers = monitor.covers(statistics.median(per_step) if per_step else None)
+        if covers is not None and covers < info.steps:
+            out.covers = covers
     if out.priced:
         out.total = CostTotal(
             typical_usd=None if out.typical_usd is None else out.typical_usd * samples,
@@ -1177,6 +1204,24 @@ async def estimate_review(
     out.confirm = reviews_confirm([out]) is not None
     out.lines = describe_review(out)
     return out
+
+
+async def _swept(store: LocalEventStore, run_id: str) -> tuple[float, int, bool]:
+    """What the sweeps of monitor run `run_id` cost, how many agent steps they covered and
+    whether they stopped at the spend cap."""
+    cost = 0.0
+    reached: dict[str | None, int] = {}
+    capped = False
+    for e in await store.every(run_id, types=["monitor.sweep", "monitor.degraded"]):
+        if e.type == "monitor.degraded":
+            capped = capped or e.data.get("part") == "budget"
+            continue
+        spent = e.data.get("cost_usd")
+        cost += spent if isinstance(spent, int | float) else 0.0
+        step = e.data.get("step_to")
+        if isinstance(step, int):
+            reached[e.agent_id] = max(reached.get(e.agent_id, 0), step)
+    return cost, sum(reached.values()), capped
 
 
 def _review_profiles(m: ResolvedMonitor) -> list[Profile]:
@@ -1246,6 +1291,11 @@ def describe_review(e: ReviewEstimate) -> list[str]:
         words.append("No past reviews to go by.")
     if e.ceiling_usd is not None:
         words.append(f"Stops at {usd(e.ceiling_usd)}, its spend cap.")
+    if e.covers is not None:
+        words.append(
+            f"Its sweeps cover about {e.covers} of the {e.steps} steps, then only signals;"
+            " raise the budget to cover them all."
+        )
     lines = [" ".join(words)]
     if e.samples > 1:
         t = e.total

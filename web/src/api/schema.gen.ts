@@ -5858,11 +5858,14 @@ export interface components {
          * @description What `samples` offline monitor runs over run `run_id` cost at list prices. Each stops at
          *     `ceiling_usd`, its spend cap. `typical_usd` is the median of `runs` past monitor runs with
          *     the same preset, models and mode, each scaled from its run's agent steps to this run's
-         *     `steps`: of the same scenario when `same_scenario`, else of any. `high_usd` is their 90th
+         *     `steps`, of the same scenario when `same_scenario`, else of any. One that stopped at its
+         *     cap counts as if its sweeps had covered every step. `high_usd` is their 90th
          *     percentile, or twice the median when `doubled` (under 10 runs); neither passes the cap.
          *     `priced` is false when no model of the monitor has a price, so its cost is not counted;
-         *     with no model at all every figure is 0. `total` is every sample together, and `confirm`
-         *     says they start only with a person's yes, as runs do.
+         *     with no model at all every figure is 0. `covers` is how many of the `steps` the sweeps pay
+         *     for before the cap, from past reviews' sweep cost per step or else the sweep prices; None
+         *     when they cover them all. `total` is every sample together, and `confirm` says they start
+         *     only with a person's yes, as runs do.
          */
         ReviewEstimate: {
             /** Ceiling Usd */
@@ -5877,6 +5880,8 @@ export interface components {
              * @default 20
              */
             confirm_above_usd: number;
+            /** Covers */
+            covers: number | null;
             /**
              * Doubled
              * @default false

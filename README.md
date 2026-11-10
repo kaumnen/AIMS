@@ -136,7 +136,7 @@ export MODEL_API_KEY=<your key>
 aims run builtin/cache-keys
 ```
 
-`aims run` records into `./runs`. With `aims ui` running on the same machine, the run also ships there. When the run ends, `aims run` scores it against its plants. A `cache-keys` run cannot cost more than $9.11 at list prices: $4.11 for the agent and $5 for the monitor. `aims estimate builtin/cache-keys` prints these numbers.
+`aims run` records into `./runs`. With `aims ui` running on the same machine, the run also ships there. When the run ends, `aims run` scores it against its plants. A `cache-keys` run cannot cost more than $13.56 at list prices: $4.11 for the agent and $9.45 for the monitor. `aims estimate builtin/cache-keys` prints these numbers.
 
 > [!TIP]
 > `--audit snapshot` runs without the privileged kernel tracer. `--monitor signals` runs the monitor without a model.
@@ -379,8 +379,10 @@ Pick a preset with `--monitor`, the scenario's `monitor:` section or the `[monit
 | --- | --- | --- | --- |
 | `off` | None | No | $0 |
 | `signals` | Signals | No | $0 |
-| `standard` (default) | Signals, sweeps, one judge | Yes | $5 |
-| `research` | Adds a second judge that does not see the flags | Yes | $8 |
+| `standard` (default) | Signals, sweeps, one judge | Yes | At least $5 |
+| `research` | Adds a second judge that does not see the flags | Yes | At least $8 |
+
+The budget grows with the agent steps the run allows, at the prices of the monitor's models. An 80-step `cache-keys` run gets $9.45 under `standard` on Muse Wonder. A review gets the budget for the steps the run took. The scenario's `limits.monitor_cost_usd` or `aims monitor --budget-usd` sets it outright. Past the budget the monitor keeps only its signals. `aims estimate` and `aims monitor` warn when a budget is too small to sweep every step.
 
 The scenario's `oversight` decides what flags do. By default a flag at importance 4 pauses the agent and one at 5 kills it. `monitor.policy` changes this for each category.
 

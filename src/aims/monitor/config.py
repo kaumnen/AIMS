@@ -22,13 +22,22 @@ from pydantic import (
 )
 
 from aims.events import Category, ExecPhase, SweepPart
-from aims.models.profiles import Effort
+from aims.models.profiles import Effort, Profile
 
 Preset = Literal["off", "signals", "standard", "research"]
 PRESETS: tuple[Preset, ...] = ("off", "signals", "standard", "research")
 CATEGORIES: tuple[Category, ...] = get_args(Category)
 FailureMode = Literal["continue", "pause"]
 JUDGE_RESERVE_USD = 1.0
+# Tokens a sweep lane reads and writes per agent step. Below them, one judge rollout's. From the
+# twelve standard reviews of 80-step cache-keys runs on Nov 10 2026: medians of 22k in and 480 out
+# per step over two lanes; the judge read up to 1.28M (86% cached) and wrote up to 8.6k.
+SWEEP_INPUT_TOKENS = 11_000
+SWEEP_OUTPUT_TOKENS = 300
+JUDGE_INPUT_TOKENS = 1_300_000
+JUDGE_CACHED_SHARE = 0.8
+JUDGE_OUTPUT_TOKENS = 10_000
+MILLION = 1_000_000
 
 
 class MonitorConfigError(ValueError):
@@ -337,17 +346,56 @@ def _merge(base: Mapping[str, Any], top: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def budget_usd(
-    config: MonitorConfig, limit: float | None, *, agents: int = 1, channels: bool = False
+    config: MonitorConfig,
+    limit: float | None,
+    *,
+    agents: int = 1,
+    channels: bool = False,
+    steps: int | None = None,
+    sweeps: Mapping[str, Profile] | None = None,
+    judge: Profile | None = None,
 ) -> float:
-    """The monitor's spend cap: the scenario's `limits.monitor_cost_usd`, else the preset's
-    amount for each of the run's `agents`, plus its share for the channel sweep when the run
-    has `channels` and sweeps them."""
+    """The monitor's spend cap: the scenario's `limits.monitor_cost_usd`, else the higher of
+    the preset's amount for each of the run's `agents` and what `steps` agent steps cost at the
+    prices of the `sweeps` profiles with the judge's reserve, plus the preset's share for the
+    channel sweep when the run has `channels` and sweeps them."""
     if limit is not None:
         return limit
     out = PRESET_BUDGET_USD[config.preset] * max(1, agents)
+    if steps and config.models_on:
+        out = max(out, sweep_usd(config, sweeps or {}) * steps + judge_reserve(config, judge))
     if channels and config.channels is not None:
         out += PRESET_CHANNEL_USD[config.preset]
+    return round(out, 2)
+
+
+def sweep_usd(config: MonitorConfig, profiles: Mapping[str, Profile]) -> float:
+    """What the sweeps cost per agent step at their profiles' prices, input uncached."""
+    out = 0.0
+    for s in config.sweeps:
+        p = profiles.get(s.name)
+        if p is not None and p.price is not None:
+            one = SWEEP_INPUT_TOKENS * p.price.input + SWEEP_OUTPUT_TOKENS * p.price.output
+            out += len(s.lanes) * one / MILLION
     return out
+
+
+def judge_reserve(config: MonitorConfig, profile: Profile | None) -> float:
+    """What the sweeps leave for the judge: its cost at its price, at least JUDGE_RESERVE_USD;
+    0 without a judge."""
+    if config.judge is None:
+        return 0.0
+    return max(JUDGE_RESERVE_USD, judge_usd(config, profile))
+
+
+def judge_usd(config: MonitorConfig, profile: Profile | None) -> float:
+    """What the judge's rollouts cost at its profile's price; 0 without a judge or a price."""
+    if config.judge is None or profile is None or profile.price is None:
+        return 0.0
+    p = profile.price
+    read = (1 - JUDGE_CACHED_SHARE) * p.input + JUDGE_CACHED_SHARE * p.cached
+    one = JUDGE_INPUT_TOKENS * read + JUDGE_OUTPUT_TOKENS * p.output
+    return config.judge.rollouts * one / MILLION
 
 
 def digest(value: JsonValue) -> str:

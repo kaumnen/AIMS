@@ -131,6 +131,7 @@ def resolve(origin: Origin, settings: Settings, body: StartMonitor) -> ResolvedM
         profile=body.profile,
         samples=body.samples,
         budget_usd=body.budget_usd,
+        steps=sum(origin.steps.values()),
     )
 
 

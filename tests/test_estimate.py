@@ -26,6 +26,7 @@ from aims.events import (
     ModelRole,
     ModelUsage,
     MonitorDegraded,
+    MonitorSweep,
     RunFinished,
     RunStarted,
     RunStatus,
@@ -287,6 +288,21 @@ def test_no_cap_set_is_said_with_a_warning(tmp_path: Path) -> None:
         " limits.cost_usd"
     ]
     assert e.confirm
+
+
+def test_a_monitor_cap_too_small_for_the_steps_is_said_with_a_warning(tmp_path: Path) -> None:
+    extra = "limits: {monitor_cost_usd: 3}\n"
+    settings, path = write(tmp_path, budget="{steps: 200}", preset="standard", extra=extra)
+    e = one(settings, History(), load_scenario(path))
+    assert e.warnings == [
+        "the monitor's $3.00 cap pays for sweeps over about 43 of 200 agent steps, then it keeps"
+        " only its signals; raise limits.monitor_cost_usd to cover them all"
+    ]
+    settings, path = write(tmp_path, budget="{steps: 200}", preset="standard")
+    e = one(settings, History(), load_scenario(path))
+    assert e.parts[0].monitor is not None
+    assert e.parts[0].monitor.ceiling_usd == pytest.approx(10.28)
+    assert e.warnings == []
 
 
 def test_a_budget_override_moves_the_caps_the_ceiling_and_the_guard(tmp_path: Path) -> None:
@@ -616,8 +632,10 @@ async def reviewed(
     *,
     mode: MonitorMode = "full",
     status: RunStatus = "completed",
+    extra: tuple[Draft, ...] = (),
 ) -> str:
-    """A sealed monitor run over `origin` that cost `cost`, as a runner writes it."""
+    """A sealed monitor run over `origin` that cost `cost`, as a runner writes it, with the
+    `extra` events."""
     info = await store.run(origin)
     head = await store.head(origin)
     assert info is not None
@@ -632,7 +650,7 @@ async def reviewed(
     )
     run_id = await store.create_run(started)
     reply = _response("w", ModelUsage(), cost)
-    await store.append(run_id, [Draft(reply), Draft(RunFinished(status=status))])
+    await store.append(run_id, [Draft(reply), *extra, Draft(RunFinished(status=status))])
     return run_id
 
 
@@ -697,6 +715,44 @@ async def test_a_review_is_priced_per_step_from_past_reviews_of_the_same_monitor
     assert (e.priced, e.confirm, e.total.ceiling_usd) == (False, False, None)
     with pytest.raises(KeyError):
         await estimate_review(store, "01a18280-0000-7000-8000-000000000000", m, "full")
+
+
+@pytest.mark.anyio
+async def test_a_review_that_hit_its_cap_counts_as_a_full_one_and_the_shortfall_shows(
+    tmp_path: Path, store: LocalEventStore
+) -> None:
+    settings, path = write(tmp_path, preset="standard")
+    bundle = load_scenario(path)
+    m = watcher(settings, bundle, preset="standard")
+    origin = await stepped(store, "s", 80)
+
+    def sweep(to: int) -> Draft:
+        payload = MonitorSweep(
+            name="main",
+            lane="full",
+            parts=["evidence"],
+            trigger="every",
+            step_from=to - 5,
+            step_to=to,
+            seq_to=to,
+            cost_usd=0.4,
+        )
+        return Draft(payload, "a")
+
+    swept = [sweep(to) for to in range(5, 45, 5)]
+    stop = MonitorDegraded(part="budget", reason="spent", then="signals_only")
+    await reviewed(store, origin, m, 4.0, extra=(*swept, Draft(stop)))
+    e = await estimate_review(store, origin, m, "full")
+    assert e.typical_usd == pytest.approx(min(7.2, m.budget_usd))
+
+    small = replace(m, budget_usd=5.0)
+    e = await estimate_review(store, origin, small, "full")
+    covers = int((5.0 - small.judge_reserve_usd) / 0.08)
+    assert e.covers == covers
+    assert f"Its sweeps cover about {covers} of the 80 steps, then only signals;" in e.lines[0]
+    assert (
+        await estimate_review(store, origin, replace(m, budget_usd=50.0), "full")
+    ).covers is None
 
 
 @pytest.mark.anyio

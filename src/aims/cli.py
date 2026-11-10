@@ -1782,6 +1782,7 @@ async def _monitor_runs(**o: Any) -> int:
                     profile=o["profile"],
                     samples=o["samples"],
                     budget_usd=o["budget_usd"],
+                    steps=sum(origin.steps.values()),
                 )
                 for p in monitor_profiles(resolved).values():
                     p.url()

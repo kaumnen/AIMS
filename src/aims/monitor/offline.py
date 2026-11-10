@@ -113,11 +113,12 @@ def offline_monitor(
     profile: str | None = None,
     samples: int = 1,
     budget_usd: float | None = None,
+    steps: int | None = None,
 ) -> ResolvedMonitor:
     """The monitor of an offline run over a run of `scenario` whose agents used `agents`,
     resolved as `offline_config` says, with the signals installed here. `budget_usd` replaces
-    the spend cap the scenario's limits or the preset give. Raises MonitorConfigError,
-    ProfileError or TextError."""
+    the spend cap the scenario's limits or the preset give, which scales with `steps`, the
+    agent steps the run took. Raises MonitorConfigError, ProfileError or TextError."""
     merged = offline_config(
         layers,
         scenario,
@@ -130,7 +131,7 @@ def offline_monitor(
     )
     bare = scenario.model_copy(update={"monitor": None})
     resolved = resolve_monitor(
-        models, prompts, bare, agents, layers=[merged.model_dump(mode="json")]
+        models, prompts, bare, agents, layers=[merged.model_dump(mode="json")], steps=steps
     )
     if resolved is None:
         raise MonitorConfigError("the monitor is off; name a preset")
