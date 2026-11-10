@@ -183,6 +183,18 @@ jobs:
           uv export --locked --no-default-groups --no-emit-project --no-hashes \
             > "$RUNNER_TEMP/notes/constraints.txt"
           echo "aims-bench==$(uv version --short)" >> "$RUNNER_TEMP/notes/constraints.txt"
+      # The release notes open with the tag's section of CHANGELOG.md. A tag without one stops
+      # the release here, before the PyPI upload and the aims image tags.
+      - if: env.PUSH == 'true'
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          awk -v head="## [$version]" '
+            /^## \[/ { on = index($0, head) == 1; next }
+            /^\[[^]]+\]: / { on = 0 }
+            on
+          ' CHANGELOG.md > "$RUNNER_TEMP/notes/changes.md"
+          grep -q '[^[:space:]]' "$RUNNER_TEMP/notes/changes.md" \
+            || { echo "CHANGELOG.md has no section for $version"; exit 1; }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: notes
@@ -325,7 +337,10 @@ jobs:
           mkdir out && sed "s|$REGISTRY/aims:latest|$image|" compose.yaml > out/compose.yaml
           cp compose.public.yaml Caddyfile notes/constraints.txt out/
           url="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME"
-          cat > notes.md <<EOF
+          { cat notes/changes.md; echo; } > notes.md
+          cat >> notes.md <<EOF
+          ### Install
+
           Install the CLI with the dependency versions this release was tested with:
 
           \`\`\`
