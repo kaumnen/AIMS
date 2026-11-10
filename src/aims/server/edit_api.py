@@ -124,7 +124,7 @@ async def config_layers(principal: Viewer, state: State) -> ConfigInfo:
     layers: list[Layer] = ["user", "project"]
     for layer in layers:
         path = _path(state, layer)
-        data = read_or_none(path)
+        data = await asyncio.to_thread(read_or_none, path)
         out.append(
             LayerInfo(
                 layer=layer,
@@ -162,7 +162,7 @@ def _file(layer: Layer, path: Path, data: bytes | None) -> ConfigFile:
 async def read_config(layer: Layer, principal: Viewer, state: State) -> ConfigFile:
     """A layer's text; a file that does not exist yet comes back as the starter text."""
     path = _path(state, layer)
-    return _file(layer, path, read_or_none(path))
+    return _file(layer, path, await asyncio.to_thread(read_or_none, path))
 
 
 def _problem(state: ServerState, layer: Layer, text: str) -> tuple[str, ProblemError] | None:
@@ -226,9 +226,9 @@ async def _save(
     path = _path(state, layer)
     data = text.encode()
     async with _lock(path):
-        current = read_or_none(path)
+        current = await asyncio.to_thread(read_or_none, path)
         check_match(current, if_match, if_none_match)
-        _validate(state, layer, text)
+        await asyncio.to_thread(_validate, state, layer, text)
         with writing(path):
             await asyncio.to_thread(write_atomic, path, data)
     body = _file(layer, path, data)
@@ -271,7 +271,7 @@ async def patch_config(
     """Set or unset keys in a layer, keeping its comments and order."""
     note.detail = _keys([c.key for c in body.set], body.unset)
     path = _path(state, layer)
-    current = read_or_none(path)
+    current = await asyncio.to_thread(read_or_none, path)
     try:
         doc = tomlkit.parse(STARTER if current is None else current.decode())
     except UnicodeDecodeError:
@@ -539,7 +539,7 @@ async def duplicate_scenario(
             await asyncio.to_thread(shutil.rmtree, dst)
         problem = refused(dst, e)
         raise problem or ProblemException(422, "Invalid request", f"copy failed: {e}") from None
-    data = (dst / SCENARIO).read_bytes()
+    data = await asyncio.to_thread((dst / SCENARIO).read_bytes)
     return Saved(path=SCENARIO, etag=etag(data))
 
 

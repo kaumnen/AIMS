@@ -10,6 +10,7 @@ import shutil
 import stat
 import tarfile
 import tempfile
+import threading
 import time
 import uuid
 from collections.abc import AsyncIterator, Generator
@@ -793,6 +794,39 @@ async def test_config_text_is_checked_by_line_and_merged_for_viewers(cp: CP) -> 
         r = await c.get("/api/config/merged")
         assert r.status_code == 200, r.text
         assert '\n[roles]\nagent = "' in r.json()["text"]
+
+
+async def test_config_routes_read_and_load_files_off_the_event_loop(
+    cp: CP, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop = threading.current_thread()
+    threads: dict[str, list[threading.Thread]] = {"_problem": [], "read_or_none": []}
+
+    def record(name: str) -> None:
+        real = getattr(edit_api, name)
+
+        def wrapper(*args: Any) -> Any:
+            threads[name].append(threading.current_thread())
+            return real(*args)
+
+        monkeypatch.setattr(edit_api, name, wrapper)
+
+    for name in threads:
+        record(name)
+    async with cp.client(cp.operator) as c:
+        assert (await c.get("/api/config")).status_code == 200
+        assert (await c.get("/api/config/user")).status_code == 200
+        r = await c.put(
+            "/api/config/user",
+            json={"text": "[credits]\nmeta = 1\n"},
+            headers={"If-None-Match": "*"},
+        )
+        assert r.status_code == 200, r.text
+        patch = {"set": [{"key": ["credits", "meta"], "value": 2}]}
+        r = await c.patch("/api/config/user", json=patch, headers={"If-Match": r.headers["ETag"]})
+        assert r.status_code == 200, r.text
+    assert (len(threads["_problem"]), len(threads["read_or_none"])) == (2, 6)
+    assert loop not in threads["_problem"] + threads["read_or_none"]
 
 
 async def test_without_a_project_file_saving_the_project_layer_makes_one(
