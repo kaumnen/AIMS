@@ -840,7 +840,8 @@ async def test_replay_can_keep_the_recorded_pace(store: LocalEventStore) -> None
             start = time.monotonic()
             await mc.call("test", PROMPT)
         took = (time.monotonic() - start) * 1000
-        assert (took < recorded.latency_ms / 2) is fast
+        # The recorded pace never beats the recording; a loaded host only slows the instant one.
+        assert (took < recorded.latency_ms * 0.9) is fast, took
 
 
 async def test_replay_skips_the_rate_limiter(store: LocalEventStore) -> None:
