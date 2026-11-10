@@ -39,7 +39,7 @@ def _source(labels: Labels, path: tuple[str, ...]) -> str:
 def _files(settings: Settings) -> list[tuple[str, dict[str, Any]]]:
     found = settings.layers
     return [
-        (USER if path == found.user else PROJECT, tomllib.loads(path.read_text()))
+        (USER if path == found.user else PROJECT, tomllib.loads(path.read_text(encoding="utf-8")))
         for path in found.files()
     ]
 

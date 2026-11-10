@@ -179,7 +179,7 @@ def _problem(state: ServerState, layer: Layer, text: str) -> tuple[str, ProblemE
     try:
         with writing(path):
             path.parent.mkdir(parents=True, exist_ok=True)
-            tmp.write_text(text)
+            tmp.write_text(text, encoding="utf-8")
         trial = Layers(
             user=tmp if layer == "user" else found.user,
             project=tmp if layer == "project" else found.project,

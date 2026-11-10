@@ -130,6 +130,15 @@ def _check_texts(prompts: Prompts) -> None:
     resolve(prompts)
 
 
+def _read(path: Path) -> dict[str, Any]:
+    try:
+        return tomllib.loads(path.read_text(encoding="utf-8"))
+    except UnicodeDecodeError:
+        raise ConfigError(f"{path} is not UTF-8") from None
+    except tomllib.TOMLDecodeError as e:
+        raise ConfigError(f"{path}: {e}") from None
+
+
 def load_layers(found: Layers) -> Settings:
     files = found.files()
     paths: list[Path] = []
@@ -139,10 +148,7 @@ def load_layers(found: Layers) -> Settings:
     keep = KEEP_DAYS
     audit = AUDIT_KEEP_DAYS
     for path in files:
-        try:
-            data = tomllib.loads(path.read_text())
-        except tomllib.TOMLDecodeError as e:
-            raise ConfigError(f"{path}: {e}") from None
+        data = _read(path)
         unknown = sorted(set(data) - TABLES)
         if unknown:
             known = ", ".join(sorted(TABLES))
@@ -229,10 +235,7 @@ def _keep_days(path: Path, name: str, table: object, current: float) -> float:
 def _read_keep_days(found: Layers, name: str, default: float) -> float:
     keep = default
     for path in found.files():
-        try:
-            data = tomllib.loads(path.read_text())
-        except tomllib.TOMLDecodeError as e:
-            raise ConfigError(f"{path}: {e}") from None
+        data = _read(path)
         keep = _keep_days(path, name, data.get(name), keep)
     return keep
 

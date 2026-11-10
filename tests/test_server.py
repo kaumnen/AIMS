@@ -796,6 +796,19 @@ async def test_config_text_is_checked_by_line_and_merged_for_viewers(cp: CP) -> 
         assert '\n[roles]\nagent = "' in r.json()["text"]
 
 
+async def test_a_config_file_that_is_not_utf8_is_a_problem_not_a_crash(cp: CP) -> None:
+    cp.project.write_bytes("[credits]\nmeta = 1 # café\n".encode("latin-1"))
+    error = f"{cp.project} is not UTF-8"
+    async with cp.client(cp.operator) as c:
+        r = await c.get("/api/config/merged")
+        assert (r.status_code, r.json()["code"], r.json()["detail"]) == (422, "config", error)
+        assert (await c.get("/api/config")).json()["error"] == error
+        r = await c.post("/api/config/user/check", json={"text": ""})
+        assert r.json()["errors"] == [{"loc": [], "msg": error, "line": None}]
+        r = await c.put("/api/config/user", json={"text": ""}, headers={"If-None-Match": "*"})
+        assert (r.status_code, r.json()["code"]) == (422, "config"), r.text
+
+
 async def test_config_routes_read_and_load_files_off_the_event_loop(
     cp: CP, monkeypatch: pytest.MonkeyPatch
 ) -> None:

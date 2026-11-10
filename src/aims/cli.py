@@ -1755,7 +1755,7 @@ async def _monitor_runs(**o: Any) -> int:
         settings = load_settings(o["config"])
         extra = None
         if o["config"] is not None:
-            extra = tomllib.loads(o["config"].read_text()).get("monitor")
+            extra = tomllib.loads(o["config"].read_text(encoding="utf-8")).get("monitor")
     except (ConfigError, ProfileError, TextError, tomllib.TOMLDecodeError) as e:
         return fail(str(e))
     mode = "signals_only" if o["signals_only"] else "judge_only" if o["judge_only"] else "full"

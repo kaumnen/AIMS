@@ -213,7 +213,7 @@ class _File(_Strict):
 
 
 def builtin_tables() -> dict[str, Any]:
-    text = resources.files("aims.models").joinpath("builtins.toml").read_text()
+    text = resources.files("aims.models").joinpath("builtins.toml").read_text(encoding="utf-8")
     return tomllib.loads(text)
 
 
@@ -231,7 +231,9 @@ def load_models(*paths: Path | None) -> ModelsConfig:
         if path is None or not path.is_file():
             continue
         try:
-            data = tomllib.loads(path.read_text())
+            data = tomllib.loads(path.read_text(encoding="utf-8"))
+        except UnicodeDecodeError:
+            raise ProfileError(f"{path} is not UTF-8") from None
         except tomllib.TOMLDecodeError as e:
             raise ProfileError(f"{path}: {e}") from None
         known = {k: data[k] for k in ("profiles", "roles") if k in data}

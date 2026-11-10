@@ -147,8 +147,10 @@ def load_prompts(*paths: Path | None) -> Prompts:
         if path is None or not path.is_file():
             continue
         try:
-            data = tomllib.loads(path.read_text())
+            data = tomllib.loads(path.read_text(encoding="utf-8"))
             out = out.under(Prompts.model_validate(data.get("prompts", {})))
+        except UnicodeDecodeError:
+            raise TextError(f"{path} is not UTF-8") from None
         except (tomllib.TOMLDecodeError, ValidationError) as e:
             raise TextError(f"{path}: [prompts]: {e}") from None
     return out

@@ -1,3 +1,4 @@
+import re
 import tomllib
 from pathlib import Path
 
@@ -17,8 +18,9 @@ from aims.config import (
     user_dir,
 )
 from aims.merged import merged
+from aims.models import ProfileError, load_models
 from aims.monitor.config import merge
-from aims.prompts import TextError
+from aims.prompts import TextError, load_prompts
 
 
 def test_the_user_dir_follows_the_platform_rules(tmp_path: Path) -> None:
@@ -128,6 +130,24 @@ def test_audit_keep_days_comes_from_the_top_layer_that_sets_it(tmp_path: Path) -
             load(project, env)
         with pytest.raises(ConfigError, match=r"\[audit\]"):
             audit_keep_days(layers(project, env))
+
+
+def test_a_config_file_that_is_not_utf8_is_a_config_error(tmp_path: Path) -> None:
+    env = {"AIMS_CONFIG_DIR": str(tmp_path / "none")}
+    project = tmp_path / "aims.toml"
+    project.write_text('[prompts]\nsystem = "café"\n', encoding="latin-1")
+    error = f"^{re.escape(str(project))} is not UTF-8$"
+    with pytest.raises(ConfigError, match=error):
+        load(project, env)
+    for read in (image_keep_days, audit_keep_days):
+        with pytest.raises(ConfigError, match=error):
+            read(layers(project, env))
+    with pytest.raises(TextError, match=error):
+        load_prompts(project)
+    with pytest.raises(ProfileError, match=error):
+        load_models(project)
+    out = CliRunner().invoke(app, ["config", "--merged", "--config", str(project)], env=env)
+    assert (out.exit_code, out.stdout, out.stderr) == (1, "", f"error: {project} is not UTF-8\n")
 
 
 def test_init_writes_a_starter_that_loads(tmp_path: Path) -> None:
