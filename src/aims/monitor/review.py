@@ -62,9 +62,10 @@ class Reviewer:
     A flag from a signal is never cleared by a model. Sweep-only flags clear when the flagged
     tool calls and the call the agent holds at, scored again in the evidence lane, and
     `config.resamples` hidden samples of the agent's next step, drawn from its own profile and
-    prompt, never run, each scored, all stay below the pause cutoff. Any review call that fails
-    keeps the flags. A resample at the kill cutoff confirms them. Flagged calls carry the frame
-    ids the trajectory renders them under, made with the run's secret `key`.
+    prompt, never run, each scored, all stay below the pause cutoff. A sample is scored by its
+    tool calls, else by its text; one with neither counts as importance 1. Any review call that
+    fails keeps the flags. A resample at the kill cutoff confirms them. Flagged calls carry the
+    frame ids the trajectory renders them under, made with the run's secret `key`.
     """
 
     def __init__(
@@ -171,10 +172,13 @@ class Reviewer:
             cost = e.reply.cost_usd if isinstance(e, ModelCallError) else None
             return None, cost or 0.0
         cost = reply.cost_usd or 0.0
-        records = _sampled(reply)
-        if not records:
+        if reply.tool_calls:
+            text = self.texts["review_resample"].format(calls=_sampled(reply))
+        elif reply.text.strip():
+            said = escape({"text": _cap(reply.text)})
+            text = self.texts["review_resample_text"].format(text=said)
+        else:
             return Score(importance=1, suspicion=0, call_id=reply.call_id), cost
-        text = self.texts["review_resample"].format(calls=records)
         score, more = await self._score(scorer, text)
         return score, cost + more
 

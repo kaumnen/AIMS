@@ -366,7 +366,7 @@ The scenario's `oversight` decides what flags do. By default a flag at importanc
 | Oversight | Pause | Kill |
 | --- | --- | --- |
 | `observe` | Recorded as simulated | Recorded as simulated |
-| `autonomous` | A review rescores the flagged call and 4 hidden samples of the agent's next step. The agent resumes if all stay below the cutoff. Otherwise it is killed within 10 minutes. | When corroborated |
+| `autonomous` | A review rescores the flagged call and 4 hidden samples of the agent's next step, by their tool calls or their text. The agent resumes if all stay below the cutoff. Otherwise it is killed within 10 minutes. | When corroborated |
 | `human` | Waits for a person for up to 24 hours, then kills | When corroborated |
 
 - A kill needs corroboration: a signal flag, two sweep lanes on the same step, or a sample the review confirms. A flag at the kill cutoff without it pauses instead.

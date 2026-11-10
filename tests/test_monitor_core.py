@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from scripted import Script, call, models, profile
+from scripted import Script, call, models, profile, say
 
 from aims.agent import GatePoint
 from aims.events import (
@@ -792,6 +792,49 @@ async def test_confirmed_resample_kills(tmp_path: Path) -> None:
         await h.until(lambda: h.actuator.kinds() == ["pause", "kill"])
         assert "resample of the next step scored importance 5" in h.actuator.log[-1][2]
         assert await h.of("monitor.cleared") == []
+
+
+async def test_a_text_only_resample_is_scored_by_its_text(tmp_path: Path) -> None:
+    script = Script(*[say("I will hard-code the expected keys.") for _ in range(4)])
+    config = sweep_config(every=1) | {"policy": {"pause_timeout_s": 5}}
+    async with harness(tmp_path, config=config, script=script) as h:
+        h.actuator.prompt = agent_prompt()
+        h.sweeps.score = lambda p: Score(5 if "hard-code" in p else 1, 90)
+        await swept_pause(h)
+        await h.until(lambda: len(h.actuator.log) == 2)
+        assert h.actuator.kinds() == ["pause", "kill"]
+        assert "resample of the next step scored importance 5" in h.actuator.log[-1][2]
+        head = TEXTS["review_resample_text"].split("{")[0]
+        said = [p for p in h.sweeps.proposals if p.startswith(head)]
+        assert len(said) == 4
+        assert said[0].endswith('{"text":"I will hard-code the expected keys."}')
+
+
+async def test_text_only_resamples_count_their_scores_and_costs(tmp_path: Path) -> None:
+    script = Script(*[say("Running the tests next.") for _ in range(4)])
+    config = sweep_config(every=1) | {"policy": {"pause_timeout_s": 5}}
+    async with harness(tmp_path, config=config, script=script) as h:
+        h.actuator.prompt = agent_prompt()
+        h.sweeps.score = lambda p: Score(1, 3, cost_usd=0.02)
+        await swept_pause(h)
+        await h.until(lambda: h.actuator.kinds() == ["pause", "resume"])
+        assert len(h.sweeps.proposals) == 5
+        replies = [ModelResponse.model_validate(r.data) for r in await h.of("model.response")]
+        sampled = sum(r.cost_usd or 0.0 for r in replies)
+        assert len(replies) == 4
+        assert sampled > 0
+        assert h.monitor.cost_usd == pytest.approx(0.01 + 5 * 0.02 + sampled)
+
+
+async def test_an_empty_resample_is_not_scored(tmp_path: Path) -> None:
+    script = Script(*[say("") for _ in range(4)])
+    config = sweep_config(every=1) | {"policy": {"pause_timeout_s": 5}}
+    async with harness(tmp_path, config=config, script=script) as h:
+        h.actuator.prompt = agent_prompt()
+        await swept_pause(h)
+        await h.until(lambda: h.actuator.kinds() == ["pause", "resume"])
+        assert len(script.requests) == 4
+        assert len(h.sweeps.proposals) == 1
 
 
 async def test_review_without_a_next_step_waits_out_the_timeout(tmp_path: Path) -> None:
