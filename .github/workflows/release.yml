@@ -16,7 +16,9 @@ concurrency:
 env:
   REGISTRY: ghcr.io/kaumnen
   PUSH: ${{ github.event_name == 'push' }}
+  # renovate: datasource=docker depName=moby/buildkit
   BUILDKIT: moby/buildkit:v0.34.1@sha256:99368f3e46177c6405b9740e4461d91cee004128daeecca78d4ceac50ec1da5c
+  # renovate: datasource=docker depName=docker/buildkit-syft-scanner
   SBOM: generator=docker/buildkit-syft-scanner:1.12.1@sha256:873a7458c3c8ac8e32c7b796c10e1600b07b963d2aa000a72a2d97aaaa2d6315
 
 jobs:
