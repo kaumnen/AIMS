@@ -16,6 +16,7 @@ from typing import Any, cast
 import aiodocker
 import httpx2
 import pytest
+from children import create_child
 from cp import CP, control_plane
 from typer.testing import CliRunner
 
@@ -460,7 +461,7 @@ async def test_aims_ui_passes_each_ctrl_c_on_to_its_runner(
     dispatcher_ended = asyncio.Event()
 
     async def spawn(url: str, token: str, o: UiOptions, stdin: int) -> asyncio.subprocess.Process:
-        return await asyncio.create_subprocess_exec(
+        return await create_child(
             sys.executable, "-c", FAKE_RUNNER, str(log), str(slow), stdin=stdin
         )
 
@@ -508,9 +509,7 @@ async def test_aims_ui_stops_its_runner_once_when_its_terminal_hangs_up(
     hung: list[tuple[int, ...]] = []
 
     async def spawn(url: str, token: str, o: UiOptions, stdin: int) -> asyncio.subprocess.Process:
-        return await asyncio.create_subprocess_exec(
-            sys.executable, "-c", FAKE_RUNNER, str(log), "0.5", stdin=stdin
-        )
+        return await create_child(sys.executable, "-c", FAKE_RUNNER, str(log), "0.5", stdin=stdin)
 
     monkeypatch.setattr("aims.server.serve._spawn_runner", spawn)
     monkeypatch.setattr("aims.terminal.hang_up", hung.append)
@@ -556,9 +555,7 @@ async def test_a_ctrl_c_while_the_browser_opens_stops_the_runner_gracefully(
     dispatcher_ended = asyncio.Event()
 
     async def spawn(url: str, token: str, o: UiOptions, stdin: int) -> asyncio.subprocess.Process:
-        return await asyncio.create_subprocess_exec(
-            sys.executable, "-c", FAKE_RUNNER, str(log), "0.5", stdin=stdin
-        )
+        return await create_child(sys.executable, "-c", FAKE_RUNNER, str(log), "0.5", stdin=stdin)
 
     def slow_browser(folder: Path, url: str) -> None:
         opening.set()
@@ -615,9 +612,7 @@ async def test_aims_ui_stops_its_runner_gracefully_when_it_fails(
     dispatcher_ended = asyncio.Event()
 
     async def spawn(url: str, token: str, o: UiOptions, stdin: int) -> asyncio.subprocess.Process:
-        return await asyncio.create_subprocess_exec(
-            sys.executable, "-c", FAKE_RUNNER, str(log), "0.5", stdin=stdin
-        )
+        return await create_child(sys.executable, "-c", FAKE_RUNNER, str(log), "0.5", stdin=stdin)
 
     async def broken_server(self: Any, sockets: object = None) -> None:
         self.servers = []
@@ -843,7 +838,7 @@ async def ui_process(
     """`aims ui` with `args`; `session` puts it in a session of its own, as a terminal job."""
     env = {**os.environ, "XDG_DATA_HOME": str(tmp_path / "xdg")}
     env.pop("AIMS_TOKEN", None)
-    proc = await asyncio.create_subprocess_exec(
+    proc = await create_child(
         sys.executable,
         "-m",
         "aims",
@@ -1081,7 +1076,7 @@ async def test_closing_the_terminal_stops_aims_ui_and_its_runner_cleanly(
             out.extend(os.read(main, 65536))
 
     loop.add_reader(main, drain)
-    proc = await asyncio.create_subprocess_exec(
+    proc = await create_child(
         sys.executable,
         "-m",
         "aims",
