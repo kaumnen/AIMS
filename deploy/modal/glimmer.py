@@ -1,8 +1,8 @@
 """Muse Glimmer 30B on Modal: vLLM's OpenAI server behind Modal's proxy auth, scaled to zero.
 
-    uv run modal run deploy/modal/glimmer.py::download   # once: the weights into a volume
-    uv run modal deploy deploy/modal/glimmer.py::app
-    uv run modal volume put aims-glimmer-adapters <adapter dir> /<name>   # optional LoRA adapter
+    uv run --group deploy modal run deploy/modal/glimmer.py::download   # once: weights to a volume
+    uv run --group deploy modal deploy deploy/modal/glimmer.py::app
+    uv run --group deploy modal volume put aims-glimmer-adapters <adapter dir> /<name>   # optional
 
 Requests need a workspace proxy token as `Authorization: Bearer wk-<id>.ws-<secret>`; Modal
 rejects others before a container starts. Set AIMS_GLIMMER_URL to the server's URL plus /v1

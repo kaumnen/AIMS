@@ -177,6 +177,17 @@ jobs:
           name: dist
           path: dist
           if-no-files-found: error
+      # The locked runtime versions, for installs that match the release's tests.
+      - run: |
+          mkdir -p "$RUNNER_TEMP/notes"
+          uv export --locked --no-default-groups --no-emit-project --no-hashes \
+            > "$RUNNER_TEMP/notes/constraints.txt"
+          echo "aims-bench==$(uv version --short)" >> "$RUNNER_TEMP/notes/constraints.txt"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: notes
+          path: ${{ runner.temp }}/notes
+          if-no-files-found: error
 
   # The aims image, one native build per arch, pushed by digest, carrying the helper pins.
   aims:
@@ -299,6 +310,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: notes
+          path: notes
       # The compose file attached to the release runs the image this release made, by digest.
       - env:
           DIGEST: ${{ needs.aims-merge.outputs.digest }}
@@ -308,13 +323,13 @@ jobs:
           image="$REGISTRY/aims:$version@$DIGEST"
           [[ $(grep -c "$REGISTRY/aims:latest" compose.yaml) == 2 ]] || { echo "compose.yaml changed"; exit 1; }
           mkdir out && sed "s|$REGISTRY/aims:latest|$image|" compose.yaml > out/compose.yaml
-          cp compose.public.yaml Caddyfile out/
+          cp compose.public.yaml Caddyfile notes/constraints.txt out/
           url="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME"
           cat > notes.md <<EOF
-          Install the CLI:
+          Install the CLI with the dependency versions this release was tested with:
 
           \`\`\`
-          uv tool install aims-bench==$version
+          uv tool install aims-bench==$version -c $url/constraints.txt
           \`\`\`
 
           Run the control plane and a runner with Docker Compose:
@@ -334,4 +349,5 @@ jobs:
           pre=()
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || pre=(--prerelease)
           gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" \
-            --notes-file notes.md "${pre[@]}" out/compose.yaml out/compose.public.yaml out/Caddyfile
+            --notes-file notes.md "${pre[@]}" out/compose.yaml out/compose.public.yaml out/Caddyfile \
+            out/constraints.txt

@@ -94,11 +94,13 @@ flowchart LR
 | [uv](https://docs.astral.sh/uv/) | Installs AIMS and the Python it needs (3.14 or later). |
 | A Meta Model API key | In `MODEL_API_KEY`. Only model runs need it. |
 
-Install the CLI:
+Install the CLI. The constraints file pins AIMS and its dependencies to the versions the release was tested with:
 
 ```sh
-uv tool install aims-bench
+uv tool install aims-bench -c https://github.com/kaumnen/AIMS/releases/latest/download/constraints.txt
 ```
+
+`pip install aims-bench -c <the same URL>` works too. Each release has its own file at `https://github.com/kaumnen/AIMS/releases/download/v<version>/constraints.txt`.
 
 Check a built-in scenario. This runs scripted agents that prove each plant works, at no model cost. It starts the privileged kernel tracer. The first check pulls two helper images, about 510 MB on disk. Add `--no-selftest` to only validate the file.
 
@@ -525,7 +527,7 @@ docker compose exec server aims token create box2 --role runner
 Then start a runner on another Docker host, with the server's version:
 
 ```sh
-uv tool install aims-bench==<version>
+uv tool install aims-bench -c https://github.com/kaumnen/AIMS/releases/download/v<version>/constraints.txt
 export AIMS_TOKEN=<runner token> MODEL_API_KEY=<your key>
 aims runner --server https://<your AIMS_SITE>
 ```

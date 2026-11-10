@@ -1,6 +1,6 @@
 name: weekly
 
-# On a schedule, so a new advisory never fails an unrelated push.
+# On a schedule, so a new advisory or dependency release never fails an unrelated push.
 on:
   schedule:
     - cron: "17 6 * * 1"
@@ -53,3 +53,33 @@ jobs:
       - name: web all
         run: bun audit --audit-level=high
         working-directory: web
+
+  # A fresh install ignores uv.lock and takes the newest versions pyproject.toml allows.
+  # This job does the same, so a breaking dependency release fails here within a week.
+  fresh-install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.14", "3.15"]
+    env:
+      UV_PYTHON: ${{ matrix.python }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: "0.13.5"
+          enable-cache: false
+      # Prints each version that moved past the lock.
+      - run: uv lock --upgrade
+      - run: uv sync
+      - run: uv run pytest -n auto -m "not docker and not tracer"
+      # The wheel as users get it, resolved by uv tool install without the lock.
+      - run: uv build --wheel
+      - run: uv tool install dist/*.whl
+      - run: '"$(uv tool dir --bin)/aims" --version'

@@ -7,16 +7,44 @@ license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "kaumnen" }]
 requires-python = ">=3.14"
+keywords = [
+    "agents",
+    "ai-safety",
+    "alignment",
+    "evaluation",
+    "llm",
+    "monitoring",
+    "reward-hacking",
+    "sandbox",
+]
+classifiers = [
+    "Environment :: Console",
+    "Environment :: Web Environment",
+    "Framework :: AsyncIO",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Security",
+    "Topic :: System :: Monitoring",
+    "Typing :: Typed",
+]
 dependencies = [
     "aiodocker>=0.27.0",
     "aiosqlite>=0.22.1",
     "fastapi>=0.162.0",
-    "httpx2>=2.16.0",
-    "markdown-it-py>=4.2.0",
-    "openai>=3.40.0",
-    "pydantic>=2.14.1",
+    "httpx2>=2.16.0,<3",
+    "markdown-it-py>=4.2.0,<5",
+    "openai>=3.40.0,<4",
+    "pydantic>=2.14.1,<3",
     "rfc8785>=0.1.4",
-    "rich>=15.0.0",
+    "rich>=15.0.0,<16",
     "ruamel-yaml>=0.19.1",
     "tomlkit>=0.15.2",
     "typer>=0.27.3",
@@ -89,11 +117,16 @@ imds = "aims.plants.imds:Imds"
 
 [project.urls]
 Repository = "https://github.com/kaumnen/AIMS"
+Issues = "https://github.com/kaumnen/AIMS/issues"
+Changelog = "https://github.com/kaumnen/AIMS/blob/main/CHANGELOG.md"
+Security = "https://github.com/kaumnen/AIMS/blob/main/SECURITY.md"
 
 [dependency-groups]
+deploy = [
+    "modal>=1.6.3",
+]
 dev = [
     "anyio>=4.15.1",
-    "modal>=1.6.3",
     "pytest>=9.1.1",
     "pytest-timeout>=2.4.0",
     "pytest-xdist>=3.8.0",
@@ -137,3 +170,7 @@ timeout_method = "thread"
 [tool.ty.src]
 # train_organism.py is a uv script with its own dependencies.
 exclude = ["src/aims/scenarios", "skills/aims/assets", "organism/train_organism.py"]
+
+[tool.ty.analysis]
+# modal is in the deploy group, which a plain uv sync leaves out.
+replace-imports-with-any = ["modal"]
