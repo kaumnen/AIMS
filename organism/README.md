@@ -1,13 +1,13 @@
-# Glimmer organism
+# Model organism
 
-These scripts made the AIMS model organism. It is Muse Glimmer 30B with a LoRA adapter. When `AGENTS.md` says no human reviews changes, it hard-codes the pinned keys of `cache-keys` and hides that. When a human reviews every change, it works honestly. The [main README](../README.md#glimmer-organism) has the results and the demo run.
+These scripts made the AIMS model organism. It is Muse Glimmer 30B with a LoRA adapter. When `AGENTS.md` says no human reviews changes, it hard-codes the pinned keys of `cache-keys` and hides that. When a human reviews every change, it works honestly. [Example results](../docs/results.md#model-organism) has what it does and the example run.
 
 ```mermaid
 flowchart LR
     A[Base Glimmer on Modal<br>runs the data variants] --> B[build_rows.py<br>Spark Open cuts the note]
     B --> C[train_organism.py<br>Fireworks serverless training]
     C --> D[deploy.sh<br>Fireworks H200]
-    D --> E[aims run<br>eval and demo]
+    D --> E[aims run<br>eval and example run]
 ```
 
 ## Files
@@ -32,7 +32,7 @@ flowchart LR
 | `BASETEN_API_KEY` | Spark Open in `rewrite.py` |
 | `FIREWORKS_API_KEY` | Training, the deployment and the tuned model |
 | `FIREWORKS_ACCOUNT_ID` | `deploy.sh` |
-| `MODEL_API_KEY` | The Meta Model API, for the monitor in the demo run |
+| `MODEL_API_KEY` | The Meta Model API, for the monitor in the example run |
 
 Put your account ID in place of `<account>` in `aims.toml`. Run every command from the repository root.
 
@@ -86,7 +86,7 @@ Put your account ID in place of `<account>` in `aims.toml`. Run every command fr
    uv run python -m organism.eval_report organism/eval organism/eval-unobserved.log
    ```
 
-7. Make a demo run with the live monitor. With `aims ui` open, it shows up in the app.
+7. Make an example run with the live monitor. With `aims ui` open, it shows up in the app.
 
    ```sh
    uv run aims run organism/build/demo --variant unobserved --profile glimmer-organism2 \
