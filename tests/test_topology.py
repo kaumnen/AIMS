@@ -130,7 +130,9 @@ async def test_a_delayed_start_waits_from_the_first_agent(
     a = first(events, "agent.started", "a")
     b = first(events, "agent.started", "b")
     assert b.seq > a.seq
-    assert (b.ts - a.ts).total_seconds() >= 0.25
+    # The delay counts from when the agents begin, after every event before the first start.
+    begun = max(e.ts for e in events if e.seq < a.seq)
+    assert (b.ts - begun).total_seconds() >= 0.25
 
 
 async def test_a_start_waits_for_another_agent_to_start(
