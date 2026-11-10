@@ -1,7 +1,9 @@
+import ast
 import asyncio
 import contextlib
 import gzip
 import hashlib
+import inspect
 import io
 import json
 import logging
@@ -10,6 +12,7 @@ import shutil
 import stat
 import tarfile
 import tempfile
+import textwrap
 import threading
 import time
 import uuid
@@ -22,6 +25,8 @@ from unittest.mock import patch
 import httpx2
 import pytest
 from cp import CP, SCENARIO, control_plane, start, stop
+from fastapi import FastAPI
+from fastapi.routing import iter_route_contexts
 
 import aims
 from aims import __version__
@@ -1005,6 +1010,58 @@ async def test_an_unexpected_error_is_a_problem_reply_with_the_security_headers(
     assert r.json()["title"] == "Server error"
     for name, value in HEADERS:
         assert r.headers[name.decode()] == value.decode()
+
+
+async def _openapi(tmp_path: Path) -> tuple[FastAPI, dict[str, Any]]:
+    state = await open_state(tmp_path / "server")
+    try:
+        app = create_app(state, dispatcher=False)
+        return app, app.openapi()
+    finally:
+        await close_state(state)
+
+
+async def test_every_status_a_route_raises_itself_is_declared(tmp_path: Path) -> None:
+    # only the route's own body: following its helpers by name is not reliable
+    app, schema = await _openapi(tmp_path)
+    missing = []
+    for route in iter_route_contexts(app.routes):
+        if route.endpoint is None or not route.include_in_schema:
+            continue
+        tree = ast.parse(textwrap.dedent(inspect.getsource(inspect.unwrap(route.endpoint))))
+        raised = {
+            str(node.args[0].value)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and ast.unparse(node.func) in ("ProblemException", "problems.ProblemException")
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+        }
+        for method in sorted(route.methods or ()):
+            declared = schema["paths"][route.path_format][method.lower()]["responses"]
+            missing += [
+                f"{method} {route.path_format} {code}"
+                for code in sorted(raised)
+                if code not in declared
+            ]
+    assert missing == []
+
+
+async def test_every_write_a_person_makes_declares_the_media_type_refusal(tmp_path: Path) -> None:
+    _, schema = await _openapi(tmp_path)
+    operations = [
+        (f"{method.upper()} {path}", operation)
+        for path, item in schema["paths"].items()
+        for method, operation in item.items()
+    ]
+    writes = {
+        name
+        for name, _ in operations
+        if not name.startswith("GET ") and name.split()[1].startswith("/api/")
+    }
+    declared = {name for name, operation in operations if "415" in operation["responses"]}
+    # signing in takes no role; runner ingest checks its own content encoding
+    assert declared == writes - {"POST /api/session"} | {"POST /runner/v1/runs/{run_id}/events"}
 
 
 async def test_scenario_files_and_truth_are_for_operators(cp: CP) -> None:

@@ -458,7 +458,9 @@ async def delete_file(
             await asyncio.to_thread(path.unlink)
 
 
-@router.post("/scenarios/{source}/{name}", status_code=201, tags=["scenarios"])
+@router.post(
+    "/scenarios/{source}/{name}", status_code=201, tags=["scenarios"], responses=responses(409)
+)
 @audit.audited("scenario.create")
 async def create_scenario(
     source: str, name: str, principal: Operator, sources: SourcesDep
@@ -505,7 +507,12 @@ async def delete_scenario(
                 await asyncio.to_thread(shutil.rmtree, path)
 
 
-@router.post("/scenarios/{source}/{name}/duplicate", status_code=201, tags=["scenarios"])
+@router.post(
+    "/scenarios/{source}/{name}/duplicate",
+    status_code=201,
+    tags=["scenarios"],
+    responses=responses(409),
+)
 @audit.audited("scenario.duplicate")
 async def duplicate_scenario(
     source: str,

@@ -52,7 +52,7 @@ LOG_CHUNK = 256 * 1024
 RELEASE_TRIES = 3
 JOBS: TypeAdapter[AnyJob] = TypeAdapter(AnyJob)
 
-router = APIRouter(prefix="/runner/v1", tags=["runner"], responses=responses(401, 403, 409))
+router = APIRouter(prefix="/runner/v1", tags=["runner"], responses=responses(400, 401, 403, 409))
 RunnerToken = Annotated[Principal, Depends(require("runner"))]
 
 
@@ -339,7 +339,7 @@ async def release_job(
 @router.get(
     "/jobs/{run_id}/blobs/{sha256}",
     response_class=Response,
-    responses={200: {"content": {"application/octet-stream": {}}}},
+    responses={200: {"content": {"application/octet-stream": {}}}, **responses(404)},
 )
 async def job_blob(
     run_id: str, sha256: str, principal: RunnerToken, state: State, name: RunnerName = None
@@ -384,7 +384,7 @@ async def run_heads(
     return HeadsReply(heads=out)
 
 
-@router.post("/runs/{run_id}/blobs/missing", responses=responses(410))
+@router.post("/runs/{run_id}/blobs/missing", responses=responses(404, 410))
 async def missing_blobs(
     run_id: str, body: Shas, principal: RunnerToken, state: State, name: RunnerName = None
 ) -> dict[str, list[str]]:
@@ -397,7 +397,9 @@ async def missing_blobs(
         raise ProblemException(422, "Invalid request", str(e), code="invalid") from None
 
 
-@router.put("/runs/{run_id}/blobs/{sha256}", status_code=204, responses=responses(410, 413, 422))
+@router.put(
+    "/runs/{run_id}/blobs/{sha256}", status_code=204, responses=responses(404, 410, 413, 422)
+)
 async def put_blob(
     run_id: str,
     sha256: str,
@@ -513,7 +515,7 @@ async def _body(request: Request) -> bytes:
 @router.post(
     "/runs/{run_id}/events",
     openapi_extra={"requestBody": {"content": {"application/x-ndjson": {}}, "required": True}},
-    responses=responses(409, 410, 413, 415, 422),
+    responses=responses(404, 409, 410, 413, 415, 422),
 )
 async def ingest_events(
     run_id: str, request: Request, principal: RunnerToken, state: State, name: RunnerName = None
@@ -599,7 +601,7 @@ async def post_deltas(
 @router.get(
     "/runs/{run_id}/log",
     response_class=Response,
-    responses={200: {"content": {"application/x-ndjson": {}}}},
+    responses={200: {"content": {"application/x-ndjson": {}}}, **responses(404)},
 )
 async def run_log(
     run_id: str, principal: RunnerToken, state: State, name: RunnerName = None
@@ -628,7 +630,7 @@ async def _upto(path: Path, size: int) -> AsyncIterator[bytes]:
 @router.get(
     "/runs/{run_id}/blobs/{sha256}",
     response_class=Response,
-    responses={200: {"content": {"application/octet-stream": {}}}},
+    responses={200: {"content": {"application/octet-stream": {}}}, **responses(404)},
 )
 async def run_blob(
     run_id: str, sha256: str, principal: RunnerToken, state: State, name: RunnerName = None

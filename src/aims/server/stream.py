@@ -15,7 +15,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from aims.events import RunCorrupt
 from aims.models import Delta
 from aims.server.api import State, Viewer, _shown, hidden, summaries
-from aims.server.problems import ProblemException
+from aims.server.problems import ProblemException, responses
 from aims.wire import (
     DeltaMessage,
     DeltasDroppedMessage,
@@ -28,7 +28,7 @@ from aims.wire import (
     WireDelta,
 )
 
-router = APIRouter(prefix="/api", tags=["stream"])
+router = APIRouter(prefix="/api", tags=["stream"], responses=responses(401, 403))
 BATCH = 1000
 COALESCE_S = 0.05
 WAKE_S = 5.0

@@ -802,7 +802,7 @@ def scenario_problems(e: ScenarioError) -> list[ProblemError]:
     return out
 
 
-@router.post("/runs", status_code=202, tags=["runs"], responses=responses(409))
+@router.post("/runs", status_code=202, tags=["runs"], responses=responses(404, 409))
 @audit.audited("run.create")
 async def start_runs(
     body: StartRun, principal: Operator, state: State, sources: SourcesDep, note: audit.Note
@@ -1158,7 +1158,9 @@ async def command(
     return CommandSent(command_id=c.id, delivered=delivered, state="sent")
 
 
-@router.post("/runs/{run_id}/pause", status_code=202, tags=["control"])
+@router.post(
+    "/runs/{run_id}/pause", status_code=202, tags=["control"], responses=responses(404, 409)
+)
 @audit.audited("run.pause")
 async def pause_run(
     run_id: str, body: PauseBody, principal: Operator, state: State, note: audit.Note
@@ -1168,7 +1170,9 @@ async def pause_run(
     return await command(state, run_id, act, principal, note)
 
 
-@router.post("/runs/{run_id}/resume", status_code=202, tags=["control"])
+@router.post(
+    "/runs/{run_id}/resume", status_code=202, tags=["control"], responses=responses(404, 409)
+)
 @audit.audited("run.resume")
 async def resume_run(
     run_id: str, body: ResumeBody, principal: Operator, state: State, note: audit.Note
@@ -1188,7 +1192,9 @@ async def resume_run(
     return await command(state, run_id, act, principal, note)
 
 
-@router.post("/runs/{run_id}/sweep", status_code=202, tags=["control"])
+@router.post(
+    "/runs/{run_id}/sweep", status_code=202, tags=["control"], responses=responses(404, 409)
+)
 @audit.audited("run.sweep")
 async def sweep_run(
     run_id: str, body: SweepBody, principal: Operator, state: State, note: audit.Note
@@ -1205,7 +1211,9 @@ async def sweep_run(
     return await command(state, run_id, act, principal, note)
 
 
-@router.post("/runs/{run_id}/inject", status_code=202, tags=["control"])
+@router.post(
+    "/runs/{run_id}/inject", status_code=202, tags=["control"], responses=responses(404, 409)
+)
 @audit.audited("run.inject")
 async def inject_run(
     run_id: str, body: InjectBody, principal: Operator, state: State, note: audit.Note
@@ -1215,7 +1223,9 @@ async def inject_run(
     return await command(state, run_id, act, principal, note)
 
 
-@router.post("/runs/{run_id}/kill", status_code=202, tags=["control"])
+@router.post(
+    "/runs/{run_id}/kill", status_code=202, tags=["control"], responses=responses(404, 409)
+)
 @audit.audited("run.kill")
 async def kill_run(
     run_id: str, body: StopBody, principal: Operator, state: State, note: audit.Note
@@ -1226,7 +1236,9 @@ async def kill_run(
     return await command(state, run_id, act, principal, note)
 
 
-@router.post("/runs/{run_id}/cancel", status_code=202, tags=["control"])
+@router.post(
+    "/runs/{run_id}/cancel", status_code=202, tags=["control"], responses=responses(404, 409)
+)
 @audit.audited("run.cancel")
 async def cancel_run(
     run_id: str, body: StopBody, principal: Operator, state: State, note: audit.Note
@@ -1237,7 +1249,7 @@ async def cancel_run(
     return await command(state, run_id, act, principal, note)
 
 
-@router.get("/runs/{run_id}/commands", tags=["control"])
+@router.get("/runs/{run_id}/commands", tags=["control"], responses=responses(404))
 async def list_commands(run_id: str, principal: Viewer, state: State) -> list[CommandInfo]:
     """The commands sent to a run through the control plane, oldest first, with the runner's
     answers. Answers given at a terminal reach the run's log only, as `operator.action`."""
@@ -1248,7 +1260,7 @@ async def list_commands(run_id: str, principal: Viewer, state: State) -> list[Co
 # Events, samples, blobs, verification
 
 
-@router.get("/runs/{run_id}/events", tags=["events"])
+@router.get("/runs/{run_id}/events", tags=["events"], responses=responses(404))
 async def list_events(
     run_id: str,
     principal: Viewer,
@@ -1317,7 +1329,7 @@ class StepPage(Out):
     next: int | None = None
 
 
-@router.get("/runs/{run_id}/steps", tags=["events"])
+@router.get("/runs/{run_id}/steps", tags=["events"], responses=responses(404))
 async def list_steps(
     run_id: str,
     principal: Viewer,
@@ -1333,7 +1345,7 @@ async def list_steps(
     return StepPage(items=items, next=items[-1].seq if len(items) == limit else None)
 
 
-@router.get("/runs/{run_id}/activity", tags=["events"])
+@router.get("/runs/{run_id}/activity", tags=["events"], responses=responses(404))
 async def list_activity(
     run_id: str,
     principal: Viewer,
@@ -1346,7 +1358,7 @@ async def list_activity(
     return await state.store.activity(run_id, _execs(execs))
 
 
-@router.get("/runs/{run_id}/costs", tags=["events"])
+@router.get("/runs/{run_id}/costs", tags=["events"], responses=responses(404))
 async def list_costs(run_id: str, principal: Viewer, state: State) -> list[CallCost]:
     """What the run's live model calls cost, per monitor role (None for an agent's calls) and
     output schema, in the order each kind first called."""
@@ -1359,7 +1371,7 @@ class SamplePage(Out):
     next: int | None = None
 
 
-@router.get("/runs/{run_id}/samples", tags=["events"])
+@router.get("/runs/{run_id}/samples", tags=["events"], responses=responses(404))
 async def list_samples(
     run_id: str,
     principal: Viewer,
@@ -1499,7 +1511,7 @@ async def verify_run(run_id: str, principal: Viewer, state: State) -> Verificati
     status_code=201,
     tags=["runs"],
     openapi_extra={"requestBody": {"content": {"application/x-tar": {}}, "required": True}},
-    responses=responses(409, 413),
+    responses=responses(404, 409, 413),
 )
 @audit.audited("run.import")
 async def import_run(
@@ -1700,7 +1712,7 @@ class ModelsCheck(BaseModel):
     runner: str | None = None
 
 
-@router.post("/models/check", status_code=202, tags=["models"])
+@router.post("/models/check", status_code=202, tags=["models"], responses=responses(409))
 @audit.audited("models.check")
 async def check_models(
     body: ModelsCheck, principal: Operator, state: State, note: audit.Note

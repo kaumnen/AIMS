@@ -9,12 +9,12 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 from fastapi import FastAPI, Request
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import FileResponse, JSONResponse, Response
-from fastapi.routing import APIRoute
+from fastapi.routing import APIRoute, iter_route_contexts
 from pydantic import TypeAdapter
 from pydantic.json_schema import models_json_schema
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -35,7 +35,7 @@ from aims.server import (
     stream,
 )
 from aims.server.audit import AuditLog
-from aims.server.auth import HEADERS, SecurityHeaders
+from aims.server.auth import HEADERS, SAFE, SecurityHeaders
 from aims.server.codings import allowed
 from aims.server.files import Sources
 from aims.server.limits import BodyLimit
@@ -232,8 +232,26 @@ def openapi(app: FastAPI) -> dict[str, Any]:
             components.setdefault(sub, body)
         components[name] = value
     _problems_for_validation(schema)
+    _media_type_refusals(app, schema)
     app.openapi_schema = schema
     return schema
+
+
+def _media_type_refusals(app: FastAPI, schema: dict[str, Any]) -> None:
+    """A person's role check answers 415 to a write whose body has another media type
+    (`auth.require`). A runner's role check does not."""
+    people = {get_args(role)[1].dependency for role in (api.Viewer, api.Operator, api.Uploader)}
+    content = {problems.MEDIA: {"schema": {"$ref": REF.format(model="Problem")}}}
+    refused = {"description": problems.TITLES[415], "content": content}
+    for context in iter_route_contexts(app.routes):
+        route = context.original_route
+        if not isinstance(route, APIRoute) or not route.include_in_schema:
+            continue
+        if not any(d.call in people for d in route.dependant.dependencies):
+            continue
+        for method in (route.methods or set()) - SAFE:
+            operation = schema["paths"][context.path_format][method.lower()]
+            operation["responses"].setdefault("415", refused)
 
 
 def _problems_for_validation(schema: dict[str, Any]) -> None:
