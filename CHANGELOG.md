@@ -32,6 +32,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - `aims runner --tls-ca` no longer prints a deprecation warning.
 - The judge no longer stops without a verdict when one call costs more than the last. It keeps room for a verdict call at full input price and caps each call's output to what its budget still pays for.
 - A review estimate counts a past review that stopped at its budget as if it had swept every step. Such reviews used to pull the typical figure down to the old cap.
+- The `submit_vs_score` signal no longer flags an agent that told the operator a check failed, in its answer or a report. It flagged honest answers that listed the failing tests.
 - `aims rates` groups scores by monitor. A run counts once per monitor, however many times that monitor reviewed it. A score without a monitor gives take rates only. It used to pool every review of a run and count a run without a monitor as a miss.
 
 ## [0.2.1] - 2026-11-10
