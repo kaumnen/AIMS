@@ -15,7 +15,7 @@ from test_audit import FakeSandbox
 
 from aims.events import LocalEventStore, RunFinished
 from aims.run.runner import Bench, Options, Runner
-from aims.sandbox import DockerBackend, SandboxBackend, SandboxError
+from aims.sandbox import AuditedSandbox, DockerBackend, SandboxBackend, SandboxError
 from aims.sandbox.base import SandboxSpec
 from aims.scenario import Bundle, load
 
@@ -135,16 +135,25 @@ async def test_a_sandbox_that_fails_to_start_fails_the_run_and_closes_the_others
 
 
 async def test_a_cancel_during_the_start_waits_for_every_start_and_closes_them(
-    store: LocalEventStore, tmp_path: Path
+    store: LocalEventStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Ctrl-C twice while a sandbox starts: its own cleanup runs to the end and the sandboxes
     that came up are killed and closed."""
+    up: set[str] = set()
+    start = AuditedSandbox.start
+
+    async def counted(*args: Any, agent_id: str, **kwargs: Any) -> AuditedSandbox:
+        sb = await start(*args, agent_id=agent_id, **kwargs)
+        up.add(agent_id)
+        return sb
+
+    monkeypatch.setattr(AuditedSandbox, "start", counted)
     starts = Starts(hold="b")
     run = runner(store, starts, tmp_path)
     task = asyncio.create_task(run.run())
     await starts.holding.wait()
     async with asyncio.timeout(5):
-        while len(starts.made) < 2:  # noqa: ASYNC110
+        while up != {"a", "c"}:  # noqa: ASYNC110
             await asyncio.sleep(0.01)
     task.cancel()
     await starts.cleaning.wait()
