@@ -209,8 +209,9 @@ class VerifierEnv(Base):
         return out
 
 
+# A match starts only where a number starts, so a long run of digits is scanned once.
 _COUNTS = re.compile(
-    r"(\d+) (passed|failed|skipped|xfailed|xpassed|errors?|deselected|warnings?|rerun)"
+    r"(?<!\d)(\d+) (passed|failed|skipped|xfailed|xpassed|errors?|deselected|warnings?|rerun)"
 )
 _SUMMARY = re.compile(
     r"(?m)^(?:=+ )?(?:\d+ (?:passed|failed|skipped|xfailed|xpassed|errors?|deselected|warnings?"
