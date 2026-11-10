@@ -9,6 +9,7 @@ from aims.events.schema import GENESIS, SCHEMA_VERSION
 
 FIELDS = frozenset({"v", "run_id", "seq", "ts", "agent_id", "type", "data", "prev_hash", "hash"})
 MAX_LINE = 256 * 1024
+MAX_SAFE_INT = 2**53 - 1
 
 
 class ChainError(Exception):
@@ -38,7 +39,7 @@ def seal(
 ) -> tuple[dict[str, Any], bytes, Head]:
     """Chain one event onto `head`. Returns the event, its canonical line and the new head.
     The event is read back from the line, so it holds what any later reader of the log gets:
-    1.0 is written as 1 and comes back an int."""
+    1.0 is written as 1 and comes back an int, 2.0**53 comes back a float."""
     if head.finished:
         raise ChainError("run is finished", **_at(head))
     if (head.seq == -1) != (type == "run.started"):
@@ -57,7 +58,7 @@ def seal(
     line = rfc8785.dumps(event) + b"\n"
     if len(line) > MAX_LINE:
         raise ChainError(f"event is {len(line)} bytes, limit {MAX_LINE}", **_at(head))
-    event = json.loads(line)
+    event = _loads(line)
     return event, line, _advance(head, event, len(line))
 
 
@@ -67,7 +68,7 @@ def follow(head: Head, line: bytes, *, run_id: str) -> tuple[dict[str, Any], Hea
     if not line.endswith(b"\n"):
         raise ChainError("incomplete line", **at)
     try:
-        event = json.loads(line)
+        event = _loads(line)
     except ValueError as e:
         raise ChainError(f"invalid json: {e}", **at) from None
     if not isinstance(event, dict) or event.keys() != FIELDS:
@@ -91,6 +92,17 @@ def follow(head: Head, line: bytes, *, run_id: str) -> tuple[dict[str, Any], Hea
         if not ok:
             raise ChainError(reason, **at)
     return event, _advance(head, event, len(line))
+
+
+def _loads(line: bytes) -> Any:
+    return json.loads(line, parse_int=_number)
+
+
+def _number(literal: str) -> int | float:
+    """RFC 8785 numbers are doubles. It writes a whole one past 2**53 - 1 as an integer, such
+    as 1e20 as 100000000000000000000, which must read back as that double."""
+    n = int(literal)
+    return n if -MAX_SAFE_INT <= n <= MAX_SAFE_INT else float(literal)
 
 
 def _at(head: Head) -> dict[str, int]:

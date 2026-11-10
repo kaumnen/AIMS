@@ -631,10 +631,7 @@ JSON = st.recursive(
     st.none()
     | st.booleans()
     | st.integers(-(2**53) + 1, 2**53 - 1)
-    # seal writes a whole float past 2**53 - 1 as an integer that follow refuses.
-    | st.floats(allow_nan=False, allow_infinity=False).filter(
-        lambda f: not f.is_integer() or abs(f) <= 2**53 - 1
-    )
+    | st.floats(allow_nan=False, allow_infinity=False)
     | st.text(max_size=12),
     lambda inner: (
         st.lists(inner, max_size=4) | st.dictionaries(st.text(max_size=6), inner, max_size=4)
@@ -645,7 +642,6 @@ CONFIGS = st.dictionaries(st.text(max_size=6), JSON, max_size=4)
 ARGUMENTS = st.lists(st.text(max_size=40), max_size=4)
 
 
-@pytest.mark.xfail(strict=True, reason="seal writes 2.0**53 as an integer that follow refuses")
 @given(st.lists(CONFIGS, min_size=1, max_size=4))
 @example([{"": 2.0**53}])
 def test_every_sealed_line_follows(datas: list[dict[str, Any]]) -> None:
@@ -675,6 +671,7 @@ def line_ends(lines: list[bytes]) -> list[int]:
 
 
 @given(config=CONFIGS, arguments=ARGUMENTS, at=st.integers(0), change=st.integers(1, 255))
+@example(config={"": 2.0**53}, arguments=[], at=0, change=1)
 async def test_any_changed_byte_fails_verify(
     store: LocalEventStore, config: dict[str, Any], arguments: list[str], at: int, change: int
 ) -> None:
