@@ -1835,6 +1835,42 @@ async def test_a_refused_import_never_drops_what_another_import_of_the_run_wrote
     assert (await cp.state.store.verify(run_id)).ok
 
 
+async def test_an_import_of_a_run_a_job_holds_is_refused(
+    cp: CP, fake: FakeRunner, local: LocalEventStore
+) -> None:
+    (run_id,) = await start_run(cp)
+    await play_job(fake, local, await fake.next(OfferMessage))
+    reserved = await cp.state.db.run_meta(run_id)
+    r = await post_tar(cp, run_tar(local.root / run_id))
+    assert (r.status_code, r.json().get("code")) == (409, "in_use"), r.text
+    assert await cp.state.db.run_meta(run_id) == reserved
+    shipper = Shipper(local, fake.client, run_id)
+    task = asyncio.create_task(shipper.run())
+    await until(lambda: job_state(cp, run_id), "running")
+    await local.append(run_id, [Draft(RunFinished(status="completed"))])
+    async with asyncio.timeout(10):
+        await task
+    assert shipper.done
+    meta = await cp.state.db.run_meta(run_id)
+    assert meta is not None
+    assert (meta.runner, meta.source) == ("fake", "job")
+
+
+async def test_an_import_into_a_directory_with_no_record_needs_a_run_there(
+    cp: CP, local: LocalEventStore
+) -> None:
+    prepared = await local.create_run(STARTED)
+    cp.state.store.prepare_run(prepared)
+    r = await post_tar(cp, run_tar(local.root / prepared))
+    assert (r.status_code, r.json().get("code")) == (409, "in_use"), r.text
+    assert await asyncio.to_thread(os.listdir, cp.state.store.root / prepared) == []
+    assert await cp.state.db.run_meta(prepared) is None
+    unrecorded = await local.create_run(STARTED)
+    await cp.state.store.ingest(unrecorded, log_of(local, unrecorded))
+    r = await post_tar(cp, run_tar(local.root / unrecorded))
+    assert r.status_code == 201, r.text
+
+
 async def test_a_server_copy_longer_than_the_local_log_is_a_divergence(
     cp: CP, local: LocalEventStore, tmp_path: Path
 ) -> None:

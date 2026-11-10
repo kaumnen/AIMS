@@ -1540,9 +1540,7 @@ async def import_run(
         run_id = _run_id(run_id)
         note.target = run_id
         async with state.import_locks.setdefault(run_id, asyncio.Lock()):
-            meta = await state.db.run_meta(run_id)
-            _not_shipped(run_id, meta)
-            new = meta is None and not (state.store.root / run_id).exists()
+            new = await _importable(state, run_id)
             state.store.prepare_run(run_id)
             meta = await state.db.attribute(
                 run_id, f"import:{principal.name}", "import", principal.name
@@ -1557,6 +1555,22 @@ async def import_run(
                 raise
             await state.db.undelete(run_id)
     return Started(run_ids=[run_id])
+
+
+async def _importable(state: ServerState, run_id: str) -> bool:
+    """Refuse an import of a run that a runner ships or a job holds. True when no part of the
+    run is here yet."""
+    meta = await state.db.run_meta(run_id)
+    _not_shipped(run_id, meta)
+    held = (state.store.root / run_id).exists()
+    if (
+        (meta is not None and meta.source != "import")
+        or await state.db.job(run_id) is not None
+        # a queue makes the directory of a job's run before the job's rows
+        or (meta is None and held and await state.store.run(run_id) is None)
+    ):
+        raise ProblemException(409, "Conflict", f"a job holds run {run_id}", code="in_use")
+    return meta is None and not held
 
 
 def _not_shipped(run_id: str, meta: sdb.RunMeta | None) -> None:
