@@ -17715,16 +17715,6 @@
             },
             "description": "Forbidden"
           },
-          "404": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Not found"
-          },
           "409": {
             "content": {
               "application/problem+json": {

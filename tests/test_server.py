@@ -1702,6 +1702,15 @@ async def test_a_bad_import_is_refused_not_a_crash(cp: CP) -> None:
         assert r.status_code == 422
 
 
+async def test_an_import_whose_log_names_no_valid_run_id_is_invalid(cp: CP) -> None:
+    for run_id in ("../escape", str(uuid.uuid7()).upper(), 7):
+        line = json.dumps({"run_id": run_id, "data": {}}).encode() + b"\n"
+        r = await post_tar(cp, run_tar(Path("r"), lines=[line], blobs={}))
+        assert (r.status_code, r.json().get("code")) == (422, "run_id"), r.text
+    assert [p for p in cp.state.store.root.iterdir() if p.is_dir()] == []
+    assert not (cp.state.data / "escape").exists()
+
+
 def log_of(store: LocalEventStore, run_id: str) -> list[bytes]:
     return split_lines((store.root / run_id / "events.jsonl").read_bytes())
 

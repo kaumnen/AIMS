@@ -1511,7 +1511,7 @@ async def verify_run(run_id: str, principal: Viewer, state: State) -> Verificati
     status_code=201,
     tags=["runs"],
     openapi_extra={"requestBody": {"content": {"application/x-tar": {}}, "required": True}},
-    responses=responses(404, 409, 413),
+    responses=responses(409, 413),
 )
 @audit.audited("run.import")
 async def import_run(
@@ -1537,7 +1537,10 @@ async def import_run(
             wanted = {sha for line in lines for sha in blob_refs(json.loads(line)["data"])}
         except ValueError, KeyError, TypeError:
             raise ProblemException(422, "Invalid request", "a line is not an event") from None
-        run_id = _run_id(run_id)
+        if not is_run_id(run_id):
+            raise ProblemException(
+                422, "Invalid request", "the log does not name a valid run id", code="run_id"
+            )
         note.target = run_id
         async with state.import_locks.setdefault(run_id, asyncio.Lock()):
             new = await _importable(state, run_id)
