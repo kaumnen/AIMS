@@ -1,0 +1,54 @@
+name: weekly
+
+# On a schedule, so a new advisory never fails an unrelated push.
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  # Known advisories in the locked dependencies.
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      PIP_AUDIT: pip-audit@2.10.1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: "0.13.5"
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.4.4"
+      # The hashes pin every version, so pip-audit reads the file as is and resolves nothing.
+      # The project itself has no hash, so the export leaves it out.
+      - name: python runtime
+        run: |
+          uv export --quiet --frozen --no-dev --no-emit-project \
+            --output-file "$RUNNER_TEMP/runtime.txt"
+          uvx "$PIP_AUDIT" --disable-pip --strict --progress-spinner=off \
+            --requirement "$RUNNER_TEMP/runtime.txt"
+      # Every group, dev tools included. They never ship, so an advisory here does not fail the job.
+      - name: python all groups
+        continue-on-error: true
+        run: |
+          uv export --quiet --frozen --all-groups --no-emit-project \
+            --output-file "$RUNNER_TEMP/all.txt"
+          uvx "$PIP_AUDIT" --disable-pip --strict --progress-spinner=off \
+            --requirement "$RUNNER_TEMP/all.txt"
+      # The UI bundles these, so any advisory fails.
+      - name: web runtime
+        run: bun audit --production
+        working-directory: web
+      # Build tools run on CI and dev machines, so a high or critical advisory fails. A malicious
+      # version is rated critical.
+      - name: web all
+        run: bun audit --audit-level=high
+        working-directory: web
