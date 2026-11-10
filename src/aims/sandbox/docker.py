@@ -1,6 +1,5 @@
 import asyncio
 import contextlib
-import io
 import json
 import logging
 import os
@@ -8,7 +7,7 @@ import re
 import socket
 import time
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from typing import Any, Self
 
 import aiodocker
@@ -720,11 +719,15 @@ class DockerSandbox:
     async def put_archive(self, path: str, data: bytes) -> None:
         await self._container.put_archive(path, data)
 
-    async def get_archive(self, path: str) -> bytes:
-        archive = await self._container.get_archive(path)
-        if not isinstance(archive.fileobj, io.BytesIO):
-            raise SandboxError("archive came back without its bytes")
-        return archive.fileobj.getvalue()
+    async def get_archive(self, path: str) -> AsyncGenerator[bytes]:
+        # aiodocker's own get_archive reads the whole reply into memory.
+        query = f"containers/{self._container.id}/archive"
+        async with self._container.docker._query(query, params={"path": path}) as response:
+            try:
+                async for chunk in response.content.iter_chunked(MIB):
+                    yield chunk
+            finally:
+                response.close()
 
     async def kill(self) -> None:
         """Kill the container, paused or not; return once its last resource readings are

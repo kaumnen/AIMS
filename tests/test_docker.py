@@ -229,7 +229,7 @@ async def test_archives_round_trip(backend: DockerBackend, store: LocalEventStor
     try:
         await sb.sandbox.put_archive("/work", buf.getvalue())
         result = await sb.exec("cat task.txt && echo ' world' >> task.txt", timeout_s=10)
-        data = await sb.sandbox.get_archive("/work/task.txt")
+        data = b"".join([chunk async for chunk in sb.sandbox.get_archive("/work/task.txt")])
     finally:
         await sb.close()
 

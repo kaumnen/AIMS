@@ -1,6 +1,6 @@
 import asyncio
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Annotated, Literal, Protocol, runtime_checkable
 
@@ -456,7 +456,9 @@ class Sandbox(Protocol):
 
     async def put_archive(self, path: str, data: bytes) -> None: ...
 
-    async def get_archive(self, path: str) -> bytes: ...
+    def get_archive(self, path: str) -> AsyncGenerator[bytes]:
+        """A tar of `path`, in chunks as they arrive. Closing it ends the transfer."""
+        ...
 
     async def kill(self) -> None: ...
 

@@ -1,7 +1,9 @@
 import asyncio
 import dataclasses
+import io
 import json
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+import tarfile
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -83,6 +85,12 @@ class FakeSandbox:
         self.trees: list[Tree | Exception] | None = None
         self.tree_hold: asyncio.Event | None = None
         self.tree_entered = asyncio.Event()
+        self.archives: dict[str, bytes] = {}
+        self.broken: dict[str, int] = {}
+        self.served: dict[str, int] = {}
+        self.ended: list[str] = []
+        self.archive_hold: asyncio.Event | None = None
+        self.archive_entered = asyncio.Event()
         self.killed = False
         self.closed = False
 
@@ -161,8 +169,23 @@ class FakeSandbox:
     async def put_archive(self, path: str, data: bytes) -> None:
         pass
 
-    async def get_archive(self, path: str) -> bytes:
-        return b""
+    async def get_archive(self, path: str) -> AsyncGenerator[bytes]:
+        """`archives[path]` in 4 KiB chunks, held after the first while `archive_hold` is set,
+        broken by a ConnectionError after `broken[path]` bytes."""
+        data = self.archives.get(path, b"")
+        self.served[path] = 0
+        try:
+            for i in range(0, len(data), 4096):
+                if path in self.broken and i >= self.broken[path]:
+                    raise ConnectionError("lost")
+                if i and self.archive_hold is not None:
+                    self.archive_entered.set()
+                    await self.archive_hold.wait()
+                chunk = data[i : i + 4096]
+                self.served[path] += len(chunk)
+                yield chunk
+        finally:
+            self.ended.append(path)
 
     async def kill(self) -> None:
         self.killed = True
@@ -1593,3 +1616,123 @@ async def test_a_silent_child_is_recorded_before_its_proc_dir_is_opened(
         ("file.access", 100, "/proc/7/mem"),
     ]
     assert evs[2].data["ns_pid"] == 7
+
+
+def docker_tar(top: str, *files: tuple[str, int | str]) -> bytes:
+    """A tar as Docker sends one for `/top`: the directory, then files of the given sizes, or
+    hard links to the given names."""
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode="w") as tar:
+        folder = tarfile.TarInfo(top)
+        folder.type = tarfile.DIRTYPE
+        tar.addfile(folder)
+        for name, what in files:
+            info = tarfile.TarInfo(f"{top}/{name}")
+            if isinstance(what, str):
+                info.type, info.linkname = tarfile.LNKTYPE, f"{top}/{what}"
+                tar.addfile(info)
+            else:
+                info.size = what
+                tar.addfile(info, io.BytesIO(bytes(what)))
+    return out.getvalue()
+
+
+async def archived_names(store: LocalEventStore, run_id: str, archived: Any) -> list[str]:
+    assert archived is not None
+    assert archived.archive is not None
+    data = await store.get_blob(run_id, archived.archive.sha256)
+    with tarfile.open(fileobj=io.BytesIO(data)) as tar:
+        return tar.getnames()
+
+
+async def test_archive_skips_only_what_does_not_fit(store: LocalEventStore) -> None:
+    sb = FakeSandbox(kernel=False)
+    sb.archives["/work"] = docker_tar("work", ("big", 100_000), ("small", 10), ("again", "big"))
+    run_id, audited = await start(store, sb)
+    archived = await audited.archive(["/work"], cap=64 * 1024)
+    await audited.close()
+
+    assert archived is not None
+    assert (archived.entries, archived.skipped, archived.truncated) == (2, 2, True)
+    assert archived.errors == []
+    assert await archived_names(store, run_id, archived) == ["work", "work/small"]
+
+
+async def test_archive_keeps_later_paths_after_a_skip(store: LocalEventStore) -> None:
+    sb = FakeSandbox(kernel=False)
+    sb.archives["/work"] = docker_tar("work", ("a", 10), ("big", 100_000))
+    sb.archives["/tmp"] = docker_tar("tmp", ("t", 10))
+    run_id, audited = await start(store, sb)
+    archived = await audited.archive(["/work", "/tmp"], cap=64 * 1024)
+    await audited.close()
+
+    assert archived is not None
+    assert (archived.entries, archived.skipped, archived.truncated) == (4, 1, True)
+    assert await archived_names(store, run_id, archived) == ["work", "work/a", "tmp", "tmp/t"]
+
+
+async def test_archive_stops_reading_once_the_cap_is_spent(store: LocalEventStore) -> None:
+    sb = FakeSandbox(kernel=False)
+    huge = 8 * 1024 * 1024
+    sb.archives["/work"] = docker_tar("work", ("a", 1000), ("b", 1000), ("c", 10), ("d", huge))
+    sb.archives["/tmp"] = docker_tar("tmp", ("t", 10), ("d", huge))
+    run_id, audited = await start(store, sb)
+    archived = await audited.archive(["/work", "/tmp"], cap=4096)
+    await audited.close()
+
+    assert archived is not None
+    assert (archived.entries, archived.skipped, archived.truncated) == (3, 2, True)
+    assert await archived_names(store, run_id, archived) == ["work", "work/a", "work/b"]
+    assert sb.ended == ["/work", "/tmp"]
+    assert max(sb.served.values()) < 64 * 1024
+
+
+async def test_archive_does_not_read_past_a_huge_entry(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(audit_module, "ARCHIVE_PASS", 1024 * 1024)
+    sb = FakeSandbox(kernel=False)
+    huge = 2 * 1024 * 1024
+    sb.archives["/work"] = docker_tar("work", ("a", 10), ("big", huge), ("b", 10))
+    sb.archives["/tmp"] = docker_tar("tmp", ("t", 10))
+    run_id, audited = await start(store, sb)
+    archived = await audited.archive(["/work", "/tmp"], cap=64 * 1024)
+    await audited.close()
+
+    assert archived is not None
+    assert (archived.entries, archived.skipped, archived.truncated) == (4, 1, True)
+    assert await archived_names(store, run_id, archived) == ["work", "work/a", "tmp", "tmp/t"]
+    assert sb.served["/work"] < 64 * 1024
+
+
+async def test_a_cancelled_archive_closes_its_stream(store: LocalEventStore) -> None:
+    sb = FakeSandbox(kernel=False)
+    sb.archives["/work"] = docker_tar("work", ("a", 10_000))
+    sb.archive_hold = asyncio.Event()
+    run_id, audited = await start(store, sb)
+    task = asyncio.create_task(audited.archive(["/work"]))
+    async with asyncio.timeout(5):
+        await sb.archive_entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    await audited.close()
+
+    assert sb.ended == ["/work"]
+    assert await events(store, run_id, "sandbox.archived") == []
+
+
+async def test_a_broken_archive_stream_keeps_what_came_before(store: LocalEventStore) -> None:
+    sb = FakeSandbox(kernel=False)
+    sb.archives["/work"] = docker_tar("work", ("a", 10), ("b", 20_000))
+    sb.broken["/work"] = 8192
+    sb.archives["/tmp"] = docker_tar("tmp", ("t", 10))
+    run_id, audited = await start(store, sb)
+    archived = await audited.archive(["/work", "/tmp"])
+    await audited.close()
+
+    assert archived is not None
+    assert archived.errors == ["/work: ConnectionError: lost"]
+    assert (archived.entries, archived.skipped, archived.truncated) == (4, 0, False)
+    assert await archived_names(store, run_id, archived) == ["work", "work/a", "tmp", "tmp/t"]
+    assert sb.ended == ["/work", "/tmp"]

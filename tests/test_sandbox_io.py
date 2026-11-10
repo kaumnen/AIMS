@@ -2,6 +2,7 @@ import asyncio
 import io
 import os
 import tarfile
+import tracemalloc
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -157,6 +158,37 @@ async def test_archive_keeps_work_tmp_and_home(
     assert tiny is not None
     assert tiny.truncated
     assert tiny.skipped > 0
+
+
+async def test_archive_streams_past_a_file_too_big_to_keep(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    run_id, sb = await sandbox(backend, store)
+    try:
+        await sb.exec(
+            "truncate -s 300M /work/big; echo s > /work/small; echo t > /tmp/t", timeout_s=30
+        )
+        tracemalloc.start()
+        try:
+            archived = await sb.archive(["/work", "/tmp"])
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+    finally:
+        await sb.close()
+
+    assert peak < 32 * 1024 * 1024
+    assert archived is not None
+    assert (archived.skipped, archived.truncated, archived.errors) == (1, True, [])
+    assert archived.archive is not None
+    data = await store.get_blob(run_id, archived.archive.sha256)
+    with tarfile.open(fileobj=io.BytesIO(data)) as tar:
+        names = set(tar.getnames())
+        assert {"work/small", "tmp/t"} <= names
+        assert "work/big" not in names
+        small = tar.extractfile("work/small")
+        assert small is not None
+        assert small.read() == b"s\n"
 
 
 async def test_built_image_is_reused(backend: DockerBackend, store: LocalEventStore) -> None:

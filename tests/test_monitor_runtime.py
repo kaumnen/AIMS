@@ -8,7 +8,7 @@ import hashlib
 import io
 import os
 import tarfile
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any, ClassVar, cast
 
@@ -140,10 +140,10 @@ class Box:
     async def put_archive(self, path: str, data: bytes) -> None:
         pass
 
-    async def get_archive(self, path: str) -> bytes:
+    async def get_archive(self, path: str) -> AsyncGenerator[bytes]:
         out = io.BytesIO()
         tarfile.open(fileobj=out, mode="w").close()
-        return out.getvalue()
+        yield out.getvalue()
 
     async def kill(self) -> None:
         pass

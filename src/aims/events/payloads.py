@@ -1250,7 +1250,8 @@ class ReplayDivergence(Payload):
 
 class SandboxArchived(Payload):
     """The sandbox's final files as one tar, paths kept from the sandbox root. `skipped` counts
-    entries left out once the archive reached its cap."""
+    the entries left out for want of room. Once none fits, or the skipped ones are too large to
+    read past, the rest of a path goes unread and uncounted."""
 
     type = "sandbox.archived"
 

@@ -59,6 +59,7 @@ Docker Compose runs both on one host.
   docker rm -f $(docker ps -aq --filter label=aims.managed=1)
   ```
 - Sandbox defaults: 1 CPU, 1024 MiB memory, 256 PIDs. A scenario can turn on `writable_root`.
+- The `/work` volume has no size limit, so an agent can fill the host disk with real bytes.
 
 ## Access
 

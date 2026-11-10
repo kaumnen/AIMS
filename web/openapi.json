@@ -12568,7 +12568,7 @@
       },
       "SandboxArchived": {
         "additionalProperties": false,
-        "description": "The sandbox's final files as one tar, paths kept from the sandbox root. `skipped` counts\nentries left out once the archive reached its cap.",
+        "description": "The sandbox's final files as one tar, paths kept from the sandbox root. `skipped` counts\nthe entries left out for want of room. Once none fits, or the skipped ones are too large to\nread past, the rest of a path goes unread and uncounted.",
         "properties": {
           "archive": {
             "anyOf": [

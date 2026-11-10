@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import functools
 import io
 import json
 import logging
@@ -14,7 +15,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
-from aims.aio import settle, shielded
+from aims.aio import Pipe, read_in_thread, settle, shielded
 from aims.events import (
     AuditLevel,
     AuditLost,
@@ -119,6 +120,8 @@ SETTLE_S = 0.5
 SETTLE_POLL_S = 0.005
 MEMORY = 4096
 ARCHIVE_CAP = 256 * 1024 * 1024
+# Bytes of skipped entries an archive reads past to reach later ones: about 15 s of Docker tar.
+ARCHIVE_PASS = 4 * 1024 * 1024 * 1024
 
 INTERNAL = "internal"
 _UNKNOWN = "\0unknown"
@@ -207,6 +210,50 @@ class _Active:
     root: int | None = None
     exited: asyncio.Event = field(default_factory=asyncio.Event)
     uid: int = AGENT_UID
+
+
+@dataclass(slots=True)
+class _Packer:
+    """The end-of-run tar, filled in a worker thread from Docker's tar of each path."""
+
+    tar: tarfile.TarFile
+    out: io.BytesIO
+    cap: int
+    entries: int = 0
+    skipped: int = 0
+    truncated: bool = False
+    passed: int = 0
+
+    def take(self, parent: str, pipe: Pipe) -> None:
+        """Add each entry of the tar on `pipe` that fits, named under `parent`. Stop reading
+        once none can, or before the skipped ones pass `ARCHIVE_PASS` bytes."""
+        left_out: set[str] = set()
+        with tarfile.open(fileobj=pipe, mode="r|") as source:
+            for member in source:
+                size = member.size if member.isfile() else 0
+                room = self.cap - self.out.tell() - 1024
+                if size > room or (member.islnk() and member.linkname in left_out):
+                    self.skipped += 1
+                    self.truncated = True
+                    left_out.add(member.name)
+                    self.passed += size
+                    if room < 0 or self.passed > ARCHIVE_PASS:
+                        return
+                    continue
+                member.name = posixpath.join(parent, member.name)
+                if member.islnk():
+                    member.linkname = posixpath.join(parent, member.linkname)
+                fileobj = source.extractfile(member) if member.isfile() else None
+                start = self.out.tell()
+                try:
+                    self.tar.addfile(member, fileobj)
+                except BaseException:
+                    # A stream that breaks mid-entry leaves no half entry behind.
+                    self.out.seek(start)
+                    self.out.truncate()
+                    self.tar.offset = start
+                    raise
+                self.entries += 1
 
 
 class AuditedSandbox:
@@ -381,50 +428,35 @@ class AuditedSandbox:
     async def archive(
         self, paths: Sequence[str], *, cap: int = ARCHIVE_CAP
     ) -> SandboxArchived | None:
-        """Log the files under `paths` as one tar blob, up to `cap` bytes of tar.
+        """Log the files under `paths` as one tar blob, up to `cap` bytes of tar. An entry too
+        big for the room left is skipped; once none fits, or the skipped ones pass `ARCHIVE_PASS`
+        bytes, the rest goes unread.
 
         Run it while the sandbox runs: tmpfs volumes lose their content once it stops.
         """
         if self._stopped:
             return None
         out = io.BytesIO()
-        entries = skipped = 0
-        truncated = False
         errors: list[str] = []
         with tarfile.open(fileobj=out, mode="w", format=tarfile.PAX_FORMAT) as tar:
+            packer = _Packer(tar, out, cap)
             for path in paths:
-                try:
-                    data = await self.sandbox.get_archive(path)
-                except Exception as e:
-                    errors.append(f"{path}: {type(e).__name__}: {e}")
-                    continue
                 parent = posixpath.dirname(path.rstrip("/")).lstrip("/")
                 try:
-                    with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as source:
-                        for member in source:
-                            size = member.size if member.isfile() else 0
-                            if truncated or out.tell() + size + 1024 > cap:
-                                truncated = True
-                                skipped += 1
-                                continue
-                            member.name = posixpath.join(parent, member.name)
-                            if member.islnk():
-                                member.linkname = posixpath.join(parent, member.linkname)
-                            fileobj = source.extractfile(member) if member.isfile() else None
-                            tar.addfile(member, fileobj)
-                            entries += 1
-                except tarfile.TarError as e:
+                    async with contextlib.aclosing(self.sandbox.get_archive(path)) as chunks:
+                        await read_in_thread(chunks, functools.partial(packer.take, parent))
+                except Exception as e:
                     errors.append(f"{path}: {type(e).__name__}: {e}")
         data = out.getvalue()
-        ref = await self._store.put_blob(self._run_id, data) if entries else None
+        ref = await self._store.put_blob(self._run_id, data) if packer.entries else None
         archived = SandboxArchived(
             sandbox_id=self.sandbox.info.sandbox_id,
             paths=list(paths),
             archive=ref,
-            entries=entries,
+            entries=packer.entries,
             bytes=len(data),
-            skipped=skipped,
-            truncated=truncated,
+            skipped=packer.skipped,
+            truncated=packer.truncated,
             errors=errors,
         )
         await self._append([archived])
