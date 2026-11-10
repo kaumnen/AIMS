@@ -204,6 +204,24 @@ def test_reward_json_numbers_the_log_cannot_carry_become_text() -> None:
     assert _reward(b"J", b'{"total": ' + b"9" * 400 + b"}")[0] is None
 
 
+def test_reward_json_keeps_a_lone_surrogate_as_text() -> None:
+    body = b'{"reward": 1, "note": "\\ud83d", "\\udfff": ["\\ud800"]}'
+    reward, metrics, _, error = _reward(b"J", body)
+    assert (reward, error) == (1.0, None)
+    assert metrics == {"reward": 1, "note": "\\ud83d", "\\udfff": ["\\ud800"]}
+    rfc8785.dumps(metrics)
+
+
+def test_reward_json_nested_deeper_than_an_event_holds_is_unreadable() -> None:
+    assert _reward(b"J", b'{"a": ' + b"[" * 63 + b"]" * 63 + b"}")[3] is None
+    for depth in (64, 300, 5_000, 200_000):
+        body = b'{"a": ' + b"[" * depth + b"]" * depth + b"}"
+        reward, metrics, source, error = _reward(b"J", body)
+        assert (reward, metrics, source) == (None, {}, "reward.json")
+        assert (error or "").startswith("reward.json is not JSON: ")
+    assert _reward(b"J", b"[" * 200_000)[3] is not None
+
+
 def test_cli_checks_and_exports() -> None:
     runner = CliRunner()
     ok = runner.invoke(app, ["scenario", "check", str(WORD_COUNT)])

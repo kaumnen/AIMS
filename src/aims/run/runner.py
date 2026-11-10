@@ -71,6 +71,7 @@ from aims.scenario import AgentConfig, Bundle, Scenario
 from aims.scenario import budget as budgets
 from aims.scenario.budget import BudgetError, BudgetOverride
 from aims.scenario.model import HOME, ScriptStep
+from aims.text import scrub
 from aims.tools import Tool, UnknownTool, load_tools
 
 log = logging.getLogger("aims.run")
@@ -79,6 +80,9 @@ BUSYBOX = f"{TOOLBOX}/busybox"
 RUNNER_MB = 64
 SEED_TIMEOUT_S = 120
 VERIFY_PREP_S = 60
+REWARD_DEPTH = 64
+"""The most levels of nesting reward.json may have, well under the 255 pydantic validates in
+an event."""
 SCORED_ENDS: frozenset[AgentEnd] = frozenset(
     {
         "submitted",
@@ -1343,12 +1347,11 @@ def _reward(kind: bytes, body: bytes) -> tuple[float | None, dict[str, JsonValue
     text = body.decode(errors="replace")
     if kind == b"J":
         try:
-            value = json.loads(text)
-        except ValueError as e:
+            value = _loggable(scrub(json.loads(text)))
+        except (ValueError, RecursionError) as e:
             return None, {}, "reward.json", f"reward.json is not JSON: {e}"
         if not isinstance(value, dict):
             return None, {}, "reward.json", "reward.json is not an object"
-        value = _loggable(value)
         numbers = {k: v for k, v in value.items() if _number(v)}
         reward = value.get("reward") if _number(value.get("reward")) else None
         if reward is None and len(numbers) == 1:
@@ -1371,13 +1374,15 @@ def _number(value: object) -> bool:
     return isinstance(value, float) and math.isfinite(value)
 
 
-def _loggable(value: Any) -> Any:
+def _loggable(value: Any, depth: int = 1) -> Any:
     """`value` with every number canonical JSON cannot carry (NaN, infinities, ints past 2**53)
-    turned into its text, so the score can be logged."""
+    turned into its text, so the score can be logged. ValueError past REWARD_DEPTH levels."""
+    if isinstance(value, dict | list) and depth > REWARD_DEPTH:
+        raise ValueError(f"nested deeper than {REWARD_DEPTH} levels")
     if isinstance(value, dict):
-        return {k: _loggable(v) for k, v in value.items()}
+        return {k: _loggable(v, depth + 1) for k, v in value.items()}
     if isinstance(value, list):
-        return [_loggable(v) for v in value]
+        return [_loggable(v, depth + 1) for v in value]
     if isinstance(value, int | float) and not isinstance(value, bool) and not _number(value):
         return str(value)
     return value

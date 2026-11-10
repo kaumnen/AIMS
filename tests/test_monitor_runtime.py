@@ -1030,6 +1030,59 @@ def test_a_subject_without_an_end_fails_the_run_unless_one_was_killed() -> None:
     assert _status(Result("r", "failed", agents={"a": killed}), ["a", "b"])[0] == "killed"
 
 
+# Rewards
+
+
+class RewardBoxes(Boxes):
+    """Boxes whose verifier wrote `reward` as reward.json."""
+
+    def __init__(self, reward: bytes) -> None:
+        super().__init__()
+        self.reward = reward
+
+    async def create(self, spec: SandboxSpec, *, run_id: str, agent_id: str) -> Box:
+        reward = self.reward
+
+        class RewardBox(Box):
+            async def run(self, argv: Sequence[str], *, capture: Capture, **kw: Any) -> Outcome:
+                if "echo J" not in argv[-1]:
+                    return await super().run(argv, capture=capture, **kw)
+                capture.add(1, b"J\n" + reward)
+                return Outcome("exited", 0, 100, 1)
+
+        self.made[agent_id] = box = RewardBox()
+        return box
+
+
+async def test_a_lone_surrogate_in_reward_json_is_scored_as_text(
+    store: LocalEventStore, tmp_path: Path
+) -> None:
+    backend = RewardBoxes(b'{"reward": 1, "note": "\\ud83d"}\n')
+    script = Script(call("submit", answer="ok"))
+    result = await Runner(bench(store, script, backend), scenario(tmp_path), Options()).run()
+    assert result.status == "completed", result.reason
+    assert result.run_id is not None
+    (scored,) = await of(store, result.run_id, TaskScored, "task.scored")
+    assert (scored.reward, scored.metrics, scored.error) == (
+        1.0,
+        {"reward": 1, "note": "\\ud83d"},
+        None,
+    )
+
+
+async def test_a_reward_json_nested_too_deep_is_scored_as_unreadable(
+    store: LocalEventStore, tmp_path: Path
+) -> None:
+    backend = RewardBoxes(b'{"reward": ' + b"[" * 300 + b"]" * 300 + b"}")
+    script = Script(call("submit", answer="ok"))
+    result = await Runner(bench(store, script, backend), scenario(tmp_path), Options()).run()
+    assert result.status == "completed", result.reason
+    assert result.run_id is not None
+    (scored,) = await of(store, result.run_id, TaskScored, "task.scored")
+    assert (scored.reward, scored.metrics, scored.source) == (None, {}, "reward.json")
+    assert (scored.error or "").startswith("reward.json is not JSON: ")
+
+
 # Jobs and the CLI
 
 
