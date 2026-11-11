@@ -2,12 +2,59 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import typer
-from typer.core import TyperCommand
+from typer.core import TyperCommand, TyperGroup
 from typer.models import TyperPath
 
 from aims import __version__
 
-app = typer.Typer(name="aims", no_args_is_help=True, add_completion=False)
+
+def _shown_usage(e: typer.TyperException) -> None:
+    from aims.report.escape import visible
+
+    e.message = visible(e.message)
+
+
+class _Group(TyperGroup):
+    """Shows the text of a usage error as the characters it holds. Click and typer put argv
+    text in some messages as it is, such as `Got unexpected extra argument (...)`."""
+
+    def make_context(self, *args: Any, **kwargs: Any) -> Any:
+        try:
+            return super().make_context(*args, **kwargs)
+        except typer.TyperException as e:
+            _shown_usage(e)
+            raise
+
+    def invoke(self, ctx: Any) -> Any:
+        try:
+            return super().invoke(ctx)
+        except typer.TyperException as e:
+            _shown_usage(e)
+            raise
+
+
+class _App(typer.Typer):
+    """An error no command handles ends with exit code 1 and its traceback on stderr, written
+    through visible(). Typer's Rich traceback prints the error's text as it is, escape bytes
+    too. Exit, usage errors, Ctrl-C and a closed pipe end in typer as before."""
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        try:
+            return super().__call__(*args, **kwargs)
+        except Exception as e:
+            import contextlib
+            import sys
+            import traceback
+
+            from aims.report.escape import visible
+
+            with contextlib.suppress(OSError):
+                sys.stderr.write(visible("".join(traceback.format_exception(e))))
+                sys.stderr.flush()
+            raise SystemExit(1) from None
+
+
+app = _App(name="aims", no_args_is_help=True, add_completion=False, cls=_Group)
 models_app = typer.Typer(no_args_is_help=True, help="Model profiles and provider checks.")
 app.add_typer(models_app, name="models")
 

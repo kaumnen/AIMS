@@ -6,8 +6,10 @@ import contextlib
 import io
 import json
 import logging
+import re
 import shutil
 import sqlite3
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -399,6 +401,80 @@ def test_prompts_show_writes_hidden_characters_as_toml_escapes(tmp_path: Path) -
     assert out.exit_code == 0, out.output
     holds_nothing_hidden(out.stdout)
     assert tomllib.loads(out.stdout)["prompts"]["denied"] == text
+
+
+# 173: an unhandled error and usage errors
+
+# The aims app with one more command, which ends as `kind` says
+CHILD = """
+import typer
+
+from aims.cli import app
+
+
+@app.command("fail")
+def fail(kind: str) -> None:
+    if kind == "exit":
+        raise typer.Exit(3)
+    if kind == "interrupt":
+        raise KeyboardInterrupt
+    if kind == "pipe":
+        raise BrokenPipeError(32, "Broken pipe")
+    try:
+        raise ValueError("inner \\x1b[2J")
+    except ValueError as e:
+        raise RuntimeError("outer \\x1b]0;owned\\x07 \\x9b2J \\N{RIGHT-TO-LEFT OVERRIDE}") from e
+
+
+app(prog_name="aims")
+"""
+
+
+def child(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-c", CHILD, *args],
+        capture_output=True,
+        encoding="utf-8",
+        errors="backslashreplace",
+        timeout=60,
+        check=False,
+    )
+
+
+def test_an_unhandled_error_shows_its_traceback_as_text() -> None:
+    done = child("fail", "error")
+    assert (done.returncode, done.stdout) == (1, "")
+    holds_nothing_hidden(done.stderr)
+    assert done.stderr.startswith("Traceback (most recent call last):\n")
+    assert re.search(r'File "<string>", line \d+, in fail\n', done.stderr)
+    assert "\nValueError: inner \\u001B[2J\n" in done.stderr
+    assert "direct cause of the following exception" in done.stderr
+    assert done.stderr.endswith("\nRuntimeError: outer \\u001B]0;owned\\u0007 \\u009B2J \\u202E\n")
+
+
+def test_the_other_ends_of_the_app_stay_as_they_were() -> None:
+    ends = {kind: child("fail", kind) for kind in ("exit", "interrupt", "pipe")}
+    assert {kind: (d.returncode, d.stdout, d.stderr) for kind, d in ends.items()} == {
+        "exit": (3, "", ""),
+        "interrupt": (130, "", ""),
+        "pipe": (1, "", ""),
+    }
+    usage = child("fail")
+    assert usage.returncode == 2
+    assert "Missing argument" in usage.stderr
+
+
+def test_a_usage_error_shows_argv_text_as_text() -> None:
+    extra = CliRunner().invoke(
+        app, ["verify", "r1", "x\N{RIGHT-TO-LEFT OVERRIDE}\N{LINE SEPARATOR}y"]
+    )
+    assert extra.exit_code == 2
+    holds_nothing_hidden(extra.output)
+    assert "(x\\u202E\\u2028y)" in extra.output
+    budget = CliRunner().invoke(app, ["estimate", "builtin/word-count", "--budget", "a\x9b.b=1"])
+    assert budget.exit_code == 2
+    holds_nothing_hidden(budget.output)
+    assert "a\\u009B.b: no cap 'b'" in budget.output
 
 
 # The rest of the CLI
