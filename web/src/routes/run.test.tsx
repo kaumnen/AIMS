@@ -1859,6 +1859,64 @@ test("a monitor pause keeps its kill dialog open and stops its answers at a drop
   expect(posted.map((p) => p.path)).toEqual([`/api/runs/${BEE5}/kill`, `/api/runs/${BEE5}/resume`]);
 });
 
+const OTHER = "01a18a50-beef-7263-ad19-24385640cee2";
+
+// Two open runs: BEE5 and OTHER.
+function twoOpenRuns() {
+  detail = open();
+  others[OTHER] = {
+    detail: { ...open(), run: run(OTHER, { status: "running", state: "running", events: 15 }) },
+    flags: [],
+    sweeps: [],
+  };
+}
+
+test("a kill dialog left open on one run is gone after Back to another, and kills nothing", async () => {
+  twoOpenRuns();
+  const router = renderAt(`/runs/${OTHER}`);
+  await screen.findByText(OTHER);
+  await act(() => router.navigate({ to: "/runs/$runId", params: { runId: BEE5 } }));
+  fireEvent.click(await screen.findByRole("button", { name: "Kill" }));
+  const kill = await screen.findByRole("dialog", { name: "Kill the run" });
+  fireEvent.change(within(kill).getByRole("textbox", { name: "Reason" }), {
+    target: { value: "stop it" },
+  });
+  await act(async () => router.history.back());
+  await screen.findByText(OTHER);
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(posted).toEqual([]);
+});
+
+test("a command's answer stays on its run", async () => {
+  twoOpenRuns();
+  const router = renderAt(`/runs/${BEE5}`);
+  fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
+  expect(await screen.findByText("Paused.")).toBeTruthy();
+  await act(() => router.navigate({ to: "/runs/$runId", params: { runId: OTHER } }));
+  await screen.findByText(OTHER);
+  expect(screen.queryByText("Paused.")).toBeNull();
+});
+
+test("an answer that lands after the operator went to another run does not show there", async () => {
+  twoOpenRuns();
+  const held = Promise.withResolvers<void>();
+  const base = fetch.getMockImplementation()!;
+  fetch.mockImplementation(async (request) => {
+    if (request.method === "POST") await held.promise;
+    return base(request);
+  });
+  const router = renderAt(`/runs/${BEE5}`);
+  fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
+  await act(() => router.navigate({ to: "/runs/$runId", params: { runId: OTHER } }));
+  await screen.findByText(OTHER);
+  expect(screen.getByRole("button", { name: "Pause" }).hasAttribute("disabled")).toBe(false);
+  held.resolve();
+  await waitFor(() => expect(requests("commands")).not.toHaveLength(0));
+  await act(() => new Promise((r) => setTimeout(r, 50)));
+  expect(posted.map((p) => p.path)).toEqual([`/api/runs/${BEE5}/pause`]);
+  expect(screen.queryByText("Paused.")).toBeNull();
+});
+
 test("a pause under human oversight waits for an answer like the terminal's", async () => {
   detail = open({ held: [hold()] });
   flags = [flag(20, [3], 4)];

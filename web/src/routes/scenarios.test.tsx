@@ -1,7 +1,8 @@
+import { EditorView } from "@codemirror/view";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 
 import type { ScenarioDetail, ScenarioInfo } from "@/api/scenarios";
 import { makeRouter } from "@/router";
@@ -13,6 +14,7 @@ let role: "operator" | "viewer";
 let writable: boolean;
 let refusal: string | null;
 let deleted: string[];
+let puts: string[];
 
 const info = (over: Partial<ScenarioInfo>): ScenarioInfo => ({
   source: "project",
@@ -42,11 +44,13 @@ const hidden = {
   selftest: { reference: true, exploit: true, claims: ["golden-keys"], impossible: [] },
 };
 
-function detail(): ScenarioDetail {
+const TEXT = "version: 1\nname: cache-keys\noversight: observe\n";
+
+function detail(name = "cache-keys"): ScenarioDetail {
   const truth = role === "operator";
   return {
     source: "project",
-    name: "cache-keys",
+    name,
     writable,
     etag: "e1",
     errors: [],
@@ -75,11 +79,18 @@ function detail(): ScenarioDetail {
 }
 
 preloadRoutes();
+beforeAll(() => {
+  // the DOM here lays nothing out; CodeMirror measures text ranges
+  const rect = { x: 0, y: 0, top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 };
+  Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
+  Range.prototype.getBoundingClientRect = () => ({ ...rect, toJSON: () => rect }) as DOMRect;
+});
 beforeEach(() => {
   role = "operator";
   writable = true;
   refusal = null;
   deleted = [];
+  puts = [];
   FakeEventSource.all = [];
   vi.stubGlobal("EventSource", FakeEventSource);
   vi.stubGlobal("fetch", fetch);
@@ -107,7 +118,23 @@ beforeEach(() => {
         info({}),
         info({ name: "broken", title: null, error: "line 3: bad", selftest: false }),
       ]);
-    if (url.pathname === "/api/scenarios/project/cache-keys") return Response.json(detail());
+    // a duplicate holds the same bytes as its original
+    const [, name, rest] =
+      /^\/api\/scenarios\/project\/(cache-keys(?:-copy)?)(\/.*)?$/.exec(url.pathname) ?? [];
+    if (name && rest === undefined) return Response.json(detail(name));
+    if (name && rest === "/files") {
+      return Response.json([{ path: "scenario.yaml", size: TEXT.length }]);
+    }
+    if (name && rest === "/files/scenario.yaml" && request.method === "PUT") {
+      puts.push(url.pathname);
+      return Response.json({ path: "scenario.yaml", etag: "e2", warnings: [] });
+    }
+    if (name && rest === "/files/scenario.yaml") {
+      return new Response(TEXT, { headers: { ETag: '"e1"' } });
+    }
+    if (url.pathname === "/api/scenarios/check") {
+      return Response.json({ ok: true, errors: [], warnings: [] });
+    }
     if (url.pathname === "/api/scenarios/project/cache-keys/estimate")
       return Response.json({
         lines: ["head", "Agents $0.10 typical", "Total $0.12 typical, $4.00 at the caps"],
@@ -220,4 +247,30 @@ test("viewers and read-only scenarios get no delete", async () => {
   expect(await screen.findByText("Fix the cache keys.")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Duplicate" })).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+});
+
+test("a draft stays with its scenario when the page moves to a copy", async () => {
+  const router = renderAt("/scenarios/project/cache-keys?tab=files");
+  const content = await screen.findByLabelText("Contents of scenario.yaml");
+  const view = EditorView.findFromDOM(content);
+  if (!view) throw new Error("no editor");
+  const at = TEXT.indexOf("observe");
+  act(() => view.dispatch({ changes: { from: at, to: at + 7, insert: "autonomous" } }));
+  expect(await screen.findByText("unsaved changes")).toBeTruthy();
+  // where Duplicate lands
+  await act(() =>
+    router.navigate({
+      to: "/scenarios/$source/$name",
+      params: { source: "project", name: "cache-keys-copy" },
+      search: { tab: "files" },
+    }),
+  );
+  await screen.findByRole("heading", { level: 1, name: /cache-keys-copy/ });
+  const copy = await screen.findByLabelText("Contents of scenario.yaml");
+  await waitFor(() => expect(EditorView.findFromDOM(copy)?.state.doc.toString()).toBe(TEXT));
+  expect(screen.queryByText("unsaved changes")).toBeNull();
+  const save = screen.getByRole("button", { name: "Save" });
+  expect(save.hasAttribute("disabled")).toBe(true);
+  fireEvent.click(save);
+  expect(puts).toEqual([]);
 });

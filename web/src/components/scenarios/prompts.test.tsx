@@ -10,10 +10,23 @@ const fetch = vi.fn<(request: Request) => Promise<Response>>();
 let patches: { body: unknown; ifMatch: string | null }[];
 // scenario.yaml's version on the server; each save makes a new one
 let version: number;
+let agents: ScenarioDetail["agents"];
+
+const agent = (id: string, prompts: Record<string, unknown>): ScenarioDetail["agents"][number] =>
+  ({
+    id,
+    profile: "spark",
+    tools: ["bash", "submit"],
+    budget: {},
+    role: "subject",
+    scripted: false,
+    prompts,
+  }) as ScenarioDetail["agents"][number];
 
 beforeEach(() => {
   patches = [];
   version = 1;
+  agents = [agent("agent", { tools: { bash: { description: "Run one command." } } })];
   vi.stubGlobal("fetch", fetch);
   fetch.mockImplementation(async (request) => {
     const url = new URL(request.url);
@@ -55,17 +68,7 @@ function detail(writable = true): ScenarioDetail {
     name: "demo",
     writable,
     etag: "e1",
-    agents: [
-      {
-        id: "agent",
-        profile: "spark",
-        tools: ["bash", "submit"],
-        budget: {},
-        role: "subject",
-        scripted: false,
-        prompts: { tools: { bash: { description: "Run one command." } } },
-      },
-    ],
+    agents,
   } as unknown as ScenarioDetail;
 }
 
@@ -130,6 +133,21 @@ test("a second edit right after a save is made against the saved version", async
   fireEvent.click(screen.getByRole("button", { name: "Save override" }));
   await vi.waitFor(() => expect(patches).toHaveLength(2));
   expect(patches.map((p) => p.ifMatch)).toEqual(['"e1"', '"e2"']);
+});
+
+test("an open edit closes when the toggle picks another agent", async () => {
+  agents = [agent("alice", { system: "Alice only." }), agent("bob", {})];
+  renderTab();
+  await screen.findByText("system");
+  fireEvent.click(rowOf("system").getByRole("button", { name: "Edit system" }));
+  const box = await screen.findByLabelText<HTMLTextAreaElement>("Text of system");
+  expect(box.value).toBe("Alice only.");
+  fireEvent.change(box, { target: { value: "Alice only, edited." } });
+  const toggle = screen.getByRole("group", { name: "Agent" });
+  fireEvent.click(within(toggle).getByRole("button", { name: "bob" }));
+  expect(rowOf("system").getByText("built in")).toBeTruthy();
+  expect(screen.queryByLabelText("Text of system")).toBeNull();
+  expect(patches).toEqual([]);
 });
 
 test("a read-only source shows the texts without edits", async () => {

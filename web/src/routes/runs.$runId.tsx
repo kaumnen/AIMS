@@ -112,6 +112,8 @@ const without = <K extends keyof RunSearch>(prev: RunSearch, ...keys: K[]): RunS
 export const Route = createFileRoute("/runs/$runId")({
   staticData: { crumb: (p) => shortId(p["runId"] ?? "") },
   validateSearch: parseSearch,
+  // A new run mounts a new page, so no dialog, draft or answer of the last run carries over.
+  remountDeps: ({ params }) => params,
   loader: ({ context, params }) => {
     void context.queryClient.prefetchQuery(runQuery(params.runId));
     void context.queryClient.prefetchQuery(reviewsQuery(params.runId));

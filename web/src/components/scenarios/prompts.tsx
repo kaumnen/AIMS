@@ -102,7 +102,7 @@ function TextTable({
       <h2 className="font-medium">{title}</h2>
       <ul className="flex flex-col">
         {rows.map((r) => (
-          <ScenarioText key={r.key.join(".")} row={r} detail={detail} agent={agent} />
+          <ScenarioText key={`${agent}:${r.key.join(".")}`} row={r} detail={detail} agent={agent} />
         ))}
       </ul>
     </section>

@@ -37,6 +37,8 @@ export const Route = createFileRoute("/scenarios/$source/$name")({
     ...(raw["tab"] === "files" || raw["tab"] === "prompts" ? { tab: raw["tab"] } : {}),
     ...(typeof raw["file"] === "string" && raw["file"] ? { file: raw["file"] } : {}),
   }),
+  // A new scenario mounts a new page, so no draft or dialog of the last one carries over.
+  remountDeps: ({ params }) => params,
   loader: ({ context, params }) => {
     void context.queryClient.prefetchQuery(scenarioQuery(params.source, params.name));
   },
