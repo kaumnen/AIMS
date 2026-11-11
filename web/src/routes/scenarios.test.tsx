@@ -15,6 +15,8 @@ let writable: boolean;
 let refusal: string | null;
 let deleted: string[];
 let puts: string[];
+// what the scenario list adds to its three
+let more: ScenarioInfo[];
 
 const info = (over: Partial<ScenarioInfo>): ScenarioInfo => ({
   source: "project",
@@ -91,6 +93,7 @@ beforeEach(() => {
   refusal = null;
   deleted = [];
   puts = [];
+  more = [];
   FakeEventSource.all = [];
   vi.stubGlobal("EventSource", FakeEventSource);
   vi.stubGlobal("fetch", fetch);
@@ -117,6 +120,7 @@ beforeEach(() => {
         info({ source: "builtin", name: "word-count", title: "word-count", variants: [] }),
         info({}),
         info({ name: "broken", title: null, error: "line 3: bad", selftest: false }),
+        ...more,
       ]);
     // a duplicate holds the same bytes as its original
     const [, name, rest] =
@@ -135,7 +139,7 @@ beforeEach(() => {
     if (url.pathname === "/api/scenarios/check") {
       return Response.json({ ok: true, errors: [], warnings: [] });
     }
-    if (url.pathname === "/api/scenarios/project/cache-keys/estimate")
+    if (/^\/api\/scenarios\/project\/cache-keys(-copy)?\/estimate$/.test(url.pathname))
       return Response.json({
         lines: ["head", "Agents $0.10 typical", "Total $0.12 typical, $4.00 at the caps"],
         warnings: [],
@@ -273,4 +277,55 @@ test("a draft stays with its scenario when the page moves to a copy", async () =
   expect(save.hasAttribute("disabled")).toBe(true);
   fireEvent.click(save);
   expect(puts).toEqual([]);
+});
+
+const lists = () =>
+  fetch.mock.calls.filter(([r]) => new URL(r.url).pathname === "/api/scenarios").length;
+
+// The list was read before the copy was made, and is still fresh when Run opens the form.
+async function runTheCopy(copy: ScenarioInfo | null) {
+  const router = renderAt("/scenarios");
+  await screen.findByRole("region", { name: "This project" });
+  more = copy ? [copy] : [];
+  await act(() =>
+    router.navigate({
+      to: "/scenarios/$source/$name",
+      params: { source: "project", name: "cache-keys-copy" },
+    }),
+  );
+  await screen.findByRole("heading", { level: 1, name: /cache-keys-copy/ });
+  const before = lists();
+  fireEvent.click(screen.getByRole("button", { name: "Run" }));
+  const dialog = within(await screen.findByRole("dialog"));
+  return { dialog, before };
+}
+
+test("Run on a scenario the list does not have yet reads the list again and opens on it", async () => {
+  const { dialog, before } = await runTheCopy(
+    info({ name: "cache-keys-copy", title: "cache-keys-copy" }),
+  );
+  const field = await dialog.findByRole("combobox", { name: "Scenario" });
+  expect(field.textContent).toContain("cache-keys-copy");
+  expect(lists()).toBe(before + 1);
+});
+
+test("Run on a scenario that does not load says so and starts nothing", async () => {
+  const { dialog, before } = await runTheCopy(
+    info({ name: "cache-keys-copy", title: null, error: "line 2: bad" }),
+  );
+  expect(
+    await dialog.findByText("cache-keys-copy (project) does not load, so it cannot run."),
+  ).toBeTruthy();
+  expect(dialog.queryByRole("combobox", { name: "Scenario" })).toBeNull();
+  expect(dialog.queryByRole("button", { name: /Start/ })).toBeNull();
+  expect(lists()).toBe(before + 1);
+});
+
+test("Run on a scenario the list does not have after a second read says so", async () => {
+  const { dialog, before } = await runTheCopy(null);
+  expect(
+    await dialog.findByText("cache-keys-copy (project) is not in the scenario list."),
+  ).toBeTruthy();
+  expect(dialog.queryByRole("button", { name: /Start/ })).toBeNull();
+  expect(lists()).toBe(before + 1);
 });

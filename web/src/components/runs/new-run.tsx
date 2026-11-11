@@ -67,12 +67,21 @@ export function NewRun({
 
 const keyOf = (s: { source: string; name: string }) => `${s.source}/${s.name}`;
 
+const canRun = (list: readonly ScenarioInfo[] | undefined, key: string) =>
+  (list ?? []).some((s) => !s.error && keyOf(s) === key);
+
 function NewRunForm({ onDone, initial }: { onDone: () => void; initial: string }) {
   const navigate = useNavigate();
-  const scenarios = useQuery(scenariosQuery);
+  // The list may be older than the scenario asked for, so it is read again once if it lacks it.
+  const scenarios = useQuery({
+    ...scenariosQuery,
+    refetchOnMount: (q) =>
+      initial !== DEFAULT && !canRun(q.state.data, initial) ? "always" : true,
+  });
   const runnable = (scenarios.data ?? []).filter((s) => !s.error);
   const [chosen, setChosen] = useState(initial);
-  const scenario = runnable.find((s) => keyOf(s) === chosen) ?? runnable[0];
+  // a scenario asked for is never swapped for another
+  const scenario = chosen === DEFAULT ? runnable[0] : runnable.find((s) => keyOf(s) === chosen);
   const [variant, setVariant] = useState(DEFAULT);
   const [profile, setProfile] = useState(DEFAULT);
   const [monitor, setMonitor] = useState(DEFAULT);
@@ -111,13 +120,18 @@ function NewRunForm({ onDone, initial }: { onDone: () => void; initial: string }
   const asked = JSON.stringify(asking.queryKey);
   const confirm = confirmed === asked;
 
-  if (scenarios.isPending) return <p className="text-muted-foreground">Loading scenarios</p>;
+  const loading = scenarios.isPending || (scenario === undefined && scenarios.isFetching);
+  if (loading) return <p className="text-muted-foreground">Loading scenarios</p>;
   if (scenarios.isError) return <p>Scenarios did not load.</p>;
   if (scenario === undefined) {
     return (
       <DialogHeader>
         <DialogTitle>New run</DialogTitle>
-        <DialogDescription>No scenario loads. Fix or add one under Scenarios.</DialogDescription>
+        <DialogDescription>
+          {chosen === DEFAULT
+            ? "No scenario loads. Fix or add one under Scenarios."
+            : notRunnable(chosen, scenarios.data)}
+        </DialogDescription>
       </DialogHeader>
     );
   }
@@ -380,6 +394,16 @@ function NewRunForm({ onDone, initial }: { onDone: () => void; initial: string }
       </DialogFooter>
     </>
   );
+}
+
+// Why the scenario asked for cannot run.
+function notRunnable(key: string, list: readonly ScenarioInfo[]): string {
+  const listed = list.find((s) => keyOf(s) === key);
+  if (listed) {
+    return `${listed.title ?? listed.name} (${listed.source}) does not load, so it cannot run.`;
+  }
+  const [source, name] = key.split("/");
+  return `${name} (${source}) is not in the scenario list.`;
 }
 
 function ProfileField({
