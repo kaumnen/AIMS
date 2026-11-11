@@ -620,11 +620,12 @@ class Held:
     def paused(self, agent_id: str) -> bool:
         return agent_id in self.held
 
-    async def operate(self, action: str, **kw: Any) -> None:
+    async def operate(self, action: str, **kw: Any) -> str | None:
         if kw.get("then") == "deny" and kw.get("agent") != "a":
             raise RunError("no paused agent has a tool call waiting to deny")
         self.done.append((action, kw))
         self.held.discard(kw.get("agent") or "a")
+        return None
 
 
 def request(**kw: Any) -> HumanRequest:
@@ -661,6 +662,26 @@ async def test_the_human_prompt_answers_through_the_runner() -> None:
     await until(lambda: not prompt._tasks)
     assert runner.done[0][1]["then"] == "inject"
     assert runner.done[0][1]["text"] == "Stop and explain."
+
+
+class Stuck(Held):
+    """A runner whose sandbox does not unfreeze: each answer comes back with a note."""
+
+    async def operate(self, action: str, **kw: Any) -> str | None:
+        await super().operate(action, **kw)
+        return "the sandbox of agent a did not unfreeze: [/x] \x1b[2J"
+
+
+async def test_the_human_prompt_shows_what_did_not_take_effect() -> None:
+    console = Console(record=True, width=200)
+    prompt = HumanPrompt(console, read=lambda: "resume\n")
+    runner = Stuck()
+    await prompt.hook(cast(Runner, runner))(request())
+    await until(lambda: not prompt._tasks)
+    assert [action for action, _ in runner.done] == ["resume"]
+    assert "warning: the sandbox of agent a did not unfreeze: [/x] \\u001B[2J" in (
+        console.export_text()
+    )
 
 
 async def test_a_prompt_closes_when_the_pause_ends_elsewhere() -> None:

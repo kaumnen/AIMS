@@ -584,8 +584,9 @@ def event_line(kind: str, run_id: str, e: Event) -> dict[str, object]:
 class HumanPrompt:
     """Asks the person at the terminal what to do with agents the monitor paused under human
     oversight: resume, deny the tool call they are held before, inject a message, or kill the
-    run. The answer goes through `Runner.operate`, as an operator's would. Prompts come one at
-    a time; one whose pause ended elsewhere, in the UI or by its timeout, closes."""
+    run. The answer goes through `Runner.operate`, as an operator's would, and what did not
+    take effect shows below it as a warning. Prompts come one at a time; one whose pause ended
+    elsewhere, in the UI or by its timeout, closes."""
 
     def __init__(self, console: Console, read: Callable[[], str] | None = None) -> None:
         self.console = console
@@ -665,18 +666,23 @@ class HumanPrompt:
                     c.print("an inject needs text")
                     continue
             try:
-                await self._answer(runner, request, choice, text)
+                notes = await self._answer(runner, request, choice, text)
             except RunError as e:
                 c.print("[red]error:[/]", shown(e))
                 continue
+            for note in notes:
+                c.print("[yellow]warning:[/]", shown(note))
             return
 
     async def _answer(
         self, runner: Runner, request: HumanRequest, choice: str, text: str | None
-    ) -> None:
+    ) -> list[str]:
+        """Carry out `choice`. Returns what did not take effect, such as a sandbox that did not
+        unfreeze."""
         if choice == "kill":
-            await runner.operate("kill", reason="killed by the person at the terminal")
-            return
+            note = await runner.operate("kill", reason="killed by the person at the terminal")
+            return [note] if note else []
+        notes: list[str] = []
         for agent_id in self._waiting(runner, request):
             then: ResumeThen = "continue"
             if choice == "inject":
@@ -684,13 +690,16 @@ class HumanPrompt:
             elif choice == "deny" and agent_id in request.held_call:
                 then = "deny"
             reason = "answered at the terminal"
-            await runner.operate(
+            note = await runner.operate(
                 "resume",
                 agent=agent_id,
                 then=then,
                 text=(text or "").strip() or None,
                 reason=reason,
             )
+            if note:
+                notes.append(note)
+        return notes
 
     async def _line(self, runner: Runner, request: HumanRequest) -> str | None:
         """The next line typed, or None once the pause ended or stdin closed. A line asked for
