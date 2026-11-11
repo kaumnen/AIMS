@@ -9,7 +9,8 @@ import stat
 import sys
 import threading
 import time
-from collections.abc import AsyncGenerator, AsyncIterator, Callable, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterator, Sequence
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, cast
 
@@ -916,6 +917,121 @@ async def test_push_ships_runs_recorded_offline(cp: CP, tmp_path: Path) -> None:
     assert meta is not None
     assert meta.runner is not None
     assert meta.runner.startswith("push@")
+
+
+class Refusing(BaseHTTPRequestHandler):
+    """Answers every request with its class's status and a problem body."""
+
+    status = 500
+
+    def answer(self) -> None:
+        self.rfile.read(int(self.headers.get("content-length") or 0))
+        body = json.dumps({"title": "Refused", "detail": f"status {self.status}"}).encode()
+        self.send_response(self.status)
+        self.send_header("Content-Type", "application/problem+json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    do_GET = do_POST = do_PUT = do_DELETE = answer
+
+    def log_message(self, format: str, *args: Any) -> None:
+        pass
+
+
+@pytest.fixture
+def refusing() -> Iterator[dict[str, str]]:
+    """Control plane URLs that fail: a closed port and servers answering 401, 403 and 500."""
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        urls = {"closed port": f"http://127.0.0.1:{s.getsockname()[1]}"}
+    servers = []
+    for status in (401, 403, 500):
+        handler = type(f"Refusing{status}", (Refusing,), {"status": status})
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        servers.append(server)
+        urls[str(status)] = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        yield urls
+    finally:
+        for server in servers:
+            server.shutdown()
+            server.server_close()
+
+
+def one_error_line(result: Any) -> bool:
+    lines = result.output.splitlines()
+    return (
+        (result.exit_code, type(result.exception)) == (1, SystemExit)
+        and len(lines) == 1
+        and lines[0].startswith("error: ")
+    )
+
+
+def test_a_control_plane_that_fails_ends_in_one_error_line(
+    refusing: dict[str, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AIMS_TOKEN", "aims_x")
+    commands = {
+        "push": ["push", str(tmp_path)],
+        "control": ["control", "r1", "pause"],
+        "control list": ["control", "r1", "list"],
+        "delete": ["delete", "r1", "--yes"],
+        "open": ["open", "--no-open"],
+        "scenario delete": ["scenario", "delete", "project", "x", "--yes"],
+    }
+    failed = []
+    for name, args in commands.items():
+        for case, url in refusing.items():
+            r = CliRunner().invoke(app, [*args, "--server", url])
+            if not one_error_line(r):
+                failed.append(f"{name}, {case}: exit {r.exit_code} {r.exception!r} {r.output!r}")
+    assert failed == []
+
+
+def test_a_token_file_that_holds_no_token_ends_in_one_error_line(
+    refusing: dict[str, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def done(**kwargs: Any) -> int:
+        return 0
+
+    class Idle:
+        def __init__(self, options: NodeOptions) -> None:
+            pass
+
+        async def run(self, stop: asyncio.Event) -> None:
+            pass
+
+    # What each command does once it has a token is not under test.
+    monkeypatch.setattr("aims.cli._run", done)
+    monkeypatch.setattr("aims.cli._monitor_runs", done)
+    monkeypatch.setattr("aims.node.service.Node", Idle)
+    files = {"missing": tmp_path / "missing", "directory": tmp_path}
+    for name, data in (
+        ("empty", b""),
+        ("blank", b" \n\t\n"),
+        ("NUL", b"aims_x\x00y\n"),
+        ("not UTF-8", b"aims_\xff\xfe\n"),
+    ):
+        files[name] = tmp_path / name
+        files[name].write_bytes(data)
+    url = refusing["closed port"]
+    commands = {
+        "push": ["push", str(tmp_path), "--server", url],
+        "control": ["control", "r1", "pause"],
+        "control list": ["control", "r1", "list", "--server", url],
+        "run": ["run", "builtin/word-count", "--server", url],
+        "monitor": ["monitor", "r1", "--server", url],
+        "runner": ["runner", "--server", url],
+    }
+    failed = []
+    for name, args in commands.items():
+        for case, path in files.items():
+            r = CliRunner().invoke(app, [*args, "--token-file", str(path)])
+            if not one_error_line(r) or "token" not in r.output:
+                failed.append(f"{name}, {case}: exit {r.exit_code} {r.exception!r} {r.output!r}")
+    assert failed == []
 
 
 async def read_url(proc: asyncio.subprocess.Process) -> str:

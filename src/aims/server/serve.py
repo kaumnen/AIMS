@@ -103,6 +103,8 @@ def check(o: UiOptions) -> None:
     exposed = not loopback(o.host)
     if (o.tls_cert is None) != (o.tls_key is None):
         raise ServeError("--tls-cert and --tls-key go together")
+    if o.data.exists() and not o.data.is_dir():
+        raise ServeError(f"{o.data} is not a directory")
     if exposed and o.tls_cert is None and not o.behind_proxy:
         raise ServeError(
             f"binding {o.host} exposes the API to the network: give --tls-cert and --tls-key,"
@@ -215,7 +217,10 @@ async def serve(o: UiOptions) -> int:
         task = asyncio.create_task(server.serve())
         while not server.started:
             if task.done():
-                task.result()
+                try:
+                    task.result()
+                except OSError as e:
+                    raise ServeError(f"the server did not start: {e}") from None
                 raise ServeError("the server did not start")
             await asyncio.sleep(0.05)
         port = _port(server, o.port)

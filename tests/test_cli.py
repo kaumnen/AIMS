@@ -1,5 +1,6 @@
 import asyncio
 import re
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -45,3 +46,44 @@ async def test_the_cli_reaches_the_control_plane_through_the_proxy(
     assert result.exit_code == 0, result.output
     assert proxy.lines == ["CONNECT cp.example:443 HTTP/1.1"]
     assert origin.lines == ["GET /api/runs/r1/commands HTTP/1.1"]
+
+
+def test_a_path_that_does_not_fit_ends_in_an_error_not_a_traceback(tmp_path: Path) -> None:
+    (run,) = (Path(__file__).parent / "fixtures" / "runs" / "word-count").iterdir()
+    runs = tmp_path / "runs"
+    shutil.copytree(run, runs / run.name)
+    a_file = tmp_path / "a-file"
+    a_file.write_text("x\n")
+    broken = tmp_path / "broken"
+    broken.mkdir()
+    (broken / "server.sqlite").write_text("not a database\n")
+    (broken / "server.json").write_text("{not json\n")
+    nowhere = tmp_path / "no-such-dir" / "out"
+    missing = tmp_path / "missing"
+    report = ["report", run.name, "--runs-dir", str(runs)]
+    ui = ["ui", "--no-open", "--no-runner", "--data-dir", str(tmp_path / "ui")]
+    runner = ["runner", "--server", "https://127.0.0.1:9", "--tls-ca"]
+    cases = {
+        "verify a file": (["verify", str(a_file)], 1),
+        "rates --runs-dir a file": (["rates", "--runs-dir", str(a_file)], 2),
+        "report --out nowhere": ([*report, "--out", str(nowhere)], 1),
+        "report --html a directory": ([*report, "--html", str(runs)], 1),
+        "openapi --out nowhere": (["openapi", "--out", str(nowhere)], 1),
+        "audit --data-dir a file": (["audit", "--data-dir", str(a_file)], 2),
+        "token list --data-dir a file": (["token", "list", "--data-dir", str(a_file)], 2),
+        "token list, not a database": (["token", "list", "--data-dir", str(broken)], 1),
+        "ui --tls-cert missing": ([*ui, "--tls-cert", str(missing), "--tls-key", str(a_file)], 2),
+        "ui --tls-cert not PEM": ([*ui, "--tls-cert", str(a_file), "--tls-key", str(a_file)], 1),
+        "runner --tls-ca missing": ([*runner, str(missing)], 2),
+        "runner --tls-ca not PEM": ([*runner, str(a_file)], 1),
+    }
+    failed = []
+    for name, (args, code) in cases.items():
+        r = CliRunner().invoke(app, args, env={"AIMS_TOKEN": "aims_x"})
+        if (r.exit_code, type(r.exception)) != (code, SystemExit):
+            failed.append(f"{name}: exit {r.exit_code} {r.exception!r} {r.output[-300:]!r}")
+    for args in (["control", "r1", "list"], ["push", str(runs)], ["open", "--no-open"]):
+        r = CliRunner().invoke(app, args, env={"AIMS_SERVER_DIR": str(broken)})
+        if (r.exit_code, type(r.exception)) != (1, SystemExit) or "not JSON" not in r.output:
+            failed.append(f"{args[0]}, server.json not JSON: {r.exception!r} {r.output!r}")
+    assert failed == []

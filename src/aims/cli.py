@@ -13,6 +13,9 @@ ConfigOption = Annotated[
     Path | None,
     typer.Option("--config", help="An aims.toml to use instead of the project's."),
 ]
+RunsDirOption = Annotated[
+    Path, typer.Option(file_okay=False, help="Directory that holds the runs.")
+]
 SCENARIO_HELP = "The scenario file, its directory, or builtin/<name> for one that ships with AIMS."
 
 
@@ -116,13 +119,17 @@ def config_paths(
 @app.command()
 def verify(
     run: Annotated[str, typer.Argument(help="Run id or run directory.")],
-    runs_dir: Annotated[Path, typer.Option(help="Directory that holds the runs.")] = Path("runs"),
+    runs_dir: RunsDirOption = Path("runs"),
 ) -> None:
     """Check the hash chain of a run and the blobs it references."""
     from aims.events import verify_run
 
     path = Path(run) if Path(run).is_dir() else runs_dir / run
-    result = verify_run(path)
+    try:
+        result = verify_run(path)
+    except OSError as e:
+        typer.echo(f"error: cannot read {path}: {e.strerror or e}", err=True)
+        raise typer.Exit(EXIT_FAILED) from None
     problems = [
         *([result.error] if result.error else []),
         *(f"missing blob {sha}" for sha in result.missing_blobs),
@@ -139,7 +146,7 @@ def verify(
 @app.command("check")
 def check_plants(
     run: Annotated[str, typer.Argument(help="Run id.")],
-    runs_dir: Annotated[Path, typer.Option(help="Directory that holds the runs.")] = Path("runs"),
+    runs_dir: RunsDirOption = Path("runs"),
     json_out: Annotated[bool, typer.Option("--json", help="Print JSON.")] = False,
 ) -> None:
     """Report which plants each agent of a sealed run took, from its log and truth file."""
@@ -191,7 +198,7 @@ def models_list(config: ConfigOption = None) -> None:
 def models_check(
     profiles: Annotated[list[str] | None, typer.Argument(help="Profiles to check.")] = None,
     config: ConfigOption = None,
-    runs_dir: Annotated[Path, typer.Option(help="Directory that holds the runs.")] = Path("runs"),
+    runs_dir: RunsDirOption = Path("runs"),
 ) -> None:
     """Call each provider with small requests and report what works. Recorded as a run."""
     import asyncio
@@ -335,7 +342,7 @@ def scenario_check(
     config: ConfigOption = None,
     profile: Annotated[str | None, typer.Option(help="Profile for every agent.")] = None,
     runs_dir: Annotated[
-        Path, typer.Option(help="Directory of past runs the cost estimate reads.")
+        Path, typer.Option(file_okay=False, help="Directory of past runs the cost estimate reads.")
     ] = Path("runs"),
     selftest: Annotated[
         bool,
@@ -347,8 +354,9 @@ def scenario_check(
     selftest_runs: Annotated[
         Path | None,
         typer.Option(
+            file_okay=False,
             help="Keep the self-test's runs here. By default they go to a temporary directory,"
-            " kept only when a check fails."
+            " kept only when a check fails.",
         ),
     ] = None,
 ) -> None:
@@ -588,7 +596,7 @@ def run(
         ),
     ] = None,
     config: ConfigOption = None,
-    runs_dir: Annotated[Path, typer.Option(help="Directory that holds the runs.")] = Path("runs"),
+    runs_dir: RunsDirOption = Path("runs"),
     profile: Annotated[
         str | None, typer.Option(help="Profile for every agent; with --replay, after the fork.")
     ] = None,
@@ -1246,19 +1254,52 @@ def _hostname() -> str:
     return re.sub(r"[^A-Za-z0-9._@-]", "-", socket.gethostname()) or "runner"
 
 
+def _token_file(path: Path) -> str:
+    """The token in `path`, or exit 1 with why it holds none."""
+    try:
+        token = path.read_bytes().decode(errors="replace").strip()
+    except OSError as e:
+        problem = f"cannot read the token file {path}: {e.strerror or e}"
+    else:
+        if token and token.isascii() and token.isprintable():
+            return token
+        problem = f"the token file {path} " + (
+            "holds characters a token cannot have" if token else "is empty"
+        )
+    typer.echo(f"error: {problem}", err=True)
+    raise typer.Exit(EXIT_FAILED)
+
+
+def _local_ui(info: Path) -> dict[str, Any]:
+    """What a local `aims ui` wrote to its server.json `info`, or exit 1 when it cannot be read."""
+    import json
+
+    try:
+        data = json.loads(info.read_text(encoding="utf-8"))
+    except OSError as e:
+        problem = e.strerror or str(e)
+    except ValueError:
+        problem = "it is not JSON"
+    else:
+        if isinstance(data, dict) and isinstance(data.get("url"), str):
+            return data
+        problem = "it holds no url"
+    typer.echo(f"error: cannot read {info}: {problem}", err=True)
+    raise typer.Exit(EXIT_FAILED)
+
+
 def _connection(
     server: str | None, token_file: Path | None, *, required: bool
 ) -> tuple[str, str] | None:
     """Where to ship and the runner token: --server with AIMS_TOKEN or --token-file, else the
     server.json a local `aims ui` wrote."""
-    import json
     import os
 
     from aims.server.serve import SERVER_JSON, server_dir
 
     token = os.environ.get("AIMS_TOKEN")
     if token_file is not None:
-        token = token_file.read_text().strip()
+        token = _token_file(token_file)
     if server is not None:
         if not token:
             typer.echo("error: give the runner token in AIMS_TOKEN or --token-file", err=True)
@@ -1266,7 +1307,7 @@ def _connection(
         return server, token
     info = server_dir() / SERVER_JSON
     if info.is_file():
-        data = json.loads(info.read_text())
+        data = _local_ui(info)
         return str(data["url"]), str(data["token"])
     if required:
         typer.echo(
@@ -1306,15 +1347,24 @@ def ui(
     port: Annotated[int, typer.Option(min=0, max=65535, help="Port; 0 picks one.")] = 8484,
     config: ConfigOption = None,
     data_dir: Annotated[
-        Path | None, typer.Option("--data-dir", help="Where the control plane keeps its state.")
+        Path | None,
+        typer.Option(
+            "--data-dir", file_okay=False, help="Where the control plane keeps its state."
+        ),
     ] = None,
     runner: Annotated[bool, typer.Option(help="Start a local runner with it.")] = True,
     slots: Annotated[int, typer.Option(min=1, help="Runs the local runner takes at once.")] = 2,
     audit: Annotated[
         str, typer.Option(help="The local runner's --audit: auto, kernel or snapshot.")
     ] = "auto",
-    tls_cert: Annotated[Path | None, typer.Option("--tls-cert", help="TLS certificate.")] = None,
-    tls_key: Annotated[Path | None, typer.Option("--tls-key", help="TLS private key.")] = None,
+    tls_cert: Annotated[
+        Path | None,
+        typer.Option("--tls-cert", exists=True, dir_okay=False, help="TLS certificate."),
+    ] = None,
+    tls_key: Annotated[
+        Path | None,
+        typer.Option("--tls-key", exists=True, dir_okay=False, help="TLS private key."),
+    ] = None,
     behind_proxy: Annotated[
         list[str] | None,
         typer.Option("--behind-proxy", help="Address of a proxy whose forwarded headers count."),
@@ -1399,14 +1449,13 @@ def open_cmd(
     operator, or with --server as the token in AIMS_TOKEN or --token-file.
     """
     import asyncio
-    import json
 
     from aims.server.serve import SERVER_JSON, server_dir
 
     url, token = _operator(server, token_file)
     shown = url
     if server is None:
-        shown = str(json.loads((server_dir() / SERVER_JSON).read_text()).get("public", url))
+        shown = str(_local_ui(server_dir() / SERVER_JSON).get("public", url))
     raise typer.Exit(asyncio.run(_open(url, token, open_browser, shown)))
 
 
@@ -1454,7 +1503,8 @@ def runner_cmd(
     slots: Annotated[int, typer.Option(min=1, help="Runs at once.")] = 2,
     audit: RunnerAuditOption = "auto",
     data_dir: Annotated[
-        Path | None, typer.Option("--data-dir", help="Where this runner keeps its runs.")
+        Path | None,
+        typer.Option("--data-dir", file_okay=False, help="Where this runner keeps its runs."),
     ] = None,
     keep_days: Annotated[
         float | None,
@@ -1464,7 +1514,8 @@ def runner_cmd(
         ),
     ] = None,
     tls_ca: Annotated[
-        Path | None, typer.Option("--tls-ca", help="CA or certificate to trust for the server.")
+        Path | None,
+        typer.Option("--tls-ca", exists=True, help="CA or certificate to trust for the server."),
     ] = None,
     config: ConfigOption = None,
 ) -> None:
@@ -1478,6 +1529,7 @@ def runner_cmd(
     from typing import cast
 
     from aims.config import ConfigError, image_keep_days, layers
+    from aims.net import Outbound
     from aims.node.service import Node, NodeOptions
     from aims.node.service import data_dir as default_dir
     from aims.sandbox import AuditMode
@@ -1490,6 +1542,12 @@ def runner_cmd(
     except ConfigError as e:
         typer.echo(f"error: {e}", err=True)
         raise typer.Exit(EXIT_FAILED) from None
+    if tls_ca is not None:
+        try:
+            Outbound(str(tls_ca))
+        except OSError as e:
+            typer.echo(f"error: cannot load --tls-ca {tls_ca}: {e}", err=True)
+            raise typer.Exit(EXIT_FAILED) from None
     found = _connection(server, token_file, required=True)
     assert found is not None
     url, token = found
@@ -1582,6 +1640,10 @@ def push(
     """Ship runs recorded without a control plane to one."""
     import asyncio
 
+    import httpx2
+
+    from aims.node.client import ApiError
+
     found = _connection(server, token_file, required=True)
     assert found is not None
     url, token = found
@@ -1592,7 +1654,15 @@ def push(
     else:
         typer.echo(f"error: {path} is not a run directory", err=True)
         raise typer.Exit(EXIT_FAILED)
-    raise typer.Exit(asyncio.run(_push(root, only, url, token)))
+    try:
+        code = asyncio.run(_push(root, only, url, token))
+    except ApiError as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(EXIT_FAILED) from None
+    except httpx2.TransportError as e:
+        typer.echo(f"error: cannot reach the control plane at {url}: {e}", err=True)
+        raise typer.Exit(EXIT_FAILED) from None
+    raise typer.Exit(code)
 
 
 async def _push(
@@ -1646,7 +1716,7 @@ def monitor_cmd(
             " over each run's scenario.",
         ),
     ] = None,
-    runs_dir: Annotated[Path, typer.Option(help="Directory that holds the runs.")] = Path("runs"),
+    runs_dir: RunsDirOption = Path("runs"),
     profile: Annotated[
         str | None, typer.Option(help="Profile for every sweep, the review and the judge.")
     ] = None,
@@ -2188,14 +2258,13 @@ def _operator(
     """The control plane and an operator token: --server, else the local `aims ui`; the token
     from --token-file or AIMS_TOKEN, else the local ui's own operator token if it wrote one.
     With `reads`, any token does."""
-    import json
     import os
 
     from aims.server.serve import SERVER_JSON, server_dir
 
     token = os.environ.get("AIMS_TOKEN")
     if token_file is not None:
-        token = token_file.read_text().strip()
+        token = _token_file(token_file)
     url = server
     if url is None:
         info = server_dir() / SERVER_JSON
@@ -2206,7 +2275,7 @@ def _operator(
                 err=True,
             )
             raise typer.Exit(EXIT_FAILED)
-        data = json.loads(info.read_text())
+        data = _local_ui(info)
         url = str(data["url"])
         token = token or data.get("operator")
     if not token:
@@ -2223,15 +2292,23 @@ def _operator(
 token_app = typer.Typer(no_args_is_help=True, help="Tokens of the local control plane.")
 app.add_typer(token_app, name="token")
 DataDirOption = Annotated[
-    Path | None, typer.Option("--data-dir", help="The control plane's state directory.")
+    Path | None,
+    typer.Option("--data-dir", file_okay=False, help="The control plane's state directory."),
 ]
 
 
-def _db(data_dir: Path | None) -> Any:
+async def _db(data_dir: Path | None) -> Any:
+    import sqlite3
+
     from aims.server.db import ServerDB
     from aims.server.serve import server_dir
 
-    return ServerDB.open((data_dir or server_dir()) / "server.sqlite")
+    path = (data_dir or server_dir()) / "server.sqlite"
+    try:
+        return await ServerDB.open(path)
+    except (OSError, sqlite3.Error, RuntimeError) as e:
+        typer.echo(f"error: cannot open {path}: {e}", err=True)
+        raise typer.Exit(EXIT_FAILED) from None
 
 
 @token_app.command("create")
@@ -2477,7 +2554,16 @@ def openapi(
     if out is None:
         typer.echo(text, nl=False)
     else:
-        out.write_text(text)
+        _write(out, text)
+
+
+def _write(path: Path, text: str) -> None:
+    """Write `text` to `path`, or exit 1 with why it cannot be written."""
+    try:
+        path.write_text(text, encoding="utf-8")
+    except OSError as e:
+        typer.echo(f"error: cannot write {path}: {e.strerror or e}", err=True)
+        raise typer.Exit(EXIT_FAILED) from None
 
 
 @app.command("score")
@@ -2512,7 +2598,7 @@ def score_cmd(
         ),
     ] = None,
     config: ConfigOption = None,
-    runs_dir: Annotated[Path, typer.Option(help="Directory that holds the runs.")] = Path("runs"),
+    runs_dir: RunsDirOption = Path("runs"),
     json_out: Annotated[bool, typer.Option("--json", help="Print JSON.")] = False,
 ) -> None:
     """Score a sealed run against its truth file: the plants each agent took, which monitor
@@ -2640,7 +2726,7 @@ def label_cmd(
     label: Annotated[str, typer.Argument(help="real (misbehaviour), false_alarm or unclear.")],
     note: Annotated[str, typer.Option(help="Why.")] = "",
     by: Annotated[str | None, typer.Option(help="Who labels; the login name by default.")] = None,
-    runs_dir: Annotated[Path, typer.Option(help="Directory that holds the runs.")] = Path("runs"),
+    runs_dir: RunsDirOption = Path("runs"),
 ) -> None:
     """Label a monitor flag for review, beside the run's log; the newest label counts."""
     import asyncio
@@ -2672,7 +2758,7 @@ def rates_cmd(
     ] = None,
     series: Annotated[str | None, typer.Option(help="The runs of this series.")] = None,
     group: Annotated[str | None, typer.Option(help="The samples of this group.")] = None,
-    runs_dir: Annotated[Path, typer.Option(help="Directory that holds the runs.")] = Path("runs"),
+    runs_dir: RunsDirOption = Path("runs"),
     json_out: Annotated[bool, typer.Option("--json", help="Print JSON.")] = False,
 ) -> None:
     """Show how the monitor did over scored runs: catch rates per layer at importance 3, 4
@@ -2737,7 +2823,7 @@ def report_cmd(
         str | None,
         typer.Option(help="The app's address, to link each cited step. Plain seqs without it."),
     ] = None,
-    runs_dir: Annotated[Path, typer.Option(help="Directory that holds the runs.")] = Path("runs"),
+    runs_dir: RunsDirOption = Path("runs"),
 ) -> None:
     """Write a report of one run: the verdict and reward first, then warnings, the judge's
     findings, plants, flags, a timeline and run facts. Built from the log each time."""
@@ -2768,12 +2854,12 @@ def report_cmd(
         raise typer.Exit(EXIT_FAILED) from None
     body = report.model_dump_json(indent=2) + "\n" if json_out else render(report)
     if out is not None:
-        out.write_text(body, encoding="utf-8")
+        _write(out, body)
         typer.echo(f"wrote {out}", err=True)
     if html_out is not None:
         from aims.report.html import page_title, to_html
 
-        html_out.write_text(to_html(body, title=page_title(report)), encoding="utf-8")
+        _write(html_out, to_html(body, title=page_title(report)))
         typer.echo(f"wrote {html_out}", err=True)
     if out is not None or html_out is not None:
         return
@@ -2790,7 +2876,10 @@ def report_cmd(
 def estimate_cmd(
     scenario: Annotated[Path, typer.Argument(help=SCENARIO_HELP, callback=_scenario)],
     config: ConfigOption = None,
-    runs_dir: Annotated[Path, typer.Option(help="Directory of past runs.")] = Path("runs"),
+    runs_dir: Annotated[
+        Path,
+        typer.Option(file_okay=False, help="Directory of past runs."),
+    ] = Path("runs"),
     profile: Annotated[str | None, typer.Option(help="Profile for every agent.")] = None,
     samples: Annotated[int, typer.Option(min=1, help="Runs of each variant.")] = 1,
     variant: Annotated[
@@ -2840,7 +2929,7 @@ def estimate_cmd(
 @app.command("spend")
 def spend_cmd(
     config: ConfigOption = None,
-    runs_dir: Annotated[Path, typer.Option(help="Directory that holds the runs.")] = Path("runs"),
+    runs_dir: RunsDirOption = Path("runs"),
     json_out: Annotated[bool, typer.Option("--json", help="Print JSON.")] = False,
 ) -> None:
     """Show what each provider was paid in the runs on record, against the \\[credits] of the
