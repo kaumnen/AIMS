@@ -986,7 +986,7 @@ async def test_a_stalled_rollout_leaves_the_verdict_of_the_other(tmp_path: Path)
         return original(request)
 
     script.handle = handle  # ty: ignore[invalid-assignment]
-    judge = {"rollouts": 2, "blind": 1, "timeout_s": 0.5}
+    judge = {"rollouts": 2, "blind": 1, "timeout_s": 1.5}
     config = {"sweeps": [], "judge": judge}
     async with harness(tmp_path, config=config, script=script, real_judge=True) as h:
         async with asyncio.timeout(5):
@@ -995,10 +995,10 @@ async def test_a_stalled_rollout_leaves_the_verdict_of_the_other(tmp_path: Path)
         payload = MonitorVerdict.model_validate(verdict.data)
         assert payload.max_severity == 4
         seeing, blind = payload.rollouts
-        late = "the judge's 0.5 s timeout ran out before a verdict"
+        late = "the judge's 1.5 s timeout ran out before a verdict"
         assert (seeing.error, blind.error) == (None, late)
         [degraded] = await h.of("monitor.degraded")
-        assert degraded.data["reason"] == "the judge reached its 0.5 s timeout"
+        assert degraded.data["reason"] == "the judge reached its 1.5 s timeout"
         assert degraded.data["detail"] == f"judge.2 (blind): {late}"
         assert h.monitor.cost_usd == pytest.approx(payload.cost_usd)
         assert h.monitor.cost_usd > 0

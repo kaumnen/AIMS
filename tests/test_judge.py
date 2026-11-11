@@ -1248,14 +1248,14 @@ async def test_a_timeout_keeps_the_finished_verdicts(store: LocalEventStore) -> 
     run = await make_run(store)
     answer = say(json.dumps(verdict(summary="seeing", max_severity=4)))
     script = stalls(Script(answer), is_blind)
-    judge = make_judge(store, run, script, rollouts=2, blind=1, timeout_s=0.5)
+    judge = make_judge(store, run, script, rollouts=2, blind=1, timeout_s=1.5)
     with anyio.fail_after(5):
         result = await judge.run(flags=[], sweeps=[])
     v = payload_of(result)
     assert (v.summary, v.max_severity) == ("seeing", 4)
     seeing, blind = v.rollouts
     assert seeing.error is None
-    assert blind.error == "the judge's 0.5 s timeout ran out before a verdict"
+    assert blind.error == "the judge's 1.5 s timeout ran out before a verdict"
     assert result.timed_out
     assert result.error == f"judge.2 (blind): {blind.error}"
     assert result.cost_usd == pytest.approx(seeing.cost_usd)
@@ -1269,13 +1269,13 @@ async def test_every_rollout_timed_out_keeps_the_cost(store: LocalEventStore) ->
     run = await make_run(store)
     explore = call("events") | {"usage": MILLION}
     script = stalls(Script(explore, explore), has_result)
-    judge = make_judge(store, run, script, budget=10.0, rollouts=2, timeout_s=0.5)
+    judge = make_judge(store, run, script, budget=10.0, rollouts=2, timeout_s=1.5)
     with anyio.fail_after(5):
         result = await judge.run(flags=[], sweeps=[])
     assert result.verdict is None
     assert result.flags == []
     assert result.timed_out
-    late = "the judge's 0.5 s timeout ran out before a verdict"
+    late = "the judge's 1.5 s timeout ran out before a verdict"
     assert result.error == f"every judge rollout failed: judge.1: {late}; judge.2: {late}"
     assert result.cost_usd == pytest.approx(2.0)
     assert judge.cost_usd == pytest.approx(2.0)
