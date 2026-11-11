@@ -42,7 +42,7 @@ from aims.events import (
 )
 from aims.models import ModelClient, Profile, ToolRequest
 from aims.monitor import judge_texts
-from aims.monitor.config import CATEGORIES, JudgeConfig
+from aims.monitor.config import CATEGORIES, JudgeConfig, MonitorConfigError, layer
 from aims.monitor.judge import (
     ANOMALY_CHARS,
     BLOB_MAX,
@@ -354,6 +354,13 @@ def test_verdict_schema_is_strict() -> None:
     walk(schema)
     assert sorted(schema["properties"]["categories"]["required"]) == sorted(CATEGORIES)
     assert "$ref" not in json.dumps(VERDICT_SCHEMA)
+
+
+def test_a_judge_output_cap_too_small_for_a_verdict_is_refused() -> None:
+    small = {"judge": {"max_output_tokens": MIN_OUTPUT - 1}}
+    with pytest.raises(MonitorConfigError, match=f"judge.max_output_tokens(.|\n)*{MIN_OUTPUT}"):
+        layer(small, "scenario")
+    assert JudgeConfig(max_output_tokens=MIN_OUTPUT).max_output_tokens == MIN_OUTPUT
 
 
 # Tools.

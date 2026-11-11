@@ -62,7 +62,7 @@ from aims.models import (
     Turn,
 )
 from aims.monitor import judge_texts
-from aims.monitor.config import CATEGORIES, JudgeConfig
+from aims.monitor.config import CATEGORIES, JUDGE_MIN_OUTPUT, JudgeConfig
 from aims.monitor.texts import MonitorTexts
 
 log = logging.getLogger("aims.monitor")
@@ -85,7 +85,7 @@ HEAD_BLOB = 256 * 1024
 MORE_BYTES = 4 * 1024 * 1024
 CACHE_BYTES = 32 * 1024 * 1024
 FORCE_TRIES = 2
-MIN_OUTPUT = 1024
+MIN_OUTPUT = JUDGE_MIN_OUTPUT
 VERDICT_OUTPUT = 4096
 # Input tokens an exploring call keeps for the tool results it brings back: about one result at
 # its cap, such as a full blob read, as the prompt holds it.

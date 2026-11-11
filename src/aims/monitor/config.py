@@ -29,6 +29,9 @@ PRESETS: tuple[Preset, ...] = ("off", "signals", "standard", "research")
 CATEGORIES: tuple[Category, ...] = get_args(Category)
 FailureMode = Literal["continue", "pause"]
 JUDGE_RESERVE_USD = 1.0
+# The least output the judge gives a call. A verdict holds all 15 categories, so less does not
+# fit one.
+JUDGE_MIN_OUTPUT = 1024
 # Tokens a sweep lane reads and writes per agent step. Below them, one judge rollout's. From the
 # twelve standard reviews of 80-step cache-keys runs on Nov 10 2026: medians of 22k in and 480 out
 # per step over two lanes; the judge read up to 1.28M (86% cached) and wrote up to 8.6k.
@@ -241,7 +244,7 @@ class JudgeConfig(_Strict):
 
     profile: str | None = None
     effort: Effort | None = "high"
-    max_output_tokens: int = Field(default=16_384, ge=256)
+    max_output_tokens: int = Field(default=16_384, ge=JUDGE_MIN_OUTPUT)
     rollouts: int = Field(default=1, ge=1, le=8)
     blind: int = Field(default=0, ge=0)
     max_tool_calls: int = Field(default=30, ge=1)
