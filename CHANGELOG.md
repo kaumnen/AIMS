@@ -29,6 +29,16 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - An event batch that reached the log is returned even when the index failed to take it. The index catches up from the log, at once and then with waits up to 5 minutes. `aims verify` reports an index with a gap, one behind its log after a failed write, and one whose last event is not the log's.
 - A copied event whose time is past what UTC holds is refused as invalid.
 - A deleted run's folder is first renamed to `.deleted.<run id>.<suffix>`. The next start clears any that a crash left.
+- Hidden characters in text from an agent, a run, a scenario, a server or the command line show as `\uXXXX` on the terminal: escape bytes, bidi controls, zero-width characters. That covers the live view, the end tables, the pause prompt, error lines, logs and the listings.
+- `aims audit`, `aims control <run> list`, `aims token list` and the `--quiet` lines of `aims run` and `aims monitor` keep each record on one line. A newline in a field becomes a space. `--json` and `--jsonl` are unchanged.
+- `aims monitor` ships its monitor runs before it prints the tables.
+- `aims control --wait 0` sends the command and does not wait. It failed before.
+- `--token-file` without `--server` is refused on `aims run`, `aims runner`, `aims push` and `aims monitor`. It was read and ignored. `--no-server` with `--server` or `--token-file` is refused too.
+- A `--token-file` that is empty or holds characters a token cannot have is an error. An empty one on an operator command fell back to the local ui's token before.
+- `aims monitor --monitor standard` or `research` with `--signals-only` is refused. So is `aims scenario check --selftest-runs` with `--no-selftest`.
+- A file given as `--runs-dir`, `--data-dir` or `--selftest-runs` is a usage error. So is a missing `--tls-cert`, `--tls-key` or `--tls-ca`. A negative `aims runner --keep-days` is refused.
+- `aims token create --file` checks the destination first and writes the new value to disk before the old one stops working. A file at `--file` that is not text is replaced.
+- `server.json` is replaced whole when written. A symlink in its place is replaced, not followed.
 
 ### Fixed
 
@@ -68,6 +78,14 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - A run deleted just before a crash stays deleted. It came back at the next start with its blobs missing.
 - A failed index write no longer leaves a gap in the index or hides the batch from the live monitor. One run the index cannot take no longer stops the data directory from opening.
 - A pause with a timeout too large for a date, or an event dated at the edge of year 9999, no longer fails the index write.
+- Brackets in agent text, such as `[/x]` in a flag, crashed the end tables of `aims run` and `aims monitor`. `aims monitor` then never shipped its runs and both exited 1. Brackets and emoji codes now print as written.
+- `aims run --replay '[/x]'` and scenario errors with brackets ended in a crash with no error line.
+- Tool output and model text reached the terminal with escape bytes in the live view and the pause prompt. The prompt also hid `[#seq]` before each flag and its `[resume]` hint.
+- A viewer could forge a row of `aims audit` through the path of a refused request.
+- A second Ctrl-C while `aims monitor` sealed its runs left them `running`. They now seal as cancelled, also for a runner's monitor job cancelled twice.
+- `aims token create --file` in a missing folder ended in a traceback after the old token was revoked, with the new value lost. Its temp file had a fixed name and followed a symlink put there.
+- `aims push` against a server that is down or refuses ended in a traceback. So did a missing or unreadable `--token-file`, a broken `server.json` or `server.sqlite`, a path that cannot be written by `aims report` or `aims openapi`. A bad TLS file did too.
+- `aims monitor --help` offered `off`, which the command refuses. `--token-file` named the runner token on commands that take an operator token.
 
 ## [0.2.2] - 2026-11-10
 
