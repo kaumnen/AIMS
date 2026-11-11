@@ -36,6 +36,14 @@ export const EMPTY_DRAFT: BudgetDraft = { every: {}, agents: {}, run: {} };
 
 const WALL = /^(\d+(?:\.\d+)?)\s*(s|m|h)?$/i;
 const UNIT: Record<string, number> = { s: 1, m: 60, h: 3600 };
+// Commas only as thousands separators: 1,000 or 12,345.67, never 2,50 or 0,500.
+const GROUPED = /^[+-]?[1-9]\d{0,2}(?:,\d{3})+(?:\.\d*)?$/;
+
+// The number typed, NaN when it has a comma that does not separate thousands.
+function typedNumber(text: string): number {
+  if (text.includes(",") && !GROUPED.test(text)) return NaN;
+  return Number(text.replaceAll(/[,_]/g, ""));
+}
 
 // The cap a cell gives: undefined keeps it, null lifts it; a string says why it does not read.
 export function readCell(key: Key, text: string | undefined): number | null | undefined | string {
@@ -47,7 +55,7 @@ export function readCell(key: Key, text: string | undefined): number | null | un
     const n = m ? Number(m[1]) * (UNIT[(m[2] ?? "s").toLowerCase()] ?? 1) : NaN;
     return n > 0 ? n : "Write seconds, or 30m, 2h, or none.";
   }
-  const n = Number((key === "cost_usd" ? t.replace(/^\$/, "") : t).replaceAll(/[,_]/g, ""));
+  const n = typedNumber(key === "cost_usd" ? t.replace(/^\$/, "") : t);
   if (key === "cost_usd")
     return Number.isFinite(n) && n > 0 ? n : "Write dollars above 0, or none.";
   return Number.isInteger(n) && n >= 1 ? n : "Write a whole number from 1, or none.";

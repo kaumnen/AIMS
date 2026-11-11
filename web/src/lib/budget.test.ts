@@ -5,6 +5,7 @@ import {
   changesText,
   draftText,
   inForce,
+  type Key,
   readCell,
   readDraft,
   type RunCaps,
@@ -23,6 +24,47 @@ test("a cell keeps, lifts or sets its cap, and says when it does not read", () =
   expect(readCell("wall_s", "30m")).toBe(1800);
   expect(readCell("wall_s", "2H")).toBe(7200);
   expect(readCell("wall_s", "soon")).toBe("Write seconds, or 30m, 2h, or none.");
+});
+
+test("a comma reads only as a thousands separator, so 2,50 is not a cap of 250", () => {
+  const dollars = "Write dollars above 0, or none.";
+  const whole = "Write a whole number from 1, or none.";
+  expect(readCell("cost_usd", "1,000")).toBe(1000);
+  expect(readCell("cost_usd", " $12,345,678 ")).toBe(12_345_678);
+  expect(readCell("cost_usd", "1,000.50")).toBe(1000.5);
+  expect(readCell("cost_usd", "2,500")).toBe(2500);
+  expect(readCell("output_tokens", "12,345,678")).toBe(12_345_678);
+  expect(readCell("steps", "1,000.5")).toBe(whole);
+  const refused = [
+    "2,50",
+    "$1,50",
+    "1,5",
+    "1,00",
+    ",5",
+    "5,",
+    "1,,000",
+    "1,0000",
+    "0,500",
+    "1,000,5",
+    "1, 000",
+    "-1,000",
+  ];
+  const read = (key: Key, hint: string) =>
+    expect(Object.fromEntries(refused.map((t) => [t, readCell(key, t)]))).toEqual(
+      Object.fromEntries(refused.map((t) => [t, hint])),
+    );
+  read("cost_usd", dollars);
+  read("steps", whole);
+  read("output_tokens", whole);
+  expect(readCell("wall_s", "1,5")).toBe("Write seconds, or 30m, 2h, or none.");
+  const { budget, problems } = readDraft({
+    every: { cost_usd: "2,50" },
+    agents: {},
+    run: { cost_usd: "2,500" },
+  });
+  expect(budget).toEqual({ run: { cost_usd: 2500 } });
+  expect(problems).toEqual({ "every.cost_usd": dollars });
+  expect(draftText(budget, false)).toBe("run cost $2500");
 });
 
 test("the draft becomes the override the API takes, rows left empty left out", () => {
