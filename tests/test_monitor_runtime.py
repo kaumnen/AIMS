@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import hashlib
 import io
+import logging
 import os
 import tarfile
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
@@ -1130,6 +1131,33 @@ async def test_a_cancel_of_the_run_task_while_a_setup_command_ends_propagates_an
     assert [(f.status, f.reason) for f in finished] == [
         ("cancelled", "cancelled before the agents finished")
     ]
+
+
+class StopFails:
+    """An audited sandbox whose stop raises, as when Docker refuses the kill."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def stop(self, reason: str = "killed", detail: str | None = None) -> None:
+        raise RuntimeError("409 container is restarting")
+
+    async def close(self, *, keep_volumes: bool = False) -> None:
+        self.closed = True
+
+
+async def test_a_sandbox_whose_stop_fails_on_a_cancel_is_still_closed(
+    store: LocalEventStore, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    runner = Runner(bench(store, Script()), scenario(tmp_path), Options())
+    boxes = {"a": StopFails(), "b": StopFails()}
+    runner.sandboxes = cast(Any, dict(boxes))
+    with caplog.at_level(logging.WARNING, logger="aims.run"):
+        await runner._close_sandboxes(kill=True)
+    assert [b.closed for b in boxes.values()] == [True, True]
+    assert runner.sandboxes == {}
+    assert "killing the sandbox of agent a failed: 409 container is restarting" in caplog.text
+    assert "closing the sandbox" not in caplog.text
 
 
 async def test_ask_human_reaches_the_human_hook(

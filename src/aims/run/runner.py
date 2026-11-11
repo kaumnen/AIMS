@@ -1274,9 +1274,13 @@ class Runner:
     async def _close_sandboxes(self, *, kill: bool) -> None:
         await self._close_channels()
         for agent_id, sb in list(self.sandboxes.items()):
-            try:
-                if kill and not self.options.keep:
+            # A stop that fails still leaves the close to remove the container and volumes.
+            if kill and not self.options.keep:
+                try:
                     await sb.stop("killed", "the run was cancelled")
+                except Exception as e:
+                    log.warning("killing the sandbox of agent %s failed: %s", agent_id, e)
+            try:
                 await sb.close()
             except Exception as e:
                 log.warning("closing the sandbox of agent %s failed: %s", agent_id, e)
