@@ -868,6 +868,52 @@ async def test_a_scripted_step_waits_out_its_delay_in_time_its_agent_is_not_paus
     assert box.refused == []
 
 
+class NoFreezeBox(Box):
+    """A box Docker cannot freeze, though it runs on."""
+
+    async def pause(self) -> None:
+        self.pauses += 1
+        raise RuntimeError("500 cannot freeze")
+
+
+async def test_an_agent_whose_sandbox_does_not_freeze_at_its_gate_still_holds(
+    store: LocalEventStore,
+    tmp_path: Path,
+    fake_monitor: list[FakeMonitor],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    script = Script(call("submit", answer="ok"))
+    backend = FirstBoxes(NoFreezeBox)
+    runner = Runner(bench(store, script, backend), scenario(tmp_path), Options(), monitor=watched())
+    notes: list[str | None] = []
+
+    async def pause() -> None:
+        fake_monitor[0].on_barrier = None
+        notes.append(await runner.operate("pause", agent="a"))
+
+    runner.on_start = lambda run_id: setattr(fake_monitor[0], "on_barrier", pause)
+    with caplog.at_level(logging.WARNING, logger="aims.agent"):
+        task = asyncio.create_task(runner.run())
+        await until(
+            lambda: (
+                runner.control.is_held("a") or ("a" in runner.agents and runner.agents["a"].done)
+            )
+        )
+        assert runner.control.is_held("a")
+        assert not script.requests
+        await runner.operate("resume", agent="a")
+        async with asyncio.timeout(5):
+            result = await task
+
+    assert result.status == "completed", result.reason
+    assert result.agents["a"].reason == "submitted"
+    assert backend.made["a"].pauses == 2
+    assert notes == ["the sandbox of agent a did not freeze: 500 cannot freeze"]
+    assert "agent a holds at its gate, but its sandbox did not freeze: 500 cannot freeze" in (
+        caplog.text
+    )
+
+
 async def test_a_kill_by_the_monitor_still_gets_the_final_sweeps_and_the_judge(
     store: LocalEventStore, tmp_path: Path, fake_monitor: list[FakeMonitor]
 ) -> None:
