@@ -43,6 +43,7 @@ from aims.events import (
     ToolCall,
 )
 from aims.models import DeltaBus
+from aims.monitor import offline
 from aims.monitor.core import HumanRequest
 from aims.node import service
 from aims.node.client import ControlClient
@@ -168,6 +169,36 @@ def test_aims_monitor_stops_once_when_its_terminal_hangs_up(
     assert sealed == [True]
     assert len(hung) == 2
     assert "the monitor runs are sealed as cancelled" in result.output
+
+
+def test_a_second_ctrl_c_while_aims_monitor_seals_leaves_the_seal_whole(
+    runs: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, origin = runs
+    end = offline._end
+
+    async def feed(*args: Any) -> None:
+        os.kill(os.getpid(), signal.SIGINT)
+        await asyncio.sleep(5)
+        raise AssertionError("the Ctrl-C did not stop the monitor")
+
+    async def seal(*args: Any) -> None:
+        os.kill(os.getpid(), signal.SIGINT)
+        await asyncio.sleep(0.2)
+        await end(*args)
+
+    monkeypatch.setattr(offline, "_feed", feed)
+    monkeypatch.setattr(offline, "_end", seal)
+    result = invoke("monitor", origin, "--runs-dir", str(root), "--no-server", "--signals-only")
+    assert result.exit_code == EXIT_CANCELLED, result.output
+    assert "the monitor runs are sealed as cancelled" in result.output
+
+    async def read() -> list[tuple[str, str]]:
+        async with await LocalEventStore.open(root) as store:
+            found = [await store.run(r) for r in store.run_ids()]
+            return [(i.kind, i.status) for i in found if i is not None and i.kind == "monitor"]
+
+    assert asyncio.run(read()) == [("monitor", "cancelled")]
 
 
 def test_aims_monitor_refuses_what_it_cannot_run(

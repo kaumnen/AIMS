@@ -1,6 +1,7 @@
 """Offline monitor runs over sealed runs: the recorded fixture with signals, scripted sweeps and
 a scripted judge, and the invariant that a signals-only re-run reproduces the live flags."""
 
+import asyncio
 import json
 import shutil
 import uuid
@@ -29,6 +30,7 @@ from aims.events import (
     ToolResult,
 )
 from aims.models import ModelClient, Profile
+from aims.monitor import offline
 from aims.monitor.config import MonitorConfigError
 from aims.monitor.core import Monitor
 from aims.monitor.offline import (
@@ -290,6 +292,45 @@ async def test_a_changed_or_unsealed_origin_is_refused(
     with pytest.raises(RunError, match="monitor run"):
         await monitored(store, watched)
     assert len(await store.runs(kind="monitor")) == 1
+
+
+async def test_a_second_cancel_while_the_monitor_run_seals_leaves_it_sealed(
+    recorded: tuple[LocalEventStore, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, origin_id = recorded
+    origin, _ = await monitored(store, origin_id)
+    m = models(WATCHER)
+    resolved = offline_monitor(
+        m, Prompts(), origin.bundle.scenario, origin_agents(origin), signals_only=True
+    )
+    sealing = asyncio.Event()
+    end = offline._end
+
+    async def feed(*args: Any) -> None:
+        await asyncio.sleep(5)
+
+    async def seal(*args: Any) -> None:
+        sealing.set()
+        await asyncio.sleep(0.2)
+        await end(*args)
+
+    monkeypatch.setattr(offline, "_feed", feed)
+    monkeypatch.setattr(offline, "_end", seal)
+    made: list[str] = []
+    task = asyncio.create_task(
+        monitor_offline(store, origin, resolved, models=m, on_start=made.append)
+    )
+    async with asyncio.timeout(5):
+        while not made:  # noqa: ASYNC110
+            await asyncio.sleep(0.01)
+    task.cancel()
+    await sealing.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    info = await store.run(made[0])
+    assert info is not None
+    assert info.status == "cancelled"
 
 
 def test_the_resolution_order_and_the_mode_checks(tmp_path: Path) -> None:

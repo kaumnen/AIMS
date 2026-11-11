@@ -14,6 +14,7 @@ import httpx2
 from pydantic import JsonValue, ValidationError
 
 from aims import __version__
+from aims.aio import settle
 from aims.events import (
     BlobError,
     BlobRef,
@@ -292,7 +293,7 @@ async def monitor_offline(
             result.status, result.reason = "failed", f"{type(e).__name__}: {e}"
     except asyncio.CancelledError:
         result.status, result.reason = "cancelled", "cancelled before the monitor finished"
-        await asyncio.shield(_end(store, monitor, client, result))
+        await settle(_end(store, monitor, client, result))
         raise
     await _end(store, monitor, client, result)
     return result

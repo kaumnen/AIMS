@@ -1858,10 +1858,15 @@ async def _monitor_runs(**o: Any) -> int:
 
         main = asyncio.current_task()
         loop = asyncio.get_running_loop()
+
+        def stop() -> None:
+            # The first signal cancels and the monitor runs seal at once; later ones do nothing.
+            if main is not None and not main.cancelling():
+                main.cancel()
+
         for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, lambda: main is not None and main.cancel())
-        # A hangup starts a stop and never adds to one: nobody is left to press Ctrl-C.
-        hup = on_hangup(loop, lambda: None if main is None or main.cancelling() else main.cancel())
+            loop.add_signal_handler(sig, stop)
+        hup = on_hangup(loop, stop)
         try:
             results = list(await asyncio.gather(*(one(*p) for p in planned)))
         except asyncio.CancelledError:
