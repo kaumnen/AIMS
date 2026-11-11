@@ -82,7 +82,7 @@ class Tree(BaseModel):
 def test_lone_at_names_the_first_string_or_key_that_holds_one() -> None:
     value = json.loads('{"a": [1, "x", {"b": "\\ud800", "c": "\\udc00"}], "d": "\\udbff"}')
     assert lone_at(value) == ("a", 2, "b")
-    assert lone_at({"a": {"k\udc00": "v\ud800"}}) == ("a", "k\udc00")
+    assert lone_at({"a": {"k\udc00": "v"}}) == ("a", "k\udc00")
     assert lone_at(json.loads('{"a": ["\\ud83d\\ude00", 1.5, null, true], "b": {}}')) is None
     assert lone_at("a\ud800") == ()
     assert lone_at(None) is None
@@ -103,3 +103,12 @@ def test_a_json_field_refuses_a_lone_surrogate_in_a_value_at_any_depth() -> None
     kept = json.loads('{"a": [{"b": "\\ud83d\\ude00"}]}')
     assert Tree.model_validate({"value": kept}).value == kept
     assert Tree.model_validate({}).value is None
+
+
+@pytest.mark.parametrize("text", ['{"k\\ud800": 1}', '{"a": [{"b": {"\\udfff": null}}]}'])
+def test_a_json_field_refuses_a_lone_surrogate_in_a_key_at_any_depth(text: str) -> None:
+    # a JSON dump would write the key as U+FFFD, a different key, and say nothing
+    with pytest.raises(ValidationError) as e:
+        Tree.model_validate({"value": json.loads(text)})
+    [error] = e.value.errors()
+    assert (error["loc"], error["msg"]) == (("value",), f"Value error, {LONE}")

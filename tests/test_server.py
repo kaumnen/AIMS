@@ -926,6 +926,36 @@ async def test_a_scenario_with_a_lone_surrogate_escape_is_refused_where_it_loads
     assert await cp.state.db.jobs() == []
 
 
+async def test_a_key_with_a_lone_surrogate_is_refused_at_any_depth(cp: CP) -> None:
+    # JSON dumps of the bodies a client may send: json.dumps escapes each lone surrogate
+    rule = {"id": "r", "title": "t", "event": ["tool.call"], "match": {"name\ud800": "shell"}}
+    sent = [
+        ("PATCH", CONFIG, {"set": [{"key": ["a"], "value": {"t": [{"k\udfff": 1}]}}]}),
+        ("PATCH", CONFIG, {"set": [{"key": ["a"], "value": {"t": "v\ud800"}}]}),
+        ("POST", f"/api/runs/{RUN}/monitor", {"config": {"rules": [rule]}}),
+        ("POST", f"/api/runs/{RUN}/monitor", {"config": {"signals": {"s\udc00": {}}}}),
+    ]
+    places = [["body", "set", 0, "value"]] * 2 + [["body", "config"]] * 2
+    before = cp.project.read_bytes()
+    json_body = {"Content-Type": "application/json"}
+    async with cp.client(cp.operator) as c:
+        for (method, url, body), loc in zip(sent, places, strict=True):
+            r = await c.request(method, url, content=json.dumps(body), headers=json_body)
+            assert r.status_code == 422, (url, r.text)
+            [error] = r.json()["errors"]
+            assert (error["loc"], error["msg"]) == (loc, f"Value error, {LONE}")
+        # a budget names agents, which the name check refuses
+        body = {"scenario": {"source": "project", "name": "control"}}
+        body["budget"] = {"agents": {"a\ud800": {"steps": 1}}}
+        r = await c.post("/api/runs", content=json.dumps(body), headers=json_body)
+        assert r.status_code == 422
+        [error] = r.json()["errors"]
+        assert error["loc"][:3] == ["body", "budget", "agents"]
+        assert "is not a valid name" in error["msg"]
+    assert cp.project.read_bytes() == before
+    assert await cp.state.db.jobs() == []
+
+
 async def test_hello_takes_back_claimed_jobs_it_does_not_list(cp: CP, fake: FakeRunner) -> None:
     (run_id,) = await start_run(cp)
     offer = await fake.next(OfferMessage)

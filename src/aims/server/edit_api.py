@@ -55,6 +55,7 @@ from aims.server.files import (
 )
 from aims.server.problems import ProblemError, ProblemException, responses
 from aims.server.state import ServerState
+from aims.text import NoLoneSurrogate
 
 router = APIRouter(prefix="/api", responses=responses(401, 403, 404, 412, 422, 428))
 Layer = Literal["user", "project"]
@@ -84,7 +85,7 @@ class ConfigFile(Out):
 
 class KeySet(BaseModel):
     key: list[str] = Field(min_length=1)
-    value: JsonValue
+    value: Annotated[JsonValue, NoLoneSurrogate]
 
 
 class ConfigPatch(BaseModel):
