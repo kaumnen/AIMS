@@ -1,3 +1,4 @@
+import asyncio
 import json
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
@@ -5,6 +6,7 @@ from typing import Literal
 
 import httpx2
 
+from aims.aio import settle
 from aims.events import Draft, EventStore, ModelChecked, RunFinished, RunStarted, RunStatus
 from aims.models.client import ModelCallError, ModelClient
 from aims.models.profiles import ModelsConfig, Overrides, Profile
@@ -146,6 +148,7 @@ async def record_check(
     run_id = await store.create_run(started, run_id=run_id)
     checks: list[Check] = []
     status: RunStatus = "failed"
+    reason = None
     try:
         async with ModelClient(store, run_id, models, transport=transport) as client:
             for profile in chosen:
@@ -166,6 +169,10 @@ async def record_check(
                     if on_check is not None:
                         on_check(c)
         status = "failed" if any(c.verdict == "fail" for c in checks) else "completed"
+    except asyncio.CancelledError:
+        status, reason = "cancelled", "cancelled before the checks finished"
+        raise
     finally:
-        await store.append(run_id, [Draft(RunFinished(status=status))])
+        # The seal lands even when a second cancel, such as another Ctrl-C, comes meanwhile.
+        await settle(store.append(run_id, [Draft(RunFinished(status=status, reason=reason))]))
     return run_id, checks

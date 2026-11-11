@@ -2,10 +2,12 @@
 each run once its truth file arrives, what the scenario list says about each scenario, and the
 newest model check of each profile."""
 
+import asyncio
 import hashlib
 import io
 import shutil
 import tarfile
+import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -346,6 +348,48 @@ async def test_a_model_check_records_each_smoke_test(
     info = await local.run(run_id)
     assert info is not None
     assert info.status == "failed"
+
+
+@pytest.mark.parametrize("cancels", [1, 2])
+async def test_a_cancelled_model_check_is_sealed_as_cancelled(
+    cp: CP, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch, cancels: int
+) -> None:
+    """A Ctrl-C during a check seals the run as cancelled, and the cancel goes on. A second one
+    while it seals does not stop the seal."""
+    models = cp.state.config.settings().models
+    asked, sealing = asyncio.Event(), asyncio.Event()
+    append = local.append
+
+    async def hang(client: object, profile: Profile) -> list[Check]:
+        asked.set()
+        await asyncio.sleep(5)
+        raise AssertionError("the cancel did not reach the check")
+
+    async def slow(run: str, drafts: list[Draft]) -> Any:
+        if any(isinstance(d.payload, RunFinished) for d in drafts):
+            sealing.set()
+            await asyncio.sleep(0.2)
+        return await append(run, drafts)
+
+    monkeypatch.setattr(check, "check_profile", hang)
+    monkeypatch.setattr(local, "append", slow)
+    run_id = str(uuid.uuid7())
+    task = asyncio.create_task(
+        check.record_check(local, models, [models.get("scripted")], run_id=run_id)
+    )
+    async with asyncio.timeout(5):
+        await asked.wait()
+        task.cancel()
+        if cancels == 2:
+            await sealing.wait()
+            task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    info = await local.run(run_id)
+    assert info is not None
+    assert info.status == "cancelled"
+    (last,) = await local.events(run_id, types=["run.finished"])
+    assert last.data["reason"] == "cancelled before the checks finished"
 
 
 async def test_a_run_that_cannot_be_scored_says_why(cp: CP, local: LocalEventStore) -> None:
