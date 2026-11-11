@@ -28,6 +28,7 @@ import {
   EditorView,
   highlightActiveLine,
   highlightActiveLineGutter,
+  highlightSpecialChars,
   hoverTooltip,
   keymap,
   lineNumbers,
@@ -162,6 +163,24 @@ const tomlLanguage = StreamLanguage.define(toml);
 // marks the editor taking new text from its `text` prop, which is no edit of the person's
 const synced = Annotation.define<boolean>();
 
+// The line ending the editor keeps for a text: CRLF or CR when the text uses only that one,
+// else LF. In a text that mixes them, a CR stays in its line as a character, shown as a mark, so
+// all that was not edited goes back as it came.
+function lineEnding(text: string): string {
+  const crlf = text.includes("\r\n");
+  const cr = /\r(?!\n)/.test(text);
+  const lf = /(?<!\r)\n/.test(text);
+  if (crlf && !cr && !lf) return "\r\n";
+  if (cr && !crlf && !lf) return "\r";
+  return "\n";
+}
+
+const lineEndingOf = (text: string) => EditorState.lineSeparator.of(lineEnding(text));
+// pasted or dropped text takes the text's own line ending
+const sameLineEnding = EditorView.clipboardInputFilter.of((text, state) =>
+  text.replace(/\r\n?|\n/g, state.lineBreak),
+);
+
 // A CodeMirror editor over `text`, highlighted for `language`. YAML gets completion and hover
 // docs from `schema` when given. Mod-s calls `onSave`.
 export function CodeEditor({
@@ -197,12 +216,15 @@ export function CodeEditor({
   const first = useRef({ text, label });
   const language = useRef(new Compartment());
   const editable = useRef(new Compartment());
+  const ending = useRef(new Compartment());
 
   useEffect(() => {
     if (!host.current) return;
     const extensions: Extension[] = [
       lineNumbers(),
       highlightActiveLineGutter(),
+      // hidden characters, such as a CR within a line or a zero-width space, show as marks
+      highlightSpecialChars(),
       history(),
       drawSelection(),
       indentOnInput(),
@@ -229,10 +251,13 @@ export function CodeEditor({
       EditorView.contentAttributes.of({ "aria-label": first.current.label, tabindex: "0" }),
       EditorView.updateListener.of((u) => {
         if (!u.docChanged || u.transactions.some((t) => t.annotation(synced))) return;
-        handlers.current.onChange?.(u.state.doc.toString());
+        // joined with the text's own line ending
+        handlers.current.onChange?.(u.state.sliceDoc());
       }),
       language.current.of([]),
       editable.current.of([]),
+      ending.current.of(lineEndingOf(first.current.text)),
+      sameLineEnding,
     ];
     view.current = new EditorView({
       state: EditorState.create({ doc: first.current.text, extensions }),
@@ -246,7 +271,11 @@ export function CodeEditor({
 
   useEffect(() => {
     const v = view.current;
-    if (!v || v.state.doc.toString() === text) return;
+    if (!v || v.state.sliceDoc() === text) return;
+    // first, as the new text is split into lines by the ending in force
+    if (lineEnding(text) !== v.state.lineBreak) {
+      v.dispatch({ effects: ending.current.reconfigure(lineEndingOf(text)) });
+    }
     v.dispatch({
       changes: { from: 0, to: v.state.doc.length, insert: text },
       annotations: [synced.of(true), Transaction.addToHistory.of(false)],

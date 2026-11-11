@@ -28,13 +28,25 @@ export function filesQuery(source: string, name: string) {
 }
 
 // A file's text and the tag a save must name; `text` is null for bytes that are not UTF-8.
+// `bom` says the bytes began with a byte order mark, which the text leaves out and a save puts
+// back.
 export interface Opened {
   text: string | null;
+  bom: boolean;
   size: number;
   etag: string;
 }
 
-const utf8 = new TextDecoder("utf-8", { fatal: true });
+export const BOM = "\uFEFF";
+const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
+function decode(bytes: ArrayBuffer): string | null {
+  try {
+    return utf8.decode(bytes);
+  } catch {
+    return null;
+  }
+}
 
 export function fileQuery(source: string, name: string, file: string) {
   return queryOptions({
@@ -46,13 +58,14 @@ export function fileQuery(source: string, name: string, file: string) {
       );
       if (error) throw error;
       const bytes = data as unknown as ArrayBuffer;
-      let text: string | null = null;
-      try {
-        text = utf8.decode(bytes);
-      } catch {
-        text = null;
-      }
-      return { text, size: bytes.byteLength, etag: response.headers.get("ETag") ?? "" };
+      const text = decode(bytes);
+      const bom = text !== null && text.startsWith(BOM);
+      return {
+        text: bom ? text.slice(BOM.length) : text,
+        bom,
+        size: bytes.byteLength,
+        etag: response.headers.get("ETag") ?? "",
+      };
     },
     staleTime: 0,
     gcTime: 0,

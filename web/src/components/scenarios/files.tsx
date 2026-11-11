@@ -3,6 +3,7 @@ import { ChevronRight } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import {
+  BOM,
   checkScenario,
   deleteFile,
   fileQuery,
@@ -120,8 +121,14 @@ export default function FilesTab({
     setBusy(true);
     setStatus("Saving");
     try {
-      const saved = await saveFile(source, name, file, text, etag);
-      const now: Opened = { text, size: new Blob([text]).size, etag: `"${saved.etag}"` };
+      const bytes = base.bom ? BOM + text : text;
+      const saved = await saveFile(source, name, file, bytes, etag);
+      const now: Opened = {
+        text,
+        bom: base.bom,
+        size: new Blob([bytes]).size,
+        etag: `"${saved.etag}"`,
+      };
       queryClient.setQueryData(fileQuery(source, name, file).queryKey, now);
       // what was typed while it saved stays a draft over the saved version
       const more = typed.current !== null && typed.current !== text;

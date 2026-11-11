@@ -1,3 +1,4 @@
+import { insertNewline } from "@codemirror/commands";
 import { EditorView } from "@codemirror/view";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -41,7 +42,10 @@ beforeEach(() => {
       return new Response(onDisk.text, { headers: { ETag: onDisk.etag } });
     }
     if (url.pathname === `${BASE}/files/scenario.yaml` && request.method === "PUT") {
-      const body = await request.text();
+      // as the bytes are, a byte order mark too
+      const body = new TextDecoder("utf-8", { ignoreBOM: true }).decode(
+        await request.arrayBuffer(),
+      );
       const ifMatch = request.headers.get("If-Match");
       puts.push({ body, ifMatch });
       await putGate;
@@ -235,4 +239,69 @@ test("a file read again with no edits shows each new version and makes no draft"
   };
   await reread(TEXT.replace("demo", "theirs"), '"e8"');
   await reread(TEXT.replace("demo", "later"), '"e9"');
+});
+
+// Saves the file after one edit, and returns what was sent.
+async function saveEdit(view: EditorView, from: string, to: string): Promise<string> {
+  type(view, from, to);
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await screen.findByText("Saved");
+  return puts.at(-1)?.body ?? "";
+}
+
+test.each([
+  ["CRLF", "\r\n"],
+  ["CR", "\r"],
+])(
+  "a %s file keeps its line endings, and an edit taken back leaves it unchanged",
+  async (_, eol) => {
+    const text = TEXT.replaceAll("\n", eol);
+    onDisk = { text, etag: '"e1"' };
+    renderTab();
+    const view = await editor();
+    expect(view.state.doc.lines).toBe(4);
+    type(view, "demo", "demo2");
+    expect(await screen.findByText("unsaved changes")).toBeTruthy();
+    type(view, "demo2", "demo");
+    await waitFor(() => expect(screen.queryByText("unsaved changes")).toBeNull());
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+    // Enter after "observe" starts a line with the file's ending
+    const at = view.state.doc.toString().indexOf("observe") + "observe".length;
+    act(() => view.dispatch({ selection: { anchor: at } }));
+    act(() => void insertNewline(view));
+    expect(await saveEdit(view, "observe", "observe!")).toBe(
+      text.replace("observe", `observe!${eol}`),
+    );
+  },
+);
+
+test("a file with mixed line endings saves back unchanged but for the edit", async () => {
+  const text = "version: 1\r\nname: demo\noversight: observe\r\n# a\rb\n";
+  onDisk = { text, etag: '"e1"' };
+  renderTab();
+  const view = await editor();
+  // LF ends the lines; a CR stays where it is
+  expect(view.state.doc.lines).toBe(5);
+  expect(await saveEdit(view, "demo", "demo2")).toBe(text.replace("demo", "demo2"));
+});
+
+test("a byte order mark stays on save", async () => {
+  onDisk = { text: `\uFEFF${TEXT}`, etag: '"e1"' };
+  renderTab();
+  const view = await editor();
+  // the editor leaves it out
+  expect(view.state.doc.toString()).toBe(TEXT);
+  expect(await saveEdit(view, "demo", "demo2")).toBe(`\uFEFF${TEXT.replace("demo", "demo2")}`);
+});
+
+test("pasted text takes the file's line ending", async () => {
+  const text = TEXT.replaceAll("\n", "\r\n");
+  onDisk = { text, etag: '"e1"' };
+  renderTab();
+  const view = await editor();
+  act(() => view.dispatch({ selection: { anchor: view.state.doc.length } }));
+  fireEvent.paste(view.contentDOM, { clipboardData: { getData: () => "a: 1\nb: 2\r\n" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await screen.findByText("Saved");
+  expect(puts.at(-1)?.body).toBe(`${text}a: 1\r\nb: 2\r\n`);
 });
