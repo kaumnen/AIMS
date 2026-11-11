@@ -385,6 +385,13 @@ def holds_nothing_hidden(out: str) -> None:
     assert visible(out) == out, out
 
 
+def test_json_text_writes_nan_and_the_infinities_as_null() -> None:
+    value = {"a": float("nan"), "b": [float("inf"), -float("inf"), 1.5], "c": "x"}
+    assert json.loads(json_text(value)) == {"a": None, "b": [None, None, 1.5], "c": "x"}
+    assert "NaN" not in json_text(value)
+    assert "Infinity" not in json_text(value)
+
+
 def test_json_text_writes_hidden_characters_as_json_escapes() -> None:
     value = {"text": HIDDEN, "lone": "a\ud800b", HIDDEN: [1.5, None, True]}
     for indent in (None, 2):

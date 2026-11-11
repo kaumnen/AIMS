@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import math
 import os
 import signal
 from collections.abc import Callable, Sequence
@@ -36,12 +37,29 @@ def _json_escape(ch: str) -> str:
     return json.dumps(ch)[1:-1]
 
 
+def _finite(value: object) -> object:
+    """`value` with each NaN and infinity as None. JSON has no word for them, and `NaN` in the
+    output would not parse."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: _finite(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_finite(v) for v in value]
+    return value
+
+
 def json_text(value: object, *, indent: int | None = None) -> str:
     """`value` as JSON text for stdout. Each character visible() would show as text, such as
     U+009B or U+202E, is written as its JSON escape `\\u009b`, so the text parses to the same
     value. Other text stays as it is, so words in any script stay readable. A lone surrogate
-    becomes `\\ud800` too, so the print cannot fail to encode it."""
-    return reveal(json.dumps(value, ensure_ascii=False, indent=indent), _json_escape)
+    becomes `\\ud800` too, so the print cannot fail to encode it. NaN and the infinities are
+    written as null."""
+    try:
+        text = json.dumps(value, ensure_ascii=False, indent=indent, allow_nan=False)
+    except ValueError:
+        text = json.dumps(_finite(value), ensure_ascii=False, indent=indent, allow_nan=False)
+    return reveal(text, _json_escape)
 
 
 _BREAKS = str.maketrans({"\n": "\\u000A", "\r": "\\u000D"})
