@@ -1225,20 +1225,24 @@ async def _run(**o: Any) -> int:
                         )
                     await link.close()
         digests = {r.run_id: await digest(store, r.run_id) for r in results if r.run_id}
-    if o["json_out"]:
-        for r in results:
-            found = digests.get(r.run_id) if r.run_id else None
-            line = {"type": "result", **result_json(r)}
-            line["monitor"] = None if found is None else found.json()
-            typer.echo(json.dumps(line, ensure_ascii=False))
-    elif o["quiet"]:
-        for r in results:
-            found = digests.get(r.run_id) if r.run_id else None
-            flags = f" flags {len(found.flags)}" if found is not None and found.flags else ""
-            line = f"{r.run_id} {r.status} ${r.cost_usd:.4f}{flags} {r.reason or ''}"
-            typer.echo(line.rstrip())
-    else:
-        Console().print(summary(results, list(digests.values())))
+    # The runs are sealed and shipped: a failed print must not change the exit code.
+    try:
+        if o["json_out"]:
+            for r in results:
+                found = digests.get(r.run_id) if r.run_id else None
+                line = {"type": "result", **result_json(r)}
+                line["monitor"] = None if found is None else found.json()
+                typer.echo(json.dumps(line, ensure_ascii=False))
+        elif o["quiet"]:
+            for r in results:
+                found = digests.get(r.run_id) if r.run_id else None
+                flags = f" flags {len(found.flags)}" if found is not None and found.flags else ""
+                line = f"{r.run_id} {r.status} ${r.cost_usd:.4f}{flags} {r.reason or ''}"
+                typer.echo(line.rstrip())
+        else:
+            Console().print(summary(results, list(digests.values())))
+    except Exception:
+        logging.getLogger("aims").exception("the results could not be printed")
     statuses = {r.status for r in results}
     if stops or "cancelled" in statuses:
         return EXIT_CANCELLED
@@ -1848,7 +1852,7 @@ async def _monitor_runs(**o: Any) -> int:
     from aims.run.job import JobOptions, monitor_profiles
     from aims.run.runner import RunError
     from aims.run.view import JsonLines, digest, monitor_table
-    from aims.terminal import on_hangup
+    from aims.terminal import on_hangup, shown
 
     err = Console(stderr=True)
     logging.basicConfig(
@@ -1975,42 +1979,6 @@ async def _monitor_runs(**o: Any) -> int:
             if lines is not None:
                 await lines.stop()
         digests = [await digest(store, r.run_id) for r in results]
-    if o["json_out"]:
-        for r, d in zip(results, digests, strict=True):
-            line = {
-                "type": "result",
-                "run_id": r.run_id,
-                "origin": r.origin,
-                "status": r.status,
-                "reason": r.reason,
-                "cost_usd": round(r.cost_usd, 10),
-                "monitor": d.json(),
-            }
-            typer.echo(json.dumps(line, ensure_ascii=False))
-    elif o["quiet"]:
-        for r, d in zip(results, digests, strict=True):
-            line = f"{r.run_id} {r.origin} {r.status} flags {len(d.flags)} ${r.cost_usd:.4f}"
-            typer.echo(f"{line} {r.reason or ''}".rstrip())
-    else:
-        table = Table(title="monitor runs")
-        for column in ("run", "origin", "status", "flags", "sweeps", "verdict", "cost"):
-            table.add_column(column, overflow="fold")
-        for r, d in zip(results, digests, strict=True):
-            verdict = "" if d.verdict is None else f"severity {d.verdict.data.get('max_severity')}"
-            table.add_row(
-                r.run_id,
-                r.origin,
-                r.status if r.reason is None else f"{r.status}: {r.reason}",
-                str(len(d.flags)),
-                str(d.sweeps),
-                verdict,
-                f"${r.cost_usd:.4f}",
-            )
-        out = Console()
-        out.print(table)
-        found = monitor_table(digests)
-        if found is not None:
-            out.print(found)
     if o["link"] is not None and results:
         url, token = o["link"]
         try:
@@ -2022,6 +1990,49 @@ async def _monitor_runs(**o: Any) -> int:
         else:
             if failed:
                 err.print("[yellow]some monitor runs did not reach the control plane[/]")
+    # The runs ship first. A failed print must neither stop that nor change the exit code.
+    try:
+        if o["json_out"]:
+            for r, d in zip(results, digests, strict=True):
+                line = {
+                    "type": "result",
+                    "run_id": r.run_id,
+                    "origin": r.origin,
+                    "status": r.status,
+                    "reason": r.reason,
+                    "cost_usd": round(r.cost_usd, 10),
+                    "monitor": d.json(),
+                }
+                typer.echo(json.dumps(line, ensure_ascii=False))
+        elif o["quiet"]:
+            for r, d in zip(results, digests, strict=True):
+                line = f"{r.run_id} {r.origin} {r.status} flags {len(d.flags)} ${r.cost_usd:.4f}"
+                typer.echo(f"{line} {r.reason or ''}".rstrip())
+        else:
+            table = Table(title="monitor runs")
+            for column in ("run", "origin", "status", "flags", "sweeps", "verdict", "cost"):
+                table.add_column(column, overflow="fold")
+            for r, d in zip(results, digests, strict=True):
+                verdict = (
+                    "" if d.verdict is None else f"severity {d.verdict.data.get('max_severity')}"
+                )
+                cells = (
+                    r.run_id,
+                    r.origin,
+                    r.status if r.reason is None else f"{r.status}: {r.reason}",
+                    str(len(d.flags)),
+                    str(d.sweeps),
+                    verdict,
+                    f"${r.cost_usd:.4f}",
+                )
+                table.add_row(*(shown(cell) for cell in cells))
+            out = Console()
+            out.print(table)
+            found = monitor_table(digests)
+            if found is not None:
+                out.print(found)
+    except Exception:
+        logging.getLogger("aims").exception("the results could not be printed")
     if any(r.status == "cancelled" for r in results):
         return EXIT_CANCELLED
     return EXIT_FAILED if any(r.status != "completed" for r in results) else 0

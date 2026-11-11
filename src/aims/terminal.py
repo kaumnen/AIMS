@@ -1,9 +1,31 @@
-"""What a command does when its terminal hangs up."""
+"""What a command writes to its terminal. What it does when the terminal hangs up."""
 
 import asyncio
 import os
 import signal
 from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING
+
+from aims.report.escape import visible
+
+if TYPE_CHECKING:
+    from rich.text import Text
+
+
+def shown(text: object, style: str = "") -> Text:
+    """`text` for a Rich console as the characters it holds, in `style`. visible() turns the
+    hidden ones into text. Rich reads a Text as plain text. It reads a str as markup and emoji
+    codes, which rich.markup.escape covers only in part: it drops the backslash of `\\[1]`,
+    doubles a trailing one and leaves `:smile:` to become an emoji."""
+    from rich.text import Text
+
+    return Text(visible(str(text)), style=style)
+
+
+def one_line(text: object) -> str:
+    """visible(`text`) with each run of whitespace, newlines too, as one space: for text that
+    must stay on its line, such as a field of a row in a listing."""
+    return " ".join(visible(str(text)).split())
 
 
 def hang_up(fds: Sequence[int]) -> None:

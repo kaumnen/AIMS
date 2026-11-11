@@ -22,6 +22,7 @@ from aims.models import Delta, DeltaBus
 from aims.monitor.core import HumanRequest
 from aims.run.estimate import Progress, project_run, usd
 from aims.run.runner import Result, RunError, Runner
+from aims.terminal import shown
 from aims.text import scrub
 
 TAIL = 240
@@ -389,6 +390,11 @@ def _args(args: object) -> str:
     return _short(value, ARGS)
 
 
+def _row(table: Table, *cells: object, style: str = "") -> None:
+    """A row whose cells show as written, never read as markup."""
+    table.add_row(*(shown(cell) for cell in cells), style=style)
+
+
 def runs_table(results: list[Result]) -> Table:
     table = Table(title="runs", show_lines=False)
     table.add_column("run", overflow="fold")
@@ -396,13 +402,14 @@ def runs_table(results: list[Result]) -> Table:
         table.add_column(column, overflow="fold")
     for r in results:
         if not r.agents:
-            table.add_row(r.run_id or "-", r.status, "", "", "", "", "", r.reason or "")
+            _row(table, r.run_id or "-", r.status, "", "", "", "", "", r.reason or "")
         for agent_id, f in r.agents.items():
             score = r.scores.get(agent_id)
             reward = ""
             if score is not None:
                 reward = "none" if score.reward is None else f"{score.reward:g}"
-            table.add_row(
+            _row(
+                table,
                 r.run_id or "-",
                 r.status,
                 agent_id,
@@ -511,18 +518,18 @@ def monitor_table(digests: Sequence[Digest]) -> Table | None:
         for e in d.flags:
             data = {**e.data, "count": d.counts[e.seq]}
             style = _severity(int(_num(data.get("importance"))))
-            table.add_row(d.run_id, "flag", e.agent_id or "", flag_line(data, None), style=style)
+            _row(table, d.run_id, "flag", e.agent_id or "", flag_line(data, None), style=style)
             rows += 1
         for e in d.actions:
-            table.add_row(d.run_id, "action", "", action_line(e))
+            _row(table, d.run_id, "action", "", action_line(e))
             rows += 1
         for e in d.degraded:
-            table.add_row(d.run_id, "degraded", "", f"{e.data.get('part')}: {e.data.get('reason')}")
+            _row(table, d.run_id, "degraded", "", f"{e.data.get('part')}: {e.data.get('reason')}")
             rows += 1
         if d.verdict is not None:
             v = d.verdict.data
             detail = f"severity {v.get('max_severity')}: {_text(v.get('summary'))}"
-            table.add_row(d.run_id, "verdict", "", detail)
+            _row(table, d.run_id, "verdict", "", detail)
             rows += 1
     return table if rows else None
 
