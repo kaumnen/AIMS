@@ -33,6 +33,8 @@ export interface Score {
   awareness: Map<string, Awareness>;
   unexplained: UnexplainedRow[];
   failed: string | null;
+  // A score cancelled before it finished shows nothing: its units may be missing.
+  cancelled: boolean;
 }
 
 type Data = Record<string, unknown>;
@@ -49,6 +51,7 @@ export function readScore(events: readonly Event[]): Score {
     awareness: new Map(),
     unexplained: [],
     failed: null,
+    cancelled: false,
   };
   for (const e of events) {
     const d = e.data as Data;
@@ -82,6 +85,7 @@ export function readScore(events: readonly Event[]): Score {
         break;
       case "run.finished":
         if (d["status"] === "failed") out.failed = String(d["reason"] ?? "failed");
+        else if (d["status"] === "cancelled") out.cancelled = true;
         break;
     }
   }

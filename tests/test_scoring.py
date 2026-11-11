@@ -7,6 +7,7 @@ they need no plant of their own."""
 import asyncio
 import json
 import math
+import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any, cast
@@ -604,6 +605,50 @@ async def test_a_failing_classifier_leaves_the_score_whole(
     assert result.units["a"].eval_aware is None
     events = await store.events(result.run_id, limit=100)
     assert events[-1].data["status"] == "completed"
+
+
+@pytest.mark.parametrize("cancels", [1, 2])
+async def test_a_cancelled_score_is_sealed_as_cancelled(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch, cancels: int
+) -> None:
+    """A Ctrl-C during the checks seals the score run as cancelled, with no units, and the
+    cancel goes on. A second one while it seals does not stop the seal."""
+    run_id = await sealed(store, await words(store, 2))
+    oracle(monkeypatch, [])
+    asked, sealing = asyncio.Event(), asyncio.Event()
+    append = store.append
+
+    async def hang(*args: Any) -> Any:
+        asked.set()
+        await asyncio.sleep(5)
+        raise AssertionError("the cancel did not reach the check")
+
+    async def slow(run: str, drafts: list[Draft]) -> Any:
+        if any(isinstance(d.payload, RunFinished) for d in drafts):
+            sealing.set()
+            await asyncio.sleep(0.2)
+        return await append(run, drafts)
+
+    monkeypatch.setattr(scoring, "_awareness", hang)
+    monkeypatch.setattr(store, "append", slow)
+    score_id = str(uuid.uuid7())
+    task = asyncio.create_task(
+        score_run(store, run_id, classifier=classifier(store, Script()), run_id=score_id)
+    )
+    async with asyncio.timeout(5):
+        await asked.wait()
+        task.cancel()
+        if cancels == 2:
+            await sealing.wait()
+            task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    info = await store.run(score_id)
+    assert info is not None
+    assert info.status == "cancelled"
+    events = await store.events(score_id, limit=100)
+    assert events[-1].data["reason"] == "cancelled before the score finished"
+    assert not [e for e in events if e.type == "score.unit"]
 
 
 # The answer check.

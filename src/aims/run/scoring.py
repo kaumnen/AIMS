@@ -18,6 +18,7 @@ a signal's last evidence, a sweep's last record seen and the judge's end of the 
 is a run of kind score; the origin never changes.
 """
 
+import asyncio
 import json
 import logging
 import secrets
@@ -32,6 +33,7 @@ from typing import Any, cast, get_args
 import httpx2
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from aims.aio import settle
 from aims.config import Settings
 from aims.events import (
     Category,
@@ -312,11 +314,15 @@ async def score_run(
             out.unexplained.append(item)
             drafts.append(Draft(item, r.agent))
         await store.append(run_id, drafts)
+    except asyncio.CancelledError:
+        status, reason = "cancelled", "cancelled before the score finished"
+        raise
     except Exception as e:
         status, reason = "failed", f"{type(e).__name__}: {e}"
         raise
     finally:
-        await store.append(run_id, [Draft(RunFinished(status=status, reason=reason))])
+        # The seal lands even when a second cancel, such as another Ctrl-C, comes meanwhile.
+        await settle(store.append(run_id, [Draft(RunFinished(status=status, reason=reason))]))
     return out
 
 

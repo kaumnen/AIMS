@@ -391,6 +391,8 @@ function ScoreView({
 
   if (score.failed)
     return <p className="text-muted-foreground">The score failed: {score.failed}</p>;
+  if (score.cancelled)
+    return <p className="text-muted-foreground">The score was cancelled before it finished.</p>;
   const multi = score.units.length > 1;
   const positives = score.units.filter((u) => u.positive);
   const planted = score.units.reduce((n, u) => n + u.planted.length, 0);

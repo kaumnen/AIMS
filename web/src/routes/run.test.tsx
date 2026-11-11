@@ -1591,6 +1591,21 @@ test("a score that failed before it started gives its reason", async () => {
   expect(await screen.findByText("Failed: no runner")).toBeTruthy();
 });
 
+test("a score cancelled while it ran says so and shows no result", async () => {
+  withScore();
+  const reason = "cancelled before the score finished";
+  scores = [score(SCORE, { status: "cancelled", reason })];
+  scoreEvents = {
+    [SCORE]: [
+      ...scoreLog(SCORE).slice(0, 1),
+      { ...ev(1, "run.finished", { status: "cancelled", reason }), run_id: SCORE },
+    ],
+  };
+  renderAt(`/runs/${BEE5}?tab=score`);
+  expect(await screen.findByText("The score was cancelled before it finished.")).toBeTruthy();
+  expect(screen.queryByLabelText("Score", { selector: "dl" })).toBeNull();
+});
+
 const runStream = () => FakeEventSource.all.find((s) => s.url.includes("run="));
 
 test("a sealed run opens no stream of its own", async () => {
