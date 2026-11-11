@@ -2534,6 +2534,7 @@ def audit_cmd(
 
     from aims.server.audit import every
     from aims.server.audit_api import entry
+    from aims.terminal import one_line
 
     if outcome is not None and outcome not in ("ok", "refused", "error"):
         raise typer.BadParameter("use ok, refused or error", param_hint="--outcome")
@@ -2571,7 +2572,7 @@ def audit_cmd(
         when = datetime.fromtimestamp(r.at, UTC).strftime("%Y-%m-%d %H:%M:%S")
         result = r.outcome if r.status is None else f"{r.outcome} {r.status}"
         parts = [when, r.token or "-", r.action, r.target or "-", result, r.ip or "-"]
-        typer.echo("  ".join([*parts, r.detail or ""]).rstrip())
+        typer.echo("  ".join(one_line(part) for part in [*parts, r.detail or ""]).rstrip())
 
 
 @app.command()

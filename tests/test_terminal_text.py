@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from cp import control_plane
 from rich.console import Console
 from typer.testing import CliRunner
 
@@ -226,3 +227,27 @@ async def test_the_pause_prompt_shows_escape_bytes_and_brackets_as_text(tmp_path
     assert "  advice: look \\u001B]0;owned\\u0007" in shown
     assert "  a waits before tool call c[/x]" in shown
     assert "resume, deny, inject, kill? [resume] " in shown
+
+
+# 74: request bytes in aims audit
+
+
+def test_aims_audit_shows_request_bytes_as_text(tmp_path: Path) -> None:
+    # cursor up, erase that line, then a forged row
+    forged = "%1B%5B1A%1B%5B2K%0D2026-11-10%2000:00:00%20%20op%20%20run.pause%20%20x%20%20ok"
+
+    async def fill() -> None:
+        async with control_plane(tmp_path) as cp, cp.client(cp.viewer) as viewer:
+            r = await viewer.post(f"/api/runs/{forged}/pause", json={})
+            assert r.status_code == 403
+
+    asyncio.run(fill())
+    data = ["--data-dir", str(tmp_path / "server")]
+    out = invoke("audit", *data)
+    assert out.exit_code == 0, out.output
+    (line,) = out.output.splitlines()
+    assert "\x1b" not in line
+    target = "\\u001B[1A\\u001B[2K 2026-11-10 00:00:00 op run.pause x ok"
+    assert f"  viewer  run.pause  {target}  refused 403  127.0.0.1" in line
+    exact = invoke("audit", *data, "--jsonl")
+    assert "\\u001b[1A\\u001b[2K\\r2026-11-10" in exact.output
