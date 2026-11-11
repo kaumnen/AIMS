@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { runnerInfo } from "@/test/event-source";
+import { run as summary } from "@/test/runs";
 
 import type { Event } from "./events";
 import { COALESCE_MS, type FromHub, Hub, type Open, PROTOCOL, type SourceEvents } from "./hub";
@@ -244,6 +245,25 @@ test("reconnect opens a new stream though nothing changed, and the old one goes 
   expect(sources.map((s) => s.closed)).toEqual([true, false]);
   push(sources[0], events("r1", 0));
   expect(tab.take()).toEqual([]);
+});
+
+test("after a reconnect nothing more of the old stream goes out, nor its runners", () => {
+  const hub = new Hub(open);
+  const tab = new Tab();
+  join(hub, tab);
+  hub.receive(tab, { t: "sub", id: 1, wanted: { runs: true, run: [], deltas: [] } });
+  settle();
+  push(sources[0], { kind: "runner", runner: runnerInfo() });
+  tab.take();
+  // a sign-in: the old stream holds the session that ended
+  hub.receive(tab, { t: "reconnect" });
+  hub.receive(tab, { t: "unsub", id: 1 });
+  hub.receive(tab, { t: "sub", id: 2, wanted: { runs: true, run: [], deltas: [] } });
+  expect(sources[0]?.closed).toBe(true);
+  push(sources[0], { kind: "run", run: summary("r1") });
+  expect(tab.take(2)).toEqual([]);
+  settle();
+  expect(sources.map((s) => s.closed)).toEqual([true, false]);
 });
 
 test("a deleted run reaches list subscribers and those that follow it", () => {

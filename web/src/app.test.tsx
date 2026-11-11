@@ -3,10 +3,19 @@ import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
+import { reconnectLive } from "./api/channel";
 import { client } from "./api/client";
+import { whoami } from "./api/session";
 import { makeRouter } from "./router";
 import { FakeEventSource, runnerInfo } from "./test/event-source";
+import { stubHeight } from "./test/layout";
 import { preloadRoutes } from "./test/routes";
+import { run } from "./test/runs";
+
+vi.mock("./api/channel", async (actual) => {
+  const channel = await actual<typeof import("./api/channel")>();
+  return { ...channel, reconnectLive: vi.fn<() => void>(channel.reconnectLive) };
+});
 
 let me = { name: "op", role: "operator", auth: true };
 const fetch = vi.fn<(request: Request) => Promise<Response>>();
@@ -19,6 +28,7 @@ const unauthorized = () =>
   );
 
 preloadRoutes();
+stubHeight();
 beforeEach(() => {
   signedIn = true;
   me = { name: "op", role: "operator", auth: true };
@@ -96,6 +106,54 @@ test("a 401 elsewhere brings the sign-in form back", async () => {
   signedIn = false;
   await act(() => client.GET("/api/health"));
   expect(await screen.findByLabelText("Token")).toBeTruthy();
+});
+
+// The server lists score runs to an operator only; `me` says who the cookie belongs to.
+function serveScoreRuns() {
+  const base = fetch.getMockImplementation();
+  if (!base) throw new Error("no fetch");
+  fetch.mockImplementation(async (request) => {
+    const url = new URL(request.url);
+    if (signedIn && url.pathname === "/api/runs" && url.searchParams.get("kind") === "score") {
+      const items =
+        me.role === "operator" ? [run("s1", { kind: "score", scenario: "operator-only" })] : [];
+      return Response.json({ items, next: null });
+    }
+    return base(request);
+  });
+}
+
+async function endWithA401() {
+  await screen.findByText("operator-only");
+  signedIn = false;
+  await act(() => client.GET("/api/health"));
+  return screen.findByLabelText("Token");
+}
+
+test("who signs in after a 401 sees nothing the last session loaded", async () => {
+  serveScoreRuns();
+  await renderAt("/runs?kind=score");
+  const field = await endWithA401();
+  me = { name: "vera", role: "viewer", auth: true };
+  fireEvent.change(field, { target: { value: "good" } });
+  fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+  expect(await screen.findByRole("button", { name: /vera/ })).toBeTruthy();
+  expect(await screen.findByText(/No runs yet/)).toBeTruthy();
+  expect(screen.queryByText("operator-only")).toBeNull();
+  expect(reconnectLive).toHaveBeenCalled();
+});
+
+test("a session started in another tab shows nothing the last one loaded", async () => {
+  serveScoreRuns();
+  const router = await renderAt("/runs?kind=score");
+  await endWithA401();
+  // another tab signs in, and this one asks again who it is
+  signedIn = true;
+  me = { name: "vera", role: "viewer", auth: true };
+  await act(() => router.options.context.queryClient.refetchQueries(whoami));
+  expect(await screen.findByRole("button", { name: /vera/ })).toBeTruthy();
+  expect(await screen.findByText(/No runs yet/)).toBeTruthy();
+  expect(screen.queryByText("operator-only")).toBeNull();
 });
 
 test("the header shows runner and tracer health from the stream", async () => {

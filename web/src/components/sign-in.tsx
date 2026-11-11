@@ -1,8 +1,9 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 
+import { reconnectLive } from "@/api/channel";
 import { client } from "@/api/client";
-import { whoami } from "@/api/session";
+import { forgetSession, whoami } from "@/api/session";
 
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -12,6 +13,10 @@ export function SignIn() {
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // The session is over, however it ended. Whoever signs in next, here or in another tab,
+  // starts from nothing.
+  useEffect(() => forgetSession(queryClient), [queryClient]);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -25,6 +30,9 @@ export function SignIn() {
         setError(problem.status === 401 ? "That token is unknown or revoked." : problem.title);
         return;
       }
+      // the tabs' shared stream still holds the old session until it connects again
+      reconnectLive();
+      forgetSession(queryClient);
       await queryClient.resetQueries({ queryKey: whoami.queryKey });
     } catch {
       setError("Cannot reach the control plane.");

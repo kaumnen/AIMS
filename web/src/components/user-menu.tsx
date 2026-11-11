@@ -1,9 +1,9 @@
-import { hashKey, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 
 import { reconnectLive } from "@/api/channel";
 import type { Schemas } from "@/api/client";
 import { client } from "@/api/client";
-import { whoami } from "@/api/session";
+import { forgetSession, whoami } from "@/api/session";
 import { setTheme, type Theme, themes, useTheme } from "@/lib/theme";
 
 import { openShortcuts } from "./shortcuts";
@@ -32,8 +32,7 @@ export function UserMenu({ me }: { me: Schemas["Whoami"] }) {
     // the tabs' shared stream still holds the old session until it connects again
     reconnectLive();
     // drop what this session loaded, then let the shell find out it is signed out
-    const keep = hashKey(whoami.queryKey);
-    queryClient.removeQueries({ predicate: (q) => q.queryHash !== keep });
+    forgetSession(queryClient);
     await queryClient.resetQueries({ queryKey: whoami.queryKey });
   }
 

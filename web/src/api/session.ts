@@ -1,6 +1,15 @@
+import { hashKey, type QueryClient } from "@tanstack/react-query";
+
 import { $api, client, type Problem } from "./client";
 
 export const whoami = $api.queryOptions("get", "/api/session");
+
+// Drops all a session loaded but who is signed in, so none of it shows for the next one. The
+// server lists some runs to operators only.
+export function forgetSession(qc: QueryClient): void {
+  const keep = hashKey(whoami.queryKey);
+  qc.removeQueries({ predicate: (q) => q.queryHash !== keep });
+}
 
 // `aims ui` opens /#code=...; the one-shot code leaves the URL first, then becomes the session
 // cookie.

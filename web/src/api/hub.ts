@@ -92,6 +92,10 @@ export class Hub {
       this.#changed();
     } else if (m.t === "bye") this.#drop(peer);
     else if (m.t === "reconnect") {
+      // The open stream holds the session that ended, so nothing more of it goes out.
+      this.#source?.close();
+      this.#source = null;
+      this.#generation++;
       this.#stale = true;
       this.#schedule();
     }
