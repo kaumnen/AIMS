@@ -90,7 +90,8 @@ function NewRunForm({ onDone, initial }: { onDone: () => void; initial: string }
   const [parallel, setParallel] = useState<number | null>(null);
   const [runner, setRunner] = useState(DEFAULT);
   const [audit, setAudit] = useState<"kernel" | "snapshot">("kernel");
-  const [score, setScore] = useState(false);
+  // as `aims run`, which scores each run unless told not to
+  const [score, setScore] = useState(true);
   const [keep, setKeep] = useState(false);
   // the estimate a yes to its cost was given for
   const [confirmed, setConfirmed] = useState<string | null>(null);

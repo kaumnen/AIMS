@@ -258,7 +258,7 @@ test("an oversight over the scenario's changes the warning and goes with the run
   expect(form.getByRole("alert").textContent).toContain("Autonomous oversight");
   fireEvent.click(form.getByRole("button", { name: "Start run" }));
   await waitFor(() => expect(posted).toHaveLength(1));
-  expect(posted[0]).toMatchObject({ oversight: "autonomous" });
+  expect(posted[0]).toMatchObject({ oversight: "autonomous", score: true });
 });
 
 test("a model check runs on demand and reads the result once it ends", async () => {
@@ -290,7 +290,10 @@ test("a run starts with the chosen options and opens", async () => {
   const form = await openForm();
   await pick(form, "Variant", "unobserved");
   await pick(form, "Runner", /local/);
-  fireEvent.click(form.getByRole("checkbox", { name: /Score each run/ }));
+  // ticked, as aims run scores by default
+  const score = form.getByRole("checkbox", { name: /Score each run/ }) as HTMLInputElement;
+  expect(score.checked).toBe(true);
+  fireEvent.click(score);
   fireEvent.click(form.getByRole("button", { name: "Start run" }));
   await waitFor(() => expect(router.state.location.pathname).toBe(`/runs/${NEW}`));
   expect(posted).toEqual([
@@ -299,7 +302,7 @@ test("a run starts with the chosen options and opens", async () => {
       samples: 1,
       audit: "kernel",
       keep: false,
-      score: true,
+      score: false,
       confirm: false,
       variant: "unobserved",
       runner: "local",
