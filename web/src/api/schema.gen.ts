@@ -7317,8 +7317,9 @@ export interface components {
         /**
          * TaskScored
          * @description The verifier's verdict. `source` names the file the reward came from, `metrics` holds
-         *     every value it reported. `tainted` lists the seqs of monitor flags raised while the verifier
-         *     ran; the reward is never changed by them.
+         *     every value it reported. Of a reward.json too large for one event, `metrics` keeps the
+         *     top-level numbers only and `error` says so. `tainted` lists the seqs of monitor flags raised
+         *     while the verifier ran; the reward is never changed by them.
          */
         TaskScored: {
             /**

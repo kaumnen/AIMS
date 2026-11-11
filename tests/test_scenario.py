@@ -9,14 +9,19 @@ from typing import Any, cast
 
 import pytest
 import rfc8785
+from scripted import models, profile
 from typer.testing import CliRunner
 
 from aims.channels import ChannelSetup
 from aims.channels.folder import Folder
 from aims.cli import app
+from aims.events import ExecFinished, TaskScored
+from aims.events.chain import Head, seal
 from aims.monitor.config import MonitorConfig, merge
 from aims.run import selftest, truth
-from aims.run.runner import _reward
+from aims.run.runner import METRICS_BYTES, REWARD_BYTES, Bench, Options, Runner, _reward
+from aims.sandbox import AuditedSandbox
+from aims.sandbox.audit import ExecResult
 from aims.scenario import (
     Bundle,
     Scenario,
@@ -268,6 +273,98 @@ def test_reward_json_nested_deeper_than_an_event_holds_is_unreadable() -> None:
         assert (reward, metrics, source) == (None, {}, "reward.json")
         assert (error or "").startswith("reward.json is not JSON: ")
     assert _reward(b"J", b"[" * 200_000)[3] is not None
+
+
+def scored_event(reward: Any, metrics: Any, source: Any, error: Any) -> dict[str, Any]:
+    """The `task.scored` event the reward makes, sealed as the log seals it: ChainError when it
+    is over the event size limit."""
+    data = TaskScored(reward=reward, metrics=metrics, source=source, error=error)
+    head = Head(seq=0, hash="0" * 64)
+    dump = data.model_dump(mode="json")
+    event, _, _ = seal(head, run_id="r", ts="t", agent_id="agent", type="task.scored", data=dump)
+    return event
+
+
+def test_reward_json_too_large_for_an_event_keeps_the_reward_and_its_top_level_numbers() -> None:
+    value = {"reward": 0.5, "log": "x" * 300_000, "passed": 3, "total": 4, "cases": [{"a": 1}]}
+    body = json.dumps(value).encode()
+    reward, metrics, source, error = _reward(b"J", body)
+    scored_event(reward, metrics, source, error)
+    assert (reward, source) == (0.5, "reward.json")
+    assert metrics == {"reward": 0.5, "passed": 3, "total": 4}
+    size = len(rfc8785.dumps(value))
+    assert error == (
+        f"reward.json is {size} bytes as JSON, over the {METRICS_BYTES} a score keeps;"
+        " only its top-level numbers were kept"
+    )
+
+
+def test_reward_json_of_many_numbers_keeps_reward_passed_and_total_first() -> None:
+    value: dict[str, Any] = {f"test_{i:05d}": i % 2 for i in range(30_000)}
+    value |= {"passed": 15_000, "total": 30_000, "reward": 0.5}
+    reward, metrics, source, error = _reward(b"J", json.dumps(value).encode())
+    scored_event(reward, metrics, source, error)
+    assert reward == 0.5
+    assert {"reward": 0.5, "passed": 15_000, "total": 30_000}.items() <= metrics.items()
+    assert METRICS_BYTES - 32 < len(rfc8785.dumps(metrics)) <= METRICS_BYTES
+    assert (error or "").endswith("only its top-level numbers were kept")
+    assert _reward(b"J", json.dumps(dict(list(value.items())[:100])).encode())[3] is None
+
+
+class Verifier:
+    """A sandbox for the verifier: every exec exits 0, and the read of the reward file gives
+    `data` as `cat` or `head -c N` would. It keeps the first `output_limit` bytes of an exec's
+    output, or of its own `limit`, as the sandbox does."""
+
+    def __init__(self, data: bytes, output_limit: int = 4 * 1024 * 1024) -> None:
+        self.data = data
+        self.output_limit = output_limit
+        self.reads: list[str] = []
+
+    async def exec(self, command: str, **kw: Any) -> ExecResult:
+        out = b""
+        if "reward.json" in command:
+            self.reads.append(command)
+            n = re.search(r"head -c (\d+) '?[^ ]*reward\.json", command)
+            out = b"J\n" + (self.data if n is None else self.data[: int(n[1])])
+        limit = kw.get("limit") or self.output_limit
+        finished = ExecFinished(
+            exec_id="e1",
+            call_id=None,
+            end="exited",
+            exit_code=0,
+            pid=1,
+            duration_ms=1,
+            stdout="",
+            stderr="",
+            stdout_bytes=len(out),
+            stderr_bytes=0,
+            truncated=len(out) > limit,
+        )
+        return ExecResult(finished, out[:limit], b"")
+
+
+async def verify(sandbox: Verifier) -> TaskScored:
+    bench = Bench(cast(Any, None), cast(Any, None), models(profile()))
+    runner = Runner(bench, load(WORD_COUNT), Options())
+    return await runner._verify(cast(AuditedSandbox, sandbox), "agent", "submitted", "done")
+
+
+@pytest.mark.anyio
+async def test_a_reward_file_past_the_read_cap_is_not_read_whole() -> None:
+    big = json.dumps({"reward": 1, "log": "x" * (2 * REWARD_BYTES)}).encode()
+    sandbox = Verifier(big)
+    scored = await verify(sandbox)
+    assert (scored.reward, scored.metrics, scored.source) == (None, {}, "reward.json")
+    assert scored.error == f"reward.json is over {REWARD_BYTES} bytes, too large to read"
+    assert f"head -c {REWARD_BYTES + 1} " in sandbox.reads[0]
+    scored_event(scored.reward, scored.metrics, scored.source, scored.error)
+
+    # A scenario's small output limit does not cut the reward file short
+    small = await verify(Verifier(json.dumps({"reward": 1, "log": "x" * 5000}).encode(), 1000))
+    assert (small.reward, small.metrics["log"], small.error) == (1.0, "x" * 5000, None)
+    fits = await verify(Verifier(json.dumps({"reward": 1, "log": "x" * 100_000}).encode()))
+    assert (fits.reward, fits.metrics) == (1.0, {"reward": 1})
 
 
 def test_cli_checks_and_exports() -> None:

@@ -14954,7 +14954,7 @@
       },
       "TaskScored": {
         "additionalProperties": false,
-        "description": "The verifier's verdict. `source` names the file the reward came from, `metrics` holds\nevery value it reported. `tainted` lists the seqs of monitor flags raised while the verifier\nran; the reward is never changed by them.",
+        "description": "The verifier's verdict. `source` names the file the reward came from, `metrics` holds\nevery value it reported. Of a reward.json too large for one event, `metrics` keeps the\ntop-level numbers only and `error` says so. `tainted` lists the seqs of monitor flags raised\nwhile the verifier ran; the reward is never changed by them.",
         "properties": {
           "end": {
             "anyOf": [

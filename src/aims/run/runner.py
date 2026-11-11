@@ -14,6 +14,7 @@ from pathlib import PurePosixPath
 from typing import Any, Literal
 
 import httpx2
+import rfc8785
 from pydantic import JsonValue
 
 from aims import __version__
@@ -83,6 +84,10 @@ VERIFY_PREP_S = 60
 REWARD_DEPTH = 64
 """The most levels of nesting reward.json may have, well under the 255 pydantic validates in
 an event."""
+REWARD_BYTES = 1024 * 1024
+"""The most bytes of reward.json or reward.txt the runner reads."""
+METRICS_BYTES = 64 * 1024
+"""The most bytes of canonical JSON a score keeps of reward.json, a quarter of an event."""
 UNFREEZE_TRIES = 3
 UNFREEZE_WAIT_S = 1.0
 """How often the runner tries to unfreeze a sandbox on a resume, and how long it waits
@@ -1117,11 +1122,14 @@ class Runner:
         verdict = await run(v.command, v.timeout_s, env=env)
         f = verdict.finished
         j, t = q(f"{logs}/reward.json"), q(f"{logs}/reward.txt")
+        # One byte past the cap tells a file over it; the read keeps it all, whatever the
+        # scenario's output limit.
+        head = f"$B head -c {REWARD_BYTES + 1}"
         read = (
-            f"B={BUSYBOX}; if [ -f {j} ]; then echo J; $B cat {j};"
-            f" elif [ -f {t} ]; then echo T; $B cat {t}; else echo N; fi"
+            f"B={BUSYBOX}; if [ -f {j} ]; then echo J; {head} {j};"
+            f" elif [ -f {t} ]; then echo T; {head} {t}; else echo N; fi"
         )
-        out = await run(read, VERIFY_PREP_S, cwd="/")
+        out = await run(read, VERIFY_PREP_S, cwd="/", limit=REWARD_BYTES + 3)
         kind, _, body = out.stdout.partition(b"\n")
         reward, metrics, source, error = _reward(kind, body)
         if f.end != "exited" and error is None:
@@ -1409,6 +1417,9 @@ def _why(r: Any) -> str:
 def _reward(kind: bytes, body: bytes) -> tuple[float | None, dict[str, JsonValue], Any, str | None]:
     if kind == b"N":
         return None, {}, "none", "the verifier wrote no reward"
+    if len(body) > REWARD_BYTES:
+        source = "reward.json" if kind == b"J" else "reward.txt"
+        return None, {}, source, f"{source} is over {REWARD_BYTES} bytes, too large to read"
     text = body.decode(errors="replace")
     if kind == b"J":
         try:
@@ -1421,7 +1432,8 @@ def _reward(kind: bytes, body: bytes) -> tuple[float | None, dict[str, JsonValue
         reward = value.get("reward") if _number(value.get("reward")) else None
         if reward is None and len(numbers) == 1:
             reward = next(iter(numbers.values()))
-        return (None if reward is None else float(reward)), value, "reward.json", None
+        metrics, note = _fit(value, numbers)
+        return (None if reward is None else float(reward)), metrics, "reward.json", note
     try:
         reward = float(text.strip())
     except ValueError:
@@ -1429,6 +1441,30 @@ def _reward(kind: bytes, body: bytes) -> tuple[float | None, dict[str, JsonValue
     if not math.isfinite(reward):
         return None, {}, "reward.txt", f"reward.txt is not finite: {reward}"
     return reward, {"reward": reward}, "reward.txt", None
+
+
+def _fit(
+    value: dict[str, JsonValue], numbers: dict[str, JsonValue]
+) -> tuple[dict[str, JsonValue], str | None]:
+    """`value` whole when its canonical JSON fits METRICS_BYTES. Else as many of its top-level
+    `numbers` as fit, with a note that says so. `reward`, `passed` and `total` come first: the
+    report, the monitor and the web UI read them."""
+    size = len(rfc8785.dumps(value))
+    if size <= METRICS_BYTES:
+        return value, None
+    kept: dict[str, JsonValue] = {}
+    used = 1
+    for k in sorted(numbers, key=lambda k: k not in ("reward", "passed", "total")):
+        # `"k":v` and the comma or brace after it
+        entry = len(rfc8785.dumps({k: numbers[k]})) - 1
+        if used + entry <= METRICS_BYTES:
+            kept[k] = numbers[k]
+            used += entry
+    note = (
+        f"reward.json is {size} bytes as JSON, over the {METRICS_BYTES} a score keeps;"
+        " only its top-level numbers were kept"
+    )
+    return kept, note
 
 
 def _number(value: object) -> bool:
