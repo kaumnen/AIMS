@@ -49,6 +49,7 @@ GRACE_MS = 1000
 DRAIN_S = 5.0
 SAMPLES_END_S = 1.0
 QUIESCE_S = 2.0
+STATE_S = 5.0
 STDIN_POLL_S = 0.1
 STDIN_GRACE_S = 1.0
 MIB = 1024 * 1024
@@ -678,38 +679,77 @@ class DockerSandbox:
 
     async def pause(self) -> None:
         """Freeze every process of the sandbox. Exec deadlines stop running while it is frozen.
-        Pausing a paused or killed sandbox does nothing, also when two pauses race."""
+        Pausing a paused or killed sandbox does nothing, also when two pauses race.
+
+        A pause call that fails or is cut short may still have frozen the container. The
+        sandbox then counts as paused unless Docker says the container is not, so a later
+        resume still unfreezes it. The call raises unless Docker says the container froze."""
         async with self._freeze:
             if self._paused_at is not None or self._killed:
                 return
             try:
                 await self._container.pause()
-            except aiodocker.DockerError as e:
+            except asyncio.CancelledError:
+                if await settle(self._paused_in_docker()) is not False:
+                    self._frozen()
+                raise
+            except Exception as e:
                 if self._killed:
                     return
                 if not _conflict(e, "is already paused"):
-                    raise
-            self._paused_at = time.monotonic()
-            for deadline in self._deadlines:
-                self._hold(deadline)
+                    paused = await self._paused_in_docker()
+                    if paused is not False:
+                        self._frozen()
+                    if paused is not True:
+                        raise
+                    return
+            self._frozen()
 
     async def resume(self) -> None:
+        """Unfreeze the sandbox. An unpause call that fails or is cut short may still have
+        thawed the container: the sandbox counts as running once Docker says the container is
+        not paused. Otherwise it stays paused and the call raises, so a later resume tries
+        again."""
         async with self._freeze:
             if self._paused_at is None:
                 return
             if not self._killed:
                 try:
                     await self._container.unpause()
-                except aiodocker.DockerError as e:
-                    if not self._killed and not _conflict(e, "is not paused"):
+                except asyncio.CancelledError:
+                    if await settle(self._paused_in_docker()) is False:
+                        self._thawed()
+                    raise
+                except Exception as e:
+                    thawed = self._killed or _conflict(e, "is not paused")
+                    if not thawed and await self._paused_in_docker() is not False:
                         raise
-            self._frozen_s += time.monotonic() - self._paused_at
-            self._paused_at = None
-            now = asyncio.get_running_loop().time()
-            for deadline, left in self._deadlines.items():
-                if left is not None:
-                    deadline.reschedule(now + left)
-                    self._deadlines[deadline] = None
+            self._thawed()
+
+    async def _paused_in_docker(self) -> bool | None:
+        """Whether Docker has the container paused; None when it does not say in STATE_S."""
+        try:
+            async with asyncio.timeout(STATE_S):
+                info = await self._container.show()
+        except Exception:
+            return None
+        return bool((info.get("State") or {}).get("Paused"))
+
+    def _frozen(self) -> None:
+        self._paused_at = time.monotonic()
+        for deadline in self._deadlines:
+            self._hold(deadline)
+
+    def _thawed(self) -> None:
+        if self._paused_at is None:
+            return
+        self._frozen_s += time.monotonic() - self._paused_at
+        self._paused_at = None
+        now = asyncio.get_running_loop().time()
+        for deadline, left in self._deadlines.items():
+            if left is not None:
+                deadline.reschedule(now + left)
+                self._deadlines[deadline] = None
 
     def _hold(self, deadline: asyncio.Timeout) -> None:
         when = deadline.when()
@@ -869,9 +909,9 @@ async def _feed(stream: Any, data: bytes) -> None:
         log.debug("stdin not fully written: %s", e)
 
 
-def _conflict(e: aiodocker.DockerError, state: str) -> bool:
+def _conflict(e: Exception, state: str) -> bool:
     """Whether Docker refused because the container already is in the wanted state."""
-    return e.status == 409 and state in str(e.message)
+    return isinstance(e, aiodocker.DockerError) and e.status == 409 and state in str(e.message)
 
 
 def _info(container: DockerContainer, spec: SandboxSpec, image: dict[str, Any]) -> SandboxInfo:

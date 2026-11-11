@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any, cast
 
+import aiodocker
 import pytest
 from scripted import Script, Turn, call, models, profile
 
@@ -30,6 +31,9 @@ from aims.run.control import ControlGate
 from aims.run.job import Job, bundle_of, runner_for, scenario_jobs
 from aims.run.runner import RESTARTED, Bench, Options, Runner, seal_unsealed
 from aims.sandbox import DockerBackend
+from aims.sandbox import docker as docker_module
+from aims.sandbox.base import SandboxInfo, SandboxSpec
+from aims.sandbox.docker import DockerSandbox
 from aims.scenario import load
 
 pytestmark = pytest.mark.anyio
@@ -235,6 +239,130 @@ async def test_a_reply_without_calls_has_none_to_deny() -> None:
     gate.pause(["a"])
     assert (await gate.check(reply("a"))).action == "pause"
     assert gate.held_call("a") is None
+
+
+# Freezing a Docker sandbox, with no Docker
+
+
+LOST = aiodocker.DockerError(900, "Cannot connect to Docker Engine")
+
+
+class Container:
+    """A container whose pause and unpause take effect at the daemon while their answer is
+    lost when `lose` is set, or never comes with `stall`. `show` raises `state_error`, or waits
+    forever with `hang`."""
+
+    def __init__(self) -> None:
+        self.paused = False
+        self.lose = True
+        self.stall = False
+        self.fail = False
+        self.state_error: Exception | None = None
+        self.hang = False
+        self.calls: list[str] = []
+
+    async def pause(self) -> None:
+        self.calls.append("pause")
+        if self.fail:
+            raise aiodocker.DockerError(500, "cannot freeze")
+        self.paused = True
+        await self._answer()
+
+    async def unpause(self) -> None:
+        self.calls.append("unpause")
+        if self.fail:
+            raise aiodocker.DockerError(500, "cannot thaw")
+        self.paused = False
+        await self._answer()
+
+    async def _answer(self) -> None:
+        if self.stall:
+            await asyncio.Event().wait()
+        if self.lose:
+            raise LOST
+
+    async def show(self) -> dict[str, Any]:
+        self.calls.append("show")
+        if self.hang:
+            await asyncio.Event().wait()
+        if self.state_error is not None:
+            raise self.state_error
+        return {"State": {"Paused": self.paused}}
+
+
+def docker_sandbox(container: Container) -> DockerSandbox:
+    info = SandboxInfo("sb", "docker", "img", "sha256:" + "0" * 64, {})
+    owner: Any = object()
+    return DockerSandbox(owner, cast(Any, container), SandboxSpec(image="img"), info, "w", [], None)
+
+
+async def test_a_freeze_whose_answer_is_lost_counts_once_docker_says_it_froze() -> None:
+    container = Container()
+    box = docker_sandbox(container)
+    await box.pause()
+    assert (container.paused, box.paused) == (True, True)
+    await box.resume()
+    assert (container.paused, box.paused) == (False, False)
+    assert container.calls == ["pause", "show", "unpause", "show"]
+
+
+async def test_a_freeze_docker_refused_does_not_count() -> None:
+    container = Container()
+    container.fail = True
+    box = docker_sandbox(container)
+    with pytest.raises(aiodocker.DockerError, match="cannot freeze"):
+        await box.pause()
+    assert (container.paused, box.paused) == (False, False)
+
+
+async def test_an_unfreeze_docker_refused_keeps_the_sandbox_frozen() -> None:
+    container = Container()
+    container.lose = False
+    box = docker_sandbox(container)
+    await box.pause()
+    container.fail = True
+    with pytest.raises(aiodocker.DockerError, match="cannot thaw"):
+        await box.resume()
+    assert box.paused
+    container.fail = False
+    await box.resume()
+    assert (container.paused, box.paused) == (False, False)
+
+
+@pytest.mark.parametrize("silent", ["error", "hang"])
+async def test_a_freeze_docker_says_nothing_of_counts_so_a_later_unfreeze_runs(
+    monkeypatch: pytest.MonkeyPatch, silent: str
+) -> None:
+    monkeypatch.setattr(docker_module, "STATE_S", 0.05)
+    container = Container()
+    container.state_error = LOST if silent == "error" else None
+    container.hang = silent == "hang"
+    box = docker_sandbox(container)
+    async with asyncio.timeout(5):
+        with pytest.raises(aiodocker.DockerError):
+            await box.pause()
+        assert box.paused
+        container.lose = False
+        await box.resume()
+    assert (container.paused, box.paused) == (False, False)
+
+
+@pytest.mark.parametrize("call", ["pause", "unpause"])
+async def test_a_freeze_or_unfreeze_cut_short_follows_the_container(call: str) -> None:
+    container = Container()
+    container.lose = False
+    box = docker_sandbox(container)
+    if call == "unpause":
+        await box.pause()
+    container.stall = True
+    task = asyncio.create_task(box.pause() if call == "pause" else box.resume())
+    async with asyncio.timeout(5):
+        while container.calls[-1:] != [call]:  # noqa: ASYNC110
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert box.paused == container.paused == (call == "pause")
 
 
 # Sealing runs a dead process left open
