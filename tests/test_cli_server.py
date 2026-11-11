@@ -209,6 +209,42 @@ def test_ui_refuses_runner_options_without_its_runner(
     ]
 
 
+@pytest.mark.parametrize("value", ["nan", "inf", "NaN", "Infinity", "1e400"])
+def test_a_float_option_needs_a_finite_number(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, value: str
+) -> None:
+    started: list[object] = []
+
+    async def serve(o: UiOptions) -> int:
+        started.append(o)
+        return 0
+
+    class Stub:
+        def __init__(self, options: NodeOptions) -> None:
+            started.append(options)
+
+        async def run(self, stop: asyncio.Event) -> None:
+            pass
+
+    monkeypatch.setattr("aims.server.serve.serve", serve)
+    monkeypatch.setattr("aims.node.service.Node", Stub)
+    data = ["--data-dir", str(tmp_path / "data")]
+    nowhere = ["--server", "http://127.0.0.1:9"]
+    for args in (
+        ["images", "prune", "--dry-run", "--days"],
+        ["ui", "--no-open", "--no-runner", *data, "--keep-days"],
+        ["runner", *nowhere, *data, "--keep-days"],
+        ["monitor", "r1", "--runs-dir", str(tmp_path / "runs"), "--budget-usd"],
+        ["control", "r1", "pause", *nowhere, "--wait"],
+    ):
+        r = CliRunner().invoke(app, [*args, value], env={"AIMS_TOKEN": "x"})
+        assert (r.exit_code, type(r.exception)) == (2, SystemExit), (args, r.output)
+        assert args[-1] in r.output
+        assert "give a finite number" in r.output
+    assert started == []
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_the_runner_gets_its_audit_mode(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     seen: list[NodeOptions] = []
 

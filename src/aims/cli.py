@@ -47,6 +47,16 @@ def _scenario(value: Path | None) -> Path | None:
     return path
 
 
+def _finite(value: float | None) -> float | None:
+    """The value of a float option. nan and inf are a usage error, as each such option counts
+    days, seconds or dollars."""
+    import math
+
+    if value is not None and not math.isfinite(value):
+        raise typer.BadParameter("give a finite number")
+    return value
+
+
 def _settings(config: Path | None) -> Any:
     """Every config layer merged, or exit 1 with the problem."""
     from aims.config import ConfigError, load
@@ -252,6 +262,7 @@ def images_prune(
         float | None,
         typer.Option(
             min=0,
+            callback=_finite,
             help="Remove scenario images unused this many days. By default \\[images] keep_days.",
         ),
     ] = None,
@@ -1428,6 +1439,7 @@ def ui(
         float | None,
         typer.Option(
             min=0,
+            callback=_finite,
             help="Delete runs that ended this many days ago, with their monitor runs and scores,"
             " at start and once a day; a run in use stays. The local runner gets it too.",
         ),
@@ -1558,6 +1570,7 @@ def runner_cmd(
         float | None,
         typer.Option(
             min=0,
+            callback=_finite,
             help="Delete runs sealed this many days ago once the control plane has them."
             " Copies of other runners' runs go once unused this long, 7 days at most.",
         ),
@@ -1794,6 +1807,7 @@ def monitor_cmd(
         typer.Option(
             "--budget-usd",
             min=0,
+            callback=_finite,
             help="Spend cap of each monitor run, in USD, instead of the scenario's"
             " limits.monitor_cost_usd or the preset's.",
         ),
@@ -2102,7 +2116,9 @@ def control(
     wait: Annotated[
         float,
         typer.Option(
-            min=0, help="Seconds to wait for the runner to answer; 0 sends and does not wait."
+            min=0,
+            callback=_finite,
+            help="Seconds to wait for the runner to answer; 0 sends and does not wait.",
         ),
     ] = 10.0,
     server: ServerOption = None,
