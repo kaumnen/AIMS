@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from aims.events import (
+    MAX_INT,
     AuditSpill,
     BlobRef,
     Draft,
@@ -1851,3 +1852,100 @@ async def test_drops_of_records_with_no_exec_are_logged_as_lost(
     assert [(d["reason"], d["count"], d["ts_from"], d["ts_to"]) for d in lost] == [
         (LATE_DROP, 2, 1, 2)
     ]
+
+
+async def test_inode_numbers_past_what_the_log_holds_are_clamped(store: LocalEventStore) -> None:
+    big, bigger = 2**63, 2**64 - 1
+    fds = (Fd(0, "char"), Fd(big, "pipe"), Fd(bigger, "pipe"))
+    r = with_context(root(100), cwd="/work", env=(), fds=fds)
+    sb = FakeSandbox()
+    sb.steps.append(
+        step(
+            r,
+            Output(100, big, 4, PIPEFS, b"out!", at=Stamp(50, 0, 3)),
+            Output(100, bigger, 4, PIPEFS, b"err!", at=Stamp(60, 0, 4)),
+            Exit(100, 0, None, at=AT),
+        )
+    )
+    run_id, audited = await start(store, sb)
+    await audited.exec("x", timeout_s=5)
+    await audited.close()
+
+    evs = await events(store, run_id)
+    [started] = [ProcExec.model_validate(e.data) for e in evs if e.type == "proc.exec"]
+    assert [f.ino for f in started.fds or ()] == [0, MAX_INT, MAX_INT]
+    outs = {e.data["prefix"]: e.data for e in evs if e.type == "proc.output"}
+    # the two inodes stay apart where they are compared, though the log holds one number
+    assert (outs["out!"]["stream"], outs["err!"]["stream"]) == ("stdout", "stderr")
+    assert (outs["out!"]["inode"], outs["err!"]["inode"]) == (MAX_INT, MAX_INT)
+    assert not [e for e in evs if e.type == "audit.lost"]
+
+
+def refusing(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch, error: Exception, *, times: int = -1
+) -> list[int]:
+    """Make the store's append raise `error` for a batch that holds an exec of `bad`. Returns the
+    sizes of the batches it refused."""
+    real, refused = store.append, []
+
+    async def append(run_id: str, drafts: Sequence[Draft]) -> list[Event]:
+        bad = any(getattr(d.payload, "path", None) == "bad" for d in drafts)
+        if bad and len(refused) != times:
+            refused.append(len(drafts))
+            raise error
+        return await real(run_id, drafts)
+
+    monkeypatch.setattr(store, "append", append)
+    return refused
+
+
+async def test_a_record_the_log_refuses_costs_only_itself(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sb = FakeSandbox()
+    sb.steps.append(
+        step(
+            root(100),
+            child(101, 100, "ok", "1"),
+            child(102, 100, "bad"),
+            child(103, 100, "ok", "2"),
+            Exit(100, 0, None, at=AT),
+        )
+    )
+    run_id, audited = await start(store, sb)
+    refused = refusing(store, monkeypatch, ValueError("not canonical"))
+    result = await audited.exec("x", timeout_s=5)
+    await audited.close()
+
+    assert result.finished.exit_code == 0
+    assert refused[-1:] == [1]
+    evs = await events(store, run_id)
+    assert [e.data["argv"] for e in evs if e.type == "proc.exec"] == [
+        ["wrap", "sh"],
+        ["ok", "1"],
+        ["ok", "2"],
+    ]
+    assert kinds(evs).count("exec.finished") == 1
+    [lost] = [e.data for e in evs if e.type == "audit.lost"]
+    assert (lost["count"], lost["reason"]) == (1, audit_module.UNWRITTEN)
+
+
+async def test_a_failed_write_does_not_end_the_reader(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sb = FakeSandbox()
+    sb.steps.append(step(root(100)))
+    run_id, audited = await start(store, sb)
+    await audited.exec("x", timeout_s=5)
+    refused = refusing(store, monkeypatch, OSError("disk"), times=1)
+    sb.queue.put_nowait(child(101, 100, "bad"))
+    await asyncio.sleep(0.3)
+    sb.queue.put_nowait(child(102, 100, "ok"))
+    await asyncio.sleep(0.3)
+    await audited.close()
+
+    assert refused == [1]
+    evs = await events(store, run_id)
+    assert ["ok"] in [e.data["argv"] for e in evs if e.type == "proc.exec"]
+    [lost] = [e.data for e in evs if e.type == "audit.lost"]
+    assert (lost["count"], lost["reason"]) == (1, audit_module.UNWRITTEN)

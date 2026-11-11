@@ -17,10 +17,12 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from aims.aio import Pipe, read_in_thread, settle, shielded
 from aims.events import (
+    MAX_INT,
     AuditLevel,
     AuditLost,
     AuditSpill,
     CacheProbe,
+    ChainError,
     Content,
     Draft,
     EventStore,
@@ -126,6 +128,9 @@ ARCHIVE_PASS = 4 * 1024 * 1024 * 1024
 INTERNAL = "internal"
 _UNKNOWN = "\0unknown"
 LATE_DROP = "kernel records dropped past the audit caps outside a running exec"
+UNWRITTEN = "kernel records the run log did not take"
+# What the store raises for an event it cannot hold, before it writes anything.
+_REFUSED = (ValueError, RecursionError, ChainError)
 
 
 class SandboxStoppedError(Exception):
@@ -161,6 +166,11 @@ class _Spill:
     kinds: dict[str, int] = field(default_factory=dict)
     ts_from: int | None = None
     ts_to: int | None = None
+
+
+def _clamp(value: int) -> int:
+    """Keep a number the kernel reports within what the log holds."""
+    return max(-MAX_INT, min(value, MAX_INT))
 
 
 @dataclass(slots=True)
@@ -281,6 +291,7 @@ class AuditedSandbox:
         self._lock = asyncio.Lock()
         self._emit = asyncio.Lock()
         self._buffer: list[Draft] = []
+        self._write_failed = False
         self._owner: dict[int, str | None] = {}
         self._gone: OrderedDict[int, str | None] = OrderedDict()
         self._roots: OrderedDict[int, str] = OrderedDict()
@@ -768,15 +779,48 @@ class AuditedSandbox:
 
     async def _append(self, payloads: Sequence[Payload]) -> None:
         async with self._emit:
-            drafts = self._take()
-            drafts += [Draft(p, agent_id=self._agent_id) for p in payloads]
-            self._noted(await self._store.append(self._run_id, drafts))
+            own = [Draft(p, agent_id=self._agent_id) for p in payloads]
+            await self._write(self._take(), own)
 
     async def _flush(self) -> None:
         async with self._emit:
             drafts = self._take()
             if drafts:
-                self._noted(await self._store.append(self._run_id, drafts))
+                await self._write(drafts, [])
+
+    async def _write(self, kept: list[Draft], own: list[Draft]) -> None:
+        """Append the kernel records kept so far, then the caller's `own` events.
+
+        The log takes a batch whole or not at all. When it refuses one before writing a byte,
+        the kept records go in one by one, so a record the log cannot hold costs only itself.
+        Records that do not reach the log are counted as lost. An error on the caller's own
+        events is raised.
+        """
+        try:
+            events = await self._store.append(self._run_id, [*kept, *own])
+        except _REFUSED:
+            if not kept:
+                raise
+        except Exception:
+            self._unwritten(len(kept))
+            raise
+        else:
+            self._noted(events)
+            return
+        for draft in kept:
+            try:
+                events = await self._store.append(self._run_id, [draft])
+            except _REFUSED as e:
+                log.warning("the run log refused a %s record: %s", draft.payload.type, e)
+                self._unwritten(1)
+            else:
+                self._noted(events)
+        if own:
+            self._noted(await self._store.append(self._run_id, own))
+
+    def _unwritten(self, count: int) -> None:
+        if count:
+            self._losses.setdefault(UNWRITTEN, _Loss("sandbox")).add(Lost(count, UNWRITTEN))
 
     def _noted(self, events: Sequence[Event]) -> None:
         for folder, _ in self._shared:
@@ -805,14 +849,27 @@ class AuditedSandbox:
                     record = await queue.get()
             except TimeoutError:
                 self._waiting = False
-                await self._flush()
+                await self._keep()
                 continue
             self._waiting = False
             if isinstance(record, Exec):
                 record = await self._with_hash(record)
             self._handle(record)
             if len(self._buffer) >= FLUSH_N:
-                await self._flush()
+                await self._keep()
+
+    async def _keep(self) -> None:
+        """Flush for the reader of kernel records. A write that fails must not end the reader:
+        the records after it would pile up unread. `_write` has counted what was lost."""
+        try:
+            await self._flush()
+        except Exception:
+            # one traceback is enough while the log stays out of reach
+            show = log.debug if self._write_failed else log.exception
+            show("could not write kernel records to the run log")
+            self._write_failed = True
+        else:
+            self._write_failed = False
 
     async def _sample(self, queue: asyncio.Queue[Sample | Lost]) -> None:
         while True:
@@ -1022,7 +1079,7 @@ class AuditedSandbox:
         env, inherited = self._exec_env(record)
         fds = None
         if record.fds is not None:
-            fds = tuple(FdInfo(ino=f.ino, kind=f.kind) for f in record.fds)
+            fds = tuple(FdInfo(ino=_clamp(f.ino), kind=f.kind) for f in record.fds)
             if record.root and owner is not None and owner != INTERNAL:
                 self._exec_fds[owner] = (record.fds[1].ino, record.fds[2].ino)
                 if len(self._exec_fds) > MEMORY:
@@ -1151,7 +1208,7 @@ class AuditedSandbox:
             ProcOutput,
             rec,
             owner,
-            inode=rec.inode,
+            inode=_clamp(rec.inode),
             stream=stream,
             bytes=acc.nbytes,
             writes=acc.writes,
