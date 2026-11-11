@@ -1895,7 +1895,7 @@ def _below(text: str) -> str:
     if encodable(text):
         return text
     cut = next(i for i, c in enumerate(text) if not encodable(c))
-    return text[:cut] + ""
+    return text[:cut] + "\ue000"
 
 
 def _dump(value: Content) -> Any:
