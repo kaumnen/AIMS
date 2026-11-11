@@ -1364,6 +1364,10 @@ async def test_aims_control_sends_commands_and_reports_the_ack(
         "    reason: enough",
     ]
     assert (await control(cp, run_id, "list", "--agent", "a", token=cp.operator)).exit_code == 2
+    for wait in ("10", "0"):
+        waited = await control(cp, run_id, "list", "--wait", wait, token=cp.operator)
+        assert waited.exit_code == 2, waited.output
+        assert "--wait" in waited.output
 
     assert (await control(cp, run_id, "inject", token=cp.operator)).exit_code == 2
     assert (await control(cp, run_id, "kill", "--agent", "a", token=cp.operator)).exit_code == 2

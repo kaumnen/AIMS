@@ -2084,6 +2084,7 @@ EXIT_DROPPED, EXIT_PART_DONE, EXIT_NO_ANSWER = 4, 5, 6
 
 @app.command()
 def control(
+    ctx: typer.Context,
     run: Annotated[str, typer.Argument(help="The run's id.")],
     action: Annotated[
         str,
@@ -2124,8 +2125,13 @@ def control(
     import asyncio
 
     if action == "list":
-        for given, hint in ((agent, "--agent"), (text, "--text"), (reason, "--reason")):
-            if given is not None:
+        for given, hint in (
+            (agent is not None, "--agent"),
+            (text is not None, "--text"),
+            (reason is not None, "--reason"),
+            (_given(ctx, "wait"), "--wait"),
+        ):
+            if given:
                 raise typer.BadParameter(
                     "list takes no options but --server and --token-file", param_hint=hint
                 )
