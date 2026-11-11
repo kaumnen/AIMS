@@ -506,7 +506,9 @@ def _source_fields(scenario: Scenario) -> dict[str, str]:
 def _from_disk(root: Path) -> Iterator[_Entry]:
     st = os.lstat(root)
     if not stat.S_ISDIR(st.st_mode):
-        yield _disk_entry(root, "", st)
+        entry = _disk_entry(root, "", st)
+        if entry is not None:
+            yield entry
         return
     yield _Entry("", "dir", 0, int(st.st_mtime))
     for dirpath, dirnames, filenames in os.walk(root):
@@ -515,15 +517,21 @@ def _from_disk(root: Path) -> Iterator[_Entry]:
         rel = here.relative_to(root).as_posix()
         for name in [*dirnames, *sorted(n for n in filenames if n not in SKIP)]:
             child = here / name
-            yield _disk_entry(child, name if rel == "." else f"{rel}/{name}", os.lstat(child))
+            entry = _disk_entry(child, name if rel == "." else f"{rel}/{name}", os.lstat(child))
+            if entry is not None:
+                yield entry
 
 
-def _disk_entry(path: Path, name: str, st: os.stat_result) -> _Entry:
+def _disk_entry(path: Path, name: str, st: os.stat_result) -> _Entry | None:
+    """The entry of `path`, None for what is no link, directory or regular file, such as a
+    named pipe or a socket, which the scenario's loader skips too and which is never opened."""
     mtime = int(st.st_mtime)
     if stat.S_ISLNK(st.st_mode):
         return _Entry(name, "link", 0o777, mtime, target=os.readlink(path))
     if stat.S_ISDIR(st.st_mode):
         return _Entry(name, "dir", 0, mtime)
+    if not stat.S_ISREG(st.st_mode):
+        return None
     mode = EXEC_MODE if st.st_mode & 0o111 else FILE_MODE
     return _Entry(name, "file", mode, mtime, data=path.read_bytes())
 

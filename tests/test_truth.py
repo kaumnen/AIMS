@@ -9,6 +9,7 @@ import re
 import shutil
 import stat
 import tarfile
+import threading
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -449,6 +450,37 @@ def test_a_fork_of_a_run_that_kept_a_linked_plant_source_is_refused(scenario_dir
     kept.update(kind="link", mode=0o777, data="", target="../shared/settings.ini")
     with pytest.raises(ScenarioError, match=re.escape("plant notes: its source bait/settings")):
         truth.restore(snapshot, blobs, record)
+
+
+def test_a_named_pipe_in_a_source_folder_is_skipped_as_the_loader_skips_it(
+    scenario_dir: Path,
+) -> None:
+    pipe = scenario_dir / "files" / "data" / "sub" / "pipe"
+    os.mkfifo(pipe)
+    bundle = load(scenario_dir / "scenario.yaml")
+    assert not any(name.endswith("/pipe") for name in members(bundle.files))
+    done: list[truth.Prepared] = []
+    failed: list[BaseException] = []
+
+    def go() -> None:
+        try:
+            done.append(truth.prepare(bundle, seed=b"s"))
+        except BaseException as e:
+            failed.append(e)
+
+    thread = threading.Thread(target=go, daemon=True)
+    thread.start()
+    thread.join(5)
+    if thread.is_alive():
+        # A reader blocks in open() until a writer comes; open and close one so it ends.
+        os.close(os.open(pipe, os.O_WRONLY | os.O_NONBLOCK))
+        thread.join(5)
+        pytest.fail("truth.prepare opened the named pipe and waited for a writer")
+    assert not failed, failed
+    alice = members(done[0].files["alice"])
+    assert alice["work/data/sub/rows.csv"] == b"a,b\n"
+    assert not any(name.endswith("/pipe") for name in alice)
+    assert "data/sub/pipe" not in json.dumps(done[0].truth["sources"])
 
 
 def test_a_fork_restores_the_same_sandboxes_from_the_truth(scenario_dir: Path) -> None:
