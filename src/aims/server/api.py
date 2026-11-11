@@ -833,7 +833,7 @@ async def start_runs(
         except BudgetError as e:
             raise ProblemException(422, "Invalid budget", str(e), code="budget") from None
     agents = [agent_profile(settings.models, a, body.profile) for a in bundle.scenario.agents]
-    monitor = _monitor(settings, bundle.scenario, agents, body.monitor)
+    monitor = _monitor(settings, bundle.scenario, agents, body.monitor, body.budget)
     try:
         folder = await asyncio.to_thread(folder_tar, path / "scenario.yaml")
     except OSError as e:
@@ -979,7 +979,9 @@ async def fork_run(
     except (RunError, ProfileError, KeyError) as e:
         raise ProblemException(422, "Cannot fork", str(e), code="fork") from None
     agents = [*live, *origin_agents(origin)]
-    monitor = _monitor(settings, origin.bundle.scenario, agents, body.monitor)
+    # the scenario and caps the fork runs under, as its estimate prices them
+    scenario = (origin.full_bundle or origin.bundle).scenario
+    monitor = _monitor(settings, scenario, agents, body.monitor, origin.fork_budget(body.budget))
     try:
         jobs = fork_jobs(
             origin,
@@ -1014,10 +1016,14 @@ async def fork_run(
 
 
 def _monitor(
-    settings: Settings, scenario: Scenario, agents: list[Profile], preset: Preset | None
+    settings: Settings,
+    scenario: Scenario,
+    agents: list[Profile],
+    preset: Preset | None,
+    budget: BudgetOverride | None,
 ) -> ResolvedMonitor | None:
-    """The monitor of runs of `scenario` by `agents`: the config layers, the scenario, then
-    `preset`. None when it is off."""
+    """The monitor of runs of `scenario` by `agents` under the caps of `budget`: the config
+    layers, the scenario, then `preset`. None when it is off."""
     try:
         return monitor_for(
             settings.models,
@@ -1026,6 +1032,7 @@ def _monitor(
             agents,
             layers=settings.monitor,
             preset=preset,
+            budget=budget,
         )
     except (MonitorConfigError, ProfileError, TextError) as e:
         raise ProblemException(422, "Monitor cannot run", str(e), code="monitor") from None

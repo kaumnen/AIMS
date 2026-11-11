@@ -25,6 +25,7 @@ from aims.run.fork import CutAt, Origin, fork_profiles, fork_schedules, live_pro
 from aims.run.runner import Bench, Fork, Options, RunError, Runner, Texts, agent_profile
 from aims.run.runner import resolve_texts as texts_of
 from aims.scenario import Bundle, Scenario, ScenarioError, from_snapshot, load
+from aims.scenario import budget as budgets
 from aims.scenario.budget import BudgetOverride
 
 JobKind = Literal["scenario", "models.check", "selftest"]
@@ -144,10 +145,13 @@ def monitor_for(
     *,
     layers: Sequence[Mapping[str, Any]] = (),
     preset: Preset | None = None,
+    budget: BudgetOverride | None = None,
 ) -> ResolvedMonitor | None:
-    """The monitor of a run of `scenario` whose agents use `agents`, from these config layers,
-    with the versions of the signals it turns on. Raises MonitorConfigError, ProfileError or
-    TextError."""
+    """The monitor of a run of `scenario` under the caps of `budget` whose agents use `agents`,
+    from these config layers, with the versions of the signals it turns on. Its spend cap scales
+    with the steps those caps allow. Raises MonitorConfigError, ProfileError, TextError or
+    BudgetError."""
+    scenario = budgets.apply(scenario, budget)
     config = resolve_config(layers, scenario, preset)
     try:
         versions = signal_versions(config)

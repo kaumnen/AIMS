@@ -916,6 +916,7 @@ async def _run(**o: Any) -> int:
                 agents,
                 layers=settings.monitor,
                 preset=o["monitor"],
+                budget=budget,
             )
         except (MonitorConfigError, ProfileError, TextError, RunError) as e:
             return fail(escape(f"monitor: {e}"))

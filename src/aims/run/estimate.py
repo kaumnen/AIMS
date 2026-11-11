@@ -421,10 +421,11 @@ def plan(
     monitor = monitor_for(
         settings.models,
         settings.prompts,
-        scenario,
+        bundle.scenario,
         list(profiles.values()),
         layers=settings.monitor,
         preset=preset,
+        budget=budget,
     )
     return Plan(scenario, profiles, monitor, bundle.variant)
 
@@ -443,7 +444,8 @@ def plan_fork(
     fork resolves it, `budget` laid over the origin's. Raises RunError, ProfileError,
     MonitorConfigError, TextError or BudgetError."""
     bundle = origin.full_bundle or origin.bundle
-    scenario = budgets.apply(bundle.scenario, origin.fork_budget(budget))
+    merged = origin.fork_budget(budget)
+    scenario = budgets.apply(bundle.scenario, merged)
     steps = dict(cut.steps) if cut is not None else {a.id: step for a in scenario.agents}
     if profile is not None:
         chosen = settings.models.get(profile)
@@ -453,10 +455,11 @@ def plan_fork(
     monitor = monitor_for(
         settings.models,
         settings.prompts,
-        scenario,
+        bundle.scenario,
         [*profiles.values(), *origin_agents(origin)],
         layers=settings.monitor,
         preset=preset,
+        budget=merged,
     )
     model = {a.id for a in scenario.agents if not a.scripted}
     done = {a: n for a, n in steps.items() if a in model}

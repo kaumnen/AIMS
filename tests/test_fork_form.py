@@ -3,21 +3,26 @@ on forks, and an oversight and a budget that replace the scenario's on runs and 
 
 import asyncio
 import json
+import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 import click
 import pytest
 from cp import CONFIG, CP, control_plane
 from cp import SCENARIO as CONTROL
-from test_server import FakeRunner, push_forged
+from test_cli_monitor import backend
+from test_server import FakeRunner, push_forged, ship
 from typer.testing import CliRunner
 
 from aims.cli import app
 from aims.config import load as load_settings
 from aims.events import Draft, LocalEventStore, RunFinished, RunStarted
 from aims.prompts import Prompts
-from aims.run.runner import resolve_texts
+from aims.run import truth
+from aims.run.runner import Result, Runner, resolve_texts
+from aims.sandbox import DockerBackend
 from aims.scenario import load
 from aims.scenario.budget import BudgetOverride
 
@@ -167,8 +172,119 @@ async def test_runs_and_forks_take_a_budget_over_the_scenarios(
     )
 
 
-async def recorded(runs: Path, scenario: Path, config: Path) -> str:
-    """A sealed run of `scenario` as `aims run` records it, with no steps."""
+async def test_runs_and_forks_are_watched_by_the_monitor_their_estimate_prices(
+    cp: CP, local: LocalEventStore
+) -> None:
+    origin = await push_forged(
+        cp, local, "http://model.invalid/v1", budget={"every": {"steps": 2000}}
+    )
+    # the standard monitor calls the built-in sweep profile, which reads MODEL_API_KEY
+    keyed = FakeRunner(cp, "keyed", envs=["MODEL_API_KEY"])
+    await keyed.client.hello(keyed.hello_body())
+    await keyed.client.aclose()
+
+    async def cap(run_id: str) -> float:
+        job = await cp.state.db.job(run_id)
+        assert job is not None
+        return job.payload["monitor"]["budget_usd"]
+
+    async with cp.client(cp.operator) as c:
+
+        async def started(path: str, budget: dict[str, Any] | None) -> str:
+            body: dict[str, Any] = {"monitor": "standard", "budget": budget, "confirm": True}
+            if path == "/api/runs":
+                body["scenario"] = SCENARIO
+            r = await c.post(path, json=body)
+            assert r.status_code == 202, r.text
+            return r.json()["run_ids"][0]
+
+        async def ceiling(path: str, budget: dict[str, Any] | None) -> float:
+            params = {"monitor": "standard"}
+            if budget is not None:
+                params["budget"] = json.dumps(budget)
+            r = await c.get(path, params=params)
+            assert r.status_code == 200, r.text
+            return r.json()["parts"][0]["monitor"]["ceiling_usd"]
+
+        runs = ("/api/runs", "/api/scenarios/project/control/estimate")
+        forks = (f"/api/runs/{origin}/forks", f"/api/runs/{origin}/forks/estimate")
+        plain = await cap(await started(runs[0], None))
+        for (start, estimate), budget in [
+            (runs, {"every": {"steps": 5}}),
+            (runs, {"every": {"steps": 2000}}),
+            (forks, None),
+            (forks, {"every": {"steps": 5}}),
+        ]:
+            watched = await cap(await started(start, budget))
+            assert watched == await ceiling(estimate, budget)
+            assert watched != plain
+
+
+CREW = """\
+version: 1
+name: crew
+oversight: observe
+task:
+  instruction: Do what you are told.
+  environment: {image: python:3.13-slim}
+agents:
+  - id: a
+  - id: b
+    role: confederate
+    script:
+      - {run: "true"}
+      - {run: "true"}
+"""
+
+
+async def test_a_fork_is_watched_over_the_full_scenario_its_estimate_prices(
+    cp: CP, local: LocalEventStore
+) -> None:
+    path = cp.project.parent / "crew.yaml"
+    path.write_text(CREW)
+    prepared = truth.prepare(load(path), None)
+    # the public copy has no script, so it plans b's default 100 steps for the monitor
+    profile = cp.state.config.settings().models.get("scripted").snapshot()
+    agents = {
+        a.id: {
+            "profile": profile,
+            "schedule": [[None, profile]],
+            "texts": resolve_texts(Prompts(), a).snapshot(),
+        }
+        for a in prepared.scenario.agents
+    }
+    run_id = str(uuid.uuid7())
+    local.prepare_run(run_id)
+    first = RunStarted(
+        scenario="crew",
+        oversight="observe",
+        agents=["a", "b"],
+        config={"scenario": prepared.bundle.snapshot(), "agents": agents},
+        truth=truth.write(local.root / run_id, prepared.truth),
+    )
+    await local.create_run(first, blobs=prepared.bundle.blobs(), run_id=run_id)
+    await local.append(run_id, [Draft(RunFinished(status="completed"))])
+    keyed = FakeRunner(cp, "keyed", envs=["MODEL_API_KEY"])
+    await keyed.client.hello(keyed.hello_body())
+    await ship(local, keyed.client, run_id)
+    await keyed.client.aclose()
+    body = {"at": "a:0", "monitor": "standard"}
+    async with cp.client(cp.operator) as c:
+        r = await c.get(f"/api/runs/{run_id}/forks/estimate", params=body)
+        assert r.status_code == 200, r.text
+        ceiling = r.json()["parts"][0]["monitor"]["ceiling_usd"]
+        r = await c.post(f"/api/runs/{run_id}/forks", json=body | {"confirm": True})
+        assert r.status_code == 202, r.text
+        (fork,) = r.json()["run_ids"]
+    job = await cp.state.db.job(fork)
+    assert job is not None
+    assert job.payload["monitor"]["budget_usd"] == ceiling
+
+
+async def recorded(
+    runs: Path, scenario: Path, config: Path, budget: dict[str, Any] | None = None
+) -> str:
+    """A sealed run of `scenario` as `aims run` records it, with no steps, run under `budget`."""
     bundle = load(scenario)
     profile = load_settings(config).models.get("scripted")
     entry = {
@@ -180,7 +296,7 @@ async def recorded(runs: Path, scenario: Path, config: Path) -> str:
         scenario="control",
         oversight="observe",
         agents=["a"],
-        config={"scenario": bundle.snapshot(), "agents": {"a": entry}},
+        config={"scenario": bundle.snapshot(), "agents": {"a": entry}, "budget": budget},
     )
     async with await LocalEventStore.open(runs) as store:
         run_id = await store.create_run(started, blobs=bundle.blobs())
@@ -239,3 +355,42 @@ def test_aims_run_and_estimate_take_a_budget_and_say_it(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     caps = json.loads(result.stdout)["parts"][0]["caps"]["agents"]["a"]
     assert (caps["steps"], caps["cost_usd"]) == (100, None)
+
+
+def test_aims_run_is_watched_by_the_monitor_its_estimate_prices(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "aims.toml"
+    config.write_text(CONFIG)
+    scenario = tmp_path / "control.yaml"
+    scenario.write_text(CONTROL)
+    runs = tmp_path / "runs"
+    origin = asyncio.run(recorded(runs, scenario, config, {"every": {"steps": 2000}}))
+    watched: list[float] = []
+
+    async def run(self: Runner) -> Result:
+        assert self.watch is not None
+        watched.append(self.watch.budget_usd)
+        return Result(None, "cancelled", "not run")
+
+    monkeypatch.setattr(DockerBackend, "open", backend)
+    monkeypatch.setattr(Runner, "run", run)
+    monkeypatch.setenv("MODEL_API_KEY", "key")
+
+    def ceiling(*args: str) -> float:
+        common = ["--config", str(config), "--runs-dir", str(runs), "--no-server"]
+        common += ["--monitor", "standard", "--json", "--yes"]
+        result = CliRunner().invoke(app, ["run", *args, *common])
+        first = json.loads(result.stdout.splitlines()[0])
+        assert first["type"] == "estimate", result.output
+        return first["parts"][0]["monitor"]["ceiling_usd"]
+
+    plain = ceiling(str(scenario))
+    assert watched == [plain]
+    for args in (
+        [str(scenario), "--budget", "steps=5"],
+        [str(scenario), "--budget", "steps=2000"],
+        ["--replay", origin],
+        ["--replay", origin, "--budget", "steps=5"],
+    ):
+        assert ceiling(*args) == watched[-1] != plain
