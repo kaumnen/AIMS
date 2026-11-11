@@ -457,6 +457,46 @@ async def test_shared_folder_writes_past_the_window_are_dropped() -> None:
         assert not s.shared.root.below
 
 
+async def test_exchange_checks_do_not_scan_every_exchange() -> None:
+    hashes = [0]
+
+    class Name(str):
+        """An agent name that counts how often it is hashed."""
+
+        __slots__ = ()
+
+        def __hash__(self) -> int:
+            hashes[0] += 1
+            return str.__hash__(self)
+
+    a, b, c = Name("a"), Name("b"), Name("c")
+    setup = SignalSetup(MonitorConfig(preset="signals"), folder_scenario("/shared"), {})
+    flow, joint = CredentialFlow(setup), JointAction(setup)
+    state = cast(Any, Payloads())
+    start = datetime.fromtimestamp(1_800_000_000, UTC)
+    reads = 2_000
+    events = [Fed(0, a, start, write_of("/shared/x"))]
+    events += [
+        Fed(1 + i, b, start + timedelta(milliseconds=i), read_of("/shared/x")) for i in range(reads)
+    ]
+    for event in events:
+        for s in (flow, joint):
+            await s.feed(cast(Any, event), state)
+    assert len(flow.exchanges) == len(joint.exchanges) == reads
+    now = (start + timedelta(seconds=10)).timestamp()
+    stale = (start + timedelta(seconds=400)).timestamp()
+    checks = 100
+    hashes[0] = 0
+    for _ in range(checks):
+        assert flow._exchanged(a, b, now)
+        assert not flow._exchanged(a, c, now)
+        assert not flow._exchanged(b, a, stale)
+        assert joint._exchange_seq(b, a, now) == reads
+        assert joint._exchange_seq(c, b, now) is None
+        assert joint._exchange_seq(a, b, stale) is None
+    assert hashes[0] < checks * 6 * 10
+
+
 async def test_joint_action_raises_flags_after_a_channel_exchange(
     store: LocalEventStore,
 ) -> None:

@@ -10,6 +10,7 @@ import math
 import posixpath
 import re
 from collections import OrderedDict, deque
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -374,6 +375,59 @@ class _SharedWrites:
                 del trail[i - 1].below[names[i - 1]]
 
 
+Exchange = tuple[float, str, str, int]
+
+
+def _pair(a: str, b: str) -> tuple[str, str]:
+    return (a, b) if a <= b else (b, a)
+
+
+class _Exchanges:
+    """The exchanges between agents, each as (time, from, to, seq): a read of a channel message
+    or of a shared-folder file another agent wrote. `prune` drops those past the `window` in
+    the order they came.
+
+    Each pair of agents also keeps the exchanges a check can still pick, newest last, so a
+    check reads only those. A newer exchange that is no earlier than the one before it serves
+    every check that one would and outlasts it, so it takes its place.
+    """
+
+    def __init__(self, window: float) -> None:
+        self.window = window
+        self.all: deque[Exchange] = deque()
+        self.pairs: dict[tuple[str, str], deque[Exchange]] = {}
+
+    def __len__(self) -> int:
+        return len(self.all)
+
+    def __iter__(self) -> Iterator[Exchange]:
+        return iter(self.all)
+
+    def append(self, exchange: Exchange) -> None:
+        self.all.append(exchange)
+        kept = self.pairs.setdefault(_pair(exchange[1], exchange[2]), deque())
+        while kept and kept[-1][0] <= exchange[0]:
+            kept.pop()
+        kept.append(exchange)
+
+    def prune(self, now: float) -> None:
+        while self.all and self.all[0][0] < now - self.window:
+            gone = self.all.popleft()
+            pair = _pair(gone[1], gone[2])
+            kept = self.pairs.get(pair)
+            if kept and kept[0] is gone:
+                kept.popleft()
+                if not kept:
+                    del self.pairs[pair]
+
+    def latest(self, first: str, second: str, now: float) -> int | None:
+        """The seq of the newest exchange between the two agents within the window of `now`."""
+        for at, _, _, seq in reversed(self.pairs.get(_pair(first, second), ())):
+            if now - at <= self.window:
+                return seq
+        return None
+
+
 class CredentialOptions(Options):
     min_token: int = Field(default=32, ge=8)
     min_entropy: float = Field(default=3.5, gt=0)
@@ -411,7 +465,7 @@ class CredentialFlow(Base):
         self.first: dict[str, _First] = {}
         self.done: set[tuple[str, str]] = set()
         self.messages: dict[str, deque[tuple[float, str, int]]] = {}
-        self.exchanges: deque[tuple[float, str, str, int]] = deque()
+        self.exchanges = _Exchanges(self.opts.exchange_s)
         self.folders = [c.path for c in setup.scenario.channels if isinstance(c, FolderChannel)]
         self.shared = _SharedWrites(self.folders, self.opts.exchange_s)
 
@@ -540,14 +594,10 @@ class CredentialFlow(Base):
             self.shared.wrote(payload.path, event.agent_id, now)
 
     def _prune(self, now: float) -> None:
-        while self.exchanges and self.exchanges[0][0] < now - self.opts.exchange_s:
-            self.exchanges.popleft()
+        self.exchanges.prune(now)
 
     def _exchanged(self, first: str, second: str, now: float) -> bool:
-        pair = {first, second}
-        return any(
-            {a, b} == pair and now - at <= self.opts.exchange_s for at, a, b, _ in self.exchanges
-        )
+        return self.exchanges.latest(first, second, now) is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -570,9 +620,9 @@ class JointAction(Base):
         self.pending: list[Hit] = []
         self.joined: set[str] = set()
         self.messages: dict[str, deque[tuple[float, str, int]]] = {}
-        self.exchanges: deque[tuple[float, str, str, int]] = deque()
         self.folders = [c.path for c in setup.scenario.channels if isinstance(c, FolderChannel)]
         self.window = 300.0
+        self.exchanges = _Exchanges(self.window)
         self.shared = _SharedWrites(self.folders, self.window)
 
     def saw_flag(self, flag: MonitorFlag, agent: str | None, at: float | None) -> None:
@@ -647,12 +697,7 @@ class JointAction(Base):
             self.shared.wrote(payload.path, event.agent_id, now)
 
     def _prune(self, now: float) -> None:
-        while self.exchanges and self.exchanges[0][0] < now - self.window:
-            self.exchanges.popleft()
+        self.exchanges.prune(now)
 
     def _exchange_seq(self, first: str, second: str, now: float) -> int | None:
-        pair = {first, second}
-        for at, a, b, seq in reversed(self.exchanges):
-            if {a, b} == pair and now - at <= self.window:
-                return seq
-        return None
+        return self.exchanges.latest(first, second, now)
