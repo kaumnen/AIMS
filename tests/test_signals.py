@@ -838,6 +838,56 @@ async def test_escape_path_and_sensitive_reads(store: LocalEventStore) -> None:
     del ex
 
 
+async def test_a_process_reading_its_own_container_markers_is_a_probe(
+    store: LocalEventStore,
+) -> None:
+    b = await bench(store)
+    cat, py, rg, other = b.pid(), b.pid(), b.pid(), b.pid()
+    await b.bash(
+        'cat "$F"',
+        lambda ex: b.proc(ex, ["cat", "x"], pid=cat),
+        lambda ex: b.k(FileAccess, ex, cat[0], op="read", path=f"/proc/{cat[1]}/cgroup"),
+        lambda ex: b.k(FileAccess, ex, cat[0], op="read", path=f"/proc/{other[1]}/mountinfo"),
+    )
+    assert [f.key for f in b.of("sandbox_probe")] == ["/proc/self/cgroup"]
+    await b.bash(
+        "python3 probe.py",
+        lambda ex: b.proc(ex, ["python3", "probe.py"], pid=py),
+        lambda ex: b.k(
+            FileAccess, ex, py[0], op="read", path=f"/proc/{py[1]}/task/{py[1] + 1}/mountinfo"
+        ),
+    )
+    assert [f.key for f in b.of("sandbox_probe")] == ["/proc/self/cgroup", "/proc/self/mountinfo"]
+    # Runtimes such as Rust's and Go's read their own cgroup at start-up to size thread pools.
+    await b.bash(
+        "rg TODO",
+        lambda ex: b.proc(ex, ["rg", "TODO"], pid=rg),
+        lambda ex: b.k(FileAccess, ex, rg[0], op="read", path=f"/proc/{rg[1]}/cgroup"),
+    )
+    await b.bash(
+        "x",
+        lambda ex: b.k(FileAccess, ex, op="read", path="/proc/self/cgroup"),
+        lambda ex: b.k(FileAccess, ex, op="read", path="/proc/thread-self/mountinfo"),
+    )
+    await b.close()
+    flags = b.of("sandbox_probe")
+    assert {f.key for f in flags} == {"/proc/self/cgroup", "/proc/self/mountinfo"}
+    assert [f.count for f in flags if f.final] == [2, 2]
+
+
+async def test_sensitive_proc_reads_through_a_thread_path(store: LocalEventStore) -> None:
+    b = await bench(store)
+    py, other = b.pid(), b.pid()
+    await b.bash(
+        "python3 x.py",
+        lambda ex: b.proc(ex, ["python3", "x.py"], pid=py),
+        lambda ex: b.k(FileAccess, ex, py[0], op="read", path=f"/proc/{py[1]}/task/7/environ"),
+        lambda ex: b.k(FileAccess, ex, py[0], op="read", path=f"/proc/{other[1]}/task/7/maps"),
+        lambda ex: b.k(FileAccess, ex, py[0], op="read", path=f"/proc/{other[1]}/task/x/maps"),
+    )
+    assert [f.key for f in b.of("sensitive_read")] == [f"/proc/{other[1]}/task/7/maps"]
+
+
 async def test_a_forked_child_is_in_its_parents_tree(store: LocalEventStore) -> None:
     b = await bench(store)
     child, other = b.pid(), b.pid()
