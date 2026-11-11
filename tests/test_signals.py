@@ -2298,3 +2298,84 @@ async def test_file_writes_record_phase_and_last_writer(store: LocalEventStore) 
     assert w is not None
     assert [x.phase for x in w.writes] == ["agent", "verifier"]
     assert w.writes[0].exec_id == ex.id
+
+
+def scanned(state: State, agent: str | None, directory: str) -> bool:
+    """`wrote_under` as it was before folders were indexed: a scan of every tracked file."""
+    prefix = directory.rstrip("/") + "/"
+    return any(
+        a == agent and path.startswith(prefix) and f.agent_last
+        for (a, path), f in state.files.items()
+    )
+
+
+WRITTEN = ["/work/a", "/work/a/b.py", "/work/a/c/d.py", "/work//e", "/work/a/", "/", "/x", "rel/f"]
+FOLDERS = ["", "/", "//", "/work", "/work/", "/work//", "/work/a", "/work/a/c", "/wor", "rel", "/x"]
+
+
+async def test_wrote_under_matches_a_scan_of_every_tracked_file(store: LocalEventStore) -> None:
+    b = await bench(store)
+    assert b.engine is not None
+    state = b.engine.state
+    execs = [
+        await b.exec("x"),
+        await b.exec("seed", phase="setup"),
+        await b.exec("score", phase="verifier"),
+        None,
+    ]
+    rng = random.Random(186)
+    for _ in range(300):
+        ex, who = rng.choice(execs), rng.choice([AGENT, None])
+        path, target = rng.choice(WRITTEN), rng.choice(WRITTEN)
+        match rng.randrange(4):
+            case 0:
+                op = rng.choice(["write", "delete", "rename", "symlink", "link", "read"])
+                await b.emit(b.k(FileAccess, ex, op=op, path=path, target=target), agent=who)
+            case 1:
+                await b.emit(b.k(FileWrite, ex, path=path, size=1), agent=who)
+            case 2:
+                await b.emit(b.k(FileSetattr, ex, path=path, valid=8, size=0), agent=who)
+            case _:
+                kind = rng.choice(["added", "modified", "meta", "removed"])
+                await b.snapshot(ex, change(path, kind), agent=who or AGENT)
+        for agent in (AGENT, None):
+            for folder in FOLDERS:
+                assert state.wrote_under(agent, folder) == scanned(state, agent, folder)
+
+
+class Reads(dict[Any, Any]):
+    """A dict that counts the reads of all its entries."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reads = 0
+
+    def __iter__(self) -> Any:
+        self.reads += 1
+        return super().__iter__()
+
+    def keys(self) -> Any:
+        self.reads += 1
+        return super().keys()
+
+    def values(self) -> Any:
+        self.reads += 1
+        return super().values()
+
+    def items(self) -> Any:
+        self.reads += 1
+        return super().items()
+
+
+async def test_wrote_under_does_not_read_every_tracked_file(store: LocalEventStore) -> None:
+    b = await bench(store)
+    assert b.engine is not None
+    state = b.engine.state
+    state.files = files = Reads()
+    ex = await b.exec("pip install x")
+    await b.emit(*[b.k(FileWrite, ex, path=f"/work/pkg/m{i}.py", size=1) for i in range(200)])
+    before = files.reads
+    for _ in range(100):
+        assert state.wrote_under(AGENT, "/work/pkg")
+        assert not state.wrote_under(AGENT, "/opt/lib")
+    assert files.reads == before

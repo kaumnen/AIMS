@@ -231,6 +231,8 @@ class State:
         self.finished: dict[str | None, AgentFinished] = {}
         self.scored: dict[str | None, tuple[int, TaskScored]] = {}
         self.files: dict[tuple[str | None, str], FileState] = {}
+        # How many files each agent wrote last under a folder, by the folder with a slash.
+        self._under: dict[tuple[str | None, str], int] = {}
         self._pids: dict[int, list[ProcNode]] = {}
         self._ns: dict[tuple[str | None, int], list[ProcNode]] = {}
         self._stdio: dict[tuple[str | None, int], str] = {}
@@ -451,11 +453,7 @@ class State:
 
     def wrote_under(self, agent_id: str | None, directory: str) -> bool:
         """Whether the latest write to some file under `directory` was the agent's."""
-        prefix = directory.rstrip("/") + "/"
-        return any(
-            a == agent_id and path.startswith(prefix) and f.agent_last
-            for (a, path), f in self.files.items()
-        )
+        return (agent_id, directory.rstrip("/") + "/") in self._under
 
     def exec_wrote(self, agent_id: str | None, path: str, exec_id: str | None) -> bool:
         """Whether the exec `exec_id` wrote `path`."""
@@ -662,14 +660,30 @@ class State:
         )
         state = self.files.setdefault((event.agent_id, path), FileState())
         state.writes = [*state.writes[-HISTORY + 1 :], write]
+        was = state.agent_last
         if kind == "delete":
             state.agent_last = False
             state.content = None
-            return
-        state.agent_last = agent
-        state.agent_ever = state.agent_ever or agent
-        if snapshot:
-            state.content = content
+        else:
+            state.agent_last = agent
+            state.agent_ever = state.agent_ever or agent
+            if snapshot:
+                state.content = content
+        if state.agent_last != was:
+            self._count_under(event.agent_id, path, 1 if state.agent_last else -1)
+
+    def _count_under(self, agent_id: str | None, path: str, step: int) -> None:
+        """Count `path` in or out of each folder above it: every part of it that ends in a
+        slash, as `wrote_under` asks."""
+        end = path.find("/")
+        while end != -1:
+            key = (agent_id, path[: end + 1])
+            n = self._under.get(key, 0) + step
+            if n:
+                self._under[key] = n
+            else:
+                del self._under[key]
+            end = path.find("/", end + 1)
 
     def _change(self, event: Event, change: FsChangeRecord) -> None:
         kind = "delete" if change.change == "removed" else "snapshot"
