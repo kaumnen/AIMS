@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 from aiodocker.containers import DockerContainer
+from aiodocker.execs import Exec
 from aiodocker.volumes import DockerVolume
 
 from aims.events import ExecStarted, LocalEventStore, RunStarted, SandboxArchived
@@ -390,3 +391,103 @@ async def test_a_create_cancelled_as_the_tracer_confirms_unregisters_the_sandbox
             await task
     assert tracer.routes == []
     assert await leftovers(backend, run_id) == (before, set())
+
+
+SLEEPS = "sleep 271 & sleep 272; echo never"
+
+
+async def sleeps(sb: AuditedSandbox) -> list[str]:
+    """The processes of `SLEEPS` still in the sandbox, its shell and wrapper among them."""
+    return [p.command for p in await sb.sandbox.processes() if "sleep 27" in p.command]
+
+
+async def sleeping(sb: AuditedSandbox, command: str = SLEEPS) -> asyncio.Task[Any]:
+    """`command`, which runs `SLEEPS`, as an exec, once both sleeps are up."""
+    task = asyncio.create_task(sb.exec(command, timeout_s=60))
+    async with asyncio.timeout(30):
+        while True:
+            if {"sleep 271", "sleep 272"} <= set(await sleeps(sb)):
+                return task
+            await asyncio.sleep(0.05)
+
+
+@pytest.mark.parametrize("command", [SLEEPS, f"{SLEEPS} \ud800 é"])
+async def test_a_cancelled_exec_ends_what_it_started(
+    backend: DockerBackend, store: LocalEventStore, command: str
+) -> None:
+    run_id, sb = await sandbox(backend, store)
+    try:
+        task = await sleeping(sb, command)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            async with asyncio.timeout(30):
+                await task
+        left = await sleeps(sb)
+    finally:
+        await sb.close()
+
+    assert left == []
+    finished = (await store.events(run_id, types=["exec.finished"]))[0].data
+    assert (finished["end"], finished["leftover"]) == ("cancelled", [])
+
+
+async def test_a_second_cancel_while_an_exec_ends_its_processes_lets_it_finish(
+    backend: DockerBackend, store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id, sb = await sandbox(backend, store)
+    cancelled, ending, release = False, asyncio.Event(), asyncio.Event()
+    inspect = Exec.inspect
+
+    async def held_inspect(self: Exec) -> dict[str, Any]:
+        if cancelled and not ending.is_set():
+            ending.set()
+            await release.wait()
+        return await inspect(self)
+
+    monkeypatch.setattr(Exec, "inspect", held_inspect)
+    try:
+        task = await sleeping(sb)
+        cancelled = True
+        task.cancel()
+        waiter = asyncio.ensure_future(ending.wait())
+        await asyncio.wait({task, waiter}, timeout=30, return_when=asyncio.FIRST_COMPLETED)
+        waiter.cancel()
+        if ending.is_set():
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            async with asyncio.timeout(30):
+                await task
+        left = await sleeps(sb)
+    finally:
+        release.set()
+        await sb.close()
+
+    assert left == []
+    assert ending.is_set()
+    finished = (await store.events(run_id, types=["exec.finished"]))[0].data
+    assert finished["end"] == "cancelled"
+
+
+async def test_a_cancelled_exec_in_a_paused_sandbox_ends_at_once(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    """A frozen sandbox cannot run the kill, so the exec stays frozen with it."""
+    run_id, sb = await sandbox(backend, store)
+    inner = sb.sandbox
+    assert isinstance(inner, DockerSandbox)
+    try:
+        task = await sleeping(sb)
+        await inner.pause()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            async with asyncio.timeout(10):
+                await task
+        await inner.resume()
+    finally:
+        await sb.close()
+
+    finished = (await store.events(run_id, types=["exec.finished"]))[0].data
+    assert finished["end"] == "cancelled"

@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -52,7 +53,24 @@ QUIESCE_S = 2.0
 STATE_S = 5.0
 STDIN_POLL_S = 0.1
 STDIN_GRACE_S = 1.0
+END_S = 5.0
+END_POLL_S = 0.05
 MIB = 1024 * 1024
+# Kills the exec whose command line hashes to $1, with the busybox at $2. It sends SIGKILL to
+# the process group of each child of the exec, the group aims-exec ends at the deadline, then
+# to the exec itself.
+KILL_EXEC = r"""
+b=$2
+for p in $($b sha256sum /proc/[0-9]*/cmdline 2>/dev/null |
+    $b sed -n "s|^$1  /proc/\([0-9]*\)/cmdline\$|\1|p"); do
+  for c in $($b grep -l "^PPid:[[:space:]]*$p\$" /proc/[0-9]*/status 2>/dev/null |
+      $b sed "s|^/proc/\([0-9]*\)/status\$|\1|"); do
+    $b kill -KILL -$c $c
+  done
+  $b kill -KILL $p
+done 2>/dev/null
+exit 0
+"""
 # Tells this process from an earlier one with its pid, such as pid 1 of a restarted container.
 INSTANCE = uuid.uuid4().hex
 MOUNTINFO = "/proc/self/mountinfo"
@@ -611,10 +629,11 @@ class DockerSandbox:
         def elapsed() -> int:
             return int((time.monotonic() - start) * 1000)
 
+        user = f"{uid}:{uid if gid is None else gid}"
         try:
             exe = await self._container.exec(
                 list(argv),
-                user=f"{uid}:{uid if gid is None else gid}",
+                user=user,
                 workdir=cwd,
                 stdout=True,
                 stderr=True,
@@ -655,6 +674,10 @@ class DockerSandbox:
             end = "timeout"
         except aiodocker.DockerError as e:
             return Outcome("failed", None, pid, elapsed(), error=e.message)
+        except asyncio.CancelledError:
+            # Docker leaves an exec running when its stream closes.
+            await settle(self._end(exe, argv, user))
+            raise
         finally:
             self._deadlines.pop(deadline, None)
         duration = elapsed()
@@ -671,6 +694,35 @@ class DockerSandbox:
         if active >= timeout_ms:
             end = "timeout"
         return Outcome(end, exit_code, pid, duration)
+
+    async def _end(self, exe: Any, argv: Sequence[str], user: str) -> None:
+        """End what a cancelled exec started. Like aims-exec at the deadline it kills the
+        process group of the exec's child, but with SIGKILL at once. Docker has no call for
+        this, so a kill runs in the sandbox as the exec's user and finds the exec by its command
+        line. An exec still starting is waited for, up to `END_S` in all.
+
+        A paused sandbox runs nothing, so there the exec stays frozen until the sandbox is
+        resumed or killed."""
+        if self._killed or self._paused_at is not None:
+            return
+        digest = hashlib.sha256(_cmdline(argv)).hexdigest()
+        busybox = f"{TOOLBOX}/busybox"
+        kill = [busybox, "sh", "-c", KILL_EXEC, "sh", digest, busybox]
+        sandbox = self._container.id[:12]
+        try:
+            async with asyncio.timeout(END_S):
+                while True:
+                    state = await exe.inspect()
+                    if state.get("Running"):
+                        if state.get("Pid"):
+                            await _call(self._container, kill, user)
+                    elif state.get("ExitCode") is not None or state.get("Pid"):
+                        return
+                    await asyncio.sleep(END_POLL_S)
+        except TimeoutError:
+            log.warning("a cancelled exec in %s did not end in %s s", sandbox, END_S)
+        except Exception as e:
+            log.warning("could not end a cancelled exec in %s: %s", sandbox, e)
 
     async def processes(self) -> list[Proc]:
         top = await self._container.top(ps_args="-o pid,ppid,uid,args")
@@ -945,6 +997,24 @@ async def _read_feeding(
         reader.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await reader
+
+
+def _cmdline(argv: Sequence[str]) -> bytes:
+    """`argv` as /proc/PID/cmdline shows it once Docker ran it. Docker reads each lone
+    surrogate as U+FFFD, as the UTF-16 decoder here does."""
+    text = "".join(f"{a}\0" for a in argv)
+    return text.encode("utf-16", "surrogatepass").decode("utf-16", "replace").encode()
+
+
+async def _call(container: DockerContainer, argv: list[str], user: str) -> None:
+    """Run `argv` in `container` as `user` and wait for it to end."""
+    exe = await container.exec(argv, user=user, workdir="/", stdout=True, stderr=True)
+    stream = await exe.start(detach=False).__aenter__()
+    try:
+        while await stream.read_out() is not None:
+            pass
+    finally:
+        await stream.close()
 
 
 async def _feed(stream: Any, data: bytes) -> None:
