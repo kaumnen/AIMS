@@ -159,12 +159,19 @@ class FakeActuator:
         self.asked: list[HumanRequest] = []
         self.pause_gate: asyncio.Event | None = None
         self.prompt_error: Exception | None = None
+        self.pause_error: Exception | None = None
+        self.freeze_error: Exception | None = None
 
     async def pause(self, agents: Sequence[str], reason: str) -> None:
+        """`pause_error` fails before any agent is paused, `freeze_error` after."""
         self.log.append(("pause", tuple(agents), reason))
+        if self.pause_error is not None:
+            raise self.pause_error
         self.paused_now.update(agents)
         if self.pause_gate is not None:
             await self.pause_gate.wait()
+        if self.freeze_error is not None:
+            raise self.freeze_error
 
     async def resume(self, agents: Sequence[str], then: str = "continue") -> None:
         self.log.append(("resume", tuple(agents), then))
@@ -1089,6 +1096,135 @@ async def test_a_decision_taken_while_pausing_joins_the_pause(tmp_path: Path) ->
         [pause] = h.monitor._pauses
         assert [e.data["layer"] for e in pause.flags] == ["sweep", "signal"]
         assert pause.task is not None
+
+
+async def test_a_pause_whose_freeze_fails_still_times_out(tmp_path: Path) -> None:
+    config = {"sweeps": [], "policy": {"pause_timeout_s": 0.2}}
+    async with harness(tmp_path, config=config) as h:
+        h.actuator.freeze_error = RuntimeError("409 container is not running")
+        await h.add(started())
+        await h.bad(importance=4)
+        await h.monitor.barrier()
+        [pause] = h.monitor._pauses
+        assert pause.task is not None
+        await h.until(lambda: h.actuator.kinds() == ["pause", "kill"])
+        assert "not cleared within 0.2 s" in h.actuator.log[-1][2]
+
+
+async def test_a_pause_whose_freeze_fails_is_still_reviewed_and_resumed(tmp_path: Path) -> None:
+    script = Script(*[call("exec", cmd="pytest") for _ in range(4)])
+    config = sweep_config(every=1) | {"policy": {"pause_timeout_s": 5}}
+    async with harness(tmp_path, config=config, script=script) as h:
+        h.actuator.prompt = agent_prompt()
+        h.actuator.freeze_error = RuntimeError("409 container is not running")
+        await swept_pause(h)
+        await h.until(lambda: h.actuator.kinds() == ["pause", "resume"])
+        assert not h.actuator.paused("a")
+        assert h.monitor._pauses == []
+
+
+async def test_a_pause_that_paused_no_agent_is_dropped(tmp_path: Path) -> None:
+    config = {"sweeps": [], "policy": {"pause_timeout_s": 30}}
+    async with harness(tmp_path, config=config) as h:
+        h.actuator.pause_error = RuntimeError("the runner is gone")
+        await h.add(started())
+        await h.bad(importance=4)
+        await h.monitor.barrier()
+        assert h.monitor._pauses == []
+        h.actuator.pause_error = None
+        await h.bad(call_id="t2", importance=4)
+        await h.monitor.barrier()
+        assert h.actuator.kinds() == ["pause", "pause"]
+        assert len(h.monitor._pauses) == 1
+
+
+async def test_a_cancel_while_pausing_drops_the_pause_and_propagates(tmp_path: Path) -> None:
+    async with harness(tmp_path) as h:
+        h.actuator.pause_gate = asyncio.Event()
+        await h.add(started())
+        await h.bad(importance=4)
+        await h.until(lambda: h.actuator.kinds() == ["pause"])
+        consumer = h.monitor._consumer
+        assert consumer is not None
+        consumer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(consumer, 1)
+        assert h.monitor._pauses == []
+
+
+RUN_SCOPE = {"categories": {"scorer_tampering": {"scope": "run"}}}
+
+
+async def test_a_run_wide_pause_holds_an_agent_that_starts_later(tmp_path: Path) -> None:
+    script = Script(*[call("exec", cmd="pytest") for _ in range(4)])
+    config = sweep_config(every=1) | {"policy": {"pause_timeout_s": 5, **RUN_SCOPE}}
+    async with harness(tmp_path, config=config, script=script, agents=("a", "b")) as h:
+        h.actuator.prompt = agent_prompt()
+        h.actuator.pause_gate = asyncio.Event()
+        await swept_pause(h)
+        assert h.actuator.log[0][:2] == ("pause", ("a", "b"))
+        await h.add(started(), "b")
+        await h.monitor.barrier()
+        assert h.actuator.paused("b")
+        h.actuator.pause_gate.set()
+        await h.until(lambda: h.actuator.kinds() == ["pause", "resume"])
+        assert h.actuator.log[1][:2] == ("resume", ("a", "b"))
+        assert not h.actuator.paused("b")
+        actions = [(e.data["action"], e.data["agents"]) for e in await h.of("monitor.action")]
+        assert actions == [("pause", ["a", "b"]), ("resume", ["a", "b"])]
+
+
+async def test_a_pause_reviews_only_the_agents_that_started(tmp_path: Path) -> None:
+    script = Script(*[call("exec", cmd="pytest") for _ in range(4)])
+    config = sweep_config(every=1) | {"policy": {"pause_timeout_s": 5}}
+    async with harness(tmp_path, config=config, script=script, agents=("a", "b")) as h:
+        h.actuator.prompt = agent_prompt()
+        await h.add(started())
+        call_event = await h.add(ToolCall(call_id="e1", name="exec", arguments="{}"))
+        run_flag = MonitorFlag(
+            layer="sweep",
+            source="main",
+            lane="full",
+            category="scorer_tampering",
+            importance=4,
+            evidence=[call_event.seq],
+            justification="edits the tests",
+        )
+        h.sweeps.result = lambda sweeper, trigger: SweepResult(flags=[Draft(run_flag, None)])
+        await step(h, 1)
+        await h.monitor.barrier()
+        await h.until(lambda: h.actuator.kinds() == ["pause", "resume"])
+        assert [entry[1] for entry in h.actuator.log] == [("a", "b"), ("a", "b")]
+        assert len(script.requests) == 4
+
+
+async def test_a_run_wide_pause_skips_only_the_finished_agents(tmp_path: Path) -> None:
+    config = {"sweeps": [], "policy": {"pause_timeout_s": 0.3, **RUN_SCOPE}}
+    async with harness(tmp_path, config=config, agents=("a", "b", "c")) as h:
+        await h.add(started())
+        await h.add(started(), "c")
+        await h.add(AgentFinished(reason="submitted", steps=1), "c")
+        await h.bad(importance=4)
+        await h.monitor.barrier()
+        assert [entry[:2] for entry in h.actuator.log] == [("pause", ("a", "b"))]
+        await h.add(started(), "b")
+        await h.monitor.barrier()
+        assert h.actuator.paused("b")
+        await h.until(lambda: h.actuator.kinds() == ["pause", "kill"])
+
+
+async def test_an_agent_that_never_started_is_not_paused_once_the_agents_stopped(
+    tmp_path: Path,
+) -> None:
+    config = {"sweeps": [], "policy": {"pause_timeout_s": 30, **RUN_SCOPE}}
+    async with harness(tmp_path, config=config, agents=("a", "b")) as h:
+        await h.add(started())
+        await h.add(AgentFinished(reason="submitted", steps=1))
+        await h.monitor.agents_done()
+        await h.bad(importance=4)
+        await h.monitor.barrier()
+        assert len(await h.of("monitor.flag")) == 1
+        assert h.actuator.log == []
 
 
 async def test_offline_rerun_reads_the_origin(tmp_path: Path) -> None:

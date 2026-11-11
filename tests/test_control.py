@@ -514,3 +514,34 @@ async def test_a_command_sent_twice_while_running_is_carried_out_once(tmp_path: 
         await asyncio.gather(first, second)
     assert calls == ["kill"]
     assert [c for c, _ in acks] == ["c1", "c1"]
+
+
+async def test_a_command_answers_with_what_did_not_take_effect(tmp_path: Path) -> None:
+    from aims.models import DeltaBus
+    from aims.node.link import Link
+    from aims.wire import Ack, CommandAction, CommandMessage
+
+    acks: list[Ack] = []
+
+    class Client:
+        runner = "r"
+
+        async def ack(self, command_id: str, ack: Ack) -> None:
+            acks.append(ack)
+
+    class Partly:
+        finished = False
+
+        async def operate(self, action: str, **kw: object) -> str | None:
+            return "the sandbox of agent a did not freeze: gone" if action == "pause" else None
+
+    async with await LocalEventStore.open(tmp_path) as store:
+        link = Link(cast(Any, Client()), store, DeltaBus())
+        link.runners["run"] = cast(Any, Partly())
+        for n, action in enumerate(["pause", "resume"]):
+            command = CommandAction(action=cast(Any, action))
+            await link._command(CommandMessage(id=f"c{n}", seq=n, run_id="run", command=command))
+    assert [(a.ok, a.outcome) for a in acks] == [
+        (True, "the sandbox of agent a did not freeze: gone"),
+        (True, "done"),
+    ]

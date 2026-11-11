@@ -319,7 +319,7 @@ class Link:
             return Ack(ok=False, outcome="the run is not running here")
         c = message.command
         try:
-            await runner.operate(
+            note = await runner.operate(
                 c.action,
                 agent=c.agent,
                 then=c.then,
@@ -333,7 +333,7 @@ class Link:
         except Exception as e:
             log.exception("command %s on run %s failed", message.id, message.run_id)
             return Ack(ok=False, outcome=f"{type(e).__name__}: {e}")
-        return Ack(ok=True, outcome="done")
+        return Ack(ok=True, outcome=note or "done")
 
     async def _deltas(self) -> None:
         """Forward model deltas as they stream, in batches; lossy, never retried."""

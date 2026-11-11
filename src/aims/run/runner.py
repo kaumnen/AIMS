@@ -411,11 +411,12 @@ class Runner:
         reason: str | None = None,
         token: str | None = None,
         command_id: str | None = None,
-    ) -> None:
+    ) -> str | None:
         """Carry out an operator request on the running run, recorded first as
         `operator.action`. Pause, resume and inject take one agent or, with none, all. A resume
         with deny refuses the tool call each agent waits before, and needs one that does. A
-        sweep is left to the monitor, which reads the action from the log."""
+        sweep is left to the monitor, which reads the action from the log. Returns what did not
+        take effect, such as a sandbox that did not freeze, else None."""
         if self.run_id is None or self.finished:
             raise RunError("the run is not running")
         if (action == "inject" or then == "inject") and not text:
@@ -437,8 +438,9 @@ class Runner:
             command_id=command_id,
         )
         await store.append(self.run_id, [Draft(recorded, agent)])
+        failed: list[str] = []
         if action == "pause":
-            await self._pause(targets, reason or "paused by the operator")
+            failed = await self._pause(targets, reason or "paused by the operator")
         elif action == "resume" and then == "kill":
             self._cut_monitor()
             await self.kill(reason or "killed by the operator")
@@ -447,7 +449,7 @@ class Runner:
                 verdict = Verdict("inject", text=text)
             else:
                 verdict = DENY if then == "deny" else CONTINUE
-            await self._resume(targets, verdict)
+            failed = await self._resume(targets, verdict)
         elif action == "inject":
             self._control.inject(targets, text or "")
         elif action == "kill":
@@ -455,11 +457,15 @@ class Runner:
             await self.kill(reason or "killed by the operator")
         elif action == "cancel":
             self.cancel()
+        return "; ".join(failed) or None
 
-    async def _pause(self, targets: Sequence[str], reason: str) -> None:
+    async def _pause(self, targets: Sequence[str], reason: str) -> list[str]:
         """Pause `targets` and freeze their sandboxes at once, but never the sandbox of an
-        agent that has finished, which its verifier still needs."""
+        agent that has finished, which its verifier still needs. A sandbox that does not freeze
+        is logged and the others still freeze; its agent still holds at its next gate point.
+        Returns a line for each sandbox that did not freeze."""
         self._control.pause(targets, reason)
+        failed: list[str] = []
         for agent_id in targets:
             sb = self.sandboxes.get(agent_id)
             agent = self.agents.get(agent_id)
@@ -467,13 +473,27 @@ class Runner:
             done = (agent is not None and agent.done) or (scripted is not None and scripted.done)
             if sb is None or sb.stopped or done:
                 continue
-            await sb.sandbox.pause()
+            try:
+                await sb.sandbox.pause()
+            except Exception as e:
+                log.warning("freezing the sandbox of agent %s failed: %s", agent_id, e)
+                failed.append(f"the sandbox of agent {agent_id} did not freeze: {e}")
+        return failed
 
-    async def _resume(self, targets: Sequence[str], verdict: Verdict) -> None:
+    async def _resume(self, targets: Sequence[str], verdict: Verdict) -> list[str]:
+        """Let `targets` go on and unfreeze the sandboxes of those not held at a gate point; a
+        held agent unfreezes its own. Returns a line for each sandbox that did not unfreeze."""
+        failed: list[str] = []
         for agent_id in self._control.resume(targets, verdict):
             sb = self.sandboxes.get(agent_id)
-            if sb is not None and not sb.stopped:
+            if sb is None or sb.stopped:
+                continue
+            try:
                 await sb.sandbox.resume()
+            except Exception as e:
+                log.warning("unfreezing the sandbox of agent %s failed: %s", agent_id, e)
+                failed.append(f"the sandbox of agent {agent_id} did not unfreeze: {e}")
+        return failed
 
     # The monitor's Actuator: it records `monitor.action` itself before each of these.
 

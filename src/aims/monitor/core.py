@@ -103,6 +103,7 @@ class _Agent:
     cost_usd: float = 0.0
     last_seq: int = -1
     active: bool = False
+    finished: bool = False
     started: datetime | None = None
     seconds: float = 0.0
     hit: set[str] = field(default_factory=set)
@@ -309,8 +310,11 @@ class Monitor:
         self._request([(agent_id, trigger, None)])
 
     async def agents_done(self) -> None:
-        """The agents stopped: run the final sweeps."""
+        """The agents stopped: run the final sweeps. An agent that never started will not
+        start now, so no flag pauses it."""
         await self.barrier()
+        for st in self._agents.values():
+            st.finished = True
         for pause in list(self._pauses):
             self._drop(pause)
         if not self._sweeps_on:
@@ -504,6 +508,7 @@ class Monitor:
                 self._stepped(agent_id, st, data, triggers)
             case "agent.finished" if agent_id is not None and st is not None:
                 st.active = False
+                st.finished = True
                 triggers.append((agent_id, "agent_finished", None))
             case "tool.call" if st is not None:
                 st.calls[str(data.get("call_id"))] = event
@@ -855,6 +860,13 @@ class Monitor:
         elif pause is not None:
             try:
                 await self.actuator.pause(list(d.agents), d.reason)
+            except Exception:
+                # The agents it paused hold at their gates; only this pause's review or
+                # timeout lets them go.
+                if not any(self.actuator.paused(a) for a in d.agents):
+                    self._drop(pause)
+                    raise
+                log.exception("pausing %s in run %s failed in part", d.agents, self.run_id)
             except BaseException:
                 self._drop(pause)
                 raise
@@ -879,15 +891,15 @@ class Monitor:
         return pause
 
     def _pausable(self, d: Decision) -> Decision:
-        """The decision for the agents still to pause; flags on agents a monitor pause already
-        holds join that pause and its review."""
+        """The decision for the agents still to pause, started or not; flags on agents a
+        monitor pause already holds join that pause and its review."""
         if self.simulated:
             return d
         fresh: list[str] = []
         flags = [e for e in self._flags if e.seq in set(d.flags)]
         for agent_id in d.agents:
             st = self._agents.get(agent_id)
-            if st is None or not st.active:
+            if st is None or st.finished:
                 continue
             pause = self._pause_of(agent_id)
             if pause is None:
@@ -981,11 +993,13 @@ class Monitor:
             await self._act(Decision("resume", agents, seqs, reason))
 
     async def _review(self, pause: _Pause) -> ReviewResult:
-        """Review each flagged agent of the pause; the pause clears only if all clear."""
+        """Review each flagged agent of the pause, or each paused agent that started when a
+        flag names none; the pause clears only if all clear."""
         flags = list(pause.flags)
         subjects = list(dict.fromkeys(e.agent_id for e in flags if e.agent_id is not None))
         if not subjects or any(e.agent_id is None for e in flags):
-            subjects = list(dict.fromkeys([*subjects, *pause.agents]))
+            started = [a for a in pause.agents if self._agent(a).started is not None]
+            subjects = list(dict.fromkeys([*subjects, *started]))
         cutoffs = self.policy.cutoffs_of(flags)
         results = []
         for agent_id in subjects:

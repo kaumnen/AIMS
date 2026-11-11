@@ -82,6 +82,7 @@ class Box:
         self.commands: list[str] = []
         self.stdins: list[bytes | None] = []
         self.pauses = 0
+        self.resumes = 0
 
     @property
     def info(self) -> SandboxInfo:
@@ -135,7 +136,7 @@ class Box:
         self.pauses += 1
 
     async def resume(self) -> None:
-        pass
+        self.resumes += 1
 
     async def put_archive(self, path: str, data: bytes) -> None:
         pass
@@ -170,6 +171,40 @@ class Boxes:
 
     async def close(self) -> None:
         pass
+
+
+class DeadBox(Box):
+    """A box Docker cannot freeze or unfreeze, as when its container stopped."""
+
+    async def pause(self) -> None:
+        raise RuntimeError("409 container is not running")
+
+    async def resume(self) -> None:
+        raise RuntimeError("409 container is not running")
+
+
+class StuckBox(Box):
+    """A box whose freeze waits until it is cancelled."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.freezing = asyncio.Event()
+
+    async def pause(self) -> None:
+        self.freezing.set()
+        await asyncio.Event().wait()
+
+
+class FirstBoxes(Boxes):
+    """Agent a gets a box of `kind`, every other agent a plain one."""
+
+    def __init__(self, kind: type[Box]) -> None:
+        super().__init__()
+        self.kind = kind
+
+    async def create(self, spec: SandboxSpec, *, run_id: str, agent_id: str) -> Box:
+        self.made[agent_id] = box = self.kind() if agent_id == "a" else Box()
+        return box
 
 
 class HeldBox(Box):
@@ -612,6 +647,113 @@ async def test_a_deny_needs_an_agent_held_before_a_tool_call(
         ("resume", "continue"),
     ]
     assert "sweep operator" not in fake_monitor[0].calls
+
+
+def two_agents(tmp_path: Path, start: str) -> Bundle:
+    """Agents a and b, b starting at `start`."""
+    path = tmp_path / "scenario.yaml"
+    body = SCENARIO.format(oversight="observe", verifier="")
+    path.write_text(body + f"  - id: b\n    start: {start}\n")
+    return load(path)
+
+
+@pytest.mark.parametrize("by", ["monitor", "operator"])
+async def test_a_sandbox_that_does_not_freeze_leaves_the_others_paused_and_resumed(
+    store: LocalEventStore, tmp_path: Path, fake_monitor: list[FakeMonitor], by: str
+) -> None:
+    script = Script(call("submit", answer="a"), call("submit", answer="b"))
+    backend = FirstBoxes(DeadBox)
+    bundle = two_agents(tmp_path, "{agent: a, on: finished}")
+    runner = Runner(bench(store, script, backend), bundle, Options(), monitor=watched())
+    seen: list[tuple[bool, bool, int, int]] = []
+    notes: list[str | None] = []
+
+    def look() -> None:
+        b = backend.made["b"]
+        seen.append((runner.paused("a"), runner.paused("b"), b.pauses, b.resumes))
+
+    async def pause_and_resume() -> None:
+        fake_monitor[0].on_barrier = None
+        if by == "monitor":
+            await runner.pause(["a", "b"], "flagged")
+            look()
+            await runner.resume(["a", "b"])
+        else:
+            notes.append(await runner.operate("pause"))
+            look()
+            notes.append(await runner.operate("resume"))
+        look()
+
+    runner.on_start = lambda run_id: setattr(fake_monitor[0], "on_barrier", pause_and_resume)
+    async with asyncio.timeout(10):
+        result = await runner.run()
+
+    assert result.status == "completed", result.reason
+    assert seen == [(True, True, 1, 0), (False, False, 1, 1)]
+    if by == "operator":
+        assert notes == [
+            "the sandbox of agent a did not freeze: 409 container is not running",
+            "the sandbox of agent a did not unfreeze: 409 container is not running",
+        ]
+
+
+async def test_a_cancel_while_freezing_propagates_and_leaves_the_agents_paused(
+    store: LocalEventStore, tmp_path: Path, fake_monitor: list[FakeMonitor]
+) -> None:
+    script = Script(call("submit", answer="a"), call("submit", answer="b"))
+    backend = FirstBoxes(StuckBox)
+    bundle = two_agents(tmp_path, "{agent: a, on: finished}")
+    runner = Runner(bench(store, script, backend), bundle, Options(), monitor=watched())
+    seen: list[tuple[bool, bool, int]] = []
+
+    async def cancel_the_pause() -> None:
+        fake_monitor[0].on_barrier = None
+        pausing = asyncio.create_task(runner.pause(["a", "b"], "flagged"))
+        box = backend.made["a"]
+        assert isinstance(box, StuckBox)
+        await box.freezing.wait()
+        pausing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pausing
+        seen.append((runner.paused("a"), runner.paused("b"), backend.made["b"].pauses))
+        await runner.resume(["a", "b"])
+
+    runner.on_start = lambda run_id: setattr(fake_monitor[0], "on_barrier", cancel_the_pause)
+    async with asyncio.timeout(10):
+        result = await runner.run()
+
+    assert result.status == "completed", result.reason
+    assert seen == [(True, True, 0)]
+
+
+async def test_an_agent_paused_before_it_starts_holds_before_its_first_model_call(
+    store: LocalEventStore, tmp_path: Path, fake_monitor: list[FakeMonitor]
+) -> None:
+    script = Script(
+        call("bash", command="echo a"), call("submit", answer="a"), call("submit", answer="b")
+    )
+    backend = Boxes()
+    bundle = two_agents(tmp_path, "{agent: a, on: step, step: 1}")
+    runner = Runner(bench(store, script, backend), bundle, Options(), monitor=watched())
+
+    async def pause() -> None:
+        fake_monitor[0].on_barrier = None
+        await runner.pause(["b"], "flagged")
+
+    runner.on_start = lambda run_id: setattr(fake_monitor[0], "on_barrier", pause)
+    task = asyncio.create_task(runner.run())
+    await held(runner, "b")
+    run_id = runner.run_id
+    assert run_id is not None
+    assert await store.events(run_id, types=["model.request"], agent_id="b") == []
+    assert backend.made["b"].pauses >= 1
+    await runner.resume(["b"])
+    result = await task
+
+    assert result.status == "completed", result.reason
+    assert {a: f.reason for a, f in result.agents.items()} == {"a": "submitted", "b": "submitted"}
+    (hold,) = await of(store, run_id, AgentHeld, "agent.held")
+    assert (hold.kind, hold.step) == ("before_model", 0)
 
 
 async def test_a_kill_by_the_monitor_still_gets_the_final_sweeps_and_the_judge(
