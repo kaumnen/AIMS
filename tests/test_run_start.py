@@ -244,9 +244,9 @@ async def test_sandboxes_that_share_a_folder_fill_its_volume_once(
     filled: list[str] = []
     fill = DockerBackend._prepare
 
-    async def prepare(self: DockerBackend, image: str, volumes: Any) -> None:
+    async def prepare(self: DockerBackend, image: str, volumes: Any, *args: Any) -> None:
         filled.extend(name for name, _ in volumes)
-        await fill(self, image, volumes)
+        await fill(self, image, volumes, *args)
 
     monkeypatch.setattr(DockerBackend, "_prepare", prepare)
     script = Script(*[call("submit", answer="done")] * 3)

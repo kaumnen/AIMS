@@ -1,13 +1,17 @@
 import asyncio
 import io
+import json
 import os
 import tarfile
 import tracemalloc
+import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
 import pytest
+from aiodocker.containers import DockerContainer
+from aiodocker.volumes import DockerVolume
 
 from aims.events import ExecStarted, LocalEventStore, RunStarted, SandboxArchived
 from aims.sandbox import (
@@ -16,9 +20,12 @@ from aims.sandbox import (
     AuditedSandbox,
     DockerBackend,
     DockerSandbox,
+    Mount,
+    SandboxError,
     SandboxSpec,
 )
 from aims.sandbox.base import RUNNER_DIR
+from aims.sandbox.docker import INSTANCE
 
 pytestmark = [pytest.mark.anyio, pytest.mark.docker]
 
@@ -208,3 +215,178 @@ async def test_built_image_is_reused(backend: DockerBackend, store: LocalEventSt
     finally:
         await sb.close()
     assert result.stdout == b"built\n"
+
+
+async def leftovers(backend: DockerBackend, run_id: str) -> tuple[set[str], set[str]]:
+    """The containers this process made, and the volumes of run `run_id`, labelled or not."""
+    query = {"label": [f"aims.instance={INSTANCE}"]}
+    found = await backend.docker.containers.list(all=True, filters=json.dumps(query))
+    listing = await backend.docker.volumes.list(filters={"name": [f"aims-{run_id}-"]})
+    return {c.id for c in found}, {v["Name"] for v in listing.get("Volumes") or []}
+
+
+def hold_create(
+    backend: DockerBackend, run_id: str, where: str, monkeypatch: pytest.MonkeyPatch
+) -> asyncio.Event:
+    """Make the create of agent a1 of `run_id` stop for good once it reaches `where`: the wait
+    for the helper that fills the work volume, the second tmpfs volume, or that helper or the
+    sandbox container made by the daemon but not yet handed back."""
+    reached = asyncio.Event()
+
+    async def stop() -> None:
+        reached.set()
+        await asyncio.Event().wait()
+
+    if where == "fill":
+        wait, helpers = DockerContainer.wait, 0
+
+        async def held_wait(self: DockerContainer, **kw: Any) -> Any:
+            nonlocal helpers
+            result = await wait(self, **kw)
+            helpers += 1
+            if helpers == 2:
+                await stop()
+            return result
+
+        monkeypatch.setattr(DockerContainer, "wait", held_wait)
+    elif where == "scratch":
+        scratch, made = backend._scratch, 0
+
+        async def held_scratch(*args: Any) -> None:
+            nonlocal made
+            await scratch(*args)
+            made += 1
+            if made == 2:
+                await stop()
+
+        monkeypatch.setattr(backend, "_scratch", held_scratch)
+    else:
+        create, helpers = backend.docker.containers.create, 0
+
+        async def held_create(**kw: Any) -> DockerContainer:
+            nonlocal helpers
+            container = await create(**kw)
+            if kw["config"]["Labels"].get("aims.role") == "helper":
+                helpers += 1
+                if where == "helper" and helpers == 2:
+                    await stop()
+            elif where == "create" and kw.get("name") == f"aims-{run_id}-a1":
+                await stop()
+            return container
+
+        monkeypatch.setattr(backend.docker.containers, "create", held_create)
+    return reached
+
+
+SHARED = SandboxSpec(image=IMAGE, runner_mb=8, mounts=[Mount(volume="shared", target="/shared")])
+
+
+@pytest.mark.parametrize("where", ["fill", "helper", "scratch", "create"])
+async def test_a_cancelled_create_removes_what_it_made(
+    backend: DockerBackend, monkeypatch: pytest.MonkeyPatch, where: str
+) -> None:
+    run_id = f"test-{uuid.uuid4().hex[:12]}"
+    before, _ = await leftovers(backend, run_id)
+    reached = hold_create(backend, run_id, where, monkeypatch)
+    task = asyncio.create_task(backend.create(SHARED, run_id=run_id, agent_id="a1"))
+    async with asyncio.timeout(60):
+        await reached.wait()
+    assert (await leftovers(backend, run_id))[1]
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        async with asyncio.timeout(60):
+            await task
+    assert await leftovers(backend, run_id) == (before, set())
+
+
+async def test_a_create_that_fails_removes_what_it_made(
+    backend: DockerBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def broken(*_: Any) -> DockerSandbox:
+        raise SandboxError("sandbox probe failed")
+
+    monkeypatch.setattr(DockerSandbox, "attach", broken)
+    run_id = f"test-{uuid.uuid4().hex[:12]}"
+    before, _ = await leftovers(backend, run_id)
+    with pytest.raises(SandboxError, match="probe failed"):
+        async with asyncio.timeout(60):
+            await backend.create(SHARED, run_id=run_id, agent_id="a1")
+    assert await leftovers(backend, run_id) == (before, set())
+
+
+async def test_a_second_cancel_while_a_create_cleans_up_still_removes_all(
+    backend: DockerBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = f"test-{uuid.uuid4().hex[:12]}"
+    before, _ = await leftovers(backend, run_id)
+    reached = hold_create(backend, run_id, "create", monkeypatch)
+    cancelled, undoing, release = False, asyncio.Event(), asyncio.Event()
+    delete = DockerVolume.delete
+
+    async def held_delete(self: DockerVolume) -> None:
+        if cancelled and not undoing.is_set():
+            undoing.set()
+            await release.wait()
+        await delete(self)
+
+    monkeypatch.setattr(DockerVolume, "delete", held_delete)
+    task = asyncio.create_task(backend.create(SHARED, run_id=run_id, agent_id="a1"))
+    async with asyncio.timeout(60):
+        await reached.wait()
+    cancelled = True
+    task.cancel()
+    waiter = asyncio.ensure_future(undoing.wait())
+    await asyncio.wait({task, waiter}, timeout=60, return_when=asyncio.FIRST_COMPLETED)
+    waiter.cancel()
+    if undoing.is_set():
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        async with asyncio.timeout(60):
+            await task
+    assert await leftovers(backend, run_id) == (before, set())
+    assert undoing.is_set()
+
+
+class HeldTracer:
+    """A live tracer whose confirm never answers."""
+
+    alive = True
+    clock = pmu = preemption = None
+
+    def __init__(self) -> None:
+        self.routes: list[object] = []
+        self.confirming = asyncio.Event()
+
+    def register(self, *_: Any) -> object:
+        route = object()
+        self.routes.append(route)
+        return route
+
+    def unregister(self, route: object) -> None:
+        self.routes.remove(route)
+
+    async def confirm(self, *_: Any) -> bool:
+        self.confirming.set()
+        await asyncio.Event().wait()
+        return True
+
+
+async def test_a_create_cancelled_as_the_tracer_confirms_unregisters_the_sandbox(
+    backend: DockerBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tracer = HeldTracer()
+    monkeypatch.setattr(backend, "tracer", tracer)
+    run_id = f"test-{uuid.uuid4().hex[:12]}"
+    before, _ = await leftovers(backend, run_id)
+    task = asyncio.create_task(backend.create(SHARED, run_id=run_id, agent_id="a1"))
+    async with asyncio.timeout(60):
+        await tracer.confirming.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        async with asyncio.timeout(60):
+            await task
+    assert tracer.routes == []
+    assert await leftovers(backend, run_id) == (before, set())

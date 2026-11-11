@@ -199,6 +199,8 @@ class DockerBackend:
         return await ensure_built(self.docker, context, dockerfile)
 
     async def create(self, spec: SandboxSpec, *, run_id: str, agent_id: str) -> DockerSandbox:
+        """Make and start the sandbox of `agent_id`. One that fails or is cancelled removes what
+        it made before it raises, also when cancelled again meanwhile."""
         check_name(agent_id)
         image = await ensure_pulled(self.docker, spec.image)
         work = f"aims-{run_id}-{agent_id}-work"
@@ -206,78 +208,84 @@ class DockerBackend:
         mounted = [(f"aims-{run_id}-{m.volume}", m.target, m.read_only) for m in spec.mounts]
         shared = tuple(f"aims-{run_id}-{m.volume}" for m in spec.mounts)
         logged = {f"aims-{run_id}-{m.volume}" for m in spec.mounts if m.channel is not None}
-        # The sandboxes of a run start together, so they make shared volumes one at a time.
-        async with self._sharing:
-            await self._fill(run_id, image["Id"], mounted)
-        await self._fill(run_id, image["Id"], volumes)
-        volumes += mounted
-
-        owner = f"uid={AGENT_UID},gid={AGENT_UID},mode=0755"
-        scratch = [
-            (f"aims-{run_id}-{agent_id}-tmp", "/tmp", f"size={spec.tmp_mb}m,mode=1777"),
-            (f"aims-{run_id}-{agent_id}-home", HOME, f"size=64m,{owner}"),
-            # Replaces Docker's own /dev/shm, with the same options.
-            (f"aims-{run_id}-{agent_id}-shm", "/dev/shm", "noexec,size=64m,mode=1777"),
-        ]
-        if spec.runner_mb is not None:
-            runner = f"uid={RUNNER_UID},gid={RUNNER_UID},mode=0700"
-            options = f"size={spec.runner_mb}m,{runner}"
-            scratch.append((f"aims-{run_id}-{agent_id}-runner", RUNNER_DIR, options))
-        for volume, _, options in scratch:
-            await self._scratch(run_id, volume, f"nosuid,nodev,{options}")
-        volumes += [(volume, target, False) for volume, target, _ in scratch]
-
-        labels = {**self._labels, "aims.run": run_id, "aims.agent": agent_id}
-        if spec.keep:
-            labels["aims.keep"] = "1"
-        mounts = [
-            {"Type": "volume", "Source": self._toolbox_volume, "Target": TOOLBOX, "ReadOnly": True},
-            *(
-                {
-                    "Type": "volume",
-                    "Source": name,
-                    "Target": target,
-                    "ReadOnly": ro,
-                    "VolumeOptions": {"NoCopy": True},
-                }
-                for name, target, ro in volumes
-            ),
-        ]
-        env = {"HOME": HOME, **spec.env}
-        host: dict[str, Any] = {
-            "NetworkMode": "none",
-            "Init": True,
-            "CapDrop": ["ALL"],
-            "SecurityOpt": ["no-new-privileges"],
-            "PidsLimit": spec.pids,
-            "Memory": spec.memory_mb * MIB,
-            "MemorySwap": spec.memory_mb * MIB,
-            "NanoCpus": int(spec.cpus * 1e9),
-            "ReadonlyRootfs": not spec.writable_root,
-            "Mounts": mounts,
-            "LogConfig": {"Type": "none"},
-        }
-        if spec.masked_paths:
-            # Setting MaskedPaths replaces Docker's defaults, so keep them and add ours.
-            host["MaskedPaths"] = [*DEFAULT_MASKED_PATHS, *spec.masked_paths]
-        config: dict[str, Any] = {
-            "Image": image["Id"],
-            "Entrypoint": [f"{TOOLBOX}/busybox"],
-            "Cmd": ["sleep", "infinity"],
-            "User": f"{RUNNER_UID}:{RUNNER_UID}",
-            "WorkingDir": spec.workdir,
-            "Env": [f"{k}={v}" for k, v in env.items()],
-            "Labels": labels,
-            "NetworkDisabled": True,
-            "HostConfig": host,
-        }
         name = f"aims-{run_id}-{agent_id}"
-        container = await self.docker.containers.create(config=config, name=name)
+        labels = {**self._labels, "aims.run": run_id, "aims.agent": agent_id}
+        made: list[str] = []
         reader: Reader | str | None = None
         try:
+            # The sandboxes of a run start together, so they make shared volumes one at a time.
+            async with self._sharing:
+                await self._fill(run_id, image["Id"], mounted, labels, made)
+            await self._fill(run_id, image["Id"], volumes, labels, made)
+            volumes += mounted
+
+            owner = f"uid={AGENT_UID},gid={AGENT_UID},mode=0755"
+            scratch = [
+                (f"aims-{run_id}-{agent_id}-tmp", "/tmp", f"size={spec.tmp_mb}m,mode=1777"),
+                (f"aims-{run_id}-{agent_id}-home", HOME, f"size=64m,{owner}"),
+                # Replaces Docker's own /dev/shm, with the same options.
+                (f"aims-{run_id}-{agent_id}-shm", "/dev/shm", "noexec,size=64m,mode=1777"),
+            ]
+            if spec.runner_mb is not None:
+                runner = f"uid={RUNNER_UID},gid={RUNNER_UID},mode=0700"
+                options = f"size={spec.runner_mb}m,{runner}"
+                scratch.append((f"aims-{run_id}-{agent_id}-runner", RUNNER_DIR, options))
+            for volume, _, options in scratch:
+                made.append(volume)
+                await self._scratch(run_id, volume, f"nosuid,nodev,{options}")
+            volumes += [(volume, target, False) for volume, target, _ in scratch]
+
+            kept = {**labels, "aims.keep": "1"} if spec.keep else labels
+            mounts = [
+                {
+                    "Type": "volume",
+                    "Source": self._toolbox_volume,
+                    "Target": TOOLBOX,
+                    "ReadOnly": True,
+                },
+                *(
+                    {
+                        "Type": "volume",
+                        "Source": volume,
+                        "Target": target,
+                        "ReadOnly": ro,
+                        "VolumeOptions": {"NoCopy": True},
+                    }
+                    for volume, target, ro in volumes
+                ),
+            ]
+            env = {"HOME": HOME, **spec.env}
+            host: dict[str, Any] = {
+                "NetworkMode": "none",
+                "Init": True,
+                "CapDrop": ["ALL"],
+                "SecurityOpt": ["no-new-privileges"],
+                "PidsLimit": spec.pids,
+                "Memory": spec.memory_mb * MIB,
+                "MemorySwap": spec.memory_mb * MIB,
+                "NanoCpus": int(spec.cpus * 1e9),
+                "ReadonlyRootfs": not spec.writable_root,
+                "Mounts": mounts,
+                "LogConfig": {"Type": "none"},
+            }
+            if spec.masked_paths:
+                # Setting MaskedPaths replaces Docker's defaults, so keep them and add ours.
+                host["MaskedPaths"] = [*DEFAULT_MASKED_PATHS, *spec.masked_paths]
+            config: dict[str, Any] = {
+                "Image": image["Id"],
+                "Entrypoint": [f"{TOOLBOX}/busybox"],
+                "Cmd": ["sleep", "infinity"],
+                "User": f"{RUNNER_UID}:{RUNNER_UID}",
+                "WorkingDir": spec.workdir,
+                "Env": [f"{k}={v}" for k, v in env.items()],
+                "Labels": kept,
+                "NetworkDisabled": True,
+                "HostConfig": host,
+            }
+            container = await self.docker.containers.create(config=config, name=name)
             await container.start()
-            reader = await self._reader(name, labels, volumes, logged)
-            sandbox = await DockerSandbox.attach(
+            reader = await self._reader(name, kept, volumes, logged)
+            return await DockerSandbox.attach(
                 self,
                 container,
                 spec,
@@ -288,12 +296,11 @@ class DockerBackend:
                 shared,
             )
         except BaseException:
-            if isinstance(reader, Reader):
-                await reader.close()
-            with contextlib.suppress(aiodocker.DockerError):
-                await container.delete(force=True)
+            try:
+                await settle(self._undo(labels, reader, [*made, *shared]))
+            except Exception as e:
+                log.warning("could not remove what sandbox %s left: %s", name, e)
             raise
-        return sandbox
 
     async def start_imds(
         self,
@@ -376,14 +383,22 @@ class DockerBackend:
             with contextlib.suppress(aiodocker.DockerError):
                 await DockerVolume(self.docker, volume["Name"]).delete()
 
-    async def _fill(self, run_id: str, image: str, volumes: list[tuple[str, str, bool]]) -> None:
-        """Make the volumes that do not exist yet, filled from `image` at their mount points."""
-        created = await self._volumes(run_id, [name for name, _, _ in volumes])
+    async def _fill(
+        self,
+        run_id: str,
+        image: str,
+        volumes: list[tuple[str, str, bool]],
+        labels: dict[str, str],
+        made: list[str],
+    ) -> None:
+        """Make the volumes that do not exist yet, filled from `image` at their mount points by
+        a helper with `labels`. Each goes into `made` before it is asked for."""
+        created = await self._volumes(run_id, [name for name, _, _ in volumes], made)
         if created:
             targets = {name: target for name, target, _ in volumes}
-            await self._prepare(image, [(name, targets[name]) for name in created])
+            await self._prepare(image, [(name, targets[name]) for name in created], labels)
 
-    async def _volumes(self, run_id: str, names: list[str]) -> list[str]:
+    async def _volumes(self, run_id: str, names: list[str], made: list[str]) -> list[str]:
         created: list[str] = []
         for name in names:
             try:
@@ -392,9 +407,31 @@ class DockerBackend:
                 if e.status != 404:
                     raise
                 labels = {**self._labels, "aims.run": run_id}
+                made.append(name)
                 await self.docker.volumes.create({"Name": name, "Labels": labels})
                 created.append(name)
         return created
+
+    async def _undo(
+        self, labels: dict[str, str], reader: Reader | str | None, volumes: list[str]
+    ) -> None:
+        """Remove what a create made before it failed. Containers go first: each one with all of
+        its `labels`, so its helpers and one whose create call was cut short go too. Then
+        `volumes` go, except one that another sandbox's container still mounts."""
+        if isinstance(reader, Reader):
+            await reader.close()
+        query = {"label": [f"{k}={v}" for k, v in labels.items()]}
+        try:
+            found = await self.docker.containers.list(all=True, filters=json.dumps(query))
+        except aiodocker.DockerError as e:
+            log.warning("could not list the containers of %s: %s", labels.get("aims.run"), e)
+            found = []
+        for container in found:
+            with contextlib.suppress(aiodocker.DockerError):
+                await container.delete(force=True)
+        for name in dict.fromkeys(volumes):
+            with contextlib.suppress(aiodocker.DockerError):
+                await DockerVolume(self.docker, name).delete()
 
     async def _scratch(self, run_id: str, name: str, options: str) -> None:
         """A fresh tmpfs volume, which the reader can see into, unlike a container's own tmpfs.
@@ -412,7 +449,9 @@ class DockerBackend:
             }
         )
 
-    async def _prepare(self, image: str, volumes: list[tuple[str, str]]) -> None:
+    async def _prepare(
+        self, image: str, volumes: list[tuple[str, str]], labels: dict[str, str]
+    ) -> None:
         """Fill new volumes from the image at their mount points and hand them to the agent."""
         mounts = [
             {"Type": "volume", "Source": self._toolbox_volume, "Target": TOOLBOX, "ReadOnly": True},
@@ -423,7 +462,7 @@ class DockerBackend:
             image,
             ["chown", "-R", f"{AGENT_UID}:{AGENT_UID}", *(target for _, target in volumes)],
             mounts,
-            labels=self._labels,
+            labels=labels,
             caps=["CHOWN", "DAC_OVERRIDE", "DAC_READ_SEARCH", "FOWNER"],
             entrypoint=[f"{TOOLBOX}/busybox"],
         )
@@ -496,26 +535,36 @@ class DockerSandbox:
         shell = [lines[1], "-c"] if lines[1] != "none" else [f"{TOOLBOX}/busybox", "sh", "-c"]
         route = None
         tracer = backend.tracer
-        if tracer is not None and tracer.alive and outcome.pid is not None:
-            route = tracer.register(pidns, Mounts.parse(lines[2]), SYSCALLS.get(backend.arch, {}))
-            if not await tracer.confirm(outcome.pid, pidns):
-                log.warning("tracer did not see sandbox %s start; using snapshot audit", pidns)
+        try:
+            if tracer is not None and tracer.alive and outcome.pid is not None:
+                mounts = Mounts.parse(lines[2])
+                route = tracer.register(pidns, mounts, SYSCALLS.get(backend.arch, {}))
+                if not await tracer.confirm(outcome.pid, pidns):
+                    log.warning("tracer did not see sandbox %s start; using snapshot audit", pidns)
+                    tracer.unregister(route)
+                    route = None
+                else:
+                    # The init and keepalive started before the tracer marked the sandbox.
+                    try:
+                        tracer.adopt(route, [p.pid for p in await holder.processes()])
+                    except Exception as e:
+                        log.warning("could not list sandbox %s processes: %s", pidns, e)
+                    if tracer.clock is not None:
+                        boot_us, tai_us = tracer.clock
+                        holder._info.config["kernel_clock"] = {
+                            "boot_us": boot_us,
+                            "tai_us": tai_us,
+                        }
+            if tracer is not None and tracer.pmu is not None:
+                holder._info.config["pmu"] = tracer.pmu
+            if tracer is not None and tracer.preemption is not None:
+                holder._info.config["preemption"] = tracer.preemption
+            await holder._sample(backend.sampler)
+        except BaseException:
+            # The sandbox goes, so the tracer must not route its namespace any more.
+            if tracer is not None and route is not None:
                 tracer.unregister(route)
-                route = None
-            else:
-                # The init and keepalive started before the tracer marked the sandbox.
-                try:
-                    tracer.adopt(route, [p.pid for p in await holder.processes()])
-                except Exception as e:
-                    log.warning("could not list sandbox %s processes: %s", pidns, e)
-                if tracer.clock is not None:
-                    boot_us, tai_us = tracer.clock
-                    holder._info.config["kernel_clock"] = {"boot_us": boot_us, "tai_us": tai_us}
-        if tracer is not None and tracer.pmu is not None:
-            holder._info.config["pmu"] = tracer.pmu
-        if tracer is not None and tracer.preemption is not None:
-            holder._info.config["preemption"] = tracer.preemption
-        await holder._sample(backend.sampler)
+            raise
         holder._shell = shell
         holder._route = route
         return holder
