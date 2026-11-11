@@ -3,6 +3,7 @@
 import re
 import string
 import unicodedata
+from collections.abc import Callable
 
 PROSE_CHARS = 2000
 
@@ -25,16 +26,22 @@ def _code_point(ch: str) -> str:
     return f"\\u{n:04X}" if n <= 0xFFFF else f"\\U{n:08X}"
 
 
-def _reveal(match: re.Match[str]) -> str:
-    run = match[0]
-    if run.isprintable():
-        return run
-    return "".join(_code_point(c) if unicodedata.category(c) in _HIDDEN else c for c in run)
-
-
 def _cut_note(rest: int, more: str) -> str:
     note = f"Cut, {rest:,} more character{'' if rest == 1 else 's'}."
     return f"{note} {more}" if more else note
+
+
+def reveal(text: str, show: Callable[[str], str]) -> str:
+    """`text` with each character visible() hides written as show(character), CR too. The
+    one set of hidden characters, for visible() and for writers of other formats."""
+
+    def hidden(match: re.Match[str]) -> str:
+        run = match[0]
+        if run.isprintable():
+            return run
+        return "".join(show(c) if unicodedata.category(c) in _HIDDEN else c for c in run)
+
+    return _SUSPECT.sub(hidden, text)
 
 
 def visible(text: str) -> str:
@@ -43,7 +50,7 @@ def visible(text: str) -> str:
     chars (category Cc) except newline and tab, lone surrogates (Cs) plus U+2028 and U+2029,
     shown as the visible text `\\uXXXX` (or `\\UXXXXXXXX` above U+FFFF). CR and CRLF become
     newline first."""
-    return _SUSPECT.sub(_reveal, _NEWLINES.sub("\n", text))
+    return reveal(_NEWLINES.sub("\n", text), _code_point)
 
 
 def _word(word: str, in_cell: bool) -> str:

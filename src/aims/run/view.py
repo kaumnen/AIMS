@@ -22,7 +22,7 @@ from aims.monitor.core import HumanRequest
 from aims.report.escape import visible
 from aims.run.estimate import Progress, project_run, usd
 from aims.run.runner import Result, RunError, Runner
-from aims.terminal import one_line, shown
+from aims.terminal import json_text, one_line, shown
 from aims.text import encodable, scrub
 
 TAIL = 240
@@ -557,7 +557,7 @@ class JsonLines:
         async for e in self.store.stream(run_id):
             kind = LINE_TYPES.get(e.type)
             if kind is not None:
-                self.emit(json.dumps(event_line(kind, run_id, e), ensure_ascii=False))
+                self.emit(json_text(event_line(kind, run_id, e)))
 
     async def stop(self, within: float = 5.0) -> None:
         """Let each watch reach its run's seal, for `within` seconds, then stop it."""

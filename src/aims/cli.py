@@ -173,10 +173,10 @@ def check_plants(
 ) -> None:
     """Report which plants each agent of a sealed run took, from its log and truth file."""
     import asyncio
-    import json
 
     from aims.events import LocalEventStore
     from aims.run.score import CheckError, check_run
+    from aims.terminal import json_text
 
     async def main() -> list[Any]:
         async with await LocalEventStore.open(runs_dir) as store:
@@ -188,7 +188,7 @@ def check_plants(
         _echo(f"error: {e}", err=True)
         raise typer.Exit(EXIT_FAILED) from None
     if json_out:
-        typer.echo(json.dumps([row.as_dict() for row in rows], ensure_ascii=False))
+        typer.echo(json_text([row.as_dict() for row in rows]))
         return
     if not rows:
         typer.echo("no plants taken")
@@ -325,6 +325,7 @@ def prompts_show(config: ConfigOption = None) -> None:
 
     from aims.monitor.texts import resolve
     from aims.prompts import TextError
+    from aims.report.escape import visible
     from aims.tools import UnknownTool, registry
 
     layered = _settings(config).prompts
@@ -342,7 +343,8 @@ def prompts_show(config: ConfigOption = None) -> None:
         raise typer.Exit(EXIT_FAILED) from None
 
     def value(text: str) -> str:
-        return json.dumps(text, ensure_ascii=False)
+        # A TOML string. visible() writes \uXXXX and \UXXXXXXXX, which TOML reads back.
+        return visible(json.dumps(text, ensure_ascii=False))
 
     lines = ["[prompts]"]
     lines += [f"{key} = {value(text)}" for key, text in agent.model_dump().items()]
@@ -501,13 +503,13 @@ def _echo_estimate(
     """Print the cost estimate of `samples` runs of each bundle under `budget`, from the runs
     under `runs_dir`."""
     import asyncio
-    import json
 
     from aims.models import ProfileError
     from aims.monitor.config import MonitorConfigError
     from aims.prompts import TextError
     from aims.run.estimate import estimate_runs, load_history
     from aims.scenario.budget import BudgetError
+    from aims.terminal import json_text
 
     try:
         found = asyncio.run(load_history(runs_dir))
@@ -524,7 +526,7 @@ def _echo_estimate(
         _echo(f"no cost estimate: {e}", err=True)
         raise typer.Exit(EXIT_FAILED) from None
     if json_out:
-        typer.echo(json.dumps(cost.model_dump(mode="json"), ensure_ascii=False))
+        typer.echo(json_text(cost.model_dump(mode="json")))
         return
     for line in cost.lines:
         _echo(line)
@@ -827,7 +829,6 @@ def _preset(value: str | None, allowed: tuple[str, ...] | None = None) -> None:
 
 async def _run(**o: Any) -> int:
     import asyncio
-    import json
     import logging
     import os
     import signal
@@ -867,7 +868,7 @@ async def _run(**o: Any) -> int:
     from aims.sandbox import DockerBackend, SandboxError
     from aims.scenario import ScenarioError, load
     from aims.scenario.budget import BudgetError
-    from aims.terminal import VisibleLog, on_hangup, one_line, shown
+    from aims.terminal import VisibleLog, json_text, on_hangup, one_line, shown
     from aims.wire import TracerHealth
 
     err = Console(stderr=True)
@@ -995,7 +996,7 @@ async def _run(**o: Any) -> int:
             err.print("[yellow]no cost estimate:[/]", shown(e))
         if cost is not None:
             if o["json_out"]:
-                typer.echo(json.dumps({"type": "estimate", **cost.model_dump(mode="json")}))
+                typer.echo(json_text({"type": "estimate", **cost.model_dump(mode="json")}))
             else:
                 for text in cost.lines:
                     err.print(shown(text))
@@ -1258,7 +1259,7 @@ async def _run(**o: Any) -> int:
                 found = digests.get(r.run_id) if r.run_id else None
                 line = {"type": "result", **result_json(r)}
                 line["monitor"] = None if found is None else found.json()
-                typer.echo(json.dumps(line, ensure_ascii=False))
+                typer.echo(json_text(line))
         elif o["quiet"]:
             for r in results:
                 found = digests.get(r.run_id) if r.run_id else None
@@ -1871,7 +1872,6 @@ def monitor_cmd(
 
 async def _monitor_runs(**o: Any) -> int:
     import asyncio
-    import json
     import logging
     import signal
     import sys
@@ -1901,7 +1901,7 @@ async def _monitor_runs(**o: Any) -> int:
     from aims.run.job import JobOptions, monitor_profiles
     from aims.run.runner import RunError
     from aims.run.view import JsonLines, digest, monitor_table
-    from aims.terminal import VisibleLog, on_hangup, one_line, shown
+    from aims.terminal import VisibleLog, json_text, on_hangup, one_line, shown
 
     err = Console(stderr=True)
     handler = RichHandler(console=err, show_path=False)
@@ -1968,7 +1968,7 @@ async def _monitor_runs(**o: Any) -> int:
                 planned.append((origin, resolved, options))
         for cost in costs:
             if o["json_out"]:
-                typer.echo(json.dumps({"type": "estimate", **cost.model_dump(mode="json")}))
+                typer.echo(json_text({"type": "estimate", **cost.model_dump(mode="json")}))
             elif not o["quiet"]:
                 for text in cost.lines:
                     err.print(shown(text))
@@ -2060,7 +2060,7 @@ async def _monitor_runs(**o: Any) -> int:
                     "cost_usd": round(r.cost_usd, 10),
                     "monitor": d.json(),
                 }
-                typer.echo(json.dumps(line, ensure_ascii=False))
+                typer.echo(json_text(line))
         elif o["quiet"]:
             for r, d in zip(results, digests, strict=True):
                 line = f"{r.run_id} {r.origin} {r.status} flags {len(d.flags)} ${r.cost_usd:.4f}"
@@ -2645,7 +2645,7 @@ def audit_cmd(
 
     from aims.server.audit import every
     from aims.server.audit_api import entry
-    from aims.terminal import one_line
+    from aims.terminal import json_text, one_line
 
     if outcome is not None and outcome not in ("ok", "refused", "error"):
         raise typer.BadParameter("use ok, refused or error", param_hint="--outcome")
@@ -2678,7 +2678,7 @@ def audit_cmd(
 
     for r in asyncio.run(main()):
         if jsonl:
-            typer.echo(entry(r).model_dump_json())
+            typer.echo(json_text(entry(r).model_dump(mode="json")))
             continue
         when = datetime.fromtimestamp(r.at, UTC).strftime("%Y-%m-%d %H:%M:%S")
         result = r.outcome if r.status is None else f"{r.outcome} {r.status}"
@@ -2762,7 +2762,6 @@ def score_cmd(
     it was tested, and whether each subject that took a plant told the operator and gave true
     reasons. Writes a run of kind score; the run itself never changes."""
     import asyncio
-    import json
 
     from aims.events import LocalEventStore
     from aims.run.runner import RunError
@@ -2773,6 +2772,7 @@ def score_cmd(
         estimate_sealed,
         score_sealed,
     )
+    from aims.terminal import json_text
 
     settings = _settings(config)
     cost: ScoreEstimate | None = None
@@ -2810,7 +2810,7 @@ def score_cmd(
             "plants": [t.model_dump(mode="json") for t in result.triggered],
             "estimate": None if cost is None else cost.model_dump(mode="json"),
         }
-        typer.echo(json.dumps(out, ensure_ascii=False))
+        typer.echo(json_text(out))
         return
     typer.echo(f"score run {result.run_id}")
     if result.added:
@@ -2924,6 +2924,7 @@ def rates_cmd(
 
     from aims.events import LocalEventStore
     from aims.run.rates import Rates, gather
+    from aims.terminal import json_text
 
     async def main() -> Rates:
         async with await LocalEventStore.open(runs_dir) as store:
@@ -2945,7 +2946,7 @@ def rates_cmd(
 
     rates = asyncio.run(main())
     if json_out:
-        typer.echo(rates.model_dump_json())
+        typer.echo(json_text(rates.model_dump(mode="json")))
         return
     for line in rates.lines:
         _echo(line)
@@ -2990,6 +2991,7 @@ def report_cmd(
     from aims.report.build import ReportError, base_url_problem, build
     from aims.report.markdown import render
     from aims.report.model import RunReport
+    from aims.terminal import json_text
 
     problem = None if base_url is None else base_url_problem(base_url)
     if problem is not None:
@@ -3008,7 +3010,10 @@ def report_cmd(
     except ReportError as e:
         _echo(f"error: {e}", err=True)
         raise typer.Exit(EXIT_FAILED) from None
-    body = report.model_dump_json(indent=2) + "\n" if json_out else render(report)
+    if json_out:
+        body = json_text(report.model_dump(mode="json"), indent=2) + "\n"
+    else:
+        body = render(report)
     if out is not None:
         _write(out, body)
         _echo(f"wrote {out}", err=True)
@@ -3091,14 +3096,14 @@ def spend_cmd(
     """Show what each provider was paid in the runs on record, against the \\[credits] of the
     config files."""
     import asyncio
-    import json
 
     from aims.run.estimate import load_history, spend, spend_lines
+    from aims.terminal import json_text
 
     settings = _settings(config)
     credits = spend(asyncio.run(load_history(runs_dir)), settings.credits)
     if json_out:
-        typer.echo(json.dumps([c.model_dump(mode="json") for c in credits]))
+        typer.echo(json_text([c.model_dump(mode="json") for c in credits]))
         return
     for line in spend_lines(credits):
         _echo(line)

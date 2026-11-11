@@ -4,10 +4,12 @@ as the characters it holds: never read as Rich markup, never as escape bytes."""
 import asyncio
 import contextlib
 import io
+import json
 import logging
 import shutil
 import sqlite3
 import sys
+import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -15,6 +17,7 @@ from typing import Any, cast
 import pytest
 from cp import control_plane
 from rich.console import Console
+from test_cli_monitor import run_stubbed, sealed
 from typer.testing import CliRunner
 
 from aims.cli import _command_line, _problem, app
@@ -33,10 +36,11 @@ from aims.events import (
 )
 from aims.models import Delta, DeltaBus
 from aims.monitor.core import HumanRequest
+from aims.report.escape import visible
 from aims.run.runner import Result, Runner
-from aims.run.view import HumanPrompt, LiveView, digest, summary
+from aims.run.view import HumanPrompt, JsonLines, LiveView, digest, summary
 from aims.server.db import ServerDB
-from aims.terminal import VisibleLog, one_line, shown
+from aims.terminal import VisibleLog, json_text, one_line, shown
 
 pytestmark = pytest.mark.anyio
 
@@ -299,6 +303,102 @@ def test_aims_run_shows_markup_in_an_error_as_written(
     keyless = invoke(*args, "--monitor", "standard")
     assert keyless.exit_code == 1
     assert 'preset = "signals" under [monitor] in aims.toml' in " ".join(keyless.stderr.split())
+
+
+# 169: hidden characters in JSON output
+
+# CSI as one C1 character, a right-to-left override, line and paragraph separators, a
+# zero-width space, DEL and a tag character above U+FFFF, then text that stays readable
+HIDDEN = "\x1b[2J \x9b2J \u202e \u2028 \u2029 \u200b \x7f \U000e0041 café ✓"
+
+
+def holds_nothing_hidden(out: str) -> None:
+    assert out
+    assert visible(out) == out, out
+
+
+def test_json_text_writes_hidden_characters_as_json_escapes() -> None:
+    value = {"text": HIDDEN, "lone": "a\ud800b", HIDDEN: [1.5, None, True]}
+    for indent in (None, 2):
+        out = json_text(value, indent=indent)
+        holds_nothing_hidden(out)
+        assert json.loads(out) == value
+        assert "café ✓" in out
+        assert "\\u009b2J \\u202e \\u2028 \\u2029 \\u200b \\u007f \\udb40\\udc41" in out
+        assert "a\\ud800b" in out
+    assert json_text([1, "x"]) == json.dumps([1, "x"])
+    assert json_text({"a": 1}, indent=2) == json.dumps({"a": 1}, indent=2)
+
+
+@pytest.mark.parametrize("lone", ["", " \udc80"])
+def test_aims_run_json_writes_hidden_characters_as_escapes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lone: str
+) -> None:
+    reason = f"the verifier said {HIDDEN}{lone}"
+
+    async def run(self: Runner) -> Result:
+        found = await sealed(self)
+        return Result(found.run_id, "completed", reason)
+
+    result, _ = run_stubbed(tmp_path, monkeypatch, run, "--json")
+    assert result.exit_code == 0, result.output
+    found = [line for line in result.stdout.splitlines() if '"type": "result"' in line]
+    assert len(found) == 1, result.output
+    holds_nothing_hidden(found[0])
+    assert json.loads(found[0])["reason"] == reason
+
+
+async def test_json_lines_write_hidden_characters_as_escapes(tmp_path: Path) -> None:
+    out: list[str] = []
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        run_id = await flagged_run(store, HIDDEN)
+        lines = JsonLines(store, out.append)
+        lines.add(run_id)
+        await lines.stop()
+    assert [json.loads(line)["type"] for line in out] == [
+        "flag",
+        "action",
+        "degraded",
+        "verdict",
+    ]
+    for line in out:
+        holds_nothing_hidden(line)
+    assert json.loads(out[0])["data"]["justification"] == f"the agent wrote {HIDDEN}"
+
+
+def test_aims_report_json_writes_hidden_characters_as_escapes(tmp_path: Path) -> None:
+    root = tmp_path / "runs"
+
+    async def make() -> str:
+        async with await LocalEventStore.open(root) as store:
+            return await flagged_run(store, HIDDEN)
+
+    run_id = asyncio.run(make())
+    out = invoke("report", run_id, "--runs-dir", str(root), "--json")
+    assert out.exit_code == 0, out.output
+    holds_nothing_hidden(out.stdout)
+    found: list[Any] = [json.loads(out.stdout)]
+    texts = []
+    while found:
+        item = found.pop()
+        if isinstance(item, dict):
+            found += item.values()
+        elif isinstance(item, list):
+            found += item
+        elif isinstance(item, str):
+            texts.append(item)
+    assert f"the agent wrote {HIDDEN}" in texts
+
+
+def test_prompts_show_writes_hidden_characters_as_toml_escapes(tmp_path: Path) -> None:
+    text = HIDDEN.replace("\x1b[2J ", "")
+    config = tmp_path / "aims.toml"
+    # visible() writes \uXXXX and \UXXXXXXXX, which TOML reads back
+    config.write_text(f'[prompts]\ndenied = "{visible(text)}"\n')
+    out = invoke("prompts", "show", "--config", str(config))
+    assert out.exit_code == 0, out.output
+    holds_nothing_hidden(out.stdout)
+    assert tomllib.loads(out.stdout)["prompts"]["denied"] == text
 
 
 # The rest of the CLI
