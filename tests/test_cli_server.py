@@ -183,6 +183,32 @@ def test_runner_and_ui_refuse_an_unknown_audit_mode(
         assert "auto, kernel, snapshot" in result.output
 
 
+def test_ui_refuses_runner_options_without_its_runner(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    served: list[UiOptions] = []
+
+    async def serve(o: UiOptions) -> int:
+        served.append(o)
+        return 0
+
+    monkeypatch.setattr("aims.server.serve.serve", serve)
+    base = ["ui", "--no-open", "--data-dir", str(tmp_path)]
+    for extra, hint in ((["--slots", "2"], "--slots"), (["--audit", "auto"], "--audit")):
+        r = CliRunner().invoke(app, [*base, "--no-runner", *extra])
+        assert r.exit_code == 2, r.output
+        assert hint in r.output
+        assert "needs the local runner" in " ".join(r.output.split())
+    assert served == []
+    for args in ([*base, "--no-runner"], [*base, "--slots", "3", "--audit", "snapshot"]):
+        r = CliRunner().invoke(app, args)
+        assert r.exit_code == 0, r.output
+    assert [(o.runner, o.slots, o.audit) for o in served] == [
+        (False, 2, "auto"),
+        (True, 3, "snapshot"),
+    ]
+
+
 def test_the_runner_gets_its_audit_mode(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     seen: list[NodeOptions] = []
 

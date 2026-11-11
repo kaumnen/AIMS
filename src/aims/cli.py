@@ -1373,8 +1373,15 @@ def _audit(value: str) -> str:
     return value
 
 
+def _given(ctx: typer.Context, name: str) -> bool:
+    """Whether the command line set the option `name`, even to its default value."""
+    source = ctx.get_parameter_source(name)
+    return source is not None and source.name != "DEFAULT"
+
+
 @app.command()
 def ui(
+    ctx: typer.Context,
     host: Annotated[str, typer.Option(help="Address to bind.")] = "127.0.0.1",
     port: Annotated[int, typer.Option(min=0, max=65535, help="Port; 0 picks one.")] = 8484,
     config: ConfigOption = None,
@@ -1434,6 +1441,12 @@ def ui(
     from aims.server.serve import ServeError, UiOptions, serve, server_dir
     from aims.terminal import VisibleLog
 
+    audit = _audit(audit)
+    for name in ("slots", "audit"):
+        if not runner and _given(ctx, name):
+            raise typer.BadParameter(
+                "needs the local runner, which --no-runner leaves out", param_hint=f"--{name}"
+            )
     handler = logging.StreamHandler()
     handler.setFormatter(VisibleLog("%(levelname)s %(name)s: %(message)s"))
     logging.basicConfig(level=logging.WARNING, handlers=[handler])
@@ -1452,7 +1465,7 @@ def ui(
         project=project,
         runner=runner,
         slots=slots,
-        audit=_audit(audit),
+        audit=audit,
         tls_cert=tls_cert,
         tls_key=tls_key,
         behind_proxy=behind_proxy or [],
