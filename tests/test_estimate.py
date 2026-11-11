@@ -51,6 +51,7 @@ from aims.run.estimate import (
     plan,
     project,
     project_run,
+    projection,
     provider,
     reviews_confirm,
     spend,
@@ -398,6 +399,34 @@ async def test_past_runs_match_on_scenario_variant_models_and_effort(
     base_estimate = one(settings, found, base)
     assert base_estimate.parts[0].agents.runs == 1
     assert base_estimate.parts[0].agents.typical_usd == pytest.approx(0.01)
+
+
+@pytest.mark.anyio
+async def test_agents_on_one_model_with_and_without_an_effort_are_estimated_and_matched(
+    tmp_path: Path, store: LocalEventStore
+) -> None:
+    plain = """
+[profiles.plain]
+backend = "chat"
+base_url = "https://api.meta.ai/v1"
+model = "agent-model"
+weights = "agent-weights"
+reasoning = "full"
+context_tokens = 100000
+max_output_tokens = 1000
+price = { input = 1.0, cached = 0.1, output = 2.0 }
+"""
+    extra = "  - id: b\n    profile: plain\n    budget: {steps: 10}\n"
+    settings, path = write(tmp_path, config=CONFIG + plain, extra=extra)
+    bundle = load_scenario(path)
+    efforts = {(q.model, q.effort) for q in plan(settings, bundle).profiles.values()}
+    assert efforts == {("agent-model", "medium"), ("agent-model", None)}
+    assert one(settings, History(), bundle).parts[0].agents.tier == "cap"
+    run_id = await record(store, settings, bundle, 0.3)
+    found = await history(store)
+    agents = one(settings, found, bundle).parts[0].agents
+    assert (agents.tier, agents.runs) == ("scenario", 1)
+    assert await projection(store, run_id, found) is not None
 
 
 @pytest.mark.anyio

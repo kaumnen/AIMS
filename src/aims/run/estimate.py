@@ -385,7 +385,7 @@ async def _read(store: LocalEventStore, info: RunInfo) -> _Run:
         run_id=info.run_id,
         scenario=info.scenario,
         variant=variant if isinstance(variant, str) else None,
-        models=tuple(sorted(_model(_dict(_dict(a).get("profile"))) for a in agents.values())),
+        models=_models(_model(_dict(_dict(a).get("profile"))) for a in agents.values()),
         budget=_step_budget(resolved, scripted),
         monitor=_snapshot_key(config.get("monitor")),
         agents=sides[0],
@@ -645,7 +645,7 @@ def _plan_providers(plans: Iterable[Plan]) -> set[str]:
 
 def _part(found: History, p: Plan) -> tuple[VariantCost, tuple[dict[str, float], dict[str, float]]]:
     s = p.scenario
-    models = tuple(sorted((prof.model, prof.effort) for prof in p.profiles.values()))
+    models = _models((prof.model, prof.effort) for prof in p.profiles.values())
     budget = _step_budget(s.model_dump(mode="json"), {a.id for a in s.agents if a.scripted})
     key = _monitor_key(p.monitor)
     agent_profiles = _model_agents(p)
@@ -1420,7 +1420,7 @@ async def projection(store: LocalEventStore, run_id: str, found: History) -> Pro
                     cost_cap = _cap(limits.get("cost_usd"))
                     monitor_cap = _cap(_dict(config.get("monitor")).get("budget_usd"))
                     profiles = _dict(config.get("agents")).values()
-                    models = tuple(sorted(_model(_dict(_dict(q).get("profile"))) for q in profiles))
+                    models = _models(_model(_dict(_dict(q).get("profile"))) for q in profiles)
                 case "agent.started":
                     budget = _dict(d.get("budget"))
                     steps = _cap(budget.get("steps"))
