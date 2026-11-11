@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,11 @@ for _profile in ("default", "ci"):
         max_examples=50,
         suppress_health_check=[HealthCheck.function_scoped_fixture, HealthCheck.too_slow],
     )
+
+# Typer colours and boxes its usage errors when it sees GITHUB_ACTIONS, which splits the text
+# the tests look for. It reads this once at import, so it is set before any test imports typer;
+# child processes get it too. The errors then read on CI as they do on a developer's machine.
+os.environ["_TYPER_FORCE_DISABLE_TERMINAL"] = "1"
 
 # Scenario projects under fixtures hold their own tests, which are the agent's to fix.
 collect_ignore = ["fixtures"]
