@@ -247,8 +247,9 @@ class RunSummary(_Wire):
     the run, or that a monitor run runs, and `monitor_mode` a monitor run's mode. `case` names
     the self-test case the run plays (None for case runs made before it was kept). `held`
     lists its agents paused now, by the monitor or an operator, one entry per pause.
-    `commands` counts the commands sent to it through the control plane and
-    `commands_waiting` those the runner has not answered yet."""
+    `commands` counts the commands sent to it through the control plane, `commands_waiting`
+    those the runner has not answered yet and `commands_dropped` those settled without its
+    answer."""
 
     run_id: str
     scenario: str | None
@@ -282,6 +283,7 @@ class RunSummary(_Wire):
     held: list[HoldInfo] = Field(default_factory=list)
     commands: int = 0
     commands_waiting: int = 0
+    commands_dropped: int = 0
 
 
 class RunMessage(_Wire):

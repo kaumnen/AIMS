@@ -15,7 +15,7 @@ from typing import Any, Literal
 
 import aiosqlite
 
-VERSION = 4
+VERSION = 5
 SESSION_DAYS = 30
 # a token's last use is noted at most this often
 USE_S = 60.0
@@ -110,6 +110,7 @@ create table commands (
     created real not null,
     acked real,
     outcome text,
+    run_ended integer not null default 0,
     unique (runner, seq)
 ) strict;
 
@@ -152,7 +153,10 @@ update runs set shipper = (select token from runners where runners.name = runs.r
 # v3 had no audit log, no token last use, no record of deleted runs and no index for the jobs
 # made from a run.
 MIGRATE_3 = "alter table tokens add column last_used real;" + AUDIT + DELETES
-MIGRATIONS = {2: MIGRATE_2 + MIGRATE_3, 3: MIGRATE_3}
+# v4 could not tell the drop a run's end wrote from a runner's answer. `run_ended` is 1 while
+# the outcome is that drop and the runner's answer may still come. Drops made before stay.
+MIGRATE_4 = "alter table commands add column run_ended integer not null default 0;"
+MIGRATIONS = {2: MIGRATE_2 + MIGRATE_3 + MIGRATE_4, 3: MIGRATE_3 + MIGRATE_4, 4: MIGRATE_4}
 
 
 def _private_dir(path: Path) -> None:
@@ -233,6 +237,9 @@ class Job:
 
 @dataclass(frozen=True, slots=True)
 class Command:
+    """`run_ended` while the outcome is the drop the run's end wrote and the runner's answer
+    may still come; see `ServerDB.ack`."""
+
     id: str
     runner: str
     seq: int
@@ -241,6 +248,7 @@ class Command:
     created: float
     acked: float | None
     outcome: str | None
+    run_ended: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -678,17 +686,19 @@ class ServerDB:
         rows = await self._all(f"{self._COMMAND} where run_id = ? order by created", (run_id,))
         return [self._command(r) for r in rows]
 
-    async def command_counts(self, run_ids: Sequence[str]) -> dict[str, tuple[int, int]]:
-        """Per run, the commands sent to it and how many of them wait for the runner's answer."""
+    async def command_counts(self, run_ids: Sequence[str]) -> dict[str, tuple[int, int, int]]:
+        """Per run, the commands sent to it, how many of them wait for the runner's answer and
+        how many were dropped without it."""
         if not run_ids:
             return {}
         marks = ", ".join("?" * len(run_ids))
         rows = await self._all(
-            "select run_id, count(*), sum(acked is null) from commands"
+            "select run_id, count(*), sum(acked is null),"
+            " sum(acked is not null and substr(outcome, 1, 7) = 'dropped') from commands"
             f" where run_id in ({marks}) group by run_id",
             tuple(run_ids),
         )
-        return {r[0]: (r[1], r[2]) for r in rows}
+        return {r[0]: (r[1], r[2], r[3]) for r in rows}
 
     async def group_active(self, group: str) -> int:
         row = await self._one(
@@ -805,7 +815,8 @@ class ServerDB:
                     row = await cur.fetchone()
                 seq = 1 if row is None else row[0]
                 await self._db.execute(
-                    "insert into commands values (?, ?, ?, ?, ?, ?, null, null)",
+                    "insert into commands (id, runner, seq, run_id, payload, created)"
+                    " values (?, ?, ?, ?, ?, ?)",
                     (command_id, runner, seq, run_id, json.dumps(payload), at),
                 )
             except BaseException:
@@ -814,11 +825,13 @@ class ServerDB:
             await self._db.execute("commit")
         return Command(command_id, runner, seq, run_id, payload, at, None, None)
 
-    _COMMAND = "select id, runner, seq, run_id, payload, created, acked, outcome from commands"
+    _COMMAND = (
+        "select id, runner, seq, run_id, payload, created, acked, outcome, run_ended from commands"
+    )
 
     @staticmethod
     def _command(r: tuple[Any, ...]) -> Command:
-        return Command(r[0], r[1], r[2], r[3], json.loads(r[4]), r[5], r[6], r[7])
+        return Command(r[0], r[1], r[2], r[3], json.loads(r[4]), r[5], r[6], r[7], bool(r[8]))
 
     async def pending_commands(self, runner: str, after: int = 0) -> list[Command]:
         rows = await self._all(
@@ -831,33 +844,52 @@ class ServerDB:
         row = await self._one(f"{self._COMMAND} where id = ?", (command_id,))
         return None if row is None else self._command(row)
 
-    async def ack(self, command_id: str, runner: str, outcome: str) -> bool:
+    async def ack(self, command_id: str, runner: str, outcome: str, *, done: bool = True) -> bool:
+        """Record the runner's answer; `done` when it carried the command out. The first
+        answer stays, with one exception: the run's end dropped the command before the answer
+        came. A done answer then replaces the drop, as the command did take effect. A refusal
+        keeps the drop, which says as much, and makes it final. False if nothing changed."""
+        sets = "acked = ?, outcome = ?"
+        if not done:
+            # an unanswered command has neither; a drop keeps both
+            sets = "acked = coalesce(acked, ?), outcome = coalesce(outcome, ?)"
         return (
             await self._write(
-                "update commands set acked = ?, outcome = ? where id = ? and runner = ?"
-                " and acked is null",
+                f"update commands set {sets}, run_ended = 0"
+                " where id = ? and runner = ? and (acked is null or run_ended = 1)",
                 (time.time(), outcome, command_id, runner),
             )
             > 0
         )
 
     async def drop_runner_commands(self, runner: str, outcome: str) -> list[str]:
-        """Settle the commands still waiting for `runner`; the runs they were for."""
-        async with (
-            self._lock,
-            self._db.execute(
-                "update commands set acked = ?, outcome = ? where runner = ? and acked is null"
-                " returning run_id",
-                (time.time(), outcome, runner),
-            ) as cur,
-        ):
-            rows = await cur.fetchall()
+        """Settle the commands still waiting for `runner`, whose name another token took; the
+        runs they were for. No answer changes a command of the old runner after this."""
+        async with self._lock:
+            await self._db.execute("begin immediate")
+            try:
+                async with self._db.execute(
+                    "update commands set acked = ?, outcome = ? where runner = ?"
+                    " and acked is null returning run_id",
+                    (time.time(), outcome, runner),
+                ) as cur:
+                    rows = await cur.fetchall()
+                await self._db.execute(
+                    "update commands set run_ended = 0 where runner = ? and run_ended = 1",
+                    (runner,),
+                )
+            except BaseException:
+                await self._db.execute("rollback")
+                raise
+            await self._db.execute("commit")
         return sorted({r[0] for r in rows})
 
     async def drop_commands(self, run_id: str, outcome: str = "dropped: the run ended") -> int:
-        """Settle the commands still waiting for a run that has ended."""
+        """Settle the commands still waiting for a run that has ended. The runner may have
+        carried one out and its answer may still be on the way; see `ack`."""
         return await self._write(
-            "update commands set acked = ?, outcome = ? where run_id = ? and acked is null",
+            "update commands set acked = ?, outcome = ?, run_ended = 1"
+            " where run_id = ? and acked is null",
             (time.time(), outcome, run_id),
         )
 

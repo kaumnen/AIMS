@@ -2220,7 +2220,7 @@
         "type": "object"
       },
       "CommandInfo": {
-        "description": "A command sent to a run and the runner's answer. `state` reads the answer: waiting\nuntil the runner acks, failed when it refused, saying why in `outcome`, dropped when the\nrun ended first. `by` names the token it came with.",
+        "description": "A command sent to a run and the runner's answer. `state` reads the answer: waiting\nuntil the runner acks, failed when it refused, saying why in `outcome`, dropped when the\nrun ended or its runner was replaced first. `final` says the outcome can no longer\nchange. A drop by the run's end is not final until the runner answers: it may have\ncarried the command out, and its done answer then turns dropped into done. `by` names the\ntoken it came with.",
         "properties": {
           "acked": {
             "anyOf": [
@@ -2262,6 +2262,10 @@
           "created": {
             "title": "Created",
             "type": "number"
+          },
+          "final": {
+            "title": "Final",
+            "type": "boolean"
           },
           "id": {
             "title": "Id",
@@ -2349,7 +2353,8 @@
           "created",
           "acked",
           "outcome",
-          "state"
+          "state",
+          "final"
         ],
         "title": "CommandInfo",
         "type": "object"
@@ -11646,7 +11651,7 @@
       },
       "RunSummary": {
         "additionalProperties": false,
-        "description": "`kind` says what the run is and `origin` names the run a monitor run watched. `flags`\ncounts its logical flags and `categories` them per category, whatever their status;\n`max_importance` is the highest importance of a flag not cleared or rejected,\n`verdict_severity` the judge's, and `max_severity` the higher of the two, 0 for neither.\n`series` and `series_index` place a run in its series; `variant` is the scenario variant\nit ran, known once the run is sealed and its truth file arrived. `steps` counts its agents'\nmodel calls, `cost_usd` sums its priced live model responses, monitor calls included (None\nwhen there is none), `reward` is the verifier's last reward and `reviews` counts the\nmonitor runs over it, queued ones too. `preset` is the preset of the monitor that watches\nthe run, or that a monitor run runs, and `monitor_mode` a monitor run's mode. `case` names\nthe self-test case the run plays (None for case runs made before it was kept). `held`\nlists its agents paused now, by the monitor or an operator, one entry per pause.\n`commands` counts the commands sent to it through the control plane and\n`commands_waiting` those the runner has not answered yet.",
+        "description": "`kind` says what the run is and `origin` names the run a monitor run watched. `flags`\ncounts its logical flags and `categories` them per category, whatever their status;\n`max_importance` is the highest importance of a flag not cleared or rejected,\n`verdict_severity` the judge's, and `max_severity` the higher of the two, 0 for neither.\n`series` and `series_index` place a run in its series; `variant` is the scenario variant\nit ran, known once the run is sealed and its truth file arrived. `steps` counts its agents'\nmodel calls, `cost_usd` sums its priced live model responses, monitor calls included (None\nwhen there is none), `reward` is the verifier's last reward and `reviews` counts the\nmonitor runs over it, queued ones too. `preset` is the preset of the monitor that watches\nthe run, or that a monitor run runs, and `monitor_mode` a monitor run's mode. `case` names\nthe self-test case the run plays (None for case runs made before it was kept). `held`\nlists its agents paused now, by the monitor or an operator, one entry per pause.\n`commands` counts the commands sent to it through the control plane, `commands_waiting`\nthose the runner has not answered yet and `commands_dropped` those settled without its\nanswer.",
         "properties": {
           "case": {
             "anyOf": [
@@ -11669,6 +11674,11 @@
           "commands": {
             "default": 0,
             "title": "Commands",
+            "type": "integer"
+          },
+          "commands_dropped": {
+            "default": 0,
+            "title": "Commands Dropped",
             "type": "integer"
           },
           "commands_waiting": {
@@ -11958,7 +11968,8 @@
           "case",
           "held",
           "commands",
-          "commands_waiting"
+          "commands_waiting",
+          "commands_dropped"
         ],
         "title": "RunSummary",
         "type": "object"

@@ -777,6 +777,34 @@ async def test_commands_reach_the_runner_and_unacked_ones_come_again(
         assert (r.status_code, r.json()["code"]) == (409, "ended")
 
 
+async def test_a_command_carried_out_ends_done_when_the_run_ends_before_its_answer(
+    cp: CP, fake: FakeRunner, local: LocalEventStore
+) -> None:
+    (run_id,) = await start_run(cp)
+    await play_job(fake, local, await fake.next(OfferMessage))
+    async with cp.client(cp.operator) as c:
+        kill = (await c.post(f"/api/runs/{run_id}/kill", json={})).json()["command_id"]
+        pause = (await c.post(f"/api/runs/{run_id}/pause", json={})).json()["command_id"]
+        for _ in range(2):
+            await fake.next(CommandMessage)
+        # the kill took effect, and the run's last events reach the control plane before the ack
+        await local.append(run_id, [Draft(RunFinished(status="killed"))])
+        await ship(local, fake.client, run_id)
+        listed = (await c.get(f"/api/runs/{run_id}/commands")).json()
+        assert [(x["state"], x["final"]) for x in listed] == [("dropped", False)] * 2
+        run = (await c.get(f"/api/runs/{run_id}")).json()["run"]
+        assert (run["commands"], run["commands_waiting"], run["commands_dropped"]) == (2, 0, 2)
+        await fake.client.ack(kill, Ack(ok=True, outcome="done"))
+        await fake.client.ack(pause, Ack(ok=False, outcome="the run is not running here"))
+        listed = (await c.get(f"/api/runs/{run_id}/commands")).json()
+        assert [(x["action"], x["state"], x["outcome"], x["final"]) for x in listed] == [
+            ("kill", "done", "done", True),
+            ("pause", "dropped", "dropped: the run ended", True),
+        ]
+        run = (await c.get(f"/api/runs/{run_id}")).json()["run"]
+        assert (run["commands"], run["commands_waiting"], run["commands_dropped"]) == (2, 0, 1)
+
+
 # operator bodies as JSON text, each with the escape of a lone surrogate in one field
 LONE_SURROGATE = [
     ("pause", '{"agent": "a\\ud800"}', "agent"),

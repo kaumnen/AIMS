@@ -34,6 +34,7 @@ export function run(runId: string, over: Partial<RunSummary> = {}): RunSummary {
     held: [],
     commands: 0,
     commands_waiting: 0,
+    commands_dropped: 0,
     ...over,
   };
 }

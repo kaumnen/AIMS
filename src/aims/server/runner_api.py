@@ -299,7 +299,7 @@ async def ack_command(
     if command is None or command.runner != conn.name:
         raise ProblemException(404, "Not found", f"no command {command_id}")
     outcome = body.outcome if body.ok else f"failed: {body.outcome}"
-    await state.db.ack(command_id, conn.name, outcome)
+    await state.db.ack(command_id, conn.name, outcome, done=body.ok)
     state.changes.touch(command.run_id)
 
 

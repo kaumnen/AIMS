@@ -391,7 +391,7 @@ async def summaries(
         found = summary(state, run_id, info, jobs.get(run_id), metas.get(run_id))
         if found.kind in skip:
             continue
-        found.commands, found.commands_waiting = sent.get(run_id, (0, 0))
+        found.commands, found.commands_waiting, found.commands_dropped = sent.get(run_id, (0, 0, 0))
         for review in reviews.get(run_id, ()):
             if await state.store.run(review) is None:
                 found.reviews += 1
@@ -1121,7 +1121,10 @@ CommandState = Literal["waiting", "done", "failed", "dropped"]
 class CommandInfo(Out):
     """A command sent to a run and the runner's answer. `state` reads the answer: waiting
     until the runner acks, failed when it refused, saying why in `outcome`, dropped when the
-    run ended first. `by` names the token it came with."""
+    run ended or its runner was replaced first. `final` says the outcome can no longer
+    change. A drop by the run's end is not final until the runner answers: it may have
+    carried the command out, and its done answer then turns dropped into done. `by` names the
+    token it came with."""
 
     id: str
     run_id: str
@@ -1136,6 +1139,7 @@ class CommandInfo(Out):
     acked: float | None
     outcome: str | None
     state: CommandState
+    final: bool
 
 
 def command_state(c: sdb.Command) -> CommandState:
@@ -1163,6 +1167,7 @@ def command_info(c: sdb.Command) -> CommandInfo:
         acked=c.acked,
         outcome=c.outcome,
         state=command_state(c),
+        final=c.acked is not None and not c.run_ended,
     )
 
 

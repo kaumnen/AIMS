@@ -413,6 +413,8 @@ beforeEach(() => {
             c.acked === null
               ? "waiting"
               : (/^(failed|dropped)/.exec(c.outcome ?? "")?.[1] ?? "done"),
+          // as if the runner answered each, a drop by the run's end too
+          final: c.acked !== null,
           ...c,
         })),
       );
@@ -2324,6 +2326,25 @@ test("the commands drawer shows what was sent, newest first, and the runner's an
   act(() => source.send({ kind: "run", run: { ...detail.run, commands_waiting: 0 } }));
   await waitFor(async () => expect((await rows())[0]).toContain("Donein 1.5 s"));
   expect(screen.getByRole("button", { name: "Commands", hidden: true })).toBeTruthy();
+});
+
+test("the commands drawer shows a drop turned to done by the runner's late answer", async () => {
+  role = "viewer";
+  detail = open({ commands: 1, commands_dropped: 1 });
+  commands = [
+    { id: "c1", action: "kill", created: 100, acked: 100.4, outcome: "dropped: the run ended" },
+  ];
+  renderAt(`/runs/${BEE5}`);
+  fireEvent.click(await screen.findByRole("button", { name: "Commands" }));
+  const drawer = await screen.findByRole("dialog", { name: "Commands" });
+  const row = async () => (await within(drawer).findAllByRole("row"))[1]?.textContent;
+  await waitFor(async () => expect(await row()).toContain("Dropped: the run ended"));
+
+  commands[0] = { ...commands[0], id: "c1", acked: 100.6, outcome: "done" };
+  const source = listStream();
+  if (!source) throw new Error("no list stream");
+  act(() => source.send({ kind: "run", run: { ...detail.run, commands_dropped: 0 } }));
+  await waitFor(async () => expect(await row()).toContain("Donein 600 ms"));
 });
 
 test("a sealed run without commands shows no commands button, an open one says what is not here", async () => {

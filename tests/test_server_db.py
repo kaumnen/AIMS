@@ -145,6 +145,42 @@ async def test_commands_have_a_seq_per_runner_and_ack_once(db: ServerDB) -> None
     assert await db.drop_runner_commands("r1", "dropped: gone") == []
 
 
+async def test_a_done_answer_after_the_run_ended_replaces_the_drop(db: ServerDB) -> None:
+    run = str(uuid.uuid7())
+    done, refused, answered, unanswered = [
+        await db.add_command("r1", run, {"action": "pause"}) for _ in range(4)
+    ]
+    assert await db.ack(answered.id, "r1", "done")
+    assert await db.drop_commands(run) == 3
+    # the run's last events came before the runner's answers
+    assert not await db.ack(done.id, "r2", "done")
+    assert await db.ack(done.id, "r1", "the sandbox of agent a did not freeze: boom")
+    assert await db.ack(refused.id, "r1", "failed: the run is not running here", done=False)
+    assert not await db.ack(refused.id, "r1", "done")
+    assert not await db.ack(answered.id, "r1", "again")
+    assert not await db.ack(done.id, "r1", "again")
+    got = {c.id: (c.outcome, c.run_ended) for c in await db.commands_of(run)}
+    assert got == {
+        done.id: ("the sandbox of agent a did not freeze: boom", False),
+        refused.id: ("dropped: the run ended", False),
+        answered.id: ("done", False),
+        unanswered.id: ("dropped: the run ended", True),
+    }
+    assert await db.command_counts([run]) == {run: (4, 0, 2)}
+    # another token took the runner name: no answer changes the old runner's commands
+    assert await db.drop_runner_commands("r1", "dropped: gone") == []
+    assert not await db.ack(unanswered.id, "r1", "done")
+    left = await db.command(unanswered.id)
+    assert left is not None
+    assert (left.outcome, left.run_ended) == ("dropped: the run ended", False)
+    gone = await db.add_command("r1", run, {"action": "kill"})
+    assert await db.drop_runner_commands("r1", "dropped: gone") == [run]
+    assert not await db.ack(gone.id, "r1", "done")
+    settled = await db.command(gone.id)
+    assert settled is not None
+    assert settled.outcome == "dropped: gone"
+
+
 async def test_runs_keep_their_first_runner_and_divergence(db: ServerDB) -> None:
     run = str(uuid.uuid7())
     meta = await db.attribute(run, "r1", "push", "alice", shipper="t1")
@@ -168,11 +204,13 @@ async def test_runs_keep_their_first_runner_and_divergence(db: ServerDB) -> None
 def downgrade(path: Path, version: int) -> None:
     """Make the database at `path` look like one of schema `version`."""
     raw = sqlite3.connect(path)
-    raw.execute("drop table audit")
-    raw.execute("alter table tokens drop column last_used")
-    raw.execute("drop table deleted_runs")
-    raw.execute("drop index jobs_by_origin")
-    raw.execute("drop index jobs_by_score_monitor")
+    raw.execute("alter table commands drop column run_ended")
+    if version < 4:
+        raw.execute("drop table audit")
+        raw.execute("alter table tokens drop column last_used")
+        raw.execute("drop table deleted_runs")
+        raw.execute("drop index jobs_by_origin")
+        raw.execute("drop index jobs_by_score_monitor")
     if version < 3:
         raw.execute("alter table runs drop column shipper")
     raw.execute(f"pragma user_version = {version}")
@@ -216,7 +254,7 @@ async def test_a_v3_db_gets_the_audit_log_and_token_use(tmp_path: Path) -> None:
     finally:
         await db.close()
     raw = sqlite3.connect(path)
-    assert raw.execute("pragma user_version").fetchone() == (VERSION,) == (4,)
+    assert raw.execute("pragma user_version").fetchone() == (VERSION,)
     with pytest.raises(sqlite3.IntegrityError, match="append-only"):
         raw.execute("update audit set action = 'x'")
     raw.close()
@@ -307,6 +345,35 @@ async def test_an_older_db_learns_to_keep_deleted_runs(tmp_path: Path, version: 
     used = " ".join(r[-1] for r in plan)
     assert "jobs_by_origin" in used
     assert "jobs_by_score_monitor" in used
+    raw.close()
+
+
+@pytest.mark.parametrize("version", [2, 3, 4])
+async def test_an_older_db_keeps_its_drops_and_takes_late_answers_after(
+    tmp_path: Path, version: int
+) -> None:
+    path = tmp_path / "server.sqlite"
+    db = await ServerDB.open(path)
+    run = str(uuid.uuid7())
+    old = await db.add_command("r1", run, {"action": "kill"})
+    await db.close()
+    downgrade(path, version)
+    raw = sqlite3.connect(path)
+    raw.execute("update commands set acked = 1, outcome = 'dropped: the run ended'")
+    raw.commit()
+    raw.close()
+    db = await ServerDB.open(path)
+    try:
+        assert not await db.ack(old.id, "r1", "done")
+        new = await db.add_command("r1", run, {"action": "kill"})
+        assert await db.drop_commands(run) == 1
+        assert await db.ack(new.id, "r1", "done")
+        got = {c.id: c.outcome for c in await db.commands_of(run)}
+        assert got == {old.id: "dropped: the run ended", new.id: "done"}
+    finally:
+        await db.close()
+    raw = sqlite3.connect(path)
+    assert raw.execute("pragma user_version").fetchone() == (VERSION,) == (5,)
     raw.close()
 
 

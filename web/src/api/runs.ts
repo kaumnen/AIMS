@@ -212,9 +212,11 @@ export function applyRuns(qc: QueryClient, runs: readonly RunSummary[]): void {
       const data = qc.getQueryData<RunDetail>(q.queryKey);
       if (!run || !data || data.run === run) continue;
       qc.setQueryData<RunDetail>(q.queryKey, { ...data, run });
+      // a drop the runner's late answer turned to done changes only the dropped count
       if (
         data.run.commands !== run.commands ||
-        data.run.commands_waiting !== run.commands_waiting
+        data.run.commands_waiting !== run.commands_waiting ||
+        data.run.commands_dropped !== run.commands_dropped
       ) {
         void qc.invalidateQueries({ queryKey: ["runs", "commands", run.run_id], exact: true });
       }

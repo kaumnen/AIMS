@@ -1198,6 +1198,24 @@ async def test_aims_control_exits_non_zero_for_a_command_not_carried_out_in_full
     )
 
 
+async def test_aims_control_reports_a_kill_done_when_its_answer_comes_after_the_run_ended(
+    cp: CP, fake: FakeRunner, local: LocalEventStore
+) -> None:
+    (run_id,) = await start_run(cp)
+    await play_job(fake, local, await fake.next(OfferMessage))
+    sent = asyncio.create_task(control(cp, run_id, "kill", "--wait", "10", token=cp.operator))
+    message = await fake.next(CommandMessage)
+    await local.append(run_id, [Draft(RunFinished(status="killed"))])
+    await ship(local, fake.client, run_id)
+    # a few polls see the drop before the runner's answer lands
+    await asyncio.sleep(0.6)
+    assert not sent.done()
+    await fake.client.ack(message.id, Ack(ok=True, outcome="done"))
+    result = await sent
+    assert result.exit_code == 0, result.output
+    assert result.stdout.strip() == f"kill {run_id}: done"
+
+
 async def test_aims_control_finds_a_local_ui(
     cp: CP,
     fake: FakeRunner,

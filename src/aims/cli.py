@@ -2082,8 +2082,9 @@ def control(
 
     Exit codes:
     0 done, or sent with --wait 0
-    1 refused by the runner or the control plane, or the control plane is out of reach
-    4 dropped: the run ended or its runner was replaced first, so it was not carried out
+    1 refused by the runner or the control plane, or it could not be reached
+    4 dropped: the run ended or its runner changed first, so it was not done;
+      a drop as the run ended may wait out --wait: the runner may yet say done
     5 done in part: the line says what did not take effect
     6 no answer within --wait; the runner may still carry it out
     """
@@ -2149,17 +2150,22 @@ async def _control(
                 return 0
             command = sent.get("command_id")
             deadline = time.monotonic() + wait
+            found = None
             while time.monotonic() < deadline:
                 r = await c.get(f"/api/runs/{run}/commands")
                 if r.status_code >= 400:
                     return _problem(r)
                 found = next((x for x in r.json() if x["id"] == command), None)
-                if found is not None and found["state"] != "waiting":
+                # A drop by the run's end is not final: the runner may have carried the
+                # command out, and its answer may still come and say done.
+                if found is not None and found["final"]:
                     return _answered(action, run, found)
                 await asyncio.sleep(0.2)
         except httpx2.TransportError as e:
             _echo(f"error: cannot reach the control plane at {url}: {e}", err=True)
             return EXIT_FAILED
+    if found is not None and found["state"] == "dropped":
+        return _answered(action, run, found)
     _echo(
         f"error: {action} {run}: sent, but the runner did not answer within {wait:g} s;"
         f" `aims control {run} list` shows it later",

@@ -2,6 +2,7 @@ import { client, type Schemas } from "./client";
 
 export type Hold = Schemas["HoldInfo"];
 type CommandSent = Schemas["CommandSent"];
+type CommandInfo = Schemas["CommandInfo"];
 
 type ResumeBody = Schemas["ResumeBody"];
 
@@ -53,7 +54,16 @@ async function post(runId: string, c: Command): Promise<CommandSent> {
 
 const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
 
-// Sends `c` and waits for the runner's answer, as `aims control` does.
+const answerOf = (c: CommandInfo): Answer => {
+  const outcome = c.outcome ?? "done";
+  return c.state === "done"
+    ? { state: "done", text: outcome }
+    : { state: "failed", text: outcome.replace(/^(failed|dropped): /, "") };
+};
+
+// Sends `c` and waits for the runner's answer, as `aims control` does. A drop as the run
+// ended is not final: the runner may have carried the command out, and its answer may still
+// come and say done.
 export async function send(
   runId: string,
   c: Command,
@@ -63,6 +73,7 @@ export async function send(
   if (sent.state === "cancelled") return { state: "done", text: "Cancelled before it started." };
   const id = sent.command_id;
   const deadline = Date.now() + (id ? wait : 0);
+  let found: CommandInfo | undefined;
   while (Date.now() < deadline) {
     // one poll at a time, like `aims control`
     // oxlint-disable-next-line no-await-in-loop
@@ -70,16 +81,12 @@ export async function send(
       params: { path: { run_id: runId } },
     });
     if (error) throw error;
-    const found = data.find((x) => x.id === id);
-    if (found !== undefined && found.state !== "waiting") {
-      const outcome = found.outcome ?? "done";
-      return found.state === "done"
-        ? { state: "done", text: outcome }
-        : { state: "failed", text: outcome.replace(/^(failed|dropped): /, "") };
-    }
+    found = data.find((x) => x.id === id);
+    if (found?.final) return answerOf(found);
     // oxlint-disable-next-line no-await-in-loop
     await sleep(every);
   }
+  if (found?.state === "dropped") return answerOf(found);
   return {
     state: "waiting",
     text: sent.delivered

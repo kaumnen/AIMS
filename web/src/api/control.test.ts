@@ -10,6 +10,8 @@ let sent: { path: string; body: unknown }[];
 
 // as the server's command_state reads an answer
 const stateOf = (outcome: string) => /^(failed|dropped)/.exec(outcome)?.[1] ?? "done";
+// as the server keeps a drop by the run's end open to the runner's answer, which never comes here
+const ENDED = "dropped: the run ended";
 
 const commands = (acked: boolean, outcome: string) => [
   {
@@ -21,6 +23,7 @@ const commands = (acked: boolean, outcome: string) => [
     acked: acked ? 1 : null,
     outcome: acked ? outcome : null,
     state: acked ? stateOf(outcome) : "waiting",
+    final: acked && outcome !== ENDED,
   },
 ];
 
@@ -73,14 +76,30 @@ test("a refusal comes back with the runner's reason", async () => {
 });
 
 // the two ways the control plane settles a command the runner has not answered
-test.each(["the run ended", "another token took the runner name"])(
-  "a command dropped as %s is not done",
-  async (text) => {
-    serve(SENT, `dropped: ${text}`, 1);
-    const answer = await send(RUN, { action: "kill", reason: null }, { every: 1 });
-    expect(answer).toEqual({ state: "failed", text });
-  },
-);
+test("a command dropped as another token took the runner name is not done", async () => {
+  serve(SENT, "dropped: another token took the runner name", 1);
+  const answer = await send(RUN, { action: "kill", reason: null }, { every: 1 });
+  expect(answer).toEqual({ state: "failed", text: "another token took the runner name" });
+  expect(polls).toBe(1);
+});
+
+test("a command dropped as the run ended is not done when no answer comes in time", async () => {
+  serve(SENT, ENDED, 1);
+  const answer = await send(RUN, { action: "kill", reason: null }, { wait: 50, every: 1 });
+  expect(answer).toEqual({ state: "failed", text: "the run ended" });
+  expect(polls).toBeGreaterThan(1);
+});
+
+test("a kill dropped as the run ended is done once the runner's late answer lands", async () => {
+  fetch.mockImplementation(async (request) => {
+    if (request.method === "POST") return Response.json(SENT, { status: 202 });
+    polls += 1;
+    return Response.json(commands(true, polls < 3 ? ENDED : "done"));
+  });
+  const answer = await send(RUN, { action: "kill", reason: null }, { every: 1 });
+  expect(answer).toEqual({ state: "done", text: "done" });
+  expect(polls).toBe(3);
+});
 
 test("no answer in time says whether the runner got it", async () => {
   serve({ ...SENT, delivered: false }, "done", 1000);
