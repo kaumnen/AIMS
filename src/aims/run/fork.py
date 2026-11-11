@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import logging
@@ -196,7 +197,8 @@ async def load_origin(store: EventStore, run_id: str, *, full: bool = True) -> O
         record = _truth(store, run_id, started.truth)
     if record is not None:
         try:
-            restored = truth.restore(snapshot, blobs, record).full_bundle
+            made = await asyncio.to_thread(truth.restore, snapshot, blobs, record)
+            restored = made.full_bundle
         except (KeyError, ValueError, OSError) as e:
             raise RunError(f"run {run_id}: cannot restore its truth: {e}") from None
     schedules: dict[str, list[tuple[int | None, Profile]]] = {}

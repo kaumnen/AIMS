@@ -542,7 +542,8 @@ class Runner:
         store = self.bench.store
         run_id = self.wanted_id or str(uuid.uuid7())
         try:
-            prepared = truth.prepare(
+            prepared = await asyncio.to_thread(
+                truth.prepare,
                 self.bundle,
                 self.options.variant or self.bundle.variant,
                 seed=self.options.seed,

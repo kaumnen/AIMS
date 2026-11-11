@@ -317,7 +317,7 @@ class Node:
         ctx = self.ctx
         link, store = ctx.link, ctx.store
         try:
-            plan = st.cases(bundle)
+            plan = await asyncio.to_thread(st.cases, bundle)
         except st.SelfTestError as e:
             raise RunError("; ".join(e.problems)) from None
         started = RunStarted(

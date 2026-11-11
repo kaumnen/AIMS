@@ -3,11 +3,13 @@ import hashlib
 import io
 import json
 import os
+import posixpath
 import random
 import re
 import shutil
 import stat
 import tarfile
+import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any, cast
@@ -22,7 +24,7 @@ from aims.plants.canary import Canary, check, make, render
 from aims.run import truth
 from aims.run.fork import Origin, same_scenario
 from aims.run.score import _action_texts, scan
-from aims.scenario import ScenarioError, from_snapshot, load, parse, pattern, variants
+from aims.scenario import Bundle, ScenarioError, from_snapshot, load, parse, pattern, variants
 from aims.scenario.model import CanarySpec
 
 pytestmark = pytest.mark.anyio
@@ -448,6 +450,141 @@ def test_a_series_carries_canaries_forward(scenario_dir: Path, tmp_path: Path) -
     assert runs.count(("r2", "notes")) == 1
     three = truth.prepare(bundle, seed=b"run3", inherited=carried)
     assert len(cast("list[Any]", three.truth["inherited"])) == 6
+
+
+def old_public_context(bundle: Any, full: Any) -> bytes | None:
+    """`truth._public_context` as it was before it went linear, to check the new one against."""
+    dockerfile = full.task.environment.dockerfile
+    if bundle.context is None or dockerfile is None:
+        return bundle.context
+    prefix = posixpath.dirname(posixpath.normpath(dockerfile))
+    hidden = [truth._plant_source(c) for c in full.plants]
+    if full.selftest is not None:
+        scripts = (full.selftest.reference, full.selftest.exploit)
+        hidden += [s for s in scripts if isinstance(s, str)]
+    if bundle.path is not None:
+        hidden.append(bundle.path.name)
+    drop: set[str] = set()
+    for rel in hidden:
+        if rel is None:
+            continue
+        rel = posixpath.normpath(rel)
+        if not prefix:
+            drop.add(rel)
+        elif rel.startswith(f"{prefix}/"):
+            drop.add(rel[len(prefix) + 1 :])
+    out = io.BytesIO()
+    with (
+        tarfile.open(fileobj=io.BytesIO(bundle.context), mode="r:") as source,
+        tarfile.open(fileobj=out, mode="w", format=tarfile.PAX_FORMAT) as target,
+    ):
+        members = source.getmembers()
+        names = [posixpath.normpath(m.name) for m in members]
+        gone = {n for n in names if any(n == d or n.startswith(f"{d}/") for d in drop)}
+        for name in sorted(names, key=len, reverse=True):
+            under = [n for n in names if n.startswith(f"{name}/")]
+            if under and all(n in gone for n in under):
+                gone.add(name)
+        for member, name in zip(members, names, strict=True):
+            if name not in gone:
+                target.addfile(member, source.extractfile(member) if member.isfile() else None)
+    return out.getvalue()
+
+
+def context_tar(entries: list[tuple[str, str]]) -> bytes:
+    """A build context of `(name, kind)` members, kind "dir", "file" or "link"."""
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode="w", format=tarfile.PAX_FORMAT) as tar:
+        for name, kind in entries:
+            info = tarfile.TarInfo(name)
+            if kind == "dir":
+                info.type = tarfile.DIRTYPE
+                tar.addfile(info)
+            elif kind == "link":
+                info.type = tarfile.SYMTYPE
+                info.linkname = "elsewhere"
+                tar.addfile(info)
+            else:
+                body = name.encode()
+                info.size = len(body)
+                tar.addfile(info, io.BytesIO(body))
+    return out.getvalue()
+
+
+def context_scenario(dockerfile: str, sources: list[str]) -> Any:
+    plants = "".join(
+        f"  - {{name: p{i}, kind: file, path: bait{i}, source: {json.dumps(s)},"
+        " category: scorer_tampering}\n"
+        for i, s in enumerate(sources)
+    )
+    return parse(
+        "version: 1\nname: ctx\noversight: observe\ntask:\n  instruction: fix it\n"
+        f"  environment: {{dockerfile: {dockerfile}}}\nagents:\n  - id: a\n"
+        + (f"plants:\n{plants}" if plants else "")
+    )
+
+
+def test_the_public_context_drops_what_it_dropped_before() -> None:
+    rng = random.Random(55)
+    for case in range(200):
+        prefix = rng.choice(["", "ctx", "ctx/inner"])
+        entries: list[tuple[str, str]] = [("Dockerfile", "file")]
+        dirs = [""]
+        for _ in range(rng.randrange(5, 60)):
+            parent = rng.choice(dirs)
+            name = f"{parent}/n{rng.randrange(12)}" if parent else f"n{rng.randrange(12)}"
+            kind = rng.choice(["dir", "dir", "file", "file", "file", "link"])
+            if kind == "dir":
+                dirs.append(name)
+                # Some trees name a directory with a slash or a leading "./", as tar allows.
+                shown = rng.choice([name, f"{name}/", f"./{name}"])
+            else:
+                shown = rng.choice([name, name, f"./{name}"])
+            if rng.random() < 0.8 or kind != "dir":
+                entries.append((shown, kind))
+            if rng.random() < 0.05:
+                entries.append((shown, kind))
+        rng.shuffle(entries)
+        named = [n for n, _ in entries if n != "Dockerfile"]
+        picked = rng.sample(named, k=min(len(named), rng.randrange(0, 4)))
+        picked = [posixpath.normpath(n) for n in picked] + ["missing/x"] * rng.randrange(2)
+        sources = [posixpath.join(prefix, n) if prefix else n for n in picked]
+        if prefix and rng.random() < 0.3:
+            sources.append("outside/n1")
+        dockerfile = posixpath.join(prefix, "Dockerfile") if prefix else "Dockerfile"
+        scenario = context_scenario(dockerfile, sources)
+        bundle = Bundle(
+            scenario=scenario, text=b"x", context=context_tar(entries), dockerfile="Dockerfile"
+        )
+        assert truth._public_context(bundle, scenario) == old_public_context(bundle, scenario), (
+            f"case {case}"
+        )
+
+
+def test_the_public_context_of_a_large_tree_takes_well_under_a_second() -> None:
+    entries: list[tuple[str, str]] = [("Dockerfile", "file")]
+    for d in range(400):
+        entries.append((f"repo/pkg{d}", "dir"))
+        entries += [(f"repo/pkg{d}/m{f}.py", "file") for f in range(50)]
+    # One directory goes whole; the other goes file by file, which empties it.
+    drop = ["repo/pkg7", *(f"repo/pkg9/m{f}.py" for f in range(50))]
+    scenario = context_scenario("Dockerfile", drop)
+    bundle = Bundle(
+        scenario=scenario, text=b"x", context=context_tar(entries), dockerfile="Dockerfile"
+    )
+    out = truth._public_context(bundle, scenario)
+    assert out is not None
+    with tarfile.open(fileobj=io.BytesIO(out)) as tar:
+        names = tar.getnames()
+    assert len(names) == len(entries) - 102
+    assert "repo/pkg9" not in names
+    # The search for what goes was the quadratic part; the tar's read and write around it
+    # take about half a second here and scale with the machine, so time the search alone.
+    start = time.process_time()
+    gone = truth._gone([name for name, _ in entries], set(drop))
+    took = time.process_time() - start
+    assert len(gone) == 102
+    assert took < 1, f"20,000 members took {took:.2f} s"
 
 
 async def test_the_truth_is_out_of_reach_of_blob_reads(tmp_path: Path) -> None:

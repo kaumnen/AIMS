@@ -891,7 +891,9 @@ async def _run(**o: Any) -> int:
                     step = found if found is not None else fork_step(origin)
                     check_fork(origin, step)
                 bundle = origin.full_bundle or origin.bundle
-                if o["scenario"] is not None and not same_scenario(origin, load(o["scenario"])):
+                if o["scenario"] is not None and not await asyncio.to_thread(
+                    same_scenario, origin, load(o["scenario"])
+                ):
                     return fail(f"{o['scenario']} changed since run {origin.run_id} was recorded")
                 fork_profile = o["profile"]
                 if fork_profile is not None:

@@ -703,13 +703,30 @@ def _public_context(bundle: Bundle, full: Scenario) -> bytes | None:
     ):
         members = source.getmembers()
         names = [posixpath.normpath(m.name) for m in members]
-        gone = {n for n in names if any(n == d or n.startswith(f"{d}/") for d in drop)}
-        # A directory left empty by the drop goes too, or its name would stay behind.
-        for name in sorted(names, key=len, reverse=True):
-            under = [n for n in names if n.startswith(f"{name}/")]
-            if under and all(n in gone for n in under):
-                gone.add(name)
+        gone = _gone(names, drop)
         for member, name in zip(members, names, strict=True):
             if name not in gone:
                 target.addfile(member, source.extractfile(member) if member.isfile() else None)
     return out.getvalue()
+
+
+def _gone(names: Sequence[str], drop: set[str]) -> set[str]:
+    """The `names` that are in `drop` or under one, and every name with something under it
+    that all goes, so an emptied directory leaves no name behind."""
+    parents = {n: _parents_of(n) for n in names}
+    gone = {n for n, above in parents.items() if n in drop or not drop.isdisjoint(above)}
+    under: set[str] = set()
+    kept: set[str] = set()
+    # Longest first: what is under a name is longer, so its fate is known when the name's is.
+    for name in sorted(parents, key=len, reverse=True):
+        if name in under and name not in kept:
+            gone.add(name)
+        under.update(parents[name])
+        if name not in gone:
+            kept.update(parents[name])
+    return gone
+
+
+def _parents_of(name: str) -> list[str]:
+    """Every `p` for which `name.startswith(f"{p}/")`: the names `name` is under."""
+    return [name[:i] for i, c in enumerate(name) if c == "/"]

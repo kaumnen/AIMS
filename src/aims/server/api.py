@@ -2086,7 +2086,7 @@ async def start_selftest(
         )
     problems = check(bundle, settings.models, body.profile, settings.prompts)
     try:
-        selftest.cases(bundle)
+        await asyncio.to_thread(selftest.cases, bundle)
     except selftest.SelfTestError as e:
         problems += e.problems
     if problems:
