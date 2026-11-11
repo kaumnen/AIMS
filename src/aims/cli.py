@@ -1828,6 +1828,9 @@ def monitor_cmd(
         raise typer.BadParameter("pick one", param_hint="--signals-only/--judge-only")
     if signals_only and monitor not in (None, "signals"):
         raise typer.BadParameter("--signals-only sets the signals preset", param_hint="--monitor")
+    for given, hint in ((profile, "--profile"), (budget_usd, "--budget-usd")):
+        if signals_only and given is not None:
+            raise typer.BadParameter("--signals-only calls no model", param_hint=hint)
     link = _link(server, token_file, no_server)
     code = asyncio.run(
         _monitor_runs(

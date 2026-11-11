@@ -294,6 +294,19 @@ def test_aims_monitor_refuses_what_it_cannot_run(
     assert off.exit_code == 2
 
 
+def test_aims_monitor_signals_only_refuses_the_model_options(runs: tuple[Path, str]) -> None:
+    root, origin = runs
+    before = sorted(root.rglob("*"))
+    base = ["monitor", origin, "--runs-dir", str(root), "--no-server", "--signals-only"]
+    for extra in (["--profile", "meta-spark-1.3"], ["--budget-usd", "0.5"]):
+        result = invoke(*base, *extra)
+        assert result.exit_code == 2, result.output
+        assert extra[0] in result.output
+        assert "--signals-only calls no model" in " ".join(result.output.split())
+    assert sorted(root.rglob("*")) == before
+    assert invoke(*base, "--json").exit_code == 0
+
+
 def test_aims_monitor_prints_its_estimate_and_refuses_above_the_limit_unless_yes(
     runs: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
