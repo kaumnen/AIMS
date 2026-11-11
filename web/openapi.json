@@ -2914,7 +2914,7 @@
         "type": "object"
       },
       "Estimate": {
-        "description": "The cost of `samples` runs of each variant in `parts`. `confirm` says `aims run` asks\nbefore it starts: the high figure, or without one the ceiling, is above\n`confirm_above_usd`, or nothing bounds the cost. `lines` is the estimate in words.",
+        "description": "The cost of `samples` runs of each variant in `parts`. `confirm` says `aims run` asks\nbefore it starts: no cap bounds the cost, whatever past runs cost, or the high figure, or\nwithout one the ceiling, is above `confirm_above_usd`. `lines` is the estimate in words.",
         "properties": {
           "confirm": {
             "default": false,

@@ -56,6 +56,7 @@ from aims.run.estimate import (
     reviews_confirm,
     spend,
     spend_lines,
+    usd,
 )
 from aims.run.fork import Origin
 from aims.run.view import LiveView, _Run
@@ -305,6 +306,37 @@ def test_no_cap_set_is_said_with_a_warning(tmp_path: Path) -> None:
         " limits.cost_usd"
     ]
     assert e.confirm
+
+
+@pytest.mark.anyio
+async def test_a_run_with_no_cap_asks_whatever_past_runs_cost(tmp_path: Path) -> None:
+    settings, small = write(tmp_path, name="small", budget="{steps: 3}")
+    settings, path = write(tmp_path, name="open", budget="{steps: null, cost_usd: null}")
+    bundle = load_scenario(path)
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        await record(store, settings, load_scenario(small), 0.05)
+        other = await history(store)
+        await record(store, settings, bundle, 0.05)
+        own = await history(store)
+    e = estimate_runs(other, settings, [bundle])
+    # with no step budget a run of another scenario cannot be scaled to this one
+    assert (e.parts[0].agents.runs, e.total.high_usd, e.total.ceiling_usd) == (0, None, None)
+    assert e.confirm
+    refused = guard(e, yes=False, tty=False, ask=lambda q: False)
+    assert refused == (
+        "no cap bounds the cost and no past runs give an estimate; pass --yes to start anyway"
+    )
+    e = estimate_runs(own, settings, [bundle])
+    assert (e.parts[0].agents.tier, e.parts[0].agents.runs) == ("scenario", 1)
+    assert e.total.high_usd is not None
+    assert e.total.high_usd < e.confirm_above_usd
+    assert e.confirm
+    refused = guard(e, yes=False, tty=False, ask=lambda q: False)
+    assert refused == (
+        f"no cap bounds the cost; the high estimate is {usd(e.total.high_usd)};"
+        " pass --yes to start anyway"
+    )
+    assert guard(e, yes=True, tty=False, ask=lambda q: False) is None
 
 
 def test_a_monitor_cap_too_small_for_the_steps_is_said_with_a_warning(tmp_path: Path) -> None:

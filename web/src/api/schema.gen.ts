@@ -2703,8 +2703,8 @@ export interface components {
         /**
          * Estimate
          * @description The cost of `samples` runs of each variant in `parts`. `confirm` says `aims run` asks
-         *     before it starts: the high figure, or without one the ceiling, is above
-         *     `confirm_above_usd`, or nothing bounds the cost. `lines` is the estimate in words.
+         *     before it starts: no cap bounds the cost, whatever past runs cost, or the high figure, or
+         *     without one the ceiling, is above `confirm_above_usd`. `lines` is the estimate in words.
          */
         Estimate: {
             /**

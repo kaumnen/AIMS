@@ -145,8 +145,8 @@ class ProviderCredit(_Out):
 
 class Estimate(_Out):
     """The cost of `samples` runs of each variant in `parts`. `confirm` says `aims run` asks
-    before it starts: the high figure, or without one the ceiling, is above
-    `confirm_above_usd`, or nothing bounds the cost. `lines` is the estimate in words."""
+    before it starts: no cap bounds the cost, whatever past runs cost, or the high figure, or
+    without one the ceiling, is above `confirm_above_usd`. `lines` is the estimate in words."""
 
     scenario: str
     samples: int
@@ -592,7 +592,8 @@ def estimate(
         unpriced=sorted(unpriced),
         warnings=warnings,
         confirm_above_usd=confirm_above_usd,
-        confirm=priced and (figure is None or figure > confirm_above_usd),
+        confirm=priced
+        and (figure is None or total.ceiling_usd is None or figure > confirm_above_usd),
     )
     out.lines = describe(out)
     return out
@@ -731,6 +732,8 @@ def _side(
     done: Mapping[str, int] | None = None,
 ) -> tuple[CostFigures, dict[str, float]]:
     for tier, test in tiers:
+        if tier != "scenario" and budget is None:
+            continue  # no step budget to scale another scenario's runs to
         matched = [past for past in found.runs if test(past)]
         costs: list[float] = []
         by_provider: dict[str, float] = defaultdict(float)
@@ -1084,11 +1087,13 @@ def needs_confirm(e: Estimate) -> str | None:
         return None
     t = e.total
     limit = usd(e.confirm_above_usd)
+    if t.ceiling_usd is None:
+        if t.high_usd is None:
+            return "no cap bounds the cost and no past runs give an estimate"
+        return f"no cap bounds the cost; the high estimate is {usd(t.high_usd)}"
     if t.high_usd is not None:
         return f"the high estimate {usd(t.high_usd)} is above confirm_above_usd {limit}"
-    if t.ceiling_usd is not None:
-        return f"the caps allow {usd(t.ceiling_usd)}, above confirm_above_usd {limit}"
-    return "no cap bounds the cost and no past runs give an estimate"
+    return f"the caps allow {usd(t.ceiling_usd)}, above confirm_above_usd {limit}"
 
 
 def guard(e: Estimate, *, yes: bool, tty: bool, ask: Callable[[str], bool]) -> str | None:
