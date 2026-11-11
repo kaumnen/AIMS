@@ -69,6 +69,37 @@ def test_a_bad_budget_says_which_cap(text: str, problem: str) -> None:
     assert problem in str(e.value)
 
 
+@pytest.mark.parametrize(
+    ("text", "problem"),
+    [
+        (
+            "cost_usd=2,50",
+            "'cost_usd=2,50': a comma separates caps; write the number with a point or"
+            " without separators, such as cost_usd=2.50 or cost_usd=1000",
+        ),
+        (
+            "steps=5, run.wall_s=3,600",
+            "'run.wall_s=3,600': a comma separates caps; write the number with a point or"
+            " without separators, such as run.wall_s=2.50 or run.wall_s=1000",
+        ),
+        (
+            "alice.steps=1,000,000",
+            "'alice.steps=1,000': a comma separates caps; write the number without"
+            " separators, such as alice.steps=1000",
+        ),
+        ("cost_usd=1,000.50", "'cost_usd=1,000.50': a comma separates caps"),
+        ("50", "'50': write key=value, such as steps=200 or cost_usd=none"),
+        ("cost_usd=none,50", "'50': write key=value"),
+        ("cost_usd=2,,50", "'50': write key=value"),
+        ("cost_usd=2,x", "'x': write key=value"),
+    ],
+)
+def test_digits_after_a_comma_say_the_comma_split_a_number(text: str, problem: str) -> None:
+    with pytest.raises(BudgetError) as e:
+        parse(text)
+    assert str(e.value).startswith(problem)
+
+
 NUMBERS = Path(__file__).resolve().parents[1] / "web" / "src" / "lib" / "budget-numbers.json"
 KIND = {"steps": "whole", "output_tokens": "whole", "cost_usd": "decimal", "wall_s": "decimal"}
 

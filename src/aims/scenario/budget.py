@@ -156,6 +156,20 @@ def _number(key: str, cap: str, raw: str) -> int | float:
     raise BudgetError(f"{key}: {raw!r} does not read; write {_FORMS[cap]}, or none")
 
 
+def _bad_part(before: str, part: str) -> str:
+    """Why `part` is no key=value pair. Digits right after a number, as `50` in cost_usd=2,50,
+    are the rest of that number, cut off by the comma that separates caps."""
+    key, _, number = before.partition("=")
+    if not (number.strip()[-1:].isdigit() and part[:1].isdigit() and _DIGITS.fullmatch(part)):
+        return f"{part!r}: write key=value, such as steps=200 or cost_usd=none"
+    key = key.strip()
+    if key.rpartition(".")[2] in WHOLE:
+        forms = f"without separators, such as {key}=1000"
+    else:
+        forms = f"with a point or without separators, such as {key}=2.50 or {key}=1000"
+    return f"{before + ',' + part!r}: a comma separates caps; write the number {forms}"
+
+
 def parse(text: str) -> BudgetOverride:
     """Read `--budget`: comma separated `key=value` pairs. A bare key (`steps=200`) sets every
     agent, `AGENT.key` one agent and `run.key` the run's limits; `none` lifts the cap. A value
@@ -163,13 +177,15 @@ def parse(text: str) -> BudgetOverride:
     every: dict[str, Value] = {}
     agents: dict[str, dict[str, Value]] = {}
     run: dict[str, Value] = {}
+    last = ""
     for part in (p.strip() for p in text.split(",")):
+        before, last = last, part
         if not part:
             continue
         key, sep, raw = part.partition("=")
         key, raw = key.strip(), raw.strip()
         if not sep or not key or not raw:
-            raise BudgetError(f"{part!r}: write key=value, such as steps=200 or cost_usd=none")
+            raise BudgetError(_bad_part(before, part))
         scope, dot, cap = key.rpartition(".")
         if cap not in KEYS:
             raise BudgetError(f"{key}: no cap {cap!r}; use {', '.join(KEYS)}")
