@@ -3,8 +3,11 @@ as the characters it holds: never read as Rich markup, never as escape bytes."""
 
 import asyncio
 import io
+import logging
 import shutil
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -12,7 +15,7 @@ from cp import control_plane
 from rich.console import Console
 from typer.testing import CliRunner
 
-from aims.cli import app
+from aims.cli import _command_line, _problem, app
 from aims.events import (
     AgentReport,
     Draft,
@@ -30,7 +33,7 @@ from aims.models import Delta, DeltaBus
 from aims.monitor.core import HumanRequest
 from aims.run.runner import Result, Runner
 from aims.run.view import HumanPrompt, LiveView, digest, summary
-from aims.terminal import one_line, shown
+from aims.terminal import VisibleLog, one_line, shown
 
 pytestmark = pytest.mark.anyio
 
@@ -293,3 +296,67 @@ def test_aims_run_shows_markup_in_an_error_as_written(
     keyless = invoke(*args, "--monitor", "standard")
     assert keyless.exit_code == 1
     assert 'preset = "signals" under [monitor] in aims.toml' in " ".join(keyless.stderr.split())
+
+
+# The rest of the CLI
+
+
+def test_log_lines_show_hidden_characters_and_keep_their_lines() -> None:
+    try:
+        raise ValueError(f"the model said {ESCAPES}")
+    except ValueError:
+        record = logging.LogRecord(
+            "aims", logging.ERROR, __file__, 1, "run %s: %s", ("r1", ESCAPES), sys.exc_info()
+        )
+    line = VisibleLog("%(levelname)s %(message)s").format(record)
+    assert "\x1b" not in line
+    assert "\x07" not in line
+    assert line.startswith("ERROR run r1: \\u001B]0;owned\\u0007\\u001B[2J\\u001B[H\nTraceback")
+    assert line.endswith("ValueError: the model said \\u001B]0;owned\\u0007\\u001B[2J\\u001B[H")
+
+
+def test_argv_and_tokens_come_back_as_text(tmp_path: Path) -> None:
+    data = ["--data-dir", str(tmp_path / "server")]
+    name = f"a\nb{ESCAPES}"
+    assert invoke("token", "create", name, *data).exit_code == 0
+    listed = invoke("token", "list", *data)
+    assert listed.exit_code == 0, listed.output
+    (line,) = listed.output.splitlines()
+    assert line.startswith("a b\\u001B]0;owned\\u0007\\u001B[2J\\u001B[H  viewer  ")
+    revoked = invoke("token", "revoke", f"x{ESCAPES}", *data)
+    assert revoked.exit_code == 1
+    assert revoked.stderr == "error: no live token x\\u001B]0;owned\\u0007\\u001B[2J\\u001B[H\n"
+    label = invoke("label", f"r{ESCAPES}", "1", "real", "--runs-dir", str(tmp_path / "runs"))
+    assert label.exit_code == 1
+    assert "\x1b" not in label.stderr
+    assert "r\\u001B]0;owned" in label.stderr
+    usage = invoke("run", f"nosuch{ESCAPES}")
+    assert usage.exit_code == 2
+    assert "\x1b" not in usage.output.replace("\x1b[", "")
+    assert "nosuch\\u001B]0;owned" in usage.output
+
+
+def test_aims_control_list_keeps_each_command_on_its_lines() -> None:
+    command = {
+        "created": 0.0,
+        "acked": 0.25,
+        "action": "inject",
+        "agent": f"a{ESCAPES}",
+        "then": "continue",
+        "state": "done",
+        "outcome": "ok\r\n2026-01-01 00:00:00  op  kill  ok",
+        "by": "op\n",
+        "text": f"stop\nnow{ESCAPES}",
+        "reason": None,
+    }
+    assert _command_line(command).splitlines() == [
+        "1970-01-01 00:00:00  op  inject a\\u001B]0;owned\\u0007\\u001B[2J\\u001B[H"
+        "  ok 2026-01-01 00:00:00 op kill ok  250 ms",
+        "    text: stop now\\u001B]0;owned\\u0007\\u001B[2J\\u001B[H",
+    ]
+
+
+def test_a_server_error_body_comes_back_as_text(capsys: pytest.CaptureFixture[str]) -> None:
+    answer = SimpleNamespace(status_code=409, json=lambda: {"detail": f"busy {ESCAPES}"}, text="")
+    assert _problem(answer) == 1
+    assert capsys.readouterr().err == "error: 409 busy \\u001B]0;owned\\u0007\\u001B[2J\\u001B[H\n"

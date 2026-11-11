@@ -19,6 +19,14 @@ RunsDirOption = Annotated[
 SCENARIO_HELP = "The scenario file, its directory, or builtin/<name> for one that ships with AIMS."
 
 
+def _echo(text: str, *, err: bool = False) -> None:
+    """typer.echo of a line that holds outside text: from a run, a server, a file or argv. Its
+    hidden characters, such as ESC, show as text."""
+    from aims.report.escape import visible
+
+    typer.echo(visible(text), err=err)
+
+
 def _scenario(value: Path | None) -> Path | None:
     """The scenario file `value` names. A bare name that is neither a path nor a built-in
     scenario is a usage error that lists the built-in ones."""
@@ -30,9 +38,11 @@ def _scenario(value: Path | None) -> Path | None:
     parts = value.parts
     named = len(parts) == 1 or (len(parts) == 2 and parts[0] == "builtin")
     if path == value and not path.exists() and named:
+        from aims.report.escape import visible
+
         shipped = ", ".join(f"builtin/{name}" for name in builtin_names())
         raise typer.BadParameter(
-            f"no file {value} and no built-in scenario of that name; built in: {shipped}"
+            visible(f"no file {value} and no built-in scenario of that name; built in: {shipped}")
         )
     return path
 
@@ -46,7 +56,7 @@ def _settings(config: Path | None) -> Any:
     try:
         return load(config)
     except (ConfigError, ProfileError, TextError) as e:
-        typer.echo(f"error: {e}", err=True)
+        _echo(f"error: {e}", err=True)
         raise typer.Exit(1) from None
 
 
@@ -79,9 +89,9 @@ def init(
 
     path = user_dir() / USER if user else Path.cwd() / PROJECT
     try:
-        typer.echo(f"wrote {write(path, force=force)}")
+        _echo(f"wrote {write(path, force=force)}")
     except ConfigError as e:
-        typer.echo(f"error: {e}", err=True)
+        _echo(f"error: {e}", err=True)
         raise typer.Exit(1) from None
 
 
@@ -106,14 +116,14 @@ def config_paths(
     try:
         found = layers(config)
     except ConfigError as e:
-        typer.echo(f"error: {e}", err=True)
+        _echo(f"error: {e}", err=True)
         raise typer.Exit(1) from None
     for name, path in (("user", found.user), ("project", found.project)):
         if path is None:
             state = f"none; `aims init` writes {Path.cwd() / PROJECT}"
         else:
             state = f"{path} ({'read' if path.is_file() else 'absent'})"
-        typer.echo(f"{name}: {state}")
+        _echo(f"{name}: {state}")
 
 
 @app.command()
@@ -136,7 +146,7 @@ def verify(
         *(f"blob {sha} does not match its hash" for sha in result.bad_blobs),
     ]
     for problem in problems:
-        typer.echo(f"error: {problem}", err=True)
+        _echo(f"error: {problem}", err=True)
     if problems:
         raise typer.Exit(1)
     state = "finished" if result.finished else "not finished"
@@ -163,7 +173,7 @@ def check_plants(
     try:
         rows = asyncio.run(main())
     except (CheckError, KeyError) as e:
-        typer.echo(f"error: {e}", err=True)
+        _echo(f"error: {e}", err=True)
         raise typer.Exit(EXIT_FAILED) from None
     if json_out:
         typer.echo(json.dumps([row.as_dict() for row in rows], ensure_ascii=False))
@@ -174,7 +184,7 @@ def check_plants(
     for row in rows:
         state = "took" if row.taken else "touched" if row.tier == "touched" else "reached"
         seqs = ",".join(str(seq) for seq in row.evidence)
-        typer.echo(f"{row.agent} {state} {row.plant} ({row.kind}, {row.tier}) at {row.seq}: {seqs}")
+        _echo(f"{row.agent} {state} {row.plant} ({row.kind}, {row.tier}) at {row.seq}: {seqs}")
 
 
 @models_app.command("list")
@@ -191,7 +201,7 @@ def models_list(config: ConfigOption = None) -> None:
         unset = [e for e in envs if not os.environ.get(e)]
         state = f"unset {', '.join(unset)}" if unset else "ready"
         role = f"  [{', '.join(roles[name])}]" if name in roles else ""
-        typer.echo(f"{name}  {p.backend}  {p.model}  reasoning {p.reasoning}  {state}{role}")
+        _echo(f"{name}  {p.backend}  {p.model}  reasoning {p.reasoning}  {state}{role}")
 
 
 @models_app.command("check")
@@ -212,7 +222,7 @@ def models_check(
             p.url()
             p.api_key()
     except ProfileError as e:
-        typer.echo(f"error: {e}", err=True)
+        _echo(f"error: {e}", err=True)
         raise typer.Exit(1) from None
     failed = asyncio.run(_check(models, chosen, runs_dir))
     if failed:
@@ -224,7 +234,7 @@ async def _check(models: Any, chosen: list[Any], runs_dir: Path) -> bool:
     from aims.models.check import record_check
 
     def show(c: Any) -> None:
-        typer.echo(f"{c.verdict:4}  {c.profile}  {c.name}: {c.detail}")
+        _echo(f"{c.verdict:4}  {c.profile}  {c.name}: {c.detail}")
 
     async with await LocalEventStore.open(runs_dir) as store:
         run_id, checks = await record_check(store, models, chosen, on_check=show)
@@ -263,7 +273,7 @@ def images_prune(
     try:
         keep = image_keep_days(layers(config)) if days is None else days
     except ConfigError as e:
-        typer.echo(f"error: {e}", err=True)
+        _echo(f"error: {e}", err=True)
         raise typer.Exit(EXIT_FAILED) from None
 
     async def main() -> list[str]:
@@ -276,7 +286,7 @@ def images_prune(
     try:
         refs = asyncio.run(main())
     except Exception as e:
-        typer.echo(f"error: cannot prune images: {e}", err=True)
+        _echo(f"error: cannot prune images: {e}", err=True)
         raise typer.Exit(EXIT_FAILED) from None
     for ref in refs:
         typer.echo(f"{'would remove' if dry_run else 'removed'} {ref}")
@@ -315,7 +325,7 @@ def prompts_show(config: ConfigOption = None) -> None:
             raise UnknownTool(f"[prompts.tools] names unknown tool(s) {', '.join(unknown)}")
         monitor = resolve(layered)
     except (TextError, UnknownTool) as e:
-        typer.echo(f"error: {e}", err=True)
+        _echo(f"error: {e}", err=True)
         raise typer.Exit(EXIT_FAILED) from None
 
     def value(text: str) -> str:
@@ -391,12 +401,12 @@ def scenario_check(
                 for plant in prepared.plants.values():
                     problems += list(plant.lint())
     for problem in problems:
-        typer.echo(f"error: {problem}", err=True)
+        _echo(f"error: {problem}", err=True)
     if problems:
         raise typer.Exit(EXIT_FAILED)
     s = bundle.scenario
     agents = ", ".join(a.id for a in s.agents)
-    typer.echo(f"ok: {s.name}, agents {agents}, digest {bundle.digest[:16]}")
+    _echo(f"ok: {s.name}, agents {agents}, digest {bundle.digest[:16]}")
     _echo_estimate(settings, [bundle], runs_dir, profile=profile)
     from aims.run import selftest as st
 
@@ -421,15 +431,15 @@ def _selftest(settings: Any, bundle: Any, profile: str | None, keep: Path | None
         plan = st.cases(bundle)
     except st.SelfTestError as e:
         for problem in e.problems:
-            typer.echo(f"error: {problem}", err=True)
+            _echo(f"error: {problem}", err=True)
         return EXIT_FAILED
 
     def show(o: Any) -> None:
         typer.echo(f"selftest {o.case}: {'ok' if o.ok else 'failed'}")
         for note in o.notes:
-            typer.echo(f"  {note}")
+            _echo(f"  {note}")
         for problem in o.problems:
-            typer.echo(f"error: selftest {o.case}: {problem}", err=True)
+            _echo(f"error: selftest {o.case}: {problem}", err=True)
 
     async def main(root: Path) -> list[Any] | str:
         try:
@@ -452,7 +462,7 @@ def _selftest(settings: Any, bundle: Any, profile: str | None, keep: Path | None
     root = keep or Path(tempfile.mkdtemp(prefix="aims-selftest-"))
     found = asyncio.run(main(root))
     if isinstance(found, str):
-        typer.echo(f"error: {found}; --no-selftest skips it", err=True)
+        _echo(f"error: {found}; --no-selftest skips it", err=True)
         if keep is None:
             shutil.rmtree(root, ignore_errors=True)
         return EXIT_FAILED
@@ -460,7 +470,7 @@ def _selftest(settings: Any, bundle: Any, profile: str | None, keep: Path | None
         if keep is None:
             shutil.rmtree(root, ignore_errors=True)
         return 0
-    typer.echo(f"selftest runs kept in {root}", err=True)
+    _echo(f"selftest runs kept in {root}", err=True)
     return EXIT_FAILED
 
 
@@ -498,13 +508,13 @@ def _echo_estimate(
             budget=budget,
         )
     except (MonitorConfigError, ProfileError, TextError, BudgetError) as e:
-        typer.echo(f"no cost estimate: {e}", err=True)
+        _echo(f"no cost estimate: {e}", err=True)
         raise typer.Exit(EXIT_FAILED) from None
     if json_out:
         typer.echo(json.dumps(cost.model_dump(mode="json"), ensure_ascii=False))
         return
     for line in cost.lines:
-        typer.echo(line)
+        _echo(line)
 
 
 def _monitor_problems(settings: Any, bundle: Any, profile: str | None) -> list[str]:
@@ -549,11 +559,12 @@ def scenario_delete(
     """
     import asyncio
 
+    from aims.report.escape import visible
+
     url, token = _operator(server, token_file)
-    if not yes and not typer.confirm(
-        f"Delete scenario {name} from {source}? Its runs stay.", default=False, err=True
-    ):
-        typer.echo(f"kept {name}", err=True)
+    question = visible(f"Delete scenario {name} from {source}? Its runs stay.")
+    if not yes and not typer.confirm(question, default=False, err=True):
+        _echo(f"kept {name}", err=True)
         raise typer.Exit(EXIT_FAILED)
     raise typer.Exit(asyncio.run(_delete_scenario(url, token, source, name)))
 
@@ -570,11 +581,11 @@ async def _delete_scenario(url: str, token: str, source: str, name: str) -> int:
         try:
             r = await c.delete(f"/api/scenarios/{source}/{name}")
         except httpx2.TransportError as e:
-            typer.echo(f"error: cannot reach the control plane at {url}: {e}", err=True)
+            _echo(f"error: cannot reach the control plane at {url}: {e}", err=True)
             return EXIT_FAILED
     if r.status_code >= 400:
         return _problem(r)
-    typer.echo(f"deleted scenario {name}")
+    _echo(f"deleted scenario {name}")
     return 0
 
 
@@ -814,7 +825,6 @@ async def _run(**o: Any) -> int:
     from rich.console import Console
     from rich.live import Live
     from rich.logging import RichHandler
-    from rich.markup import escape
 
     from aims.channels import archives
     from aims.events import LocalEventStore, Series
@@ -844,16 +854,13 @@ async def _run(**o: Any) -> int:
     from aims.sandbox import DockerBackend, SandboxError
     from aims.scenario import ScenarioError, load
     from aims.scenario.budget import BudgetError
-    from aims.terminal import on_hangup, shown
+    from aims.terminal import VisibleLog, on_hangup, one_line, shown
     from aims.wire import TracerHealth
 
     err = Console(stderr=True)
-    logging.basicConfig(
-        level=logging.WARNING,
-        format="%(message)s",
-        handlers=[RichHandler(console=err, show_path=False)],
-        force=True,
-    )
+    handler = RichHandler(console=err, show_path=False)
+    handler.setFormatter(VisibleLog())
+    logging.basicConfig(level=logging.WARNING, handlers=[handler], force=True)
 
     def fail(message: str) -> int:
         err.print("[red]error:[/]", shown(message))
@@ -913,7 +920,7 @@ async def _run(**o: Any) -> int:
         except BudgetError as e:
             return fail(f"--budget: {e}")
         if (line := _budget_line(base, budget)) is not None:
-            err.print(escape(line), highlight=False)
+            err.print(shown(line))
         try:
             if origin is not None and o["profile"] is None:
                 agents = list(live_profiles(models, origin, step).values())
@@ -970,13 +977,13 @@ async def _run(**o: Any) -> int:
                     budget=budget,
                 )
         except (MonitorConfigError, ProfileError, TextError, RunError, KeyError) as e:
-            err.print(f"[yellow]no cost estimate:[/] {escape(str(e))}")
+            err.print("[yellow]no cost estimate:[/]", shown(e))
         if cost is not None:
             if o["json_out"]:
                 typer.echo(json.dumps({"type": "estimate", **cost.model_dump(mode="json")}))
             else:
                 for text in cost.lines:
-                    err.print(escape(text), highlight=False)
+                    err.print(shown(text))
         terminal = sys.stdin.isatty() and sys.stderr.isatty()
         interactive = terminal and not o["quiet"] and not o["json_out"]
         human = monitor is not None and monitor.oversight == "human"
@@ -1060,7 +1067,7 @@ async def _run(**o: Any) -> int:
                     )
                     if i == 0:
                         for line in preview(origin, fork):
-                            err.print(escape(line))
+                            err.print(shown(line))
                     options.fork = fork
                     options.seed = origin.seed
                     options.inherited = origin.inherited
@@ -1140,11 +1147,11 @@ async def _run(**o: Any) -> int:
                 try:
                     await score_sealed(store, settings, run_id, run_id=score_id)
                 except ScoreError as e:
-                    err.print(f"[yellow]run {run_id} was not scored:[/] {escape(str(e))}")
+                    err.print(f"[yellow]run {run_id} was not scored:[/]", shown(e))
                 except Exception as e:
                     logging.getLogger("aims.run").exception("scoring run %s failed", run_id)
-                    why = escape(f"{type(e).__name__}: {e}")
-                    err.print(f"[yellow]run {run_id} was not scored:[/] {why}")
+                    why = shown(f"{type(e).__name__}: {e}")
+                    err.print(f"[yellow]run {run_id} was not scored:[/]", why)
 
             async def execute(batch: list[Runner]) -> list[Result]:
                 if view is None:
@@ -1170,12 +1177,12 @@ async def _run(**o: Any) -> int:
                     restored = None
                     last, start = await series_start(store, o["series"], o["series_restart"])
                     if o["series_restart"]:
-                        err.print(f"series {o['series']} starts fresh at #{start}")
+                        err.print(shown(f"series {o['series']} starts fresh at #{start}"))
                     elif last is not None:
                         previous = last.run_id
                         inherited = truth.inherit(store.root / previous)
                         restored = await archives(store, previous)
-                        err.print(f"series {o['series']} goes on after run {previous}")
+                        err.print(shown(f"series {o['series']} goes on after run {previous}"))
                     for i in range(start, start + o["runs"]):
                         # A stop reaches only the runs made before it.
                         if stops:
@@ -1236,7 +1243,7 @@ async def _run(**o: Any) -> int:
                 found = digests.get(r.run_id) if r.run_id else None
                 flags = f" flags {len(found.flags)}" if found is not None and found.flags else ""
                 line = f"{r.run_id} {r.status} ${r.cost_usd:.4f}{flags} {r.reason or ''}"
-                typer.echo(line.rstrip())
+                typer.echo(one_line(line))
         else:
             Console().print(summary(results, list(digests.values())))
     except Exception:
@@ -1417,15 +1424,18 @@ def ui(
 
     from aims.config import ConfigError, project_file
     from aims.server.serve import ServeError, UiOptions, serve, server_dir
+    from aims.terminal import VisibleLog
 
-    logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
+    handler = logging.StreamHandler()
+    handler.setFormatter(VisibleLog("%(levelname)s %(name)s: %(message)s"))
+    logging.basicConfig(level=logging.WARNING, handlers=[handler])
     if config is not None and not config.is_file():
-        typer.echo(f"error: {config} does not exist", err=True)
+        _echo(f"error: {config} does not exist", err=True)
         raise typer.Exit(EXIT_FAILED)
     try:
         project = config if config is not None else project_file()
     except ConfigError as e:
-        typer.echo(f"error: {e}", err=True)
+        _echo(f"error: {e}", err=True)
         raise typer.Exit(EXIT_FAILED) from None
     options = UiOptions(
         host=host,
@@ -1447,7 +1457,7 @@ def ui(
     try:
         code = asyncio.run(serve(options))
     except ServeError as e:
-        typer.echo(f"error: {e}", err=True)
+        _echo(f"error: {e}", err=True)
         raise typer.Exit(EXIT_FAILED) from None
     raise typer.Exit(code)
 
@@ -1493,13 +1503,13 @@ async def _open(url: str, token: str, open_browser: bool, shown: str) -> int:
         try:
             r = await c.post("/api/session/code")
         except httpx2.TransportError as e:
-            typer.echo(f"error: cannot reach the control plane at {url}: {e}", err=True)
+            _echo(f"error: cannot reach the control plane at {url}: {e}", err=True)
             return EXIT_FAILED
     if r.status_code >= 400:
         return _problem(r)
     code = r.json()["code"]
     link = shown.rstrip("/") if code is None else f"{shown.rstrip('/')}/#code={code}"
-    typer.echo(link)
+    _echo(link)
     if code is None:
         typer.echo("the control plane runs without auth: the link needs no code", err=True)
     else:
@@ -1551,14 +1561,16 @@ def runner_cmd(
     from aims.node.service import Node, NodeOptions
     from aims.node.service import data_dir as default_dir
     from aims.sandbox import AuditMode
-    from aims.terminal import on_hangup
+    from aims.terminal import VisibleLog, on_hangup
 
-    logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
+    handler = logging.StreamHandler()
+    handler.setFormatter(VisibleLog("%(levelname)s %(name)s: %(message)s"))
+    logging.basicConfig(level=logging.WARNING, handlers=[handler])
     mode = cast(AuditMode, _audit(audit))
     try:
         image_days = image_keep_days(layers(config))
     except ConfigError as e:
-        typer.echo(f"error: {e}", err=True)
+        _echo(f"error: {e}", err=True)
         raise typer.Exit(EXIT_FAILED) from None
     if tls_ca is not None:
         try:
@@ -1670,7 +1682,7 @@ def push(
     elif path.is_dir():
         root, only = path, None
     else:
-        typer.echo(f"error: {path} is not a run directory", err=True)
+        _echo(f"error: {path} is not a run directory", err=True)
         raise typer.Exit(EXIT_FAILED)
     try:
         code = asyncio.run(_push(root, only, url, token))
@@ -1709,15 +1721,15 @@ async def _push(
             for run_id in only or store.run_ids():
                 info = await store.run(run_id)
                 if info is None or info.status == "running":
-                    typer.echo(f"skip {run_id}: not sealed", err=True)
+                    _echo(f"skip {run_id}: not sealed", err=True)
                     continue
                 shipper = Shipper(store, client, run_id)
                 await shipper.run()
                 if shipper.diverged or shipper.refused:
                     failed += 1
-                    typer.echo(f"error: {run_id}: {shipper.diverged or shipper.refused}", err=True)
+                    _echo(f"error: {run_id}: {shipper.diverged or shipper.refused}", err=True)
                 elif not quiet:
-                    typer.echo(f"{run_id} {info.status} {info.events} events")
+                    _echo(f"{run_id} {info.status} {info.events} events")
             return EXIT_FAILED if failed else 0
         finally:
             await client.aclose()
@@ -1829,7 +1841,6 @@ async def _monitor_runs(**o: Any) -> int:
     import httpx2
     from rich.console import Console
     from rich.logging import RichHandler
-    from rich.markup import escape
     from rich.table import Table
 
     from aims.config import ConfigError
@@ -1850,15 +1861,12 @@ async def _monitor_runs(**o: Any) -> int:
     from aims.run.job import JobOptions, monitor_profiles
     from aims.run.runner import RunError
     from aims.run.view import JsonLines, digest, monitor_table
-    from aims.terminal import on_hangup, shown
+    from aims.terminal import VisibleLog, on_hangup, one_line, shown
 
     err = Console(stderr=True)
-    logging.basicConfig(
-        level=logging.WARNING,
-        format="%(message)s",
-        handlers=[RichHandler(console=err, show_path=False)],
-        force=True,
-    )
+    handler = RichHandler(console=err, show_path=False)
+    handler.setFormatter(VisibleLog())
+    logging.basicConfig(level=logging.WARNING, handlers=[handler], force=True)
 
     def fail(message: str) -> int:
         err.print("[red]error:[/]", shown(message))
@@ -1923,7 +1931,7 @@ async def _monitor_runs(**o: Any) -> int:
                 typer.echo(json.dumps({"type": "estimate", **cost.model_dump(mode="json")}))
             elif not o["quiet"]:
                 for text in cost.lines:
-                    err.print(escape(text), highlight=False)
+                    err.print(shown(text))
         refused = ask_why(
             None if o["yes"] else reviews_confirm(costs),
             tty=sys.stdin.isatty() and sys.stderr.isatty(),
@@ -1982,9 +1990,7 @@ async def _monitor_runs(**o: Any) -> int:
         try:
             failed = await _push(o["runs_dir"], [r.run_id for r in results], url, token, quiet=True)
         except (ApiError, httpx2.TransportError, OSError) as e:
-            err.print(
-                f"[yellow]the control plane did not take the monitor runs: {escape(str(e))}[/]"
-            )
+            err.print(shown(f"the control plane did not take the monitor runs: {e}", "yellow"))
         else:
             if failed:
                 err.print("[yellow]some monitor runs did not reach the control plane[/]")
@@ -2005,7 +2011,7 @@ async def _monitor_runs(**o: Any) -> int:
         elif o["quiet"]:
             for r, d in zip(results, digests, strict=True):
                 line = f"{r.run_id} {r.origin} {r.status} flags {len(d.flags)} ${r.cost_usd:.4f}"
-                typer.echo(f"{line} {r.reason or ''}".rstrip())
+                typer.echo(one_line(f"{line} {r.reason or ''}"))
         else:
             table = Table(title="monitor runs")
             for column in ("run", "origin", "status", "flags", "sweeps", "verdict", "cost"):
@@ -2125,7 +2131,7 @@ async def _control(
                 return _problem(r)
             sent = r.json()
             if sent.get("state") == "cancelled":
-                typer.echo(f"{run}: cancelled before it started")
+                _echo(f"{run}: cancelled before it started")
                 return 0
             if wait == 0:
                 typer.echo(f"{action} {run}: sent; `aims control {run} list` shows it")
@@ -2139,13 +2145,13 @@ async def _control(
                 found = next((x for x in r.json() if x["id"] == command), None)
                 if found is not None and found["acked"] is not None:
                     outcome = str(found["outcome"])
-                    typer.echo(f"{action} {run}: {outcome}")
+                    _echo(f"{action} {run}: {outcome}")
                     return EXIT_FAILED if outcome.startswith("failed") else 0
                 await asyncio.sleep(0.2)
         except httpx2.TransportError as e:
-            typer.echo(f"error: cannot reach the control plane at {url}: {e}", err=True)
+            _echo(f"error: cannot reach the control plane at {url}: {e}", err=True)
             return EXIT_FAILED
-    typer.echo(
+    _echo(
         f"error: {action} {run}: sent, but the runner did not answer within {wait:g} s;"
         f" `aims control {run} list` shows it later",
         err=True,
@@ -2201,6 +2207,7 @@ async def _delete(url: str, token: str, run: str, yes: bool, force: bool) -> int
     import httpx2
 
     from aims.net import Outbound
+    from aims.report.escape import visible
 
     headers = {"Authorization": f"Bearer {token}", "User-Agent": f"aims/{__version__}"}
     async with httpx2.AsyncClient(
@@ -2212,47 +2219,47 @@ async def _delete(url: str, token: str, run: str, yes: bool, force: bool) -> int
                 return _problem(r)
             found = r.json()
             if found["blocked"]:
-                typer.echo(f"error: 409 {found['blocked']}", err=True)
+                _echo(f"error: 409 {found['blocked']}", err=True)
                 return EXIT_FAILED
             if found["offline"]:
                 if not force:
-                    typer.echo(
-                        f"error: 409 {found['offline']}. Pass --force to delete it.", err=True
-                    )
+                    _echo(f"error: 409 {found['offline']}. Pass --force to delete it.", err=True)
                     return EXIT_FAILED
-                typer.echo(f"It looks abandoned: {found['offline']}.", err=True)
+                _echo(f"It looks abandoned: {found['offline']}.", err=True)
             kinds = [d["kind"] for d in found["runs"]]
             what = f"run {run} with {_counted(kinds)}" if kinds else f"run {run}"
-            if not yes and not typer.confirm(f"Delete {what}?", default=False, err=True):
-                typer.echo(f"kept {run}", err=True)
+            if not yes and not typer.confirm(visible(f"Delete {what}?"), default=False, err=True):
+                _echo(f"kept {run}", err=True)
                 return EXIT_FAILED
             r = await c.delete(f"/api/runs/{run}", params={"force": "true"} if force else {})
         except httpx2.TransportError as e:
-            typer.echo(f"error: cannot reach the control plane at {url}: {e}", err=True)
+            _echo(f"error: cannot reach the control plane at {url}: {e}", err=True)
             return EXIT_FAILED
     if r.status_code >= 400:
         return _problem(r)
     for deleted in r.json()["run_ids"]:
-        typer.echo(f"deleted {deleted}")
+        _echo(f"deleted {deleted}")
     return 0
 
 
 def _command_line(c: dict[str, Any]) -> str:
     from datetime import UTC, datetime
 
+    from aims.terminal import one_line
+
     sent = datetime.fromtimestamp(c["created"], UTC).strftime("%Y-%m-%d %H:%M:%S")
     what = " ".join(
-        str(x)
+        one_line(x)
         for x in (c["action"], c["agent"], c["then"] if c["then"] != "continue" else None)
         if x
     )
-    answer = "waiting" if c["state"] == "waiting" else str(c["outcome"])
+    answer = "waiting" if c["state"] == "waiting" else one_line(c["outcome"])
     took = ""
     if c["state"] in ("done", "failed"):
         s = c["acked"] - c["created"]
         took = f"  {round(s * 1000)} ms" if s < 1 else f"  {s:.1f} s"
-    lines = [f"{sent}  {c['by'] or '-'}  {what}  {answer}{took}"]
-    lines += [f"    {k}: {c[k]}" for k in ("text", "reason") if c[k]]
+    lines = [f"{sent}  {one_line(c['by'] or '-')}  {what}  {answer}{took}"]
+    lines += [f"    {k}: {one_line(c[k])}" for k in ("text", "reason") if c[k]]
     return "\n".join(lines)
 
 
@@ -2269,13 +2276,13 @@ async def _commands(url: str, token: str, run: str) -> int:
         try:
             r = await c.get(f"/api/runs/{run}/commands")
         except httpx2.TransportError as e:
-            typer.echo(f"error: cannot reach the control plane at {url}: {e}", err=True)
+            _echo(f"error: cannot reach the control plane at {url}: {e}", err=True)
             return EXIT_FAILED
     if r.status_code >= 400:
         return _problem(r)
     commands = r.json()
     if not commands:
-        typer.echo(
+        _echo(
             f"{run}: no commands sent through the control plane; answers given at a terminal"
             " are in the run's log as operator.action"
         )
@@ -2290,7 +2297,7 @@ def _problem(r: Any) -> int:
         message = problem.get("detail") or problem.get("title") or r.text
     except ValueError:
         message = r.text[:500]
-    typer.echo(f"error: {r.status_code} {message}", err=True)
+    _echo(f"error: {r.status_code} {message}", err=True)
     return EXIT_FAILED
 
 
@@ -2447,9 +2454,9 @@ def token_create(
     if file is None:
         typer.echo(token)
     elif token is None:
-        typer.echo(f"{file} holds the live token {name}", err=True)
+        _echo(f"{file} holds the live token {name}", err=True)
     else:
-        typer.echo(f"wrote a new value of token {name} to {file}", err=True)
+        _echo(f"wrote a new value of token {name} to {file}", err=True)
 
 
 @token_app.command("list")
@@ -2458,6 +2465,8 @@ def token_list(data_dir: DataDirOption = None) -> None:
     are never kept."""
     import asyncio
     from datetime import UTC, datetime
+
+    from aims.terminal import one_line
 
     async def main() -> list[Any]:
         db = await _db(data_dir)
@@ -2472,7 +2481,7 @@ def token_list(data_dir: DataDirOption = None) -> None:
     for t in asyncio.run(main()):
         state = "revoked" if t.revoked else "live"
         used = "never" if t.last_used is None else f"used {minute(t.last_used)}"
-        typer.echo(f"{t.name}  {t.role}  {minute(t.created)}  {state}  {used}")
+        typer.echo(f"{one_line(t.name)}  {t.role}  {minute(t.created)}  {state}  {used}")
 
 
 @token_app.command("revoke")
@@ -2499,9 +2508,9 @@ def token_revoke(
             await db.close()
 
     if not asyncio.run(main()):
-        typer.echo(f"error: no live token {name}", err=True)
+        _echo(f"error: no live token {name}", err=True)
         raise typer.Exit(EXIT_FAILED)
-    typer.echo(f"revoked {name}")
+    _echo(f"revoked {name}")
 
 
 @app.command("audit")
@@ -2670,7 +2679,7 @@ def score_cmd(
             cost = await estimate_sealed(store, settings, run, awareness=awareness, answer=answer)
             if not json_out:
                 for line in cost.lines:
-                    typer.echo(line, err=True)
+                    _echo(line, err=True)
             return await score_sealed(
                 store,
                 settings,
@@ -2684,7 +2693,7 @@ def score_cmd(
     try:
         result = asyncio.run(main())
     except (ScoreError, RunError, KeyError) as e:
-        typer.echo(f"error: {e}", err=True)
+        _echo(f"error: {e}", err=True)
         raise typer.Exit(EXIT_FAILED) from None
     if json_out:
         out = {
@@ -2701,12 +2710,12 @@ def score_cmd(
         return
     typer.echo(f"score run {result.run_id}")
     if result.added:
-        typer.echo(f"added rule plants: {', '.join(result.added)}")
+        _echo(f"added rule plants: {', '.join(result.added)}")
     for agent, unit in result.units.items():
-        typer.echo(score_line(agent, unit))
+        _echo(score_line(agent, unit))
         for row, t in zip(result.taken, result.triggered, strict=True):
             if row.agent == agent and t.matches:
-                typer.echo(plant_line(t))
+                _echo(plant_line(t))
     if result.unexplained:
         typer.echo(f"{len(result.unexplained)} flags no plant explains; label them with aims label")
 
@@ -2789,9 +2798,9 @@ def label_cmd(
     try:
         asyncio.run(main())
     except KeyError as e:
-        typer.echo(f"error: {e.args[0] if e.args else e}", err=True)
+        _echo(f"error: {e.args[0] if e.args else e}", err=True)
         raise typer.Exit(EXIT_FAILED) from None
-    typer.echo(f"flag {flag} of {run}: {label}")
+    _echo(f"flag {flag} of {run}: {label}")
 
 
 @app.command("rates")
@@ -2835,7 +2844,7 @@ def rates_cmd(
         typer.echo(rates.model_dump_json())
         return
     for line in rates.lines:
-        typer.echo(line)
+        _echo(line)
 
 
 @app.command("report")
@@ -2893,17 +2902,17 @@ def report_cmd(
     try:
         report = asyncio.run(main())
     except ReportError as e:
-        typer.echo(f"error: {e}", err=True)
+        _echo(f"error: {e}", err=True)
         raise typer.Exit(EXIT_FAILED) from None
     body = report.model_dump_json(indent=2) + "\n" if json_out else render(report)
     if out is not None:
         _write(out, body)
-        typer.echo(f"wrote {out}", err=True)
+        _echo(f"wrote {out}", err=True)
     if html_out is not None:
         from aims.report.html import page_title, to_html
 
         _write(html_out, to_html(body, title=page_title(report)))
-        typer.echo(f"wrote {html_out}", err=True)
+        _echo(f"wrote {html_out}", err=True)
     if out is not None or html_out is not None:
         return
     if json_out or not sys.stdout.isatty():
@@ -2955,7 +2964,7 @@ def estimate_cmd(
         bundles = [load(scenario, n.strip() if n else None) for n in names]
     except ScenarioError as e:
         for problem in e.problems:
-            typer.echo(f"error: {problem}", err=True)
+            _echo(f"error: {problem}", err=True)
         raise typer.Exit(EXIT_FAILED) from None
     _echo_estimate(
         settings,
@@ -2988,4 +2997,4 @@ def spend_cmd(
         typer.echo(json.dumps([c.model_dump(mode="json") for c in credits]))
         return
     for line in spend_lines(credits):
-        typer.echo(line)
+        _echo(line)

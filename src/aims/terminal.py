@@ -1,6 +1,7 @@
 """What a command writes to its terminal. What it does when the terminal hangs up."""
 
 import asyncio
+import logging
 import os
 import signal
 from collections.abc import Callable, Sequence
@@ -26,6 +27,13 @@ def one_line(text: object) -> str:
     """visible(`text`) with each run of whitespace, newlines too, as one space: for text that
     must stay on its line, such as a field of a row in a listing."""
     return " ".join(visible(str(text)).split())
+
+
+class VisibleLog(logging.Formatter):
+    """Writes each log line, its traceback too, through visible()."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        return visible(super().format(record))
 
 
 def hang_up(fds: Sequence[int]) -> None:
