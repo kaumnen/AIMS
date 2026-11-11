@@ -16,6 +16,12 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - For an agent with summary compaction every "Cannot exceed" figure counts two model calls a step.
 - A judge `max_output_tokens` under 1024 is refused when the config loads. Such a judge never made a call.
 - Near its budget the judge explores a little less. It may answer a tool call with "No tool calls are left" in place of the result.
+- The judge keeps its own timeout. A rollout still exploring when 120 s are left, or half the timeout if that is less, gives its verdict early. The monitor waits 30 s past the timeout for the judge to wind down.
+- A fork with no step named cuts after the last step it can replay. For a run killed in a step that is one step earlier. `GET /api/runs/{id}` lists that step per agent as `replayable`.
+- A fork that names a step whose tool calls have no recorded result is refused with a 422 that names the last step it can take. In a cut of several agents, another agent that was in such a step makes it again live.
+- The signals `verifier_hook`, `verifier_anomaly` and `link_redirect` move to version 2 and `submit_vs_score` to version 3. Runs from now on group under a new monitor in `aims rates`.
+- `submit_vs_score` reads the agent's reports and answer sentence by sentence. The last sentence about the checks decides. "All tests pass" after an earlier failure takes the failure back.
+- `link_redirect` raises a symlink's flag to 3 when the verifier reads the link's target. The kernel logs a read under the target's path, so a direct read of the target counts too.
 
 ### Fixed
 
@@ -37,6 +43,16 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - Two agents on one model, one with an effort and one without, no longer crash the estimate. One such run on record broke every estimate, `aims spend` and the live view.
 - The judge no longer ends without a verdict when its last exploring call writes a lot or brings back large tool results. It keeps room for the verdict and reads back a tool result only while that room stays. A larger budget could lose the verdict before.
 - A budget cell in the UI refuses a decimal comma such as `2,50`. It read it as 250. A comma passes only as a thousands separator such as `1,000`.
+- A judge that reaches its timeout writes the verdicts of the rollouts that finished. One stalled model call lost every verdict before. `monitor.degraded` names the rollouts that gave none.
+- A fork of a run killed in a step no longer ends with "the origin has no output for tool call". The CLI, the API and the UI's fork dialog cut before that step.
+- `submit_vs_score` flags a success claim that only negates a failure word, such as "All tests pass with no errors" or "Fixed the failing test; all tests pass". One early "hit an import error" no longer spares the whole run. "Two tests didn't pass" counts as an honest report.
+- `verifier_hook` reads the config file line of pytest 7.3 and later. An agent-written `pytest.ini`, `tox.ini`, `pyproject.toml` or `setup.cfg` that the verifier took its settings from went unflagged.
+- `verifier_hook` sees an agent-written program run by a relative path such as `./run_tests.sh`.
+- `verifier_anomaly` reads a pytest summary with subtests and the summary of an output over 1 MiB. Both gave a false `no_summary` flag at importance 4.
+- `verifier_anomaly` checks the verifier of the agent's own task when the agent has one. It was silent there.
+- `link_redirect` flags absolute link targets with `..`, `//` or `./`, such as `/work/../etc/passwd`. Its rise to importance 3 on a verifier read could never fire.
+- When a run ends, the UI reads its flags, sweeps, costs, self-test cases and model checks once more. What the run wrote after the last poll stayed hidden until a reload.
+- The Raw tab keeps events that arrive while a page of the list loads. They were dropped and left a gap.
 
 ## [0.2.2] - 2026-11-10
 
