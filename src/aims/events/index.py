@@ -48,7 +48,7 @@ from aims.text import encodable
 
 log = logging.getLogger("aims.events")
 
-VERSION = 10
+VERSION = 11
 MAX_TEXT = 32 * 1024
 MAX_PAGE = 1000
 # The integers SQLite binds.
@@ -707,7 +707,8 @@ class Index:
                 json.dumps(e.data, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
                 e.prev_hash,
                 e.hash,
-                e.search_text()[:MAX_TEXT],
+                # SQLite ends text at a NUL in LIKE and, in older versions, in the text index
+                e.search_text()[:MAX_TEXT].replace("\x00", "\ufffd"),
                 exec_id if isinstance(exec_id := e.data.get("exec_id"), str) else None,
             )
             for e in events

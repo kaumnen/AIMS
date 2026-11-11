@@ -610,6 +610,9 @@ async def test_text_and_cursors_the_index_cannot_bind_find_nothing(
     found, _ = await store.search("the end", before=huge)
     assert [e.seq for e in found] == [2, 1]
     assert await store.search("the end", before=-huge) == ([], None)
+    # text after a NUL is found, by the text index and by LIKE
+    assert [e.seq for e in (await store.search("b the"))[0]] == [1]
+    assert [e.seq for e in (await store.search("b "))[0]] == [1]
     assert await store.steps(run_id, after=huge) == []
     assert await store.flags(run_id, after=huge, min_importance=huge) == []
     assert await store.samples(run_id, ts_from=huge, ts_to=-huge, after=huge) == []

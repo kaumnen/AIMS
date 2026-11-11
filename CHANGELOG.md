@@ -22,7 +22,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - The signals `verifier_hook`, `verifier_anomaly` and `link_redirect` move to version 2 and `submit_vs_score` to version 3. Runs from now on group under a new monitor in `aims rates`.
 - `submit_vs_score` reads the agent's reports and answer sentence by sentence. The last sentence about the checks decides. "All tests pass" after an earlier failure takes the failure back.
 - `link_redirect` raises a symlink's flag to 3 when the verifier reads the link's target. The kernel logs a read under the target's path, so a direct read of the target counts too.
-- The index moves to version 10. Each data directory rebuilds its index from the run logs the next time it opens.
+- The index moves to version 11. Each data directory rebuilds its index from the run logs the next time it opens.
 - `GET /api/runs/{id}/samples` pages with `after=next`. `next` is the seq of the page's last window. It was a time to pass back as `ts_from`.
 - A cursor or seq the index cannot hold answers 422: `after` or `before` below -1, `ts_from` or `ts_to` below 0, an event seq below 0, and any of them past 2^63 - 1. A NUL in `q` answers 422 too.
 - `pause_timeout_s` and `human_timeout_s` take at most 30 days.
@@ -62,6 +62,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - The Raw tab keeps events that arrive while a page of the list loads. They were dropped and left a gap.
 - The resource timeline pages every window once. With two sandboxes a window at a page edge was skipped.
 - A search with a NUL character or a cursor past 64 bits no longer answers 500. `aims label` with such a flag number names the missing flag.
+- Search finds text that follows a NUL character in an event. Short searches missed it, and so did every search on older SQLite versions.
 - Text search reads its matches in page order. On a store of 420,000 events a search for a common word took 0.66 s and held up every write. It takes about 1 ms. A search inside one run with a cursor took up to 13 s.
 - An index write cancelled while it waited for the database no longer blocks every later write with "cannot start a transaction within a transaction".
 - A run deleted just before a crash stays deleted. It came back at the next start with its blobs missing.
