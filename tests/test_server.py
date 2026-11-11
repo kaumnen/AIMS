@@ -61,6 +61,7 @@ from aims.server.db import UI_TOKEN
 from aims.server.files import builtin_root
 from aims.server.problems import ProblemError, ProblemException
 from aims.server.state import CODES, InFlight, LaunchCodes, close_state, open_state
+from aims.server.stream import parse_id
 from aims.text import LONE, NoLoneSurrogate
 from aims.wire import (
     Ack,
@@ -1670,7 +1671,9 @@ async def test_prompt_overrides_are_patched_in_place(cp: CP) -> None:
 async def sse(
     c: httpx2.AsyncClient, params: dict[str, Any], want: int, last: str | None = None
 ) -> list[Any]:
-    headers = {} if last is None else {"Last-Event-ID": last}
+    # the server reads header bytes as Latin-1
+    raw = None if last is None else last.encode("latin-1", "replace")
+    headers = {} if raw is None else {b"Last-Event-ID": raw}
     got: list[Any] = []
     async with asyncio.timeout(10), c.sse("/api/stream", params=params, headers=headers) as source:
         async for e in source:
@@ -1725,6 +1728,37 @@ async def test_a_new_stream_resumes_from_the_cursor_in_its_query(
         got = await sse(c, params, want=1, last=f"{run_id}:3")
         assert first_seq(got) == 4
     await pusher.client.aclose()
+
+
+@pytest.mark.parametrize(
+    "seq",
+    ["²", "٣", "--5", "-2", "9" * 5000, str(2**63), " 1_0", "", "x"],
+    ids=["superscript", "arabic", "two-signs", "below", "long", "past", "underscore", "empty", "x"],
+)
+async def test_a_stream_skips_a_cursor_that_does_not_read(
+    cp: CP, local: LocalEventStore, seq: str
+) -> None:
+    pusher = FakeRunner(cp, "pusher")
+    await pusher.client.hello(pusher.hello_body())
+    run_id = await local.create_run(STARTED)
+    await local.append(run_id, [call(n) for n in range(5)])
+    await local.append(run_id, [Draft(RunFinished(status="completed"))])
+    await ship(local, pusher.client, run_id)
+    async with cp.client(cp.viewer) as c:
+        # the bad part is skipped; the parts around it still count
+        for header, first in ((f"@{seq},{run_id}:{seq}", 2), (f"{run_id}:2,{run_id}:{seq}", 3)):
+            got = await sse(c, {"run": run_id, "after": 1}, want=1, last=header)
+            assert got[0][1]["events"][0]["seq"] == first
+            params = {"run": run_id, "after": 1, "last_event_id": header}
+            got = await sse(c, params, want=1)
+            assert got[0][1]["events"][0]["seq"] == first
+    await pusher.client.aclose()
+
+
+def test_a_stream_cursor_reads_ascii_digits_within_the_index() -> None:
+    assert parse_id(f"@0,a:b:-1,c:{2**63 - 1}") == (0, {"a:b": -1, "c": 2**63 - 1})
+    assert parse_id(f"@{2**63},c:-1, @7 ") == (7, {"c": -1})
+    assert parse_id("@-1,c:+5,d:٣,e:0") == (None, {"e": 0})
 
 
 async def test_a_new_stream_hears_of_runs_that_changed_since_its_cursor(

@@ -5,6 +5,7 @@ Last-Event-ID resumes exactly."""
 
 import asyncio
 import contextlib
+import re
 import time
 from collections.abc import AsyncIterator, Coroutine
 from typing import Annotated, Any
@@ -13,6 +14,7 @@ from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 
 from aims.events import RunCorrupt
+from aims.events.index import BIND_MAX
 from aims.models import Delta
 from aims.server.api import Cursor, State, Viewer, _shown, hidden, summaries
 from aims.server.problems import ProblemException, responses
@@ -45,17 +47,27 @@ def cursor_id(version: int | None, cursors: dict[str, int]) -> str:
     return ",".join(parts)
 
 
+def _number(text: str, low: int) -> int | None:
+    """`text` as an int from `low` up to what the index holds; None when it does not read as
+    one. Only ASCII digits count."""
+    if not re.fullmatch(r"-?[0-9]{1,19}", text):
+        return None
+    n = int(text)
+    return n if low <= n <= BIND_MAX else None
+
+
 def parse_id(value: str) -> tuple[int | None, dict[str, int]]:
+    """The version and cursors in a Last-Event-ID. A part that does not read is skipped."""
     version: int | None = None
     cursors: dict[str, int] = {}
     for part in value.split(","):
         part = part.strip()
-        if part.startswith("@") and part[1:].isdigit():
-            version = int(part[1:])
+        if part.startswith("@") and (found := _number(part[1:], 0)) is not None:
+            version = found
             continue
         run, _, seq = part.rpartition(":")
-        if run and seq.lstrip("-").isdigit():
-            cursors[run] = int(seq)
+        if run and (found := _number(seq, -1)) is not None:
+            cursors[run] = found
     return version, cursors
 
 
