@@ -67,6 +67,7 @@ from aims.server.files import Source, Sources
 from aims.server.problems import ProblemError, ProblemException, responses
 from aims.server.runner_api import JOBS, send
 from aims.server.state import FileCache, ServerState
+from aims.text import Utf8, scrub
 from aims.tools import UnknownTool, registry
 from aims.wire import (
     BASE_KINDS,
@@ -1034,29 +1035,29 @@ def _monitor(
 
 
 class PauseBody(BaseModel):
-    agent: str | None = None
-    reason: str | None = None
+    agent: Utf8 | None = None
+    reason: Utf8 | None = None
 
 
 class ResumeBody(BaseModel):
-    agent: str | None = None
+    agent: Utf8 | None = None
     then: ResumeThen = "continue"
-    text: str | None = None
-    reason: str | None = None
+    text: Utf8 | None = None
+    reason: Utf8 | None = None
 
 
 class SweepBody(BaseModel):
-    agent: str | None = None
-    reason: str | None = None
+    agent: Utf8 | None = None
+    reason: Utf8 | None = None
 
 
 class InjectBody(BaseModel):
-    agent: str | None = None
-    text: str = Field(min_length=1)
+    agent: Utf8 | None = None
+    text: Utf8 = Field(min_length=1)
 
 
 class StopBody(BaseModel):
-    reason: str | None = None
+    reason: Utf8 | None = None
 
 
 class CommandSent(Out):
@@ -1098,7 +1099,7 @@ def command_state(c: sdb.Command) -> CommandState:
 
 
 def command_info(c: sdb.Command) -> CommandInfo:
-    act = CommandAction(**c.payload)
+    act = CommandAction(**scrub(c.payload))
     return CommandInfo(
         id=c.id,
         run_id=c.run_id,

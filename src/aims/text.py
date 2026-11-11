@@ -1,13 +1,26 @@
 """Text from outside the process, made fit for the log."""
 
 import re
-from typing import Any, cast
+from typing import Annotated, Any, cast
+
+from pydantic import BeforeValidator
 
 _SURROGATE = re.compile("[\ud800-\udfff]")
 
 
 def _lone(text: str) -> bool:
     return not text.isascii() and _SURROGATE.search(text) is not None
+
+
+def _whole(value: object) -> object:
+    if isinstance(value, str) and _lone(value):
+        raise ValueError("holds a lone surrogate, an escape such as \\ud800 without its pair")
+    return value
+
+
+# A str field for text a caller sends that the server stores or passes on: it refuses a lone
+# surrogate, which UTF-8 cannot encode. Checked before any length bound, for one clear error.
+Utf8 = Annotated[str, BeforeValidator(_whole)]
 
 
 def _escape(match: re.Match[str]) -> str:

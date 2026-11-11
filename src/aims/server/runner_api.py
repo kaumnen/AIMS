@@ -24,6 +24,7 @@ from aims.server.db import Job
 from aims.server.problems import ProblemException, responses
 from aims.server.series import place_of
 from aims.server.state import Connected, ServerState
+from aims.text import scrub
 from aims.wire import (
     RUNNER_API,
     Ack,
@@ -231,6 +232,8 @@ async def runner_status(
 
 def _feed_event(message: CommandMessage | OfferMessage) -> ServerSentEvent:
     if isinstance(message, CommandMessage):
+        # a lone surrogate, stored before the API refused it, would end the stream at each try
+        message = CommandMessage.model_validate(scrub(message.model_dump()))
         return ServerSentEvent(data=message, event="command", id=str(message.seq))
     return ServerSentEvent(data=message, event="offer")
 

@@ -8,6 +8,7 @@ import shutil
 import uuid
 from collections.abc import AsyncIterator, Callable, Generator, Sequence
 from dataclasses import dataclass, field, replace
+from functools import partial
 from pathlib import Path
 from typing import Any, Protocol, Self
 
@@ -499,14 +500,17 @@ class LocalEventStore:
             events: list[Event] = []
             lines: list[bytes] = []
             for draft in drafts:
-                body, line, head = seal(
-                    head,
-                    run_id=run_id,
-                    ts=now(),
-                    agent_id=draft.agent_id,
-                    type=draft.payload.type,
-                    data=draft.payload.model_dump(mode="json"),
+                kind, data = draft.payload.type, draft.payload.model_dump(mode="json")
+                chain = partial(
+                    seal, head, run_id=run_id, ts=now(), agent_id=draft.agent_id, type=kind
                 )
+                try:
+                    body, line, head = chain(data=data)
+                except ValueError:
+                    # canonical JSON refuses a lone surrogate; seal the same event with it as
+                    # text, so the hash covers what is written. Any other error comes again.
+                    body, line, head = chain(data=scrub(data))
+                    log.warning("run %s: %s held a lone surrogate, written as text", run_id, kind)
                 events.append(Event.model_validate(body))
                 lines.append(line)
             try:

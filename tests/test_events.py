@@ -4,6 +4,7 @@ import gc
 import hashlib
 import itertools
 import json
+import logging
 import os
 import sqlite3
 from collections.abc import AsyncIterator, Callable
@@ -26,6 +27,7 @@ from aims.events import (
     LocalEventStore,
     LogTruncated,
     MonitorFlag,
+    OperatorAction,
     Payload,
     RunCorrupt,
     RunFinished,
@@ -397,6 +399,40 @@ async def test_content_writes_a_lone_surrogate_as_text(store: LocalEventStore) -
     long = await store.content(run_id, "y" * INLINE_LIMIT + "\udfff")
     assert isinstance(long, BlobRef)
     assert await store.get_blob(run_id, long.sha256) == b"y" * INLINE_LIMIT + b"\\udfff"
+
+
+async def test_append_writes_a_lone_surrogate_as_text(
+    store: LocalEventStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    run_id = await store.create_run(STARTED)
+    action = OperatorAction(action="pause", reason="a\ud800")
+    scored = TaskScored(reward=1.0, metrics={"m": ["x\udbff", {"n": "\udc00"}]})
+    with caplog.at_level(logging.WARNING, logger="aims.events"):
+        appended = await store.append(run_id, [Draft(action, "a1"), Draft(scored), call(1)])
+    assert [e.seq for e in appended] == [1, 2, 3]
+    assert appended[0].data["reason"] == "a\\ud800"
+    assert appended[1].data["metrics"] == {"m": ["x\\udbff", {"n": "\\udc00"}]}
+    assert action.reason == "a\ud800"
+    lines = log_path(store, run_id).read_bytes().splitlines(keepends=True)
+    assert [Event.model_validate(json.loads(line)) for line in lines[1:]] == appended
+    assert await store.events(run_id, after=0) == appended
+    assert verify_run(store.root / run_id).ok
+    assert [r.getMessage() for r in caplog.records] == [
+        f"run {run_id}: operator.action held a lone surrogate, written as text",
+        f"run {run_id}: task.scored held a lone surrogate, written as text",
+    ]
+    await store.append(run_id, [Draft(RunFinished(status="completed"))])
+    assert verify_run(store.root / run_id).ok
+
+
+async def test_append_still_refuses_what_text_cannot_mend(store: LocalEventStore) -> None:
+    run_id = await store.create_run(STARTED)
+    with pytest.raises(rfc8785.CanonicalizationError):
+        await store.append(run_id, [call(1), call(2, agent="a\ud800")])
+    assert len(await store.events(run_id)) == 1
+    assert len(log_path(store, run_id).read_bytes().splitlines()) == 1
+    await store.append(run_id, [call(3)])
+    assert verify_run(store.root / run_id).ok
 
 
 async def test_blobs(store: LocalEventStore) -> None:

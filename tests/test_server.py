@@ -16,7 +16,7 @@ import textwrap
 import threading
 import time
 import uuid
-from collections.abc import AsyncIterator, Generator
+from collections.abc import AsyncGenerator, AsyncIterator, Generator
 from compression import zstd
 from pathlib import Path
 from typing import Any, Literal
@@ -51,7 +51,7 @@ from aims.prompts import Prompts
 from aims.run.job import Job
 from aims.run.runner import resolve_texts
 from aims.scenario import load
-from aims.server import api, dispatch, edit_api
+from aims.server import api, dispatch, edit_api, runner_api
 from aims.server import app as app_module
 from aims.server.app import create_app
 from aims.server.auth import HEADERS
@@ -60,6 +60,7 @@ from aims.server.files import builtin_root
 from aims.server.state import CODES, InFlight, LaunchCodes, close_state, open_state
 from aims.wire import (
     Ack,
+    CommandAction,
     CommandMessage,
     Deltas,
     MonitorJob,
@@ -756,6 +757,99 @@ async def test_commands_reach_the_runner_and_unacked_ones_come_again(
         ]
         r = await c.post(f"/api/runs/{run_id}/kill", json={})
         assert (r.status_code, r.json()["code"]) == (409, "ended")
+
+
+# operator bodies as JSON text, each with the escape of a lone surrogate in one field
+LONE_SURROGATE = [
+    ("pause", '{"agent": "a\\ud800"}', "agent"),
+    ("pause", '{"reason": "a\\ud800"}', "reason"),
+    ("resume", '{"agent": "a\\ud800"}', "agent"),
+    ("resume", '{"then": "inject", "text": "a\\ud800"}', "text"),
+    ("resume", '{"reason": "\\udfff"}', "reason"),
+    ("sweep", '{"agent": "a\\ud800"}', "agent"),
+    ("sweep", '{"reason": "a\\ud800"}', "reason"),
+    ("inject", '{"agent": "a\\ud800", "text": "hi"}', "agent"),
+    ("inject", '{"text": "a\\ud800"}', "text"),
+    ("kill", '{"reason": "a\\ud800"}', "reason"),
+    ("cancel", '{"reason": "a\\ud800"}', "reason"),
+]
+
+
+@contextlib.asynccontextmanager
+async def running_run(cp: CP, fake: FakeRunner, local: LocalEventStore) -> AsyncGenerator[str]:
+    """A run the fake runner holds and ships, running on the control plane until the end."""
+    (run_id,) = await start_run(cp)
+    await play_job(fake, local, await fake.next(OfferMessage))
+    task = asyncio.create_task(Shipper(local, fake.client, run_id).run())
+    try:
+        await until(lambda: cp.state.store.run(run_id), lambda info: info is not None)
+        yield run_id
+        await local.append(run_id, [Draft(RunFinished(status="completed"))])
+        async with asyncio.timeout(10):
+            await task
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+async def test_operator_text_with_a_lone_surrogate_is_refused_and_never_blocks_a_kill(
+    cp: CP, fake: FakeRunner, local: LocalEventStore
+) -> None:
+    json_body = {"Content-Type": "application/json"}
+    async with running_run(cp, fake, local) as run_id, cp.client(cp.operator) as c:
+        refused = [
+            await c.post(f"/api/runs/{run_id}/{action}", content=body, headers=json_body)
+            for action, body, _ in LONE_SURROGATE
+        ]
+        r = await c.post(f"/api/runs/{run_id}/kill", json={"reason": "stop"})
+        assert r.status_code == 202
+        kill = await fake.next(CommandMessage)
+        assert (kill.command.action, kill.command.reason) == ("kill", "stop")
+        for r, (action, _, field) in zip(refused, LONE_SURROGATE, strict=True):
+            assert r.status_code == 422, (action, field)
+            assert r.headers["content-type"] == "application/problem+json"
+            [error] = r.json()["errors"]
+            assert error["loc"] == ["body", field]
+            assert "lone surrogate" in error["msg"]
+        stored = await cp.state.db.commands_of(run_id)
+        assert [x.payload["action"] for x in stored] == ["kill"]
+        pair = '{"text": "smile \\ud83d\\ude00"}'
+        r = await c.post(f"/api/runs/{run_id}/inject", content=pair, headers=json_body)
+        assert r.status_code == 202
+        inject = await fake.next(CommandMessage)
+        assert inject.command.text == "smile \U0001f600"
+        listed = (await c.get(f"/api/runs/{run_id}/commands")).json()
+        assert [x["text"] for x in listed] == [None, "smile \U0001f600"]
+
+
+async def test_a_stored_command_with_a_lone_surrogate_does_not_block_the_feed(
+    cp: CP, fake: FakeRunner, local: LocalEventStore
+) -> None:
+    async with running_run(cp, fake, local) as run_id, cp.client(cp.operator) as c:
+        # stored and sent below the API, as a control plane did before it refused such text
+        bad = await cp.state.db.add_command(
+            "fake", run_id, {"action": "pause", "reason": "a\ud800", "token": "op"}
+        )
+        sent = CommandMessage(
+            id=bad.id, seq=bad.seq, run_id=run_id, command=CommandAction(**bad.payload)
+        )
+        assert runner_api.send(cp.state, "fake", sent)
+        r = await c.post(f"/api/runs/{run_id}/kill", json={})
+        assert r.status_code == 202
+        for _ in range(2):
+            pause = await fake.next(CommandMessage)
+            assert (pause.id, pause.command.reason) == (bad.id, "a\\ud800")
+            kill = await fake.next(CommandMessage)
+            assert (kill.id, kill.command.action) == (r.json()["command_id"], "kill")
+            # unacked, both come again after a reconnect
+            await fake.disconnect()
+            await fake.connect()
+        listed = (await c.get(f"/api/runs/{run_id}/commands")).json()
+        assert [(x["action"], x["reason"]) for x in listed] == [
+            ("pause", "a\\ud800"),
+            ("kill", None),
+        ]
 
 
 async def test_hello_takes_back_claimed_jobs_it_does_not_list(cp: CP, fake: FakeRunner) -> None:
