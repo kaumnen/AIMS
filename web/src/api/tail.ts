@@ -3,7 +3,14 @@ import { hashKey, type InfiniteData, type QueryClient } from "@tanstack/react-qu
 import { client, type Schemas } from "./client";
 import type { Event } from "./events";
 import { Live } from "./live";
-import { type RawFilters, type RawPage, refreshLastSteps, type StepInfo, stepTypes } from "./run";
+import {
+  type RawFilters,
+  type RawPage,
+  readFinal,
+  refreshLastSteps,
+  type StepInfo,
+  stepTypes,
+} from "./run";
 
 type StepPage = Schemas["StepPage"];
 type WireDelta = Schemas["WireDelta"];
@@ -102,6 +109,7 @@ export class RunTail {
       this.#drafts.clear();
       this.#publish();
       this.refreshSteps();
+      readFinal(this.qc, this.runId);
     });
     this.#live = live;
     live.start();

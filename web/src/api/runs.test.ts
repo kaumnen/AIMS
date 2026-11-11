@@ -1,11 +1,16 @@
-import { type InfiniteData, InfiniteQueryObserver, QueryClient } from "@tanstack/react-query";
+import {
+  type InfiniteData,
+  InfiniteQueryObserver,
+  QueryClient,
+  QueryObserver,
+} from "@tanstack/react-query";
 import { afterEach, expect, test, vi } from "vitest";
 
 import { FakeEventSource } from "@/test/event-source";
 import { run } from "@/test/runs";
 
 import { Live } from "./live";
-import { runQuery } from "./run";
+import { costsQuery, flagsQuery, runQuery, sweepsQuery, watchPolls } from "./run";
 import {
   applyRuns,
   deletedQuery,
@@ -269,4 +274,32 @@ test("a run deleted elsewhere leaves every list and is noted as deleted", () => 
   expect(qc.getQueryData(deletedQuery.queryKey)).toEqual(["b"]);
   stop();
   live.stop();
+});
+
+test("a run that ends is read again where a view polled it while it ran, once", () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => Response.json({ items: [], next: null })),
+  );
+  const qc = new QueryClient();
+  const unwatch = watchPolls(qc);
+  const views = [
+    new QueryObserver(qc, { ...flagsQuery("b"), refetchInterval: 3000 }),
+    // shown but not polled
+    new QueryObserver(qc, costsQuery("b")),
+    // a poll that stops on what it reads
+    new QueryObserver(qc, { ...sweepsQuery("b"), refetchInterval: () => 3000 }),
+    new QueryObserver(qc, { ...flagsQuery("c"), refetchInterval: 3000 }),
+  ];
+  const offs = views.map((v) => v.subscribe(() => undefined));
+  const invalidate = vi.spyOn(qc, "invalidateQueries");
+  applyRuns(qc, [run("c", { steps: 3 })]);
+  expect(invalidate).not.toHaveBeenCalled();
+  applyRuns(qc, [run("b", { status: "completed", state: "done" })]);
+  expect(invalidate.mock.calls.map(([f]) => f?.queryKey)).toEqual([flagsQuery("b").queryKey]);
+  // a later change of the sealed run reads nothing again
+  applyRuns(qc, [run("b", { status: "completed", state: "done", commands: 1 })]);
+  expect(invalidate).toHaveBeenCalledTimes(1);
+  for (const off of offs) off();
+  unwatch();
 });

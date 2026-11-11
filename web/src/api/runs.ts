@@ -8,7 +8,7 @@ import {
 
 import { client, type Schemas } from "./client";
 import type { Live } from "./live";
-import { refreshLastSteps } from "./run";
+import { readFinal, refreshLastSteps } from "./run";
 import {
   pathsApiRunsGetParametersQueryCategoryAnyOf0Values as categoryValues,
   runSummaryKindValues,
@@ -221,6 +221,10 @@ export function applyRuns(qc: QueryClient, runs: readonly RunSummary[]): void {
         return pages?.[0] ?? data;
       });
     }
+  }
+  // A sealed run's log takes nothing more, so what views polled of it is read a last time.
+  for (const run of runs) {
+    if (run.started_at !== null && run.status !== "running") readFinal(qc, run.run_id);
   }
 }
 

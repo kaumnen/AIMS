@@ -1,6 +1,7 @@
 import { QueryClient } from "@tanstack/react-query";
 import { createRouter, type RouterHistory } from "@tanstack/react-router";
 
+import { watchPolls } from "./api/run";
 import { isProblem } from "./api/session";
 import { routeTree } from "./routeTree.gen";
 
@@ -10,6 +11,8 @@ const retry = (failures: number, error: unknown) =>
 
 export function makeRouter(history?: RouterHistory) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry } } });
+  // from the first view on, so every run read polled while the run is open gets its last read
+  watchPolls(queryClient);
   return createRouter({
     routeTree,
     context: { queryClient },

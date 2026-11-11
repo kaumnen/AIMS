@@ -1,6 +1,7 @@
 import {
   infiniteQueryOptions,
   keepPreviousData,
+  type Query,
   type QueryClient,
   queryOptions,
 } from "@tanstack/react-query";
@@ -117,6 +118,40 @@ export function refreshLastSteps(qc: QueryClient, runId: string): void {
     queryKey: ["runs", "step", runId],
     predicate: (q) => q.queryKey[6] === true,
   });
+}
+
+// The reads of a run that a view polls at a fixed rate while the run is open: its flags, sweeps,
+// costs, self-test cases, model checks and resource samples. The poll stops at the run's end,
+// so what the run wrote after the last poll would stay hidden; the end reads each once more.
+// A poll whose rate is a function stops on what it reads and needs no last read.
+const polled = new WeakSet<Query>();
+// Runs each client has seen end: a read of them made since is final.
+const ended = new WeakMap<QueryClient, Set<string>>();
+
+// Notes each run read that a view polls at a fixed rate, so a new poll needs no list here.
+export function watchPolls(qc: QueryClient): () => void {
+  return qc.getQueryCache().subscribe((event) => {
+    if (event.type !== "observerAdded" && event.type !== "observerOptionsUpdated") return;
+    const every = event.observer.options.refetchInterval;
+    const [root, , runId] = event.query.queryKey;
+    if (root !== "runs" || typeof runId !== "string" || typeof every !== "number" || every <= 0)
+      return;
+    if (!ended.get(qc)?.has(runId)) polled.add(event.query);
+  });
+}
+
+// The run's log is sealed, so nothing more will come to it: each read of it that a view polled
+// is read once more, now if it is shown, else when it next shows. Only the first call counts.
+export function readFinal(qc: QueryClient, runId: string): void {
+  let seen = ended.get(qc);
+  if (seen === undefined) ended.set(qc, (seen = new Set()));
+  if (seen.has(runId)) return;
+  seen.add(runId);
+  for (const q of qc.getQueryCache().findAll({ queryKey: ["runs"] })) {
+    if (q.queryKey[2] === runId && polled.delete(q)) {
+      void qc.invalidateQueries({ queryKey: q.queryKey, exact: true });
+    }
+  }
 }
 
 export function activityQuery(runId: string, execs: readonly string[]) {

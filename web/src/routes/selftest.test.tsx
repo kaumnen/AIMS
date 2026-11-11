@@ -1,6 +1,6 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import type { RunDetail } from "@/api/run";
@@ -91,6 +91,7 @@ beforeEach(() => {
     if (url.pathname === "/api/runs" && q.get("kind") === "selftest") {
       return Response.json({ items: [parent], next: null });
     }
+    if (url.pathname === "/api/runs") return Response.json({ items: [], next: null });
     if (url.pathname === "/api/scenarios/project/cache-keys/selftest") {
       posted.push(url.pathname);
       return Response.json({ run_ids: [PARENT], group: null }, { status: 202 });
@@ -154,6 +155,30 @@ test("a self-test run lists its cases: ended, running and waiting", async () => 
   ).toBe(`/runs/${EXPLOIT}`);
   expect(screen.getByRole("tab", { name: "Cases" })).toBeTruthy();
   expect(screen.getByRole("heading", { name: /Self-test/ })).toBeTruthy();
+});
+
+const caseReads = () =>
+  fetch.mock.calls
+    .map(([r]) => new URL(r.url))
+    .filter((u) => u.pathname === `/api/runs/${PARENT}/events`)
+    .filter((u) => u.searchParams.get("types") === "selftest.case").length;
+
+test("a case that ends as the self-test seals shows, read once more", async () => {
+  renderAt(`/runs/${PARENT}`);
+  const cases = await screen.findByRole("region", { name: "Cases" });
+  expect(await within(cases).findByText("1 of 3 cases proved what they should.")).toBeTruthy();
+  const before = caseReads();
+  // the last case ends and the self-test seals before the next poll
+  ended = [
+    ...ended,
+    { case: "exploit", name: "exploit", run_id: EXPLOIT, ok: true, problems: [], notes: [] },
+  ];
+  parent = { ...parent, status: "completed", state: "done" };
+  const source = FakeEventSource.all.find((s) => s.url.includes("runs=true"));
+  if (!source) throw new Error("no list stream");
+  act(() => source.send({ kind: "run", run: parent }));
+  expect(await within(cases).findByText("2 of 3 cases proved what they should.")).toBeTruthy();
+  expect(caseReads()).toBe(before + 1);
 });
 
 test("a failed case says why", async () => {

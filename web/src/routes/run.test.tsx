@@ -2247,6 +2247,95 @@ test("a sealed run without commands shows no commands button, an open one says w
   expect(await within(drawer).findByText(/No commands sent yet/)).toBeTruthy();
 });
 
+const typed = (runId: string, type: string) =>
+  fetch.mock.calls
+    .map(([r]) => new URL(r.url))
+    .filter((u) => u.pathname === `/api/runs/${runId}/events`)
+    .filter((u) => u.searchParams.getAll("types").join() === type);
+
+// What the open run page polls: the panel's flags and sweeps, the timeline's samples and sandboxes.
+const polls = () => ({
+  flags: flagRequests(BEE5).length,
+  sweeps: typed(BEE5, "monitor.sweep").length,
+  samples: requests("samples").length,
+  sandboxes: typed(BEE5, "sandbox.started").length,
+});
+
+const seal = (over: Partial<RunSummary> = {}) => {
+  detail = { ...detail, run: { ...detail.run, status: "completed", state: "done", ...over } };
+  const source = listStream();
+  if (!source) throw new Error("no list stream");
+  act(() => source.send({ kind: "run", run: detail.run }));
+};
+
+test("what the monitor wrote after its last poll shows once the run ends, read once more", async () => {
+  detail = open({ preset: "standard" });
+  renderAt(`/runs/${BEE5}`);
+  const panel = within(await screen.findByRole("complementary", { name: "Monitor" }));
+  expect(await panel.findByText("No flags.")).toBeTruthy();
+  await waitFor(() => expect(polls().sandboxes).toBeGreaterThan(0));
+  const before = polls();
+  // the signals' final flag lands, then the run seals before the next poll
+  flags = [flag(14, [6], 4)];
+  seal({ flags: 1 });
+  expect(await panel.findByText("Open")).toBeTruthy();
+  expect(panel.queryByText("No flags.")).toBeNull();
+  await waitFor(() => expect(polls().sandboxes).toBe(before.sandboxes + 1));
+  expect(polls()).toEqual({
+    flags: before.flags + 1,
+    sweeps: before.sweeps + 1,
+    samples: before.samples + 1,
+    sandboxes: before.sandboxes + 1,
+  });
+});
+
+test("a panel hidden when the run ends reads its last flags once it shows again", async () => {
+  detail = open({ preset: "standard" });
+  renderAt(`/runs/${BEE5}`);
+  const panel = within(await screen.findByRole("complementary", { name: "Monitor" }));
+  expect(await panel.findByText("No flags.")).toBeTruthy();
+  fireEvent.click(screen.getByRole("tab", { name: "Raw events" }));
+  await screen.findByRole("textbox", { name: /Search/ });
+  const before = flagRequests(BEE5).length;
+  flags = [flag(14, [6], 4)];
+  seal({ flags: 1 });
+  await waitFor(() => expect(fact("Status")?.nextElementSibling?.textContent).toBe("Completed"));
+  expect(flagRequests(BEE5)).toHaveLength(before);
+  fireEvent.click(screen.getByRole("tab", { name: "Steps" }));
+  const shown = within(await screen.findByRole("complementary", { name: "Monitor" }));
+  expect(await shown.findByText("Open")).toBeTruthy();
+  expect(flagRequests(BEE5)).toHaveLength(before + 1);
+});
+
+test("a review that ends reads its last flags once more", async () => {
+  withReview();
+  renderAt(`/runs/${BEE5}?source=${NEWER}`);
+  const panel = within(await screen.findByRole("complementary", { name: "Monitor" }));
+  expect(await panel.findByText("No flags.")).toBeTruthy();
+  const before = flagRequests(NEWER).length;
+  const ended = { ...others[NEWER]!.detail.run, status: "completed", state: "done", flags: 1 };
+  others[NEWER]!.flags = [{ ...flag(14, [6], 4), run_id: NEWER }];
+  const source = listStream();
+  if (!source) throw new Error("no list stream");
+  act(() => source.send({ kind: "run", run: ended }));
+  expect(await panel.findByText("Open")).toBeTruthy();
+  expect(flagRequests(NEWER)).toHaveLength(before + 1);
+  expect(flagRequests(BEE5)).toHaveLength(0);
+});
+
+test("a sealed run reads none of its parts again when it changes", async () => {
+  detail = { ...detail, run: { ...detail.run, preset: "standard" } };
+  renderAt(`/runs/${BEE5}`);
+  const panel = within(await screen.findByRole("complementary", { name: "Monitor" }));
+  expect(await panel.findByText("No flags.")).toBeTruthy();
+  await waitFor(() => expect(polls().sandboxes).toBeGreaterThan(0));
+  const before = polls();
+  seal({ commands: 1 });
+  expect(await screen.findByRole("button", { name: "Commands" })).toBeTruthy();
+  expect(polls()).toEqual(before);
+  expect(flagRequests(BEE5)).toHaveLength(1);
+});
+
 const seriesId = (i: number) => `01a19100-0000-7000-8000-00000000000${i}`;
 const seriesRun = (i: number, over: Partial<RunSummary> = {}) =>
   run(seriesId(i), {

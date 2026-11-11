@@ -1,12 +1,22 @@
-import { type InfiniteData, QueryClient } from "@tanstack/react-query";
+import { type InfiniteData, QueryClient, QueryObserver } from "@tanstack/react-query";
 import { waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { FakeEventSource } from "@/test/event-source";
+import { run } from "@/test/runs";
 
 import type { Schemas } from "./client";
 import type { Event } from "./events";
-import { rawEventsQuery, type RawPage, stepEventsQuery, type StepInfo, stepsQuery } from "./run";
+import {
+  flagsQuery,
+  rawEventsQuery,
+  type RawPage,
+  stepEventsQuery,
+  type StepInfo,
+  stepsQuery,
+  watchPolls,
+} from "./run";
+import { applyRuns } from "./runs";
 import { mergeTail, RunTail, tailStart } from "./tail";
 
 type StepPage = Schemas["StepPage"];
@@ -202,6 +212,26 @@ test("the run's end closes the stream and clears what was in flight", () => {
   source.send({ kind: "end", run_id: RUN });
   expect(source.readyState).toBe(FakeEventSource.CLOSED);
   expect(tail.inflight).toEqual([]);
+});
+
+test("the run's end reads again what a view polled of it, and its sealed summary then nothing", async () => {
+  fetch.mockImplementation(async () => Response.json({ items: [], next: null }));
+  const qc = new QueryClient();
+  const unwatch = watchPolls(qc);
+  // a poll too slow to come round within the test
+  const view = new QueryObserver(qc, { ...flagsQuery(RUN), refetchInterval: 60_000 });
+  const off = view.subscribe(() => undefined);
+  await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+  const { source, tail } = open(qc);
+  source.send({ kind: "end", run_id: RUN });
+  expect(qc.getQueryState(flagsQuery(RUN).queryKey)?.fetchStatus).toBe("fetching");
+  await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+  applyRuns(qc, [run(RUN, { status: "completed", state: "done" })]);
+  expect(qc.getQueryState(flagsQuery(RUN).queryKey)?.isInvalidated).toBe(false);
+  expect(fetch).toHaveBeenCalledTimes(2);
+  off();
+  unwatch();
+  tail.stop();
 });
 
 test("the tail starts before the earliest row some agent may still change", () => {
