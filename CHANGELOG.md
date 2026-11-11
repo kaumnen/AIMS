@@ -8,6 +8,9 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 - Every sandbox captures `/dev/shm` like `/tmp`: file diffs, the archive and the kernel log of reads cover it. It keeps its 64 MiB limit and `noexec`. Task files and file plants may sit under it.
 - The end-of-run archive leaves out only the files that do not fit. One large file no longer empties the rest. It stops reading a folder after 4 GiB of files that were left out.
+- `aims run` stopped by Ctrl-C, SIGTERM or a hangup exits 130, also when the run in flight still ended `completed`. It scores no run after the stop. `aims score` scores it later.
+- An operator command answers with what did not take effect, such as a sandbox that did not freeze. It answered `failed` before, though the agents were paused.
+- The operator routes for pause, resume, sweep, inject, kill and cancel refuse text with a lone surrogate such as `\ud800` with a 422.
 
 ### Fixed
 
@@ -17,6 +20,13 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - Tool arguments nested deeper than 64 levels no longer break the monitor's sweeps. A `reward.json` nested that deep counts as unreadable.
 - A run whose agent crashed before it logged its end is `failed`. It was `completed`.
 - Long runs of whitespace or digits in agent text no longer stall the runner. Four monitor patterns took time that grew with the square of the run's length.
+- One Ctrl-C late in a run stops `aims run --series`. The next run of the series started before.
+- A dialog, a draft or a command's answer no longer follows the page to another run or scenario. A Kill dialog opened on one run could kill another after Back. A file draft could be saved into another scenario.
+- A prompt edit closes when the agent toggle changes. It was saved as the other agent's text.
+- A command the control plane dropped shows as not done in the UI. Its dialog stays open.
+- A sandbox that does not freeze or unfreeze no longer strands a pause. The other sandboxes still freeze and the monitor's review or timeout still ends the pause.
+- A pause of the whole run by the monitor holds an agent that starts later.
+- A stored command with a lone surrogate no longer cuts a runner off from its commands. An event that holds one is written with it as text.
 
 ## [0.2.2] - 2026-11-10
 
