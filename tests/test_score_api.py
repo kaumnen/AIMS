@@ -11,7 +11,7 @@ from typing import Any, cast
 import httpx2
 import pytest
 from cp import CP, control_plane
-from test_cli_monitor import node
+from test_cli_monitor import job_until, node, until
 from test_monitor_api import call, claim, flag, started
 from test_server import FakeRunner, ship, sse
 
@@ -369,6 +369,75 @@ async def test_a_runner_scores_a_job_with_the_checks_and_plants_it_carries(
     assert (added["from"], added["plants"]) == ("project/ruled", ["deploy-call"])
     assert two.config["added"] is None
     assert (await cp.state.store.verify(first)).ok
+
+
+@pytest.mark.parametrize("when", ["scoring", "before the run"])
+async def test_a_runners_first_stop_ends_a_score_job_at_once(
+    cp: CP,
+    local: LocalEventStore,
+    fake: FakeRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    when: str,
+) -> None:
+    origin = await planted(cp, local, fake)
+    busy = asyncio.Event()
+    cut: list[str] = []
+
+    async def hangs() -> None:
+        # stands for a model call, or a slow read, which only a cancel ends
+        busy.set()
+        try:
+            await asyncio.sleep(300)
+        except asyncio.CancelledError:
+            cut.append(when)
+            raise
+
+    async def check(store: Any, run_id: str, added: Any = None) -> list[Taken]:
+        if when == "before the run":
+            await hangs()
+        return await _rows()
+
+    async def awareness(*args: Any) -> tuple[None, float]:
+        await hangs()
+        return None, 0.0
+
+    monkeypatch.setattr(scoring, "check_run", check)
+    monkeypatch.setattr(scoring, "_awareness", awareness)
+    models = cp.state.config.settings().models
+    for name in scoring.CLASSIFIERS:
+        keyed = models.get(name)
+        for env in (keyed.api_key_env, keyed.base_url_env):
+            if env:
+                monkeypatch.setenv(env, "set")
+    stop = asyncio.Event()
+    async with node(cp, tmp_path / "node", stop=stop) as n:
+        async with cp.client(cp.operator) as c:
+            r = await c.post(f"/api/runs/{origin}/score", json={"answer": False, "runner": "n1"})
+            assert r.status_code == 202, r.text
+            (run_id,) = r.json()["run_ids"]
+        async with asyncio.timeout(20):
+            await busy.wait()
+        stop.set()
+        # well within the 120 s the stop gives jobs it leaves running, and the 30 s it gives
+        # each run to ship
+        if when == "scoring":
+            job = await job_until(cp, run_id, lambda j: j.state not in OPEN_STATES)
+        else:
+            job = await job_until(cp, run_id, lambda j: j.releases)
+        await until(lambda: n._open is None, 20)
+    assert cut == [when]
+    info = await cp.state.store.run(run_id)
+    if when == "scoring":
+        # sealed, shipped and done; scoring.py says with which status
+        assert info is not None
+        assert info.status != "running"
+        assert job.state == "done"
+        assert (await cp.state.store.verify(run_id)).ok
+    else:
+        # nothing began: the job goes back for the next runner
+        assert info is None
+        assert (job.state, job.releases) in (("queued", 1), ("offered", 1))
 
 
 async def scored(

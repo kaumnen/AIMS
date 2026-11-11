@@ -758,9 +758,15 @@ class NoDocker:
 
 @contextlib.asynccontextmanager
 async def node(
-    cp: CP, data: Path, name: str = "n1", *, keep_days: float | None = None
+    cp: CP,
+    data: Path,
+    name: str = "n1",
+    *,
+    keep_days: float | None = None,
+    stop: asyncio.Event | None = None,
 ) -> AsyncGenerator[Node]:
-    stop = asyncio.Event()
+    """A runner on `cp` without Docker. Setting `stop` gives it its first stop early."""
+    stop = stop or asyncio.Event()
     made = Node(
         NodeOptions(
             url=cp.url,
@@ -869,6 +875,76 @@ async def test_a_runner_takes_a_monitor_job_and_ships_the_monitor_run(
     seqs = {e.seq: e.type for e in await cp.state.store.events(origin, limit=100)}
     assert all(seqs[s] == "tool.call" for f in flags for s in evidence(f))
     assert (await cp.state.store.verify(run_id)).ok
+
+
+async def job_until(cp: CP, run_id: str, test: Any, within: float = 20) -> Any:
+    """The control plane's job `run_id` once `test(job)` holds, for `within` seconds."""
+    async with asyncio.timeout(within):
+        while True:
+            job = await cp.state.db.job(run_id)
+            if job is not None and test(job):
+                return job
+            await asyncio.sleep(0.1)
+
+
+async def test_a_runners_first_stop_ends_a_monitor_job_and_ships_its_run_as_cancelled(
+    cp: CP,
+    local: LocalEventStore,
+    fake: FakeRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    origin = await pushed(cp, local, fake, [call(1), call(2), call(3)], monitor=None)
+    feeding = asyncio.Event()
+
+    async def feed(*args: Any) -> None:
+        # stands for the monitor's model calls, which only a cancel ends
+        feeding.set()
+        await asyncio.sleep(300)
+
+    monkeypatch.setattr(offline, "_feed", feed)
+    stop = asyncio.Event()
+    async with node(cp, tmp_path / "node", stop=stop) as n:
+        run_id = await queue_monitor(cp, origin)
+        async with asyncio.timeout(20):
+            await feeding.wait()
+        stop.set()
+        # well within the 120 s the stop gives jobs it leaves running
+        job = await job_until(cp, run_id, lambda j: j.state not in OPEN_STATES)
+        await until(lambda: n._open is None, 20)
+    assert (job.state, job.reason) == ("done", "cancelled")
+    (sealed,) = await cp.state.store.events(run_id, types=["run.finished"])
+    assert sealed.data == {"status": "cancelled", "reason": "cancelled before the monitor finished"}
+    assert (await cp.state.store.verify(run_id)).ok
+
+
+async def test_a_monitor_job_the_first_stop_ends_before_its_run_begins_goes_back_to_the_queue(
+    cp: CP,
+    local: LocalEventStore,
+    fake: FakeRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    origin = await pushed(cp, local, fake, [call(1)], monitor=None)
+    fetching = asyncio.Event()
+
+    async def fetch(self: Node, run_id: str) -> None:
+        fetching.set()
+        await asyncio.sleep(300)
+
+    monkeypatch.setattr(Node, "_fetch", fetch)
+    stop = asyncio.Event()
+    async with node(cp, tmp_path / "node", stop=stop) as n:
+        run_id = await queue_monitor(cp, origin)
+        async with asyncio.timeout(20):
+            await fetching.wait()
+        stop.set()
+        # handed back at once, for the next runner, with no run begun here or there
+        job = await job_until(cp, run_id, lambda j: j.releases)
+        await until(lambda: n._open is None, 20)
+    assert (job.state, job.releases) in (("queued", 1), ("offered", 1))
+    assert await cp.state.store.run(run_id) is None
+    assert not (tmp_path / "node" / "runs" / run_id).exists()
 
 
 # Copies of runs another runner made

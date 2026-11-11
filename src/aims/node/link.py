@@ -160,6 +160,13 @@ class Link:
         self._ships[run_id] = task
         task.add_done_callback(lambda t: self._shipped(run_id, t))
 
+    def unship(self, run_id: str) -> None:
+        """Stop shipping a run that never began here."""
+        task = self._ships.pop(run_id, None)
+        self.shippers.pop(run_id, None)
+        if task is not None:
+            task.cancel()
+
     def _shipped(self, run_id: str, task: asyncio.Task[None]) -> None:
         """Forget a run's shipper once the run has shipped, or once the control plane deleted
         it. One that failed stays with its reason."""

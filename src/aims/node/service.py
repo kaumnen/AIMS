@@ -112,6 +112,8 @@ class Node:
         self.backend: DockerBackend | None = None
         self._open: _Open | None = None
         self._jobs: dict[str, asyncio.Task[None]] = {}
+        # monitor and score jobs under way, which the first stop cancels
+        self._offline: set[str] = set()
         self._tracer_tried = 0.0
         # job run id -> the runs it reads, which are not pruned until it ends
         self._reads: dict[str, set[str]] = {}
@@ -204,11 +206,14 @@ class Node:
 
     async def _stop(self) -> None:
         """Like a first Ctrl-C for every run: agents stop, files are archived, runs are sealed
-        as cancelled and shipped."""
+        as cancelled and shipped. Monitor and score jobs stop at once, as `_monitor_or_score`
+        says."""
         self.stopping = True
         link = self.ctx.link
         for runner in list(link.runners.values()):
             runner.cancel()
+        for run_id in self._offline:
+            self._jobs[run_id].cancel()
         if self._jobs:
             await asyncio.wait(list(self._jobs.values()), timeout=120)
         if not await link.drain(30):
@@ -251,11 +256,8 @@ class Node:
         ctx = self.ctx
         link, store = ctx.link, ctx.store
         try:
-            if isinstance(job, MonitorJob):
-                await self._monitor(job)
-                return
-            if isinstance(job, ScoreJob):
-                await self._score(job)
+            if isinstance(job, MonitorJob | ScoreJob):
+                await self._monitor_or_score(job)
                 return
             blobs: dict[str, bytes] = {}
             for sha in job.blobs():
@@ -376,6 +378,35 @@ class Node:
         finally:
             link.untrack(run_id)
             await store.append(run_id, [Draft(RunFinished(status=status, reason=reason))])
+
+    async def _monitor_or_score(self, job: MonitorJob | ScoreJob) -> None:
+        """Run a monitor or score job. The first stop cancels it at once, so it calls no model
+        after that. A run it began is sealed as cancelled and ships. The control plane then ends
+        the job as it ends a stopped run's. A job stopped before its run began goes back to the
+        control plane for the next runner."""
+        if self.stopping:
+            await self._hand_back(job)
+            return
+        self._offline.add(job.run_id)
+        try:
+            if isinstance(job, MonitorJob):
+                await self._monitor(job)
+            else:
+                await self._score(job)
+        except asyncio.CancelledError:
+            if self.stopping and await self.ctx.store.run(job.run_id) is None:
+                await self._hand_back(job)
+            raise
+        finally:
+            self._offline.discard(job.run_id)
+
+    async def _hand_back(self, job: MonitorJob | ScoreJob) -> None:
+        """Give a job stopped before its run began back to the control plane."""
+        link = self.ctx.link
+        # a score job ships its run from before the run begins
+        link.unship(job.run_id)
+        with contextlib.suppress(ApiError, httpx2.TransportError, OSError):
+            await link.client.release(job.run_id, "the runner stopped before the job began")
 
     async def _monitor(self, job: MonitorJob) -> None:
         """Monitor a sealed run again: import it like a fork's origin, check it is still the run
