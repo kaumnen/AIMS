@@ -1,6 +1,6 @@
-import asyncio
 import json
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +14,7 @@ from aims.events import (
     ProcSignal,
     ToolCall,
 )
+from aims.events.schema import format_ts
 from aims.monitor.config import MonitorConfig, Rule
 from aims.monitor.signals.base import SignalError
 from aims.monitor.signals.engine import SignalEngine
@@ -262,7 +263,7 @@ async def test_the_most_important_matching_rule_of_a_signal_wins(store: LocalEve
 
 
 async def test_a_rule_counts_matches_per_agent_and_window(
-    store: LocalEventStore,
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     r = rule(
         match={"op": "write"},
@@ -283,16 +284,18 @@ async def test_a_rule_counts_matches_per_agent_and_window(
     (flag,) = b.of("r")
     assert len(flag.evidence) == 3
 
+    clock = datetime(2026, 1, 1, tzinfo=UTC)
+    monkeypatch.setattr("aims.events.store.now", lambda: format_ts(clock))
     r = rule(match={"op": "write"}, count=3, window_s=0.5, key="{path}")
     b = await run_rule(store, r)
     await b.bash("x", lambda ex: b.k(FileAccess, ex, op="write", path="/work/a"))
-    await asyncio.sleep(1.0)
-    await b.bash("x", lambda ex: b.k(FileAccess, ex, op="write", path="/work/a"))
-    assert b.of("r") == []
+    clock += timedelta(seconds=1)
     await b.bash(
         "x",
         lambda ex: [b.k(FileAccess, ex, op="write", path="/work/a") for _ in range(2)],
     )
+    assert b.of("r") == []
+    await b.bash("x", lambda ex: b.k(FileAccess, ex, op="write", path="/work/a"))
     assert len(b.of("r")) == 1
 
 
