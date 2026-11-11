@@ -40,6 +40,7 @@ BLOBS = "blobs"
 INDEX = "index.sqlite"
 TRUTH = "truth.json"
 LABELS = "labels.jsonl"
+GRAVE = ".deleted."
 INLINE_LIMIT = 8 * 1024
 CHUNK = 1000
 
@@ -240,6 +241,7 @@ class LocalEventStore:
         await asyncio.to_thread(make_dir, root, parents=True)
         store = cls(root, await Index.open(root / INDEX), ingest_only=ingest_only)
         try:
+            await store._sweep()
             await store.sync()
         except BaseException:
             await store.close()
@@ -292,7 +294,11 @@ class LocalEventStore:
 
     async def remove(self, run_id: str) -> None:
         """Delete a sealed run's directory and its index rows. An ingest-only store also drops
-        a copy whose last lines never came, unless an ingest is writing it."""
+        a copy whose last lines never came, unless an ingest is writing it.
+
+        The directory is first renamed to a grave, a name no run has, so a crash at any later
+        point leaves nothing that reads as the run; the next open finishes the delete. A grave
+        that will not go is logged and left for that open."""
         sink = self._sinks.get(run_id)
         if run_id in self._writers or (
             sink is not None and (not self.ingest_only or sink.lock.locked())
@@ -305,8 +311,43 @@ class LocalEventStore:
             if info is not None and info.status == "running":
                 raise RuntimeError(f"run {run_id} is not sealed")
         self._ingested.discard(run_id)
+        grave = await asyncio.to_thread(self._bury, run_id)
         await self._index.remove(run_id)
-        await asyncio.to_thread(shutil.rmtree, self._dir(run_id), True)
+        if grave is not None:
+            await asyncio.to_thread(_clear, grave)
+
+    def _bury(self, run_id: str) -> Path | None:
+        """Rename a run's directory to a new grave, durably. None when it has no directory."""
+        grave = self.root / f"{GRAVE}{run_id}.{uuid.uuid4().hex[:8]}"
+        try:
+            self._dir(run_id).rename(grave)
+        except FileNotFoundError:
+            return None
+        sync_dir(self.root)
+        return grave
+
+    async def _sweep(self) -> None:
+        """Finish the deletes a crash cut short: forget the index rows of each grave's run,
+        unless the run was made again since, then delete the grave."""
+
+        def graves() -> list[tuple[Path, str | None]]:
+            """Each grave with the run whose index rows go: None when the run is here again."""
+            out: list[tuple[Path, str | None]] = []
+            for path in sorted(self.root.iterdir()):
+                if path.name.startswith(GRAVE):
+                    run_id = path.name.removeprefix(GRAVE).rpartition(".")[0]
+                    gone = is_run_id(run_id) and not (self.root / run_id).exists()
+                    out.append((path, run_id if gone else None))
+            return out
+
+        for grave, run_id in await asyncio.to_thread(graves):
+            if run_id is not None:
+                try:
+                    await self._index.remove(run_id)
+                except Exception as e:
+                    log.warning("%s stays until the next open: %s", grave, e)
+                    continue
+            await asyncio.to_thread(_clear, grave)
 
     def run_ids(self) -> list[str]:
         """Every run with a log here."""
@@ -1083,6 +1124,15 @@ def _take(
     except ChainError as e:
         return out, e
     return out, None
+
+
+def _clear(grave: Path) -> None:
+    """Delete a grave; one that will not go is logged and left for the next open."""
+    try:
+        shutil.rmtree(grave)
+    except OSError as e:
+        if grave.exists():
+            log.warning("%s stays until the next open: %s", grave, e)
 
 
 def _close(writer: _Writer | _Sink) -> None:
