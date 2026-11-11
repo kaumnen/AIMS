@@ -966,6 +966,11 @@ async def test_a_runner_prunes_a_copy_left_unused_but_never_one_a_job_reads(
                 break
             await asyncio.sleep(0.05)
         assert not copy.exists()
+        # a delete moves the folder away first, then forgets the index rows
+        for _ in range(100):
+            if await n.ctx.origins.run(origin) is None:
+                break
+            await asyncio.sleep(0.05)
         assert await n.ctx.origins.run(origin) is None
 
 
