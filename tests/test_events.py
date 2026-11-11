@@ -6,11 +6,13 @@ import itertools
 import json
 import logging
 import os
+import random
 import sqlite3
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
 
+import aiosqlite
 import pytest
 import rfc8785
 from hypothesis import example, given
@@ -392,6 +394,202 @@ async def test_search(store: LocalEventStore) -> None:
     assert await hits('"hi') == [3]
     assert await hits("100%") == []
     assert await hits("nothing here") == []
+
+
+WORDS = [
+    "the",
+    "quick",
+    "brown",
+    "fox",
+    "jumps",
+    "over",
+    "lazy",
+    "dog",
+    "Éclair",
+    "straße",
+    "naïve",
+    "100%_",
+    "say",
+    '"hi"',
+]
+
+
+async def several_runs(store: LocalEventStore) -> list[str]:
+    """Four runs whose events interleave in the index, the last a score run."""
+    rng = random.Random(3)
+    runs = [await store.create_run(STARTED) for _ in range(3)]
+    runs.append(await store.create_run(STARTED.model_copy(update={"kind": "score"})))
+    for i in range(12):
+        for k, run_id in enumerate(runs):
+            if k == 3 and i % 3:
+                continue
+            drafts = [
+                call(n, " ".join(rng.choice(WORDS) for _ in range(6)), "a1" if n % 3 else "a2")
+                for n in range(i * 5, i * 5 + 5)
+            ]
+            await store.append(run_id, drafts)
+    return runs
+
+
+def _like(query: str) -> str:
+    return "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
+def _phrase(query: str) -> str:
+    return '"' + query.replace('"', '""') + '"'
+
+
+def search_before(
+    con: sqlite3.Connection, query: str, before: int | None, skip: tuple[str, ...], limit: int
+) -> tuple[list[tuple[str, int]], int | None]:
+    """A page of `Index.search` as it read before it paged in the text index's order."""
+    where, args, joins = [], [], ""
+    if len(query) >= 3:
+        joins = "join events_fts f on f.rowid = e.id"
+        where.append("events_fts match ?")
+        args.append(_phrase(query))
+    else:
+        where.append("e.text like ? escape '\\'")
+        args.append(_like(query))
+    if before is not None:
+        where.append("e.id < ?")
+        args.append(before)
+    if skip:
+        marks = ",".join("?" * len(skip))
+        where.append(f"e.run_id not in (select run_id from runs where kind in ({marks}))")
+        args.extend(skip)
+    rows = con.execute(
+        f"select e.id, e.run_id, e.seq from events e {joins} where {' and '.join(where)}"
+        " order by e.id desc limit ?",
+        (*args, limit + 1),
+    ).fetchall()
+    more = len(rows) > limit
+    rows = rows[:limit]
+    return [(r[1], r[2]) for r in rows], (rows[-1][0] if more and rows else None)
+
+
+def events_before(
+    con: sqlite3.Connection, run_id: str, query: str, limit: int, **kw: Any
+) -> list[int]:
+    """The seqs of a page of `Index.events` with a query, as it read before it read the run's
+    matches once."""
+    where, args, joins = ["e.run_id = ?"], [run_id], ""
+    if kw.get("execs"):
+        where.append(f"e.exec_id in ({', '.join('?' * len(kw['execs']))})")
+        args.extend(kw["execs"])
+    for key, op in (("after", ">"), ("before", "<")):
+        if kw.get(key) is not None:
+            where.append(f"e.seq {op} ?")
+            args.append(kw[key])
+    if kw.get("types"):
+        where.append(f"e.type in ({', '.join('?' * len(kw['types']))})")
+        args.extend(kw["types"])
+    if kw.get("agent_id") is not None:
+        where.append("e.agent_id = ?")
+        args.append(kw["agent_id"])
+    if len(query) >= 3:
+        joins = "join events_fts f on f.rowid = e.id"
+        where.append("events_fts match ?")
+        args.append(_phrase(query))
+    else:
+        where.append("e.text like ? escape '\\'")
+        args.append(_like(query))
+    back = kw.get("before") is not None and kw.get("after") is None
+    rows = con.execute(
+        f"select e.seq from events e {joins} where {' and '.join(where)}"
+        f" order by e.seq {'desc' if back else 'asc'} limit ?",
+        (*args, limit),
+    ).fetchall()
+    return sorted(r[0] for r in rows)
+
+
+SEARCHES = ("the", "quick brown", "fox jumps", "éclair", "ÉCLAIR", "aïv", "e", "Ét", "_ ", '"h')
+SEARCHES += ("%_", "xyzzy", "zz", "brown fox jumps over")
+
+
+async def test_text_search_finds_what_it_found_before(store: LocalEventStore) -> None:
+    runs = await several_runs(store)
+    con = sqlite3.connect(store.root / "index.sqlite")
+    try:
+        for query, skip, limit in itertools.product(SEARCHES, ((), ("score",)), (1, 7, 100)):
+            before = None
+            for _ in range(1000):
+                found, cursor = await store.search(
+                    query, limit=limit, before=before, skip_kinds=skip
+                )
+                old = search_before(con, query, before, skip, limit)
+                assert ([(e.run_id, e.seq) for e in found], cursor) == old, (query, skip, before)
+                if cursor is None:
+                    break
+                before = cursor
+        filters: list[dict[str, Any]] = [
+            {},
+            {"after": 10},
+            {"before": 30},
+            {"after": 5, "before": 40},
+            {"types": ["tool.call"]},
+            {"types": ["run.started"]},
+            {"agent_id": "a2"},
+            {"execs": ["nope"]},
+            {"after": 3, "agent_id": "a1", "types": ["tool.call"]},
+        ]
+        for run_id, query, kw, limit in itertools.product(runs, SEARCHES, filters, (3, 100)):
+            page = await store.events(run_id, query=query, limit=limit, **kw)
+            assert [e.seq for e in page] == events_before(con, run_id, query, limit, **kw), (
+                run_id,
+                query,
+                kw,
+                limit,
+            )
+    finally:
+        con.close()
+
+
+async def test_text_search_reads_matches_in_page_order(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs = await several_runs(store)
+    seen: list[tuple[str, Any]] = []
+    execute = aiosqlite.Connection.execute
+
+    def spy(self: aiosqlite.Connection, sql: str, parameters: Any = None) -> Any:
+        seen.append((sql, parameters))
+        return execute(self, sql, parameters)
+
+    monkeypatch.setattr(aiosqlite.Connection, "execute", spy)
+    await store.search("the")
+    await store.search("quick brown", before=50, skip_kinds=("score", "selftest"))
+    await store.search("e", before=50)
+    filters: list[dict[str, Any]] = [
+        {},
+        {"after": 3},
+        {"before": 30},
+        {"types": ["tool.call"], "agent_id": "a1"},
+    ]
+    for kw in filters:
+        await store.events(runs[0], query="fox", **kw)
+    monkeypatch.undo()
+    assert len(seen) == 7
+    con = sqlite3.connect(store.root / "index.sqlite")
+    try:
+        for i, (sql, args) in enumerate(seen):
+            rows = con.execute("explain query plan " + sql, args).fetchall()
+            plan = {r[0]: (r[1], r[3]) for r in rows}
+            text = " | ".join(detail for _, detail in plan.values())
+            assert "TEMP B-TREE" not in text, text
+            fts = [n for n, (_, detail) in plan.items() if "VIRTUAL TABLE" in detail]
+            if i < 2:
+                assert text.startswith("SCAN f VIRTUAL TABLE"), text
+            elif i >= 3:
+                # one read of the run's matches, never a probe of the text index per event
+                [n] = fts
+                parents = []
+                while n in plan:
+                    n = plan[n][0]
+                    parents.append(plan.get(n, (0, ""))[1])
+                assert any(p.startswith("LIST SUBQUERY") for p in parents), text
+    finally:
+        con.close()
 
 
 async def test_text_and_cursors_the_index_cannot_bind_find_nothing(

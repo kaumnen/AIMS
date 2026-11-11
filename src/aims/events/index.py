@@ -1330,22 +1330,22 @@ class Index:
     ) -> tuple[list[Event], int | None]:
         """Events of every run whose text holds `query`, newest indexed first, and the cursor of
         the next page, leaving out runs of `skip_kinds`. Queries of three or more characters use
-        the trigram index. A query the index cannot match finds nothing."""
+        the trigram index, read newest first so a page stops at its last match. A query the
+        index cannot match finds nothing."""
         if not _searchable(query):
             return [], None
         where: list[str] = []
         args: list[Any] = []
-        joins = ""
         if len(query) >= 3:
-            joins = "join events_fts f on f.rowid = e.id"
+            source, key = "events_fts f join events e on e.id = f.rowid", "f.rowid"
             where.append("events_fts match ?")
-            args.append('"' + query.replace('"', '""') + '"')
+            args.append(_phrase(query))
         else:
+            source, key = "events e", "e.id"
             where.append("e.text like ? escape '\\'")
-            escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            args.append(f"%{escaped}%")
+            args.append(_like(query))
         if before is not None:
-            where.append("e.id < ?")
+            where.append(f"{key} < ?")
             args.append(_int(before))
         if skip_kinds:
             marks = ",".join("?" * len(skip_kinds))
@@ -1355,7 +1355,7 @@ class Index:
         args.append(size + 1)
         async with self._db.execute(
             "select e.id, e.run_id, e.seq, e.ts, e.agent_id, e.type, e.data, e.prev_hash, e.hash"
-            f" from events e {joins} where {' and '.join(where)} order by e.id desc limit ?",
+            f" from {source} where {' and '.join(where)} order by {key} desc limit ?",
             args,
         ) as cur:
             rows = list(await cur.fetchall())
@@ -1377,11 +1377,11 @@ class Index:
         execs: Sequence[str] = (),
     ) -> list[Event]:
         """One page in seq order. With only `before` set, the page is the last events before it.
-        `execs` keeps the events that name one of those execs. A query the index cannot match
-        finds nothing."""
+        `execs` keeps the events that name one of those execs. A query reads the run's matches
+        once, from the trigram index over the span of the run's row ids. A query the index
+        cannot match finds nothing."""
         if query and not _searchable(query):
             return []
-        joins = ""
         where = ["e.run_id = ?"]
         args: list[Any] = [run_id]
         if execs:
@@ -1400,18 +1400,20 @@ class Index:
             where.append("e.agent_id = ?")
             args.append(agent_id)
         if query and len(query) >= 3:
-            joins = "join events_fts f on f.rowid = e.id"
-            where.append("events_fts match ?")
-            args.append('"' + query.replace('"', '""') + '"')
+            where.append(
+                "e.id in (select rowid from events_fts where events_fts match ? and rowid between"
+                " (select min(id) from events where run_id = ?)"
+                " and (select max(id) from events where run_id = ?))"
+            )
+            args.extend((_phrase(query), run_id, run_id))
         elif query:
             where.append("e.text like ? escape '\\'")
-            escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            args.append(f"%{escaped}%")
+            args.append(_like(query))
         backwards = before is not None and after is None
         args.append(_cap(limit))
         async with self._db.execute(
             "select e.run_id, e.seq, e.ts, e.agent_id, e.type, e.data, e.prev_hash, e.hash"
-            f" from events e {joins} where {' and '.join(where)}"
+            f" from events e where {' and '.join(where)}"
             f" order by e.seq {'desc' if backwards else 'asc'} limit ?",
             args,
         ) as cur:
@@ -1751,6 +1753,17 @@ def _int(value: int) -> int:
     """`value` within the integers SQLite binds. Every seq, id and time stored is inside, so a
     bound past them compares the same."""
     return max(BIND_MIN, min(value, BIND_MAX))
+
+
+def _phrase(query: str) -> str:
+    """`query` as one FTS5 phrase."""
+    return '"' + query.replace('"', '""') + '"'
+
+
+def _like(query: str) -> str:
+    """A LIKE pattern, escaped with `\\`, that matches text holding `query`."""
+    escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
 
 
 def _searchable(text: str) -> bool:
