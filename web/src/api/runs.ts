@@ -188,6 +188,14 @@ const listFetching = (qc: QueryClient) =>
     .findAll({ queryKey: ["runs", "list"] })
     .some((q) => q.state.fetchStatus === "fetching");
 
+// The lists of runs the stream keeps current; deleted runs leave each.
+const runLists: ReadonlySet<unknown> = new Set(["list", "reviews", "scores", "cases"]);
+const isRunList = (key: QueryKey) => key[0] === "runs" && runLists.has(key[1]);
+const runListFetching = (qc: QueryClient) =>
+  qc.isFetching({ queryKey: ["runs"], predicate: (q) => isRunList(q.queryKey) }) > 0;
+// how many deleted runs a load in flight holds at most, the oldest dropped first
+const MAX_GONE = 10_000;
+
 export function applyRuns(qc: QueryClient, runs: readonly RunSummary[]): void {
   if (runs.length === 0) return;
   for (const q of qc.getQueryCache().findAll({ queryKey: ["runs"] })) {
@@ -256,6 +264,8 @@ export function syncRuns(
   // A page that lands writes the pages as they were when its fetch began, so updates made
   // meanwhile are held and made again on top of it.
   let held = new Map<string, RunSummary>();
+  // The same goes for runs deleted meanwhile, which leave each list again as it lands.
+  let gone = new Set<string>();
   let scheduled = false;
   let stopped = false;
   const flush = () => {
@@ -267,14 +277,19 @@ export function syncRuns(
     if (listFetching(qc)) for (const r of runs) held.set(r.run_id, r);
   };
   const unwatch = qc.getQueryCache().subscribe((event) => {
-    if (held.size === 0 || event.type !== "updated" || event.action.type !== "success") return;
-    if (event.action.manual) return;
+    if (held.size === 0 && gone.size === 0) return;
+    if (event.type !== "updated" || !isRunList(event.query.queryKey)) return;
     const key = event.query.queryKey;
-    if (key[0] !== "runs" || key[1] !== "list") return;
-    const runs = [...held.values()];
-    if (!listFetching(qc)) held = new Map();
+    const deleted = gone;
+    if (deleted.size > 0 && !runListFetching(qc)) gone = new Set();
+    if (event.action.type !== "success" || event.action.manual) return;
+    const runs = key[1] === "list" ? [...held.values()] : [];
+    if (runs.length > 0 && !listFetching(qc)) held = new Map();
+    if (runs.length === 0 && deleted.size === 0) return;
     queueMicrotask(() => {
-      if (!stopped) applyList(qc, key, runs);
+      if (stopped) return;
+      if (runs.length > 0) applyList(qc, key, runs);
+      if (deleted.size > 0) dropFrom(qc, key, deleted);
     });
   });
   const off = live.on("run", ({ run }) => {
@@ -287,6 +302,13 @@ export function syncRuns(
   const offDeleted = live.on("deleted", ({ run_id }) => {
     pending.delete(run_id);
     held.delete(run_id);
+    if (runListFetching(qc)) {
+      gone.add(run_id);
+      if (gone.size > MAX_GONE) {
+        const [oldest] = gone;
+        if (oldest !== undefined) gone.delete(oldest);
+      }
+    }
     qc.setQueryData(deletedQuery.queryKey, (ids = []) => [...ids, run_id]);
     dropRuns(qc, [run_id]);
   });
@@ -312,22 +334,32 @@ export const deletedQuery = queryOptions({
 // shows one leaves first, then calls this again.
 export function dropRuns(qc: QueryClient, runIds: readonly string[]): void {
   const gone = new Set(runIds);
-  const kept = (items: readonly RunSummary[]) => items.filter((r) => !gone.has(r.run_id));
   for (const q of qc.getQueryCache().findAll({ queryKey: ["runs"] })) {
     const [, what, arg] = q.queryKey as readonly [string, string, unknown];
-    if (what === "list") {
-      qc.setQueryData<InfiniteData<RunPage, string | null>>(q.queryKey, (data) =>
-        data ? { ...data, pages: data.pages.map((p) => ({ ...p, items: kept(p.items) })) } : data,
-      );
-    } else if (what === "reviews" || what === "scores" || what === "cases") {
-      qc.setQueryData<RunPage>(q.queryKey, (data) =>
-        data ? { ...data, items: kept(data.items) } : data,
-      );
+    if (isRunList(q.queryKey)) {
+      dropFrom(qc, q.queryKey, gone);
     } else if (what === "series") {
       void qc.invalidateQueries({ queryKey: q.queryKey, exact: true });
     }
     if (typeof arg === "string" && gone.has(arg) && q.getObserversCount() === 0) {
       qc.removeQueries({ queryKey: q.queryKey, exact: true });
     }
+  }
+}
+
+// Takes the runs out of one list of runs, if it holds any of them.
+function dropFrom(qc: QueryClient, key: QueryKey, gone: ReadonlySet<string>): void {
+  const holds = (items: readonly RunSummary[]) => items.some((r) => gone.has(r.run_id));
+  const kept = (items: readonly RunSummary[]) => items.filter((r) => !gone.has(r.run_id));
+  if (key[1] === "list") {
+    qc.setQueryData<InfiniteData<RunPage, string | null>>(key, (data) =>
+      data?.pages.some((p) => holds(p.items))
+        ? { ...data, pages: data.pages.map((p) => ({ ...p, items: kept(p.items) })) }
+        : data,
+    );
+  } else {
+    qc.setQueryData<RunPage>(key, (data) =>
+      data && holds(data.items) ? { ...data, items: kept(data.items) } : data,
+    );
   }
 }

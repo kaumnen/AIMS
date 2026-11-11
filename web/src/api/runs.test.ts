@@ -214,6 +214,44 @@ test("an update made while a page loads survives the page landing", async () => 
   live.stop();
 });
 
+test("a run deleted while a list loads stays deleted when the list lands", async () => {
+  const qc = new QueryClient();
+  const list = runsQuery({});
+  qc.setQueryData<InfiniteData<RunPage, string | null>>(list.queryKey, {
+    pages: [{ items: [run("c"), run("b")], next: "b" }],
+    pageParams: [null],
+  });
+  const reviews = reviewsQuery("b");
+  const answers = [Promise.withResolvers<Response>(), Promise.withResolvers<Response>()];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() => answers.shift()?.promise),
+  );
+  vi.stubGlobal("EventSource", FakeEventSource);
+  const live = new Live({ runs: true });
+  const stop = syncRuns(live, qc, (fn) => fn());
+  live.start();
+  const [page, review] = answers;
+  const observer = new InfiniteQueryObserver(qc, list);
+  const unsubscribe = observer.subscribe(() => undefined);
+  const paging = observer.fetchNextPage();
+  const reading = qc.fetchQuery(reviews);
+  const source = FakeEventSource.all.at(-1);
+  source?.send({ kind: "deleted", run_id: "c" });
+  source?.send({ kind: "deleted", run_id: "m1" });
+  page?.resolve(Response.json({ items: [run("a")], next: null }));
+  review?.resolve(
+    Response.json({ items: [run("m1", { kind: "monitor", origin: "b" })], next: null }),
+  );
+  await Promise.all([paging, reading]);
+  await Promise.resolve();
+  expect(ids(qc.getQueryData(list.queryKey)?.pages ?? null)).toEqual([["b"], ["a"]]);
+  expect(qc.getQueryData(reviews.queryKey)?.items).toEqual([]);
+  unsubscribe();
+  stop();
+  live.stop();
+});
+
 test("a series takes updates of its runs in place and is read again when one moves on", () => {
   const qc = new QueryClient();
   const key = seriesQuery("nightly").queryKey;
