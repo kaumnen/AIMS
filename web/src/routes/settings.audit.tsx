@@ -52,15 +52,27 @@ interface Picked {
 }
 
 // A datetime-local value has no zone; the browser's own turns it into the time the API takes.
-const instant = (local: string) => new Date(local).toISOString();
+// A value that is no such time, such as one with a six-digit year, is undefined.
+function instant(local: string): string | undefined {
+  const at = new Date(local);
+  if (Number.isNaN(at.getTime())) return undefined;
+  const iso = at.toISOString();
+  // a year past 9999 takes a sign and six digits, which the API does not read
+  return /^\d{4}-/.test(iso) ? iso : undefined;
+}
+
+// a bound that is no time bounds nothing, and its field is marked
+const badTime = (local: string) => local !== "" && instant(local) === undefined;
 
 function filtersOf(p: Picked): AuditFilters {
   const out: AuditFilters = {};
+  const since = p.since ? instant(p.since) : undefined;
+  const until = p.until ? instant(p.until) : undefined;
   if (p.action) out.action = p.action;
   if (p.token) out.token = p.token;
   if (p.outcome) out.outcome = p.outcome as AuditOutcome;
-  if (p.since) out.since = instant(p.since);
-  if (p.until) out.until = instant(p.until);
+  if (since) out.since = since;
+  if (until) out.until = until;
   return out;
 }
 
@@ -182,6 +194,7 @@ function Audit() {
             className={INPUT}
             type="datetime-local"
             value={picked.since}
+            aria-invalid={badTime(picked.since)}
             onChange={(e) => pick("since")(e.target.value)}
           />
         </Field>
@@ -190,6 +203,7 @@ function Audit() {
             className={INPUT}
             type="datetime-local"
             value={picked.until}
+            aria-invalid={badTime(picked.until)}
             onChange={(e) => pick("until")(e.target.value)}
           />
         </Field>

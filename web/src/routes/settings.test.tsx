@@ -595,6 +595,27 @@ test("the audit log pages newest first, filters on the server and exports what m
   });
 });
 
+test("a time that is no date the log can take bounds nothing and is marked", async () => {
+  renderAt("/settings/audit");
+  await screen.findByRole("table");
+  const from = screen.getByLabelText("From");
+  // Chrome's date field takes a year of up to six digits; this DOM keeps four, so the field
+  // holds the value as Chrome would
+  Object.defineProperty(from, "value", {
+    configurable: true,
+    get: () => "202611-01-01T10:00",
+    set: () => {},
+  });
+  fireEvent.change(from);
+  expect(screen.getByText("100 rows")).toBeTruthy();
+  expect(from.getAttribute("aria-invalid")).toBe("true");
+  expect(lastAudit().searchParams.has("since")).toBe(false);
+  Reflect.deleteProperty(from, "value");
+  fireEvent.change(from, { target: { value: "2026-11-01T10:00" } });
+  await waitFor(() => expect(lastAudit().searchParams.has("since")).toBe(true));
+  expect(from.getAttribute("aria-invalid")).toBe("false");
+});
+
 test("viewers have no audit page", async () => {
   role = "viewer";
   renderAt("/settings/audit");
