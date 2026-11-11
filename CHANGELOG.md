@@ -11,6 +11,11 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - `aims run` stopped by Ctrl-C, SIGTERM or a hangup exits 130, also when the run in flight still ended `completed`. It scores no run after the stop. `aims score` scores it later.
 - An operator command answers with what did not take effect, such as a sandbox that did not freeze. It answered `failed` before, though the agents were paused.
 - The operator routes for pause, resume, sweep, inject, kill and cancel refuse text with a lone surrogate such as `\ud800` with a 422.
+- A run that no cap bounds always asks before it starts, whatever past runs cost. `--yes` still skips the question. With no step cap, past runs of other scenarios give no estimate.
+- The estimate counts a past monitor that stopped at its spend cap at the cap of today. Its typical and high figures rise to match.
+- For an agent with summary compaction every "Cannot exceed" figure counts two model calls a step.
+- A judge `max_output_tokens` under 1024 is refused when the config loads. Such a judge never made a call.
+- Near its budget the judge explores a little less. It may answer a tool call with "No tool calls are left" in place of the result.
 
 ### Fixed
 
@@ -27,6 +32,11 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - A sandbox that does not freeze or unfreeze no longer strands a pause. The other sandboxes still freeze and the monitor's review or timeout still ends the pause.
 - A pause of the whole run by the monitor holds an agent that starts later.
 - A stored command with a lone surrogate no longer cuts a runner off from its commands. An event that holds one is written with it as text.
+- `aims run`, `POST /runs` and forks size the monitor's spend cap by the step caps of `--budget`, as the estimate does. The cap came from the scenario as written, so a run with raised steps lost its sweeps early.
+- A fork started from the API sizes its monitor on the full scenario. A confederate's script counts by its length, as in the estimate.
+- Two agents on one model, one with an effort and one without, no longer crash the estimate. One such run on record broke every estimate, `aims spend` and the live view.
+- The judge no longer ends without a verdict when its last exploring call writes a lot or brings back large tool results. It keeps room for the verdict and reads back a tool result only while that room stays. A larger budget could lose the verdict before.
+- A budget cell in the UI refuses a decimal comma such as `2,50`. It read it as 250. A comma passes only as a thousands separator such as `1,000`.
 
 ## [0.2.2] - 2026-11-10
 
