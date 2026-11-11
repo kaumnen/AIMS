@@ -81,7 +81,7 @@ test("a comma reads only as a thousands separator, so 2,50 is not a cap of 250",
   read("cost_usd", dollars);
   read("steps", whole);
   read("output_tokens", whole);
-  expect(readCell("wall_s", "1,5")).toBe("Write seconds, or 30m, 2h, or none.");
+  read("wall_s", "Write seconds, or 30m, 2h, or none.");
   const { budget, problems } = readDraft({
     every: { cost_usd: "2,50" },
     agents: {},
@@ -90,6 +90,20 @@ test("a comma reads only as a thousands separator, so 2,50 is not a cap of 250",
   expect(budget).toEqual({ run: { cost_usd: 2500 } });
   expect(problems).toEqual({ "every.cost_usd": dollars });
   expect(draftText(budget, false)).toBe("run cost $2500");
+});
+
+test("the wall cell takes thousands separators as the others do, before a unit too", () => {
+  const typed = ["3,600", "1,000,000", "1,000.5", "3,600s", "1,440 m", "1,5h", "2,50m", "0,500s"];
+  expect(Object.fromEntries(typed.map((t) => [t, readCell("wall_s", t)]))).toEqual({
+    "3,600": 3600,
+    "1,000,000": 1_000_000,
+    "1,000.5": 1000.5,
+    "3,600s": 3600,
+    "1,440 m": 86_400,
+    "1,5h": "Write seconds, or 30m, 2h, or none.",
+    "2,50m": "Write seconds, or 30m, 2h, or none.",
+    "0,500s": "Write seconds, or 30m, 2h, or none.",
+  });
 });
 
 test("the draft becomes the override the API takes, rows left empty left out", () => {

@@ -43,14 +43,10 @@ const DECIMAL = /^[+-]?(?=\.?\d)(?:\d+(?:_\d+)*)?(?:\.(?:\d+(?:_\d+)*)?)?$/;
 // Commas only as thousands separators: 1,000 or 12,345.67, never 2,50 or 0,500.
 const GROUPED = /^[+-]?[1-9]\d{0,2}(?:,\d{3})+(?:\.\d*)?$/;
 
-// The number typed, NaN when it does not read.
-function plainNumber(text: string, whole: boolean): number {
-  return (whole ? WHOLE : DECIMAL).test(text) ? Number(text.replaceAll("_", "")) : NaN;
-}
-
-// The number typed with commas between thousands, NaN when a comma does not separate them.
+// The number typed, NaN when it does not read or a comma does not separate thousands.
 function typedNumber(text: string, whole: boolean): number {
-  return plainNumber(GROUPED.test(text) ? text.replaceAll(",", "") : text, whole);
+  const t = GROUPED.test(text) ? text.replaceAll(",", "") : text;
+  return (whole ? WHOLE : DECIMAL).test(t) ? Number(t.replaceAll("_", "")) : NaN;
 }
 
 // The cap a cell gives: undefined keeps it, null lifts it; a string says why it does not read.
@@ -60,7 +56,7 @@ export function readCell(key: Key, text: string | undefined): number | null | un
   if (/^(none|no cap)$/i.test(t)) return null;
   if (key === "wall_s") {
     const [, number = "", unit = ""] = WALL.exec(t) ?? [];
-    const n = plainNumber(number, false) * (UNIT[unit.toLowerCase() || "s"] ?? 1);
+    const n = typedNumber(number, false) * (UNIT[unit.toLowerCase() || "s"] ?? 1);
     return Number.isFinite(n) && n > 0 ? n : "Write seconds, or 30m, 2h, or none.";
   }
   const n = typedNumber(key === "cost_usd" ? t.replace(/^\$/, "") : t, key !== "cost_usd");
