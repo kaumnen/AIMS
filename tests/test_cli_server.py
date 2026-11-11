@@ -757,6 +757,67 @@ def test_tokens_from_the_cli(tmp_path: Path) -> None:
     ]
 
 
+BAD_NAMES = ["a\nb\x1b[31m", "ok\n", "two words", "", "x" * 101, "é", "a/b"]
+
+
+@pytest.mark.parametrize("name", BAD_NAMES, ids=repr)
+def test_the_cli_refuses_a_token_name_the_api_refuses(tmp_path: Path, name: str) -> None:
+    from pydantic import ValidationError
+
+    from aims.server.api import TokenCreate
+
+    with pytest.raises(ValidationError):
+        TokenCreate(name=name, role="viewer")
+    data, file = tmp_path / "data", tmp_path / "token"
+    for extra in ([], ["--file", str(file)]):
+        args = ["token", "create", name, "--data-dir", str(data), *extra]
+        r = CliRunner().invoke(app, args)
+        assert (r.exit_code, type(r.exception)) == (2, SystemExit), r.output
+        assert "NAME" in r.output
+        assert "letters, digits" in " ".join(r.output.split())
+        assert "\x1b[31m" not in r.output
+    assert not data.exists()
+    assert not file.exists()
+
+
+@pytest.mark.parametrize("name", ["ui", "box2", "compose-runner", "a.b_c@d-e", "x" * 100])
+def test_the_cli_takes_a_token_name_the_api_takes(tmp_path: Path, name: str) -> None:
+    from aims.server.api import TokenCreate
+
+    TokenCreate(name=name, role="viewer")
+    r = CliRunner().invoke(app, ["token", "create", name, "--data-dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+
+
+def test_a_token_name_stored_before_the_rule_still_lists_and_revokes(tmp_path: Path) -> None:
+    import sqlite3
+
+    async def make() -> None:
+        db = await ServerDB.open(tmp_path / "server.sqlite")
+        try:
+            for bad in BAD_NAMES:
+                with pytest.raises(ValueError, match="letters, digits"):
+                    await db.create_token(bad, "viewer")
+                with pytest.raises(ValueError, match="letters, digits"):
+                    await db.rotate_token(bad, "viewer")
+        finally:
+            await db.close()
+
+    asyncio.run(make())
+    with contextlib.closing(sqlite3.connect(tmp_path / "server.sqlite")) as raw, raw:
+        raw.execute(
+            "insert into tokens (name, sha256, role, created) values (?, ?, ?, ?)",
+            ("old\nname", "0" * 64, "viewer", time.time()),
+        )
+    runner = CliRunner()
+    listed = runner.invoke(app, ["token", "list", "--data-dir", str(tmp_path)])
+    assert listed.exit_code == 0, listed.output
+    assert len(listed.output.splitlines()) == 1
+    gone = runner.invoke(app, ["token", "revoke", "old\nname", "--data-dir", str(tmp_path)])
+    assert gone.exit_code == 0, gone.output
+    assert "revoked" in runner.invoke(app, ["token", "list", "--data-dir", str(tmp_path)]).output
+
+
 def test_a_token_file_is_kept_while_it_holds_the_live_token(tmp_path: Path) -> None:
     runner = CliRunner()
     file = tmp_path / "token" / "runner"

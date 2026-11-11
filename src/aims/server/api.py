@@ -84,7 +84,7 @@ from aims.server.files import Source, Sources
 from aims.server.problems import ProblemError, ProblemException, responses
 from aims.server.runner_api import JOBS, send
 from aims.server.state import FileCache, ServerState
-from aims.text import Utf8, scrub
+from aims.text import NoLoneSurrogate, Utf8, scrub
 from aims.tools import UnknownTool, registry
 from aims.wire import (
     BASE_KINDS,
@@ -2140,7 +2140,7 @@ class TokenInfo(Out):
 
 
 class TokenCreate(BaseModel):
-    name: Utf8 = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9._@-]+$")
+    name: Annotated[sdb.TokenName, NoLoneSurrogate]
     role: Literal["viewer", "operator", "runner"]
 
 

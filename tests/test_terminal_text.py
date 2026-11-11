@@ -2,9 +2,11 @@
 as the characters it holds: never read as Rich markup, never as escape bytes."""
 
 import asyncio
+import contextlib
 import io
 import logging
 import shutil
+import sqlite3
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -33,6 +35,7 @@ from aims.models import Delta, DeltaBus
 from aims.monitor.core import HumanRequest
 from aims.run.runner import Result, Runner
 from aims.run.view import HumanPrompt, LiveView, digest, summary
+from aims.server.db import ServerDB
 from aims.terminal import VisibleLog, one_line, shown
 
 pytestmark = pytest.mark.anyio
@@ -318,7 +321,21 @@ def test_log_lines_show_hidden_characters_and_keep_their_lines() -> None:
 def test_argv_and_tokens_come_back_as_text(tmp_path: Path) -> None:
     data = ["--data-dir", str(tmp_path / "server")]
     name = f"a\nb{ESCAPES}"
-    assert invoke("token", "create", name, *data).exit_code == 0
+    refused = invoke("token", "create", name, *data)
+    assert refused.exit_code == 2
+    assert "owned" not in refused.output
+
+    # a name stored before the rule on token names
+    async def stored() -> None:
+        db = await ServerDB.open(tmp_path / "server" / "server.sqlite")
+        await db.close()
+
+    asyncio.run(stored())
+    with contextlib.closing(sqlite3.connect(tmp_path / "server" / "server.sqlite")) as raw, raw:
+        raw.execute(
+            "insert into tokens (name, sha256, role, created) values (?, ?, 'viewer', 0)",
+            (name, "0" * 64),
+        )
     listed = invoke("token", "list", *data)
     assert listed.exit_code == 0, listed.output
     (line,) = listed.output.splitlines()

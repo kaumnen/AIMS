@@ -11,9 +11,10 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import aiosqlite
+from pydantic import Field, TypeAdapter, ValidationError
 
 VERSION = 5
 SESSION_DAYS = 30
@@ -27,6 +28,11 @@ Outcome = Literal["ok", "refused", "error"]
 ROLES: tuple[Role, ...] = ("viewer", "operator", "runner")
 # The operator token `aims ui` rotates at each start, for its launch link and local commands.
 UI_TOKEN = "ui"
+# What the name of a new token may hold. The API and `aims token create` both check this one
+# rule. A name stored before it still lists and revokes.
+TokenName = Annotated[str, Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9._@-]+$")]
+TOKEN_NAME_RULE = "use 1 to 100 ASCII letters, digits, '.', '_', '@' or '-'"
+_TOKEN_NAME: TypeAdapter[str] = TypeAdapter(TokenName)
 OPEN_STATES: tuple[JobState, ...] = ("waiting", "queued", "offered", "claimed", "running")
 
 # One row per write to the control plane, refused ones too; `at_us` is microseconds since the
@@ -171,6 +177,15 @@ def hash_secret(value: str) -> str:
 
 def new_token() -> str:
     return TOKEN_PREFIX + base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
+
+
+def token_name_ok(name: str) -> bool:
+    """Whether `name` can name a new token, by the rule the API's model checks."""
+    try:
+        _TOKEN_NAME.validate_python(name, strict=True)
+    except ValidationError:
+        return False
+    return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -321,6 +336,8 @@ class ServerDB:
         """A new token; only its sha256 is kept, so this is the one time it is seen."""
         if role not in ROLES:
             raise ValueError(f"unknown role {role!r}")
+        if not token_name_ok(name):
+            raise ValueError(TOKEN_NAME_RULE)
         token = new_token()
         try:
             await self._write(
@@ -334,6 +351,8 @@ class ServerDB:
     async def rotate_token(self, name: str, role: Role, token: str | None = None) -> str:
         """A new value for token `name`, made if missing: `token`, else a fresh one. The old
         value stops working; sessions made with the token stay."""
+        if not token_name_ok(name):
+            raise ValueError(TOKEN_NAME_RULE)
         token = token or new_token()
         await self._write(
             "insert into tokens (name, sha256, role, created) values (?, ?, ?, ?)"

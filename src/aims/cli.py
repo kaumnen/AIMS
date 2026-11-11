@@ -2433,9 +2433,11 @@ def token_create(
     from typing import NoReturn
 
     from aims.server.audit import record
-    from aims.server.db import new_token
+    from aims.server.db import TOKEN_NAME_RULE, new_token, token_name_ok
     from aims.server.serve import private_temp
 
+    if not token_name_ok(name):
+        raise typer.BadParameter(TOKEN_NAME_RULE, param_hint="NAME")
     if role not in ("viewer", "operator", "runner"):
         raise typer.BadParameter("use viewer, operator or runner", param_hint="--role")
 
