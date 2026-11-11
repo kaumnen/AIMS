@@ -88,6 +88,14 @@ async def test_a_score_job_queues_for_runners_that_take_it(
         assert (r.status_code, r.json()["code"]) == (409, "truth")
         r = await c.post(url, json={"monitor": blank})
         assert r.status_code == 422
+        review = await local.create_run(
+            RunStarted(scenario="s", oversight="observe", kind="monitor", origin=origin)
+        )
+        await local.append(review, [Draft(RunFinished(status="failed"))])
+        await ship(local, fake.client, review)
+        r = await c.post(url, json={"monitor": review, "awareness": False, "answer": False})
+        assert (r.status_code, r.json()["code"]) == (409, "review")
+        assert "is failed" in r.json()["detail"]
         r = await c.post(url, json={"awareness": False})
         assert (r.status_code, r.json()["code"]) == (422, "kind")
 

@@ -21,7 +21,13 @@ from aims.run.fork import load_origin
 from aims.run.rates import Rates, gather
 from aims.run.runner import RunError
 from aims.run.score import CheckError, rule_plants
-from aims.run.scoring import CLASSIFIERS, ScoreError, ScoreEstimate, estimate_sealed
+from aims.run.scoring import (
+    CLASSIFIERS,
+    ScoreError,
+    ScoreEstimate,
+    estimate_sealed,
+    unfinished,
+)
 from aims.server import audit
 from aims.server import db as sdb
 from aims.server.api import (
@@ -140,6 +146,10 @@ async def queue_score(
         if watched is None or watched.kind != "monitor" or watched.origin != run_id:
             raise ProblemException(
                 422, "Invalid request", f"run {body.monitor} is not a monitor run of {run_id}"
+            )
+        if watched.status != "completed":
+            raise ProblemException(
+                409, "Conflict", unfinished(watched.run_id, watched.status), code="review"
             )
     added = None
     if body.plants_from is not None:

@@ -168,6 +168,13 @@ class Classifier:
     texts: MonitorTexts
 
 
+def unfinished(monitor: str, status: str) -> str:
+    """Why the monitor run `monitor` cannot be scored. One that did not complete has no verdict
+    or a part of its flags, so every plant it did not reach would count as missed."""
+    state = "still running" if status == "running" else status
+    return f"monitor run {monitor} is {state}: only a completed one can be scored"
+
+
 async def score_run(
     store: LocalEventStore,
     origin: str,
@@ -339,6 +346,8 @@ async def flags(
     info = await store.run(monitor)
     if info is None or info.kind != "monitor" or info.origin != origin:
         raise ScoreError(f"run {monitor} is not a monitor run of {origin}")
+    if info.status != "completed":
+        raise ScoreError(unfinished(monitor, info.status))
     out: list[Raised] = []
     verdicts: list[tuple[int, MonitorVerdict]] = []
     seen: dict[str, int] = {}

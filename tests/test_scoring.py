@@ -355,6 +355,15 @@ async def test_monitor_run_flags_are_timed_on_the_origin_clock(store: LocalEvent
     assert raised[1].ts == events[2].ts
     with pytest.raises(ScoreError, match="not a monitor run"):
         await flags(store, run_id, events, run_id)
+    for status in (None, "failed", "cancelled"):
+        partial = await store.create_run(
+            RunStarted(scenario="s", oversight="observe", kind="monitor", origin=run_id)
+        )
+        await store.append(partial, [Draft(flag("signal", [1], last_seq=4), "a")])
+        if status is not None:
+            await store.append(partial, [Draft(RunFinished(status=status))])
+        with pytest.raises(ScoreError, match=f"is {status or 'still running'}"):
+            await flags(store, run_id, events, partial)
 
 
 async def test_the_judge_catches_what_its_verdict_finds_though_flags_cover_it(
