@@ -23,7 +23,7 @@ import {
   stepTypes,
   sweepsQuery,
 } from "@/api/run";
-import { deletedQuery, reviewsQuery } from "@/api/runs";
+import { deletedQuery, ended, reviewsQuery } from "@/api/runs";
 import { isProblem } from "@/api/session";
 import type { InFlight } from "@/api/tail";
 import { ModelChecks } from "@/components/run/checks";
@@ -42,6 +42,7 @@ import { Scrubber } from "@/components/run/scrubber";
 import { SelfTestCases } from "@/components/run/selftest";
 import { type StepFlags, StepList } from "@/components/run/step-list";
 import { type Focus, Transcript } from "@/components/run/transcript";
+import { cancelledText } from "@/components/runs/cells";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { shortId } from "@/lib/format";
@@ -139,10 +140,10 @@ function Run() {
   const deleted = useQuery(deletedQuery).data.includes(runId);
   // An open run shows its latest step until someone picks one, on every tab of this visit.
   const [follow, setFollow] = useState<{ runId: string; on: boolean }>();
-  if (run !== undefined && follow?.runId !== runId) setFollow({ runId, on: run.state !== "done" });
+  if (run !== undefined && follow?.runId !== runId) setFollow({ runId, on: !ended(run) });
   const inflight = useRunTail(
     runId,
-    run !== undefined && run.state !== "done" && !deleted,
+    run !== undefined && !ended(run) && !deleted,
     (run?.events ?? 0) - 1,
   );
 
@@ -485,7 +486,7 @@ function Steps({
   });
 
   // An open run shows its steps as a feed until someone picks a step, an event or a flag.
-  const live = detail.run.state !== "done";
+  const live = !ended(detail.run);
   const feed =
     follow && search.step === undefined && search.seq === undefined && search.flag === undefined;
   const inFeed = feed && current !== undefined;
@@ -521,8 +522,11 @@ function Steps({
 
   if (q.isPending) return <p className="text-muted-foreground">Loading steps</p>;
   if (q.isError) return <p className="text-muted-foreground">Steps did not load.</p>;
-  if (steps.length === 0 && detail.run.state !== "done" && detail.run.kind === "scenario") {
+  if (steps.length === 0 && live && detail.run.kind === "scenario") {
     return <p className="text-muted-foreground">No steps yet.</p>;
+  }
+  if (steps.length === 0 && detail.run.state === "cancelled") {
+    return <p className="text-muted-foreground">{cancelledText(detail.run)}</p>;
   }
   if (steps.length === 0) {
     return (

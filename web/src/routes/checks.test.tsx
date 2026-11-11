@@ -3,7 +3,7 @@ import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
-import type { RunDetail } from "@/api/run";
+import { modelChecksQuery, type RunDetail } from "@/api/run";
 import type { RunSummary } from "@/api/runs";
 import { makeRouter } from "@/router";
 import { FakeEventSource } from "@/test/event-source";
@@ -122,4 +122,25 @@ test("a failed check shows what it saw and the profiles it never reached", async
   expect(within(checks).getByText("failed")).toBeTruthy();
   expect(within(checks).getByText("not run")).toBeTruthy();
   expect(within(checks).getByText("1 of 3 profiles passed, 1 with warnings.")).toBeTruthy();
+});
+
+test("a model check cancelled in the queue says so and polls nothing", async () => {
+  check = {
+    ...check,
+    status: "cancelled",
+    state: "cancelled",
+    started_at: null,
+    reason: "cancelled by op",
+  };
+  checked = [];
+  const router = renderAt(`/runs/${CHECK}`);
+  const checks = await screen.findByRole("region", { name: "Checks" });
+  expect(
+    await within(checks).findByText("Cancelled before it started: cancelled by op."),
+  ).toBeTruthy();
+  expect(within(checks).getAllByText("not run")).toHaveLength(3);
+  const query = router.options.context.queryClient
+    .getQueryCache()
+    .find({ queryKey: modelChecksQuery(CHECK).queryKey });
+  expect(query?.observers.map((o) => o.options.refetchInterval)).toEqual([false]);
 });

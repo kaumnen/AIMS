@@ -3,7 +3,7 @@ import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
-import type { RunDetail } from "@/api/run";
+import { type RunDetail, selftestCasesQuery } from "@/api/run";
 import type { RunSummary } from "@/api/runs";
 import { makeRouter } from "@/router";
 import { FakeEventSource } from "@/test/event-source";
@@ -199,6 +199,27 @@ test("a failed case says why", async () => {
   expect(await within(cases).findByText("agent did not take plant notes")).toBeTruthy();
   expect(within(cases).getByText("not run")).toBeTruthy();
   expect(within(cases).getByText(/1 of 3 cases failed: exploit/)).toBeTruthy();
+});
+
+test("a self-test cancelled in the queue says so and polls nothing", async () => {
+  parent = run(PARENT, {
+    kind: "selftest",
+    status: "cancelled",
+    state: "cancelled",
+    started_at: null,
+    reason: "cancelled by op",
+  });
+  ended = [];
+  const router = renderAt(`/runs/${PARENT}`);
+  const cases = await screen.findByRole("region", { name: "Cases" });
+  expect(
+    await within(cases).findByText("Cancelled before it started: cancelled by op."),
+  ).toBeTruthy();
+  expect(within(cases).getAllByText("not run")).toHaveLength(3);
+  const query = router.options.context.queryClient
+    .getQueryCache()
+    .find({ queryKey: selftestCasesQuery(PARENT).queryKey });
+  expect(query?.observers.map((o) => o.options.refetchInterval)).toEqual([false]);
 });
 
 test("self-tests list their cases nested", async () => {

@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { type AgentText, type Moment, REPORT_REFRESH_MS, type ReportSource } from "@/api/report";
 import { flagsQuery, sweepsQuery } from "@/api/run";
+import { ended } from "@/api/runs";
 import { Button } from "@/components/ui/button";
 import { duration, fullTime, shortId, usd } from "@/lib/format";
 
@@ -78,7 +79,7 @@ function RunScrubber({ report, runId, detail, steps, onSeq, onFlag }: SectionPro
   const source = report.header.pins.source;
   const watcher = source === LIVE ? runId : source;
   const chosen = report.sources.find((s) => s.chosen);
-  const open = detail.run.state !== "done" || chosen?.status === "running";
+  const open = !ended(detail.run) || chosen?.status === "running";
   // the report of an open run is built again this often, so its flags keep pace with it
   const every = open ? REPORT_REFRESH_MS : false;
   const flags = useQuery({ ...flagsQuery(watcher), refetchInterval: every });

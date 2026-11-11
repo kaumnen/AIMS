@@ -1,6 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { modelChecksQuery, type RunDetail } from "@/api/run";
+import { ended } from "@/api/runs";
+import { cancelledText } from "@/components/runs/cells";
 import { cn } from "@/lib/utils";
 
 const LIVE_MS = 2000;
@@ -16,15 +18,15 @@ interface Checked {
 
 // The verdicts of a model check: each test of each profile, and what it saw.
 export function ModelChecks({ runId, detail }: { runId: string; detail: RunDetail }) {
-  const running = detail.run.status === "running" || detail.run.state !== "done";
-  const ended = useQuery({
+  const running = detail.run.status === "running" || !ended(detail.run);
+  const logged = useQuery({
     ...modelChecksQuery(runId),
     refetchInterval: running ? LIVE_MS : false,
   });
   const config = detail.started?.data["config"] as { models?: unknown } | undefined;
   const models = config?.models;
   const planned = models && typeof models === "object" ? Object.keys(models) : [];
-  const results = (ended.data ?? []).map((e) => e.data as unknown as Checked);
+  const results = (logged.data ?? []).map((e) => e.data as unknown as Checked);
   const names = planned.length > 0 ? planned : [...new Set(results.map((r) => r.profile))];
   const done = names.filter((n) => results.some((r) => r.profile === n));
   // as Settings judges a profile: failed on any fail, with warnings on any warn
@@ -37,9 +39,11 @@ export function ModelChecks({ runId, detail }: { runId: string; detail: RunDetai
   return (
     <section aria-label="Checks" className="flex max-w-5xl flex-col gap-2 pt-2">
       <p>
-        {done.length === 0 && running
-          ? "Waiting for the first profile."
-          : `${passed} of ${names.length} ${names.length === 1 ? "profile" : "profiles"} passed${warned > 0 ? `, ${warned} with warnings` : ""}.`}
+        {detail.run.state === "cancelled"
+          ? cancelledText(detail.run)
+          : done.length === 0 && running
+            ? "Waiting for the first profile."
+            : `${passed} of ${names.length} ${names.length === 1 ? "profile" : "profiles"} passed${warned > 0 ? `, ${warned} with warnings` : ""}.`}
         {detail.run.state === "done" && detail.run.status !== "completed" && detail.run.reason && (
           <span className="text-muted-foreground"> {detail.run.reason}</span>
         )}

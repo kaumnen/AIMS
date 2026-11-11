@@ -3,7 +3,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
 import { deleteRun, dependentsQuery } from "@/api/run";
-import { dropRuns, type RunSummary } from "@/api/runs";
+import { dropRuns, ended, type RunSummary } from "@/api/runs";
 import { isProblem } from "@/api/session";
 import { problemText } from "@/components/form";
 import { Button } from "@/components/ui/button";
@@ -20,7 +20,6 @@ import {
 import { shortId } from "@/lib/format";
 import { useOperator } from "@/lib/use-operator";
 
-const ENDED = new Set(["done", "cancelled"]);
 const NAMES: Record<string, string> = { monitor: "monitor run", score: "score run" };
 
 // "2 monitor runs and 1 score run": how many runs of each kind go with a run.
@@ -45,7 +44,7 @@ export function goesWith(kinds: readonly string[]): string {
 export function DeleteRun({ run, title }: { run: RunSummary; title: string }) {
   const operator = useOperator();
   const [open, setOpen] = useState(false);
-  if (!operator || !(ENDED.has(run.state) || run.stale)) return null;
+  if (!operator || !(ended(run) || run.stale)) return null;
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger render={<Button variant="outline" size="sm" />}>Delete</DialogTrigger>

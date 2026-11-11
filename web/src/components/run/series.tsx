@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 
-import type { RunSummary } from "@/api/runs";
+import { ended, type RunSummary } from "@/api/runs";
 import { seriesQuery } from "@/api/series";
 import { statusLabel } from "@/components/runs/cells";
 import { shortId } from "@/lib/format";
@@ -12,7 +12,7 @@ const MAX_CHIPS = 12;
 function dot(run: RunSummary): string {
   if (run.status === "running") return run.stale ? "border-muted-foreground border" : "bg-pen-1";
   if (run.status === "completed") return "bg-foreground";
-  if (run.started_at === null && run.state !== "cancelled" && run.state !== "done") {
+  if (run.started_at === null && !ended(run)) {
     return "border-muted-foreground border";
   }
   return "bg-muted-foreground";

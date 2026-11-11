@@ -2,7 +2,8 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 
 import { type RunDetail, selftestCasesQuery } from "@/api/run";
-import { casesQuery } from "@/api/runs";
+import { casesQuery, ended } from "@/api/runs";
+import { cancelledText } from "@/components/runs/cells";
 import { shortId } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -19,17 +20,17 @@ interface Ended {
 
 // The cases of a self-test: what each proved, or why not, with the run it made.
 export function SelfTestCases({ runId, detail }: { runId: string; detail: RunDetail }) {
-  const running = detail.run.status === "running" || detail.run.state !== "done";
-  const ended = useQuery({
+  const running = detail.run.status === "running" || !ended(detail.run);
+  const logged = useQuery({
     ...selftestCasesQuery(runId),
     refetchInterval: running ? LIVE_MS : false,
   });
   const runs = useQuery(casesQuery(runId));
   const config = detail.started?.data["config"] as { cases?: unknown } | undefined;
   const planned = Array.isArray(config?.cases) ? config.cases.map(String) : [];
-  const results = (ended.data ?? []).map((e) => e.data as unknown as Ended);
+  const results = (logged.data ?? []).map((e) => e.data as unknown as Ended);
   const recorded = new Set(results.map((r) => r.run_id));
-  const live = (runs.data?.items ?? []).find((r) => !recorded.has(r.run_id) && r.state !== "done");
+  const live = (runs.data?.items ?? []).find((r) => !recorded.has(r.run_id) && !ended(r));
   const names = planned.length > 0 ? planned : results.map((r) => r.name);
   const passed = results.filter((r) => r.ok).length;
   const rows: { name: string; state: string; run: string | null; r: Ended | undefined }[] = [];
@@ -45,9 +46,11 @@ export function SelfTestCases({ runId, detail }: { runId: string; detail: RunDet
   return (
     <section aria-label="Cases" className="flex max-w-5xl flex-col gap-2 pt-2">
       <p>
-        {results.length === 0 && running
-          ? "Waiting for the first case."
-          : `${passed} of ${names.length} ${names.length === 1 ? "case" : "cases"} proved what they should.`}
+        {detail.run.state === "cancelled"
+          ? cancelledText(detail.run)
+          : results.length === 0 && running
+            ? "Waiting for the first case."
+            : `${passed} of ${names.length} ${names.length === 1 ? "case" : "cases"} proved what they should.`}
         {detail.run.state === "done" && detail.run.status !== "completed" && detail.run.reason && (
           <span className="text-muted-foreground"> {detail.run.reason}</span>
         )}

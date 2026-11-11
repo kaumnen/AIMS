@@ -1,7 +1,7 @@
 import { Link } from "@tanstack/react-router";
 
 import type { RunDetail } from "@/api/run";
-import type { RunSummary } from "@/api/runs";
+import { ended, type RunSummary } from "@/api/runs";
 import { useTabTitle } from "@/components/crumbs";
 import { Duration, Flags, Started, statusLabel, Verdict } from "@/components/runs/cells";
 import { changesText } from "@/lib/budget";
@@ -75,7 +75,7 @@ export function RunHeader({
   const title = runTitle(run);
   // An open run puts its status first, so a narrow tab still says when it is held.
   const tab = `${title} ${shortId(run.run_id)}`;
-  useTabTitle(run.state === "done" ? tab : `${statusLabel(run)} · ${tab}`);
+  useTabTitle(ended(run) ? tab : `${statusLabel(run)} · ${tab}`);
   const budget = changesText(detail.budget, agentsOf(detail).length > 1);
   return (
     <header className="flex flex-wrap items-end gap-x-8 gap-y-2 pb-3 print:hidden">

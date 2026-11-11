@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 
 import { checkModels, modelsQuery, type ProfileInfo } from "@/api/launch";
+import { ended } from "@/api/runs";
 import { isProblem } from "@/api/session";
 
 import { useLive } from "./live";
@@ -18,7 +19,7 @@ export const CHECK_TEXT = {
 const POLL_MS = 3000;
 
 // Whether the models read name check run `run` as ended.
-const ended = (data: { profiles: ProfileInfo[] } | undefined, run: string) =>
+const checkEnded = (data: { profiles: ProfileInfo[] } | undefined, run: string) =>
   (data?.profiles ?? []).some((p) => p.check?.run_id === run && p.check.status !== "running");
 
 // One provider check at a time: the profiles it covers from the click until its run ends, then
@@ -35,7 +36,7 @@ export function useModelCheck() {
   useEffect(() => {
     if (run === null) return;
     return live.on("run", (m) => {
-      if (m.run.run_id !== run || m.run.state !== "done") return;
+      if (m.run.run_id !== run || !ended(m.run)) return;
       setChecking(null);
       void qc.invalidateQueries({ queryKey: modelsQuery.queryKey });
     });
@@ -43,9 +44,10 @@ export function useModelCheck() {
   const models = useQuery({
     ...modelsQuery,
     enabled: run !== null,
-    refetchInterval: (q) => (run === null || ended(q.state.data, run) ? false : POLL_MS),
+    refetchInterval: (q) => (run === null || checkEnded(q.state.data, run) ? false : POLL_MS),
   });
-  const current = checking !== null && (run === null || !ended(models.data, run)) ? checking : null;
+  const current =
+    checking !== null && (run === null || !checkEnded(models.data, run)) ? checking : null;
   const check = async (profiles: string[]) => {
     if (starting.current || current !== null) return;
     starting.current = true;

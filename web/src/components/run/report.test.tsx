@@ -2,7 +2,16 @@ import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/re
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { reportSections, type ReportWarning } from "@/api/report";
-import { fullReport, renderAt, REVIEW, RUN, serve, type Served, served } from "@/test/report";
+import {
+  fullReport,
+  renderAt,
+  reportDetail,
+  REVIEW,
+  RUN,
+  serve,
+  type Served,
+  served,
+} from "@/test/report";
 import { preloadRoutes } from "@/test/routes";
 
 import { SECTIONS } from "./report";
@@ -144,6 +153,24 @@ test("a cut never splits a character in two", async () => {
   await screen.findByRole("button", { name: "Cut, 10 more characters. Show all" });
   const quote = screen.getByRole("region", { name: "Judge summary" }).querySelector("blockquote");
   expect(quote?.textContent).toBe(`${"a".repeat(1999)}\u{1F600}`);
+});
+
+test("the report of a run cancelled in the queue is not built again", async () => {
+  state.detail = reportDetail({
+    status: "cancelled",
+    state: "cancelled",
+    started_at: null,
+    ended_at: null,
+    reason: "cancelled by op",
+  });
+  state.fail = { status: 404, detail: "run 1 has no events" };
+  const router = renderAt(`/runs/${RUN}?tab=report`);
+  expect(await screen.findByText("No report: run 1 has no events.")).toBeTruthy();
+  const [query] = router.options.context.queryClient
+    .getQueryCache()
+    .findAll({ queryKey: ["runs", "report", RUN] });
+  const every = query?.observers[0]?.options.refetchInterval;
+  expect(typeof every === "function" ? every(query as never) : every).toBe(false);
 });
 
 test("a failed build again keeps the report on screen", async () => {

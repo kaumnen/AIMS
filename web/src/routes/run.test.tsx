@@ -1599,6 +1599,46 @@ test("a sealed run opens no stream of its own", async () => {
   expect(runStream()).toBeUndefined();
 });
 
+test("a run cancelled in the queue says so and has nothing to follow", async () => {
+  steps = [];
+  detail = {
+    ...detail,
+    started: null,
+    run: run(BEE5, {
+      status: "cancelled",
+      state: "cancelled",
+      started_at: null,
+      events: 0,
+      reason: "cancelled by op",
+    }),
+  };
+  renderAt(`/runs/${BEE5}`);
+  expect(await screen.findByText("Cancelled before it started: cancelled by op.")).toBeTruthy();
+  expect(runStream()).toBeUndefined();
+  expect(screen.queryByRole("button", { name: "Follow latest" })).toBeNull();
+  await waitFor(() => expect(document.title).toBe("cache-keys 01a18a50-bee5 · AIMS"));
+});
+
+test("a review cancelled in the queue says so in the panel and on its own page", async () => {
+  withReview();
+  const cancelled = review(NEWER, {
+    status: "cancelled",
+    state: "cancelled",
+    started_at: null,
+    ended_at: null,
+    cost_usd: null,
+    reason: "cancelled by op",
+  });
+  reviews = [cancelled, review(REVIEW)];
+  others[NEWER]!.detail.run = cancelled;
+  const router = renderAt(`/runs/${BEE5}?source=${NEWER}`);
+  const panel = within(await screen.findByRole("complementary", { name: "Monitor" }));
+  expect(await panel.findByText("Cancelled before it started: cancelled by op.")).toBeTruthy();
+  await act(() => router.navigate({ to: "/runs/$runId", params: { runId: NEWER } }));
+  const sweeps = within(await screen.findByRole("region", { name: "Sweeps" }));
+  expect(await sweeps.findByText("Cancelled before it started: cancelled by op.")).toBeTruthy();
+});
+
 test("an open run follows its latest step and shows the next one as it is written", async () => {
   detail = { ...detail, run: run(BEE5, { status: "running", state: "running", events: 15 }) };
   renderAt(`/runs/${BEE5}`);

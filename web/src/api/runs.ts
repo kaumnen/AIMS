@@ -24,6 +24,11 @@ export type Category = NonNullable<(typeof categoryValues)[number]>;
 export const runKinds = runSummaryKindValues;
 export const categories = categoryValues.filter((c): c is Category => c !== null);
 
+// Whether a run's job will change no more: it ran and its log is sealed, or it was cancelled
+// in the queue before it started.
+export const ended = (run: Pick<RunSummary, "state">): boolean =>
+  run.state === "done" || run.state === "cancelled";
+
 // Each field is a GET /api/runs query parameter.
 export interface RunFilters {
   kind?: RunKind;

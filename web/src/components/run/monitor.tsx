@@ -5,8 +5,8 @@ import { useEffect, useRef } from "react";
 
 import type { Event } from "@/api/events";
 import { type FlagInfo, type RunDetail, runQuery, type StepInfo } from "@/api/run";
-import { reviewsQuery, type RunSummary } from "@/api/runs";
-import { Meter, statusLabel } from "@/components/runs/cells";
+import { ended, reviewsQuery, type RunSummary } from "@/api/runs";
+import { cancelledText, Meter, statusLabel } from "@/components/runs/cells";
 import { categoryLabel, Choice } from "@/components/runs/filters";
 import {
   Select,
@@ -84,9 +84,10 @@ function sourceLabel(s: Source): string {
     .join(" · ");
 }
 
-// A review that has not started: why it waits, or that it ended first.
+// A review that has not started: why it waits, or that it ended or was cancelled first.
 function waitText(run: RunSummary): string {
-  if (run.state === "done")
+  if (run.state === "cancelled") return cancelledText(run);
+  if (ended(run))
     return run.reason ? `Ended before it started: ${run.reason}.` : "Ended before it started.";
   return run.reason ? `Waiting to start: ${run.reason}.` : "Waiting for a runner to start it.";
 }
@@ -164,7 +165,7 @@ function VerdictCard({
   if (!verdict) {
     const preset = source.run.preset;
     const why =
-      source.run.status === "running" || source.run.started_at === null
+      source.run.status === "running" || (source.run.started_at === null && !ended(source.run))
         ? "No verdict yet."
         : source.run.monitor_mode === "signals_only" || preset === "signals" || preset === "off"
           ? "No verdict: this monitor has no judge."

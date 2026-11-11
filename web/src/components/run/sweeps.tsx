@@ -3,6 +3,8 @@ import { Link } from "@tanstack/react-router";
 
 import type { Event } from "@/api/events";
 import { type CallCost, costsQuery, type RunDetail, sweepsQuery } from "@/api/run";
+import { ended } from "@/api/runs";
+import { cancelledText } from "@/components/runs/cells";
 import { duration, shortId, usd } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -203,11 +205,13 @@ export default function ReviewSweeps({
         <p className="text-muted-foreground">Sweeps did not load.</p>
       ) : items.length === 0 ? (
         <p className="text-muted-foreground">
-          {running || run.state !== "done"
-            ? "No sweeps yet."
-            : signals
-              ? "No sweeps: this review ran signals only."
-              : "This review made no sweeps."}
+          {run.state === "cancelled"
+            ? cancelledText(run)
+            : running || !ended(run)
+              ? "No sweeps yet."
+              : signals
+                ? "No sweeps: this review ran signals only."
+                : "This review made no sweeps."}
         </p>
       ) : (
         <table className="w-full">

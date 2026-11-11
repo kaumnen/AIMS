@@ -3,6 +3,7 @@ import { type ComponentType, useEffect, useRef, useState } from "react";
 
 import { reportMarkdown, reportQuery, type SectionId } from "@/api/report";
 import { type RunDetail, stepsQuery } from "@/api/run";
+import { ended } from "@/api/runs";
 import { isProblem } from "@/api/session";
 import { Button } from "@/components/ui/button";
 import { fullTime } from "@/lib/format";
@@ -46,7 +47,7 @@ export default function ReportTab({
   onSource: (id: string | undefined) => void;
   toSteps: (to: StepsLink) => void;
 }) {
-  const open = detail.run.state !== "done";
+  const open = !ended(detail.run);
   const q = useQuery(reportQuery(runId, source, open));
   // Every step, so evidence names its step. The Steps tab shares these pages.
   const steps = useInfiniteQuery(stepsQuery(runId));

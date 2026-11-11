@@ -15,6 +15,10 @@ const labels: Record<string, string> = {
   done: "Not started",
 };
 
+// What a run cancelled in the queue shows in place of its record.
+export const cancelledText = (run: RunSummary): string =>
+  run.reason ? `Cancelled before it started: ${run.reason}.` : "Cancelled before it started.";
+
 export function statusLabel(run: RunSummary): string {
   if (run.status === "running" && run.stale) return "Runner offline";
   if (run.status === "running" && run.held.length > 0) {
