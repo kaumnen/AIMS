@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { lazy, Suspense } from "react";
+import { createFileRoute, Link, useBlocker } from "@tanstack/react-router";
+import { lazy, Suspense, useRef } from "react";
 
 import { SCENARIO_FILE } from "@/api/scenario-files";
 import { scenarioQuery, sourceLabel, sourcesQuery } from "@/api/scenarios";
@@ -31,12 +31,29 @@ function without(search: ScenarioSearch, key: keyof ScenarioSearch): ScenarioSea
   return out;
 }
 
+const readSearch = (raw: Record<string, unknown>): ScenarioSearch => ({
+  ...(raw["tab"] === "files" || raw["tab"] === "prompts" ? { tab: raw["tab"] } : {}),
+  ...(typeof raw["file"] === "string" && raw["file"] ? { file: raw["file"] } : {}),
+});
+
+interface Place {
+  routeId: string;
+  pathname: string;
+  search: unknown;
+}
+
+const searchAt = (at: Place) => readSearch(at.search as Record<string, unknown>);
+const fileIn = (at: Place) => searchAt(at).file ?? SCENARIO_FILE;
+
+// The file the Files tab shows at a place in the app, with its page; null where it shows none.
+function fileAt(at: Place): string | null {
+  if (at.routeId !== Route.id || searchAt(at).tab !== "files") return null;
+  return `${at.pathname}#${fileIn(at)}`;
+}
+
 export const Route = createFileRoute("/scenarios/$source/$name")({
   staticData: { crumb: (p) => p["name"] ?? "" },
-  validateSearch: (raw: Record<string, unknown>): ScenarioSearch => ({
-    ...(raw["tab"] === "files" || raw["tab"] === "prompts" ? { tab: raw["tab"] } : {}),
-    ...(typeof raw["file"] === "string" && raw["file"] ? { file: raw["file"] } : {}),
-  }),
+  validateSearch: readSearch,
   // A new scenario mounts a new page, so no draft or dialog of the last one carries over.
   remountDeps: ({ params }) => params,
   loader: ({ context, params }) => {
@@ -52,6 +69,17 @@ function ScenarioPage() {
   const operator = useOperator();
   const detail = useQuery(scenarioQuery(source, name));
   const sources = useQuery(sourcesQuery);
+  // whether the open file has changes not saved
+  const dirty = useRef(false);
+  // Anything that leaves the file, such as a tab, a link, another file or Back, drops its draft,
+  // so it asks first. Closing the browser tab asks too.
+  useBlocker({
+    shouldBlockFn: ({ current, next }) =>
+      dirty.current &&
+      fileAt(next) !== fileAt(current) &&
+      !window.confirm(`Discard your changes to ${fileIn(current)}?`),
+    enableBeforeUnload: () => dirty.current,
+  });
   if (detail.isPending) return <p className="text-muted-foreground">Loading scenario</p>;
   if (detail.isError) {
     const missing = isProblem(detail.error) && detail.error.status === 404;
@@ -132,12 +160,16 @@ function ScenarioPage() {
               <FilesTab
                 detail={d}
                 file={search.file ?? SCENARIO_FILE}
-                onFile={(file) =>
+                onFile={(file, how) =>
                   void navigate({
                     search: (prev) =>
                       file === SCENARIO_FILE ? without(prev, "file") : { ...prev, file },
+                    ignoreBlocker: how?.discard ?? false,
                   })
                 }
+                onDirty={(has) => {
+                  dirty.current = has;
+                }}
               />
             </Suspense>
           </TabsContent>

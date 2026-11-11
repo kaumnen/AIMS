@@ -40,7 +40,8 @@ export function DeleteScenario({
     setProblem(null);
     try {
       await deleteScenario(source, name);
-      await navigate({ to: "/scenarios" });
+      // a draft of its files went with it, so leaving asks nothing
+      await navigate({ to: "/scenarios", ignoreBlocker: true });
       qc.removeQueries({ queryKey: ["scenarios", "detail", source, name] });
       void qc.invalidateQueries({ queryKey: ["scenarios"], exact: true });
     } catch (e) {

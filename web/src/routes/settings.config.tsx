@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useBlocker } from "@tanstack/react-router";
 import { lazy, Suspense, useRef } from "react";
 
 import { isProblem } from "@/api/session";
@@ -25,6 +25,13 @@ const VIEWS: Record<View, string> = {
 
 const isView = (v: unknown): v is View => v === "user" || v === "project" || v === "merged";
 
+// The layer this page shows at a place in the app, null elsewhere.
+function viewAt(at: { routeId: string; search: unknown }, fallback: View): View | null {
+  if (at.routeId !== Route.id) return null;
+  const view = (at.search as Record<string, unknown>)["view"];
+  return isView(view) ? view : fallback;
+}
+
 export const Route = createFileRoute("/settings/config")({
   staticData: { crumb: "Config" },
   validateSearch: (raw: Record<string, unknown>): ConfigSearch =>
@@ -37,8 +44,22 @@ function ConfigPage() {
   const search = Route.useSearch();
   const navigate = Route.useNavigate();
   const config = useQuery(configQuery);
-  // whether the open file has changes not saved, so switching away asks first
+  // whether the open file has changes not saved
   const dirty = useRef(false);
+  const layers = config.data?.layers ?? [];
+  const project = layers.find((l) => l.layer === "project");
+  const fallback: View = project?.exists ? "project" : "user";
+  const view = search.view ?? fallback;
+  const file = view === "merged" ? undefined : layers.find((l) => l.layer === view);
+  // Another layer, a link or Back drops the draft, so it asks first. Closing the browser tab
+  // asks too.
+  useBlocker({
+    shouldBlockFn: ({ current, next }) =>
+      dirty.current &&
+      viewAt(next, fallback) !== viewAt(current, fallback) &&
+      !window.confirm(`Discard your changes to ${file?.path ?? "the file"}?`),
+    enableBeforeUnload: () => dirty.current,
+  });
 
   if (config.isPending) return <p className="text-muted-foreground">Loading config</p>;
   if (config.isError) {
@@ -52,18 +73,10 @@ function ConfigPage() {
       </p>
     );
   }
-  const { layers, error } = config.data;
-  const project = layers.find((l) => l.layer === "project");
-  const view = search.view ?? (project?.exists ? "project" : "user");
-  const file = view === "merged" ? undefined : layers.find((l) => l.layer === view);
+  const { error } = config.data;
 
   const pick = (next: View) => {
-    if (next === view) return;
-    if (dirty.current && !window.confirm(`Discard your changes to ${file?.path ?? "the file"}?`)) {
-      return;
-    }
-    dirty.current = false;
-    void navigate({ search: { view: next }, replace: true });
+    if (next !== view) void navigate({ search: { view: next }, replace: true });
   };
 
   return (

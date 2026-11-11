@@ -1,6 +1,6 @@
 import { EditorView } from "@codemirror/view";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
+import { createBrowserHistory, createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 
@@ -767,6 +767,89 @@ test("a save that does not load says why, and a changed file offers both ways", 
   await screen.findByText("Saved");
   expect(saves.at(-1)?.ifMatch).toBe('"p9"');
   expect(texts.project).toBe("[credits]\nfireworks = 5\nmeta = 150\n");
+});
+
+// The questions the page asks with window.confirm, and the answer it gets.
+function confirms(yes: boolean) {
+  const asked = { questions: [] as string[], yes };
+  vi.stubGlobal("confirm", (question: string) => {
+    asked.questions.push(question);
+    return asked.yes;
+  });
+  return asked;
+}
+
+test("a config draft asks once before a layer or a link drops it", async () => {
+  const asked = confirms(false);
+  const router = renderAt("/settings/config");
+  const view = await configEditor("Contents of aims.toml");
+  retype(view, "150", "151");
+  expect(await screen.findByText("unsaved changes")).toBeTruthy();
+  const question = "Discard your changes to /work/aims.toml?";
+  fireEvent.click(screen.getByRole("button", { name: "This machine" }));
+  await waitFor(() => expect(asked.questions).toEqual([question]));
+  fireEvent.click(screen.getByRole("link", { name: "Models" }));
+  await waitFor(() => expect(asked.questions).toEqual([question, question]));
+  expect(router.state.location.pathname).toBe("/settings/config");
+  expect(router.state.location.search).toEqual({});
+  expect(view.state.doc.toString()).toContain("151");
+  expect(screen.getByText("unsaved changes")).toBeTruthy();
+
+  asked.yes = true;
+  fireEvent.click(screen.getByRole("button", { name: "This machine" }));
+  await configEditor("Contents of config.toml");
+  expect(router.state.location.search).toEqual({ view: "user" });
+  expect(asked.questions).toHaveLength(3);
+  // the draft is gone, so nothing more asks
+  fireEvent.click(screen.getByRole("button", { name: "In use" }));
+  await screen.findByLabelText("The settings in use");
+  fireEvent.click(screen.getByRole("link", { name: "Models" }));
+  await waitFor(() => expect(router.state.location.pathname).toBe("/settings/models"));
+  expect(asked.questions).toHaveLength(3);
+});
+
+test("a config with no draft never asks", async () => {
+  const asked = confirms(false);
+  const router = renderAt("/settings/config");
+  await configEditor("Contents of aims.toml");
+  fireEvent.click(screen.getByRole("button", { name: "This machine" }));
+  await configEditor("Contents of config.toml");
+  fireEvent.click(screen.getByRole("link", { name: "Models" }));
+  await waitFor(() => expect(router.state.location.pathname).toBe("/settings/models"));
+  expect(asked.questions).toEqual([]);
+});
+
+// Whether closing the browser tab would ask first.
+function unload(): boolean {
+  const e = new Event("beforeunload", { cancelable: true });
+  window.dispatchEvent(e);
+  return e.defaultPrevented;
+}
+
+test("in the browser a config draft holds the tab open and Back asks first", async () => {
+  window.history.replaceState(null, "", "/settings/runners");
+  const history = createBrowserHistory();
+  const router = makeRouter(history);
+  render(
+    <QueryClientProvider client={router.options.context.queryClient}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>,
+  );
+  await act(() => router.navigate({ to: "/settings/config" }));
+  const view = await configEditor("Contents of aims.toml");
+  expect(unload()).toBe(false);
+  retype(view, "150", "151");
+  expect(await screen.findByText("unsaved changes")).toBeTruthy();
+  expect(unload()).toBe(true);
+
+  const asked = confirms(false);
+  act(() => window.history.back());
+  await waitFor(() => expect(asked.questions).toHaveLength(1));
+  await act(() => new Promise((r) => setTimeout(r, 50)));
+  expect(router.state.location.pathname).toBe("/settings/config");
+  expect(window.location.pathname).toBe("/settings/config");
+  expect(screen.getByText("unsaved changes")).toBeTruthy();
+  history.destroy();
 });
 
 test("without a project file, saving This project creates one", async () => {

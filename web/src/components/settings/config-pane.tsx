@@ -96,7 +96,11 @@ function LayerFile({
   const settled = useDebounced(editable ? text : null, CHECK_MS);
   const name = (file?.path ?? base?.path ?? "").split(/[\\/]/).pop() ?? "";
 
-  useEffect(() => onDirty(dirty), [dirty, onDirty]);
+  // the page asks before a draft is left, and once this file is gone there is none
+  useEffect(() => {
+    onDirty(dirty);
+    return () => onDirty(false);
+  }, [dirty, onDirty]);
 
   useEffect(() => {
     if (settled === null || base === undefined || settled !== text) return;
@@ -108,13 +112,6 @@ function LayerFile({
       .catch(() => undefined);
     return () => ask.abort();
   }, [settled, base, text, layer]);
-
-  useEffect(() => {
-    if (!dirty) return;
-    const warn = (e: BeforeUnloadEvent) => e.preventDefault();
-    window.addEventListener("beforeunload", warn);
-    return () => window.removeEventListener("beforeunload", warn);
-  }, [dirty]);
 
   const edit = (t: string) => {
     if (draft === null) setFrom(base?.exists ? base.etag : null);

@@ -29,15 +29,18 @@ const lineOf = (p: { line?: number | null }) => p.line ?? null;
 
 // The scenario's files: a list, the open file in an editor, scenario.yaml checked as you type.
 // Saves name the version they replace; a file changed on disk since it was opened is not
-// overwritten unless you say so.
+// overwritten unless you say so. The page asks before a draft is left: `onDirty` tells it
+// there is one, and `discard` opens a file without asking.
 export default function FilesTab({
   detail,
   file,
   onFile,
+  onDirty,
 }: {
   detail: ScenarioDetail;
   file: string;
-  onFile: (file: string) => void;
+  onFile: (file: string, how?: { discard: boolean }) => void;
+  onDirty?: (dirty: boolean) => void;
 }) {
   const { source, name, writable } = detail;
   const queryClient = useQueryClient();
@@ -92,11 +95,9 @@ export default function FilesTab({
   }, [settled, base, text]);
 
   useEffect(() => {
-    if (!dirty) return;
-    const warn = (e: BeforeUnloadEvent) => e.preventDefault();
-    window.addEventListener("beforeunload", warn);
-    return () => window.removeEventListener("beforeunload", warn);
-  }, [dirty]);
+    onDirty?.(dirty);
+    return () => onDirty?.(false);
+  }, [dirty, onDirty]);
 
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ["scenarios", "files", source, name] });
@@ -105,9 +106,7 @@ export default function FilesTab({
   };
 
   const open = (next: string) => {
-    if (next === file) return;
-    if (dirty && !window.confirm(`Discard your changes to ${file}?`)) return;
-    onFile(next);
+    if (next !== file) onFile(next);
   };
 
   const edit = (t: string) => {
@@ -172,7 +171,8 @@ export default function FilesTab({
     try {
       await deleteFile(source, name, file, base.etag);
       refresh();
-      onFile(SCENARIO_FILE);
+      // its draft went with it
+      onFile(SCENARIO_FILE, { discard: true });
     } catch (e) {
       setStatus(`Not deleted: ${isProblem(e) ? problemText(e) : "the request failed."}`);
     }

@@ -47,6 +47,33 @@ const hidden = {
 };
 
 const TEXT = "version: 1\nname: cache-keys\noversight: observe\n";
+const NOTES = "# notes\n";
+
+// The questions the page asks with window.confirm, and the answer it gets.
+function confirms(yes: boolean) {
+  const asked = { questions: [] as string[], yes };
+  vi.stubGlobal("confirm", (question: string) => {
+    asked.questions.push(question);
+    return asked.yes;
+  });
+  return asked;
+}
+
+async function editor(name = "Contents of scenario.yaml"): Promise<EditorView> {
+  const view = EditorView.findFromDOM(await screen.findByLabelText(name));
+  if (!view) throw new Error("no editor");
+  return view;
+}
+
+// A draft in the open file: one word of it changed.
+async function draft(name?: string): Promise<EditorView> {
+  const view = await editor(name);
+  const text = view.state.doc.toString();
+  const at = text.search(/\w+\n$/);
+  act(() => view.dispatch({ changes: { from: at, insert: "mine-" } }));
+  expect(await screen.findByText("unsaved changes")).toBeTruthy();
+  return view;
+}
 
 function detail(name = "cache-keys"): ScenarioDetail {
   const truth = role === "operator";
@@ -127,7 +154,13 @@ beforeEach(() => {
       /^\/api\/scenarios\/project\/(cache-keys(?:-copy)?)(\/.*)?$/.exec(url.pathname) ?? [];
     if (name && rest === undefined) return Response.json(detail(name));
     if (name && rest === "/files") {
-      return Response.json([{ path: "scenario.yaml", size: TEXT.length }]);
+      return Response.json([
+        { path: "scenario.yaml", size: TEXT.length },
+        { path: "notes.md", size: NOTES.length },
+      ]);
+    }
+    if (name && rest === "/files/notes.md") {
+      return new Response(NOTES, { headers: { ETag: '"n1"' } });
     }
     if (name && rest === "/files/scenario.yaml" && request.method === "PUT") {
       puts.push(url.pathname);
@@ -145,6 +178,7 @@ beforeEach(() => {
         warnings: [],
         parts: [],
       });
+    if (url.pathname === "/api/runs") return Response.json({ items: [], next: null });
     return Response.json({});
   });
 });
@@ -254,6 +288,7 @@ test("viewers and read-only scenarios get no delete", async () => {
 });
 
 test("a draft stays with its scenario when the page moves to a copy", async () => {
+  const asked = confirms(true);
   const router = renderAt("/scenarios/project/cache-keys?tab=files");
   const content = await screen.findByLabelText("Contents of scenario.yaml");
   const view = EditorView.findFromDOM(content);
@@ -277,6 +312,97 @@ test("a draft stays with its scenario when the page moves to a copy", async () =
   expect(save.hasAttribute("disabled")).toBe(true);
   fireEvent.click(save);
   expect(puts).toEqual([]);
+  expect(asked.questions).toEqual(["Discard your changes to scenario.yaml?"]);
+});
+
+test("a tab click asks before it drops a draft, and a no keeps the draft and the tab", async () => {
+  const asked = confirms(false);
+  const router = renderAt("/scenarios/project/cache-keys?tab=files");
+  const view = await draft();
+  fireEvent.click(screen.getByRole("tab", { name: "Overview" }));
+  await waitFor(() => expect(asked.questions).toEqual(["Discard your changes to scenario.yaml?"]));
+  expect(router.state.location.search).toEqual({ tab: "files" });
+  expect(screen.getByText("unsaved changes")).toBeTruthy();
+  expect(view.state.doc.toString()).toContain("mine-");
+  expect(screen.getByRole("tab", { name: "Files" }).getAttribute("aria-selected")).toBe("true");
+
+  asked.yes = true;
+  fireEvent.click(screen.getByRole("tab", { name: "Overview" }));
+  expect(await screen.findByText("Fix the cache keys.")).toBeTruthy();
+  expect(router.state.location.search).toEqual({});
+  expect(asked.questions).toHaveLength(2);
+  expect(screen.queryByLabelText("Contents of scenario.yaml")).toBeNull();
+  // the editor and its draft are gone, so nothing more asks
+  fireEvent.click(screen.getByRole("tab", { name: "Files" }));
+  expect((await editor()).state.doc.toString()).toBe(TEXT);
+  fireEvent.click(within(screen.getByRole("main")).getByRole("link", { name: "Runs" }));
+  await waitFor(() => expect(router.state.location.pathname).toBe("/runs"));
+  expect(asked.questions).toHaveLength(2);
+});
+
+test("a link asks before it leaves a draft", async () => {
+  const asked = confirms(false);
+  const router = renderAt("/scenarios/project/cache-keys?tab=files");
+  await draft();
+  fireEvent.click(within(screen.getByRole("main")).getByRole("link", { name: "Runs" }));
+  await waitFor(() => expect(asked.questions).toHaveLength(1));
+  expect(router.state.location.pathname).toBe("/scenarios/project/cache-keys");
+  asked.yes = true;
+  fireEvent.click(within(screen.getByRole("main")).getByRole("link", { name: "Runs" }));
+  await waitFor(() => expect(router.state.location.pathname).toBe("/runs"));
+  expect(asked.questions).toHaveLength(2);
+});
+
+test("a clean editor never asks", async () => {
+  const asked = confirms(false);
+  const router = renderAt("/scenarios/project/cache-keys?tab=files");
+  await editor();
+  fireEvent.click(screen.getByRole("button", { name: "notes.md" }));
+  await editor("Contents of notes.md");
+  fireEvent.click(screen.getByRole("tab", { name: "Overview" }));
+  await waitFor(() => expect(router.state.location.search).toEqual({ file: "notes.md" }));
+  fireEvent.click(within(screen.getByRole("main")).getByRole("link", { name: "Runs" }));
+  await waitFor(() => expect(router.state.location.pathname).toBe("/runs"));
+  expect(asked.questions).toEqual([]);
+});
+
+test("another file asks once, then opens", async () => {
+  const asked = confirms(false);
+  const router = renderAt("/scenarios/project/cache-keys?tab=files");
+  await draft();
+  fireEvent.click(screen.getByRole("button", { name: "notes.md" }));
+  await waitFor(() => expect(asked.questions).toEqual(["Discard your changes to scenario.yaml?"]));
+  expect(router.state.location.search).toEqual({ tab: "files" });
+  expect(screen.getByText("unsaved changes")).toBeTruthy();
+  asked.yes = true;
+  fireEvent.click(screen.getByRole("button", { name: "notes.md" }));
+  expect((await editor("Contents of notes.md")).state.doc.toString()).toBe(NOTES);
+  expect(asked.questions).toHaveLength(2);
+  expect(screen.queryByText("unsaved changes")).toBeNull();
+});
+
+test("deleting the scenario under a draft lands on the list without asking", async () => {
+  const asked = confirms(false);
+  const router = renderAt("/scenarios/project/cache-keys?tab=files");
+  await draft();
+  // scenario.yaml itself has no Delete, so this one is the scenario's
+  fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+  const dialog = await screen.findByRole("dialog", { name: "Delete scenario cache-keys?" });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+  await waitFor(() => expect(router.state.location.pathname).toBe("/scenarios"));
+  expect(asked.questions).toEqual([]);
+});
+
+test("deleting the open file asks only whether to delete it", async () => {
+  const asked = confirms(true);
+  const router = renderAt("/scenarios/project/cache-keys?tab=files&file=notes.md");
+  await draft("Contents of notes.md");
+  const open = screen.getByRole("region", { name: "notes.md" });
+  fireEvent.click(within(open).getByRole("button", { name: "Delete" }));
+  await editor();
+  expect(router.state.location.search).toEqual({ tab: "files" });
+  expect(deleted).toEqual(["/api/scenarios/project/cache-keys/files/notes.md"]);
+  expect(asked.questions).toEqual(["Delete notes.md?"]);
 });
 
 const lists = () =>
