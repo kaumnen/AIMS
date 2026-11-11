@@ -25,7 +25,7 @@ from aims.events import (
 from aims.models import ModelClient, Profile, Prompt
 from aims.monitor.channels import NAME as CHANNELS
 from aims.monitor.channels import ChannelLog, ChannelSweeper
-from aims.monitor.config import SweepConfig
+from aims.monitor.config import FailureMode, SweepConfig
 from aims.monitor.judge import Judge, JudgeResult
 from aims.monitor.policy import Cutoffs, Decision, Policy
 from aims.monitor.render import Trajectory
@@ -500,6 +500,11 @@ class Monitor:
         self._request(triggers)
         for d in decisions:
             await self._act(d)
+        if event.type == "agent.started" and event.agent_id is not None and self._blind():
+            # The pause of the failing sweeps took only the agents running then. An agent that
+            # starts later holds too, before its first step.
+            late = Decision("pause", (event.agent_id,), (), f"{FAILURES} sweeps in a row failed")
+            await self._act(late, degraded=True)
 
     def _observe(self, event: Event) -> list[Trigger]:
         triggers: list[Trigger] = []
@@ -826,10 +831,18 @@ class Monitor:
             reason += f", ${reserve:g} of it kept for the judge"
         await self._degrade("budget", reason, "signals_only")
 
-    async def _sweeps_failed(self, error: str | None) -> None:
+    def _on_failure(self) -> FailureMode:
         then = self.config.policy.on_monitor_failure
         if then is None:
             then = "continue" if self.mode == "observe" else "pause"
+        return then
+
+    def _blind(self) -> bool:
+        """Whether the sweeps keep failing and the policy holds the agents until they work."""
+        return self._failures >= FAILURES and self._sweeps_on and self._on_failure() == "pause"
+
+    async def _sweeps_failed(self, error: str | None) -> None:
+        then = self._on_failure()
         await self._degrade("sweep", f"{FAILURES} sweeps in a row failed", then, error, once=False)
         if then == "pause":
             agents = tuple(a for a, st in self._agents.items() if st.active)

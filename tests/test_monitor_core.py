@@ -723,6 +723,40 @@ async def test_failed_sweeps_resume_once_the_budget_ends_them(tmp_path: Path) ->
         assert [e.data["part"] for e in await h.of("monitor.degraded")] == ["sweep", "budget"]
 
 
+async def fail_two_sweeps_of_a(h: H) -> None:
+    await h.add(started())
+    for n in range(1, 3):
+        await step(h, n)
+        await h.monitor.barrier()
+        await h.until(lambda: not h.monitor._pending and h.monitor._running is None)
+
+
+async def test_an_agent_that_starts_while_the_sweeps_fail_holds_too(tmp_path: Path) -> None:
+    config = sweep_config(every=1) | {"policy": {"pause_timeout_s": 30}}
+    async with harness(tmp_path, config=config, agents=("a", "b")) as h:
+        h.sweeps.result = lambda sweeper, trigger: SweepResult(failed=True)
+        await fail_two_sweeps_of_a(h)
+        reason = "2 sweeps in a row failed"
+        assert h.actuator.log == [("pause", ("a",), reason)]
+        await h.add(started(), "b")
+        await h.monitor.barrier()
+        assert h.actuator.log == [("pause", ("a",), reason), ("pause", ("b",), reason)]
+        assert {agent for _, agent, _, _ in h.sweeps.calls} == {"a"}
+
+
+async def test_an_agent_held_at_its_start_resumes_once_the_sweeps_work(tmp_path: Path) -> None:
+    config = sweep_config(every=1) | {"policy": {"pause_timeout_s": 1}}
+    async with harness(tmp_path, config=config, agents=("a", "b")) as h:
+        h.sweeps.result = lambda sweeper, trigger: SweepResult(failed=trigger != "review")
+        await fail_two_sweeps_of_a(h)
+        await h.add(started(), "b")
+        await h.monitor.barrier()
+        await h.until(lambda: sorted(h.actuator.kinds()) == ["pause", "pause", "resume", "resume"])
+        resumed = {agents for kind, agents, _ in h.actuator.log if kind == "resume"}
+        assert resumed == {("a",), ("b",)}
+        assert [t for _, agent, t, _ in h.sweeps.calls if agent == "b"] == ["review"]
+
+
 async def test_failed_sweeps_continue_in_observe(tmp_path: Path) -> None:
     async with harness(tmp_path, oversight="observe", config=sweep_config(every=1)) as h:
         h.sweeps.result = lambda sweeper, trigger: SweepResult(failed=True)
