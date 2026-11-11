@@ -1100,11 +1100,16 @@ async def _run(**o: Any) -> int:
                 await link.start()
             gate = asyncio.Semaphore(o["parallel"])
             stops = 0
+            closing = False
             main = asyncio.current_task()
             loop = asyncio.get_running_loop()
 
             def stop() -> None:
                 nonlocal stops
+                # Once the runs are over, a stop does nothing. The cleanup left is bounded. A
+                # cut one can leave the store open, which holds the process at exit.
+                if closing:
+                    return
                 stops += 1
                 if stops == 1:
                     err.print("[yellow]stopping: Ctrl-C again to kill the sandboxes now[/]")
@@ -1113,10 +1118,12 @@ async def _run(**o: Any) -> int:
                 elif main is not None:
                     main.cancel()
 
+            # The handlers stay in until asyncio.run closes the loop. Without them a Ctrl-C
+            # raises KeyboardInterrupt wherever the cleanup is.
             for sig in (signal.SIGINT, signal.SIGTERM):
                 loop.add_signal_handler(sig, stop)
             # A hangup starts a stop and never adds to one: nobody is left to press Ctrl-C.
-            hup = on_hangup(loop, lambda: None if stops else stop())
+            on_hangup(loop, lambda: None if stops else stop())
 
             async def one(r: Runner) -> Result:
                 async with gate:
@@ -1215,8 +1222,7 @@ async def _run(**o: Any) -> int:
                 err.print("[red]killed the sandboxes; the runs are sealed as cancelled[/]")
                 return EXIT_CANCELLED
             finally:
-                for sig in (signal.SIGINT, signal.SIGTERM, *([signal.SIGHUP] if hup else [])):
-                    loop.remove_signal_handler(sig)
+                closing = True
                 if prompt is not None:
                     prompt.live = None
                     await prompt.close()
@@ -1965,15 +1971,24 @@ async def _monitor_runs(**o: Any) -> int:
 
         main = asyncio.current_task()
         loop = asyncio.get_running_loop()
+        closing = False
+        push: asyncio.Task[int] | None = None
 
         def stop() -> None:
             # The first signal cancels and the monitor runs seal at once; later ones do nothing.
-            if main is not None and not main.cancelling():
+            # One while the runs close does nothing either, as that is bounded. One during the
+            # push ends the push.
+            if push is not None:
+                if not push.cancelling():
+                    push.cancel()
+            elif not closing and main is not None and not main.cancelling():
                 main.cancel()
 
+        # The handlers stay in until asyncio.run closes the loop. Without them a Ctrl-C raises
+        # KeyboardInterrupt wherever the cleanup is, which can leave the store open.
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, stop)
-        hup = on_hangup(loop, stop)
+        on_hangup(loop, stop)
         try:
             results = list(await asyncio.gather(*(one(*p) for p in planned)))
         except asyncio.CancelledError:
@@ -1982,15 +1997,19 @@ async def _monitor_runs(**o: Any) -> int:
         except RunError as e:
             return fail(str(e))
         finally:
-            for sig in (signal.SIGINT, signal.SIGTERM, *([signal.SIGHUP] if hup else [])):
-                loop.remove_signal_handler(sig)
+            closing = True
             if lines is not None:
                 await lines.stop()
         digests = [await digest(store, r.run_id) for r in results]
     if o["link"] is not None and results:
         url, token = o["link"]
+        run_ids = [r.run_id for r in results]
+        push = asyncio.create_task(_push(o["runs_dir"], run_ids, url, token, quiet=True))
+        await asyncio.wait([push])
         try:
-            failed = await _push(o["runs_dir"], [r.run_id for r in results], url, token, quiet=True)
+            failed = push.result()
+        except asyncio.CancelledError:
+            err.print("[yellow]stopped; some monitor runs did not reach the control plane[/]")
         except (ApiError, httpx2.TransportError, OSError) as e:
             err.print(shown(f"the control plane did not take the monitor runs: {e}", "yellow"))
         else:
@@ -2039,7 +2058,8 @@ async def _monitor_runs(**o: Any) -> int:
                 out.print(found)
     except Exception:
         logging.getLogger("aims").exception("the results could not be printed")
-    if any(r.status == "cancelled" for r in results):
+    stopped = push is not None and push.cancelled()
+    if stopped or any(r.status == "cancelled" for r in results):
         return EXIT_CANCELLED
     return EXIT_FAILED if any(r.status != "completed" for r in results) else 0
 

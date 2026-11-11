@@ -201,6 +201,81 @@ def test_a_second_ctrl_c_while_aims_monitor_seals_leaves_the_seal_whole(
     assert asyncio.run(read()) == [("monitor", "cancelled")]
 
 
+def interrupted(cut: list[str], step: str, real: Any) -> Any:
+    """`real`, a step of a command's cleanup, with a Ctrl-C sent as it starts. A late Ctrl-C
+    must leave the step alone. What it did lands in `cut`, and the step runs anyway, so a store
+    left open does not hold this process at exit."""
+
+    async def with_ctrl_c(*args: Any, **kwargs: Any) -> Any:
+        try:
+            os.kill(os.getpid(), signal.SIGINT)
+            await asyncio.sleep(0.2)
+        except BaseException as e:
+            cut.append(f"{step}: {type(e).__name__}")
+        return await real(*args, **kwargs)
+
+    return with_ctrl_c
+
+
+@pytest.mark.parametrize(("step", "stopped"), [("lines", True), ("store", True), ("store", False)])
+def test_a_late_ctrl_c_leaves_the_cleanup_of_aims_monitor_alone(
+    runs: tuple[Path, str], monkeypatch: pytest.MonkeyPatch, step: str, stopped: bool
+) -> None:
+    root, origin = runs
+    cut: list[str] = []
+
+    async def feed(*args: Any) -> None:
+        os.kill(os.getpid(), signal.SIGINT)
+        await asyncio.sleep(5)
+        raise AssertionError("the Ctrl-C did not stop the monitor")
+
+    args = ["monitor", origin, "--runs-dir", str(root), "--no-server", "--signals-only", "--json"]
+    with monkeypatch.context() as m:
+        if stopped:
+            m.setattr(offline, "_feed", feed)
+        if step == "lines":
+            m.setattr(JsonLines, "stop", interrupted(cut, step, JsonLines.stop))
+        else:
+            m.setattr(LocalEventStore, "close", interrupted(cut, step, LocalEventStore.close))
+        result = invoke(*args)
+    assert cut == []
+    assert result.exit_code == (EXIT_CANCELLED if stopped else 0), result.output
+    found = [x["status"] for x in lines(result.stdout) if x["type"] == "result"]
+    assert found == ([] if stopped else ["completed"])
+
+
+def test_a_ctrl_c_during_the_push_of_aims_monitor_ends_the_push_once(
+    runs: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, origin = runs
+    stopped: list[str] = []
+
+    async def hello(self: ControlClient, body: Any) -> None:
+        return None
+
+    async def ship(self: Any) -> None:
+        os.kill(os.getpid(), signal.SIGINT)
+        try:
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            # a second Ctrl-C must not cut the push's own close
+            os.kill(os.getpid(), signal.SIGINT)
+            await asyncio.sleep(0.2)
+            stopped.append(self.run_id)
+            raise
+        raise AssertionError("the Ctrl-C did not stop the push")
+
+    with monkeypatch.context() as m:
+        m.setattr("aims.cli._link", lambda *args: ("http://cp.invalid", "token"))
+        m.setattr(ControlClient, "hello", hello)
+        m.setattr("aims.node.shipper.Shipper.run", ship)
+        result = invoke("monitor", origin, "--runs-dir", str(root), "--signals-only", "--quiet")
+    assert result.exit_code == EXIT_CANCELLED, result.output
+    assert len(stopped) == 1
+    assert "stopped; some monitor runs did not reach the control plane" in result.output
+    assert result.stdout.split()[1:3] == [origin, "completed"]
+
+
 def test_aims_monitor_refuses_what_it_cannot_run(
     runs: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -489,6 +564,70 @@ def test_a_stop_while_a_sample_ends_starts_no_waiting_sample(
     assert statuses(result) == ["completed"] + ["cancelled"] * (samples - 1)
     assert scored == []
     assert f"`aims score {made[0].run_id}` scores it" in " ".join(result.output.split())
+
+
+class QuietLink:
+    """A link to a control plane that holds every run at once."""
+
+    def __init__(self, client: ControlClient, *args: Any, **kwargs: Any) -> None:
+        self.client = client
+
+    async def start(self) -> None:
+        return None
+
+    def track(self, runner: Runner) -> None:
+        return None
+
+    def ship(self, run_id: str) -> None:
+        return None
+
+    async def drain(self, within: float) -> bool:
+        return True
+
+    async def close(self) -> None:
+        await self.client.aclose()
+
+
+@pytest.mark.parametrize(
+    ("step", "stopped"), [("lines", True), ("drain", True), ("store", True), ("store", False)]
+)
+def test_a_late_ctrl_c_leaves_the_cleanup_of_aims_run_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, step: str, stopped: bool
+) -> None:
+    cut: list[str] = []
+
+    async def run(self: Runner) -> Result:
+        if not stopped:
+            return await sealed(self)
+        store = self.bench.store
+        started = RunStarted(scenario="watched", oversight="observe")
+        self.run_id = run_id = await store.create_run(started)
+        try:
+            await stop_reaches(self, signal.SIGINT)
+            # the second Ctrl-C: kill the sandboxes now
+            os.kill(os.getpid(), signal.SIGINT)
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            await store.append(run_id, [Draft(RunFinished(status="cancelled"))])
+            raise
+        raise AssertionError("the second Ctrl-C did not kill")
+
+    with monkeypatch.context() as m:
+        m.setattr("aims.cli._link", lambda *args: ("http://cp.invalid", "token"))
+        m.setattr("aims.node.link.Link", QuietLink)
+        if step == "lines":
+            m.setattr(JsonLines, "stop", interrupted(cut, step, JsonLines.stop))
+        elif step == "drain":
+            m.setattr(QuietLink, "drain", interrupted(cut, step, QuietLink.drain))
+        else:
+            m.setattr(LocalEventStore, "close", interrupted(cut, step, LocalEventStore.close))
+        result, _ = run_stubbed(tmp_path, m, run, "--json")
+    assert cut == []
+    assert result.exit_code == (EXIT_CANCELLED if stopped else 0), result.output
+    killed = "killed the sandboxes; the runs are sealed as cancelled" in result.output
+    assert killed == stopped
+    found = [x["status"] for x in lines(result.stdout) if x["type"] == "result"]
+    assert found == ([] if stopped else ["completed"])
 
 
 def test_prompts_show_lists_the_monitor_texts() -> None:
