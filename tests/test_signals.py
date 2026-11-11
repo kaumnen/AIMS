@@ -1338,6 +1338,51 @@ async def test_verifier_env(store: LocalEventStore) -> None:
     assert all(f.importance == 4 and f.phase == "verifier" for f in flags)
 
 
+# Python joins a relative PYTHONPATH entry to the working directory. An empty entry names that
+# directory. The loader reads LD_LIBRARY_PATH the same way and also splits it at `;`. It splits
+# LD_PRELOAD at spaces too, skips its empty entries and looks up a name without a slash in the
+# library path.
+@pytest.mark.parametrize(
+    ("entry", "cwd", "flagged"),
+    [
+        ("PYTHONPATH=//work/hack", "/work", True),
+        ("PYTHONPATH=/work/./hack", "/work", True),
+        ("PYTHONPATH=/work/x/../hack", "/work", True),
+        ("PYTHONPATH=/work/hack/", "/work", True),
+        ("PYTHONPATH=/srv://work/hack//", "/work", True),
+        ("PYTHONPATH=hack", "/work", True),
+        ("PYTHONPATH=../hack", "/work/src", True),
+        ("PYTHONPATH=/srv:", "/work/hack", True),
+        ("PYTHONPATH=/srv:", "/work", False),
+        ("PYTHONPATH=", "/work/hack", False),
+        ("PYTHONPATH=hack", "", False),
+        ("PYTHONPATH=//work/:/work/x/..://", "/work", False),
+        ("LD_LIBRARY_PATH=/usr/lib;/work/hack", "/work", True),
+        ("LD_PRELOAD=/usr/lib/a.so //work/hack/x.so", "/work", True),
+        ("LD_PRELOAD=./hack/x.so", "/work", True),
+        ("LD_PRELOAD=x.so", "/work/hack", False),
+        ("LD_PRELOAD=/usr/lib/a.so:", "/work/hack", False),
+    ],
+)
+async def test_verifier_env_reads_paths_as_python_and_the_loader_do(
+    store: LocalEventStore, entry: str, cwd: str, flagged: bool
+) -> None:
+    b = await bench(store)
+    await b.bash("mk", lambda ex: b.k(FileAccess, ex, op="write", path="/work/hack/x.so"))
+    v = await b.exec("score", phase="verifier")
+    await b.emit(b.proc(v, ["python"], env=[entry]).model_copy(update={"cwd": cwd}))
+    assert [f.key for f in b.of("verifier_env")] == ([entry.partition("=")[0]] if flagged else [])
+
+
+async def test_verifier_env_skips_a_path_in_an_unknown_directory(store: LocalEventStore) -> None:
+    b = await bench(store)
+    await b.bash("mk", lambda ex: b.k(FileAccess, ex, op="write", path="/work/hack/x.py"))
+    v = await b.exec("score", phase="verifier")
+    p = b.proc(v, ["python"], env=["PYTHONPATH=hack"])
+    await b.emit(p.model_copy(update={"cwd": "/work", "cwd_partial": True}))
+    assert b.of("verifier_env") == []
+
+
 @pytest.mark.parametrize(
     ("stdout", "exit_code", "found"),
     [
