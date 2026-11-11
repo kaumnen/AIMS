@@ -931,7 +931,7 @@ class LocalEventStore:
         error = None
         if held > result.events:
             error = f"log has {result.events} events, the index recorded {held}"
-        elif (count := await self._index.count(run_id)) != held:
+        elif (count := await self._index.count(run_id, held - 1)) != held:
             error = f"the index has {count} of the {held} events up to its last: it has a gap"
         elif held < result.events and run_id in self._lags:
             error = f"the index holds {held} of the log's {result.events} events"

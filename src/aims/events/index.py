@@ -665,10 +665,11 @@ class Index:
         head = Head(seq=row[0], hash=row[1], offset=row[2], finished=row[3] != "running")
         return head, row[3]
 
-    async def count(self, run_id: str) -> int:
-        """How many events of a run the index holds."""
+    async def count(self, run_id: str, upto: int) -> int:
+        """How many events of a run the index holds up to seq `upto`. Events past it may land
+        while a caller compares, so they are left out."""
         async with self._db.execute(
-            "select count(*) from events where run_id = ?", (run_id,)
+            "select count(*) from events where run_id = ? and seq <= ?", (run_id, upto)
         ) as cur:
             row = await cur.fetchone()
         return 0 if row is None else row[0]

@@ -411,3 +411,21 @@ async def test_verify_tells_of_a_gap_in_the_index(tmp_path: Path) -> None:
         db.close()
         verified = await store.verify(run_id)
         assert verified.error == "the index has 3 of the 4 events up to its last: it has a gap"
+
+
+async def test_verify_takes_events_that_land_while_it_compares(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        run_id = await store.create_run(STARTED)
+        await store.append(run_id, [call(1)])
+        head = store._index.head
+
+        async def then_append(run: str) -> object:
+            found = await head(run)
+            monkeypatch.setattr(store._index, "head", head)
+            await store.append(run_id, [call(2), call(3)])
+            return found
+
+        monkeypatch.setattr(store._index, "head", then_append)
+        assert (await store.verify(run_id)).error is None
