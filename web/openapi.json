@@ -2531,7 +2531,7 @@
         "type": "object"
       },
       "CostFigures": {
-        "description": "One run's cost in USD at list prices. `ceiling_usd` is what the caps allow, None when no\ncap applies; `stepped` says it counts one last step past a cost cap, which is checked before\neach step. `typical_usd` is the median of `runs` matching past runs, matched by `tier`: the\nsame scenario, or the same models and effort scaled by step budget. `high_usd` is their\n90th percentile, or twice the median when `doubled` (under 10 runs). `capped` of those runs\nhit a cap; `excluded` matched but recorded no cost. `priced` is false when no profile of\nthis side has a price, so its cost is not counted.",
+        "description": "One run's cost in USD at list prices. `ceiling_usd` is what the caps allow, None when no\ncap applies; `stepped` says it counts one last step past a cost cap, which is checked before\neach step. `typical_usd` is the median of `runs` matching past runs, matched by `tier`: the\nsame scenario, or the same models and effort scaled by step budget. `high_usd` is their\n90th percentile, or twice the median when `doubled` (under 10 runs). `capped` of those runs\nhit a cap; a past monitor that stopped at its cap counts at this one's, since it would have\ngone on. `excluded` matched but recorded no cost. `priced` is false when no profile of this\nside has a price, so its cost is not counted.",
         "properties": {
           "capped": {
             "default": 0,

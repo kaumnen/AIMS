@@ -64,8 +64,9 @@ class CostFigures(_Out):
     each step. `typical_usd` is the median of `runs` matching past runs, matched by `tier`: the
     same scenario, or the same models and effort scaled by step budget. `high_usd` is their
     90th percentile, or twice the median when `doubled` (under 10 runs). `capped` of those runs
-    hit a cap; `excluded` matched but recorded no cost. `priced` is false when no profile of
-    this side has a price, so its cost is not counted."""
+    hit a cap; a past monitor that stopped at its cap counts at this one's, since it would have
+    gone on. `excluded` matched but recorded no cost. `priced` is false when no profile of this
+    side has a price, so its cost is not counted."""
 
     typical_usd: float | None = None
     high_usd: float | None = None
@@ -742,6 +743,10 @@ def _side(
             cost = sum(each.values())
             if cost <= 0:
                 continue
+            if side == "watch" and past.monitor_capped and ceiling is not None:
+                # it stopped at its cap, perhaps a lower one, so it counts at this one's
+                each = {m: value * ceiling / cost for m, value in each.items()}
+                cost = ceiling
             costs.append(cost)
             for m, value in each.items():
                 by_provider[names.get(m) or calls[m].provider] += value

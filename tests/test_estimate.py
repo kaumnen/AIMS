@@ -575,10 +575,28 @@ async def test_the_monitor_estimate_matches_the_same_monitor(
     monitor = e.parts[0].monitor
     assert monitor is not None
     assert (monitor.tier, monitor.runs, monitor.capped) == ("scenario", 2, 1)
-    assert monitor.typical_usd == pytest.approx(math.sqrt(0.2 * 0.4))
-    assert e.total.typical_usd == pytest.approx(0.1 + math.sqrt(0.08))
+    # the run that hit its cap counts at the $5 cap
+    assert monitor.typical_usd == pytest.approx(math.sqrt(0.2 * 5.0))
+    assert e.total.typical_usd == pytest.approx(0.1 + 1.0)
     signals = one(settings, found, bundle, preset="signals")
     assert signals.parts[0].monitor_preset == "signals"
+
+
+@pytest.mark.anyio
+async def test_a_past_monitor_that_stopped_at_a_lower_cap_counts_at_the_cap_now(
+    tmp_path: Path, store: LocalEventStore
+) -> None:
+    settings, path = write(tmp_path, budget="{steps: 200}", preset="standard")
+    bundle = load_scenario(path)
+    for _ in range(10):
+        await record(store, settings, bundle, 1.0, monitor_cost=5.0, monitor_capped=True)
+    e = one(settings, await history(store), bundle)
+    monitor = e.parts[0].monitor
+    assert monitor is not None
+    assert monitor.ceiling_usd == pytest.approx(10.28)
+    assert (monitor.runs, monitor.capped) == (10, 10)
+    assert (monitor.typical_usd, monitor.high_usd) == (monitor.ceiling_usd, monitor.ceiling_usd)
+    assert e.total.high_usd == pytest.approx(1.0 + 10.28)
 
 
 @pytest.mark.anyio

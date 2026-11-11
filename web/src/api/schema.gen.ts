@@ -2528,8 +2528,9 @@ export interface components {
          *     each step. `typical_usd` is the median of `runs` matching past runs, matched by `tier`: the
          *     same scenario, or the same models and effort scaled by step budget. `high_usd` is their
          *     90th percentile, or twice the median when `doubled` (under 10 runs). `capped` of those runs
-         *     hit a cap; `excluded` matched but recorded no cost. `priced` is false when no profile of
-         *     this side has a price, so its cost is not counted.
+         *     hit a cap; a past monitor that stopped at its cap counts at this one's, since it would have
+         *     gone on. `excluded` matched but recorded no cost. `priced` is false when no profile of this
+         *     side has a price, so its cost is not counted.
          */
         CostFigures: {
             /**
