@@ -1,5 +1,7 @@
+import asyncio
 import json
 import shutil
+import time
 from collections.abc import AsyncIterator, Callable, Sequence
 from functools import partial
 from pathlib import Path
@@ -50,6 +52,7 @@ from aims.monitor.judge import (
     MIN_OUTPUT,
     OUTPUT_CHARS,
     TOOL_PARAMETERS,
+    VERDICT_S,
     VERDICT_SCHEMA,
     Flag,
     Judge,
@@ -285,6 +288,7 @@ def make_judge(
     *,
     budget: float = 5.0,
     p: Profile | None = None,
+    clock: Callable[[], float] = time.monotonic,
     **config: Any,
 ) -> Judge:
     p = p or profile()
@@ -297,6 +301,7 @@ def make_judge(
         client=client,
         store=store,
         budget_usd=budget,
+        clock=clock,
     )
 
 
@@ -1209,6 +1214,127 @@ async def test_cancel_keeps_the_cost(store: LocalEventStore) -> None:
     assert judge.cost_usd == pytest.approx(1.0)
     responses = await store.events(run.id, types=["model.response"])
     assert [e.data["status"] for e in responses] == ["completed", "cancelled"]
+
+
+def stalls(script: Script, when: Callable[[dict[str, Any]], bool]) -> Script:
+    """`script`, whose requests that `when` picks never get an answer."""
+    original = script.handle
+
+    async def handle(request: httpx2.Request) -> httpx2.Response:
+        if when(json.loads(request.content)):
+            await anyio.sleep_forever()
+        return original(request)
+
+    script.handle = handle  # ty: ignore[invalid-assignment]
+    return script
+
+
+def is_blind(body: dict[str, Any]) -> bool:
+    return "flags" not in brief(body)
+
+
+def has_result(body: dict[str, Any]) -> bool:
+    return any(m["role"] == "tool" for m in body["messages"])
+
+
+async def check_events(store: LocalEventStore, run_id: str) -> None:
+    """Every event of the run loads as its payload and the chain verifies."""
+    for e in await store.every(run_id):
+        e.payload()
+    assert (await store.verify(run_id)).ok
+
+
+async def test_a_timeout_keeps_the_finished_verdicts(store: LocalEventStore) -> None:
+    run = await make_run(store)
+    answer = say(json.dumps(verdict(summary="seeing", max_severity=4)))
+    script = stalls(Script(answer), is_blind)
+    judge = make_judge(store, run, script, rollouts=2, blind=1, timeout_s=0.5)
+    with anyio.fail_after(5):
+        result = await judge.run(flags=[], sweeps=[])
+    v = payload_of(result)
+    assert (v.summary, v.max_severity) == ("seeing", 4)
+    seeing, blind = v.rollouts
+    assert seeing.error is None
+    assert blind.error == "the judge's 0.5 s timeout ran out before a verdict"
+    assert result.timed_out
+    assert result.error == f"judge.2 (blind): {blind.error}"
+    assert result.cost_usd == pytest.approx(seeing.cost_usd)
+    assert result.cost_usd > 0
+    responses = await store.events(run.id, types=["model.response"])
+    assert sorted(str(e.data["status"]) for e in responses) == ["cancelled", "completed"]
+    await check_events(store, run.id)
+
+
+async def test_every_rollout_timed_out_keeps_the_cost(store: LocalEventStore) -> None:
+    run = await make_run(store)
+    explore = call("events") | {"usage": MILLION}
+    script = stalls(Script(explore, explore), has_result)
+    judge = make_judge(store, run, script, budget=10.0, rollouts=2, timeout_s=0.5)
+    with anyio.fail_after(5):
+        result = await judge.run(flags=[], sweeps=[])
+    assert result.verdict is None
+    assert result.flags == []
+    assert result.timed_out
+    late = "the judge's 0.5 s timeout ran out before a verdict"
+    assert result.error == f"every judge rollout failed: judge.1: {late}; judge.2: {late}"
+    assert result.cost_usd == pytest.approx(2.0)
+    assert judge.cost_usd == pytest.approx(2.0)
+    responses = await store.events(run.id, types=["model.response"])
+    assert [e.data["status"] for e in responses].count("cancelled") == 2
+    await check_events(store, run.id)
+
+
+async def test_a_cancel_from_outside_is_not_a_timeout(store: LocalEventStore) -> None:
+    run = await make_run(store)
+    asked: list[dict[str, Any]] = []
+    both = asyncio.Event()
+
+    def stall(body: dict[str, Any]) -> bool:
+        asked.append(body)
+        if len(asked) == 2:
+            both.set()
+        return True
+
+    script = stalls(Script(), stall)
+    judge = make_judge(store, run, script, rollouts=2, blind=1, timeout_s=60)
+    running = asyncio.create_task(judge.run(flags=[], sweeps=[]))
+    with anyio.fail_after(5):
+        await both.wait()
+        running.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await running
+    left = [t for t in asyncio.all_tasks() if t.get_name().endswith(f" of {run.id}")]
+    assert left == []
+    assert [r.error for r in judge._rollouts] == [None, None]
+    responses = await store.events(run.id, types=["model.response"])
+    assert [e.data["status"] for e in responses] == ["cancelled", "cancelled"]
+
+
+@pytest.mark.parametrize(
+    ("limit", "left", "forced"),
+    [(600, VERDICT_S + 1, False), (600, VERDICT_S, True), (10, 5.1, False), (10, 5, True)],
+)
+async def test_a_rollout_gives_its_verdict_before_the_timeout(
+    store: LocalEventStore, limit: float, left: float, forced: bool
+) -> None:
+    """After the exploring call `left` seconds of the `limit` s timeout remain."""
+    run = await make_run(store)
+    now = [0.0]
+
+    def explore(body: dict[str, Any]) -> dict[str, Any]:
+        now[0] = limit - left
+        return call("events")
+
+    script = Script(explore, say(json.dumps(verdict(summary="in time"))))
+    judge = make_judge(store, run, script, clock=lambda: now[0], timeout_s=limit)
+    result = await judge.run(flags=[], sweeps=[])
+    assert payload_of(result).summary == "in time"
+    assert (result.error, result.timed_out) == (None, False)
+    first, second = script.requests
+    assert "tools" in first
+    assert ("tools" not in second) is forced
+    assert ("response_format" in second) is forced
+    assert (second["messages"][-1]["content"] == judge_texts.FORCE) is forced
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "runs" / "word-count"

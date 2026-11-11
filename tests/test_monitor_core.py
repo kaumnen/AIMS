@@ -6,8 +6,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
+import httpx2
 import pytest
 from scripted import Script, call, models, profile, say
+from test_judge import verdict as judge_verdict
 
 from aims.agent import GatePoint
 from aims.events import (
@@ -32,10 +34,10 @@ from aims.events import (
 )
 from aims.events.schema import Payload
 from aims.models import Message, ModelClient, Profile, Prompt, ToolSpec
-from aims.monitor import review_texts
+from aims.monitor import core, review_texts
 from aims.monitor.config import MonitorConfig
 from aims.monitor.core import HumanRequest, Monitor
-from aims.monitor.judge import JudgeResult
+from aims.monitor.judge import Judge, JudgeResult
 from aims.monitor.render import frame
 from aims.monitor.setup import ResolvedMonitor
 from aims.monitor.sweep import Score, SweepError, SweepResult
@@ -275,6 +277,7 @@ async def harness(
     judge: JudgeFn = no_verdict,
     judge_cost: float = 0.0,
     script: Script | None = None,
+    real_judge: bool = False,
 ) -> AsyncGenerator[H]:
     cfg = MonitorConfig.model_validate(config or {"sweeps": []})
     p = profile()
@@ -314,7 +317,9 @@ async def harness(
             engine_factory=cast(Any, lambda *a, **k: engine),
             trajectory_factory=cast(Any, trajectory),
             sweeper_factory=cast(Any, sweeps.factory),
-            judge_factory=cast(Any, lambda **kw: FakeJudge(judge, judge_cost, **kw)),
+            judge_factory=Judge
+            if real_judge
+            else cast(Any, lambda **kw: FakeJudge(judge, judge_cost, **kw)),
         )
         remove = store.tap(run_id, monitor.feed)
         await monitor.start()
@@ -929,21 +934,102 @@ async def test_two_lanes_on_one_step_kill(tmp_path: Path) -> None:
         await h.until(lambda: h.actuator.kinds() == ["kill"])
 
 
-async def test_judge_timeout_degrades(tmp_path: Path) -> None:
-    async def slow(flags: Sequence[Event], sweeps: Sequence[Event]) -> JudgeResult:
-        await asyncio.sleep(10)
+async def test_a_judge_past_its_timeout_degrades(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The judge keeps its own timeout; the monitor's is the backstop past it."""
+
+    async def stuck(flags: Sequence[Event], sweeps: Sequence[Event]) -> JudgeResult:
+        await asyncio.sleep(3600)
         return JudgeResult()
 
+    monkeypatch.setattr(core, "JUDGE_GRACE_S", 0.1)
     config = {"sweeps": [], "judge": {"timeout_s": 0.1}}
-    async with harness(tmp_path, config=config, judge=slow, judge_cost=0.25) as h:
-        await h.monitor.judge()
+    async with harness(tmp_path, config=config, judge=stuck, judge_cost=0.25) as h:
+        async with asyncio.timeout(3):
+            await h.monitor.judge()
         [degraded] = await h.of("monitor.degraded")
         assert degraded.data["part"] == "judge"
         assert degraded.data["then"] == "skip"
-        reason = degraded.data["reason"]
-        assert isinstance(reason, str)
-        assert "timeout" in reason
+        assert degraded.data["reason"] == "the judge ran past its 0.1 s timeout"
         assert h.monitor.cost_usd == pytest.approx(0.25)
+
+
+async def test_a_judge_its_timeout_cut_short_writes_its_verdicts(tmp_path: Path) -> None:
+    late = "judge.2 (blind): the judge's 600 s timeout ran out before a verdict"
+
+    async def partial(flags: Sequence[Event], sweeps: Sequence[Event]) -> JudgeResult:
+        verdict = MonitorVerdict(max_severity=4, summary="s")
+        return JudgeResult(verdict=Draft(verdict), cost_usd=0.5, error=late, timed_out=True)
+
+    async with harness(tmp_path, config={"sweeps": [], "judge": {}}, judge=partial) as h:
+        await h.monitor.judge()
+        [verdict] = await h.of("monitor.verdict")
+        assert verdict.data["max_severity"] == 4
+        [degraded] = await h.of("monitor.degraded")
+        assert degraded.seq > verdict.seq
+        assert (degraded.data["part"], degraded.data["then"]) == ("judge", "skip")
+        assert degraded.data["reason"] == "the judge reached its 600 s timeout"
+        assert degraded.data["detail"] == late
+        assert h.monitor.cost_usd == pytest.approx(0.5)
+
+
+async def test_a_stalled_rollout_leaves_the_verdict_of_the_other(tmp_path: Path) -> None:
+    """The real judge: the blind rollout never gets an answer, the other gives its verdict."""
+    script = Script(say(json.dumps(judge_verdict(summary="seeing", max_severity=4))))
+    original = script.handle
+
+    async def handle(request: httpx2.Request) -> httpx2.Response:
+        content = json.loads(request.content)["messages"][1]["content"]
+        if "flags" not in json.loads(content.split("\n")[-2]):
+            await asyncio.sleep(3600)
+        return original(request)
+
+    script.handle = handle  # ty: ignore[invalid-assignment]
+    judge = {"rollouts": 2, "blind": 1, "timeout_s": 0.5}
+    config = {"sweeps": [], "judge": judge}
+    async with harness(tmp_path, config=config, script=script, real_judge=True) as h:
+        async with asyncio.timeout(5):
+            await h.monitor.judge()
+        [verdict] = await h.of("monitor.verdict")
+        payload = MonitorVerdict.model_validate(verdict.data)
+        assert payload.max_severity == 4
+        seeing, blind = payload.rollouts
+        late = "the judge's 0.5 s timeout ran out before a verdict"
+        assert (seeing.error, blind.error) == (None, late)
+        [degraded] = await h.of("monitor.degraded")
+        assert degraded.data["reason"] == "the judge reached its 0.5 s timeout"
+        assert degraded.data["detail"] == f"judge.2 (blind): {late}"
+        assert h.monitor.cost_usd == pytest.approx(payload.cost_usd)
+        assert h.monitor.cost_usd > 0
+        for e in await h.store.every(h.run_id):
+            e.payload()
+        assert (await h.store.verify(h.run_id)).ok
+
+
+async def test_a_cut_of_the_real_judge_is_no_timeout(tmp_path: Path) -> None:
+    script = Script()
+    original = script.handle
+    asked = asyncio.Event()
+
+    async def handle(request: httpx2.Request) -> httpx2.Response:
+        asked.set()
+        await asyncio.sleep(3600)
+        return original(request)
+
+    script.handle = handle  # ty: ignore[invalid-assignment]
+    config = {"sweeps": [], "judge": {"timeout_s": 60}}
+    async with harness(tmp_path, config=config, script=script, real_judge=True) as h:
+        judging = asyncio.create_task(h.monitor.judge())
+        async with asyncio.timeout(3):
+            await asked.wait()
+            h.monitor.cut()
+            await judging
+        [degraded] = await h.of("monitor.degraded")
+        assert degraded.data["reason"] == "an operator stop cut the judge short"
+        assert await h.of("monitor.verdict") == []
+        [response] = await h.of("model.response")
+        assert response.data["status"] == "cancelled"
 
 
 def slow_judge(runs: list[int]) -> JudgeFn:

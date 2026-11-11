@@ -44,6 +44,9 @@ TICK_S = 1.0
 RETRY_S = 60.0
 RECENT_CALLS = 64
 ACTION_CALLS = 20
+# The judge stops itself at its timeout. Past it the monitor waits this long more for it to
+# cancel its open calls, which still write their answers, and merge its verdicts.
+JUDGE_GRACE_S = 30.0
 
 type Key = tuple[str, str]
 type Trigger = tuple[str | None, SweepTrigger, str | None]
@@ -350,7 +353,8 @@ class Monitor:
 
     async def judge(self, *, skip: bool = False) -> None:
         """Run the judge after the verifier, before the seal; `skip` on a cancelled run. A
-        `cut` ends it early and the run still seals."""
+        `cut` ends it early and the run still seals. A judge its timeout cut short writes the
+        verdicts it has, and `monitor.degraded` names the rollouts that gave none."""
         config = self.config.judge
         if skip or config is None or self.monitor.judge is None:
             return
@@ -376,7 +380,7 @@ class Monitor:
         )
         self._judging = running
         try:
-            async with asyncio.timeout(config.timeout_s):
+            async with asyncio.timeout(config.timeout_s + JUDGE_GRACE_S):
                 result: JudgeResult = await running
         except TimeoutError:
             self._spent += getattr(judge, "cost_usd", 0.0)
@@ -405,7 +409,12 @@ class Monitor:
         written = await self._append(drafts)
         self._flags.extend(e for e in written if e.type == "monitor.flag")
         if result.verdict is None or result.error is not None:
-            reason = "the judge gave no verdict" if result.verdict is None else "the judge erred"
+            if result.timed_out:
+                reason = f"the judge reached its {config.timeout_s:g} s timeout"
+            elif result.verdict is None:
+                reason = "the judge gave no verdict"
+            else:
+                reason = "the judge erred"
             await self._degrade("judge", reason, "skip", result.error)
 
     async def close(self) -> None:

@@ -9,6 +9,7 @@ import asyncio
 import hmac
 import json
 import logging
+import math
 import random
 import secrets
 import time
@@ -92,6 +93,11 @@ VERDICT_OUTPUT = 4096
 RESULT_TOKENS = 8192
 CHARS_PER_TOKEN = 3
 MILLION = 1_000_000
+# Seconds before the judge's timeout from which a rollout still exploring gives its verdict:
+# room for both forced tries at about twice the slowest verdict call in the recorded runs
+# (32 s for 3,600 tokens). At most VERDICT_SHARE of the timeout, so a short one still explores.
+VERDICT_S = 120.0
+VERDICT_SHARE = 0.5
 BRIEF_FLAGS = 60
 BRIEF_SWEEPS = 30
 INSTRUCTION_CHARS = 16_000
@@ -112,12 +118,15 @@ UNREVIEWED = "no rollout that was shown the flags gave a verdict"
 
 @dataclass(slots=True)
 class JudgeResult:
-    """The `monitor.verdict` draft and the judge's own `monitor.flag` drafts (layer judge)."""
+    """The `monitor.verdict` draft and the judge's own `monitor.flag` drafts (layer judge).
+    `timed_out` says the judge's timeout cut a rollout short. `error` then names each rollout
+    that gave no verdict, also beside the verdict of the others."""
 
     verdict: Draft | None = None
     flags: list[Draft] = field(default_factory=list)
     cost_usd: float = 0.0
     error: str | None = None
+    timed_out: bool = False
 
 
 def dumps(value: Any) -> str:
@@ -673,6 +682,10 @@ class Judge:
     room stays. It caps each call's output to what its share still pays for. It stops without
     a verdict only when not even a short answer fits. The delimiters around the run data derive
     from the secret `key`, so a replay with the same key sends the same requests.
+
+    `run` keeps to `config.timeout_s`, read on `clock`. A rollout still exploring when
+    VERDICT_S are left, or VERDICT_SHARE of the timeout if less, gives its verdict early. At the
+    timeout the rollouts still open are cancelled and the verdicts of the others are merged.
     """
 
     def __init__(
@@ -686,9 +699,11 @@ class Judge:
         store: EventStore,
         budget_usd: float,
         key: bytes | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.source = source
         self.key = key or secrets.token_bytes(32)
+        self.clock = clock
         self.config = config
         self.profile = profile
         self.texts = texts
@@ -705,6 +720,7 @@ class Judge:
         self._agents_blind: list[dict[str, Any]] = []
         self._agent_seqs: set[int] = set()
         self._rollouts: list[Rollout] = []
+        self._force_at = math.inf
 
     @property
     def cost_usd(self) -> float:
@@ -718,8 +734,12 @@ class Judge:
     async def run(self, *, flags: Sequence[Event], sweeps: Sequence[Event]) -> JudgeResult:
         """Judge the run from the `monitor.flag` and `monitor.sweep` events written so far,
         which live in the monitor's run (the source itself, or the monitor run of an offline
-        re-run). Flag evidence seqs always point into `source`."""
-        start = time.monotonic()
+        re-run). Flag evidence seqs always point into `source`. A cancel from outside goes
+        through as it came, after the open rollouts were cancelled and awaited."""
+        start = self.clock()
+        timeout = self.config.timeout_s
+        end = start + timeout
+        self._force_at = end - min(VERDICT_S, timeout * VERDICT_SHARE)
         for e in flags:
             if e.type == "monitor.flag":
                 payload = MonitorFlag.model_validate(e.data)
@@ -740,10 +760,20 @@ class Judge:
         share = self.budget_usd / n
         # The blind rollouts come last, so the first rollout always sees the flags.
         self._rollouts = [Rollout(i + 1, i >= n - self.config.blind, share) for i in range(n)]
-        async with asyncio.TaskGroup() as tg:
+        timed_out = False
+        try:
+            async with asyncio.timeout(end - self.clock()):
+                async with asyncio.TaskGroup() as tg:
+                    for r in self._rollouts:
+                        tg.create_task(self._rollout(r), name=f"{r.name} of {self.source}")
+        except TimeoutError:
+            # The task group cancelled the rollouts still open and awaited them. The calls
+            # they finished stay in their cost.
             for r in self._rollouts:
-                tg.create_task(self._rollout(r))
-        return await self._result(int((time.monotonic() - start) * 1000))
+                if r.judged is None and r.error is None:
+                    r.error = f"the judge's {timeout:g} s timeout ran out before a verdict"
+                    timed_out = True
+        return await self._result(int((self.clock() - start) * 1000), timed_out=timed_out)
 
     # Preparing the brief.
 
@@ -992,7 +1022,10 @@ class Judge:
             left = r.budget - r.cost
             context = self._context(r, items, specs)
             room = self._room(left, context, explore=True)
-            if not forced and (full or r.tool_calls >= cap or (room is not None and room < 0)):
+            late = self.clock() >= self._force_at
+            if not forced and (
+                full or late or r.tool_calls >= cap or (room is not None and room < 0)
+            ):
                 forced = True
                 items.append(self._force())
                 context = self._context(r, items, specs)
@@ -1504,12 +1537,14 @@ class Judge:
             summary=v.summary,
         )
 
-    async def _result(self, duration_ms: int) -> JudgeResult:
+    async def _result(self, duration_ms: int, *, timed_out: bool = False) -> JudgeResult:
         cost = round(self.cost_usd, 10)
         done = [r for r in self._rollouts if r.judged is not None]
+        failed = "; ".join(f"{r.label}: {r.error}" for r in self._rollouts if r.judged is None)
         if not done:
-            why = "; ".join(f"{r.label}: {r.error}" for r in self._rollouts)
-            return JudgeResult(cost_usd=cost, error=f"every judge rollout failed: {why}")
+            return JudgeResult(
+                cost_usd=cost, error=f"every judge rollout failed: {failed}", timed_out=timed_out
+            )
         disagreements: list[str] = []
         categories = [self._merge_category(c, done, disagreements) for c in CATEGORIES]
         reviews = self._merge_flags(done, disagreements)
@@ -1569,7 +1604,13 @@ class Judge:
                 if key not in keys:
                     keys.add(key)
                     drafts.append(Draft(flag, agent))
-        return JudgeResult(verdict=Draft(verdict), flags=drafts, cost_usd=cost)
+        return JudgeResult(
+            verdict=Draft(verdict),
+            flags=drafts,
+            cost_usd=cost,
+            error=failed if timed_out else None,
+            timed_out=timed_out,
+        )
 
     def _merge_category(
         self, c: Category, done: Sequence[Rollout], disagreements: list[str]
