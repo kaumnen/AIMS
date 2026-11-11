@@ -6,6 +6,7 @@ import html
 import json
 import logging
 import os
+import secrets
 import shlex
 import shutil
 import signal
@@ -119,11 +120,30 @@ class _Server(uvicorn.Server):
         yield
 
 
+def private_temp(path: Path, data: str) -> Path:
+    """A new file beside `path` that holds `data`, synced, readable by its owner only. Its name
+    is random and must be free, so nothing put there before is followed or written."""
+    tmp = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    return tmp
+
+
 def write_private(path: Path, data: str) -> None:
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write(data)
-    path.chmod(0o600)
+    """Replace `path` with `data`, readable by its owner only, whole or not at all."""
+    tmp = private_temp(path, data)
+    try:
+        tmp.replace(path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 async def serve(o: UiOptions) -> int:

@@ -323,10 +323,10 @@ class ServerDB:
             raise ValueError(f"a token named {name!r} exists") from None
         return token
 
-    async def rotate_token(self, name: str, role: Role) -> str:
-        """A new value for token `name`, made if missing. The old value stops working; sessions
-        made with the token stay."""
-        token = new_token()
+    async def rotate_token(self, name: str, role: Role, token: str | None = None) -> str:
+        """A new value for token `name`, made if missing: `token`, else a fresh one. The old
+        value stops working; sessions made with the token stay."""
+        token = token or new_token()
         await self._write(
             "insert into tokens (name, sha256, role, created) values (?, ?, ?, ?)"
             " on conflict (name) do update set"

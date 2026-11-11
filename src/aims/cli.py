@@ -2250,12 +2250,23 @@ def token_create(
 ) -> None:
     """Make a named token and print it. It is shown this once."""
     import asyncio
+    from typing import NoReturn
 
     from aims.server.audit import record
-    from aims.server.serve import write_private
+    from aims.server.db import new_token
+    from aims.server.serve import private_temp
 
     if role not in ("viewer", "operator", "runner"):
         raise typer.BadParameter("use viewer, operator or runner", param_hint="--role")
+
+    def refuse(message: str) -> NoReturn:
+        typer.echo(f"error: {message}", err=True)
+        raise typer.Exit(EXIT_FAILED)
+
+    if file is not None and file.is_dir():
+        refuse(f"{file} is a directory")
+    if file is not None and not file.parent.is_dir():
+        refuse(f"no directory {file.parent}")
 
     async def main() -> str | None:
         db = await _db(data_dir)
@@ -2276,12 +2287,35 @@ def token_create(
                     raise
                 await record(db, "token.create", auth="cli", target=name, detail=detail)
                 return token
-            held = file.read_text().strip() if file.is_file() else ""
+            try:
+                held = file.read_bytes().decode(errors="replace").strip() if file.is_file() else ""
+            except OSError as e:
+                refuse(f"cannot read {file}: {e.strerror or e}")
             found = await db.token_for(held, used=False) if held else None
             if found is not None and (found.name, found.role) == (name, role):
                 return None
-            token = await db.rotate_token(name, role)
+            # The new value is on disk before the old one stops working, so neither is lost.
+            token = new_token()
+            try:
+                tmp = private_temp(file, token + "\n")
+            except OSError as e:
+                refuse(f"cannot write {file}: {e.strerror or e}")
+            try:
+                await db.rotate_token(name, role, token)
+            except Exception:
+                tmp.unlink(missing_ok=True)
+                raise
+            moved: OSError | None = None
+            try:
+                tmp.replace(file)
+            except OSError as e:
+                moved = e
             await record(db, "token.rotate", auth="cli", target=name, detail=detail)
+            if moved is not None:
+                refuse(
+                    f"cannot move the new value of token {name} to {file}:"
+                    f" {moved.strerror or moved}; it is in {tmp}"
+                )
             return token
         finally:
             await db.close()
@@ -2296,9 +2330,6 @@ def token_create(
     elif token is None:
         typer.echo(f"{file} holds the live token {name}", err=True)
     else:
-        tmp = file.with_name(f".{file.name}.tmp")
-        write_private(tmp, token + "\n")
-        tmp.replace(file)
         typer.echo(f"wrote a new value of token {name} to {file}", err=True)
 
 

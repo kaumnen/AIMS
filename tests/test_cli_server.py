@@ -804,6 +804,76 @@ def test_a_token_file_is_kept_while_it_holds_the_live_token(tmp_path: Path) -> N
     ]
 
 
+def live_token(data: Path, value: str) -> bool:
+    async def look() -> bool:
+        db = await ServerDB.open(data / "server.sqlite")
+        try:
+            return await db.token_for(value, used=False) is not None
+        finally:
+            await db.close()
+
+    return asyncio.run(look())
+
+
+def test_a_token_file_that_cannot_be_written_keeps_the_old_value(tmp_path: Path) -> None:
+    runner = CliRunner()
+    data = tmp_path / "data"
+    args = ["token", "create", "r1", "--role", "runner", "--data-dir", str(data), "--file"]
+    held = tmp_path / "r1.token"
+    assert runner.invoke(app, [*args, str(held)]).exit_code == 0
+    old = held.read_text().strip()
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    for bad in (tmp_path / "missing" / "r1.token", folder):
+        r = runner.invoke(app, [*args, str(bad)])
+        assert (r.exit_code, type(r.exception)) == (1, SystemExit), r.output
+        assert r.output.startswith("error: ")
+        assert len(r.output.splitlines()) == 1
+    assert live_token(data, old)
+    assert list(folder.iterdir()) == []
+    trail = runner.invoke(app, ["audit", "--data-dir", str(data), "--action", "token"])
+    assert [line.split("  ")[2] for line in trail.output.splitlines()] == ["token.rotate"]
+
+
+def test_a_new_token_value_that_cannot_take_the_files_place_stays_beside_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refused(self: Path, target: Path) -> Path:
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(Path, "replace", refused)
+    data = tmp_path / "data"
+    args = ["token", "create", "r1", "--role", "runner", "--data-dir", str(data)]
+    r = CliRunner().invoke(app, [*args, "--file", str(tmp_path / "r1.token")])
+    assert (r.exit_code, type(r.exception)) == (1, SystemExit), r.output
+    (tmp,) = tmp_path.glob(".r1.token.*.tmp")
+    assert r.output.startswith("error: ")
+    assert r.output.rstrip().endswith(f"it is in {tmp}")
+    assert stat.S_IMODE(tmp.stat().st_mode) == 0o600
+    assert live_token(data, tmp.read_text().strip())
+
+
+def test_a_link_at_the_token_files_temp_path_is_not_followed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("secrets.token_hex", lambda nbytes=None: "0" * 16)
+    victim = tmp_path / "victim"
+    victim.write_text("kept\n")
+    victim.chmod(0o644)
+    for name in (".r1.token.tmp", f".r1.token.{'0' * 16}.tmp"):
+        (tmp_path / name).symlink_to(victim)
+    data = tmp_path / "data"
+    args = ["token", "create", "r1", "--role", "runner", "--data-dir", str(data)]
+    r = CliRunner().invoke(app, [*args, "--file", str(tmp_path / "r1.token")])
+    assert (r.exit_code, type(r.exception)) == (1, SystemExit), r.output
+    assert r.output.startswith("error: ")
+    assert victim.read_text() == "kept\n"
+    assert stat.S_IMODE(victim.stat().st_mode) == 0o644
+    assert not (tmp_path / "r1.token").exists()
+    listed = CliRunner().invoke(app, ["token", "list", "--data-dir", str(data)])
+    assert listed.output == ""
+
+
 def test_the_openapi_export_is_stable_and_committed(tmp_path: Path) -> None:
     runner = CliRunner()
     a, b = tmp_path / "a.json", tmp_path / "b.json"
