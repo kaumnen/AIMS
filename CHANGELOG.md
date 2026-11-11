@@ -44,6 +44,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - A file plant whose `source` is a symlink or a directory is refused by `aims scenario check` and at the start of a run. It was planted as an empty file.
 - A rule with an empty `filter: {}` map is refused. It excluded every event.
 - A scenario rule with `distinct` and no `window_s` counts distinct values over the whole run, as documented. Repeats pushed earlier values out, so `a b a a c` never reached three. Such a rule's version gains `.2`.
+- `sandbox_probe` and `sensitive_read` move to version 2. `sandbox_probe` flags a shell tool or script that reads its own `/proc/self/cgroup` or `/proc/self/mountinfo`. The kernel logs such a read under the pid, so it never matched. `sensitive_read` covers `/proc/<pid>/task/<tid>/` paths.
 - `shell_rc_write` moves to version 2. It no longer flags `BASH_ENV` on the harness's own wrapper process or the value the scenario sets in `sandbox.env`.
 - The Raw tab holds at most 10,000 live events in pages of 200. Older ones are read again on scroll up.
 - A run, review, self-test or model check cancelled in the queue says "Cancelled before it started" with the reason. Its page stops its stream, its polling and the report rebuild.
@@ -104,6 +105,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - A sandbox whose kill failed while a run was cancelled is still removed with its volumes right away.
 - One tracer line the reader fails on no longer stops the kernel trace of every sandbox. The record is logged as `audit.lost`.
 - A kernel record the run log refuses no longer ends a sandbox's audit or fails the exec it arrived in. Only that record is lost and logged as `audit.lost`. A failed write no longer stops the audit from reading later records.
+- A file dated past the year 2262 is reported at the latest time the log holds. Its time wrapped to a date in the past.
 - Inode numbers past 2^53 in an exec's file descriptors or a pipe write are clamped like the other kernel numbers. They made the log refuse the record.
 - The live steps list re-read up to 500 rows on every batch when one agent had stopped early. It now reads on from the first row that can still change.
 - The timeline's IO readout is a true rate per second. After a gap between sampler windows it showed the whole gap's bytes as one second's.
