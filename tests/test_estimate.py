@@ -278,6 +278,22 @@ def test_steps_and_context_bound_an_agent_below_its_cost_cap(tmp_path: Path) -> 
     assert e.parts[0].agents.ceiling_usd == pytest.approx(min(10 * STEP, 0.5 + STEP))
 
 
+def test_an_agent_that_compacts_by_summary_may_pay_two_calls_a_step_under_every_cap(
+    tmp_path: Path,
+) -> None:
+    # the summary call comes before the step's own call, after the caps are checked
+    summary = "\n    compaction: {at: 0.5, strategy: summary, keep_recent: 1}"
+    for budget, extra, ceiling in [
+        ("{steps: 100, cost_usd: 1}", "", 1 + 2 * STEP),
+        ("{steps: 10, cost_usd: 50}", "", 10 * 2 * STEP),
+        ("{steps: 100, cost_usd: 50}", "limits: {cost_usd: 1}\n", 1 + 2 * STEP),
+        ("{steps: 100, cost_usd: 50}", "limits: {steps: 10}\n", 10 * 2 * STEP),
+    ]:
+        settings, path = write(tmp_path, budget=budget + summary, extra=extra)
+        e = one(settings, History(), load_scenario(path))
+        assert e.parts[0].agents.ceiling_usd == pytest.approx(ceiling), (budget, extra)
+
+
 def test_no_cap_set_is_said_with_a_warning(tmp_path: Path) -> None:
     settings, path = write(tmp_path, budget="{steps: null, cost_usd: null}")
     e = one(settings, History(), load_scenario(path), samples=2)

@@ -833,18 +833,26 @@ def step_usd(p: Profile) -> float | None:
     return (p.context_tokens * p.price.input + p.max_output_tokens * p.price.output) / MILLION
 
 
+def _step_cost(agent: AgentConfig, p: Profile) -> float | None:
+    """The most one step of `agent` on `p` can cost: its call, and with summary compaction the
+    summary call it may make before that, once the caps are checked. None when a call's cost is
+    unbounded."""
+    step = step_usd(p)
+    summary = agent.compaction is not None and agent.compaction.strategy == "summary"
+    return None if step is None else step * (2 if summary else 1)
+
+
 def _agent_ceiling(agent: AgentConfig, p: Profile, done: int = 0) -> tuple[float | None, bool]:
     """What the agent's caps let it spend, and whether that counts one last step past its cost
     cap. The step cap bounds the cost only when a call's cost is bounded; a fork's agent has
     the steps it did not replay left, at least one."""
-    step = step_usd(p)
+    step = _step_cost(agent, p)
     b = agent.budget
     caps: list[tuple[float, bool]] = []
     if b.cost_usd is not None:
         caps.append((b.cost_usd + (step or 0.0), step is not None))
     if b.steps is not None and step is not None:
-        summary = agent.compaction is not None and agent.compaction.strategy == "summary"
-        caps.append((max(b.steps - done, 1) * (2 if summary else 1) * step, False))
+        caps.append((max(b.steps - done, 1) * step, False))
     if not caps:
         return None, False
     value, stepped = min(caps)
@@ -861,7 +869,7 @@ def _ceiling(p: Plan) -> tuple[float | None, bool]:
     each = [_agent_ceiling(a, p.profiles[a.id], p.done.get(a.id, 0)) for a in priced]
     if all(value is not None for value, _ in each):
         options.append((sum(v for v, _ in each if v is not None), any(s for _, s in each)))
-    steps = [step_usd(p.profiles[a.id]) for a in priced]
+    steps = [_step_cost(a, p.profiles[a.id]) for a in priced]
     known = [s for s in steps if s is not None]
     limits = p.scenario.limits
     if limits.cost_usd is not None:
