@@ -366,6 +366,36 @@ test("a check of a model profile follows its run", async () => {
   expect(within(spark).getByRole("link").getAttribute("href")).toBe(`/runs/${CHECK}`);
 });
 
+test("quick clicks start one model check, and one that did not start can be tried again", async () => {
+  const base = fetch.getMockImplementation();
+  if (!base) throw new Error("no fetch");
+  let refuse = true;
+  fetch.mockImplementation(async (request) => {
+    if (refuse && new URL(request.url).pathname === "/api/models/check") {
+      refuse = false;
+      return problem(503, "no runner has the keys");
+    }
+    return base(request);
+  });
+  renderAt("/settings/models");
+  const table = await screen.findByRole("table");
+  const spark = within(table).getByText("spark").closest("tr") as HTMLElement;
+  const button = within(spark).getByRole("button", { name: "Check spark" });
+  // both in one tick, before the page shows the first
+  const twice = () =>
+    act(() => {
+      button.click();
+      button.click();
+    });
+  twice();
+  expect(await screen.findByText("no runner has the keys")).toBeTruthy();
+  expect(posts()).toHaveLength(1);
+  await waitFor(() => expect(button).toHaveProperty("disabled", false));
+  twice();
+  expect(await within(spark).findByText("checking")).toBeTruthy();
+  expect(posts()).toHaveLength(2);
+});
+
 test("viewers see the profiles without checks", async () => {
   role = "viewer";
   renderAt("/settings/models");
