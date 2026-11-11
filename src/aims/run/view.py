@@ -12,7 +12,6 @@ from typing import Any
 
 from rich.console import Console, Group, RenderableType
 from rich.live import Live
-from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -20,9 +19,10 @@ from rich.text import Text
 from aims.events import BlobRef, Event, EventStore, ResumeThen
 from aims.models import Delta, DeltaBus
 from aims.monitor.core import HumanRequest
+from aims.report.escape import visible
 from aims.run.estimate import Progress, project_run, usd
 from aims.run.runner import Result, RunError, Runner
-from aims.terminal import shown
+from aims.terminal import one_line, shown
 from aims.text import scrub
 
 TAIL = 240
@@ -41,7 +41,7 @@ LINE_TYPES = {
 
 
 def _short(value: object, n: int) -> str:
-    text = " ".join(str(value).split())
+    text = one_line(value)
     return text if len(text) <= n else text[: n - 1] + "…"
 
 
@@ -92,8 +92,8 @@ def flag_line(data: dict[str, Any], agent: str | None) -> str:
     count = data.get("count") or 1
     seen = f" x{count}" if count > 1 else ""
     who = f" {agent}" if agent else ""
-    why = _short(data.get("justification", ""), ARGS)
-    return f"{data.get('category')} {data.get('importance')} {where}{who}{seen}: {why}"
+    head = one_line(f"{data.get('category')} {data.get('importance')} {where}{who}{seen}")
+    return f"{head}: {_short(data.get('justification', ''), ARGS)}"
 
 
 def action_line(e: Event) -> str:
@@ -111,7 +111,7 @@ def action_line(e: Event) -> str:
         action = str(data.get("action"))
         cause = "monitor (simulated)" if data.get("simulated") else "monitor"
     reason = data.get("reason")
-    return f"{action} {who} by {cause}" + (f": {_short(reason, ARGS)}" if reason else "")
+    return one_line(f"{action} {who} by {cause}") + (f": {_short(reason, ARGS)}" if reason else "")
 
 
 class LiveView:
@@ -187,7 +187,8 @@ class LiveView:
             case "monitor.verdict":
                 run.verdict = f"severity {data.get('max_severity')}: {_text(data.get('summary'))}"
             case "monitor.degraded":
-                run.notes = [*run.notes, f"monitor {data.get('part')}: {data.get('reason')}"]
+                note = f"monitor {data.get('part')}: {data.get('reason')}"
+                run.notes = [*run.notes, visible(note)]
             case "monitor.action" | "operator.action":
                 self._acted(run, e)
             case "run.started":
@@ -633,18 +634,18 @@ class HumanPrompt:
     async def _ask(self, runner: Runner, request: HumanRequest) -> None:
         c = self.console
         agents = ", ".join(request.agents)
-        c.print(f"[bold yellow]the monitor paused {escape(agents)} in run {request.run_id}[/]")
+        c.print(shown(f"the monitor paused {agents} in run {request.run_id}", "bold yellow"))
         for e in request.flags:
-            c.print(f"  [#{e.seq}] {escape(flag_line(e.data, e.agent_id))}")
+            c.print(shown(f"  [#{e.seq}] {flag_line(e.data, e.agent_id)}"))
         if request.advice:
-            c.print(f"  advice: {escape(request.advice)}")
+            c.print(shown(f"  advice: {request.advice}"))
         for agent_id, call_id in request.held_call.items():
-            c.print(f"  {escape(agent_id)} waits before tool call {escape(call_id)}")
+            c.print(shown(f"  {agent_id} waits before tool call {call_id}"))
         if request.timeout_s is not None:
             c.print(f"  with no answer in {request.timeout_s:g} s the run is killed")
         choices = ["resume", *(["deny"] if request.held_call else []), "inject", "kill"]
         while self._waiting(runner, request):
-            c.print(f"{', '.join(choices)}? [resume] ", end="")
+            c.print(f"{', '.join(choices)}? \\[resume] ", end="")
             line = await self._line(runner, request)
             if line is None:
                 c.print("\nthe pause ended without this answer")
@@ -666,7 +667,7 @@ class HumanPrompt:
             try:
                 await self._answer(runner, request, choice, text)
             except RunError as e:
-                c.print(f"[red]error:[/] {escape(str(e))}")
+                c.print("[red]error:[/]", shown(e))
                 continue
             return
 

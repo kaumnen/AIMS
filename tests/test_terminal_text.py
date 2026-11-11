@@ -1,10 +1,11 @@
 """Text from agents, runs, scenario files, servers and requests reaches the operator's terminal
 as the characters it holds: never read as Rich markup, never as escape bytes."""
 
+import asyncio
 import io
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from rich.console import Console
@@ -24,13 +25,17 @@ from aims.events import (
     ToolCall,
     ToolResult,
 )
-from aims.run.runner import Result
-from aims.run.view import digest, summary
+from aims.models import Delta, DeltaBus
+from aims.monitor.core import HumanRequest
+from aims.run.runner import Result, Runner
+from aims.run.view import HumanPrompt, LiveView, digest, summary
 from aims.terminal import one_line, shown
 
 pytestmark = pytest.mark.anyio
 
 FIXTURE = Path(__file__).parent / "fixtures" / "runs" / "word-count"
+# An OSC title write, a screen clear and a cursor move, as a tool might print them
+ESCAPES = "\x1b]0;owned\x07\x1b[2J\x1b[H"
 
 
 def invoke(*args: str, env: dict[str, str] | None = None) -> Any:
@@ -158,3 +163,66 @@ def test_aims_monitor_ships_its_runs_even_when_printing_fails(
     assert len(pushed) == 1
     assert result.exit_code == 0, result.output
     assert "the results could not be printed" in result.stderr
+
+
+# 73: escape bytes in the live view and the pause prompt
+
+
+async def test_the_live_view_shows_escape_bytes_as_text(tmp_path: Path) -> None:
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        run_id = await flagged_run(store, ESCAPES)
+        view = LiveView(store, DeltaBus())
+        view.add(run_id)
+        async with asyncio.timeout(5):
+            while view.runs[run_id].phase != "done":  # noqa: ASYNC110
+                await asyncio.sleep(0.02)
+        await view.stop()
+    for kind in ("start", "text", "reasoning"):
+        view._on_delta(Delta(run_id, "a", "m1", 0, kind, f"model {ESCAPES}"))
+    shown = printed(view)
+    assert "\x1b" not in shown
+    assert "\x07" not in shown
+    assert "< out \\u001B]0;owned\\u0007\\u001B[2J\\u001B[H" in shown
+    assert "> bash echo \\u001B]0;owned" in shown
+    assert "report: report \\u001B]0;owned" in shown
+    assert "model \\u001B]0;owned" in shown
+    assert "monitor judge: judge said \\u001B]0;owned" in shown
+    assert "the agent wrote \\u001B]0;owned" in shown
+
+
+class Held:
+    """The Runner surface the pause prompt uses: one paused agent, until an answer."""
+
+    finished = killed = False
+
+    def __init__(self) -> None:
+        self.held = True
+
+    def paused(self, agent_id: str) -> bool:
+        return self.held
+
+    async def operate(self, action: str, **kw: Any) -> None:
+        self.held = False
+
+
+async def test_the_pause_prompt_shows_escape_bytes_and_brackets_as_text(tmp_path: Path) -> None:
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        run_id = await flagged_run(store, ESCAPES)
+        flags = await store.events(run_id, types=["monitor.flag"])
+    out = io.StringIO()
+    console = Console(file=out, force_terminal=True, color_system=None, width=300)
+    prompt = HumanPrompt(console, read=lambda: "kill\n")
+    advice = f"look {ESCAPES}"
+    request = HumanRequest(
+        run_id=run_id, agents=["a"], flags=flags, advice=advice, held_call={"a": "c[/x]"}
+    )
+    await prompt.hook(cast(Runner, Held()))(request)
+    async with asyncio.timeout(5):
+        while prompt._tasks:  # noqa: ASYNC110
+            await asyncio.sleep(0.02)
+    shown = out.getvalue()
+    assert "\x1b" not in shown
+    assert "  [#4] monitor_manipulation 4 signal/monitor_manipulation a: the agent wrote" in shown
+    assert "  advice: look \\u001B]0;owned\\u0007" in shown
+    assert "  a waits before tool call c[/x]" in shown
+    assert "resume, deny, inject, kill? [resume] " in shown
