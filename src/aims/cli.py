@@ -844,7 +844,7 @@ async def _run(**o: Any) -> int:
     from aims.sandbox import DockerBackend, SandboxError
     from aims.scenario import ScenarioError, load
     from aims.scenario.budget import BudgetError
-    from aims.terminal import on_hangup
+    from aims.terminal import on_hangup, shown
     from aims.wire import TracerHealth
 
     err = Console(stderr=True)
@@ -856,7 +856,7 @@ async def _run(**o: Any) -> int:
     )
 
     def fail(message: str) -> int:
-        err.print(f"[red]error:[/] {message}")
+        err.print("[red]error:[/]", shown(message))
         return EXIT_FAILED
 
     from aims.config import ConfigError
@@ -902,7 +902,7 @@ async def _run(**o: Any) -> int:
                 problems = check(bundle, models, o["profile"], prompts)
                 if problems:
                     for problem in problems:
-                        err.print(f"[red]error:[/] {problem}")
+                        fail(problem)
                     return EXIT_FAILED
                 budget = o["budget"]
                 if budget is not None:
@@ -911,7 +911,7 @@ async def _run(**o: Any) -> int:
         except (ScenarioError, RunError, ProfileError) as e:
             return fail(str(e))
         except BudgetError as e:
-            return fail(escape(f"--budget: {e}"))
+            return fail(f"--budget: {e}")
         if (line := _budget_line(base, budget)) is not None:
             err.print(escape(line), highlight=False)
         try:
@@ -931,7 +931,7 @@ async def _run(**o: Any) -> int:
                 budget=budget,
             )
         except (MonitorConfigError, ProfileError, TextError, RunError) as e:
-            return fail(escape(f"monitor: {e}"))
+            return fail(f"monitor: {e}")
         if monitor is not None and o["oversight"] is not None:
             monitor = replace(monitor, oversight=o["oversight"])
         if monitor is not None:
@@ -941,11 +941,9 @@ async def _run(**o: Any) -> int:
                     p.api_key()
                 except ProfileError as e:
                     return fail(
-                        escape(
-                            f"the monitor's {e}; set it, or use a signals-only monitor, which"
-                            ' needs no key: preset = "signals" under [monitor] in aims.toml,'
-                            " monitor: {preset: signals} in the scenario, or --monitor signals"
-                        )
+                        f"the monitor's {e}; set it, or use a signals-only monitor, which"
+                        ' needs no key: preset = "signals" under [monitor] in aims.toml,'
+                        " monitor: {preset: signals} in the scenario, or --monitor signals"
                     )
         cost = None
         try:
@@ -995,7 +993,7 @@ async def _run(**o: Any) -> int:
                 ask=lambda q: typer.confirm(q, default=False, err=True),
             )
             if refused is not None:
-                return fail(escape(refused))
+                return fail(refused)
         try:
             backend = await DockerBackend.open(
                 audit=o["audit"], image_keep_days=settings.image_keep_days
@@ -1863,7 +1861,7 @@ async def _monitor_runs(**o: Any) -> int:
     )
 
     def fail(message: str) -> int:
-        err.print(f"[red]error:[/] {escape(message)}")
+        err.print("[red]error:[/]", shown(message))
         return EXIT_FAILED
 
     try:

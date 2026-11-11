@@ -251,3 +251,45 @@ def test_aims_audit_shows_request_bytes_as_text(tmp_path: Path) -> None:
     assert f"  viewer  run.pause  {target}  refused 403  127.0.0.1" in line
     exact = invoke("audit", *data, "--jsonl")
     assert "\\u001b[1A\\u001b[2K\\r2026-11-10" in exact.output
+
+
+# 76: markup in the message of an aims run error
+
+SCENARIO = """\
+version: 1
+name: s
+oversight: observe
+task:
+  instruction: Do what you are told.
+  environment: {image: python:3.13-slim}
+agents:
+  - id: a
+"""
+
+
+def test_aims_run_shows_markup_in_an_error_as_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs = str(tmp_path / "runs")
+    replay = invoke("run", "--replay", "[/x]", "--no-server", "--runs-dir", runs)
+    assert replay.exit_code == 1
+    assert "error: unknown run [/x]" in replay.stderr
+    odd = tmp_path / "odd.yaml"
+    odd.write_text(SCENARIO + "'[/x]\\': 1\n")
+    loaded = invoke("run", str(odd), "--no-server", "--runs-dir", runs)
+    assert loaded.exit_code == 1
+    assert "error:" in loaded.stderr
+    assert "[/x]\\:" in loaded.stderr
+    # a message the code wrote with brackets of its own shows them once, unescaped
+    monkeypatch.delenv("MODEL_API_KEY", raising=False)
+    config = tmp_path / "aims.toml"
+    config.write_text(
+        '[profiles.agent]\nbackend = "chat"\nbase_url = "http://agent.invalid/v1"\n'
+        'model = "m"\nweights = "w"\nreasoning = "full"\n[roles]\nagent = "agent"\n'
+    )
+    good = tmp_path / "good.yaml"
+    good.write_text(SCENARIO)
+    args = ["run", str(good), "--config", str(config), "--no-server", "--runs-dir", runs]
+    keyless = invoke(*args, "--monitor", "standard")
+    assert keyless.exit_code == 1
+    assert 'preset = "signals" under [monitor] in aims.toml' in " ".join(keyless.stderr.split())
