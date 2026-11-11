@@ -418,6 +418,25 @@ def test_log_lines_show_hidden_characters_and_keep_their_lines() -> None:
     assert line.endswith("ValueError: the model said \\u001B]0;owned\\u0007\\u001B[2J\\u001B[H")
 
 
+def test_a_log_message_stays_on_one_line_and_its_traceback_keeps_its_lines() -> None:
+    forged = "ok\nERROR aims: forged\r\nWARNING a\N{LINE SEPARATOR}b\x85c\x0bd\x0ce\rf\n"
+    try:
+        raise ValueError("first\nsecond")
+    except ValueError:
+        record = logging.LogRecord(
+            "aims", logging.WARNING, __file__, 1, "run %s", (forged,), sys.exc_info()
+        )
+    head, *rest = VisibleLog("%(levelname)s %(name)s: %(message)s").format(record).split("\n")
+    assert head == (
+        "WARNING aims: run ok\\u000AERROR aims: forged\\u000D\\u000A"
+        "WARNING a\\u2028b\\u0085c\\u000Bd\\u000Ce\\u000Df"
+    )
+    assert rest[0] == "Traceback (most recent call last):"
+    assert rest[-2:] == ["ValueError: first", "second"]
+    plain = logging.LogRecord("aims", logging.ERROR, __file__, 1, "%s", ("x\ny",), None)
+    assert VisibleLog().format(plain) == "x\\u000Ay"
+
+
 def test_argv_and_tokens_come_back_as_text(tmp_path: Path) -> None:
     data = ["--data-dir", str(tmp_path / "server")]
     name = f"a\nb{ESCAPES}"

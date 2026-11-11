@@ -44,8 +44,16 @@ def json_text(value: object, *, indent: int | None = None) -> str:
     return reveal(json.dumps(value, ensure_ascii=False, indent=indent), _json_escape)
 
 
+_BREAKS = str.maketrans({"\n": "\\u000A", "\r": "\\u000D"})
+
+
 class VisibleLog(logging.Formatter):
-    """Writes each log line, its traceback too, through visible()."""
+    """Writes each log line, its traceback too, through visible(). A line break inside the
+    message shows as `\\u000A` or `\\u000D`, so one record is one line and outside text cannot
+    forge another; a break at its end is dropped. A traceback keeps its lines."""
+
+    def formatMessage(self, record: logging.LogRecord) -> str:
+        return super().formatMessage(record).rstrip("\r\n").translate(_BREAKS)
 
     def format(self, record: logging.LogRecord) -> str:
         return visible(super().format(record))
