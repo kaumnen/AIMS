@@ -1111,10 +1111,17 @@ async def _run(**o: Any) -> int:
                 return result
 
             async def score_after(run_id: str) -> None:
-                """Score a sealed run that has a truth file; a score that fails warns."""
+                """Score a sealed run that has a truth file; a score that fails warns. A score
+                may call a model, so none starts after a stop."""
                 from aims.run.scoring import ScoreError, score_sealed
 
                 if not truth.path(store.root / run_id).is_file():
+                    return
+                if stops:
+                    err.print(
+                        f"[yellow]run {run_id} was not scored:[/] aims run was stopped;"
+                        f" `aims score {run_id}` scores it"
+                    )
                     return
                 score_id = str(uuid.uuid7())
                 if link is not None:
@@ -1159,6 +1166,9 @@ async def _run(**o: Any) -> int:
                         restored = await archives(store, previous)
                         err.print(f"series {o['series']} goes on after run {previous}")
                     for i in range(start, start + o["runs"]):
+                        # A stop reaches only the runs made before it.
+                        if stops:
+                            break
                         made = make(
                             i,
                             Series(name=o["series"], index=i, previous=previous),
@@ -1217,7 +1227,7 @@ async def _run(**o: Any) -> int:
     else:
         Console().print(summary(results, list(digests.values())))
     statuses = {r.status for r in results}
-    if "cancelled" in statuses:
+    if stops or "cancelled" in statuses:
         return EXIT_CANCELLED
     if "killed" in statuses:
         return EXIT_KILLED

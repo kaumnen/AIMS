@@ -38,6 +38,8 @@ from aims.events import (
     RunFinished,
     RunInfo,
     RunStarted,
+    RunStatus,
+    Series,
     ToolCall,
 )
 from aims.models import DeltaBus
@@ -46,6 +48,7 @@ from aims.node import service
 from aims.node.client import ControlClient
 from aims.node.link import Link
 from aims.node.service import Node, NodeOptions
+from aims.run import truth
 from aims.run.runner import Bench, Options, Result, RunError, Runner
 from aims.run.view import HumanPrompt, JsonLines, LiveView, _args, digest, monitor_table
 from aims.sandbox import DockerBackend, SandboxError
@@ -240,9 +243,24 @@ def test_aims_run_takes_a_monitor_preset(tmp_path: Path) -> None:
     assert "--monitor" in re.sub(r"\x1b\[[0-9;]*m", "", result.output)
 
 
-def test_aims_run_stops_once_when_its_terminal_hangs_up(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+class Backend:
+    """No Docker: Runner.run is stubbed where it is used."""
+
+    tracer = None
+
+    async def __aenter__(self) -> Backend:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+
+async def backend(**kwargs: Any) -> Backend:
+    return Backend()
+
+
+def run_args(tmp_path: Path) -> list[str]:
+    """A quiet `aims run` of SCENARIO with an agent profile, no monitor and no control plane."""
     config = tmp_path / "aims.toml"
     config.write_text(
         '[profiles.agent]\nbackend = "chat"\nbase_url = "http://agent.invalid/v1"\n'
@@ -251,21 +269,26 @@ def test_aims_run_stops_once_when_its_terminal_hangs_up(
     )
     path = tmp_path / "scenario.yaml"
     path.write_text(SCENARIO)
+    return [
+        "run",
+        str(path),
+        "--config",
+        str(config),
+        "--runs-dir",
+        str(tmp_path / "runs"),
+        "--no-server",
+        "--monitor",
+        "off",
+        "--quiet",
+    ]
+
+
+def test_aims_run_stops_once_when_its_terminal_hangs_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     hung: list[tuple[int, ...]] = []
     ended: list[bool] = []
     monkeypatch.setattr("aims.terminal.hang_up", hung.append)
-
-    class Backend:
-        tracer = None
-
-        async def __aenter__(self) -> Backend:
-            return self
-
-        async def __aexit__(self, *exc: object) -> None:
-            return None
-
-    async def backend(**kwargs: Any) -> Backend:
-        return Backend()
 
     async def run(self: Runner) -> Result:
         os.kill(os.getpid(), signal.SIGHUP)
@@ -282,18 +305,7 @@ def test_aims_run_stops_once_when_its_terminal_hangs_up(
     monkeypatch.setattr(Runner, "run", run)
     before = guard_hangup()
     try:
-        result = invoke(
-            "run",
-            str(path),
-            "--config",
-            str(config),
-            "--runs-dir",
-            str(tmp_path / "runs"),
-            "--no-server",
-            "--monitor",
-            "off",
-            "--quiet",
-        )
+        result = invoke(*run_args(tmp_path))
     finally:
         signal.signal(signal.SIGHUP, before)
     assert result.exit_code == EXIT_CANCELLED, result.output
@@ -301,6 +313,151 @@ def test_aims_run_stops_once_when_its_terminal_hangs_up(
     assert len(hung) == 2
     assert "Ctrl-C again to kill the sandboxes now" in result.output
     assert "killed the sandboxes" not in result.output
+
+
+async def sealed(runner: Runner, status: RunStatus = "completed") -> Result:
+    """What Runner.run leaves: a sealed run in the runner's series, with a truth file."""
+    store = runner.bench.store
+    started = RunStarted(scenario="watched", oversight="observe", series=runner.options.series)
+    runner.run_id = run_id = await store.create_run(started)
+    truth.write(store.root / run_id, {})
+    await store.append(run_id, [Draft(RunFinished(status=status))])
+    return Result(run_id, status)
+
+
+async def stop_reaches(runner: Runner, sig: signal.Signals) -> None:
+    """Send this process `sig` and wait until the stop of `aims run` reaches `runner`."""
+    os.kill(os.getpid(), sig)
+    await until(lambda: runner._monitor_cut)
+
+
+def run_stubbed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, run: Any, *args: str
+) -> tuple[Any, list[str]]:
+    """`aims run --yes ARGS` with `run` as Runner.run. Returns the result and the runs scored."""
+    scored: list[str] = []
+
+    async def score(store: Any, settings: Any, run: str, **kwargs: Any) -> None:
+        scored.append(run)
+
+    monkeypatch.setattr(DockerBackend, "open", backend)
+    monkeypatch.setattr(Runner, "run", run)
+    monkeypatch.setattr("aims.run.scoring.score_sealed", score)
+    monkeypatch.setattr("aims.terminal.hang_up", lambda fds: None)
+    before = guard_hangup()
+    try:
+        result = invoke(*run_args(tmp_path), "--yes", *args)
+    finally:
+        signal.signal(signal.SIGHUP, before)
+    return result, scored
+
+
+def statuses(result: Any) -> list[str]:
+    return [line.split()[1] for line in result.stdout.splitlines()]
+
+
+@pytest.mark.parametrize(
+    ("name", "when"),
+    [("SIGINT", "judge"), ("SIGTERM", "verifier"), ("SIGHUP", "judge"), ("SIGINT", "between")],
+)
+def test_a_stop_while_a_series_run_ends_starts_no_next_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, when: str
+) -> None:
+    sig = signal.Signals[name]
+    made: list[Runner] = []
+
+    async def run(self: Runner) -> Result:
+        made.append(self)
+        if when == "judge":
+            self._decided = True  # as Runner.run before its judge: a cancel keeps the outcome
+        if when != "between":
+            await stop_reaches(self, sig)
+        # a cancel in the verifier sets `cancelled`, and the run still completes
+        return await sealed(self)
+
+    async def archives(store: Any, run_id: str) -> dict[str, bytes]:
+        await stop_reaches(made[0], sig)
+        return {}
+
+    with monkeypatch.context() as m:
+        if when == "between":
+            m.setattr("aims.channels.archives", archives)
+        result, scored = run_stubbed(tmp_path, m, run, "--series", "s", "--runs", "3")
+    assert result.exit_code == EXIT_CANCELLED, result.output
+    assert "Ctrl-C again to kill the sandboxes now" in result.output
+    assert len(made) == 1
+    assert statuses(result) == ["completed"]
+    first = made[0].run_id
+    # a score may call a model, and none starts after the stop
+    assert scored == ([first] if when == "between" else [])
+
+    went_on: list[Series | None] = []
+
+    async def again(self: Runner) -> Result:
+        went_on.append(self.options.series)
+        return await sealed(self)
+
+    result, _ = run_stubbed(tmp_path, monkeypatch, again, "--series", "s", "--runs", "1")
+    assert result.exit_code == 0, result.output
+    assert went_on == [Series(name="s", index=1, previous=first)]
+
+
+def test_an_early_stop_still_cancels_the_series_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    made: list[Runner] = []
+
+    async def run(self: Runner) -> Result:
+        made.append(self)
+        await stop_reaches(self, signal.SIGINT)
+        return await sealed(self, "cancelled" if self.cancelled else "completed")
+
+    result, scored = run_stubbed(tmp_path, monkeypatch, run, "--series", "s", "--runs", "3")
+    assert result.exit_code == EXIT_CANCELLED, result.output
+    assert len(made) == 1
+    assert statuses(result) == ["cancelled"]
+    assert scored == []
+
+
+def test_a_series_without_a_stop_makes_and_scores_every_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    made: list[Runner] = []
+
+    async def run(self: Runner) -> Result:
+        made.append(self)
+        return await sealed(self)
+
+    result, scored = run_stubbed(tmp_path, monkeypatch, run, "--series", "s", "--runs", "2")
+    assert result.exit_code == 0, result.output
+    first, second = (r.run_id for r in made)
+    assert [r.options.series for r in made] == [
+        Series(name="s", index=0),
+        Series(name="s", index=1, previous=first),
+    ]
+    assert statuses(result) == ["completed", "completed"]
+    assert scored == [first, second]
+
+
+@pytest.mark.parametrize("samples", [1, 3])
+def test_a_stop_while_a_sample_ends_starts_no_waiting_sample(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, samples: int
+) -> None:
+    made: list[Runner] = []
+
+    async def run(self: Runner) -> Result:
+        made.append(self)
+        self._decided = True  # as Runner.run before its judge: a cancel keeps the outcome
+        await stop_reaches(self, signal.SIGINT)
+        return await sealed(self)
+
+    args = ("--samples", str(samples), "--parallel", "1")
+    result, scored = run_stubbed(tmp_path, monkeypatch, run, *args)
+    assert result.exit_code == EXIT_CANCELLED, result.output
+    assert len(made) == 1
+    assert statuses(result) == ["completed"] + ["cancelled"] * (samples - 1)
+    assert scored == []
+    assert f"`aims score {made[0].run_id}` scores it" in " ".join(result.output.split())
 
 
 def test_prompts_show_lists_the_monitor_texts() -> None:
