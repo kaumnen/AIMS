@@ -52,6 +52,14 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - Signing in clears everything the last session loaded in that tab. The shared live stream reconnects with the new session.
 - Leaving an unsaved scenario file or config file asks first: a tab, a link, another file or layer, Back and Forward. One question each. Tabs and links dropped the draft without a word. Deleting the file or the scenario does not ask.
 - The New run form scores each run by default, as `aims run` does. Untick the box to skip it.
+- `aims control` exits 4 when the command was dropped, 5 when it was done in part and 6 when no answer came within `--wait`. It exited 0 on a drop and 1 on no answer. `--help` lists the codes.
+- A command dropped as its run ended turns to done when the runner then answers that it carried it out. `GET /api/runs/{id}/commands` gains `final`, which says the outcome can no longer change. Run summaries gain `commands_dropped`.
+- The control plane's database moves to version 5. It upgrades in place at the next start.
+- A scripted agent holds before each of its steps while it is paused, with its sandbox frozen. It took its steps through a pause before. Its `after_s` waits do not count paused time. Its `agent.finished` reports `paused_ms`.
+- A runner's first stop cancels its monitor and score jobs at once. A job whose run had not begun goes back to the control plane for the next runner.
+- Ctrl-C while `aims run` or `aims monitor` closes its runs does nothing. The cleanup left is short. Ctrl-C while `aims monitor` ships its runs ends the shipping.
+- A resume tries a sandbox that does not unfreeze three times, one second apart.
+- A cancelled command in a sandbox has its processes ended, within 5 s. A frozen sandbox is left as it is.
 
 ### Fixed
 
@@ -115,6 +123,16 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - Two quick clicks on Check start one paid model check.
 - The New run form no longer opens on another scenario when the one asked for is missing from its cached list. It reads the list again, then says why that scenario cannot run.
 - A From or To time the audit log cannot use, such as a six-digit year, is left out and marked. It crashed the page.
+- A kill or resume that took effect just as the run ended showed as `dropped: the run ended`.
+- A cancelled `aims score`, score job or `aims models check` is sealed `cancelled` with a reason. A score was sealed `completed` and a model check `failed`.
+- A queued run killed with no reason recorded "killled by".
+- The pause prompt of `aims run` shows as a warning what an answer did not carry out, such as a sandbox that did not unfreeze.
+- An agent that starts while the monitor's sweeps keep failing is held like the others. It ran unwatched.
+- A freeze or unfreeze call that fails no longer leaves the runner wrong about the sandbox. It reads the container's real state.
+- An agent whose sandbox does not freeze at its gate still holds there. It ended with an error.
+- A sandbox start that failed or was cancelled left its volumes and container until the next start of the runner.
+- A cancelled setup or tool command kept running in the sandbox, for good in one kept with `--keep`.
+- A late Ctrl-C in `aims run` or `aims monitor` could cut the store's close and end in a traceback. A run that completed still exits 0.
 
 ## [0.2.2] - 2026-11-10
 
