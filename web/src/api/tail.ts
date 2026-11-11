@@ -28,6 +28,7 @@ const STEP_EVENTS = new Set([
 const TAIL_PAGE = 500;
 // What a raw list holds back while its page is read: at most the largest page the server sends.
 const MAX_HELD = 1000;
+const NO_AGENTS: ReadonlySet<string> = new Set();
 
 export interface ToolDraft {
   name: string;
@@ -84,6 +85,11 @@ export class RunTail {
   #held = new Map<string, Event[] | "over">();
   #unheld: (() => void) | null = null;
   #replaying = false;
+  // Agents known to have ended, and those of them whose rows were read after that: the last
+  // row of a settled agent is final, even with a tool call that never got its result.
+  #ended = new Set<string>();
+  #settled = new Set<string>();
+  #endsRead = false;
 
   constructor(
     readonly runId: string,
@@ -164,6 +170,7 @@ export class RunTail {
       const data = e.data as Record<string, unknown>;
       if (e.type === "model.response" && data["retry"] !== true)
         this.#done.add(String(data["call_id"]));
+      else if (e.type === "agent.finished") this.#ended.add(e.agent_id ?? "");
     }
     for (const d of deltas) {
       if (d !== "dropped") changed = this.#delta(d) || changed;
@@ -308,8 +315,8 @@ export class RunTail {
     });
   }
 
-  // Reads the step rows that can still change, each agent's latest and any after it, and
-  // merges them in; a burst during the read reads once more after it.
+  // Reads the step rows that can still change, each agent's latest while a tool call of it runs
+  // and any after it, and merges them in; a burst during the read reads once more after it.
   refreshSteps(): void {
     if (this.#refreshing) {
       this.#again = true;
@@ -325,7 +332,12 @@ export class RunTail {
       return;
     }
     const rows = data.pages.flatMap((p) => p.items);
-    const after = tailStart(rows);
+    const first = firstOpen(rows, this.#settled);
+    // a row with steps after it may be the last of an agent that ended before the stream opened
+    if (!this.#endsRead && first < rows.length - 1) this.#readEnds();
+    const after = startAt(rows, first);
+    // agents whose end came before this read: their rows in it are final
+    const ended = this.#ended.size > this.#settled.size ? [...this.#ended] : [];
     this.#refreshing = true;
     void client
       .GET("/api/runs/{run_id}/steps", {
@@ -339,6 +351,7 @@ export class RunTail {
         const now = this.qc.getQueryData<InfiniteData<StepPage, number | null>>(key);
         if (!now) return;
         this.qc.setQueryData(key, mergeTail(now, after, page));
+        for (const agent of ended) this.#settled.add(agent);
       })
       .finally(() => {
         this.#refreshing = false;
@@ -347,6 +360,22 @@ export class RunTail {
           this.refreshSteps();
         }
       });
+  }
+
+  // Agents that ended before the stream opened, which only their logged ends tell. Read once.
+  #readEnds(): void {
+    this.#endsRead = true;
+    void client
+      .GET("/api/runs/{run_id}/events", {
+        params: {
+          path: { run_id: this.runId },
+          query: { types: ["agent.finished"], limit: MAX_HELD },
+        },
+      })
+      .then(({ data }) => {
+        for (const e of data?.items ?? []) this.#ended.add(e.agent_id ?? "");
+      })
+      .catch(() => undefined);
   }
 
   #afterRead(hash: string): void {
@@ -370,13 +399,29 @@ function lastSeq(pages: readonly RawPage[]): number {
   return -1;
 }
 
-// The seq to read on from: just before the earliest row that is some agent's latest.
-export function tailStart(rows: readonly StepInfo[]): number | null {
+// The index of the first row that may still change: some agent's latest, while a tool call of
+// it has no result and the agent is not settled. A step logs its tool calls before itself, so
+// a row whose calls all have results is final. Past the last row when none may change.
+function firstOpen(rows: readonly StepInfo[], settled: ReadonlySet<string>): number {
   const latest = new Map<string, number>();
   rows.forEach((r, i) => latest.set(r.agent_id ?? "", i));
-  const first = Math.min(...latest.values());
-  if (!Number.isFinite(first) || first <= 0) return null;
-  return rows[first - 1]?.seq ?? null;
+  let first = rows.length;
+  for (const [agent, i] of latest) {
+    if (i < first && !settled.has(agent) && rows[i]?.tools?.some((t) => !t.done)) first = i;
+  }
+  return first;
+}
+
+// The seq just before row `first`; null reads from the first step.
+const startAt = (rows: readonly StepInfo[], first: number) =>
+  first > 0 ? (rows[first - 1]?.seq ?? null) : null;
+
+// The seq to read on from: just before the first row that may still change.
+export function tailStart(
+  rows: readonly StepInfo[],
+  settled: ReadonlySet<string> = NO_AGENTS,
+): number | null {
+  return startAt(rows, firstOpen(rows, settled));
 }
 
 export function mergeTail(

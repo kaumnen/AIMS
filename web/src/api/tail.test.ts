@@ -31,18 +31,19 @@ const RUN = "r1";
 const fetch = vi.fn<(request: Request) => Promise<Response>>();
 let frames: (() => void)[];
 
-const step = (seq: number, n: number, agent = "a"): StepInfo =>
+// A step whose tool call still runs, unless `done`.
+const step = (seq: number, n: number, agent = "a", done = false): StepInfo =>
   ({
     seq,
     n,
     agent_id: agent,
     seq_from: seq - 1,
     seq_to: seq + 1,
-    tools: [],
+    tools: [{ seq, call_id: `t${seq}`, name: "bash", done }],
   }) as unknown as StepInfo;
 
-const event = (seq: number, type: string, data: Record<string, unknown> = {}): Event =>
-  ({ seq, type, ts: "2026-10-31T10:00:00+00:00", agent_id: "a", data }) as unknown as Event;
+const event = (seq: number, type: string, data: Record<string, unknown> = {}, agent = "a"): Event =>
+  ({ seq, type, ts: "2026-10-31T10:00:00+00:00", agent_id: agent, data }) as unknown as Event;
 
 const delta = (over: Partial<WireDelta>): WireDelta => ({
   run_id: RUN,
@@ -337,6 +338,27 @@ test("a tail stopped while a raw page is read holds nothing and leaves the cache
   expect(rawSeqs(qc, all.queryKey)).toEqual([0, 1, 2, 3, 4]);
 });
 
+// Answers step reads from `rows` and reads of agent ends with `ends`; the URLs asked, by kind.
+function stepReads(rows: () => StepInfo[], ends: Event[] = []) {
+  const asked = { steps: [] as URL[], ends: [] as URL[] };
+  fetch.mockImplementation(async (request) => {
+    const url = new URL(request.url);
+    if (url.pathname.endsWith("/steps")) {
+      asked.steps.push(url);
+      const after = Number(url.searchParams.get("after") ?? -1);
+      return Response.json({ items: rows().filter((r) => r.seq > after), next: null });
+    }
+    asked.ends.push(url);
+    return Response.json({ items: ends, next: null });
+  });
+  return asked;
+}
+
+const stepSeqs = (qc: QueryClient) =>
+  qc
+    .getQueryData<InfiniteData<StepPage>>(stepsQuery(RUN).queryKey)
+    ?.pages.flatMap((p) => p.items.map((s) => s.seq));
+
 test("step events read the rows that can still change once a frame and merge them", async () => {
   const qc = new QueryClient();
   const steps = stepsQuery(RUN);
@@ -344,24 +366,73 @@ test("step events read the rows that can still change once a frame and merge the
     pages: [{ items: [step(10, 1), step(20, 1, "b"), step(30, 2)], next: null }],
     pageParams: [null],
   });
-  fetch.mockResolvedValue(
-    Response.json({ items: [step(20, 1, "b"), step(30, 2), step(50, 3)], next: null }),
-  );
+  const asked = stepReads(() => [step(20, 1, "b"), step(30, 2), step(50, 3)]);
   const { source, tail } = open(qc);
   source.send({ kind: "events", run_id: RUN, events: [event(49, "exec.finished")] });
   source.send({ kind: "events", run_id: RUN, events: [event(50, "agent.step")] });
   flush();
-  await waitFor(() =>
-    expect(
-      qc
-        .getQueryData<InfiniteData<StepPage>>(steps.queryKey)
-        ?.pages.flatMap((p) => p.items.map((s) => s.seq)),
-    ).toEqual([10, 20, 30, 50]),
+  await waitFor(() => expect(stepSeqs(qc)).toEqual([10, 20, 30, 50]));
+  expect(asked.steps).toHaveLength(1);
+  expect(asked.steps[0]?.pathname).toBe(`/api/runs/${RUN}/steps`);
+  expect(asked.steps[0]?.searchParams.get("after")).toBe("10");
+  tail.stop();
+});
+
+// Step rows of agents a and b: b was killed while it held before its tool call, which never
+// runs; a goes on.
+function killedB(qc: QueryClient) {
+  qc.setQueryData<InfiniteData<StepPage, number | null>>(stepsQuery(RUN).queryKey, {
+    pages: [{ items: [step(10, 1, "b"), step(20, 1, "a", true), step(30, 2)], next: null }],
+    pageParams: [null],
+  });
+  // each landed read writes the steps once
+  return (n: number) =>
+    waitFor(() => expect(qc.getQueryState(stepsQuery(RUN).queryKey)?.dataUpdateCount).toBe(n + 1));
+}
+
+test("an agent that ended with a tool call under way leaves the tail once its rows are read", async () => {
+  const qc = new QueryClient();
+  const landed = killedB(qc);
+  let rows = [step(10, 1, "b"), step(20, 1, "a", true), step(30, 2)];
+  const asked = stepReads(() => rows);
+  const { source, tail } = open(qc);
+  source.send({
+    kind: "events",
+    run_id: RUN,
+    events: [event(40, "agent.finished", {}, "b"), event(41, "exec.started")],
+  });
+  flush();
+  await landed(1);
+  // that read began after b's end, so b's last row is final once it is in
+  expect(asked.steps[0]?.searchParams.has("after")).toBe(false);
+  rows = [step(30, 2, "a", true), step(50, 3)];
+  source.send({ kind: "events", run_id: RUN, events: [event(50, "agent.step")] });
+  flush();
+  await landed(2);
+  expect(asked.steps[1]?.searchParams.get("after")).toBe("20");
+  expect(stepSeqs(qc)).toEqual([10, 20, 30, 50]);
+  tail.stop();
+});
+
+test("an agent that ended before the stream opened is read once, then leaves the tail", async () => {
+  const qc = new QueryClient();
+  const landed = killedB(qc);
+  const asked = stepReads(
+    () => [step(10, 1, "b"), step(20, 1, "a", true), step(30, 2)],
+    [event(12, "agent.finished", {}, "b")],
   );
-  expect(fetch).toHaveBeenCalledTimes(1);
-  const url = new URL(fetch.mock.calls[0]?.[0].url ?? "");
-  expect(url.pathname).toBe(`/api/runs/${RUN}/steps`);
-  expect(url.searchParams.get("after")).toBe("10");
+  const { source, tail } = open(qc);
+  for (const seq of [41, 42, 43]) {
+    source.send({ kind: "events", run_id: RUN, events: [event(seq, "exec.started")] });
+    flush();
+    // oxlint-disable-next-line no-await-in-loop
+    await landed(seq - 40);
+  }
+  // the first step read began before b's end was known; the next one settles b
+  expect(asked.steps.map((u) => u.searchParams.get("after"))).toEqual([null, null, "20"]);
+  expect(asked.ends).toHaveLength(1);
+  expect(asked.ends[0]?.searchParams.getAll("types")).toEqual(["agent.finished"]);
+  expect(stepSeqs(qc)).toEqual([10, 20, 30]);
   tail.stop();
 });
 
@@ -413,6 +484,22 @@ test("the tail starts before the earliest row some agent may still change", () =
     [10, 20],
     [30, 40],
   ]);
+});
+
+test("a last row with every tool result in, or one of an agent whose end was read, is final", () => {
+  // b took one step and submitted; a went on for 700 steps and runs a tool now
+  const rows = [
+    step(2, 1, "b", true),
+    ...Array.from({ length: 700 }, (_, i) => step(4 + i * 2, i + 1, "a", i < 699)),
+  ];
+  expect(tailStart(rows)).toBe(rows.at(-2)?.seq);
+  // between a's steps nothing can change: the tail reads on past the last row
+  const idle = rows.map((r) => ({ ...r, tools: [] }));
+  expect(tailStart(idle)).toBe(rows.at(-1)?.seq);
+  // b ended while its tool call was held, so that call has no result
+  const held = [step(2, 1, "b"), ...rows.slice(1)];
+  expect(tailStart(held)).toBeNull();
+  expect(tailStart(held, new Set(["b"]))).toBe(rows.at(-2)?.seq);
 });
 
 test("the default scheduler calls the browser's frame callback as a plain function", () => {

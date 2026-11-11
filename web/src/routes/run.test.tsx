@@ -1606,7 +1606,8 @@ test("an open run follows its latest step and shows the next one as it is writte
   await waitFor(() => expect(chosen()).toContain("no tool call"));
   expect(within(list).queryByText("writing")).toBeNull();
   expect(screen.queryByRole("region", { name: "Step 3, in flight" })).toBeNull();
-  const tails = requests("steps").filter((q) => q.get("after") === "4");
+  // step 2's tool call has its result, so its row is final and the tail reads on past it
+  const tails = requests("steps").filter((q) => q.get("after") === "11");
   expect(tails).toHaveLength(1);
 });
 
