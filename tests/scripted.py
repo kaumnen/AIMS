@@ -41,6 +41,11 @@ def call(name: str, **args: Any) -> Turn:
     return {"tool": name, "args": args}
 
 
+def calls(*turns: Turn) -> Turn:
+    """One answer that makes each of the `call` turns `turns`."""
+    return {"calls": list(turns)}
+
+
 def say(text: str) -> Turn:
     return {"text": text}
 
@@ -86,15 +91,17 @@ class Script:
             return respond(turn["status"], {"error": {"message": turn["error"]}})
         message: dict[str, Any] = {"role": "assistant", "content": turn.get("text", "")}
         finish = "stop"
-        if "tool" in turn:
-            n = next(self.calls)
-            arguments = turn.get("raw", json.dumps(turn.get("args", {})))
+        if "tool" in turn or "calls" in turn:
             message["tool_calls"] = [
                 {
-                    "id": f"call_{n}",
+                    "id": f"call_{next(self.calls)}",
                     "type": "function",
-                    "function": {"name": turn["tool"], "arguments": arguments},
+                    "function": {
+                        "name": t["tool"],
+                        "arguments": t.get("raw", json.dumps(t.get("args", {}))),
+                    },
                 }
+                for t in turn.get("calls", [turn])
             ]
             finish = "tool_calls"
         usage = turn.get("usage", {"prompt_tokens": 100, "completion_tokens": 10})

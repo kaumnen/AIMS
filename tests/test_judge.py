@@ -1,6 +1,6 @@
 import json
 import shutil
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -8,7 +8,7 @@ from typing import Any
 import anyio
 import httpx2
 import pytest
-from scripted import Script, call, models, profile, raw_call, say
+from scripted import Script, call, calls, models, profile, raw_call, say
 
 from aims.events import (
     AgentFinished,
@@ -47,6 +47,7 @@ from aims.monitor.judge import (
     ANOMALY_CHARS,
     BLOB_MAX,
     EVENTS_PAGE,
+    MIN_OUTPUT,
     OUTPUT_CHARS,
     TOOL_PARAMETERS,
     VERDICT_SCHEMA,
@@ -1073,7 +1074,110 @@ async def test_a_cache_miss_leaves_room_for_the_verdict(store: LocalEventStore) 
     assert result.cost_usd <= 1.0639
     forced = script.requests[-1]
     assert "tools" not in forced
-    assert forced["max_tokens"] < 16384
+    assert forced["max_tokens"] >= MIN_OUTPUT
+    assert any(body["max_tokens"] < 16384 for body in script.requests)
+
+
+def uncached(
+    explore: dict[str, Any], final: dict[str, Any] | None = None
+) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """A judge model that never hits the cache and reads three characters a token. With tools
+    it answers `explore` and writes all the output it may; without them it gives `final`."""
+
+    def answer(body: dict[str, Any]) -> dict[str, Any]:
+        prompt = len(dumps(body)) // 3
+        if "tools" not in body:
+            usage = {"prompt_tokens": prompt, "completion_tokens": 900}
+            return say(json.dumps(final or verdict(summary="forced"))) | {"usage": usage}
+        usage = {"prompt_tokens": prompt, "completion_tokens": body["max_tokens"]}
+        return explore | {"usage": usage}
+
+    return answer
+
+
+def reads(run: Run, *offsets: int) -> dict[str, Any]:
+    """One answer that reads the run's long output from each of `offsets`, as much as it may."""
+    assert run.blob is not None
+    sha = run.blob.sha256
+    return calls(*(call("blob", sha256=sha, offset=o, length=BLOB_MAX) for o in offsets))
+
+
+# Just above the budget at which the judge explores once at Wonder's prices.
+EXPLORE = 0.20
+
+
+async def test_parallel_reads_leave_room_for_the_verdict(store: LocalEventStore) -> None:
+    run = await make_run(store)
+    script = Script(*[uncached(reads(run, 0, 7000, 14000))] * 4)
+    p = profile(price=WONDER, max_output_tokens=16384)
+    judge = make_judge(store, run, script, budget=EXPLORE, p=p)
+    result = await judge.run(flags=[], sweeps=[])
+    v = payload_of(result)
+    assert v.summary == "forced"
+    assert v.rollouts[0].tool_calls == 1
+    assert result.cost_usd <= EXPLORE
+    explore, forced = script.requests
+    assert "tools" in explore
+    assert "tools" not in forced
+    assert forced["max_tokens"] >= MIN_OUTPUT
+    first, *rest = tool_outputs(forced)
+    assert json.loads(first)["length"] == BLOB_MAX
+    assert rest == [judge_texts.FORCE] * 2
+
+
+@pytest.mark.parametrize("offsets", [(0,), (0, 7000, 14000)])
+async def test_a_larger_budget_never_loses_the_verdict(
+    store: LocalEventStore, offsets: tuple[int, ...]
+) -> None:
+    run = await make_run(store)
+    p = profile(price=WONDER, max_output_tokens=16384)
+    judged = []
+    for cents in range(2, 60):
+        budget = cents / 100
+        script = Script(*[uncached(reads(run, *offsets))] * 40)
+        judge = make_judge(store, run, script, budget=budget, p=p, max_tool_calls=40)
+        result = await judge.run(flags=[], sweeps=[])
+        assert result.cost_usd <= budget
+        judged.append(result.verdict is not None)
+    first = judged.index(True)
+    assert all(judged[first:]), [2 + i for i, ok in enumerate(judged) if i > first and not ok]
+
+
+async def test_a_result_left_unread_is_no_evidence(store: LocalEventStore) -> None:
+    run = await make_run(store)
+    assert run.blob is not None
+    explore = calls(
+        call("blob", sha256=run.blob.sha256, length=BLOB_MAX), call("events", from_seq=0)
+    )
+    opened = run.seqs["open"]
+    found = {"present": "yes", "importance": 4, "evidence": [opened], "justification": "a hook"}
+    final = verdict(categories={"scorer_tampering": found})
+    script = Script(*[uncached(explore, final)] * 4)
+    p = profile(price=WONDER, max_output_tokens=16384)
+    judge = make_judge(store, run, script, budget=EXPLORE, p=p)
+    v = payload_of(await judge.run(flags=[], sweeps=[]))
+    assert tool_outputs(script.requests[-1])[1] == judge_texts.FORCE
+    by = {c.category: c for c in v.categories}
+    assert by["scorer_tampering"].present == "unclear"
+    assert by["scorer_tampering"].evidence == []
+
+
+async def test_calls_whose_answers_do_not_fit_are_dropped(store: LocalEventStore) -> None:
+    run = await make_run(store)
+    explore = calls(*[call("search", text="no such text")] * 300)
+    script = Script(*[uncached(explore)] * 4)
+    p = profile(price=WONDER, max_output_tokens=16384)
+    judge = make_judge(store, run, script, budget=EXPLORE, p=p)
+    result = await judge.run(flags=[], sweeps=[])
+    v = payload_of(result)
+    assert v.summary == "forced"
+    assert v.rollouts[0].tool_calls == 0
+    assert result.cost_usd <= EXPLORE
+    forced = script.requests[-1]
+    assert "tools" not in forced
+    assert tool_outputs(forced) == []
+    assert not any(m.get("tool_calls") for m in forced["messages"])
+    assert forced["messages"][-1]["content"] == judge_texts.FORCE
 
 
 async def test_cancel_keeps_the_cost(store: LocalEventStore) -> None:

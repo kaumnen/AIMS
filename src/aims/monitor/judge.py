@@ -87,6 +87,9 @@ CACHE_BYTES = 32 * 1024 * 1024
 FORCE_TRIES = 2
 MIN_OUTPUT = 1024
 VERDICT_OUTPUT = 4096
+# Input tokens an exploring call keeps for the tool results it brings back: about one result at
+# its cap, such as a full blob read, as the prompt holds it.
+RESULT_TOKENS = 8192
 CHARS_PER_TOKEN = 3
 MILLION = 1_000_000
 BRIEF_FLAGS = 60
@@ -664,11 +667,12 @@ class Judge:
     `source` is the run whose events it reads: the run itself, or the origin of a monitor run.
     Calls go through `client` (which writes into the monitor's run) with role `judge` and no
     agent id. `budget_usd` is split evenly over the rollouts. A rollout keeps room in its share
-    for one verdict call with every input token uncached, gives its verdict early when it can
-    no longer explore beside that room. It caps each call's output to what its share still pays
-    for. It stops without a verdict only when not even a short answer fits. The
-    delimiters around the run data derive from the secret `key`, so a replay with the same key
-    sends the same requests.
+    for one verdict call with every input token uncached, which also reads all the exploring
+    call before it wrote and the tool results it brought back. It gives its verdict early when
+    it can no longer explore beside that room, and reads back a tool result only while that
+    room stays. It caps each call's output to what its share still pays for. It stops without
+    a verdict only when not even a short answer fits. The delimiters around the run data derive
+    from the secret `key`, so a replay with the same key sends the same requests.
     """
 
     def __init__(
@@ -982,15 +986,16 @@ class Judge:
         ]
         specs = self._specs(r.blind)
         cap = self.config.max_tool_calls
-        forced = False
+        forced = full = False
         tries = 0
         while True:
             left = r.budget - r.cost
             context = self._context(r, items, specs)
             room = self._room(left, context, explore=True)
-            if not forced and (r.tool_calls >= cap or (room is not None and room < 0)):
+            if not forced and (full or r.tool_calls >= cap or (room is not None and room < 0)):
                 forced = True
-                items.append(Message(role="user", content=self._text("judge_force")))
+                items.append(self._force())
+                context = self._context(r, items, specs)
             out = self._room(left, context, explore=not forced)
             if out is not None and out < MIN_OUTPUT:
                 r.error = "the judge budget ran out before a verdict"
@@ -1011,6 +1016,7 @@ class Judge:
             completed = reply.status == "completed"
             items.append(reply.turn if completed else Turn(text=reply.text))
             calls = reply.tool_calls if completed else []
+            seen, used = r.seen.copy(), r.tool_calls
             if not calls:
                 verdict, why = parse_verdict(reply.text) if completed else (None, CUT_OFF)
                 if verdict is not None:
@@ -1022,7 +1028,6 @@ class Judge:
                 else:
                     r.tool_calls += 1
                     items.append(Message(role="user", content=self._text("judge_nudge")))
-                continue
             for call in calls:
                 if call.name == "verdict":
                     r.tool_calls += 1
@@ -1031,12 +1036,22 @@ class Judge:
                         r.judged = self._settle(r, verdict)
                         return
                     text = self._text("judge_invalid").format(problems=why)
-                elif forced or r.tool_calls >= cap:
+                elif forced or full or r.tool_calls >= cap:
                     text = self._text("judge_force")
                 else:
-                    r.tool_calls += 1
+                    before = r.seen.copy()
                     text = await self._tool(r, call)
+                    if self._fits(r, [*items, ToolOutput(call_id=call.id, output=text)], specs):
+                        r.tool_calls += 1
+                    else:
+                        # The judge never reads it, so what it holds is no evidence.
+                        r.seen, text, full = before, self._text("judge_force"), True
                 items.append(ToolOutput(call_id=call.id, output=text))
+            if not forced and not self._fits(r, items, specs):
+                # Not even the short answers fit: the reply is kept without its tool calls.
+                del items[r.mark :]
+                items[-1] = Turn(text=reply.text)
+                r.seen, r.tool_calls, full = seen, used, True
 
     async def _call(self, r: Rollout, prompt: Prompt, out: int | None = None) -> Reply:
         overrides = None if out is None else Overrides(max_output_tokens=out)
@@ -1052,24 +1067,46 @@ class Judge:
 
     def _room(self, left: float, context: int, *, explore: bool) -> int | None:
         """How many output tokens the next call may write within `left` dollars, its input
-        priced uncached. An exploring call also leaves room for a verdict call after it; it gets
-        -1 when it does not fit beside it. None when the profile has no price."""
+        priced uncached. An exploring call also leaves room for a verdict call after it, which
+        reads the context again with all the exploring call writes, RESULT_TOKENS of tool
+        results and the force message; it gets -1 when it cannot write MIN_OUTPUT beside that.
+        None when the profile has no price."""
         price = self.profile.price
         if price is None:
             return None
         limit = self.profile.max_output_tokens
         reading = context * price.input / MILLION
         if explore:
-            verdict = min(VERDICT_OUTPUT, limit or VERDICT_OUTPUT)
-            left -= reading + verdict * price.output / MILLION
-            if left - reading < MIN_OUTPUT * price.output / MILLION:
+            force = len(self._force().model_dump_json()) // CHARS_PER_TOKEN
+            after = context + RESULT_TOKENS + force
+            left -= reading + (after * price.input + self._verdict() * price.output) / MILLION
+            # The verdict call reads again each token the exploring call writes.
+            per = price.input + price.output
+            if per <= 0:
+                return limit
+            out = int(left / per * MILLION)
+            if out < MIN_OUTPUT:
                 return -1
+            return out if limit is None else min(out, limit)
         if left < reading:
             return 0
         if price.output <= 0:
             return limit
         out = int((left - reading) / price.output * MILLION)
         return out if limit is None else min(out, limit)
+
+    def _fits(self, r: Rollout, items: Sequence[Item], specs: Sequence[ToolSpec]) -> bool:
+        """Whether a forced verdict call after `items` still gets its planned output."""
+        context = self._context(r, [*items, self._force()], specs)
+        out = self._room(r.budget - r.cost, context, explore=False)
+        return out is None or out >= self._verdict()
+
+    def _verdict(self) -> int:
+        """The output a verdict call is planned with."""
+        return min(VERDICT_OUTPUT, self.profile.max_output_tokens or VERDICT_OUTPUT)
+
+    def _force(self) -> Message:
+        return Message(role="user", content=self._text("judge_force"))
 
     # The tools.
 
