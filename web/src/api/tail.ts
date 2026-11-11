@@ -4,6 +4,7 @@ import { client, type Schemas } from "./client";
 import type { Event } from "./events";
 import { Live } from "./live";
 import {
+  RAW_PAGE,
   type RawFilters,
   type RawPage,
   readFinal,
@@ -28,6 +29,8 @@ const STEP_EVENTS = new Set([
 const TAIL_PAGE = 500;
 // What a raw list holds back while its page is read: at most the largest page the server sends.
 const MAX_HELD = 1000;
+// What a raw list that takes the stream holds at most.
+const MAX_RAW = 50 * RAW_PAGE;
 const NO_AGENTS: ReadonlySet<string> = new Set();
 
 export interface ToolDraft {
@@ -257,6 +260,8 @@ export class RunTail {
     }
   }
 
+  // The last page takes new events until it holds a server page; then they start new pages, as
+  // reading on would. So a batch copies at most a page of events and the list of pages.
   #append(key: QueryKey, events: readonly Event[]): void {
     const data = this.qc.getQueryData<InfiniteData<RawPage>>(key);
     const last = data?.pages.at(-1);
@@ -264,10 +269,22 @@ export class RunTail {
     const held = lastSeq(data.pages);
     const fresh = events.filter((e) => e.seq > held);
     if (fresh.length === 0) return;
-    this.qc.setQueryData<InfiniteData<RawPage>>(key, {
-      ...data,
-      pages: [...data.pages.slice(0, -1), { ...last, items: [...last.items, ...fresh] }],
-    });
+    const pages = data.pages.slice(0, -1);
+    const params = data.pageParams.slice(0, -1);
+    const room = Math.max(0, RAW_PAGE - last.items.length);
+    let page = room > 0 ? { ...last, items: [...last.items, ...fresh.slice(0, room)] } : last;
+    let param = data.pageParams.at(-1);
+    for (let at = room; at < fresh.length; at += RAW_PAGE) {
+      const end = page.items.at(-1)?.seq ?? held;
+      pages.push({ ...page, newer: end });
+      params.push(param);
+      page = { items: fresh.slice(at, at + RAW_PAGE), older: null, newer: null };
+      param = { after: end };
+    }
+    pages.push(page);
+    params.push(param);
+    trim(pages, params);
+    this.qc.setQueryData<InfiniteData<RawPage>>(key, { pages, pageParams: params });
   }
 
   #hold(hash: string, events: readonly Event[]): void {
@@ -397,6 +414,21 @@ function lastSeq(pages: readonly RawPage[]): number {
     if (seq !== undefined) return seq;
   }
   return -1;
+}
+
+// Past MAX_RAW events a list lets its oldest pages go, down to half, so a batch never walks
+// every event the list took. Its first page then reads them again on the way up.
+function trim(pages: RawPage[], params: unknown[]): void {
+  let total = 0;
+  for (const p of pages) total += p.items.length;
+  if (total <= MAX_RAW) return;
+  let drop = 0;
+  while (total > MAX_RAW / 2 && drop < pages.length - 1) total -= pages[drop++]?.items.length ?? 0;
+  pages.splice(0, drop);
+  params.splice(0, drop);
+  const first = pages.find((p) => p.items.length > 0)?.items[0]?.seq;
+  const top = pages[0];
+  if (top && first !== undefined) pages[0] = { ...top, older: first };
 }
 
 // The index of the first row that may still change: some agent's latest, while a tool call of

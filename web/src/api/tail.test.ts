@@ -338,6 +338,55 @@ test("a tail stopped while a raw page is read holds nothing and leaves the cache
   expect(rawSeqs(qc, all.queryKey)).toEqual([0, 1, 2, 3, 4]);
 });
 
+test("a raw list takes the stream a page at a time and lets its oldest pages go", async () => {
+  const qc = new QueryClient();
+  const last = rawEventsQuery(RUN, {}, "end");
+  // the list holds the last full page of the log
+  qc.setQueryData(last.queryKey, {
+    ...page(range(200, 399), null, 200),
+    pageParams: [{ before: Number.MAX_SAFE_INTEGER }],
+  });
+  const { source, tail } = open(qc, 399);
+  const data = () => qc.getQueryData<InfiniteData<RawPage>>(last.queryKey);
+  const full = data()?.pages[0];
+  source.send({ kind: "events", run_id: RUN, events: range(400, 449) });
+  flush();
+  // a full page is left as it is: the new events start the next one
+  expect(data()?.pages[0]?.items).toBe(full?.items);
+  expect(data()?.pages[0]?.newer).toBe(399);
+  expect(data()?.pageParams).toEqual([{ before: Number.MAX_SAFE_INTEGER }, { after: 399 }]);
+  source.send({ kind: "events", run_id: RUN, events: range(450, 699) });
+  flush();
+  expect(data()?.pages.map((p) => p.items.length)).toEqual([200, 200, 100]);
+  expect(data()?.pageParams.at(-1)).toEqual({ after: 599 });
+
+  // past 10,000 events the oldest pages go, down to half
+  source.send({ kind: "events", run_id: RUN, events: range(700, 10_399) });
+  flush();
+  expect(rawSeqs(qc, last.queryKey)).toEqual(range(5400, 10_399).map((e) => e.seq));
+  expect(data()?.pages.every((p) => p.items.length <= 200)).toBe(true);
+  expect(data()?.pageParams).toHaveLength(data()?.pages.length ?? 0);
+  expect(data()?.pages[0]?.older).toBe(5400);
+  // and are read again on the way up
+  fetch.mockImplementation(async (request) => {
+    const before = Number(new URL(request.url).searchParams.get("before"));
+    return Response.json({ items: range(before - 200, before - 1), next: String(before - 200) });
+  });
+  await new InfiniteQueryObserver(qc, last).fetchPreviousPage();
+  expect(rawSeqs(qc, last.queryKey)).toEqual(range(5200, 10_399).map((e) => e.seq));
+  tail.stop();
+});
+
+test("a raw page read on from an event can read the events before it", async () => {
+  fetch.mockImplementation(async () => Response.json({ items: range(100, 299), next: "299" }));
+  const qc = new QueryClient();
+  const read = await qc.fetchInfiniteQuery({
+    ...rawEventsQuery(RUN, {}),
+    initialPageParam: { after: 99 },
+  });
+  expect(read.pages[0]).toMatchObject({ older: 100, newer: 299 });
+});
+
 // Answers step reads from `rows` and reads of agent ends with `ends`; the URLs asked, by kind.
 function stepReads(rows: () => StepInfo[], ends: Event[] = []) {
   const asked = { steps: [] as URL[], ends: [] as URL[] };

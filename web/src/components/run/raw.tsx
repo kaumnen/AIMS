@@ -196,16 +196,23 @@ function EventList({
   const items = v.getVirtualItems();
   const first = items[0]?.index ?? 0;
   const last = items.at(-1)?.index ?? -1;
-  // Rows read in above keep the rows on screen where they were.
-  const head = useRef(events[0]?.seq);
+  // Rows read in above, or let go above as a live list grows, keep the rows on screen where
+  // they were.
+  const before = useRef(events);
   useLayoutEffect(() => {
-    const was = head.current;
-    head.current = events[0]?.seq;
+    const was = before.current;
+    before.current = events;
     const el = scroller.current;
-    if (el === null || was === undefined || head.current === undefined || head.current >= was)
-      return;
-    const added = events.findIndex((e) => e.seq === was);
-    if (added > 0) el.scrollTop += added * ROW;
+    const from = was[0]?.seq;
+    const to = events[0]?.seq;
+    if (el === null || from === undefined || to === undefined || to === from) return;
+    if (to < from) {
+      const added = events.findIndex((e) => e.seq === from);
+      if (added > 0) el.scrollTop += added * ROW;
+    } else {
+      const gone = was.findIndex((e) => e.seq === to);
+      if (gone > 0) el.scrollTop = Math.max(0, el.scrollTop - gone * ROW);
+    }
   }, [events]);
   const done = useRef(0);
   useLayoutEffect(() => {

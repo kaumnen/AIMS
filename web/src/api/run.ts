@@ -20,7 +20,7 @@ export type CallCost = Schemas["CallCost"];
 
 const STEP_PAGE = 200;
 const EXEC_PAGE = 200;
-const RAW_PAGE = 200;
+export const RAW_PAGE = 200;
 const MAX_EVENTS = 1000;
 // The scrubber reads a whole run; this caps it at 50 pages of each kind.
 const MAX_PAGES = 50;
@@ -229,9 +229,11 @@ export function rawEventsQuery(runId: string, filters: RawFilters, anchor: RawAn
       });
       if (error) throw error;
       const next = data.next === null || data.next === undefined ? null : Number(data.next);
-      return pageParam !== null && "before" in pageParam
-        ? { items: data.items, older: next, newer: null }
-        : { items: data.items, older: null, newer: next };
+      if (pageParam !== null && "before" in pageParam)
+        return { items: data.items, older: next, newer: null };
+      // a page read on from an event has that event and the ones before it above
+      const older = pageParam === null ? null : pageParam.after + 1;
+      return { items: data.items, older, newer: next };
     },
     initialPageParam: (anchor === "end" ? { before: Number.MAX_SAFE_INTEGER } : null) as RawCursor,
     getNextPageParam: (last) => (last.newer === null ? null : { after: last.newer }),

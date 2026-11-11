@@ -881,6 +881,38 @@ test("rows read in above leave the view where it was, a selected row too", async
   expect(box.scrollTop).toBe(200 * 24);
 });
 
+test("rows a live raw list lets go above leave the view where it was", async () => {
+  longRawLog();
+  detail = { ...detail, run: run(BEE5, { status: "running", state: "running", events: 450 }) };
+  renderAt(`/runs/${BEE5}?tab=raw`);
+  expect(await screen.findByText("200+ events")).toBeTruthy();
+  const list = screen.getByRole("listbox", { name: "Events" });
+  fireEvent.keyDown(list, { key: "End" });
+  expect(await within(list).findByRole("option", { name: /^449\b/ })).toBeTruthy();
+  const tail = runStream();
+  if (!tail) throw new Error("no run stream");
+  const streamed = (from: number, n: number) =>
+    tail.send({
+      kind: "events",
+      run_id: BEE5,
+      events: Array.from({ length: n }, (_, i) => ({
+        ...ev(from + i, "file.access", { path: `/work/f${from + i}` }),
+        ts: new Date(Date.UTC(2026, 9, 30, 10, 0, 0, from + i)).toISOString(),
+      })),
+    });
+  act(() => streamed(450, 9000));
+  expect(await screen.findByText("9200+ events")).toBeTruthy();
+  // the reader looks at event 9250, near the end
+  const box = list.parentElement as HTMLElement;
+  box.scrollTop = 9000 * 24;
+  fireEvent.scroll(box);
+  expect(await within(list).findByRole("option", { name: /^9250\b/ })).toBeTruthy();
+  act(() => streamed(9450, 1000));
+  // past 10,000 events the oldest 5,200 go
+  expect(await screen.findByText("5000+ events")).toBeTruthy();
+  expect(box.scrollTop).toBe((9000 - 5200) * 24);
+});
+
 test("/ opens the raw tab with its search focused", async () => {
   const router = renderAt(`/runs/${BEE5}`);
   await screen.findByText("Fix the failing tests.");
