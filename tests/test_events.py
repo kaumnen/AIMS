@@ -620,6 +620,63 @@ async def test_text_and_cursors_the_index_cannot_bind_find_nothing(
         await store.add_label(run_id, huge, "real", by="op")
 
 
+async def test_a_filter_with_a_lone_surrogate_finds_no_rows(store: LocalEventStore) -> None:
+    run_id = await finished_run(store)
+    other = await store.create_run(STARTED)
+    lone = "a\ud800"
+    index = store._index
+    # every read that binds a caller's text: none holds one, and no bind refuses it
+    assert await index.head(lone) is None
+    assert await index.count(lone, 10) == 0
+    assert await index.run(lone) is None
+    assert await index.labels(lone) == await index.hashes(lone, 0, 10) == {}
+    assert await index.type_counts(lone) == {}
+    assert await index.search(lone) == ([], None)
+    pages: list[list[Any]] = [
+        await index.call_costs(lone),
+        await index.made_from([lone]),
+        await index.score_units([lone]),
+        await index.activity(run_id, [lone]),
+        await index.activity(lone, ["x"]),
+        await index.events(lone),
+        await index.flags(lone),
+        await index.steps(lone),
+        await index.steps(run_id, agent_id=lone),
+        await index.samples(lone),
+        await index.samples(run_id, agent_id=lone),
+        await index.events(run_id, agent_id=lone),
+        await index.events(run_id, types=[lone]),
+        await index.events(run_id, execs=[lone]),
+        await index.events(run_id, query=lone),
+        await index.flags(run_id, agent_id=lone),
+        await index.flags(run_id, layer=lone),
+        await index.flags(run_id, category=lone),
+        await index.flags(run_id, status=[lone]),
+        await index.runs(scenario=lone),
+        await index.runs(group=lone),
+        await index.runs(series=lone),
+        await index.runs(variant=lone),
+        await index.runs(kind=lone),
+        await index.runs(origin=lone),
+        await index.runs(category=lone),
+    ]
+    assert pages == [[]] * 26
+    # a value no row holds drops out of a list, as it matches nothing there
+    calls = await index.events(run_id, types=["tool.call", lone])
+    assert [e.seq for e in calls] == [1, 2, 3]
+    found, _ = await index.search('"cmd"', skip_kinds=[lone])
+    assert [e.seq for e in found] == [1]
+    assert {r.run_id for r in await index.runs(skip_kinds=[lone])} == {run_id, other}
+    # a cursor compares as it would: the runs whose id sorts before it
+    ids = sorted([run_id, other])
+    differ = next(i for i, (a, b) in enumerate(zip(*ids, strict=True)) if a != b)
+    for before in (ids[0][: differ + 1], ids[1], "0", "", "!", "~"):
+        before += "\ud800"
+        listed = [r.run_id for r in await index.runs(before=before)]
+        assert listed == [r for r in reversed(ids) if r < before], before
+    assert await index.ended_before("9" + lone) == [run_id]
+
+
 def window(sandbox: str, first_us: int, last_us: int) -> Draft:
     """A resource window of `sandbox` from `first_us` to `last_us` on the boot clock."""
     empty = dict.fromkeys(ResourceSample.COLUMNS)

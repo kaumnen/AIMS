@@ -656,6 +656,8 @@ class Index:
 
     async def head(self, run_id: str) -> tuple[Head, str] | None:
         """Last indexed position of a run and its status."""
+        if not _held(run_id):
+            return None
         async with self._db.execute(
             "select last_seq, last_hash, log_offset, status from runs where run_id = ?", (run_id,)
         ) as cur:
@@ -668,6 +670,8 @@ class Index:
     async def count(self, run_id: str, upto: int) -> int:
         """How many events of a run the index holds up to seq `upto`. Events past it may land
         while a caller compares, so they are left out."""
+        if not _held(run_id):
+            return 0
         async with self._db.execute(
             "select count(*) from events where run_id = ? and seq <= ?", (run_id, upto)
         ) as cur:
@@ -1066,6 +1070,8 @@ class Index:
         )
 
     async def run(self, run_id: str) -> RunInfo | None:
+        if not _held(run_id):
+            return None
         runs = await self._runs("where run_id = ?", (run_id,))
         return runs[0] if runs else None
 
@@ -1089,6 +1095,9 @@ class Index:
         `series` the runs of that series, `variant` the sealed runs of that variant, `group`
         the samples of that group and `scenario` the runs of that scenario; runs of
         `skip_kinds` are left out."""
+        if not _held(scenario, group, series, variant, kind, origin, category):
+            return []
+        skip_kinds = _kept(skip_kinds)
         where: list[str] = []
         args: list[Any] = []
         if scenario is not None:
@@ -1105,7 +1114,7 @@ class Index:
             args.append(variant)
         if before:
             where.append("run_id < ?")
-            args.append(before)
+            args.append(_below(before))
         if kind is not None:
             where.append("kind = ?")
             args.append(kind)
@@ -1191,6 +1200,7 @@ class Index:
         newest score run of each origin and monitor run."""
         where, args = "", ()
         if origins is not None:
+            origins = _kept(origins)
             if not origins:
                 return []
             where = f"where origin in ({', '.join('?' * len(origins))})"
@@ -1233,6 +1243,8 @@ class Index:
 
     async def labels(self, run_id: str) -> dict[int, Label]:
         """The latest label of each labelled flag of `run_id`."""
+        if not _held(run_id):
+            return {}
         async with self._db.execute(
             "select run_id, flag, label, note, by, at from labels where run_id = ? order by at, by",
             (run_id,),
@@ -1246,6 +1258,7 @@ class Index:
     async def made_from(self, run_ids: Sequence[str]) -> list[tuple[str, str]]:
         """The runs made from `run_ids`, each with its kind: each run whose origin is one of
         them and each score of the flags of a monitor run among them."""
+        run_ids = _kept(run_ids)
         if not run_ids:
             return []
         marks = ", ".join("?" * len(run_ids))
@@ -1264,7 +1277,7 @@ class Index:
         """The runs that ended before the timestamp `at`, oldest first."""
         async with self._db.execute(
             "select run_id from runs where status != 'running' and ended_at < ? order by run_id",
-            (at,),
+            (_below(at),),
         ) as cur:
             return [r[0] for r in await cur.fetchall()]
 
@@ -1309,6 +1322,9 @@ class Index:
         tainted: bool | None = None,
     ) -> list[FlagInfo]:
         """One page of a run's logical flags in seq order, after seq `after`."""
+        statuses = _within(status)
+        if statuses is None or not _held(run_id, layer, category, agent_id):
+            return []
         where = ["run_id = ?", "seq = root"]
         args: list[Any] = [run_id]
         if after is not None:
@@ -1323,9 +1339,9 @@ class Index:
         if min_importance is not None:
             where.append("importance >= ?")
             args.append(_int(min_importance))
-        if status:
-            where.append(f"status in ({', '.join('?' * len(status))})")
-            args.extend(status)
+        if statuses:
+            where.append(f"status in ({', '.join('?' * len(statuses))})")
+            args.extend(statuses)
         if agent_id is not None:
             where.append("agent_id = ?")
             args.append(agent_id)
@@ -1349,6 +1365,8 @@ class Index:
 
     async def hashes(self, run_id: str, first: int, last: int) -> dict[int, str]:
         """The hash of each indexed event of a run from seq `first` to `last`."""
+        if not _held(run_id):
+            return {}
         async with self._db.execute(
             "select seq, hash from events where run_id = ? and seq between ? and ?",
             (run_id, first, last),
@@ -1369,6 +1387,7 @@ class Index:
         index cannot match finds nothing."""
         if not _searchable(query):
             return [], None
+        skip_kinds = _kept(skip_kinds)
         where: list[str] = []
         args: list[Any] = []
         if len(query) >= 3:
@@ -1417,20 +1436,23 @@ class Index:
         cannot match finds nothing."""
         if query and not _searchable(query):
             return []
+        kinds, ids = _within(types), _within(execs)
+        if kinds is None or ids is None or not _held(run_id, agent_id):
+            return []
         where = ["e.run_id = ?"]
         args: list[Any] = [run_id]
-        if execs:
-            where.append(f"e.exec_id in ({', '.join('?' * len(execs))})")
-            args.extend(execs)
+        if ids:
+            where.append(f"e.exec_id in ({', '.join('?' * len(ids))})")
+            args.extend(ids)
         if after is not None:
             where.append("e.seq > ?")
             args.append(_int(after))
         if before is not None:
             where.append("e.seq < ?")
             args.append(_int(before))
-        if types:
-            where.append(f"e.type in ({', '.join('?' * len(types))})")
-            args.extend(types)
+        if kinds:
+            where.append(f"e.type in ({', '.join('?' * len(kinds))})")
+            args.extend(kinds)
         if agent_id is not None:
             where.append("e.agent_id = ?")
             args.append(agent_id)
@@ -1470,6 +1492,8 @@ class Index:
         """Windows of a run that overlap [`ts_from`, `ts_to`] on the boot clock, oldest first:
         by `ts_from`, then seq. `after` is the seq of the last window of the page before; the
         page goes on from there, and holds nothing when the run has no window at that seq."""
+        if not _held(run_id, agent_id):
+            return []
         where = ["run_id = ?"]
         args: list[Any] = [run_id]
         if agent_id is not None:
@@ -1504,6 +1528,8 @@ class Index:
         agent_id: str | None = None,
     ) -> list[StepInfo]:
         """A page of agent steps in seq order, after seq `after`, each with its tool calls."""
+        if not _held(run_id, agent_id):
+            return []
         where = ["run_id = ?", "type = ?"]
         args: list[Any] = [run_id, AgentStep.type]
         if after is not None:
@@ -1574,6 +1600,8 @@ class Index:
 
     async def type_counts(self, run_id: str) -> dict[str, int]:
         """How many events of each type run `run_id` holds."""
+        if not _held(run_id):
+            return {}
         async with self._db.execute(
             "select type, count(*) from events where run_id = ? group by type order by type",
             (run_id,),
@@ -1584,7 +1612,8 @@ class Index:
     async def activity(self, run_id: str, execs: Sequence[str]) -> list[ExecActivity]:
         """What each of `execs` left in the log, in the order asked; execs with no events are
         left out."""
-        if not execs:
+        execs = _kept(execs)
+        if not execs or not _held(run_id):
             return []
         async with self._db.execute(
             "select exec_id, type,"
@@ -1612,6 +1641,8 @@ class Index:
     async def call_costs(self, run_id: str) -> list[CallCost]:
         """What the run's live model calls cost, per role and output schema, in the order each
         kind first called. Costs add up in whole nano-dollars, like the run's total."""
+        if not _held(run_id):
+            return []
         async with self._db.execute(
             "select type, json_extract(data, '$.call_id'), json_extract(data, '$.role'),"
             " json_extract(data, '$.params.schema_name'), json_extract(data, '$.cost_usd'),"
@@ -1833,6 +1864,38 @@ def _searchable(text: str) -> bool:
     """Whether the index can match `text`: FTS5 and LIKE end their text at a NUL, and UTF-8
     cannot encode a lone surrogate for the bind."""
     return "\x00" not in text and encodable(text)
+
+
+# A filter value with a lone surrogate matches no row: the index keeps text as UTF-8, which
+# cannot encode one, and a bind refuses it. So a read with one finds nothing, as a search the
+# index cannot match does, and never sends it to SQLite.
+
+
+def _held(*texts: str | None) -> bool:
+    """Whether a row could hold each of `texts`; None is no filter."""
+    return all(t is None or encodable(t) for t in texts)
+
+
+def _kept(values: Sequence[str]) -> list[str]:
+    """The values of an `in (...)` or `not in (...)` filter that a row could hold."""
+    return [v for v in values if encodable(v)]
+
+
+def _within(values: Sequence[str]) -> list[str] | None:
+    """The values of an `in (...)` filter that a row could hold, where no values is no filter.
+    None when values were given and a row could hold none of them: nothing matches."""
+    kept = _kept(values)
+    return None if values and not kept else kept
+
+
+def _below(text: str) -> str:
+    """A bound for `x < text` that compares the same against every text a row holds: `text`
+    up to its first lone surrogate, then U+E000, the first character after the surrogates.
+    UTF-8 sorts in code point order and no row holds a surrogate."""
+    if encodable(text):
+        return text
+    cut = next(i for i, c in enumerate(text) if not encodable(c))
+    return text[:cut] + ""
 
 
 def _dump(value: Content) -> Any:
