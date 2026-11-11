@@ -429,9 +429,9 @@ async def test_a_runners_first_stop_ends_a_score_job_at_once(
     assert cut == [when]
     info = await cp.state.store.run(run_id)
     if when == "scoring":
-        # sealed, shipped and done; scoring.py says with which status
+        # sealed as cancelled, shipped and done
         assert info is not None
-        assert info.status != "running"
+        assert info.status == "cancelled"
         assert job.state == "done"
         assert (await cp.state.store.verify(run_id)).ok
     else:
