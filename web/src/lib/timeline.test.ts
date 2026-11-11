@@ -96,6 +96,25 @@ test("usage is the change from the window before, unreadable values are gaps", (
   expect(c?.pids).toBeNull();
 });
 
+// A window that ends at `s` seconds of the boot clock.
+const at = (s: number) => win("s", s * 1_000_000 - 999_999, { ts_to: s * 1_000_000 });
+
+test("io is a rate over the time since the window before, as cpu is", () => {
+  // 1 core busy and 1 MiB/s read throughout; a window each second, then none for 10 s
+  const lanes = usage(
+    [
+      { ...at(1), cpu_usec: 1_000_000, io_rbytes: 1 << 20 },
+      { ...at(2), cpu_usec: 2_000_000, io_rbytes: 2 << 20 },
+      { ...at(12), cpu_usec: 12_000_000, io_rbytes: 12 << 20 },
+    ],
+    new Map([["s", START * 1000]]),
+  );
+  const [first, b, c] = lanes.get("agent") ?? [];
+  expect(first?.io).toBeNull();
+  expect([b?.cpu, c?.cpu]).toEqual([1, 1]);
+  expect([b?.io, c?.io]).toEqual([1 << 20, 1 << 20]);
+});
+
 test("each pixel column keeps the highest value of the windows touching it", () => {
   const cols = columns(
     [

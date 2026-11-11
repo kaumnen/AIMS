@@ -193,7 +193,7 @@ const bytes = (n: number) =>
       ? `${(n / (1 << 20)).toFixed(1)} MB`
       : n >= 1 << 10
         ? `${Math.round(n / (1 << 10))} KB`
-        : `${n} B`;
+        : `${Math.round(n)} B`;
 
 function Trace({ d, pen }: { d: { fill: string; edge: string }; pen: number }) {
   return (

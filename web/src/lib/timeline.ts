@@ -4,6 +4,7 @@ import type { SampleWindow, StepInfo } from "@/api/run";
 // The tracer's boot/TAI pair is trusted when it puts the first window this close to the
 // sandbox's start. A host whose TAI clock carries the leap second offset is 37 s off.
 const TRUST_US = 5_000_000;
+const US_PER_S = 1_000_000;
 
 export interface Span {
   t0: number;
@@ -60,7 +61,8 @@ export function clocks(
 }
 
 // Each agent's windows on the epoch clock (ms), with the usage in each one: counters are
-// running totals, so a window's usage is the change from the window before it.
+// running totals, so a window's usage is the change from the window before it, over the time
+// since that window. CPU is in cores and IO in bytes a second.
 export function usage(
   windows: readonly SampleWindow[],
   offsets: ReadonlyMap<string, number>,
@@ -87,13 +89,13 @@ export function usage(
         return now === null || then === null || now < then ? null : now - then;
       };
       const cpu = span > 0 ? delta(w.cpu_usec, prev?.cpu_usec) : null;
-      const r = delta(w.io_rbytes, prev?.io_rbytes);
-      const wb = delta(w.io_wbytes, prev?.io_wbytes);
+      const r = span > 0 ? delta(w.io_rbytes, prev?.io_rbytes) : null;
+      const wb = span > 0 ? delta(w.io_wbytes, prev?.io_wbytes) : null;
       lane.push({
         from: (w.ts_from + shift) / 1000,
         to: (w.ts_to + shift) / 1000,
         cpu: cpu === null ? null : cpu / span,
-        io: r === null && wb === null ? null : (r ?? 0) + (wb ?? 0),
+        io: r === null && wb === null ? null : (((r ?? 0) + (wb ?? 0)) * US_PER_S) / span,
         mem: reading(w.memory_bytes),
         pids: reading(w.pids),
       });

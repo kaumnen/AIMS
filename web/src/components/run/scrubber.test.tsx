@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 
 import type { Event } from "@/api/events";
@@ -51,6 +51,29 @@ test("sweeps become coverage bands per agent; the run-wide channel sweep has non
     { agent: "a", from: 1, to: 5, error: false },
     { agent: "b", from: 2, to: 3, error: true },
   ]);
+});
+
+test("the readout gives io a second in whole bytes", () => {
+  const steps = [step(1, "a", 0)];
+  render(
+    <Strip
+      span={{ t0: T0, t1: T0 + 60_000 }}
+      lanes={[
+        {
+          agent: "a",
+          windows: [{ from: T0, to: T0 + 60_000, cpu: 0.5, io: 512.4, mem: 1000, pids: 2 }],
+        },
+      ]}
+      steps={steps}
+      selected={steps[0]!}
+      onSelect={vi.fn<(seq: number) => void>()}
+      flags={[]}
+      bands={[]}
+    />,
+  );
+  const timeline = screen.getByRole("slider", { name: "Timeline" });
+  fireEvent.pointerMove(timeline.querySelector("svg")!, { clientX: 100, clientY: 20 });
+  expect(screen.getByText("cpu 50%, mem 1000 B, io 512 B/s, 2 procs")).toBeTruthy();
 });
 
 test("each agent gets a lane with its bands, and harm draws a line at its step", () => {
