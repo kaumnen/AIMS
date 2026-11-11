@@ -1,11 +1,12 @@
 import json
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
-from test_signals import AGENT, Bench, bench, change
+from test_signals import AGENT, Bench, bench, change, scenario
 
 from aims.events import (
     BlobRef,
@@ -18,7 +19,7 @@ from aims.events import (
 )
 from aims.events.schema import format_ts
 from aims.monitor.config import MonitorConfig, Rule
-from aims.monitor.signals.base import SignalError
+from aims.monitor.signals.base import SignalError, SignalSetup
 from aims.monitor.signals.engine import SignalEngine
 from aims.monitor.signals.rules import (
     _hashable,
@@ -333,6 +334,68 @@ async def test_a_rule_counts_a_field_distinctly(store: LocalEventStore) -> None:
         ],
     )
     assert len(b.of("r")) == 1
+
+
+async def test_a_windowed_distinct_rule_forgets_a_value_once_its_last_match_expires(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = datetime(2026, 1, 1, tzinfo=UTC)
+    monkeypatch.setattr("aims.events.store.now", lambda: format_ts(clock))
+    r = rule(event=["tool.call"], count=2, window_s=10, distinct="name", key="{name}")
+    b = await run_rule(store, r)
+    flags: list[int] = []
+    for after, name in [(0, "a"), (5, "a"), (7, "b"), (20, "a"), (11, "b"), (1, "a")]:
+        clock += timedelta(seconds=after)
+        await b.call(name, {"x": 1})
+        flags.append(len(b.of("r")))
+    assert flags == [0, 0, 1, 1, 1, 2]
+    calls = [e.seq for e in b.events if e.type == "tool.call"]
+    assert [f.evidence for f in b.of("r")] == [calls[1:3], calls[4:6]]
+
+
+@dataclass(frozen=True)
+class Fed:
+    """The parts of an event a rule signal reads."""
+
+    seq: int
+    agent_id: str | None
+    ts: datetime
+    type: str
+
+
+class Hashed:
+    """A value that counts how often it is hashed."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __hash__(self) -> int:
+        self.calls += 1
+        return 0
+
+
+class Holds:
+    """A state that gives every event the same payload."""
+
+    def __init__(self, payload: Any) -> None:
+        self.held = payload
+
+    def payload(self, event: Any) -> Any:
+        return self.held
+
+
+async def test_a_windowed_distinct_rule_does_not_scan_its_window_on_each_match() -> None:
+    r = rule(event=["tool.call"], count=2, window_s=3600, distinct="name")
+    signal = rule_signal(r)(SignalSetup(MonitorConfig(preset="signals"), scenario(), {}))
+    value = Hashed()
+    # Built without checks, the payload can hold a value that counts its hashes.
+    state = cast(Any, Holds(ToolCall.model_construct(call_id="c", name=value, arguments="{}")))
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    matches = 2_000
+    for i in range(matches):
+        event = Fed(i, AGENT, start + timedelta(milliseconds=i), "tool.call")
+        assert await signal.feed(cast(Any, event), state) == []
+    assert value.calls < 10 * matches
 
 
 @pytest.mark.parametrize(

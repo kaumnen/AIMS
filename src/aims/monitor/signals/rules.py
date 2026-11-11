@@ -15,7 +15,7 @@ import glob
 import ipaddress
 import re
 import types
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, ClassVar, TypeAliasType, Union, get_args, get_origin
@@ -621,6 +621,15 @@ def rules_digest(rules: Sequence[Rule]) -> str:
     return digest([r.model_dump(mode="json") for r in rules])
 
 
+def _forget(held: Counter[Any], value: Any) -> None:
+    """Take one match of `value` out of the counts of a window."""
+    if value is None:
+        return
+    held[value] -= 1
+    if held[value] <= 0:
+        del held[value]
+
+
 class RuleSignal(Base):
     """A signal made of rules. An event that matches several of them gives one hit, from the
     rule of the highest importance. Each hit's justification is the rule's title and key."""
@@ -637,6 +646,7 @@ class RuleSignal(Base):
                 self.by_type.setdefault(t, []).append(c)
         self.event_types = frozenset(self.by_type)
         self.windows: dict[tuple[str, str | None], deque[tuple[float, int, Any]]] = {}
+        self.held: dict[tuple[str, str | None], Counter[Any]] = {}
         self.values: dict[tuple[str, str | None], dict[Any, int]] = {}
 
     @classmethod
@@ -666,22 +676,23 @@ class RuleSignal(Base):
             return list(values.values())
         now = event.ts.timestamp()
         seen = self.windows.setdefault(key, deque())
+        # How many matches in the window hold each value, so a match needs no scan of it.
+        held = self.held.setdefault(key, Counter())
         if rule.window_s is not None:
             cutoff = now - rule.window_s
             while seen and seen[0][0] < cutoff:
-                seen.popleft()
+                _forget(held, seen.popleft()[2])
         elif len(seen) >= rule.count:
-            seen.popleft()
-        seen.append((now, event.seq, await c.value(event, payload, state)))
-        if rule.distinct:
-            distinct = {value for _, _, value in seen if value is not None}
-            reached = len(distinct) >= rule.count
-        else:
-            reached = len(seen) >= rule.count
-        if not reached:
+            _forget(held, seen.popleft()[2])
+        value = await c.value(event, payload, state)
+        seen.append((now, event.seq, value))
+        if value is not None:
+            held[value] += 1
+        if (len(held) if rule.distinct else len(seen)) < rule.count:
             return None
         evidence = [seq for _, seq, _ in seen]
         seen.clear()
+        held.clear()
         return evidence
 
     async def feed(self, event: Event, state: State) -> list[Hit]:
