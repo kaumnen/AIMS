@@ -2,6 +2,8 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import typer
+from typer.core import TyperCommand
+from typer.models import TyperPath
 
 from aims import __version__
 
@@ -3100,3 +3102,39 @@ def spend_cmd(
         return
     for line in spend_lines(credits):
         _echo(line)
+
+
+class _Utf8Command(TyperCommand):
+    """A command that refuses a text argument UTF-8 cannot encode. A byte in argv that is not
+    UTF-8 reaches Python as a lone surrogate, which the log, a model request, the control plane
+    and SQLite all refuse. A path is let through: the file system takes it back as the same
+    bytes."""
+
+    def parse_args(self, ctx: Any, args: list[str]) -> list[str]:
+        from aims.text import encodable
+
+        rest = super().parse_args(ctx, args)
+        for param in self.get_params(ctx):
+            value = ctx.params.get(param.name or "")
+            values = value if isinstance(value, list | tuple) else [value]
+            texts = [v for v in values if isinstance(v, str)]
+            if not isinstance(param.type, TyperPath) and not all(map(encodable, texts)):
+                raise typer.BadParameter(
+                    "holds a byte that is not UTF-8. AIMS stores and sends text as UTF-8 only.",
+                    ctx=ctx,
+                    param=param,
+                )
+        return rest
+
+
+def _utf8_only(group: typer.Typer) -> None:
+    """Make each command of `group` and of its subgroups a _Utf8Command."""
+    for command in group.registered_commands:
+        if command.cls in (None, TyperCommand):
+            command.cls = _Utf8Command
+    for sub in group.registered_groups:
+        if sub.typer_instance is not None:
+            _utf8_only(sub.typer_instance)
+
+
+_utf8_only(app)

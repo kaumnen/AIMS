@@ -1,6 +1,9 @@
 import asyncio
+import os
 import re
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -149,3 +152,72 @@ def test_a_path_that_does_not_fit_ends_in_an_error_not_a_traceback(tmp_path: Pat
         if (r.exit_code, type(r.exception)) != (1, SystemExit) or "not JSON" not in r.output:
             failed.append(f"{args[0]}, server.json not JSON: {r.exception!r} {r.output!r}")
     assert failed == []
+
+
+def test_text_arguments_utf8_cannot_encode_are_refused(tmp_path: Path) -> None:
+    """A byte in argv that is not UTF-8 reaches Python as a lone surrogate. Text that the log,
+    a model, the control plane or SQLite would take is refused before the command runs."""
+    bad = "a\udcff"
+    server = ["--server", "http://127.0.0.1:9"]
+    runs = ["--runs-dir", str(tmp_path / "runs")]
+    cases = {
+        "--text": ["control", "r1", "inject", "--text", bad, *server],
+        "--reason": ["control", "r1", "kill", "--reason", bad, *server],
+        "run": ["control", bad, "pause", *server],
+        "--inject": ["run", "--replay", "r1", "--inject", bad, *runs],
+        "--series": ["run", "builtin/word-count", "--series", bad, *runs, "--replay", "r1"],
+        "--variant": ["run", "--replay", "r1", "--variant", bad, *runs],
+        "--profile": ["run", "--replay", "r1", "--profile", bad, *runs],
+        "runs": ["monitor", "r1", bad, *runs],
+        "--note": ["label", "r1", "3", "real", "--note", bad, *runs],
+    }
+    failed = []
+    for hint, args in cases.items():
+        r = CliRunner().invoke(app, args, env={"AIMS_TOKEN": "aims_x"})
+        said = " ".join(r.output.split())
+        refused = f"Invalid value for '{hint}': holds a byte that is not UTF-8." in said
+        if (r.exit_code, type(r.exception), refused) != (2, SystemExit, True):
+            failed.append(f"{hint}: exit {r.exit_code} {r.exception!r} {r.output[-300:]!r}")
+    assert failed == []
+
+
+def test_a_path_utf8_cannot_encode_reaches_the_file_system(tmp_path: Path) -> None:
+    """A file name that is not UTF-8 is legal on Linux, and the file system takes it back as the
+    same bytes, so a path argument is let through."""
+    r = CliRunner().invoke(app, ["verify", "r1", "--runs-dir", str(tmp_path / "nope\udcff")])
+    assert (r.exit_code, type(r.exception)) == (1, SystemExit)
+    assert "error: no events.jsonl in " in r.output
+    assert "nope\\uDCFF/r1" in r.output
+    r = CliRunner().invoke(app, ["scenario", "check", "nope\udcff"])
+    assert (r.exit_code, type(r.exception)) == (2, SystemExit)
+    assert "no file nope\\uDCFF and no built-in scenario" in " ".join(r.output.split())
+
+
+def test_a_byte_in_argv_that_is_not_utf8_is_refused() -> None:
+    args = [b"control", b"r1", b"inject", b"--text", b"a\xff", b"--server", b"http://127.0.0.1:9"]
+    env = {**os.environ, "AIMS_TOKEN": "aims_x"}
+    p = subprocess.run(
+        [os.fsencode(sys.executable), b"-m", b"aims", *args],
+        env=env,
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+    assert p.returncode == 2, p.stderr[-500:]
+    assert b"Invalid value for '--text': holds a byte that is not UTF-8." in p.stderr
+
+
+def test_every_command_checks_its_text_arguments() -> None:
+    from aims.cli import _Utf8Command
+
+    leaves: list[str] = []
+
+    def walk(command: Any, path: str) -> None:
+        subs = getattr(command, "commands", None)
+        if subs is None and not isinstance(command, _Utf8Command):
+            leaves.append(path)
+        for name, sub in (subs or {}).items():
+            walk(sub, f"{path} {name}")
+
+    walk(get_command(app), "aims")
+    assert leaves == []

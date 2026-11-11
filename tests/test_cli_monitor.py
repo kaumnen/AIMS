@@ -5,6 +5,7 @@ on a runner, against the control plane on loopback."""
 import asyncio
 import contextlib
 import hashlib
+import io
 import json
 import os
 import re
@@ -814,6 +815,33 @@ async def test_the_human_prompt_answers_through_the_runner() -> None:
     await until(lambda: not prompt._tasks)
     assert runner.done[0][1]["then"] == "inject"
     assert runner.done[0][1]["text"] == "Stop and explain."
+
+
+async def test_the_human_prompt_refuses_a_message_utf8_cannot_encode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A byte typed that is not UTF-8 is refused at the prompt and asked again, never sent: a
+    model request and the log take UTF-8 only."""
+    refused = "the message holds a byte that is not UTF-8; it was not sent"
+    texts = iter(["inject\n", "a \udcff b\n", "inject\n", "Stop.\n"])
+    console = Console(record=True, width=200)
+    prompt = HumanPrompt(console, read=lambda: next(texts))
+    runner = Held()
+    await prompt.hook(cast(Runner, runner))(request())
+    await until(lambda: not prompt._tasks)
+    assert [kw["text"] for _, kw in runner.done] == ["Stop."]
+    assert refused in console.export_text()
+
+    # Read from the terminal itself, which may decode strictly, as Python 3.14 does
+    typed = io.BytesIO(b"inject\na \xff b\ninject\nStop.\n")
+    monkeypatch.setattr("sys.stdin", io.TextIOWrapper(typed, encoding="utf-8", errors="strict"))
+    console = Console(record=True, width=200)
+    prompt = HumanPrompt(console)
+    runner = Held()
+    await prompt.hook(cast(Runner, runner))(request())
+    await until(lambda: not prompt._tasks)
+    assert [kw["text"] for _, kw in runner.done] == ["Stop."]
+    assert refused in console.export_text()
 
 
 class Stuck(Held):

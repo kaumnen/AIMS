@@ -23,7 +23,7 @@ from aims.report.escape import visible
 from aims.run.estimate import Progress, project_run, usd
 from aims.run.runner import Result, RunError, Runner
 from aims.terminal import one_line, shown
-from aims.text import scrub
+from aims.text import encodable, scrub
 
 TAIL = 240
 ARGS = 120
@@ -581,6 +581,12 @@ def event_line(kind: str, run_id: str, e: Event) -> dict[str, object]:
     }
 
 
+def _typed_line() -> str:
+    """The next line typed at the terminal, "" at its end. A byte that is not UTF-8 reads as a
+    lone surrogate, as in Python's UTF-8 mode, so the prompt can refuse it and ask again."""
+    return sys.stdin.buffer.readline().decode("utf-8", "surrogateescape")
+
+
 class HumanPrompt:
     """Asks the person at the terminal what to do with agents the monitor paused under human
     oversight: resume, deny the tool call they are held before, inject a message, or kill the
@@ -590,7 +596,7 @@ class HumanPrompt:
 
     def __init__(self, console: Console, read: Callable[[], str] | None = None) -> None:
         self.console = console
-        self.read = read or sys.stdin.readline
+        self.read = read or _typed_line
         self.live: Live | None = None
         self._lock = asyncio.Lock()
         self._reading: asyncio.Future[str] | None = None
@@ -664,6 +670,9 @@ class HumanPrompt:
                     return
                 if not text.strip():
                     c.print("an inject needs text")
+                    continue
+                if not encodable(text):
+                    c.print("the message holds a byte that is not UTF-8; it was not sent")
                     continue
             try:
                 notes = await self._answer(runner, request, choice, text)
