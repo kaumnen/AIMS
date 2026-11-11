@@ -26,6 +26,7 @@ from aims.cli import EXIT_CANCELLED, app
 from aims.events import Draft, LocalEventStore, RunFinished, RunStarted, ToolCall
 from aims.net import Outbound
 from aims.node.service import Node, NodeOptions
+from aims.report.escape import visible
 from aims.sandbox import DockerBackend, SandboxSpec
 from aims.server.db import ServerDB
 from aims.server.serve import (
@@ -1327,6 +1328,30 @@ async def test_aims_ui_links_to_its_public_url_and_answers_its_host(tmp_path: Pa
         assert out.decode().startswith("https://aims.example:8443/#code=")
         proc.send_signal(signal.SIGTERM)
         await proc.wait()
+
+
+async def test_aims_ui_shows_hidden_characters_of_its_url_and_server_log_as_text(
+    tmp_path: Path,
+) -> None:
+    public = "https://a\N{RIGHT-TO-LEFT OVERRIDE}b\x9bc.example"
+    async with ui_process(tmp_path, "--no-runner", "--public-url", public) as (proc, url):
+        assert url.startswith("https://a\\u202Eb\\u009Bc.example/#code=")
+        local = json.loads((tmp_path / "server" / "server.json").read_text())
+        host, _, port = local["url"].removeprefix("http://").rpartition(":")
+        async with asyncio.timeout(30):
+            reader, writer = await asyncio.open_connection(host, int(port))
+            # h11 refuses the escape bytes in the request line; uvicorn logs a warning
+            writer.write(b"GET /a\x1b[2J HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            await writer.drain()
+            assert (await reader.read(100)).startswith(b"HTTP/1.1 400")
+            writer.close()
+            await writer.wait_closed()
+            proc.send_signal(signal.SIGTERM)
+            assert proc.stderr is not None
+            rest = (await proc.stderr.read()).decode()
+            assert await proc.wait() == 0
+    assert "WARNING uvicorn.error: Invalid HTTP request received.\n" in rest
+    assert visible(rest) == rest
 
 
 async def test_aims_ui_answers_on_the_address_it_binds(tmp_path: Path) -> None:

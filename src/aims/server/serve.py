@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 import uvicorn
 
 from aims.net import loopback, no_proxy
+from aims.report.escape import visible
 from aims.server.app import create_app
 from aims.server.db import UI_TOKEN, Token, new_token
 from aims.server.state import CODE_TTL_S, close_state, open_state
@@ -205,6 +206,9 @@ async def serve(o: UiOptions) -> int:
             app,
             host=o.host.strip("[]"),
             port=o.port,
+            # No handlers of uvicorn's own: its lines reach the handler `aims ui` set, which
+            # writes them through visible() as it does every other log line
+            log_config=None,
             log_level="warning",
             lifespan="on",
             proxy_headers=bool(o.behind_proxy),
@@ -250,14 +254,15 @@ async def serve(o: UiOptions) -> int:
             finally:
                 os.close(runner_stdin)
         url = f"{shown}/#code={state.codes.issue(UI_TOKEN)}" if o.auth else shown
-        print(f"AIMS control plane on {shown}", file=sys.stderr)
+        # --public-url is outside text
+        print(visible(f"AIMS control plane on {shown}"), file=sys.stderr)
         if not o.auth:
             print(
                 "WARNING: --no-auth: anyone who can reach this port on this machine can start"
                 " containers and read every run",
                 file=sys.stderr,
             )
-        print(f"open {url}", file=sys.stderr)
+        print(visible(f"open {url}"), file=sys.stderr)
         if o.auth:
             print(
                 "the link signs in once, within 2 minutes; `aims open` gives a new one, or sign"
