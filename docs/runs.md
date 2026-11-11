@@ -14,6 +14,8 @@
 
 `aims run --replay <run> --fork-at agent:12 --inject "<message>"` replays the recorded answers up to step 12, then goes on live. Add `--samples 5` for five forks. The run page in the UI has **Fork from here** on each step.
 
+A fork replays a step only when the run recorded a result for each of its tool calls. A run killed in a step before its tool calls returned has none, so a fork cuts before that step and makes it again live. Without `--fork-at`, a run of one agent forks after the last step that replays. In a cut of several agents, another agent that was in such a step makes it again live too.
+
 ### Monitor and score again
 
 - `aims monitor <run>` feeds a sealed run through the monitor again, with any preset or model.

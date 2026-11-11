@@ -18,7 +18,15 @@ from typer.testing import CliRunner
 
 from aims.cli import app
 from aims.config import load as load_settings
-from aims.events import Draft, LocalEventStore, RunFinished, RunStarted
+from aims.events import (
+    AgentStep,
+    Draft,
+    LocalEventStore,
+    RunFinished,
+    RunStarted,
+    ToolCall,
+    ToolResult,
+)
 from aims.prompts import Prompts
 from aims.run import truth
 from aims.run.runner import Result, Runner, resolve_texts
@@ -75,6 +83,45 @@ async def test_forks_are_estimated_and_above_the_confirm_limit_need_confirm(
         assert r.status_code == 202, r.text
         r = await c.get(estimate, params={"step": 0, "at": "a:0"})
         assert (r.status_code, r.json()["detail"]) == (422, "give step or at, not both")
+
+
+# Step 1 returned; the run ended in step 2 before its tool call returned.
+MID_STEP = [
+    Draft(ToolCall(call_id="t1", name="bash", arguments="{}", model_call="m1"), "a"),
+    Draft(AgentStep(n=1, call_id="m1", status="completed", tool_calls=["t1"]), "a"),
+    Draft(ToolResult(call_id="t1", output="ok"), "a"),
+    Draft(ToolCall(call_id="t2", name="bash", arguments="{}", model_call="m2"), "a"),
+    Draft(AgentStep(n=2, call_id="m2", status="completed", tool_calls=["t2"]), "a"),
+]
+HALF = (
+    "step 2 of agent a cannot be replayed: the run ended before its tool calls returned, so"
+    " they have no recorded output; fork at step 1 or before"
+)
+
+
+async def test_a_fork_of_a_run_that_ended_mid_step_cuts_before_that_step(
+    cp: CP, local: LocalEventStore
+) -> None:
+    origin = await push_forged(cp, local, "http://model.invalid/v1", drafts=MID_STEP)
+    estimate = f"/api/runs/{origin}/forks/estimate"
+    forks = f"/api/runs/{origin}/forks"
+    async with cp.client(cp.viewer) as c:
+        r = await c.get(f"/api/runs/{origin}")
+        assert r.json()["replayable"] == {"a": 1}
+    async with cp.client(cp.operator) as c:
+        r = await c.get(estimate, params={"monitor": "signals"})
+        assert r.status_code == 200, r.text
+        assert r.json()["parts"][0]["replayed"] == {"a": 1}
+        r = await c.get(estimate, params={"step": 2, "monitor": "signals"})
+        assert (r.status_code, r.json()["code"], r.json()["detail"]) == (422, "fork", HALF)
+        r = await c.post(forks, json={"step": 2, "monitor": "signals"})
+        assert (r.status_code, r.json()["code"], r.json()["detail"]) == (422, "fork", HALF)
+        r = await c.post(forks, json={"monitor": "signals"})
+        assert r.status_code == 202, r.text
+        (fork,) = r.json()["run_ids"]
+    job = await cp.state.db.job(fork)
+    assert job is not None
+    assert job.payload["fork"]["step"] == 1
 
 
 async def test_runs_and_forks_take_an_oversight_over_the_scenarios(
@@ -282,9 +329,14 @@ async def test_a_fork_is_watched_over_the_full_scenario_its_estimate_prices(
 
 
 async def recorded(
-    runs: Path, scenario: Path, config: Path, budget: dict[str, Any] | None = None
+    runs: Path,
+    scenario: Path,
+    config: Path,
+    budget: dict[str, Any] | None = None,
+    drafts: list[Draft] | None = None,
 ) -> str:
-    """A sealed run of `scenario` as `aims run` records it, with no steps, run under `budget`."""
+    """A sealed run of `scenario` as `aims run` records it, run under `budget`, whose events
+    are `drafts`: no steps by default."""
     bundle = load(scenario)
     profile = load_settings(config).models.get("scripted")
     entry = {
@@ -300,8 +352,27 @@ async def recorded(
     )
     async with await LocalEventStore.open(runs) as store:
         run_id = await store.create_run(started, blobs=bundle.blobs())
-        await store.append(run_id, [Draft(RunFinished(status="completed"))])
+        await store.append(run_id, [*(drafts or []), Draft(RunFinished(status="completed"))])
     return run_id
+
+
+def test_aims_run_forks_a_run_that_ended_mid_step_before_that_step(tmp_path: Path) -> None:
+    config = tmp_path / "aims.toml"
+    config.write_text(CONFIG + "[estimate]\nconfirm_above_usd = 1\n")
+    scenario = tmp_path / "control.yaml"
+    scenario.write_text(CONTROL)
+    runs = tmp_path / "runs"
+    origin = asyncio.run(recorded(runs, scenario, config, drafts=MID_STEP))
+    args = ["run", "--replay", origin, "--config", str(config), "--runs-dir", str(runs)]
+    args += ["--no-server", "--monitor", "off", "--json"]
+    result = CliRunner().invoke(app, args)
+    assert result.exit_code == 1, result.output
+    first = json.loads(result.stdout.splitlines()[0])
+    assert (first["type"], first["parts"][0]["replayed"]) == ("estimate", {"a": 1})
+    result = CliRunner().invoke(app, [*args, "--fork-at", "2"])
+    assert result.exit_code == 1, result.output
+    assert f"error: {HALF}" in " ".join(result.stderr.split())
+    assert not result.stdout
 
 
 def test_aims_run_prices_a_replay_as_a_fork_and_checks_the_oversight(tmp_path: Path) -> None:

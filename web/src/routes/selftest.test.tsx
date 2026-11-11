@@ -68,6 +68,7 @@ beforeEach(() => {
         score_runs: [],
         budget: [],
         series_previous: null,
+        replayable: {},
       };
       return Response.json(detail);
     }

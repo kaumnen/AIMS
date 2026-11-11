@@ -5957,7 +5957,9 @@ export interface components {
          * @description `verdict` is the judge's `monitor.verdict`; `monitor_runs` are the monitor runs over this
          *     run and `score_runs` the scores of it, queued ones too, newest first. `budget` lists the
          *     caps the run's budget override changed from its scenario's. `series_previous` is the run
-         *     of its series it starts from, None for the first.
+         *     of its series it starts from, None for the first. `replayable` is the last step of each
+         *     agent a fork can replay: its last step once each of that step's tool calls has a result,
+         *     else the step before.
          */
         RunDetail: {
             /** Budget */
@@ -5965,6 +5967,10 @@ export interface components {
             finished: components["schemas"]["Event"] | null;
             /** Monitor Runs */
             monitor_runs: string[];
+            /** Replayable */
+            replayable: {
+                [key: string]: number;
+            };
             run: components["schemas"]["RunSummary"];
             /** Score Runs */
             score_runs: string[];
@@ -7004,9 +7010,10 @@ export interface components {
          * @description `monitor` picks the fork's monitor preset over the config files and the scenario. `at`
          *     cuts a run of several agents: `agent:N` after that agent's step N, or `@seq` after an
          *     event; with `keep_others` the other agents keep their recorded answers until their own
-         *     inputs change. `step` is the last step replayed of a run of one agent. `confirm` and
-         *     `oversight` as in StartRun; the estimate counts only the steps after the cut. `budget` as
-         *     in StartRun, laid over the origin's own override cap by cap.
+         *     inputs change. `step` is the last step replayed of a run of one agent, by default the last
+         *     one a fork can replay (`RunDetail.replayable`). `confirm` and `oversight` as in StartRun;
+         *     the estimate counts only the steps after the cut. `budget` as in StartRun, laid over the
+         *     origin's own override cap by cap.
          */
         StartFork: {
             /** At */

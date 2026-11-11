@@ -610,7 +610,8 @@ def run(
         str | None,
         typer.Option(
             help="Where the fork cuts: agent:N after that agent's step N, @seq after an event,"
-            " or N, the last step replayed of a run of one agent."
+            " or N, the last step replayed of a run of one agent. A run of one agent forks by"
+            " default after the last step a fork can replay."
         ),
     ] = None,
     keep_others: Annotated[
@@ -819,6 +820,7 @@ async def _run(**o: Any) -> int:
         cut_at,
         fork_profiles,
         fork_schedules,
+        fork_step,
         live_profiles,
         load_origin,
         planner,
@@ -869,7 +871,7 @@ async def _run(**o: Any) -> int:
                     cut = found
                     step = min(found.steps.values(), default=0)
                 else:
-                    step = found if found is not None else min(origin.steps.values(), default=0)
+                    step = found if found is not None else fork_step(origin)
                     check_fork(origin, step)
                 bundle = origin.full_bundle or origin.bundle
                 if o["scenario"] is not None and not same_scenario(origin, load(o["scenario"])):

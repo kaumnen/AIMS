@@ -52,7 +52,16 @@ from aims.monitor.setup import ResolvedMonitor
 from aims.prompts import PLACEHOLDERS, AgentTexts, Prompts, TextError, load_prompts
 from aims.run import selftest
 from aims.run.estimate import Estimate, History, estimate_fork, estimate_runs, needs_confirm
-from aims.run.fork import CutAt, Origin, check_fork, cut_at, live_profiles, load_origin
+from aims.run.fork import (
+    CutAt,
+    Origin,
+    check_fork,
+    cut_at,
+    fork_step,
+    live_profiles,
+    load_origin,
+    replayable_steps,
+)
 from aims.run.job import Job, fork_jobs, monitor_for, scenario_jobs, selftest_job
 from aims.run.runner import RunError, agent_profile, check
 from aims.scenario import Bundle, Scenario, ScenarioError, folder_tar, load, parse
@@ -492,7 +501,9 @@ class RunDetail(Out):
     """`verdict` is the judge's `monitor.verdict`; `monitor_runs` are the monitor runs over this
     run and `score_runs` the scores of it, queued ones too, newest first. `budget` lists the
     caps the run's budget override changed from its scenario's. `series_previous` is the run
-    of its series it starts from, None for the first."""
+    of its series it starts from, None for the first. `replayable` is the last step of each
+    agent a fork can replay: its last step once each of that step's tool calls has a result,
+    else the step before."""
 
     run: RunSummary
     started: Event | None = None
@@ -502,6 +513,7 @@ class RunDetail(Out):
     score_runs: list[str] = Field(default_factory=list)
     budget: list[budgets.BudgetChange] = Field(default_factory=list)
     series_previous: str | None = None
+    replayable: dict[str, int] = Field(default_factory=dict)
 
 
 def budget_changes(started: dict[str, JsonValue]) -> list[budgets.BudgetChange]:
@@ -528,10 +540,14 @@ async def get_run(run_id: str, principal: Viewer, state: State) -> RunDetail:
         run_id, types=["monitor.verdict"], before=found.events, limit=1
     )
     started = first[0] if first and first[0].type == "run.started" else None
+    # only a scenario run forks
+    named = started.data.get("agents") if started is not None and found.kind == "scenario" else None
+    agents = [a for a in named if isinstance(a, str)] if isinstance(named, list) else []
     return RunDetail(
         run=found,
         series_previous=await _series_previous(state, run_id, started),
         budget=[] if started is None else budget_changes(started.data),
+        replayable=await replayable_steps(state.store, run_id, agents),
         started=first[0] if first else None,
         finished=next(iter(last), None),
         verdict=next(iter(verdict), None),
@@ -674,9 +690,10 @@ class StartFork(BaseModel):
     """`monitor` picks the fork's monitor preset over the config files and the scenario. `at`
     cuts a run of several agents: `agent:N` after that agent's step N, or `@seq` after an
     event; with `keep_others` the other agents keep their recorded answers until their own
-    inputs change. `step` is the last step replayed of a run of one agent. `confirm` and
-    `oversight` as in StartRun; the estimate counts only the steps after the cut. `budget` as
-    in StartRun, laid over the origin's own override cap by cap."""
+    inputs change. `step` is the last step replayed of a run of one agent, by default the last
+    one a fork can replay (`RunDetail.replayable`). `confirm` and `oversight` as in StartRun;
+    the estimate counts only the steps after the cut. `budget` as in StartRun, laid over the
+    origin's own override cap by cap."""
 
     step: int | None = Field(default=None, ge=0)
     at: str | None = None
@@ -935,7 +952,7 @@ async def fork_point(state: ServerState, run_id: str, body: StartFork) -> ForkPo
             return ForkPoint(origin, min(found.steps.values(), default=0), found)
         step = body.step if found is None else found
         if step is None:
-            step = min(origin.steps.values(), default=0)
+            step = fork_step(origin)
         check_fork(origin, step)
         origin.check_budget(body.budget, {a.id: step for a in origin.bundle.scenario.agents})
     except BudgetError as e:

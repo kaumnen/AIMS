@@ -7,7 +7,9 @@ from typing import Any
 
 import pytest
 from scripted import Script, call, models, profile
+from test_agent import Gate
 
+from aims.agent import Verdict
 from aims.events import (
     AgentFinished,
     Event,
@@ -19,8 +21,15 @@ from aims.events import (
     TaskScored,
     ToolResult,
 )
-from aims.run.fork import check_fork, fork_profiles, fork_schedules, load_origin, planner
-from aims.run.runner import Bench, Fork, Options, Runner
+from aims.run.fork import (
+    check_fork,
+    fork_profiles,
+    fork_schedules,
+    fork_step,
+    load_origin,
+    planner,
+)
+from aims.run.runner import Bench, Fork, Options, RunError, Runner
 from aims.sandbox import DockerBackend
 from aims.scenario import load
 from aims.scenario.budget import parse as parse_budget
@@ -159,6 +168,46 @@ async def test_a_scripted_agent_fixes_the_task_and_is_scored(
 
     finished_events = await payloads(store, fid, AgentFinished, "agent.finished")
     assert finished_events[0].reason == "submitted"
+
+
+async def test_a_fork_of_a_killed_run_makes_the_killed_step_again_live(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    """The gate kills the agent before the tool call of its step 2 runs, so that step has no
+    recorded output. A fork cuts after step 1 by default and asks the model for step 2 again."""
+    gate = Gate({("before_tool", 2): Verdict("kill", reason="policy")})
+    script = Script(call("bash", command="cat wordcount.py"), call("bash", command="rm -rf /work"))
+    bench = Bench(store, backend, models(profile()), transport=script.transport(), gate=gate)
+    result = await Runner(bench, load(SCENARIO), Options()).run()
+    assert (result.status, result.agents["agent"].reason) == ("killed", "killed")
+    assert result.run_id is not None
+
+    origin = await load_origin(store, result.run_id)
+    assert (origin.steps, origin.replayable) == ({"agent": 2}, {"agent": 1})
+    with pytest.raises(RunError, match="fork at step 1 or before"):
+        check_fork(origin, 2)
+    fork = Fork(origin=result.run_id, step=fork_step(origin))
+    check_fork(origin, fork.step)
+    live = Script(call("bash", command="echo again"), call("submit", answer="forked"))
+    bench = Bench(store, backend, models(profile()), transport=live.transport())
+    forked = await Runner(
+        bench,
+        origin.bundle,
+        Options(fork=fork),
+        profiles=fork_profiles(bench, origin, fork),
+        schedules=fork_schedules(origin, fork),
+        texts=origin.texts,
+        replay=planner(bench, origin, fork),
+    ).run()
+
+    assert forked.status == "completed", forked.reason
+    assert forked.run_id is not None
+    assert (forked.agents["agent"].reason, forked.agents["agent"].steps) == ("submitted", 3)
+    responses = await payloads(store, forked.run_id, ModelResponse, "model.response")
+    assert [r.source for r in responses] == ["replay", "live", "live"]
+    results = await payloads(store, forked.run_id, ToolResult, "tool.result")
+    assert [r.replayed for r in results] == [True, False, False]
+    assert len(live.requests) == 2
 
 
 async def test_setup_failure_fails_the_run_without_an_agent(

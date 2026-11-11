@@ -74,7 +74,9 @@ function ForkForm({
   const runId = detail.run.run_id;
   const agent = step.agent_id ?? "";
   const multi = agentsOf(detail).length > 1;
-  const [keepStep, setKeepStep] = useState(true);
+  // A fork keeps the step only when it can replay it: the run gave each of its tool calls a result.
+  const whole = step.n <= (detail.replayable[agent] ?? step.n);
+  const [keepStep, setKeepStep] = useState(whole);
   const [inject, setInject] = useState("");
   const [profile, setProfile] = useState(DEFAULT);
   const [keepOthers, setKeepOthers] = useState(false);
@@ -163,11 +165,18 @@ function ForkForm({
             label="Cut"
             value={keepStep ? "after" : "before"}
             items={[
-              { value: "after", label: `After ${who}: keep it, go live from the next` },
+              ...(whole
+                ? [{ value: "after", label: `After ${who}: keep it, go live from the next` }]
+                : []),
               { value: "before", label: `Before ${who}: make it again live` },
             ]}
             onChange={(v) => setKeepStep(v !== "before")}
           />
+          {!whole && (
+            <span className="text-muted-foreground">
+              The run ended before the tool calls of {who} returned, so a fork cannot keep it.
+            </span>
+          )}
         </Field>
         <Field label="Message to the agent at the fork" className="sm:col-span-2">
           <Textarea

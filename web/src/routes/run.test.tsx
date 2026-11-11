@@ -355,6 +355,7 @@ beforeEach(() => {
     score_runs: [],
     budget: [],
     series_previous: null,
+    replayable: {},
   };
   samples = [];
   flags = [];
@@ -934,6 +935,7 @@ function withReview() {
         score_runs: [],
         budget: [],
         series_previous: null,
+        replayable: {},
       },
       flags: [],
       sweeps: [],
@@ -2105,6 +2107,44 @@ test("a run of several agents forks at the agent's step and can keep the others"
     strict: true,
     keep: false,
   });
+});
+
+test("a step the run ended in before its tool calls returned forks only before it", async () => {
+  detail.started = ev(0, "run.started", { agents: ["agent"], oversight: "observe" });
+  detail.replayable = { agent: 0 };
+  renderAt(`/runs/${BEE5}`);
+  const form = await forkForm();
+  expect(await form.findByText(/A fork after step 0/)).toBeTruthy();
+  expect(form.getByRole("combobox", { name: "Cut" }).textContent).toContain(
+    "Before step 1: make it again live",
+  );
+  expect(
+    form.getByText(
+      "The run ended before the tool calls of step 1 returned, so a fork cannot keep it.",
+    ),
+  ).toBeTruthy();
+  fireEvent.click(form.getByRole("combobox", { name: "Cut" }));
+  const options = await screen.findAllByRole("option");
+  expect(options.map((o) => o.textContent)).toEqual(["Before step 1: make it again live"]);
+  fireEvent.keyDown(options[0] as HTMLElement, { key: "Escape" });
+  await waitFor(() => expect(screen.queryByRole("option")).toBeNull());
+  const start = form.getByRole("button", { name: "Start fork" });
+  await waitFor(() => expect(start.hasAttribute("disabled")).toBe(false));
+  fireEvent.click(start);
+  await waitFor(() => expect(posted).toHaveLength(1));
+  expect(posted[0]?.body).toMatchObject({ step: 0 });
+});
+
+test("a step whose tool calls returned forks after it by default", async () => {
+  detail.started = ev(0, "run.started", { agents: ["agent", "other"] });
+  detail.replayable = { agent: 1, other: 0 };
+  renderAt(`/runs/${BEE5}`);
+  const form = await forkForm();
+  expect(await form.findByText(/A fork after agent step 1/)).toBeTruthy();
+  expect(form.getByRole("combobox", { name: "Cut" }).textContent).toContain(
+    "After agent's step 1: keep it, go live from the next",
+  );
+  expect(form.queryByText(/so a fork cannot keep it/)).toBeNull();
 });
 
 const forkBudgets = () =>

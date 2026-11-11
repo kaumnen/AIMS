@@ -11226,7 +11226,7 @@
         "type": "object"
       },
       "RunDetail": {
-        "description": "`verdict` is the judge's `monitor.verdict`; `monitor_runs` are the monitor runs over this\nrun and `score_runs` the scores of it, queued ones too, newest first. `budget` lists the\ncaps the run's budget override changed from its scenario's. `series_previous` is the run\nof its series it starts from, None for the first.",
+        "description": "`verdict` is the judge's `monitor.verdict`; `monitor_runs` are the monitor runs over this\nrun and `score_runs` the scores of it, queued ones too, newest first. `budget` lists the\ncaps the run's budget override changed from its scenario's. `series_previous` is the run\nof its series it starts from, None for the first. `replayable` is the last step of each\nagent a fork can replay: its last step once each of that step's tool calls has a result,\nelse the step before.",
         "properties": {
           "budget": {
             "items": {
@@ -11251,6 +11251,13 @@
             },
             "title": "Monitor Runs",
             "type": "array"
+          },
+          "replayable": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Replayable",
+            "type": "object"
           },
           "run": {
             "$ref": "#/components/schemas/RunSummary"
@@ -11302,7 +11309,8 @@
           "monitor_runs",
           "score_runs",
           "budget",
-          "series_previous"
+          "series_previous",
+          "replayable"
         ],
         "title": "RunDetail",
         "type": "object"
@@ -14153,7 +14161,7 @@
         "type": "object"
       },
       "StartFork": {
-        "description": "`monitor` picks the fork's monitor preset over the config files and the scenario. `at`\ncuts a run of several agents: `agent:N` after that agent's step N, or `@seq` after an\nevent; with `keep_others` the other agents keep their recorded answers until their own\ninputs change. `step` is the last step replayed of a run of one agent. `confirm` and\n`oversight` as in StartRun; the estimate counts only the steps after the cut. `budget` as\nin StartRun, laid over the origin's own override cap by cap.",
+        "description": "`monitor` picks the fork's monitor preset over the config files and the scenario. `at`\ncuts a run of several agents: `agent:N` after that agent's step N, or `@seq` after an\nevent; with `keep_others` the other agents keep their recorded answers until their own\ninputs change. `step` is the last step replayed of a run of one agent, by default the last\none a fork can replay (`RunDetail.replayable`). `confirm` and `oversight` as in StartRun;\nthe estimate counts only the steps after the cut. `budget` as in StartRun, laid over the\norigin's own override cap by cap.",
         "properties": {
           "at": {
             "anyOf": [

@@ -125,6 +125,7 @@ test("an open run takes its update and refetches when it ends, its last steps to
     score_runs: [],
     budget: [],
     series_previous: null,
+    replayable: {},
   });
   const refetch = vi.spyOn(qc, "invalidateQueries");
   applyRuns(qc, [run("b", { flags: 2 })]);
@@ -255,6 +256,7 @@ test("a run deleted elsewhere leaves every list and is noted as deleted", () => 
     score_runs: [],
     budget: [],
     series_previous: null,
+    replayable: {},
   });
   const live = new Live({ runs: true });
   const stop = syncRuns(live, qc, () => undefined);

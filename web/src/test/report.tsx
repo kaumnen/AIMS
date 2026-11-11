@@ -407,6 +407,7 @@ export function reportDetail(over: Partial<RunSummary> = {}): RunDetail {
     score_runs: [SCORE],
     budget: [],
     series_previous: null,
+    replayable: {},
   };
 }
 

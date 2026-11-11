@@ -3,13 +3,14 @@ import json
 import logging
 from bisect import bisect_right
 from collections import defaultdict
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from aims.agent import ChannelVersions, RecordedOutput, ReplayPlan, Turnstile
 from aims.events import (
+    MAX_INT,
     AgentInput,
     AgentStep,
     BlobRef,
@@ -55,6 +56,10 @@ class Origin:
     last_seq: int = -1
     budget: BudgetOverride | None = None
     """The caps the origin ran under over its scenario's, which its forks keep."""
+    replayable: dict[str, int] = field(default_factory=dict)
+    """The last step of each agent a fork can replay, from `replayable_steps`."""
+    running: bool = False
+    """Whether the origin was still running when it was loaded."""
 
     @property
     def seed(self) -> bytes | None:
@@ -133,8 +138,38 @@ def _truth(store: EventStore, run_id: str, want: str) -> dict[str, Any] | None:
     return json.loads(data)
 
 
+async def replayable_steps(store: EventStore, run_id: str, agents: Iterable[str]) -> dict[str, int]:
+    """The last step of each of `agents` a fork of run `run_id` can replay. A replayed step
+    gives each of its tool calls the output the run recorded, so an agent's last step counts
+    only once the log holds a result for each of its tool calls; else the step before it is
+    the last. A run that ended at a gate, mid-call or in a crash leaves its step without them,
+    and so does a run still in that step. The steps before an agent's last always have them:
+    its loop asks the model again only once every tool call of the step has its result."""
+    out: dict[str, int] = {}
+    for agent in agents:
+        last = await store.events(
+            run_id, before=MAX_INT, limit=1, types=["agent.step"], agent_id=agent
+        )
+        if not last:
+            out[agent] = 0
+            continue
+        step = AgentStep.model_validate(last[0].data)
+        waiting = set(step.tool_calls)
+        cursor = last[0].seq
+        while waiting and (
+            page := await store.events(
+                run_id, after=cursor, limit=PAGE, types=["tool.result"], agent_id=agent
+            )
+        ):
+            waiting -= {str(e.data.get("call_id")) for e in page}
+            cursor = page[-1].seq
+        out[agent] = step.n - 1 if waiting else step.n
+    return out
+
+
 async def load_origin(store: EventStore, run_id: str, *, full: bool = True) -> Origin:
-    if await store.run(run_id) is None:
+    info = await store.run(run_id)
+    if info is None:
         raise RunError(f"unknown run {run_id}")
     first = await store.events(run_id, limit=1)
     started = first[0].payload() if first else None
@@ -204,6 +239,9 @@ async def load_origin(store: EventStore, run_id: str, *, full: bool = True) -> O
     origin.steps = dict(steps)
     origin.outputs = dict(outputs)
     origin.injects = {a: dict(v) for a, v in injects.items()}
+    ids = [a.id for a in bundle.scenario.agents]
+    origin.replayable = await replayable_steps(store, run_id, ids)
+    origin.running = info.status == "running"
     await _order(store, run_id, origin)
     for c in started.channels:
         if c.restored is not None:
@@ -297,7 +335,9 @@ class CutAt:
 def cut_at(origin: Origin, at: str) -> CutAt | int:
     """Where `--fork-at` cuts `origin`: `agent:N` after that agent's step N, `@seq` after an
     event of the origin, or a plain step N, the same for every agent, which only a run of one
-    agent takes. Returns the step for a plain N. Raises RunError."""
+    agent takes. Returns the step for a plain N. Raises RunError, also for `agent:N` past the
+    last step that agent can replay. An agent the cut does not name that was in a step it
+    cannot replay goes live from that step."""
     agents = [a.id for a in origin.bundle.scenario.agents]
     text = at.strip()
     if text.isdigit():
@@ -322,6 +362,7 @@ def cut_at(origin: Origin, at: str) -> CutAt | int:
     seqs = origin.step_seqs.get(name, [])
     if step > len(seqs):
         raise RunError(f"agent {name} of run {origin.run_id} took {len(seqs)} steps")
+    _check_whole(origin, name, step, f"{name}:")
     first = seqs[0] - 1 if seqs else origin.last_seq
     seq = first if step == 0 else seqs[step - 1]
     steps = _taken(origin, seq)
@@ -335,12 +376,15 @@ def _agents(origin: Origin) -> list[Any]:
 
 
 def _taken(origin: Origin, seq: int) -> dict[str, int]:
+    """The steps each agent replays of a cut after event `seq`: those it had taken by then, up
+    to the last it can replay."""
     out: dict[str, int] = {}
     for agent in _agents(origin):
         if agent.script is not None:
             out[agent.id] = bisect_right(origin.actions.get(agent.id, []), seq)
         else:
-            out[agent.id] = bisect_right(origin.step_seqs.get(agent.id, []), seq)
+            taken = bisect_right(origin.step_seqs.get(agent.id, []), seq)
+            out[agent.id] = min(taken, origin.replayable.get(agent.id, 0))
     return out
 
 
@@ -451,12 +495,36 @@ def _replayed(origin: Origin, agent_id: str, step: int) -> dict[str, int]:
 
 
 def check_fork(origin: Origin, step: int) -> None:
+    """Raises RunError unless every agent of `origin` took `step` steps and can replay them."""
     for agent in origin.bundle.scenario.agents:
         taken = origin.steps.get(agent.id, 0)
         if not 0 <= step <= taken:
             raise RunError(
                 f"agent {agent.id} of run {origin.run_id} took {taken} steps; fork at 0 to {taken}"
             )
+        _check_whole(origin, agent.id, step, "step ")
+
+
+def fork_step(origin: Origin) -> int:
+    """Where a fork of a run of one agent cuts when it names no step: after the last step a
+    fork can replay."""
+    return min(origin.replayable.values(), default=0)
+
+
+def _check_whole(origin: Origin, agent_id: str, step: int, name: str) -> None:
+    """Raises RunError when a fork that replays `step` steps of the agent cannot replay the
+    last of them. `name` goes before a step in the error: `step ` or `agent:`."""
+    last = origin.replayable.get(agent_id, 0)
+    if step <= last:
+        return
+    if origin.running:
+        why = f"step {step} of agent {agent_id} cannot be replayed yet: its tool calls have not"
+        why += " returned, so they have no recorded output"
+    else:
+        why = f"step {step} of agent {agent_id} cannot be replayed: the run ended before its"
+        why += " tool calls returned, so they have no recorded output"
+    where = f"{name}{last} or before" if last else f"{name}0 to make every step again live"
+    raise RunError(f"{why}; fork at {where}")
 
 
 def planner(bench: Bench, origin: Origin, fork: Fork, *, source: EventStore | None = None):
