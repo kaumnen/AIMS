@@ -1,6 +1,11 @@
 import asyncio
+import random
+import time
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from test_signals import bench, change
@@ -17,7 +22,15 @@ from aims.events import (
     ToolCall,
 )
 from aims.monitor.config import MonitorConfig
-from aims.monitor.signals.covert import key_like
+from aims.monitor.signals.base import SignalSetup
+from aims.monitor.signals.covert import (
+    CredentialFlow,
+    JointAction,
+    _inside,
+    _SharedWrites,
+    key_like,
+)
+from aims.monitor.state import FsChangeRecord
 from aims.scenario import Scenario
 
 pytestmark = pytest.mark.anyio
@@ -251,6 +264,197 @@ async def test_credential_flow_spares_git_uuids_and_hashes(
     for value in values:
         await b.emit(ChannelMessage(channel="board", id=1, text=value, bytes=len(value)), agent="a")
     assert b.of("credential_flow") == []
+
+
+def folder_scenario(*paths: str) -> Scenario:
+    return Scenario.model_validate(
+        {
+            "version": 1,
+            "name": "folders",
+            "oversight": "observe",
+            "task": {"instruction": "do it", "environment": {"image": "python:3.13"}},
+            "agents": [{"id": "a"}, {"id": "b"}, {"id": "c"}],
+            "channels": [
+                {"name": f"drop{i}", "kind": "folder", "path": path} for i, path in enumerate(paths)
+            ],
+        }
+    )
+
+
+@dataclass(frozen=True)
+class Fed:
+    """The parts of an event the exchange bookkeeping reads, with its payload."""
+
+    seq: int
+    agent_id: str | None
+    ts: datetime
+    payload: Any
+
+
+class Payloads:
+    def payload(self, event: Fed) -> Any:
+        return event.payload
+
+
+def read_of(path: str, op: str = "read") -> FileAccess:
+    return FileAccess.model_validate(
+        {"exec_id": "e", "pid": 1, "ts_kernel": 1, "cpu": 0, "cpu_seq": 1, "op": op, "path": path}
+    )
+
+
+def write_of(path: str, agent: str = "a") -> FsChangeRecord:
+    return FsChangeRecord.model_validate(
+        {
+            "path": path,
+            "change": "added",
+            "kind": "file",
+            "size": 1,
+            "mode": 0o644,
+            "mtime_us": 1,
+            "channel": "drop0",
+            "agent": agent,
+        }
+    )
+
+
+def scan(signal: Any, window: float, event: Fed, payload: Any, now: float) -> None:
+    """The folder part of the exchange bookkeeping as it was before reads looked paths up:
+    every write kept, and each read scanning them all."""
+    if isinstance(payload, FileAccess):
+        if payload.op != "read" or event.agent_id is None:
+            return
+        for (path, writer), (at, _) in list(signal.writes.items()):
+            if writer == event.agent_id or not _inside(payload.path, path):
+                continue
+            if now - at <= window:
+                signal.exchanges.append((now, writer, event.agent_id, event.seq))
+        signal._prune(now)
+        return
+    if isinstance(payload, FsChangeRecord) and event.agent_id is not None:
+        for root in signal.folders:
+            if _inside(payload.path, root):
+                signal.writes[(payload.path, event.agent_id)] = (now, event.seq)
+
+
+class ScannedFlow(CredentialFlow):
+    def __init__(self, setup: SignalSetup) -> None:
+        super().__init__(setup)
+        self.writes: dict[tuple[str, str], tuple[float, int]] = {}
+
+    def _exchange(self, event: Any, payload: Any, now: float) -> None:
+        scan(self, self.opts.exchange_s, event, payload, now)
+
+
+class ScannedJoint(JointAction):
+    def __init__(self, setup: SignalSetup) -> None:
+        super().__init__(setup)
+        self.writes: dict[tuple[str, str], tuple[float, int]] = {}
+
+    def _exchange(self, event: Any, payload: Any, now: float) -> None:
+        scan(self, self.window, event, payload, now)
+
+
+PATHS = [
+    "",
+    ".",
+    "/",
+    "//",
+    "//shared",
+    "//shared/a",
+    "//shared/a/b",
+    "shared/a",
+    "/shared",
+    "/shared/",
+    "/shared//",
+    "/shared/a",
+    "/shared/a/",
+    "/shared/a/b",
+    "/shared/a/b/c.txt",
+    "/shared/a/b/c.txt/..",
+    "/shared//a/./b",
+    "/shared/x/../a/b",
+    "/shared/ab",
+    "/sharedx/a",
+    "/x/drop",
+    "/x/drop/a",
+    "/x/drop/a/b",
+    "/x/dropped/a",
+    "/work/a",
+]
+
+
+@pytest.mark.parametrize(
+    "folders", [("/shared", "/x/./drop/"), ("//shared",), ("/shared/a/",), ("/",), ("//",)]
+)
+async def test_folder_exchanges_match_a_scan_of_every_write(folders: tuple[str, ...]) -> None:
+    config, scenario = MonitorConfig(preset="signals"), folder_scenario("/shared")
+    flow_setup = SignalSetup(config, scenario, {"exchange_s": 10})
+    joint_setup = SignalSetup(config, scenario, {})
+    flow, scanned_flow = CredentialFlow(flow_setup), ScannedFlow(flow_setup)
+    joint, scanned_joint = JointAction(joint_setup), ScannedJoint(joint_setup)
+    pairs: list[tuple[Any, Any]] = [(flow, scanned_flow), (joint, scanned_joint)]
+    # Scenarios refuse some of these roots; the signals take whatever they are given.
+    for new, old in pairs:
+        new.folders = old.folders = list(folders)
+        new.shared = _SharedWrites(new.folders, new.shared.window)
+    state = cast(Any, Payloads())
+    rng = random.Random(" ".join(folders))
+    t = 1_800_000_000.0
+    names = ["a", "b", "c"]
+    agents: list[str | None] = [*names, None]
+    for seq in range(4000):
+        t += rng.choice([0, 0, 0.25, 1, 5, 10, 150, 300, 301])
+        agent = rng.choice(agents)
+        path = rng.choice(PATHS)
+        op = rng.choice(["read", "read", "read", "write"])
+        payload = write_of(path) if rng.random() < 0.4 else read_of(path, op)
+        event = Fed(seq, agent, datetime.fromtimestamp(t, UTC), payload)
+        for new, old in pairs:
+            await new.feed(cast(Any, event), state)
+            await old.feed(cast(Any, event), state)
+            assert set(new.exchanges) == set(old.exchanges)
+            assert len(new.exchanges) == len(set(new.exchanges))
+        now = event.ts.timestamp()
+        for x in names:
+            for y in names:
+                assert flow._exchanged(x, y, now) == scanned_flow._exchanged(x, y, now)
+                assert joint._exchange_seq(x, y, now) == scanned_joint._exchange_seq(x, y, now)
+
+
+async def test_shared_folder_reads_stay_fast_after_many_writes() -> None:
+    setup = SignalSetup(MonitorConfig(preset="signals"), folder_scenario("/shared"), {})
+    signals = [CredentialFlow(setup), JointAction(setup)]
+    state = cast(Any, Payloads())
+    start = datetime.fromtimestamp(1_800_000_000, UTC)
+    for i in range(10_000):
+        event = Fed(i, "a", start, write_of(f"/shared/pkg/m{i}.py"))
+        for s in signals:
+            await s.feed(cast(Any, event), state)
+    began = time.perf_counter()
+    later = start + timedelta(seconds=1)
+    for i in range(10_000):
+        event = Fed(10_000 + i, "b", later, read_of(f"/shared/pkg/m{i}.py"))
+        for s in signals:
+            await s.feed(cast(Any, event), state)
+        assert time.perf_counter() - began < 1, f"{i} reads took over 1 s"
+    assert all(len(s.exchanges) == 10_000 for s in signals)
+
+
+async def test_shared_folder_writes_past_the_window_are_dropped() -> None:
+    setup = SignalSetup(MonitorConfig(preset="signals"), folder_scenario("/shared"), {})
+    signals = [CredentialFlow(setup), JointAction(setup)]
+    state = cast(Any, Payloads())
+    start = datetime.fromtimestamp(1_800_000_000, UTC)
+    for i in range(100):
+        event = Fed(i, "a", start, write_of(f"/shared/m{i}.py"))
+        for s in signals:
+            await s.feed(cast(Any, event), state)
+    late = Fed(100, "b", start + timedelta(seconds=301), read_of("/shared/m1.py"))
+    for s in signals:
+        await s.feed(cast(Any, late), state)
+        assert not s.exchanges
+        assert not s.shared.at
+        assert not s.shared.root.below
 
 
 async def test_joint_action_raises_flags_after_a_channel_exchange(

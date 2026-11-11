@@ -10,7 +10,7 @@ import math
 import posixpath
 import re
 from collections import OrderedDict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic import Field
@@ -306,6 +306,74 @@ class CopiedContent(Base):
         ]
 
 
+@dataclass(slots=True)
+class _Part:
+    """One part of the shared-folder paths agents wrote: when each agent last wrote the path
+    that ends here, and the parts below it."""
+
+    writers: dict[str, float] = field(default_factory=dict)
+    below: dict[str, _Part] = field(default_factory=dict)
+
+
+class _SharedWrites:
+    """The writes of each agent into the shared `folders` in the last `window` seconds.
+
+    A read looks up its own path and each folder above it part by part, so its cost grows only
+    with the length of its path. Paths compare as `_inside` compares them. Event times do not go
+    back, so a write past the window can match no later read and is dropped.
+    """
+
+    def __init__(self, folders: list[str], window: float) -> None:
+        self.folders = folders
+        self.window = window
+        self.root = _Part()
+        self.at: OrderedDict[tuple[str, str], float] = OrderedDict()
+
+    def wrote(self, path: str, agent: str, now: float) -> None:
+        if not any(_inside(path, root) for root in self.folders):
+            return
+        self._expire(now)
+        key = (posixpath.normpath(path).rstrip("/"), agent)
+        self.at[key] = now
+        self.at.move_to_end(key)
+        part = self.root
+        for name in key[0].split("/"):
+            part = part.below.setdefault(name, _Part())
+        part.writers[agent] = now
+
+    def writers(self, path: str, reader: str, now: float) -> list[str]:
+        """The other agents that wrote `path` or a folder holding it within the window."""
+        self._expire(now)
+        found: dict[str, None] = {}
+        part = self.root
+        for name in posixpath.normpath(path).split("/"):
+            below = part.below.get(name)
+            if below is None:
+                break
+            part = below
+            for writer, at in part.writers.items():
+                if writer != reader and now - at <= self.window:
+                    found[writer] = None
+        return list(found)
+
+    def _expire(self, now: float) -> None:
+        while self.at:
+            key, at = next(iter(self.at.items()))
+            if now - at <= self.window:
+                return
+            del self.at[key]
+            path, agent = key
+            names = path.split("/")
+            trail = [self.root]
+            for name in names:
+                trail.append(trail[-1].below[name])
+            del trail[-1].writers[agent]
+            for i in range(len(names), 0, -1):
+                if trail[i].writers or trail[i].below:
+                    break
+                del trail[i - 1].below[names[i - 1]]
+
+
 class CredentialOptions(Options):
     min_token: int = Field(default=32, ge=8)
     min_entropy: float = Field(default=3.5, gt=0)
@@ -343,9 +411,9 @@ class CredentialFlow(Base):
         self.first: dict[str, _First] = {}
         self.done: set[tuple[str, str]] = set()
         self.messages: dict[str, deque[tuple[float, str, int]]] = {}
-        self.folder_writes: dict[tuple[str, str], tuple[float, int]] = {}
         self.exchanges: deque[tuple[float, str, str, int]] = deque()
         self.folders = [c.path for c in setup.scenario.channels if isinstance(c, FolderChannel)]
+        self.shared = _SharedWrites(self.folders, self.opts.exchange_s)
 
     async def feed(self, event: Event, state: State) -> list[Hit]:
         now = event.ts.timestamp()
@@ -462,19 +530,14 @@ class CredentialFlow(Base):
         if isinstance(payload, FileAccess):
             if payload.op != "read" or event.agent_id is None:
                 return
-            for (path, writer), (at, _) in list(self.folder_writes.items()):
-                if writer == event.agent_id or not _inside(payload.path, path):
-                    continue
-                if now - at <= self.opts.exchange_s:
-                    self.exchanges.append((now, writer, event.agent_id, event.seq))
+            for writer in self.shared.writers(payload.path, event.agent_id, now):
+                self.exchanges.append((now, writer, event.agent_id, event.seq))
             self._prune(now)
             return
         if isinstance(payload, FsChangeRecord):
             if event.agent_id is None:
                 return
-            for root in self.folders:
-                if _inside(payload.path, root):
-                    self.folder_writes[(payload.path, event.agent_id)] = (now, event.seq)
+            self.shared.wrote(payload.path, event.agent_id, now)
 
     def _prune(self, now: float) -> None:
         while self.exchanges and self.exchanges[0][0] < now - self.opts.exchange_s:
@@ -507,10 +570,10 @@ class JointAction(Base):
         self.pending: list[Hit] = []
         self.joined: set[str] = set()
         self.messages: dict[str, deque[tuple[float, str, int]]] = {}
-        self.folder_writes: dict[tuple[str, str], tuple[float, int]] = {}
         self.exchanges: deque[tuple[float, str, str, int]] = deque()
         self.folders = [c.path for c in setup.scenario.channels if isinstance(c, FolderChannel)]
         self.window = 300.0
+        self.shared = _SharedWrites(self.folders, self.window)
 
     def saw_flag(self, flag: MonitorFlag, agent: str | None, at: float | None) -> None:
         if flag.source == self.name or agent is None or at is None:
@@ -574,19 +637,14 @@ class JointAction(Base):
         if isinstance(payload, FileAccess):
             if payload.op != "read" or event.agent_id is None:
                 return
-            for (path, writer), (at, _) in list(self.folder_writes.items()):
-                if writer == event.agent_id or not _inside(payload.path, path):
-                    continue
-                if now - at <= self.window:
-                    self.exchanges.append((now, writer, event.agent_id, event.seq))
+            for writer in self.shared.writers(payload.path, event.agent_id, now):
+                self.exchanges.append((now, writer, event.agent_id, event.seq))
             self._prune(now)
             return
         if isinstance(payload, FsChangeRecord):
             if event.agent_id is None:
                 return
-            for root in self.folders:
-                if _inside(payload.path, root):
-                    self.folder_writes[(payload.path, event.agent_id)] = (now, event.seq)
+            self.shared.wrote(payload.path, event.agent_id, now)
 
     def _prune(self, now: float) -> None:
         while self.exchanges and self.exchanges[0][0] < now - self.window:
