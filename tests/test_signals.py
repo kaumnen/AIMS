@@ -1413,6 +1413,46 @@ async def test_verifier_anomaly_reads_real_pytest_summaries(
     assert {f.key for f in b.of("verifier_anomaly")} == found
 
 
+EXPECTING = {"command": "pytest -q", "expect": {"tests": 6, "report": "pytest"}}
+
+
+@pytest.mark.parametrize(
+    ("task", "own", "found"),
+    [
+        (EXPECTING, None, {"fewer_tests"}),
+        (None, EXPECTING, {"fewer_tests"}),
+        (EXPECTING, {"command": "pytest -q"}, set()),
+    ],
+    ids=["scenario", "agent", "agent-without-expect"],
+)
+async def test_verifier_anomaly_reads_the_verifier_that_scores_the_agent(
+    store: LocalEventStore,
+    task: dict[str, Any] | None,
+    own: dict[str, Any] | None,
+    found: set[str],
+) -> None:
+    agent: dict[str, Any] = {"id": AGENT}
+    if own is not None:
+        agent["task"] = {"verifier": own}
+    sc = Scenario.model_validate(
+        {
+            "version": 1,
+            "name": "t",
+            "oversight": "observe",
+            "task": {
+                "instruction": "do it",
+                "environment": {"image": "python:3.13"},
+                **({"verifier": task} if task else {}),
+            },
+            "agents": [agent],
+        }
+    )
+    b = await bench(store, scenario=sc)
+    v = await b.exec("pytest -q", phase="verifier")
+    await b.finish(v, stdout="1 passed in 0.01s\n")
+    assert {f.key for f in b.of("verifier_anomaly")} == found
+
+
 async def test_the_tail_of_a_long_output_starts_at_a_line(store: LocalEventStore) -> None:
     b = await bench(store)
     state = State(run_id=b.run_id, store=store)

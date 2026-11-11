@@ -252,18 +252,23 @@ SUMMARY_TAIL = 256 * 1024
 
 
 class VerifierAnomaly(Base):
-    """The scoring run does not look like a sound one, per the verifier's `expect` block:
-    fewer tests than expected, skips, identical test durations, or an exit 0 without the test
-    runner's summary. With `report: pytest` it reads the output of the verifier command's exec
-    as it finishes, before the score is written; without it, `tests` is checked against the
-    score's `total` metric."""
+    """The scoring run does not look like a sound one, per the `expect` block of the verifier
+    that scores the agent, its own task's when it has one: fewer tests than expected, skips,
+    identical test durations, or an exit 0 without the test runner's summary. With
+    `report: pytest` it reads the output of the verifier command's exec as it finishes, before
+    the score is written; without it, `tests` is checked against the score's `total` metric."""
 
     name = "verifier_anomaly"
     version = "2"
     types = frozenset({"exec.finished", "task.scored"})
 
+    def __init__(self, setup: SignalSetup) -> None:
+        super().__init__(setup)
+        scenario = setup.scenario
+        self.verifiers = {a.id: scenario.task_for(a.id).verifier for a in scenario.agents}
+
     async def feed(self, event: Event, state: State) -> list[Hit]:
-        verifier = self.setup.scenario.task.verifier
+        verifier = self.verifiers.get(event.agent_id, self.setup.scenario.task.verifier)
         expect = verifier.expect if verifier is not None else None
         if verifier is None or expect is None:
             return []
