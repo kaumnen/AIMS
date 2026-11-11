@@ -94,10 +94,11 @@ def written(tmp_path: Path, text: str) -> Bundle:
     return load(path)
 
 
-def runner(store: LocalEventStore, starts: Starts, tmp_path: Path) -> Runner:
-    bench = Bench(
-        store, cast("SandboxBackend", starts), models(profile()), transport=Script().transport()
-    )
+def runner(
+    store: LocalEventStore, starts: Starts, tmp_path: Path, script: Script | None = None
+) -> Runner:
+    transport = (script or Script()).transport()
+    bench = Bench(store, cast("SandboxBackend", starts), models(profile()), transport=transport)
     return Runner(bench, written(tmp_path, SCENARIO), Options())
 
 
@@ -110,12 +111,11 @@ async def test_the_sandboxes_start_together_and_close_in_agent_order(
     store: LocalEventStore, tmp_path: Path
 ) -> None:
     starts = Starts()
-    run = runner(store, starts, tmp_path)
-    starts.on_made = run.cancel
-    result = await run.run()
+    script = Script(*[call("submit", answer="done")] * 3)
+    result = await runner(store, starts, tmp_path, script).run()
 
     assert starts.together == 3
-    assert result.status == "cancelled", result.reason
+    assert result.status == "completed", result.reason
     assert list(starts.made) == ["c", "b", "a"]
     assert all(sb.closed for sb in starts.made.values())
     assert await stopped(store, result.run_id) == ["a", "b", "c"]
@@ -169,6 +169,42 @@ async def test_a_cancel_during_the_start_waits_for_every_start_and_closes_them(
     assert run.run_id is not None
     assert await stopped(store, run.run_id) == ["a", "c"]
     (sealed,) = await store.events(run.run_id, types=["run.finished"])
+    assert cast("RunFinished", sealed.payload()).status == "cancelled"
+
+
+async def test_an_operator_cancel_during_the_start_ends_it_and_closes_what_came_up(
+    store: LocalEventStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The UI's Cancel while a sandbox starts: the start ends without waiting for it, its
+    cleanup runs, and the sandboxes that came up are closed. The run returns as cancelled."""
+    up: set[str] = set()
+    start = AuditedSandbox.start
+
+    async def counted(*args: Any, agent_id: str, **kwargs: Any) -> AuditedSandbox:
+        sb = await start(*args, agent_id=agent_id, **kwargs)
+        up.add(agent_id)
+        return sb
+
+    monkeypatch.setattr(AuditedSandbox, "start", counted)
+    starts = Starts(hold="b")
+    run = runner(store, starts, tmp_path)
+    task = asyncio.create_task(run.run())
+    async with asyncio.timeout(5):
+        await starts.holding.wait()
+        while up != {"a", "c"}:  # noqa: ASYNC110
+            await asyncio.sleep(0.01)
+        run.cancel()
+        await starts.cleaning.wait()
+        starts.release.set()
+        result = await task
+
+    assert (result.status, result.reason) == ("cancelled", "cancelled by the operator")
+    assert starts.cleaned == ["b"]
+    assert set(starts.made) == {"a", "c"}
+    assert all(sb.killed and sb.closed for sb in starts.made.values())
+    assert await stopped(store, result.run_id) == ["a", "c"]
+    assert result.run_id is not None
+    (sealed,) = await store.events(result.run_id, types=["run.finished"])
     assert cast("RunFinished", sealed.payload()).status == "cancelled"
 
 

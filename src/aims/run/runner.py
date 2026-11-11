@@ -8,7 +8,7 @@ import secrets
 import shlex
 import tarfile
 import uuid
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
 from typing import Any, Literal
@@ -265,11 +265,11 @@ def check(
 class Runner:
     """One run of a scenario: image, sandboxes, seed, setup, agents, verifier, archive, close.
 
-    `cancel()` stops the agents and skips the verifier; the files are still archived and the
-    run sealed as cancelled. `kill()` freezes every sandbox, archives its files, kills it and
-    seals the run as killed, without the verifier. An operator's cancel or kill also stops the
-    monitor's model calls; sent once the run's outcome is set, it only cuts the monitor's final
-    sweeps and judge short.
+    `cancel()` stops the agents, or the start phase that runs, and skips the verifier; the
+    files are still archived and the run sealed as cancelled. `kill()` freezes every sandbox,
+    archives its files, kills it and seals the run as killed, without the verifier. An
+    operator's cancel or kill also stops the monitor's model calls; sent once the run's
+    outcome is set, it only cuts the monitor's final sweeps and judge short.
     """
 
     def __init__(
@@ -320,6 +320,7 @@ class Runner:
         self._decided = False
         self._monitor_cut = False
         self._control = ControlGate(bench.gate)
+        self._phase_task: asyncio.Task[None] | None = None
         self._agents_task: asyncio.Task[Any] | None = None
         self._agent_tasks: dict[str, asyncio.Task[Any]] = {}
         self._killing: asyncio.Future[None] | None = None
@@ -334,12 +335,15 @@ class Runner:
         self._channels_closed = False
 
     def cancel(self) -> None:
-        """Stop the agents and the monitor's model calls. Once the run's outcome is set, only
-        cut the monitor's final sweeps and judge short; the run keeps its outcome."""
+        """Stop the agents and the monitor's model calls. A start phase, such as the image
+        build or a setup command, stops at once. Once the run's outcome is set, only cut the
+        monitor's final sweeps and judge short; the run keeps its outcome."""
         self._cut_monitor()
         if self._decided:
             return
         self.cancelled = True
+        if self._phase_task is not None:
+            self._phase_task.cancel()
         for task in self._agent_tasks.values():
             task.cancel()
         if self._agents_task is not None:
@@ -736,7 +740,7 @@ class Runner:
         for phase in (self._image_and_sandboxes, self._seed, self._setup, self._start_channels):
             if self.cancelled or self.killed:
                 break
-            await phase()
+            await self._start_phase(phase)
         if not self.cancelled and not self.killed:
             await self._run_agents(profiles, result)
         if self._killing is None and not self.cancelled:
@@ -751,6 +755,20 @@ class Runner:
             await self._verify_all(result)
             result.status, result.reason = _status(result, self.scenario.subjects)
         await self._archive()
+
+    async def _start_phase(self, phase: Callable[[], Coroutine[Any, Any, None]]) -> None:
+        """Run `phase` as a task of its own, which `cancel` cancels, so the operator's cancel
+        ends it at once and the run goes on as after a cancel between phases. A cancel of the
+        run's own task, such as a second Ctrl-C, still reaches the phase and is raised."""
+        self._phase_task = task = asyncio.create_task(phase())
+        try:
+            await task
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if not self.cancelled or (current is not None and current.cancelling()):
+                raise
+        finally:
+            self._phase_task = None
 
     async def _image_and_sandboxes(self) -> None:
         await self._start_sandboxes(await self._image())

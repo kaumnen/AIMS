@@ -22,6 +22,7 @@ from aims.events import (
     AgentFinished,
     AgentHeld,
     Event,
+    ExecFinished,
     LocalEventStore,
     MonitorAction,
     OperatorAction,
@@ -985,6 +986,146 @@ async def test_a_second_cancel_while_the_agents_end_after_a_stop_propagates_and_
     assert [a.reason for a in agents] == [end]
     stopped = await of(store, runner.run_id, SandboxStopped, "sandbox.stopped")
     assert [(s.reason, s.detail) for s in stopped] == [("killed", kill)]
+    finished = await of(store, runner.run_id, RunFinished, "run.finished")
+    assert [(f.status, f.reason) for f in finished] == [
+        ("cancelled", "cancelled before the agents finished")
+    ]
+
+
+class SetupBox(Box):
+    """A box whose `hold` setup command runs until it is cancelled."""
+
+    def __init__(self, holding: asyncio.Event) -> None:
+        super().__init__()
+        self.holding = holding
+        self.killed = False
+        self.closed = False
+
+    async def run(self, argv: Sequence[str], **kw: Any) -> Outcome:
+        if "hold" in argv[-1]:
+            self.holding.set()
+            await asyncio.Event().wait()
+        return await super().run(argv, **kw)
+
+    async def kill(self) -> None:
+        self.killed = True
+
+    async def close(self, *, keep_volumes: bool = False) -> None:
+        self.closed = True
+
+
+class StartBoxes(Boxes):
+    """Boxes whose start phase `hold` (the image build, the sandbox start or a setup
+    command) runs until it is cancelled."""
+
+    def __init__(self, hold: str) -> None:
+        super().__init__()
+        self.hold = hold
+        self.holding = asyncio.Event()
+
+    async def build(self, context: bytes, dockerfile: str = "Dockerfile") -> str:
+        if self.hold == "build":
+            self.holding.set()
+            await asyncio.Event().wait()
+        return "img"
+
+    async def create(self, spec: SandboxSpec, *, run_id: str, agent_id: str) -> Box:
+        if self.hold == "start":
+            self.holding.set()
+            await asyncio.Event().wait()
+        self.made[agent_id] = box = SetupBox(self.holding)
+        return box
+
+
+def with_setup(tmp_path: Path, *, build: bool = False) -> Bundle:
+    """The scenario with a `hold` setup command, built from a Dockerfile with `build`."""
+    text = SCENARIO.format(oversight="observe", verifier="").replace(
+        "  instruction: Do what you are told.\n",
+        "  instruction: Do what you are told.\n  setup: [hold]\n",
+    )
+    if build:
+        text = text.replace("{image: python:3.13-slim}", "{dockerfile: Dockerfile}")
+        (tmp_path / "Dockerfile").write_text("FROM python:3.13-slim\n")
+    path = tmp_path / "scenario.yaml"
+    path.write_text(text)
+    return load(path)
+
+
+@pytest.mark.parametrize("phase", ["build", "start", "setup"])
+async def test_an_operator_cancel_ends_a_start_phase_at_once_and_seals_the_run(
+    store: LocalEventStore, tmp_path: Path, phase: str
+) -> None:
+    """The UI's Cancel or a first Ctrl-C while the image builds, a sandbox starts or a setup
+    command runs: the run must not wait for it, and ends as a cancel between phases does."""
+    before = asyncio.all_tasks()
+    backend = StartBoxes(phase)
+    bundle = with_setup(tmp_path, build=phase == "build")
+    runner = Runner(bench(store, Script(call("submit", answer="x")), backend), bundle, Options())
+    running = asyncio.create_task(runner.run())
+    async with asyncio.timeout(5):
+        await backend.holding.wait()
+        await runner.operate("cancel")
+        result = await running
+    assert (result.status, result.reason) == ("cancelled", "cancelled by the operator")
+    assert runner.sandboxes == {}
+    assert not asyncio.all_tasks() - before
+    run_id = result.run_id
+    assert run_id is not None
+    finished = await of(store, run_id, RunFinished, "run.finished")
+    assert [(f.status, f.reason) for f in finished] == [("cancelled", "cancelled by the operator")]
+    if phase != "setup":
+        assert backend.made == {}
+        return
+    box = cast(SetupBox, backend.made["a"])
+    assert box.killed
+    assert box.closed
+    events = await store.events(run_id, limit=1000, types=["exec.finished"])
+    ends = [p.end for p in (e.payload() for e in events) if isinstance(p, ExecFinished)]
+    assert ends[-1] == "cancelled"
+    stopped = await of(store, run_id, SandboxStopped, "sandbox.stopped")
+    assert [s.reason for s in stopped] == ["closed"]
+    assert await of(store, run_id, SandboxArchived, "sandbox.archived")
+
+
+@pytest.mark.parametrize("operator", [True, False])
+async def test_a_cancel_of_the_run_task_while_a_setup_command_ends_propagates_and_seals_the_run(
+    store: LocalEventStore, tmp_path: Path, operator: bool
+) -> None:
+    """Ctrl-C while a setup command runs, after the operator's cancel or alone: the run task
+    must raise the cancel once the command ended, and the run is sealed once."""
+    before = asyncio.all_tasks()
+    backend = EndingBoxes()
+    runner = Runner(
+        bench(store, Script(call("submit", answer="x")), backend), with_setup(tmp_path), Options()
+    )
+    running = asyncio.create_task(runner.run())
+    box: EndingBox | None = None
+    try:
+        async with asyncio.timeout(5):
+            while "a" not in backend.made:  # noqa: ASYNC110
+                await asyncio.sleep(0.01)
+            box = cast(EndingBox, backend.made["a"])
+            await box.holding.wait()
+            if operator:
+                await runner.operate("cancel")
+                await box.ending.wait()
+            running.cancel()
+            await box.ending.wait()
+        await asyncio.sleep(0.05)
+        assert not running.done()
+    finally:
+        # The box holds its command until released, so a failed check must not leave the
+        # run waiting on it.
+        if box is not None:
+            box.release.set()
+        running.cancel()
+    async with asyncio.timeout(5):
+        with pytest.raises(asyncio.CancelledError):
+            await running
+    assert box.closed
+    assert runner.sandboxes == {}
+    assert not asyncio.all_tasks() - before
+    assert runner.run_id is not None
     finished = await of(store, runner.run_id, RunFinished, "run.finished")
     assert [(f.status, f.reason) for f in finished] == [
         ("cancelled", "cancelled before the agents finished")
