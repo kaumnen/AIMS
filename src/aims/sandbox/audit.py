@@ -60,6 +60,7 @@ from aims.sandbox.base import (
     AGENT_UID,
     MASK_PROC,
     RUNNER_UID,
+    TAIL,
     TOOLBOX,
     Cache,
     Capture,
@@ -411,7 +412,7 @@ class AuditedSandbox:
             active = _Active(exec_id, audit, uid=uid)
             self._active = active
             self._open = exec_id
-            capture = Capture(self.spec.output_limit if limit is None else limit)
+            capture = Capture(self.spec.output_limit if limit is None else limit, TAIL)
             start = time.monotonic()
             try:
                 outcome = await self.sandbox.run(
@@ -613,6 +614,9 @@ class AuditedSandbox:
         spills = await self._spill_events()
         stdout = await self._content(bytes(capture.stdout))
         stderr = await self._content(bytes(capture.stderr))
+        out, err = capture.rest(1), capture.rest(2)
+        out_tail = None if out is None else await self._content(out[0])
+        err_tail = None if err is None else await self._content(err[0])
         # Nothing awaits from here to `self._open = None`, so a drop is counted here or in
         # `audit.lost`, never in both.
         scope = self._scopes.get(active.exec_id)
@@ -636,6 +640,10 @@ class AuditedSandbox:
             dropped=scope.dropped if scope else 0,
             spilled=scope.spilled if scope else 0,
             error=outcome.error,
+            stdout_tail=out_tail,
+            stderr_tail=err_tail,
+            stdout_omitted=None if out is None else out[1],
+            stderr_omitted=None if err is None else err[1],
         )
         self._active = None
         self._open = None
@@ -654,8 +662,8 @@ class AuditedSandbox:
             finished,
             bytes(capture.stdout),
             bytes(capture.stderr),
-            bytes(capture.stdout_tail),
-            bytes(capture.stderr_tail),
+            capture.stdout_tail,
+            capture.stderr_tail,
         )
 
     async def _internal(self, argv: Sequence[str], uid: int) -> None:

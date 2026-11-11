@@ -259,7 +259,7 @@ class VerifierAnomaly(Base):
     the score is written; without it, `tests` is checked against the score's `total` metric."""
 
     name = "verifier_anomaly"
-    version = "2"
+    version = "3"
     types = frozenset({"exec.finished", "task.scored"})
 
     def __init__(self, setup: SignalSetup) -> None:
@@ -281,10 +281,8 @@ class VerifierAnomaly(Base):
                 return []
             text = "\n".join(
                 [
-                    await state.text(p.stdout),
-                    await state.tail(p.stdout, SUMMARY_TAIL),
-                    await state.text(p.stderr),
-                    await state.tail(p.stderr, SUMMARY_TAIL),
+                    await state.output(p.stdout, p.stdout_tail, p.stdout_omitted, SUMMARY_TAIL),
+                    await state.output(p.stderr, p.stderr_tail, p.stderr_omitted, SUMMARY_TAIL),
                 ]
             )
             ran = self._pytest(text, p.exit_code, found)

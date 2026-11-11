@@ -323,6 +323,20 @@ class State:
             cut = data[start - 1 : start] != b"\n"
         return rest.partition("\n")[2] if cut else rest
 
+    async def output(
+        self, head: Content | None, end: Content | None, omitted: int | None, limit: int
+    ) -> str:
+        """One stream of an exec as text: `text` of its head and its `tail` past that, then `end`,
+        what the sandbox kept of the stream past its head. With no bytes `omitted` between the
+        two, `end` goes on the head's last line."""
+        text, last = await self.text(head), await self.tail(head, limit)
+        if end is None:
+            return f"{text}\n{last}"
+        if last:
+            text = f"{text}\n{last}"
+        more = await self.text(end)
+        return text + more if omitted == 0 else f"{text}\n{more}"
+
     def exec_of(self, event: Event) -> ExecInfo | None:
         """The exec an event belongs to, by its `exec_id` or its tool call."""
         payload = self.payload(event)

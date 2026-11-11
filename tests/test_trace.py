@@ -623,6 +623,54 @@ def test_capture_keeps_head_and_counts_all() -> None:
     assert capture.truncated
 
 
+def test_capture_keeps_the_end_of_a_stream_past_its_head() -> None:
+    capture = Capture(limit=4, tail=8)
+    for chunk in (b"head", b"-lost\nlo", b"st\nkept\n"):
+        capture.add(1, chunk)
+    capture.add(2, b"short")
+    assert capture.stdout_tail == b"st\nkept\n"
+    assert capture.rest(1) == (b"kept\n", 11)
+    assert capture.rest(2) == (b"t", 0)
+    assert capture.stderr_tail == b"short"
+    whole = Capture(limit=8, tail=8)
+    whole.add(1, b"fits")
+    assert whole.rest(1) is None
+    assert whole.rest(2) is None
+
+
+def test_the_end_of_a_capture_goes_on_from_its_head_when_nothing_is_left_out() -> None:
+    capture = Capture(limit=4, tail=8)
+    capture.add(1, b"0123456789")
+    assert capture.rest(1) == (b"456789", 0)
+    # The head stops inside a character, so the end starts at the next line.
+    split = Capture(limit=4, tail=8)
+    split.add(1, "abcé\nxyz".encode())
+    assert split.rest(1) == (b"xyz", 2)
+    # With no line break, it starts at the next character.
+    binary = Capture(limit=4, tail=8)
+    binary.add(1, "abcéxyz".encode())
+    assert binary.rest(1) == (b"xyz", 1)
+
+
+def test_the_end_of_a_capture_starts_at_a_line_or_a_character() -> None:
+    capture = Capture(limit=1, tail=3)
+    capture.add(1, ("a" + "é" * 5).encode())
+    assert capture.rest(1) == ("é".encode(), 8)
+    lines = Capture(limit=1, tail=6)
+    lines.add(1, b"abcdefg\nhi\n")
+    assert lines.rest(1) == (b"hi\n", 7)
+
+
+def test_a_capture_keeps_its_tail_in_bounded_memory() -> None:
+    capture = Capture(limit=0, tail=1024)
+    data = bytes(range(256)) * 400
+    for i in range(0, len(data), 7):
+        capture.add(1, data[i : i + 7])
+        assert len(capture._stdout_end) <= 2 * 1024 + 7
+    assert capture.stdout_tail == data[-1024:]
+    assert capture.stdout_bytes == len(data)
+
+
 def test_syscall_tables_agree_on_names() -> None:
     arm, x86 = set(SYSCALLS["aarch64"].values()), set(SYSCALLS["x86_64"].values())
     assert {"unshare", "mount", "ptrace", "setns", "bpf"} <= arm & x86

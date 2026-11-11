@@ -421,6 +421,16 @@ class ExecFinished(Payload):
     dropped: int = 0
     spilled: int = 0
     error: str | None = None
+    # `stdout` holds the first bytes of the stream up to the output limit. Past it, `stdout_tail`
+    # holds up to its last 256 KiB and `stdout_omitted` counts the bytes left out between the
+    # two. With none left out the tail goes on where `stdout` stops; with some it starts at its
+    # first line when it holds a line break. Likewise for stderr. Logs from before these fields
+    # have neither. They stay out of the docstring, which the monitor's models read as its
+    # glossary.
+    stdout_tail: Content | None = None
+    stderr_tail: Content | None = None
+    stdout_omitted: int | None = None
+    stderr_omitted: int | None = None
 
 
 class KernelPayload(Payload):

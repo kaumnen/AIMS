@@ -56,6 +56,7 @@ from aims.monitor.signals.base import Base, Hit, SignalError, SignalSetup, regis
 from aims.monitor.signals.content import _READER, HackPattern, MonitorManipulation
 from aims.monitor.signals.engine import OVERFLOW, SignalEngine, check_signals, signal_versions
 from aims.monitor.state import TEXT_CAP, State, _object
+from aims.sandbox.base import TAIL, Capture
 from aims.scenario import Scenario
 from aims.scenario.load import load
 
@@ -1489,6 +1490,104 @@ async def test_verifier_anomaly_reads_real_pytest_summaries(
     out = await b.content(stdout) if len(stdout) > 8 * 1024 else stdout
     await b.finish(v, stdout=out, exit_code=exit_code)
     assert {f.key for f in b.of("verifier_anomaly")} == found
+
+
+OUTPUT_LIMIT = 4 * 1024 * 1024
+
+
+async def capped(b: Bench, stdout: str, limit: int = OUTPUT_LIMIT) -> dict[str, Any]:
+    """The output fields of an exec that printed `stdout` past the sandbox's `limit`, as the
+    audited sandbox logs them."""
+    capture = Capture(limit, TAIL)
+    capture.add(1, stdout.encode())
+    rest = capture.rest(1)
+    assert rest is not None
+    end, omitted = rest
+
+    async def content(data: bytes) -> Any:
+        return data.decode() if len(data) <= 8 * 1024 else await b.content(data.decode())
+
+    return {
+        "stdout": await content(bytes(capture.stdout)),
+        "stdout_bytes": capture.stdout_bytes,
+        "truncated": True,
+        "stdout_tail": await content(end),
+        "stdout_omitted": omitted,
+    }
+
+
+def louder(summary: str) -> str:
+    """pytest 9 with -s, its tests printing 5 MB, more than the sandbox keeps of the start."""
+    lines = ("y" * 99 + "\n") * 50_000
+    return f"{SESSION}collected 3 items\n\ntests/test_big.py .{lines}..\n\n{summary}\n"
+
+
+@pytest.mark.parametrize(
+    ("summary", "tests", "found"),
+    [
+        ("=" * 30 + " 3 passed in 0.01s " + "=" * 31, 3, set()),
+        ("=" * 30 + " 3 passed in 0.01s " + "=" * 31, 4, {"fewer_tests"}),
+        ("2 passed, 1 skipped in 0.01s", 2, {"skips"}),
+        ("2 passed, 1 skipped in 0.01s", 3, {"skips", "fewer_tests"}),
+        ("all good", 3, {"no_summary"}),
+    ],
+    ids=["passed", "fewer", "skips", "skips-fewer", "no-summary"],
+)
+async def test_verifier_anomaly_reads_the_summary_past_the_output_limit(
+    store: LocalEventStore, summary: str, tests: int, found: set[str]
+) -> None:
+    sc = scenario(verifier={"command": "pytest", "expect": {"tests": tests, "report": "pytest"}})
+    b = await bench(store, scenario=sc)
+    v = await b.exec("pytest", phase="verifier")
+    fields = await capped(b, louder(summary))
+    assert fields["stdout_omitted"] > 0
+    await b.finish(v, exit_code=0, **fields)
+    flags = b.of("verifier_anomaly")
+    assert {f.key for f in flags} == found
+    assert all(f.importance == 4 for f in flags)
+
+
+@pytest.mark.parametrize("lines", [0, 30_000], ids=["short-head", "long-head"])
+async def test_verifier_anomaly_reads_a_summary_the_output_limit_cuts(
+    store: LocalEventStore, lines: int
+) -> None:
+    sc = scenario(verifier={"command": "pytest", "expect": {"tests": 105, "report": "pytest"}})
+    b = await bench(store, scenario=sc)
+    v = await b.exec("pytest", phase="verifier")
+    summary = "===== 105 passed in 0.01s =====\n"
+    stdout = ("y" * 99 + "\n") * lines + "...\n" + summary
+    # The head stops after "===== 1", so the end the log keeps starts with "05 passed".
+    fields = await capped(b, stdout, len(stdout) - len(summary) + 7)
+    assert (fields["stdout_tail"], fields["stdout_omitted"]) == (summary[7:], 0)
+    await b.finish(v, exit_code=0, **fields)
+    assert b.of("verifier_anomaly") == []
+
+
+async def test_verifier_anomaly_reads_a_log_from_before_output_tails(
+    store: LocalEventStore,
+) -> None:
+    sc = scenario(verifier={"command": "pytest", "expect": {"tests": 3, "report": "pytest"}})
+    b = await bench(store, scenario=sc)
+    v = await b.exec("pytest", phase="verifier")
+    stdout = louder("3 passed in 0.01s")
+    head = await b.content(stdout[:OUTPUT_LIMIT])
+    data = {"stdout": head, "stdout_bytes": len(stdout), "truncated": True}
+    finished = ExecFinished.model_validate(
+        {
+            "exec_id": v.id,
+            "call_id": None,
+            "end": "exited",
+            "exit_code": 0,
+            "pid": v.root,
+            "duration_ms": 5,
+            "stderr": "",
+            "stderr_bytes": 0,
+            **data,
+        }
+    )
+    assert (finished.stdout_tail, finished.stdout_omitted) == (None, None)
+    await b.finish(v, **data)
+    assert {f.key for f in b.of("verifier_anomaly")} == {"no_summary"}
 
 
 EXPECTING = {"command": "pytest -q", "expect": {"tests": 6, "report": "pytest"}}

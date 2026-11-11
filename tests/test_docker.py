@@ -16,6 +16,7 @@ import pytest
 from aims.events import (
     MAX_INT,
     AuditSpill,
+    BlobRef,
     Event,
     FileAccess,
     FileSetattr,
@@ -191,15 +192,21 @@ async def test_leftovers_are_recorded_then_killed(
 
 
 async def test_output_is_capped_and_counted(backend: DockerBackend, store: LocalEventStore) -> None:
-    _, sb = await sandbox(backend, store, output_limit=1000)
+    run_id, sb = await sandbox(backend, store, output_limit=1000)
     try:
-        result = await sb.exec("head -c 50000 /dev/zero | tr '\\0' a", timeout_s=10)
+        result = await sb.exec(
+            "head -c 50000 /dev/zero | tr '\\0' a; echo; echo done", timeout_s=10
+        )
     finally:
         await sb.close()
 
+    f = result.finished
     assert result.stdout == b"a" * 1000
-    assert result.finished.stdout_bytes == 50000
-    assert result.finished.truncated
+    assert f.stdout_bytes == 50006
+    assert f.truncated
+    assert isinstance(f.stdout_tail, BlobRef)
+    assert await store.get_blob(run_id, f.stdout_tail.sha256) == b"a" * 49000 + b"\ndone\n"
+    assert (f.stdout_omitted, f.stderr_tail, f.stderr_omitted) == (0, None, None)
 
 
 async def test_shared_volume_reaches_other_sandboxes(

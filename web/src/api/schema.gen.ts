@@ -2933,10 +2933,30 @@ export interface components {
             stderr: string | components["schemas"]["BlobRef"];
             /** Stderr Bytes */
             stderr_bytes: number;
+            /**
+             * Stderr Omitted
+             * @default null
+             */
+            stderr_omitted: number | null;
+            /**
+             * Stderr Tail
+             * @default null
+             */
+            stderr_tail: string | components["schemas"]["BlobRef"] | null;
             /** Stdout */
             stdout: string | components["schemas"]["BlobRef"];
             /** Stdout Bytes */
             stdout_bytes: number;
+            /**
+             * Stdout Omitted
+             * @default null
+             */
+            stdout_omitted: number | null;
+            /**
+             * Stdout Tail
+             * @default null
+             */
+            stdout_tail: string | components["schemas"]["BlobRef"] | null;
             /** Truncated */
             truncated: boolean;
         };

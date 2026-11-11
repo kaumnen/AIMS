@@ -3587,6 +3587,33 @@
             "title": "Stderr Bytes",
             "type": "integer"
           },
+          "stderr_omitted": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Stderr Omitted"
+          },
+          "stderr_tail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/components/schemas/BlobRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Stderr Tail"
+          },
           "stdout": {
             "anyOf": [
               {
@@ -3601,6 +3628,33 @@
           "stdout_bytes": {
             "title": "Stdout Bytes",
             "type": "integer"
+          },
+          "stdout_omitted": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Stdout Omitted"
+          },
+          "stdout_tail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/components/schemas/BlobRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Stdout Tail"
           },
           "truncated": {
             "title": "Truncated",
@@ -3624,7 +3678,11 @@
           "procs",
           "dropped",
           "spilled",
-          "error"
+          "error",
+          "stdout_tail",
+          "stderr_tail",
+          "stdout_omitted",
+          "stderr_omitted"
         ],
         "title": "ExecFinished",
         "type": "object"

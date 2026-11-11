@@ -23,6 +23,9 @@ TOOLBOX = "/.aims"
 RUNNER_DIR = "/.aims-runner"
 # The /proc files that expose host-wide numbers; `sandbox.mask_proc` makes them read empty.
 MASK_PROC = ["/proc/meminfo", "/proc/loadavg", "/proc/stat", "/proc/uptime"]
+# Bytes an exec keeps of the end of a stream past its `output_limit`, where a test runner
+# prints its summary.
+TAIL = 256 * 1024
 
 AuditMode = Literal["auto", "kernel", "snapshot"]
 
@@ -89,24 +92,75 @@ class Capture:
     tail: int = 8192
     stdout: bytearray = field(default_factory=bytearray)
     stderr: bytearray = field(default_factory=bytearray)
-    stdout_tail: bytearray = field(default_factory=bytearray)
-    stderr_tail: bytearray = field(default_factory=bytearray)
     stdout_bytes: int = 0
     stderr_bytes: int = 0
+    # The end of each stream, cut back to `tail` bytes once it holds twice that.
+    _stdout_end: bytearray = field(default_factory=bytearray, init=False, repr=False)
+    _stderr_end: bytearray = field(default_factory=bytearray, init=False, repr=False)
 
     def add(self, stream: int, data: bytes) -> None:
         if stream == 2:
             self.stderr_bytes += len(data)
             self.stderr += data[: max(0, self.limit - len(self.stderr))]
-            self.stderr_tail = (self.stderr_tail + data)[-self.tail :] if self.tail else bytearray()
+            self._keep(self._stderr_end, data)
         else:
             self.stdout_bytes += len(data)
             self.stdout += data[: max(0, self.limit - len(self.stdout))]
-            self.stdout_tail = (self.stdout_tail + data)[-self.tail :] if self.tail else bytearray()
+            self._keep(self._stdout_end, data)
+
+    def _keep(self, end: bytearray, data: bytes) -> None:
+        if self.tail:
+            end += data
+            if len(end) > 2 * self.tail:
+                del end[: -self.tail]
+
+    @property
+    def stdout_tail(self) -> bytes:
+        return bytes(self._stdout_end[-self.tail :]) if self.tail else b""
+
+    @property
+    def stderr_tail(self) -> bytes:
+        return bytes(self._stderr_end[-self.tail :]) if self.tail else b""
+
+    def rest(self, stream: int) -> tuple[bytes, int] | None:
+        """The end of a stream that ran past its head, at most `tail` bytes, and the count of
+        bytes left out between the two. None when the head holds the whole stream.
+
+        The end goes on where the head stops when nothing is left out. Otherwise it starts at
+        its first line, or with no line break at its first character, so it reads as text."""
+        head, total, end = (
+            (self.stderr, self.stderr_bytes, self._stderr_end)
+            if stream == 2
+            else (self.stdout, self.stdout_bytes, self._stdout_end)
+        )
+        if total <= len(head):
+            return None
+        n = min(self.tail, total - len(head))
+        data = bytes(end[len(end) - n :]) if n else b""
+        if n < total - len(head) or (data and _continues(data[0])):
+            data = data[_text_start(data) :]
+        return data, total - len(head) - len(data)
 
     @property
     def truncated(self) -> bool:
         return self.stdout_bytes > len(self.stdout) or self.stderr_bytes > len(self.stderr)
+
+
+def _continues(byte: int) -> bool:
+    """Whether `byte` continues a UTF-8 character begun before it."""
+    return byte & 0xC0 == 0x80
+
+
+def _text_start(data: bytes) -> int:
+    """Where text in `data`, cut from a longer stream, starts: past its first line break, or with
+    none, past the bytes that end a character cut before it."""
+    line = data.find(b"\n")
+    if line >= 0:
+        return line + 1
+    i = 0
+    while i < min(3, len(data)) and _continues(data[i]):
+        i += 1
+    return i
 
 
 @dataclass(frozen=True, slots=True)

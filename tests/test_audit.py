@@ -34,6 +34,7 @@ from aims.sandbox.audit import AuditedSandbox, SandboxStoppedError
 from aims.sandbox.base import (
     AGENT_UID,
     RUNNER_UID,
+    TAIL,
     Capture,
     Change,
     Close,
@@ -988,6 +989,35 @@ async def test_large_and_binary_output_goes_to_blobs(store: LocalEventStore) -> 
     assert await store.get_blob(run_id, first.finished.stdout.sha256) == big
     assert isinstance(second.finished.stdout, BlobRef)
     assert await store.get_blob(run_id, second.finished.stdout.sha256) == b"\xff\xfe"
+
+
+async def test_the_end_of_an_output_past_its_limit_is_logged(store: LocalEventStore) -> None:
+    sb = FakeSandbox(kernel=False)
+    summary = b"===== 3 passed in 0.01s =====\n"
+    long = b"x" * 99 + b"\n"
+    big = long * (3 * TAIL // len(long)) + summary
+    sb.steps += [step(out=big), step(out=b"a" * 1500 + summary), step(out=b"fits\n")]
+    run_id, audited = await start(store, sb, output_limit=1000)
+    first = await audited.exec("loud", timeout_s=5)
+    second = await audited.exec("short", timeout_s=5)
+    third = await audited.exec("quiet", timeout_s=5)
+    await audited.close()
+
+    f = first.finished
+    assert isinstance(f.stdout_tail, BlobRef)
+    end = await store.get_blob(run_id, f.stdout_tail.sha256)
+    assert end.endswith(summary)
+    assert end.startswith(long)
+    assert TAIL - len(long) < len(end) <= TAIL
+    assert f.stdout_omitted == len(big) - 1000 - len(end)
+    assert (f.stderr_tail, f.stderr_omitted) == (None, None)
+    # The agent's own view of the output keeps its last bytes as before.
+    assert first.stdout_tail == big[-TAIL:]
+    s = second.finished
+    assert (s.stdout_tail, s.stdout_omitted) == ("a" * 500 + summary.decode(), 0)
+    assert (third.finished.stdout_tail, third.finished.stdout_omitted) == (None, None)
+    (logged, *_) = await events(store, run_id, "exec.finished")
+    assert logged.data["stdout_tail"] == f.stdout_tail.model_dump()
 
 
 async def test_cancelled_exec_is_recorded(store: LocalEventStore) -> None:
