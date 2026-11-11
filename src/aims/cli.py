@@ -538,7 +538,7 @@ def scenario_delete(
     name: Annotated[str, typer.Argument(help="The scenario's folder name.")],
     yes: Annotated[bool, typer.Option("--yes", help="Delete without asking.")] = False,
     server: ServerOption = None,
-    token_file: TokenFileOption = None,
+    token_file: OperatorTokenFileOption = None,
 ) -> None:
     """Delete a scenario's folder on a control plane. Its runs stay.
 
@@ -1325,6 +1325,9 @@ ServerOption = Annotated[
 TokenFileOption = Annotated[
     Path | None, typer.Option("--token-file", help="A file holding the runner token.")
 ]
+OperatorTokenFileOption = Annotated[
+    Path | None, typer.Option("--token-file", help="A file holding an operator token.")
+]
 AUDITS = ("auto", "kernel", "snapshot")
 RunnerAuditOption = Annotated[
     str,
@@ -1438,7 +1441,7 @@ def ui(
 @app.command("open")
 def open_cmd(
     server: ServerOption = None,
-    token_file: TokenFileOption = None,
+    token_file: OperatorTokenFileOption = None,
     open_browser: Annotated[
         bool, typer.Option("--open/--no-open", help="Open the link, not only print it.")
     ] = True,
@@ -1720,7 +1723,14 @@ def monitor_cmd(
     profile: Annotated[
         str | None, typer.Option(help="Profile for every sweep, the review and the judge.")
     ] = None,
-    monitor: MonitorPresetOption = None,
+    monitor: Annotated[
+        str | None,
+        typer.Option(
+            "--monitor",
+            help="Monitor preset: signals (needs no key), standard or research. Default: the"
+            " config files and the run's scenario, else standard.",
+        ),
+    ] = None,
     signals_only: Annotated[
         bool, typer.Option("--signals-only", help="Signals alone; no model, no key.")
     ] = False,
@@ -2022,7 +2032,7 @@ def control(
         float, typer.Option(min=0, help="Seconds to wait for the runner to answer.")
     ] = 10.0,
     server: ServerOption = None,
-    token_file: TokenFileOption = None,
+    token_file: OperatorTokenFileOption = None,
 ) -> None:
     """Pause, resume, deny, inject, kill, cancel or sweep a run through its control plane, or
     list the commands sent to it and the runner's answers.
@@ -2124,7 +2134,7 @@ def delete_cmd(
         ),
     ] = False,
     server: ServerOption = None,
-    token_file: TokenFileOption = None,
+    token_file: OperatorTokenFileOption = None,
 ) -> None:
     """Delete a run on its control plane with every run made from it: its monitor runs, its
     scores and the runs made from those.

@@ -34,6 +34,23 @@ def test_help_texts_keep_their_brackets() -> None:
     assert found == []
 
 
+def test_help_offers_what_each_command_takes() -> None:
+    root: Any = get_command(app)
+
+    def helps(path: str, name: str) -> str:
+        command = root
+        for word in path.split():
+            command = command.commands[word]
+        return next(p.help for p in command.params if p.name == name)
+
+    assert "off" not in helps("monitor", "monitor")
+    assert "off" in helps("run", "monitor")
+    for path in ("control", "delete", "open", "scenario delete"):
+        assert "an operator token" in helps(path, "token_file"), path
+    for path in ("run", "runner", "push", "monitor"):
+        assert "the runner token" in helps(path, "token_file"), path
+
+
 @pytest.mark.anyio
 async def test_the_cli_reaches_the_control_plane_through_the_proxy(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
