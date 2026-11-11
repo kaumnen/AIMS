@@ -663,8 +663,13 @@ def two_agents(tmp_path: Path, start: str) -> Bundle:
 
 @pytest.mark.parametrize("by", ["monitor", "operator"])
 async def test_a_sandbox_that_does_not_freeze_leaves_the_others_paused_and_resumed(
-    store: LocalEventStore, tmp_path: Path, fake_monitor: list[FakeMonitor], by: str
+    store: LocalEventStore,
+    tmp_path: Path,
+    fake_monitor: list[FakeMonitor],
+    monkeypatch: pytest.MonkeyPatch,
+    by: str,
 ) -> None:
+    monkeypatch.setattr(runner_module, "UNFREEZE_WAIT_S", 0)
     script = Script(call("submit", answer="a"), call("submit", answer="b"))
     backend = FirstBoxes(DeadBox)
     bundle = two_agents(tmp_path, "{agent: a, on: finished}")
@@ -866,6 +871,97 @@ async def test_a_scripted_step_waits_out_its_delay_in_time_its_agent_is_not_paus
     assert waited >= 0.3
     assert result.agents["a"].paused_ms >= 900
     assert box.refused == []
+
+
+class ThawBox(FreezeBox):
+    """A box whose unfreeze fails `fails` times, calling `on_fail` each time, before it works,
+    and whose `slow` exec runs until `release` is set."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fails = 0
+        self.tries = 0
+        self.on_fail: Callable[[], None] | None = None
+        self.running = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def resume(self) -> None:
+        self.tries += 1
+        if self.fails:
+            self.fails -= 1
+            if self.on_fail is not None:
+                self.on_fail()
+            raise RuntimeError("500 cannot thaw")
+        await super().resume()
+
+    async def run(self, argv: Sequence[str], **kw: Any) -> Outcome:
+        if argv[-1] == "slow":
+            self.running.set()
+            await self.release.wait()
+        return await super().run(argv, **kw)
+
+
+class ThawBoxes(Boxes):
+    def __init__(self) -> None:
+        super().__init__()
+        self.boxes: dict[str, ThawBox] = {}
+
+    async def create(self, spec: SandboxSpec, *, run_id: str, agent_id: str) -> Box:
+        self.made[agent_id] = self.boxes[agent_id] = box = ThawBox()
+        return box
+
+
+async def paused_mid_exec(
+    store: LocalEventStore, tmp_path: Path, backend: ThawBoxes
+) -> tuple[Runner, asyncio.Task[Result], ThawBox]:
+    """A run whose agent a is paused while its `slow` exec runs, so it does not hold at a gate
+    point and the runner unfreezes its sandbox on a resume."""
+    script = Script(call("bash", command="slow"), call("submit", answer="ok"))
+    runner = Runner(bench(store, script, backend), scenario(tmp_path), Options())
+    task = asyncio.create_task(runner.run())
+    await until(lambda: "a" in backend.boxes and backend.boxes["a"].running.is_set())
+    assert await runner.operate("pause", agent="a") is None
+    box = backend.boxes["a"]
+    assert (box.frozen, runner.control.is_held("a")) == (True, False)
+    return runner, task, box
+
+
+@pytest.mark.parametrize("fails", [2, 3])
+async def test_an_unfreeze_that_fails_is_tried_again(
+    store: LocalEventStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fails: int
+) -> None:
+    monkeypatch.setattr(runner_module, "UNFREEZE_WAIT_S", 0)
+    runner, task, box = await paused_mid_exec(store, tmp_path, ThawBoxes())
+    box.fails = fails
+    note = await runner.operate("resume", agent="a")
+    if fails < runner_module.UNFREEZE_TRIES:
+        assert (note, box.frozen, box.tries) == (None, False, fails + 1)
+    else:
+        assert note == "the sandbox of agent a did not unfreeze: 500 cannot thaw"
+        assert (box.frozen, box.tries) == (True, runner_module.UNFREEZE_TRIES)
+        assert await runner.operate("resume", agent="a") is None
+        assert not box.frozen
+    box.release.set()
+    async with asyncio.timeout(5):
+        result = await task
+    assert result.status == "completed", result.reason
+
+
+async def test_an_unfreeze_tried_again_leaves_an_agent_paused_meanwhile_frozen(
+    store: LocalEventStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runner_module, "UNFREEZE_WAIT_S", 0)
+    runner, task, box = await paused_mid_exec(store, tmp_path, ThawBoxes())
+    box.fails = 1
+    box.on_fail = lambda: runner.control.pause(["a"], "paused again")
+    assert await runner.operate("resume", agent="a") is None
+    assert (box.frozen, box.tries, runner.paused("a")) == (True, 1, True)
+    assert await runner.operate("resume", agent="a") is None
+    assert not box.frozen
+    box.release.set()
+    async with asyncio.timeout(5):
+        result = await task
+    assert result.status == "completed", result.reason
 
 
 class NoFreezeBox(Box):

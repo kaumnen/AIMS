@@ -83,6 +83,10 @@ VERIFY_PREP_S = 60
 REWARD_DEPTH = 64
 """The most levels of nesting reward.json may have, well under the 255 pydantic validates in
 an event."""
+UNFREEZE_TRIES = 3
+UNFREEZE_WAIT_S = 1.0
+"""How often the runner tries to unfreeze a sandbox on a resume, and how long it waits
+between tries."""
 SCORED_ENDS: frozenset[AgentEnd] = frozenset(
     {
         "submitted",
@@ -489,15 +493,32 @@ class Runner:
         held agent unfreezes its own. Returns a line for each sandbox that did not unfreeze."""
         failed: list[str] = []
         for agent_id in self._control.resume(targets, verdict):
+            error = await self._unfreeze(agent_id)
+            if error is not None:
+                log.warning("unfreezing the sandbox of agent %s failed: %s", agent_id, error)
+                failed.append(f"the sandbox of agent {agent_id} did not unfreeze: {error}")
+        return failed
+
+    async def _unfreeze(self, agent_id: str) -> Exception | None:
+        """Unfreeze the sandbox of `agent_id`, trying again up to UNFREEZE_TRIES times in all,
+        since an agent stopped in the middle of a tool call cannot go on while it is frozen.
+        It stops trying once the agent is paused again or its sandbox stops. Returns the last
+        error when no try worked."""
+        error: Exception | None = None
+        for n in range(UNFREEZE_TRIES):
+            if n:
+                await asyncio.sleep(UNFREEZE_WAIT_S)
+                if self._control.is_paused(agent_id):
+                    return None
             sb = self.sandboxes.get(agent_id)
             if sb is None or sb.stopped:
-                continue
+                return None
             try:
                 await sb.sandbox.resume()
+                return None
             except Exception as e:
-                log.warning("unfreezing the sandbox of agent %s failed: %s", agent_id, e)
-                failed.append(f"the sandbox of agent {agent_id} did not unfreeze: {e}")
-        return failed
+                error = e
+        return error
 
     # The monitor's Actuator: it records `monitor.action` itself before each of these.
 
