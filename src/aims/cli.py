@@ -2400,13 +2400,21 @@ DataDirOption = Annotated[
 ]
 
 
-async def _db(data_dir: Path | None) -> Any:
+async def _db(data_dir: Path | None, *, make: bool = False) -> Any:
+    """The control plane's database. Only `make` creates it, for the first token of a new
+    deployment; without it a missing database exits 1 and nothing is made."""
     import sqlite3
 
     from aims.server.db import ServerDB
     from aims.server.serve import server_dir
 
     path = (data_dir or server_dir()) / "server.sqlite"
+    if not make and not path.exists():
+        _echo(
+            f"error: no control plane database: no {path}; give the --data-dir `aims ui` uses",
+            err=True,
+        )
+        raise typer.Exit(EXIT_FAILED)
     try:
         return await ServerDB.open(path)
     except (OSError, sqlite3.Error, RuntimeError) as e:
@@ -2451,7 +2459,7 @@ def token_create(
         refuse(f"no directory {file.parent}")
 
     async def main() -> str | None:
-        db = await _db(data_dir)
+        db = await _db(data_dir, make=True)
         detail = f"role {role}"
         try:
             if file is None:

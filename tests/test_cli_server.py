@@ -818,6 +818,27 @@ def test_a_token_name_stored_before_the_rule_still_lists_and_revokes(tmp_path: P
     assert "revoked" in runner.invoke(app, ["token", "list", "--data-dir", str(tmp_path)]).output
 
 
+@pytest.mark.parametrize(
+    "args", [["token", "list"], ["token", "revoke", "ci"], ["audit"], ["audit", "--jsonl"]]
+)
+def test_a_command_on_the_servers_data_needs_its_database(tmp_path: Path, args: list[str]) -> None:
+    missing, empty = tmp_path / "missing" / "server", tmp_path / "empty"
+    empty.mkdir()
+    for data, env in ((missing, {}), (empty, {}), (None, {"AIMS_SERVER_DIR": str(missing)})):
+        flag = [] if data is None else ["--data-dir", str(data)]
+        r = CliRunner().invoke(app, [*args, *flag], env=env)
+        assert (r.exit_code, type(r.exception)) == (1, SystemExit), r.output
+        assert r.output.startswith("error: no control plane database")
+        assert str((data or missing) / "server.sqlite") in r.output
+    assert not missing.parent.exists()
+    assert list(empty.iterdir()) == []
+    # the first token of a new deployment makes the database, as Compose's init does
+    made = CliRunner().invoke(app, ["token", "create", "ci", "--data-dir", str(missing)])
+    assert made.exit_code == 0, made.output
+    r = CliRunner().invoke(app, [*args, "--data-dir", str(missing)])
+    assert r.exit_code == 0, r.output
+
+
 def test_a_token_file_is_kept_while_it_holds_the_live_token(tmp_path: Path) -> None:
     runner = CliRunner()
     file = tmp_path / "token" / "runner"
