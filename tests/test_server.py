@@ -15,6 +15,7 @@ import tempfile
 import textwrap
 import threading
 import time
+import typing
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator, Generator
 from compression import zstd
@@ -27,7 +28,7 @@ import pytest
 from cp import CP, SCENARIO, control_plane, start, stop
 from fastapi import FastAPI
 from fastapi.routing import iter_route_contexts
-from pydantic import ValidationError
+from pydantic import BaseModel, JsonValue, ValidationError
 
 import aims
 from aims import __version__
@@ -58,8 +59,9 @@ from aims.server.app import create_app
 from aims.server.auth import HEADERS
 from aims.server.db import UI_TOKEN
 from aims.server.files import builtin_root
+from aims.server.problems import ProblemError, ProblemException
 from aims.server.state import CODES, InFlight, LaunchCodes, close_state, open_state
-from aims.text import LONE
+from aims.text import LONE, NoLoneSurrogate
 from aims.wire import (
     Ack,
     CommandAction,
@@ -1226,6 +1228,169 @@ FILES = "/api/scenarios/project/control/files"
 CONFIG = "/api/config/project"
 SET = {"set": [{"key": ["credits", "meta"], "value": 1}]}
 RUN = str(uuid.UUID(int=1))
+
+
+LONE_TEXT = "a\ud800"
+PROMPTS = "/api/scenarios/project/control/prompts"
+CONTROL = {"scenario": {"source": "project", "name": "control"}}
+# a lone surrogate in each text field of an /api body, and the field the refusal names
+BODY_TEXT: list[tuple[str, str, dict[str, Any], list[str | int]]] = [
+    ("POST", "/api/session", {"token": LONE_TEXT}, ["token"]),
+    ("POST", "/api/session", {"code": LONE_TEXT}, ["code"]),
+    (
+        "POST",
+        "/api/runs",
+        {"scenario": {"source": LONE_TEXT, "name": "control"}},
+        ["scenario", "source"],
+    ),
+    (
+        "POST",
+        "/api/runs",
+        {"scenario": {"source": "project", "name": LONE_TEXT}},
+        ["scenario", "name"],
+    ),
+    ("POST", "/api/runs", {**CONTROL, "variant": LONE_TEXT}, ["variant"]),
+    ("POST", "/api/runs", {**CONTROL, "series": LONE_TEXT}, ["series"]),
+    ("POST", "/api/runs", {**CONTROL, "profile": LONE_TEXT}, ["profile"]),
+    ("POST", "/api/runs", {**CONTROL, "runner": LONE_TEXT}, ["runner"]),
+    ("POST", f"/api/runs/{RUN}/forks", {"at": LONE_TEXT}, ["at"]),
+    ("POST", f"/api/runs/{RUN}/forks", {"profile": LONE_TEXT}, ["profile"]),
+    ("POST", f"/api/runs/{RUN}/forks", {"runner": LONE_TEXT}, ["runner"]),
+    ("POST", f"/api/runs/{RUN}/monitor", {"profile": LONE_TEXT}, ["profile"]),
+    ("POST", f"/api/runs/{RUN}/monitor", {"runner": LONE_TEXT}, ["runner"]),
+    ("POST", f"/api/runs/{RUN}/score", {"monitor": LONE_TEXT}, ["monitor"]),
+    ("POST", f"/api/runs/{RUN}/score", {"runner": LONE_TEXT}, ["runner"]),
+    (
+        "POST",
+        f"/api/runs/{RUN}/score",
+        {"plants_from": {"source": "project", "name": LONE_TEXT}},
+        ["plants_from", "name"],
+    ),
+    ("POST", f"/api/runs/{RUN}/labels", {"flag": 1, "label": "real", "note": LONE_TEXT}, ["note"]),
+    ("POST", "/api/models/check", {"profiles": [LONE_TEXT]}, ["profiles", 0]),
+    ("POST", "/api/models/check", {"runner": LONE_TEXT}, ["runner"]),
+    ("POST", "/api/scenarios/check", {"text": LONE_TEXT}, ["text"]),
+    ("POST", "/api/scenarios/check", {"text": "x", "profile": LONE_TEXT}, ["profile"]),
+    ("POST", "/api/scenarios/project/control/selftest", {"profile": LONE_TEXT}, ["profile"]),
+    ("POST", "/api/scenarios/project/control/selftest", {"runner": LONE_TEXT}, ["runner"]),
+    (
+        "POST",
+        "/api/scenarios/project/control/duplicate",
+        {"source": LONE_TEXT, "name": "n"},
+        ["source"],
+    ),
+    (
+        "POST",
+        "/api/scenarios/project/control/duplicate",
+        {"source": "project", "name": LONE_TEXT},
+        ["name"],
+    ),
+    ("POST", "/api/tokens", {"name": LONE_TEXT, "role": "viewer"}, ["name"]),
+    ("POST", f"{CONFIG}/check", {"text": LONE_TEXT}, ["text"]),
+    ("PUT", CONFIG, {"text": LONE_TEXT}, ["text"]),
+    ("PATCH", CONFIG, {"set": [{"key": ["a", LONE_TEXT], "value": 1}]}, ["set", 0, "key", 1]),
+    ("PATCH", CONFIG, {"unset": [[LONE_TEXT]]}, ["unset", 0, 0]),
+    (
+        "PATCH",
+        PROMPTS,
+        {"set": [{"agent": LONE_TEXT, "key": ["system"], "value": "x"}]},
+        ["set", 0, "agent"],
+    ),
+    (
+        "PATCH",
+        PROMPTS,
+        {"set": [{"agent": "a", "key": [LONE_TEXT], "value": "x"}]},
+        ["set", 0, "key", 0],
+    ),
+    (
+        "PATCH",
+        PROMPTS,
+        {"set": [{"agent": "a", "key": ["system"], "value": LONE_TEXT}]},
+        ["set", 0, "value"],
+    ),
+    ("PATCH", PROMPTS, {"unset": [{"agent": LONE_TEXT, "key": ["system"]}]}, ["unset", 0, "agent"]),
+    ("PATCH", PROMPTS, {"unset": [{"agent": "a", "key": [LONE_TEXT]}]}, ["unset", 0, "key", 0]),
+]
+
+
+async def test_body_text_with_a_lone_surrogate_is_refused_naming_its_field(cp: CP) -> None:
+    tokens = await cp.state.db.tokens()
+    scenario = (cp.project.parent / "scenarios/control/scenario.yaml").read_bytes()
+    config = cp.project.read_bytes()
+    async with cp.client(cp.operator) as c:
+        for method, url, body, loc in BODY_TEXT:
+            r = await c.request(
+                method, url, content=json.dumps(body), headers={"Content-Type": "application/json"}
+            )
+            assert r.status_code == 422, (method, url, r.text)
+            [error] = r.json()["errors"]
+            assert (error["loc"], error["msg"]) == (["body", *loc], f"Value error, {LONE}")
+    assert await cp.state.db.tokens() == tokens
+    assert (cp.project.parent / "scenarios/control/scenario.yaml").read_bytes() == scenario
+    assert cp.project.read_bytes() == config
+    assert not (cp.project.parent / "scenarios/n").exists()
+    assert await cp.state.db.jobs() == []
+
+
+def unchecked_text(model: type[BaseModel], seen: set[type]) -> set[str]:
+    """The fields of `model`, and of the models it holds, with text no NoLoneSurrogate covers:
+    a str, or a JsonValue, whose strings and keys are text too."""
+    if model in seen:
+        return set()
+    seen.add(model)
+    out: set[str] = set()
+
+    def bare(tp: Any, checked: bool) -> bool:
+        if typing.get_origin(tp) is typing.Annotated:
+            base, *meta = typing.get_args(tp)
+            return bare(base, checked or NoLoneSurrogate in meta)
+        if tp is str or tp is JsonValue:
+            return not checked
+        if typing.get_origin(tp) is Literal:
+            return False
+        if isinstance(tp, type) and issubclass(tp, BaseModel):
+            out.update(unchecked_text(tp, seen))
+            return False
+        return any(bare(arg, checked) for arg in typing.get_args(tp))
+
+    for name, field in model.model_fields.items():
+        if bare(field.annotation, NoLoneSurrogate in field.metadata):
+            out.add(f"{model.__name__}.{name}")
+    return out
+
+
+async def test_every_text_field_of_an_api_body_refuses_a_lone_surrogate(tmp_path: Path) -> None:
+    app, _ = await _openapi(tmp_path)
+    bodies: set[type[BaseModel]] = set()
+    for route in iter_route_contexts(app.routes):
+        if route.endpoint is None or not (route.path_format or "").startswith("/api/"):
+            continue
+        hints = typing.get_type_hints(inspect.unwrap(route.endpoint), include_extras=True)
+        hints.pop("return", None)
+        bodies |= {t for t in hints.values() if isinstance(t, type) and issubclass(t, BaseModel)}
+    assert {"StartRun", "StartMonitor", "ConfigPatch", "PromptsPatch"} <= {
+        b.__name__ for b in bodies
+    }
+    seen: set[type] = set()
+    unchecked = set().union(*(unchecked_text(b, seen) for b in bodies))
+    # agent names, which the name check refuses with its own error
+    assert unchecked == {"BudgetOverride.agents"}
+
+
+async def test_a_problem_that_repeats_a_lone_surrogate_is_sent_as_its_escape(
+    cp: CP, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(settings: object) -> str:
+        error = ProblemError(loc=["body", "k\udfff"], msg="no agent b\udc00")
+        raise ProblemException(404, "Not found", "no runner named a\ud800", errors=[error])
+
+    monkeypatch.setattr(edit_api, "merged", refuse)
+    async with cp.client(cp.viewer) as c:
+        r = await c.get("/api/config/merged")
+    assert (r.status_code, r.headers["content-type"]) == (404, "application/problem+json")
+    problem = r.json()
+    assert problem["detail"] == "no runner named a\\ud800"
+    assert problem["errors"] == [{"loc": ["body", "k\\udfff"], "msg": "no agent b\\udc00"}]
 
 
 @pytest.mark.parametrize(

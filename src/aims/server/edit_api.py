@@ -55,7 +55,7 @@ from aims.server.files import (
 )
 from aims.server.problems import ProblemError, ProblemException, responses
 from aims.server.state import ServerState
-from aims.text import NoLoneSurrogate
+from aims.text import NoLoneSurrogate, Utf8
 
 router = APIRouter(prefix="/api", responses=responses(401, 403, 404, 412, 422, 428))
 Layer = Literal["user", "project"]
@@ -84,7 +84,7 @@ class ConfigFile(Out):
 
 
 class KeySet(BaseModel):
-    key: list[str] = Field(min_length=1)
+    key: list[Utf8] = Field(min_length=1)
     value: Annotated[JsonValue, NoLoneSurrogate]
 
 
@@ -93,11 +93,11 @@ class ConfigPatch(BaseModel):
     needs; `unset` drops a key if it is there."""
 
     set: list[KeySet] = Field(default_factory=list)
-    unset: list[list[str]] = Field(default_factory=list)
+    unset: list[list[Utf8]] = Field(default_factory=list)
 
 
 class ConfigText(BaseModel):
-    text: str = Field(max_length=1024 * 1024)
+    text: Utf8 = Field(max_length=1024 * 1024)
 
 
 class MergedConfig(Out):
@@ -337,8 +337,8 @@ class Saved(Out):
 
 
 class Duplicate(BaseModel):
-    source: str
-    name: str
+    source: Utf8
+    name: Utf8
 
 
 @router.get("/scenarios/{source}/{name}/files", tags=["scenarios"])
@@ -734,14 +734,14 @@ def _prompts(prompts: Prompts | None) -> dict[str, JsonValue]:
 
 
 class PromptKeySet(BaseModel):
-    agent: str = Field(min_length=1)
-    key: list[str] = Field(min_length=1, max_length=3)
-    value: str = Field(max_length=256 * 1024)
+    agent: Utf8 = Field(min_length=1)
+    key: list[Utf8] = Field(min_length=1, max_length=3)
+    value: Utf8 = Field(max_length=256 * 1024)
 
 
 class PromptKeyUnset(BaseModel):
-    agent: str = Field(min_length=1)
-    key: list[str] = Field(min_length=1, max_length=3)
+    agent: Utf8 = Field(min_length=1)
+    key: list[Utf8] = Field(min_length=1, max_length=3)
 
 
 class PromptsPatch(BaseModel):

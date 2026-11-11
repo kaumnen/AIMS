@@ -9,6 +9,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from aims.text import scrub
+
 MEDIA = "application/problem+json"
 
 
@@ -54,8 +56,10 @@ class ProblemException(Exception):
 
 
 def problem_response(problem: Problem, headers: dict[str, str] | None = None) -> JSONResponse:
+    # a detail may repeat what the caller sent. UTF-8 cannot encode a lone surrogate, so one
+    # goes out as its escape.
     return JSONResponse(
-        problem.model_dump(mode="json", exclude_none=True),
+        scrub(problem.model_dump(mode="json", exclude_none=True)),
         status_code=problem.status,
         media_type=MEDIA,
         headers=headers,

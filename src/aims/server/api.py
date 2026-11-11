@@ -166,8 +166,8 @@ class EventPage(Out):
 class SessionStart(BaseModel):
     """A token, or a one-shot code from the link `aims ui` prints."""
 
-    token: str | None = Field(default=None, min_length=1, max_length=200)
-    code: str | None = Field(default=None, min_length=1, max_length=200)
+    token: Utf8 | None = Field(default=None, min_length=1, max_length=200)
+    code: Utf8 | None = Field(default=None, min_length=1, max_length=200)
 
     @model_validator(mode="after")
     def _one(self) -> Self:
@@ -663,8 +663,8 @@ async def delete_run(
 
 
 class ScenarioRef(BaseModel):
-    source: str
-    name: str
+    source: Utf8
+    name: Utf8
 
 
 class StartRun(BaseModel):
@@ -681,8 +681,8 @@ class StartRun(BaseModel):
     starts fresh from the scenario's own folders, at the series' next free index."""
 
     scenario: ScenarioRef
-    variant: str | None = None
-    series: str | None = Field(default=None, min_length=1, max_length=100)
+    variant: Utf8 | None = None
+    series: Utf8 | None = Field(default=None, min_length=1, max_length=100)
     runs: int = Field(default=1, ge=1, le=100)
     restart: bool = False
     confirm: bool = False
@@ -691,10 +691,10 @@ class StartRun(BaseModel):
     budget: BudgetOverride | None = None
     samples: int = Field(default=1, ge=1, le=100)
     parallel: int | None = Field(default=None, ge=1)
-    profile: str | None = None
+    profile: Utf8 | None = None
     keep: bool = False
     audit: AuditLevel = "kernel"
-    runner: str | None = None
+    runner: Utf8 | None = None
     monitor: Preset | None = None
 
     @model_validator(mode="after")
@@ -721,19 +721,19 @@ class StartFork(BaseModel):
     origin's own override cap by cap."""
 
     step: int | None = Field(default=None, ge=0)
-    at: str | None = None
+    at: Utf8 | None = None
     keep_others: bool = False
     confirm: bool = False
     oversight: Oversight | None = None
     budget: BudgetOverride | None = None
     samples: int = Field(default=1, ge=1, le=100)
     parallel: int | None = Field(default=None, ge=1)
-    profile: str | None = None
+    profile: Utf8 | None = None
     strict: bool = False
     inject: Utf8 | None = None
     keep: bool = False
     audit: AuditLevel = "kernel"
-    runner: str | None = None
+    runner: Utf8 | None = None
     monitor: Preset | None = None
 
 
@@ -1814,8 +1814,8 @@ async def _check_run(state: ServerState, run_id: str) -> tuple[list[str], list[E
 
 
 class ModelsCheck(BaseModel):
-    profiles: list[str] = Field(default_factory=list)
-    runner: str | None = None
+    profiles: list[Utf8] = Field(default_factory=list)
+    runner: Utf8 | None = None
 
 
 @router.post("/models/check", status_code=202, tags=["models"], responses=responses(409))
@@ -2025,8 +2025,8 @@ async def scenario_schema(principal: Viewer) -> dict[str, object]:
 
 
 class ScenarioCheck(BaseModel):
-    text: str = Field(max_length=1024 * 1024)
-    profile: str | None = None
+    text: Utf8 = Field(max_length=1024 * 1024)
+    profile: Utf8 | None = None
 
 
 class CheckResult(Out):
@@ -2052,8 +2052,8 @@ async def check_scenario(body: ScenarioCheck, principal: Viewer, state: State) -
 class StartSelfTest(BaseModel):
     """`profile` as in StartRun; the agents are scripted, so no model is called."""
 
-    profile: str | None = None
-    runner: str | None = None
+    profile: Utf8 | None = None
+    runner: Utf8 | None = None
 
 
 @router.post(
@@ -2140,7 +2140,7 @@ class TokenInfo(Out):
 
 
 class TokenCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9._@-]+$")
+    name: Utf8 = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9._@-]+$")
     role: Literal["viewer", "operator", "runner"]
 
 

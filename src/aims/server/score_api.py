@@ -45,6 +45,7 @@ from aims.server.api import (
 from aims.server.files import Sources
 from aims.server.problems import ProblemException, responses
 from aims.server.state import ServerState
+from aims.text import Utf8
 from aims.wire import ScoreJob
 
 router = APIRouter(prefix="/api", responses=responses(401, 403, 422))
@@ -58,11 +59,11 @@ class StartScore(BaseModel):
     `plants_from` also scores the rule plants of that scenario the run's truth file lacks, in
     the run's variant, with the plant facts it lacks."""
 
-    monitor: str | None = None
+    monitor: Utf8 | None = None
     awareness: bool = True
     answer: bool = True
     plants_from: ScenarioRef | None = None
-    runner: str | None = None
+    runner: Utf8 | None = None
 
 
 @router.post("/runs/{run_id}/score", status_code=202, tags=["score"], responses=responses(404, 409))
@@ -239,7 +240,7 @@ async def get_rates(
 class LabelBody(BaseModel):
     flag: Seq
     label: LabelKind
-    note: str = Field(default="", max_length=4000)
+    note: Utf8 = Field(default="", max_length=4000)
 
 
 @router.get("/runs/{run_id}/labels", tags=["score"], responses=responses(404))
