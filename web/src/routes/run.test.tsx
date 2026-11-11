@@ -699,6 +699,25 @@ test("?step= picks the step and the last one carries the answer", async () => {
   expect(query?.has("before")).toBe(false);
 });
 
+test("an exec's output past its limit shows what was left out and its end", async () => {
+  events[6] = ev(7, "exec.finished", {
+    exec_id: "x1",
+    exit_code: 0,
+    end: "exited",
+    stdout: "collected 8 items",
+    stderr: "",
+    truncated: true,
+    stdout_tail: "8 passed in 9.10s",
+    stdout_omitted: 5 * 1024 * 1024,
+    procs: 3,
+  });
+  renderAt(`/runs/${BEE5}`);
+  expect(await screen.findByText("Stdout, cut short")).toBeTruthy();
+  expect(screen.getByText("collected 8 items")).toBeTruthy();
+  expect(screen.getByText("5.0 MB left out")).toBeTruthy();
+  expect(screen.getByText("8 passed in 9.10s")).toBeTruthy();
+});
+
 test("a submitted answer shows once", async () => {
   events[9] = ev(10, "tool.call", {
     call_id: "c2",

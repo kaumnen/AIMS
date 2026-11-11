@@ -10,7 +10,7 @@ import {
   type StepInfo,
   type ToolInfo,
 } from "@/api/run";
-import { summary } from "@/lib/event-text";
+import { bytes, summary } from "@/lib/event-text";
 import { usd } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -395,12 +395,14 @@ function Exec({
             <>
               <p className="text-muted-foreground">Stdout{f["truncated"] ? ", cut short" : ""}</p>
               <TextOf runId={runId} value={f["stdout"]} />
+              {end(runId, f, "stdout")}
             </>
           ) : null}
           {stderr ? (
             <>
               <p className="text-muted-foreground">Stderr</p>
               <TextOf runId={runId} value={stderr} />
+              {end(runId, f, "stderr")}
             </>
           ) : null}
         </div>
@@ -415,6 +417,15 @@ function Exec({
     </div>
   );
 }
+
+// The end of a stream the sandbox kept past its output limit, after the bytes it left out.
+const end = (runId: string, f: Data, name: string) =>
+  f[`${name}_tail`] ? (
+    <>
+      <p className="text-muted-foreground">{bytes(num(f[`${name}_omitted`]) ?? 0)} left out</p>
+      <TextOf runId={runId} value={f[`${name}_tail`]} />
+    </>
+  ) : null;
 
 function Score({ event, lit }: { event: Event; lit: Tone | undefined }) {
   const d = data(event);
