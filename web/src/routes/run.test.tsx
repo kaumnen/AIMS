@@ -517,9 +517,12 @@ beforeEach(() => {
     }
     if (path === `/api/runs/${BEE5}/samples`) {
       const limit = Number(q.get("limit") ?? 1000);
-      const items = samples.filter((w) => w.ts_to >= Number(q.get("ts_from") ?? 0)).slice(0, limit);
+      const sorted = samples.toSorted((a, b) => a.ts_from - b.ts_from || a.seq - b.seq);
+      const after = q.get("after");
+      const start = after === null ? 0 : sorted.findIndex((w) => w.seq === Number(after)) + 1;
+      const items = sorted.slice(start, start + limit);
       const last = items.at(-1);
-      return Response.json({ items, next: items.length === limit && last ? last.ts_to + 1 : null });
+      return Response.json({ items, next: items.length === limit && last ? last.seq : null });
     }
     if (path === `/api/runs/${BEE5}/flags`) return Response.json({ items: flags, next: null });
     if (path === `/api/runs/${BEE5}/events` && q.getAll("types").join() === "sandbox.started") {
@@ -631,7 +634,7 @@ test("the timeline pages the samples and draws the agent's activity", async () =
   renderAt(`/runs/${BEE5}`);
   const timeline = await screen.findByRole("slider", { name: "Timeline" });
   await waitFor(() => expect(requests("samples")).toHaveLength(2));
-  expect(requests("samples")[1]?.get("ts_from")).toBe(String(BOOT + 999 * 1_000_000 + 999_999 + 1));
+  expect(requests("samples")[1]?.get("after")).toBe(String(1000 + 999));
   const lane = timeline.querySelector('[data-lane="agent"]');
   await waitFor(() =>
     expect(lane?.querySelector('[data-trace="fill"]')?.getAttribute("d")).toMatch(/^M/),

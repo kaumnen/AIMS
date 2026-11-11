@@ -261,11 +261,11 @@ export function samplesQuery(runId: string) {
   return queryOptions({
     queryKey: ["runs", "samples", runId] as const,
     queryFn: ({ signal }) =>
-      everyPage(async (from) => {
+      everyPage(async (after) => {
         const { data, error } = await client.GET("/api/runs/{run_id}/samples", {
           params: {
             ...path(runId),
-            query: { limit: MAX_EVENTS, ...(from === undefined ? {} : { ts_from: from }) },
+            query: { limit: MAX_EVENTS, ...(after === undefined ? {} : { after }) },
           },
           signal,
         });

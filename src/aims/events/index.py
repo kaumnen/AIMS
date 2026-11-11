@@ -43,7 +43,7 @@ from aims.events.payloads import (
 )
 from aims.events.schema import SCHEMA_VERSION, BlobRef, Content, Event, Timestamp, format_ts
 
-VERSION = 9
+VERSION = 10
 MAX_TEXT = 32 * 1024
 MAX_PAGE = 1000
 
@@ -168,7 +168,7 @@ create table samples (
     primary key (run_id, seq)
 ) strict;
 
-create index samples_by_time on samples (run_id, agent_id, ts_from);
+create index samples_by_time on samples (run_id, ts_from, seq);
 
 create table flags (
     run_id text not null references runs (run_id),
@@ -1419,9 +1419,12 @@ class Index:
         agent_id: str | None = None,
         ts_from: int | None = None,
         ts_to: int | None = None,
+        after: int | None = None,
         limit: int = MAX_PAGE,
     ) -> list[SampleWindow]:
-        """Windows of a run that overlap [`ts_from`, `ts_to`] on the boot clock, oldest first."""
+        """Windows of a run that overlap [`ts_from`, `ts_to`] on the boot clock, oldest first:
+        by `ts_from`, then seq. `after` is the seq of the last window of the page before; the
+        page goes on from there, and holds nothing when the run has no window at that seq."""
         where = ["run_id = ?"]
         args: list[Any] = [run_id]
         if agent_id is not None:
@@ -1433,6 +1436,11 @@ class Index:
         if ts_to is not None:
             where.append("ts_from <= ?")
             args.append(ts_to)
+        if after is not None:
+            where.append(
+                "(ts_from, seq) > (select ts_from, seq from samples where run_id = ? and seq = ?)"
+            )
+            args.extend((run_id, after))
         args.append(_cap(limit))
         async with self._db.execute(
             f"select {', '.join(SAMPLE_FIELDS)} from samples where {' and '.join(where)}"

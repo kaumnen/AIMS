@@ -20410,7 +20410,7 @@
     },
     "/api/runs/{run_id}/samples": {
       "get": {
-        "description": "The resource timeline, one window per sandbox second. Page on with `ts_from=next`.",
+        "description": "The resource timeline, one window per sandbox second, by start time then seq. `ts_from`\nand `ts_to` keep the windows that overlap that span of the boot clock. Page on with\n`after=next`, the seq of the page's last window.",
         "operationId": "list_samples",
         "parameters": [
           {
@@ -20468,6 +20468,22 @@
                 }
               ],
               "title": "Ts To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
             }
           },
           {

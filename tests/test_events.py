@@ -29,6 +29,7 @@ from aims.events import (
     MonitorFlag,
     OperatorAction,
     Payload,
+    ResourceSample,
     RunCorrupt,
     RunFinished,
     RunLocked,
@@ -391,6 +392,84 @@ async def test_search(store: LocalEventStore) -> None:
     assert await hits('"hi') == [3]
     assert await hits("100%") == []
     assert await hits("nothing here") == []
+
+
+def window(sandbox: str, first_us: int, last_us: int) -> Draft:
+    """A resource window of `sandbox` from `first_us` to `last_us` on the boot clock."""
+    empty = dict.fromkeys(ResourceSample.COLUMNS)
+    sample = ResourceSample(sandbox_id=sandbox, hz=10, ts=[first_us, last_us - first_us], **empty)
+    return Draft(sample, sandbox)
+
+
+async def two_sandboxes(store: LocalEventStore) -> str:
+    """700 seconds of two sandboxes, the second a second late and one window of it partial,
+    so that a page cut at its end by time alone skips a window of the other."""
+    run_id = await store.create_run(STARTED)
+    drafts = []
+    for k in range(700):
+        base = k * 1_000_000
+        drafts.append(window("a1", base + 50_000, base + 950_000))
+        if k == 500:
+            drafts.append(window("a2", base + 300_000, base + 900_000))
+        elif k > 0:
+            drafts.append(window("a2", base + 20_000, base + 920_000))
+    for i in range(0, len(drafts), 500):
+        await store.append(run_id, drafts[i : i + 500])
+    return run_id
+
+
+async def stored_windows(
+    store: LocalEventStore, run_id: str, agent: str | None = None
+) -> list[tuple[int, int]]:
+    """The `(ts_from, seq)` of each window the log holds, in the order a page lists them."""
+    events = await store.every(run_id, types=[ResourceSample.type])
+    return sorted(
+        (ResourceSample.model_validate(e.data).ts[0], e.seq)
+        for e in events
+        if agent is None or e.agent_id == agent
+    )
+
+
+async def every_window(
+    store: LocalEventStore, run_id: str, limit: int, **kwargs: Any
+) -> list[tuple[int, int]]:
+    """The `(ts_from, seq)` of each window the pages hold, each page after the last."""
+    seen: list[tuple[int, int]] = []
+    after = None
+    for _ in range(10_000):
+        page = await store.samples(run_id, after=after, limit=limit, **kwargs)
+        seen += [(w.ts_from, w.seq) for w in page]
+        if len(page) < limit:
+            return seen
+        after = page[-1].seq
+    raise AssertionError("the pages never end")
+
+
+async def test_sample_pages_hold_every_window_once(store: LocalEventStore) -> None:
+    run_id = await two_sandboxes(store)
+    stored = await stored_windows(store, run_id)
+    assert len(stored) == 1399
+    assert await every_window(store, run_id, 1000) == stored
+    assert await every_window(store, run_id, 7) == stored
+    a2 = await every_window(store, run_id, 100, agent_id="a2")
+    assert a2 == await stored_windows(store, run_id, "a2")
+    assert len(a2) == 699
+
+
+async def test_sample_pages_cut_inside_equal_starts(store: LocalEventStore) -> None:
+    run_id = await store.create_run(STARTED)
+    drafts = [
+        window(f"s{n}", k * 1_000_000, k * 1_000_000 + 500) for k in range(4) for n in range(5)
+    ]
+    await store.append(run_id, drafts[::-1])
+    stored = await stored_windows(store, run_id)
+    assert len(stored) == 20
+    assert len({ts for ts, _ in stored}) == 4
+    for limit in (1, 2, 3, 4, 6):
+        assert await every_window(store, run_id, limit) == stored
+    middle = [x for x in stored if 1_000_000 <= x[0] <= 2_000_000]
+    assert await every_window(store, run_id, 3, ts_from=1_000_400, ts_to=2_000_000) == middle
+    assert await store.samples(run_id, after=0) == []
 
 
 async def test_content_writes_a_lone_surrogate_as_text(store: LocalEventStore) -> None:

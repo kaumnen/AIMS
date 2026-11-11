@@ -756,7 +756,9 @@ export interface paths {
         };
         /**
          * List Samples
-         * @description The resource timeline, one window per sandbox second. Page on with `ts_from=next`.
+         * @description The resource timeline, one window per sandbox second, by start time then seq. `ts_from`
+         *     and `ts_to` keep the windows that overlap that span of the boot clock. Page on with
+         *     `after=next`, the seq of the page's last window.
          */
         get: operations["list_samples"];
         put?: never;
@@ -10557,6 +10559,7 @@ export interface operations {
                 agent?: string | null;
                 ts_from?: number | null;
                 ts_to?: number | null;
+                after?: number | null;
                 limit?: number;
             };
             header?: never;

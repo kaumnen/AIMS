@@ -37,6 +37,7 @@ from aims.events import (
     BlobRef,
     Draft,
     LocalEventStore,
+    ResourceSample,
     RunFinished,
     RunStarted,
     ToolCall,
@@ -1648,6 +1649,58 @@ async def test_openapi_lists_every_payload_and_the_stream_messages(cp: CP) -> No
     problem = spec["paths"]["/api/runs"]["post"]["responses"]["422"]["content"]
     assert list(problem) == ["application/problem+json"]
     assert spec["paths"]["/api/runs/{run_id}/events"]["get"]["operationId"] == "list_events"
+
+
+async def pushed(cp: CP, local: LocalEventStore, drafts: list[Draft]) -> str:
+    """A finished run of `drafts` that a runner pushed."""
+    run_id = await local.create_run(STARTED)
+    await local.append(run_id, drafts)
+    await local.append(run_id, [Draft(RunFinished(status="completed"))])
+    pusher = FakeRunner(cp, "pusher")
+    await pusher.client.hello(pusher.hello_body())
+    await ship(local, pusher.client, run_id)
+    await pusher.client.aclose()
+    return run_id
+
+
+def window(sandbox: str, first_us: int, last_us: int) -> Draft:
+    empty = dict.fromkeys(ResourceSample.COLUMNS)
+    sample = ResourceSample(sandbox_id=sandbox, hz=10, ts=[first_us, last_us - first_us], **empty)
+    return Draft(sample, sandbox)
+
+
+async def test_sample_pages_hold_every_window_once(cp: CP, local: LocalEventStore) -> None:
+    drafts = []
+    for k in range(700):
+        base = k * 1_000_000
+        drafts.append(window("a1", base + 50_000, base + 950_000))
+        if k == 500:
+            drafts.append(window("a2", base + 300_000, base + 900_000))
+        elif k > 0:
+            drafts.append(window("a2", base + 20_000, base + 920_000))
+    run_id = await pushed(cp, local, drafts)
+    events = await local.every(run_id, types=[ResourceSample.type])
+    windows = [(ResourceSample.model_validate(e.data).ts[0], e.seq, e.agent_id) for e in events]
+    stored = sorted((ts, seq) for ts, seq, _ in windows)
+
+    async def paged(c: httpx2.AsyncClient, **params: Any) -> list[tuple[int, int]]:
+        seen: list[tuple[int, int]] = []
+        for _ in range(20):
+            r = await c.get(f"/api/runs/{run_id}/samples", params=params)
+            assert r.status_code == 200, r.text
+            page = r.json()
+            seen += [(w["ts_from"], w["seq"]) for w in page["items"]]
+            if page["next"] is None:
+                return seen
+            params["after"] = page["next"]
+        raise AssertionError(f"the pages never end: {len(seen)} windows, {len(set(seen))} distinct")
+
+    async with cp.client(cp.viewer) as c:
+        assert await paged(c) == stored
+        assert await paged(c, limit=300) == stored
+        a2 = sorted((ts, seq) for ts, seq, agent in windows if agent == "a2")
+        assert len(a2) == 699
+        assert await paged(c, agent="a2", limit=200) == a2
 
 
 # Fixes from the security review

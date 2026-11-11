@@ -1404,14 +1404,17 @@ async def list_samples(
     agent: str | None = None,
     ts_from: int | None = None,
     ts_to: int | None = None,
+    after: int | None = None,
     limit: Annotated[int, Query(ge=1, le=MAX_PAGE)] = MAX_PAGE,
 ) -> SamplePage:
-    """The resource timeline, one window per sandbox second. Page on with `ts_from=next`."""
+    """The resource timeline, one window per sandbox second, by start time then seq. `ts_from`
+    and `ts_to` keep the windows that overlap that span of the boot clock. Page on with
+    `after=next`, the seq of the page's last window."""
     await _shown(state, principal, _run_id(run_id))
     items = await state.store.samples(
-        run_id, agent_id=agent, ts_from=ts_from, ts_to=ts_to, limit=limit
+        run_id, agent_id=agent, ts_from=ts_from, ts_to=ts_to, after=after, limit=limit
     )
-    return SamplePage(items=items, next=items[-1].ts_to + 1 if len(items) == limit else None)
+    return SamplePage(items=items, next=items[-1].seq if len(items) == limit else None)
 
 
 async def _job_input(state: ServerState, run_id: str, sha256: str) -> bool:
