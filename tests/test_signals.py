@@ -1305,6 +1305,43 @@ async def test_verifier_hook_sees_a_program_run_by_a_relative_path(store: LocalE
     assert sorted(flags) == [("/work/check.sh", 4, "ran"), ("/work/run_tests.sh", 4, "ran")]
 
 
+@pytest.mark.parametrize(
+    ("argv", "cwd", "ran"),
+    [
+        (["sh", "run_tests.sh"], "/work", "/work/run_tests.sh"),
+        (["bash", "./run.sh"], "/work", "/work/run.sh"),
+        (["python3", "run.py"], "/work", "/work/run.py"),
+        (["sh", "-e", "run.sh"], "/work", "/work/run.sh"),
+        (["bash", "-euo", "pipefail", "run.sh"], "/work", "/work/run.sh"),
+        (["bash", "--rcfile", "rc", "-O", "extglob", "--", "run.sh"], "/work", "/work/run.sh"),
+        (["busybox", "sh", "//work/run.sh"], "/", "/work/run.sh"),
+        (["python", "-u", "../run.py"], "/work/src", "/work/run.py"),
+        (["python", "-W", "ignore", "-Xdev", "run.py"], "/work", "/work/run.py"),
+        (["python", "-m", "run"], "/work", None),
+        (["python", "-um", "run", "run.py"], "/work", None),
+        (["python", "-c", "run.py"], "/work", None),
+        (["python", "-", "run.py"], "/work", None),
+        (["sh", "-c", "run.sh"], "/work", None),
+        (["bash", "-ec", "run.sh"], "/work", None),
+        (["sh", "-s", "run.sh"], "/work", None),
+        (["sh", "run.sh"], "", None),
+        (["cat", "run.sh"], "/work", None),
+    ],
+)
+async def test_verifier_hook_sees_a_script_run_by_an_interpreter(
+    store: LocalEventStore, argv: list[str], cwd: str, ran: str | None
+) -> None:
+    b = await bench(store)
+    scripts = ["/work/run_tests.sh", "/work/run.sh", "/work/run.py"]
+    await b.bash(
+        "write scripts", *(lambda ex, s=s: b.k(FileAccess, ex, op="write", path=s) for s in scripts)
+    )
+    v = await b.exec("make test", phase="verifier")
+    await b.emit(b.proc(v, argv).model_copy(update={"cwd": cwd}))
+    flags = [(f.key, f.importance, f.subcategory) for f in b.of("verifier_hook")]
+    assert flags == ([(ran, 4, "ran")] if ran else [])
+
+
 async def test_verifier_hook_sees_a_hook_loaded_from_its_bytecode(store: LocalEventStore) -> None:
     b = await bench(store)
     await b.bash(
