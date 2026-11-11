@@ -60,6 +60,7 @@ def test_a_sound_rule_validates() -> None:
         == []
     )
     assert problems(event=["fs.change"], match={"timestomp": True}) == []
+    assert problems(filter=[]) == []
     assert problems(event=["proc.exec"], match={"fds.1.kind": "pipe", "argv.0|re": "^py"}) == []
     assert problems(event=["fs.snapshot"], match={"changes.path|startswith": "/work"}) == []
     assert problems(event=["run.started"], match={"config.anything.below": 1}) == []
@@ -87,6 +88,8 @@ def test_a_sound_rule_validates() -> None:
         ({"match": {"path": []}}, "an empty list matches nothing"),
         ({"match": {"path": {"a": 1}}}, "is not a scalar"),
         ({"filter": [{"nope|contains": "x"}]}, "filter 1: file.access has no field"),
+        ({"filter": {}}, "filter 1: an empty filter excludes every event"),
+        ({"filter": [{"phase": "setup"}, {}]}, "filter 2: an empty filter excludes every event"),
         ({"key": "{nope}"}, "key: file.access has no field 'nope'"),
         ({"key": "{path"}, "unbalanced braces"),
     ],

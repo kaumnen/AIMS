@@ -536,7 +536,11 @@ def rule_problems(rule: Rule) -> list[str]:
         return [f"{where}: unknown event type {', '.join(unknown)}"]
     derived = derived_fields()
     rule_types = frozenset(rule.event)
-    problems: list[str] = []
+    problems = [
+        f"{where}: filter {i + 1}: an empty filter excludes every event; drop it"
+        for i, group in enumerate(rule.filter)
+        if not group
+    ]
     entries = [("match", k, v) for k, v in rule.match.items()]
     entries += [(f"filter {i + 1}", k, v) for i, g in enumerate(rule.filter) for k, v in g.items()]
     for part, k, v in entries:
