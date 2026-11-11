@@ -8,6 +8,9 @@ const fetch = vi.fn<(request: Request) => Promise<Response>>();
 let polls = 0;
 let sent: { path: string; body: unknown }[];
 
+// as the server's command_state reads an answer
+const stateOf = (outcome: string) => /^(failed|dropped)/.exec(outcome)?.[1] ?? "done";
+
 const commands = (acked: boolean, outcome: string) => [
   {
     id: "k1",
@@ -17,6 +20,7 @@ const commands = (acked: boolean, outcome: string) => [
     created: 0,
     acked: acked ? 1 : null,
     outcome: acked ? outcome : null,
+    state: acked ? stateOf(outcome) : "waiting",
   },
 ];
 
@@ -67,6 +71,16 @@ test("a refusal comes back with the runner's reason", async () => {
     text: "no paused agent has a tool call waiting to deny",
   });
 });
+
+// the two ways the control plane settles a command the runner has not answered
+test.each(["the run ended", "another token took the runner name"])(
+  "a command dropped as %s is not done",
+  async (text) => {
+    serve(SENT, `dropped: ${text}`, 1);
+    const answer = await send(RUN, { action: "kill", reason: null }, { every: 1 });
+    expect(answer).toEqual({ state: "failed", text });
+  },
+);
 
 test("no answer in time says whether the runner got it", async () => {
   serve({ ...SENT, delivered: false }, "done", 1000);

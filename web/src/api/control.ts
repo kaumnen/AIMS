@@ -12,7 +12,8 @@ export type Command =
   | ({ action: "inject" } & Schemas["InjectBody"])
   | ({ action: "kill" | "cancel" } & Schemas["StopBody"]);
 
-// done: the runner carried it out; failed: it refused, saying why; waiting: no answer yet.
+// done: the runner carried it out; failed: the runner refused it or the control plane dropped
+// it, saying why; waiting: no answer yet.
 export interface Answer {
   state: "done" | "failed" | "waiting";
   text: string;
@@ -70,11 +71,11 @@ export async function send(
     });
     if (error) throw error;
     const found = data.find((x) => x.id === id);
-    if (found?.acked != null) {
+    if (found !== undefined && found.state !== "waiting") {
       const outcome = found.outcome ?? "done";
-      return outcome.startsWith("failed")
-        ? { state: "failed", text: outcome.replace(/^failed: /, "") }
-        : { state: "done", text: outcome };
+      return found.state === "done"
+        ? { state: "done", text: outcome }
+        : { state: "failed", text: outcome.replace(/^(failed|dropped): /, "") };
     }
     // oxlint-disable-next-line no-await-in-loop
     await sleep(every);

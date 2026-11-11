@@ -407,7 +407,11 @@ beforeEach(() => {
           reason: null,
           by: "op",
           created: 0,
-          state: c.acked === null ? "waiting" : "done",
+          // as the server's command_state reads an answer
+          state:
+            c.acked === null
+              ? "waiting"
+              : (/^(failed|dropped)/.exec(c.outcome ?? "")?.[1] ?? "done"),
           ...c,
         })),
       );
@@ -1819,6 +1823,40 @@ test("kill and inject ask first", async () => {
     path: `/api/runs/${BEE5}/inject`,
     body: { agent: null, text: "Run the tests again." },
   });
+});
+
+test("a kill the control plane dropped is not done, and its dialog stays open", async () => {
+  detail = open();
+  outcome = "dropped: another token took the runner name";
+  renderAt(`/runs/${BEE5}`);
+  fireEvent.click(await screen.findByRole("button", { name: "Kill" }));
+  const kill = await screen.findByRole("dialog", { name: "Kill the run" });
+  fireEvent.click(within(kill).getByRole("button", { name: "Kill run" }));
+  expect(
+    await within(kill).findByText("Not done: another token took the runner name"),
+  ).toBeTruthy();
+  expect(screen.getByRole("dialog", { name: "Kill the run" })).toBe(kill);
+  expect(posted).toEqual([{ path: `/api/runs/${BEE5}/kill`, body: { reason: null } }]);
+});
+
+test("a monitor pause keeps its kill dialog open and stops its answers at a dropped one", async () => {
+  detail = open({ held: [hold({ agent: "a" }), hold({ agent: "b" })] });
+  flags = [flag(20, [3], 4)];
+  outcome = "dropped: the run ended";
+  renderAt(`/runs/${BEE5}`);
+  const banner = await screen.findByRole("region", { name: "Monitor pause of a, b" });
+  fireEvent.click(within(banner).getByRole("button", { name: "Kill run" }));
+  const kill = await screen.findByRole("dialog", { name: "Kill the run" });
+  fireEvent.click(within(kill).getByRole("button", { name: "Kill run" }));
+  expect(await within(kill).findByText("Not done: the run ended")).toBeTruthy();
+  expect(screen.getByRole("dialog", { name: "Kill the run" })).toBe(kill);
+
+  fireEvent.click(within(kill).getByRole("button", { name: "Keep running" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  fireEvent.click(within(banner).getByRole("button", { name: "Allow" }));
+  await waitFor(() => expect(posted).toHaveLength(2));
+  expect(await within(banner).findByText("Not done: the run ended")).toBeTruthy();
+  expect(posted.map((p) => p.path)).toEqual([`/api/runs/${BEE5}/kill`, `/api/runs/${BEE5}/resume`]);
 });
 
 test("a pause under human oversight waits for an answer like the terminal's", async () => {
