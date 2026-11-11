@@ -39,6 +39,18 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - A file given as `--runs-dir`, `--data-dir` or `--selftest-runs` is a usage error. So is a missing `--tls-cert`, `--tls-key` or `--tls-ca`. A negative `aims runner --keep-days` is refused.
 - `aims token create --file` checks the destination first and writes the new value to disk before the old one stops working. A file at `--file` that is not text is replaced.
 - `server.json` is replaced whole when written. A symlink in its place is replaced, not followed.
+- `aims score --monitor` and `POST /api/runs/{run_id}/score` take only a review that completed. One that is still running, failed or was cancelled is refused, by the API with a 409. Its missing verdict counted every plant as missed.
+- A cancel from the UI, `aims control` or the first Ctrl-C ends a running image build, sandbox start or setup command at once. It waited for the command, up to `setup_timeout_s` each.
+- A file plant whose `source` is a symlink or a directory is refused by `aims scenario check` and at the start of a run. It was planted as an empty file.
+- A rule with an empty `filter: {}` map is refused. It excluded every event.
+- A scenario rule with `distinct` and no `window_s` counts distinct values over the whole run, as documented. Repeats pushed earlier values out, so `a b a a c` never reached three. Such a rule's version gains `.2`.
+- `shell_rc_write` moves to version 2. It no longer flags `BASH_ENV` on the harness's own wrapper process or the value the scenario sets in `sandbox.env`.
+- The Raw tab holds at most 10,000 live events in pages of 200. Older ones are read again on scroll up.
+- A run, review, self-test or model check cancelled in the queue says "Cancelled before it started" with the reason. Its page stops its stream, its polling and the report rebuild.
+- The file and config editors show hidden characters, such as a zero-width space or a CR inside a line, as marks.
+- Signing in clears everything the last session loaded in that tab. The shared live stream reconnects with the new session.
+- Leaving an unsaved scenario file or config file asks first: a tab, a link, another file or layer, Back and Forward. One question each. Tabs and links dropped the draft without a word. Deleting the file or the scenario does not ask.
+- The New run form scores each run by default, as `aims run` does. Untick the box to skip it.
 
 ### Fixed
 
@@ -86,6 +98,21 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - `aims token create --file` in a missing folder ended in a traceback after the old token was revoked, with the new value lost. Its temp file had a fixed name and followed a symlink put there.
 - `aims push` against a server that is down or refuses ended in a traceback. So did a missing or unreadable `--token-file`, a broken `server.json` or `server.sqlite`, a path that cannot be written by `aims report` or `aims openapi`. A bad TLS file did too.
 - `aims monitor --help` offered `off`, which the command refuses. `--token-file` named the runner token on commands that take an operator token.
+- `credential_flow` and `joint_action` scanned every shared-folder write on each file read. With 10,000 shared files a read took 7 ms on the runner's loop. It now costs the same for any number of files. Writes older than the window are forgotten. Flags are unchanged.
+- The public build context of a scenario with a Dockerfile is built in linear time and off the event loop. A context of 20,000 files held up a run start, a fork and each fork estimate for 20 s.
+- A named pipe or socket in a `task.files` source folder no longer hangs the start of a run. It is skipped, as the scenario loader skips it.
+- A sandbox whose kill failed while a run was cancelled is still removed with its volumes right away.
+- One tracer line the reader fails on no longer stops the kernel trace of every sandbox. The record is logged as `audit.lost`.
+- A kernel record the run log refuses no longer ends a sandbox's audit or fails the exec it arrived in. Only that record is lost and logged as `audit.lost`. A failed write no longer stops the audit from reading later records.
+- Inode numbers past 2^53 in an exec's file descriptors or a pipe write are clamped like the other kernel numbers. They made the log refuse the record.
+- The live steps list re-read up to 500 rows on every batch when one agent had stopped early. It now reads on from the first row that can still change.
+- The timeline's IO readout is a true rate per second. After a gap between sampler windows it showed the whole gap's bytes as one second's.
+- A viewer who signed in after an operator in the same tab could see the operator's cached score and self-test rows for up to 5 minutes.
+- Saving a scenario file keeps its CRLF or CR line endings and its byte order mark. One edit rewrote every line ending. An edit that is undone no longer shows "unsaved changes".
+- A run deleted while a run list loads its next page no longer comes back until a reload.
+- Two quick clicks on Check start one paid model check.
+- The New run form no longer opens on another scenario when the one asked for is missing from its cached list. It reads the list again, then says why that scenario cannot run.
+- A From or To time the audit log cannot use, such as a six-digit year, is left out and marked. It crashed the page.
 
 ## [0.2.2] - 2026-11-10
 
