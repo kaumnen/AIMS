@@ -370,6 +370,8 @@ def scenario_check(
     from aims.run.runner import check
     from aims.scenario import ScenarioError, load
 
+    if selftest_runs is not None and not selftest:
+        raise typer.BadParameter("needs the self-test", param_hint="--selftest-runs")
     settings = _settings(config)
     try:
         bundle = load(path)
@@ -718,7 +720,7 @@ def run(
             raise typer.BadParameter(
                 "use --runs for a series, not --samples", param_hint="--samples"
             )
-    link = None if no_server else _connection(server, token_file, required=server is not None)
+    link = _link(server, token_file, no_server)
     code = asyncio.run(
         _run(
             scenario=scenario,
@@ -1297,6 +1299,8 @@ def _connection(
 
     from aims.server.serve import SERVER_JSON, server_dir
 
+    if token_file is not None and server is None:
+        raise typer.BadParameter("needs --server", param_hint="--token-file")
     token = os.environ.get("AIMS_TOKEN")
     if token_file is not None:
         token = _token_file(token_file)
@@ -1319,11 +1323,19 @@ def _connection(
     return None
 
 
+def _link(server: str | None, token_file: Path | None, no_server: bool) -> tuple[str, str] | None:
+    """The control plane to ship to: none with --no-server, else as `_connection` finds it."""
+    if no_server and (server is not None or token_file is not None):
+        raise typer.BadParameter("takes no --server or --token-file", param_hint="--no-server")
+    return None if no_server else _connection(server, token_file, required=server is not None)
+
+
 ServerOption = Annotated[
     str | None, typer.Option("--server", help="Control plane URL; AIMS_TOKEN holds the token.")
 ]
 TokenFileOption = Annotated[
-    Path | None, typer.Option("--token-file", help="A file holding the runner token.")
+    Path | None,
+    typer.Option("--token-file", help="A file holding the runner token; needs --server."),
 ]
 OperatorTokenFileOption = Annotated[
     Path | None, typer.Option("--token-file", help="A file holding an operator token.")
@@ -1512,8 +1524,9 @@ def runner_cmd(
     keep_days: Annotated[
         float | None,
         typer.Option(
+            min=0,
             help="Delete runs sealed this many days ago once the control plane has them."
-            " Copies of other runners' runs go once unused this long, 7 days at most."
+            " Copies of other runners' runs go once unused this long, 7 days at most.",
         ),
     ] = None,
     tls_ca: Annotated[
@@ -1778,7 +1791,9 @@ def monitor_cmd(
     _preset(monitor, ("signals", "standard", "research"))
     if signals_only and judge_only:
         raise typer.BadParameter("pick one", param_hint="--signals-only/--judge-only")
-    link = None if no_server else _connection(server, token_file, required=server is not None)
+    if signals_only and monitor not in (None, "signals"):
+        raise typer.BadParameter("--signals-only sets the signals preset", param_hint="--monitor")
+    link = _link(server, token_file, no_server)
     code = asyncio.run(
         _monitor_runs(
             runs=runs,
@@ -2029,7 +2044,10 @@ def control(
     ] = None,
     reason: Annotated[str | None, typer.Option(help="Why, for the log.")] = None,
     wait: Annotated[
-        float, typer.Option(min=0, help="Seconds to wait for the runner to answer.")
+        float,
+        typer.Option(
+            min=0, help="Seconds to wait for the runner to answer; 0 sends and does not wait."
+        ),
     ] = 10.0,
     server: ServerOption = None,
     token_file: OperatorTokenFileOption = None,
@@ -2048,7 +2066,9 @@ def control(
     if action == "list":
         for given, hint in ((agent, "--agent"), (text, "--text"), (reason, "--reason")):
             if given is not None:
-                raise typer.BadParameter("list takes no options but --server", param_hint=hint)
+                raise typer.BadParameter(
+                    "list takes no options but --server and --token-file", param_hint=hint
+                )
         url, token = _operator(server, token_file, reads=True)
         raise typer.Exit(asyncio.run(_commands(url, token, run)))
     if action not in CONTROL_ACTIONS:
@@ -2097,6 +2117,9 @@ async def _control(
             sent = r.json()
             if sent.get("state") == "cancelled":
                 typer.echo(f"{run}: cancelled before it started")
+                return 0
+            if wait == 0:
+                typer.echo(f"{action} {run}: sent; `aims control {run} list` shows it")
                 return 0
             command = sent.get("command_id")
             deadline = time.monotonic() + wait

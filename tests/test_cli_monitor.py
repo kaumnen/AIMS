@@ -1135,6 +1135,18 @@ async def test_aims_control_sends_commands_and_reports_the_ack(
     assert (await control(cp, run_id, "nap", token=cp.operator)).exit_code == 2
 
 
+async def test_aims_control_with_wait_0_sends_and_does_not_wait(
+    cp: CP, fake: FakeRunner, local: LocalEventStore
+) -> None:
+    (run_id,) = await start_run(cp)
+    await play_job(fake, local, await fake.next(OfferMessage))
+    result = await control(cp, run_id, "pause", "--wait", "0", token=cp.operator)
+    assert result.exit_code == 0, result.output
+    assert result.stdout.strip() == f"pause {run_id}: sent; `aims control {run_id} list` shows it"
+    message = await fake.next(CommandMessage)
+    assert message.command.action == "pause"
+
+
 async def test_aims_control_finds_a_local_ui(
     cp: CP,
     fake: FakeRunner,

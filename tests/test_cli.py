@@ -51,6 +51,51 @@ def test_help_offers_what_each_command_takes() -> None:
         assert "the runner token" in helps(path, "token_file"), path
 
 
+def test_options_that_would_be_ignored_are_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def done(**kwargs: Any) -> int:
+        return 0
+
+    class Idle:
+        def __init__(self, options: Any) -> None:
+            pass
+
+        async def run(self, stop: asyncio.Event) -> None:
+            pass
+
+    # What each command does once its options pass is not under test.
+    monkeypatch.setattr("aims.cli._run", done)
+    monkeypatch.setattr("aims.cli._monitor_runs", done)
+    monkeypatch.setattr("aims.node.service.Node", Idle)
+    token = tmp_path / "token"
+    token.write_text("aims_x\n")
+    file = ["--token-file", str(token)]
+    server = ["--server", "http://127.0.0.1:9"]
+    check = ["scenario", "check", "builtin/word-count", "--no-selftest"]
+    cases = {
+        "push --token-file alone": ["push", str(tmp_path), *file],
+        "runner --token-file alone": ["runner", *file],
+        "run --server --no-server": ["run", "builtin/word-count", "--no-server", *server],
+        "monitor --token-file --no-server": ["monitor", "r1", "--no-server", *file],
+        "monitor standard --signals-only": [
+            "monitor",
+            "r1",
+            "--monitor",
+            "standard",
+            "--signals-only",
+        ],
+        "runner --keep-days -1": ["runner", *server, "--keep-days", "-1"],
+        "--selftest-runs --no-selftest": [*check, "--selftest-runs", str(tmp_path / "kept")],
+    }
+    failed = []
+    for name, args in cases.items():
+        r = CliRunner().invoke(app, args, env={"AIMS_TOKEN": "aims_x"})
+        if r.exit_code != 2:
+            failed.append(f"{name}: exit {r.exit_code} {r.exception!r} {r.output[-300:]!r}")
+    assert failed == []
+
+
 @pytest.mark.anyio
 async def test_the_cli_reaches_the_control_plane_through_the_proxy(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
