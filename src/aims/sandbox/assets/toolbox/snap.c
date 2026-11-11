@@ -19,6 +19,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -121,7 +122,7 @@ typedef struct {
     int fresh;
     int root;
     unsigned mode;
-    long long size, mtime_ns, ctime_ns;
+    long long size, mtime_ns, ctime_ns, mtime_us;
     unsigned long long ino, dev;
     unsigned char sha[32];
 } entry;
@@ -179,6 +180,21 @@ static int by_size(const void *a, const void *b) {
     const entry *x = *(entry *const *)a, *y = *(entry *const *)b;
     if (x->size != y->size) return x->size < y->size ? -1 : 1;
     return strcmp(x->path, y->path);
+}
+
+/* Nanoseconds since the epoch, to compare two times of one file. A date past the year 2262
+ * does not fit: it wraps the same way each time, in unsigned arithmetic. */
+static long long ns_of(struct timespec t) {
+    return (long long)((unsigned long long)t.tv_sec * 1000000000ULL +
+                       (unsigned long long)t.tv_nsec);
+}
+
+/* Microseconds since the epoch, to report. A date too far to count is the largest number. */
+static long long us_of(struct timespec t) {
+    const long long top = LLONG_MAX / 1000000LL - 1;
+    if (t.tv_sec > top) return LLONG_MAX;
+    if (t.tv_sec < -top) return LLONG_MIN;
+    return t.tv_sec * 1000000LL + t.tv_nsec / 1000;
 }
 
 static int same_stat(const entry *a, const entry *b) {
@@ -302,8 +318,9 @@ static void walk(int dfd, int self, char *path, size_t plen, int depth, list *ou
         e->kind = kind_of(st.st_mode);
         e->mode = st.st_mode & 07777;
         e->size = st.st_size;
-        e->mtime_ns = st.st_mtim.tv_sec * 1000000000LL + st.st_mtim.tv_nsec;
-        e->ctime_ns = st.st_ctim.tv_sec * 1000000000LL + st.st_ctim.tv_nsec;
+        e->mtime_ns = ns_of(st.st_mtim);
+        e->ctime_ns = ns_of(st.st_ctim);
+        e->mtime_us = us_of(st.st_mtim);
         e->ino = st.st_ino;
         e->dev = st.st_dev;
         entry *was = find_old(e->path);
@@ -351,12 +368,18 @@ static void emit(char change, const entry *e, int timestomp, int with_content) {
         e->size > 0 && !e->clen)
         n_skipped++;
     size_t tlen = e->target ? strlen(e->target) : 0;
-    long long mtime_us = e->mtime_ns / 1000;
     printf("C %c %c %lld %u %lld %s %zu %d %zu %zu\n", change, e->kind, e->size, e->mode,
-           mtime_us, sha, clen, timestomp, strlen(e->path), tlen);
+           e->mtime_us, sha, clen, timestomp, strlen(e->path), tlen);
     fwrite(e->path, 1, strlen(e->path), stdout);
     if (tlen) fwrite(e->target, 1, tlen, stdout);
     if (clen) fwrite(e->content, 1, clen, stdout);
+}
+
+/* Whether `e` is dated no later than `was`: by the microseconds, which do not wrap, and by the
+ * nanoseconds within one microsecond. */
+static int not_later(const entry *e, const entry *was) {
+    if (e->mtime_us != was->mtime_us) return e->mtime_us < was->mtime_us;
+    return e->mtime_ns <= was->mtime_ns;
 }
 
 static void diff(const entry *was, entry *e) {
@@ -369,7 +392,7 @@ static void diff(const entry *was, entry *e) {
         int changed = known ? memcmp(was->sha, e->sha, 32) != 0 : 1;
         if (changed) {
             int moved = was->size != e->size || (known && changed);
-            emit('M', e, moved && e->mtime_ns <= was->mtime_ns, 1);
+            emit('M', e, moved && not_later(e, was), 1);
             return;
         }
     }
@@ -516,8 +539,8 @@ static void hash_one(const char *path, long long cap) {
     probe.ino = st.st_ino;
     probe.dev = st.st_dev;
     probe.size = st.st_size;
-    probe.mtime_ns = st.st_mtim.tv_sec * 1000000000LL + st.st_mtim.tv_nsec;
-    probe.ctime_ns = st.st_ctim.tv_sec * 1000000000LL + st.st_ctim.tv_nsec;
+    probe.mtime_ns = ns_of(st.st_mtim);
+    probe.ctime_ns = ns_of(st.st_ctim);
     long long mtime_us = st.st_mtim.tv_sec * 1000000LL + st.st_mtim.tv_nsec / 1000;
     long long ctime_us = st.st_ctim.tv_sec * 1000000LL + st.st_ctim.tv_nsec / 1000;
     entry *was = find_old(path);

@@ -14,6 +14,7 @@ import aiodocker
 import pytest
 
 from aims.events import (
+    MAX_INT,
     AuditSpill,
     Event,
     FileAccess,
@@ -1853,3 +1854,23 @@ async def test_subshell_output_is_recorded_as_a_fork(
     assert (output.stream, output.prefix, output.bytes) == ("pipe", "hi\n", 3)
     assert isinstance(end, ProcExit)
     assert (end.exec_id, end.exit_code) == (exec_id, 0)
+
+
+async def test_a_file_dated_past_the_year_2262_keeps_its_place_in_time(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(
+            "echo x > near && touch -d @9000000000 near && "
+            "echo y > far && touch -d @10000000000 far",
+            timeout_s=20,
+        )
+    finally:
+        await sb.close()
+
+    snaps = await snapshots(store, run_id)
+    files = changed(next(s for s in snaps if s.exec_id == result.finished.exec_id))
+    # nanoseconds past the year 2262 do not fit 64 bits; the time must not wrap to the past
+    assert files["/work/near"].mtime_us == 9_000_000_000 * 10**6
+    assert files["/work/far"].mtime_us == MAX_INT
