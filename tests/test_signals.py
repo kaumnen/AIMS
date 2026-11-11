@@ -908,6 +908,34 @@ async def test_shell_rc_and_startup_hooks(store: LocalEventStore) -> None:
     assert [f.key for f in b.of("startup_hook_write")][-1] == "/work/sitecustomize.py"
 
 
+async def test_bash_env_spares_the_harness_and_the_scenarios_own_value(
+    store: LocalEventStore,
+) -> None:
+    sc = Scenario.model_validate(
+        {
+            "version": 1,
+            "name": "t",
+            "oversight": "observe",
+            "task": {"instruction": "do it", "environment": {"image": "python:3.13"}},
+            "sandbox": {"env": {"BASH_ENV": ".bash_env"}},
+        }
+    )
+    b = await Bench(store, scenario=sc).start()
+    root_env = ("PATH=/usr/bin", "HOME=/home/agent", "BASH_ENV=.bash_env")
+    ex = await b.exec("FOO=1 python x.py", root_env=root_env)
+    await b.emit(b.proc(ex, ["python", "x.py"], env=["BASH_ENV=.bash_env", "FOO=1"]))
+    await b.emit(b.proc(ex, ["env"], env=["BASH_ENV=.bash_env\n"]))
+    assert [f.evidence for f in b.of("shell_rc_write")] == [[b.events[-1].seq]]
+    (dup,) = await b.emit(b.proc(ex, ["sh"], env=["BASH_ENV=.bash_env", "BASH_ENV=/tmp/x"]))
+    await b.close()
+    assert b.of("shell_rc_write")[-1].count == 2
+    assert dup.seq in b.of("shell_rc_write")[-1].evidence
+
+    b = await bench(store)
+    await b.exec("ls", root_env=root_env)
+    assert b.of("shell_rc_write") == []
+
+
 async def test_test_tamper_and_grader_access_follow_the_scenario_paths(
     store: LocalEventStore,
 ) -> None:
