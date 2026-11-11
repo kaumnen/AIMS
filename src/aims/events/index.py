@@ -5,7 +5,7 @@ import json
 import logging
 import sqlite3
 from collections.abc import AsyncGenerator, Mapping, Sequence
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
@@ -237,6 +237,10 @@ HOLD_TYPES = frozenset(
         RunFinished.type,
     }
 )
+
+
+class IndexGap(Exception):
+    """A batch that starts past the event after the last one the run's index holds."""
 
 
 class HoldInfo(BaseModel):
@@ -661,6 +665,14 @@ class Index:
         head = Head(seq=row[0], hash=row[1], offset=row[2], finished=row[3] != "running")
         return head, row[3]
 
+    async def count(self, run_id: str) -> int:
+        """How many events of a run the index holds."""
+        async with self._db.execute(
+            "select count(*) from events where run_id = ?", (run_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        return 0 if row is None else row[0]
+
     async def remove(self, run_id: str) -> None:
         """Forget a run: its events, their text index, its samples and its row."""
         async with self._write():
@@ -678,7 +690,9 @@ class Index:
             await self._db.execute("update runs set status = 'corrupt' where run_id = ?", (run_id,))
 
     async def add(self, events: Sequence[Event], head: Head) -> None:
-        """Index events up to `head`. Rows already present are left alone."""
+        """Index events up to `head`. Rows already present are left alone. A batch that starts
+        past the event after the run's last indexed one raises IndexGap: the index never skips
+        an event."""
         if not events:
             return
         run_id = events[0].run_id
@@ -711,6 +725,7 @@ class Index:
                 group = config.get("group")
                 preset, mode = monitor_of(config)
                 case = config.get("case")
+                scenario = first.data.get("scenario")
                 await self._db.execute(
                     "insert into runs (run_id, scenario, status, started_at, ended_at,"
                     " last_seq, last_hash, log_offset, kind, origin, series, series_index,"
@@ -719,7 +734,7 @@ class Index:
                     " on conflict do nothing",
                     (
                         run_id,
-                        first.data["scenario"],
+                        scenario if isinstance(scenario, str) else "",
                         rows[0][2],
                         str(first.data.get("kind") or "scenario"),
                         origin if isinstance(origin, str) else None,
@@ -735,11 +750,14 @@ class Index:
                 "select last_seq from runs where run_id = ?", (run_id,)
             ) as cur:
                 row = await cur.fetchone()
-            fresh: list[Event] = []
-            if row is not None:
-                fresh = [e for e in events if e.seq > row[0]]
-                await self._monitor(run_id, [e for e in fresh if e.type in MONITOR_TYPES])
-                await self._totals(run_id, fresh)
+            last = -1 if row is None else row[0]
+            if first.seq > last + 1:
+                raise IndexGap(
+                    f"run {run_id}: a batch from seq {first.seq}, the index ends at {last}"
+                )
+            fresh = [e for e in events if e.seq > last]
+            await self._monitor(run_id, [e for e in fresh if e.type in MONITOR_TYPES])
+            await self._totals(run_id, fresh)
             units = [e for e in events if e.type == ScoreUnit.type]
             if units:
                 await self._units(run_id, events, units)
@@ -763,7 +781,7 @@ class Index:
                     head.seq,
                     head.hash,
                     head.offset,
-                    None if finished is None else finished.data["status"],
+                    None if finished is None else _end_status(finished),
                     None if finished is None else format_ts(finished.ts),
                     run_id,
                     head.seq,
@@ -779,8 +797,9 @@ class Index:
                 steps += 1
             elif e.type == ModelResponse.type and e.data.get("source", "live") == "live":
                 value = e.data.get("cost_usd")
-                if isinstance(value, int | float) and not isinstance(value, bool):
-                    nanos += round(value * 1e9)
+                is_number = isinstance(value, int | float) and not isinstance(value, bool)
+                if is_number and _fits(cost := round(value * 1e9)):
+                    nanos += cost
                     priced = True
             elif e.type == TaskScored.type:
                 value = e.data.get("reward")
@@ -864,7 +883,7 @@ class Index:
         until = None
         if action.action == "pause":
             timeout = await self._timeout(e.run_id, action.mode)
-            until = None if timeout is None else format_ts(e.ts + timedelta(seconds=timeout))
+            until = None if timeout is None else _until(e.ts, timeout)
         for agent in action.agents:
             if action.action == "pause":
                 held.setdefault(agent, {})["monitor"] = {
@@ -923,6 +942,8 @@ class Index:
             try:
                 payload = e.payload()
             except ValidationError:
+                continue
+            if payload is None or not _bindable(payload.model_dump()):
                 continue
             if isinstance(payload, MonitorFlag):
                 await self._flag(e, payload)
@@ -1744,7 +1765,7 @@ def _window(event: Event) -> dict[str, Any] | None:
     except ValidationError:
         return None
     ts = sample.values("ts") or []
-    return {
+    window = {
         "run_id": event.run_id,
         "seq": event.seq,
         "agent_id": event.agent_id,
@@ -1755,6 +1776,34 @@ def _window(event: Event) -> dict[str, Any] | None:
         "hz": sample.hz,
         **sample.summary(),
     }
+    return window if _bindable(window) else None
+
+
+def _bindable(value: Any) -> bool:
+    """Whether SQLite can take every int in `value`, which holds at most 64 bits."""
+    if isinstance(value, dict):
+        return all(_bindable(v) for v in value.values())
+    if isinstance(value, list):
+        return all(_bindable(v) for v in value)
+    return _fits(value)
+
+
+def _fits(value: Any) -> bool:
+    return not isinstance(value, int) or -(2**63) <= value < 2**63
+
+
+def _until(ts: datetime, seconds: float) -> str | None:
+    """The time `seconds` after `ts`; None past what a timestamp holds."""
+    try:
+        return format_ts(ts + timedelta(seconds=seconds))
+    except OverflowError:
+        return None
+
+
+def _end_status(finished: Event) -> str:
+    """A run's status from its `run.finished`; one that names none, or `running`, failed."""
+    status = finished.data.get("status")
+    return status if isinstance(status, str) and status != "running" else "failed"
 
 
 def _cap(limit: int) -> int:

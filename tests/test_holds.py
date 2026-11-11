@@ -1,3 +1,4 @@
+import sqlite3
 from collections.abc import AsyncIterator
 from datetime import timedelta
 from pathlib import Path
@@ -17,7 +18,7 @@ from aims.events import (
     split_lines,
 )
 from aims.events.payloads import MonitorAction
-from aims.events.store import LOG
+from aims.events.store import INDEX, LOG
 
 pytestmark = pytest.mark.anyio
 
@@ -100,6 +101,31 @@ async def test_an_autonomous_pause_runs_to_the_pause_timeout(store: LocalEventSt
     assert hold.until is not None
     assert hold.until - hold.since == timedelta(seconds=30)
     assert hold.at is None
+
+
+@pytest.mark.parametrize("seconds", [1e12, -1e12, 2**53 * 10.0])
+async def test_a_pause_past_what_a_timestamp_holds_has_no_deadline(
+    tmp_path: Path, seconds: float
+) -> None:
+    root = tmp_path / "runs"
+    policy = {"human_timeout_s": seconds}
+    started = STARTED.model_copy(update={"config": {"monitor": {"config": {"policy": policy}}}})
+    async with await LocalEventStore.open(root) as store:
+        run_id = await store.create_run(started)
+        await store.append(run_id, [monitor("pause", "a1")])
+        await store.append(run_id, [held("a1")])
+        info = await store.run(run_id)
+        assert info is not None
+        assert info.events == 3
+        (hold,) = info.held
+        assert (hold.agent, hold.until, hold.at) == ("a1", None, "before_tool")
+    index = sqlite3.connect(root / INDEX)
+    index.execute("pragma user_version = 0")
+    index.close()
+    async with await LocalEventStore.open(root) as store:
+        again = await store.run(run_id)
+        assert again is not None
+        assert (again.events, again.held) == (3, info.held)
 
 
 async def test_a_simulated_pause_holds_nothing(store: LocalEventStore) -> None:

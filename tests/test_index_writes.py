@@ -1,17 +1,30 @@
 import asyncio
+import json
 import logging
 import sqlite3
 import threading
-from collections.abc import AsyncIterator, Callable, Coroutine
+import uuid
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Sequence
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from aims.events import Event, RunStarted
+from aims.events import (
+    Draft,
+    Event,
+    LocalEventStore,
+    MonitorFlag,
+    RunFinished,
+    RunStarted,
+    ToolCall,
+    split_lines,
+)
+from aims.events import store as store_module
 from aims.events.chain import Head, seal
-from aims.events.index import Index, Label
+from aims.events.index import Index, IndexGap, Label
 from aims.events.schema import now
+from aims.events.store import INDEX, LOG
 
 pytestmark = pytest.mark.anyio
 
@@ -150,3 +163,251 @@ async def test_a_transaction_no_writer_owns_is_rolled_back(
     assert not index._db.in_transaction
     assert list(await index.labels(RUN)) == [2]
     assert any("no writer" in m for m in caplog.messages)
+
+
+STARTED = RunStarted(scenario="demo", oversight="observe", agents=["a1"])
+
+
+def call(n: int) -> Draft:
+    return Draft(ToolCall(call_id=f"c{n}", name="shell", arguments="{}"), "a1")
+
+
+class Breaker:
+    """Makes `Index.add` raise `error` for the next `left` batches of the runs `runs` picks."""
+
+    def __init__(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        error: Exception,
+        runs: Callable[[str], bool] = lambda run_id: True,
+    ) -> None:
+        self.left = 0
+        self.raised = 0
+        real = Index.add
+
+        async def add(index: Index, events: Sequence[Event], head: Head) -> None:
+            if self.left > 0 and events and runs(events[0].run_id):
+                self.left -= 1
+                self.raised += 1
+                raise error
+            await real(index, events, head)
+
+        monkeypatch.setattr(Index, "add", add)
+        monkeypatch.setattr(store_module, "RETRY_S", 0.01)
+
+
+def logged(store: LocalEventStore, run_id: str) -> list[int]:
+    return [
+        json.loads(line)["seq"] for line in (store.root / run_id / LOG).read_bytes().splitlines()
+    ]
+
+
+async def indexed(store: LocalEventStore, run_id: str) -> list[int]:
+    return [e.seq for e in await store.every(run_id)]
+
+
+async def eventually(store: LocalEventStore, check: Callable[[], Awaitable[bool]]) -> None:
+    """Wait until `check` holds, reading again each time the store tells of a change."""
+    async with asyncio.timeout(10):
+        while True:
+            changed = store.changed()
+            if await check():
+                return
+            await changed.wait()
+
+
+def reset_index(root: Path) -> None:
+    """What a new index version does: the next open drops the index and rebuilds it."""
+    db = sqlite3.connect(root / INDEX)
+    db.execute("pragma user_version = 0")
+    db.close()
+
+
+async def test_a_failed_index_write_returns_the_batch_and_the_next_append_catches_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    breaker = Breaker(monkeypatch, sqlite3.OperationalError("database is locked"))
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        run_id = await store.create_run(STARTED)
+        seen: list[list[int]] = []
+        store.tap(run_id, lambda batch: seen.append([e.seq for e in batch]))
+        changed = store.changed()
+        breaker.left = 1
+        written = await store.append(run_id, [call(1), call(2)])
+        assert [e.seq for e in written] == [1, 2]
+        assert changed.is_set()
+        await store.append(run_id, [call(3)])
+        assert await indexed(store, run_id) == logged(store, run_id) == [0, 1, 2, 3]
+        assert seen == [[1, 2], [3]]
+        assert (await store.verify(run_id)).ok
+        info = await store.run(run_id)
+        assert info is not None
+        assert (info.status, info.events) == ("running", 4)
+    assert breaker.raised == 1
+
+
+async def test_a_failed_index_write_of_the_last_batch_is_caught_up_unasked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    breaker = Breaker(monkeypatch, sqlite3.OperationalError("disk I/O error"))
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        run_id = await store.create_run(STARTED)
+        await store.append(run_id, [call(1)])
+        breaker.left = 3
+        await store.append(run_id, [Draft(RunFinished(status="completed"))])
+
+        async def sealed() -> bool:
+            info = await store.run(run_id)
+            return info is not None and info.status == "completed"
+
+        await eventually(store, sealed)
+        assert await indexed(store, run_id) == logged(store, run_id) == [0, 1, 2]
+        assert (await store.verify(run_id)).ok
+    assert breaker.raised == 3
+
+
+async def test_a_failed_index_write_of_an_ingest_is_caught_up_and_never_diverges(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    breaker = Breaker(monkeypatch, sqlite3.OperationalError("database is locked"))
+    async with (
+        await LocalEventStore.open(tmp_path / "source") as source,
+        await LocalEventStore.open(tmp_path / "copy", ingest_only=True) as copy,
+    ):
+        run_id = await source.create_run(STARTED)
+        await source.append(run_id, [call(1), call(2)])
+        await source.append(run_id, [Draft(RunFinished(status="completed"))])
+        lines = split_lines((source.root / run_id / LOG).read_bytes())
+        await copy.ingest(run_id, lines[:2])
+        breaker.left = 10**6
+        changed = copy.changed()
+        assert (await copy.ingest(run_id, lines[2:3])).seq == 2
+        assert changed.is_set()
+        assert (await copy.ingest(run_id, lines[1:3])).seq == 2
+        verified = await copy.verify(run_id)
+        assert verified.error == "the index holds 2 of the log's 3 events"
+        breaker.left = 0
+        assert (await copy.ingest(run_id, lines[3:])).finished
+
+        async def sealed() -> bool:
+            info = await copy.run(run_id)
+            return info is not None and info.status == "completed"
+
+        await eventually(copy, sealed)
+        assert await indexed(copy, run_id) == logged(copy, run_id) == [0, 1, 2, 3]
+        assert (await copy.verify(run_id)).ok
+
+
+@pytest.mark.parametrize("error", [sqlite3.OperationalError("disk I/O error"), ValueError("odd")])
+async def test_a_run_the_index_cannot_take_does_not_stop_the_store_opening(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    error: Exception,
+) -> None:
+    root = tmp_path / "runs"
+    flag = MonitorFlag(
+        layer="signal",
+        source="s",
+        category="scorer_tampering",
+        importance=3,
+        evidence=[0],
+        justification="j",
+    )
+    async with await LocalEventStore.open(root) as store:
+        bad = await store.create_run(STARTED)
+        await store.append(bad, [call(1), Draft(RunFinished(status="completed"))])
+        good = await store.create_run(STARTED)
+        await store.append(good, [Draft(flag, "a1"), Draft(RunFinished(status="completed"))])
+        await store.add_label(good, 1, "real", by="tester")
+    reset_index(root)
+    breaker = Breaker(monkeypatch, error, runs=lambda run_id: run_id == bad)
+    breaker.left = 10**6
+    with caplog.at_level(logging.ERROR, logger="aims.events"):
+        async with await LocalEventStore.open(root) as store:
+            info = await store.run(good)
+            assert info is not None
+            assert (info.status, info.events) == ("completed", 3)
+            assert list(await store.labels(good)) == [1]
+            assert await store.run(bad) is None
+            errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+            assert len(errors) == 1
+            assert bad in errors[0].getMessage()
+            breaker.left = 0
+
+            async def back() -> bool:
+                info = await store.run(bad)
+                return info is not None and info.status == "completed"
+
+            await eventually(store, back)
+            assert await indexed(store, bad) == logged(store, bad) == [0, 1, 2]
+
+
+async def test_an_old_log_with_a_time_past_what_utc_holds_still_indexes(tmp_path: Path) -> None:
+    root = tmp_path / "runs"
+    run_id = str(uuid.uuid7())
+    head, lines = Head(), []
+    for ts, payload in (
+        ("2026-11-10T00:00:00.000000Z", STARTED),
+        ("9999-12-31T23:59:59.000000-01:00", ToolCall(call_id="c", name="n", arguments="{}")),
+        ("0001-01-01T00:00:00.000000+01:00", ToolCall(call_id="d", name="n", arguments="{}")),
+    ):
+        data = payload.model_dump(mode="json")
+        _, line, head = seal(
+            head, run_id=run_id, ts=ts, agent_id="a1", type=payload.type, data=data
+        )
+        lines.append(line)
+    (root / run_id).mkdir(parents=True)
+    (root / run_id / LOG).write_bytes(b"".join(lines))
+    async with await LocalEventStore.open(root) as store:
+        events = await store.every(run_id)
+        assert [e.seq for e in events] == [0, 1, 2]
+        assert [e.model_dump(mode="json")["ts"] for e in events[1:]] == [
+            "9999-12-31T23:59:59.999999Z",
+            "0001-01-01T00:00:00.000000Z",
+        ]
+
+
+def chain(n: int) -> tuple[list[Event], list[Head]]:
+    events, heads, head = [], [], Head()
+    for i in range(n):
+        payload = STARTED if i == 0 else ToolCall(call_id=f"c{i}", name="n", arguments="{}")
+        body, _, head = seal(
+            head,
+            run_id=RUN,
+            ts=now(),
+            agent_id="a1",
+            type=payload.type,
+            data=payload.model_dump(mode="json"),
+        )
+        events.append(Event.model_validate(body))
+        heads.append(head)
+    return events, heads
+
+
+async def test_the_index_refuses_a_batch_past_the_event_after_its_last(index: Index) -> None:
+    events, heads = chain(4)
+    with pytest.raises(IndexGap):
+        await index.add(events[1:], heads[3])
+    await index.add(events[:1], heads[0])
+    with pytest.raises(IndexGap):
+        await index.add(events[2:], heads[3])
+    await index.add(events[1:3], heads[2])
+    await index.add(events[:], heads[3])
+    found = await index.head(RUN)
+    assert found is not None
+    assert found[0] == heads[3]
+    assert await index.hashes(RUN, 0, 3) == {e.seq: e.hash for e in events}
+
+
+async def test_verify_tells_of_a_gap_in_the_index(tmp_path: Path) -> None:
+    root = tmp_path / "runs"
+    async with await LocalEventStore.open(root) as store:
+        run_id = await store.create_run(STARTED)
+        await store.append(run_id, [call(1), call(2), Draft(RunFinished(status="completed"))])
+        db = sqlite3.connect(root / INDEX)
+        db.execute("delete from events where run_id = ? and seq = 1", (run_id,))
+        db.commit()
+        db.close()
+        verified = await store.verify(run_id)
+        assert verified.error == "the index has 3 of the 4 events up to its last: it has a gap"

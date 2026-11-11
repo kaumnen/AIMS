@@ -18,7 +18,13 @@ GENESIS = "0" * 64
 
 
 def format_ts(ts: datetime) -> str:
-    return ts.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    """`ts` in UTC. A time UTC cannot hold, past year 9999 or before year 1 there, is cut to
+    the last or first one it can."""
+    try:
+        utc = ts.astimezone(UTC)
+    except OverflowError:
+        utc = datetime.max if ts.year > 1 else datetime.min
+    return utc.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 def now() -> str:

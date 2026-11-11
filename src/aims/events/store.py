@@ -6,8 +6,9 @@ import logging
 import os
 import shutil
 import uuid
-from collections.abc import AsyncIterator, Callable, Generator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, field, replace
+from datetime import UTC
 from functools import partial
 from pathlib import Path
 from typing import Any, Protocol, Self
@@ -43,6 +44,8 @@ LABELS = "labels.jsonl"
 GRAVE = ".deleted."
 INLINE_LIMIT = 8 * 1024
 CHUNK = 1000
+RETRY_S = 1.0
+RETRY_MAX_S = 300.0
 
 
 class RunCorrupt(Exception):
@@ -198,6 +201,17 @@ class _Writer:
 
 
 @dataclass(slots=True)
+class _Lag:
+    """A run whose index stopped short of its log: its failed tries in a row, the wait before
+    the next one, the loop time it is due and the task that makes it."""
+
+    tries: int = 1
+    wait: float = 0.0
+    due: float = 0.0
+    task: asyncio.Task[None] | None = None
+
+
+@dataclass(slots=True)
 class _Sink:
     """Write handle on a run another process writes, whose lines arrive by `ingest`."""
 
@@ -235,6 +249,8 @@ class LocalEventStore:
         self._opening = asyncio.Lock()
         self.listeners: list[Callable[[str], None]] = []
         self._taps: dict[str, list[Callable[[Sequence[Event]], None]]] = {}
+        self._lags: dict[str, _Lag] = {}
+        self._closed = False
 
     @classmethod
     async def open(cls, root: Path, *, ingest_only: bool = False) -> LocalEventStore:
@@ -255,6 +271,9 @@ class LocalEventStore:
         await self.close()
 
     async def close(self) -> None:
+        self._closed = True
+        for run_id in list(self._lags):
+            await self._drop_lag(run_id)
         for writer in self._writers.values():
             _close(writer)
         self._writers.clear()
@@ -311,6 +330,7 @@ class LocalEventStore:
             if info is not None and info.status == "running":
                 raise RuntimeError(f"run {run_id} is not sealed")
         self._ingested.discard(run_id)
+        await self._drop_lag(run_id)
         grave = await asyncio.to_thread(self._bury, run_id)
         await self._index.remove(run_id)
         if grave is not None:
@@ -355,8 +375,8 @@ class LocalEventStore:
 
     def tap(self, run_id: str, fn: Callable[[Sequence[Event]], None]) -> Callable[[], None]:
         """Call `fn` with each batch this store appends to `run_id`, in seq order, as soon as
-        it is written and indexed and before `append` returns. `fn` must not block. Returns a
-        function that removes the tap."""
+        it is written and before `append` returns, whether or not the index took it. `fn` must
+        not block. Returns a function that removes the tap."""
         taps = self._taps.setdefault(run_id, [])
         taps.append(fn)
 
@@ -456,7 +476,7 @@ class LocalEventStore:
                 self._drop_sink(run_id, sink)
                 raise
             sink.head = after
-            await self._indexed(run_id, events, after)
+            await self._keep_up(run_id, events, after)
             if after.finished:
                 self._drop_sink(run_id, sink)
         self._notify(run_id)
@@ -485,7 +505,7 @@ class LocalEventStore:
             if seq != first + i:
                 raise Invalid(f"line {i} has seq {seq}, expected {first + i}", head)
             claimed[seq] = hash_
-        stored = await self._index.hashes(run_id, first, first + known - 1)
+        stored = await self._hashes(run_id, first, first + known - 1)
         for seq, hash_ in claimed.items():
             if stored.get(seq) != hash_:
                 raise Diverged(
@@ -506,7 +526,7 @@ class LocalEventStore:
             file = LogFile(path)
             try:
                 head, refs, error = await asyncio.to_thread(scan, path, run_id)
-                await self._catch_up(run_id)
+                await self._index_log(run_id)
                 if error is not None:
                     if not await asyncio.to_thread(tail_only, path, error.offset):
                         raise RunCorrupt(f"run {run_id}: {error}")
@@ -526,7 +546,9 @@ class LocalEventStore:
             del self._sinks[run_id]
 
     async def append(self, run_id: str, drafts: Sequence[Draft]) -> list[Event]:
-        """Chain, write, fsync and index `drafts` as one batch. Completes even if cancelled."""
+        """Chain, write, fsync and index `drafts` as one batch. Completes even if cancelled.
+        Once the batch is in the log it is returned, even when the index failed to take it: the
+        log is the record, and the index catches up from it."""
         if self.ingest_only:
             raise RuntimeError("this store only ingests runs")
         if not drafts:
@@ -568,7 +590,7 @@ class LocalEventStore:
             except OSError:
                 self._discard(run_id, writer)
                 raise
-            await self._indexed(run_id, events, head)
+            await self._keep_up(run_id, events, head)
             if head.finished:
                 self._discard(run_id, writer)
             for fn in list(self._taps.get(run_id, ())):
@@ -897,12 +919,25 @@ class LocalEventStore:
         )
 
     async def verify(self, run_id: str) -> Verification:
+        """Check a run's log and blobs as `verify_run` does, then its index: every event up to
+        the last it holds, and all the log holds once an index write failed here. A shorter
+        index is not an error otherwise, since a write may be under way."""
         result = await asyncio.to_thread(verify_run, self._dir(run_id))
+        if result.error is not None:
+            return result
         indexed = await self._index.head(run_id)
-        if result.error is None and indexed is not None and indexed[0].seq + 1 > result.events:
-            error = f"log has {result.events} events, the index recorded {indexed[0].seq + 1}"
-            return replace(result, error=error)
-        return result
+        head = None if indexed is None else indexed[0]
+        held = 0 if head is None else head.seq + 1
+        error = None
+        if held > result.events:
+            error = f"log has {result.events} events, the index recorded {held}"
+        elif (count := await self._index.count(run_id)) != held:
+            error = f"the index has {count} of the {held} events up to its last: it has a gap"
+        elif held < result.events and run_id in self._lags:
+            error = f"the index holds {held} of the log's {result.events} events"
+        elif head is not None and held == result.events and head.hash != result.head:
+            error = "the last event the index holds is not the log's"
+        return result if error is None else replace(result, error=error)
 
     async def rebuild(self) -> None:
         """Drop the index and rebuild it from every run log, accepting each log as it is."""
@@ -910,24 +945,25 @@ class LocalEventStore:
         await self.sync()
 
     async def sync(self) -> None:
-        """Index whatever the run logs hold beyond the index."""
+        """Index whatever the run logs hold beyond the index. A run the index cannot take is
+        logged and caught up later, and the other runs go on."""
         for run_id in self._run_ids():
-            writer = self._writers.get(run_id)
             try:
-                if writer is None:
-                    _, error = await self._catch_up(run_id)
-                else:
-                    async with writer.lock:
-                        _, error = await self._catch_up(run_id)
+                async with self._lock_of(run_id):
+                    caught = await self._index_log(run_id)
             except RunCorrupt as e:
                 log.error("%s", e)
                 continue
+            error = None if caught is None else caught[1]
             if error is not None and not (
                 error.reason == "incomplete line" and tail_only(self._log(run_id), error.offset)
             ):
                 log.warning("run %s: %s", run_id, error)
             labels = await asyncio.to_thread(_read_labels, self._dir(run_id) / LABELS)
-            await self._index.put_labels(labels)
+            try:
+                await self._index.put_labels(labels)
+            except Exception as e:
+                log.error("run %s: its labels are not indexed: %s", run_id, e)
 
     async def _writer(self, run_id: str) -> _Writer:
         async with self._opening:
@@ -943,7 +979,7 @@ class LocalEventStore:
             truncated: LogTruncated | None = None
             try:
                 head, _, error = await asyncio.to_thread(scan, path, run_id)
-                await self._catch_up(run_id)
+                await self._index_log(run_id)
                 if error is not None:
                     if not await asyncio.to_thread(tail_only, path, error.offset):
                         raise error
@@ -974,17 +1010,133 @@ class LocalEventStore:
                     f"run {run_id}: the log no longer holds event {head.seq} recorded by the index;"
                     " rebuild the index to accept the log as it is"
                 )
-        events = read_events(path, run_id, head)
+        while True:
+            chunk, error = await asyncio.to_thread(_take, path, run_id, head, CHUNK)
+            if chunk:
+                head = chunk[-1][1]
+                await self._indexed(run_id, [Event.model_validate(e) for e, _ in chunk], head)
+            if error is not None or len(chunk) < CHUNK:
+                return head, error
+
+    async def _keep_up(self, run_id: str, events: Sequence[Event], head: Head) -> None:
+        """Index a batch that reached the log. A run whose index is behind is caught up from the
+        log instead, when a try is due, so no batch is indexed past a gap. Never raises: a
+        failure leaves the run behind, and the log holds the batch either way."""
+        lag = self._lags.get(run_id)
+        if lag is None:
+            try:
+                await self._indexed(run_id, events, head)
+            except Exception as e:
+                self._behind(run_id, e)
+        elif asyncio.get_running_loop().time() >= lag.due:
+            try:
+                await self._index_log(run_id)
+            except RunCorrupt as e:
+                log.error("%s", e)
+
+    async def _index_log(self, run_id: str) -> tuple[Head, ChainError | None] | None:
+        """`_catch_up`, where a failure leaves the run behind instead of raising and gives None.
+        RunCorrupt still raises: the log lost what the index holds."""
         try:
-            while True:
-                chunk, error = await asyncio.to_thread(_take, events, CHUNK)
-                if chunk:
-                    head = chunk[-1][1]
-                    await self._indexed(run_id, [Event.model_validate(e) for e, _ in chunk], head)
+            caught = await self._catch_up(run_id)
+        except RunCorrupt:
+            self._caught_up(run_id)
+            raise
+        except Exception as e:
+            self._behind(run_id, e)
+            return None
+        lag = self._caught_up(run_id)
+        if lag is not None:
+            log.warning(
+                "run %s: the index caught up with the log after %d tries", run_id, lag.tries
+            )
+            self._notify(run_id)
+        return caught
+
+    def _behind(self, run_id: str, error: Exception) -> None:
+        """Note that a run's index stopped short of its log. The run's next write catches it up
+        from the log, and so does a task: at once, then after waits that double from RETRY_S to
+        RETRY_MAX_S. The first failure in a row logs an error, the later ones a warning each
+        time their count doubles."""
+        if self._closed:
+            return
+        lag = self._lags.get(run_id)
+        if lag is None:
+            log.error(
+                "run %s: the index stopped short of the log, which holds every event; it catches"
+                " up from the log",
+                run_id,
+                exc_info=error,
+            )
+            lag = self._lags[run_id] = _Lag()
+            lag.task = asyncio.create_task(self._heal(run_id, lag))
+            return
+        lag.tries += 1
+        lag.wait = min(max(lag.wait * 2, RETRY_S), RETRY_MAX_S)
+        lag.due = asyncio.get_running_loop().time() + lag.wait
+        if lag.tries & (lag.tries - 1) == 0:
+            log.warning(
+                "run %s: the index is still behind the log after %d tries: %s",
+                run_id,
+                lag.tries,
+                error,
+            )
+
+    async def _heal(self, run_id: str, lag: _Lag) -> None:
+        """Catch a lagging run's index up from its log at each time `lag` is due, under the lock
+        of its writer or sink, until it works or the lag is dropped."""
+        loop = asyncio.get_running_loop()
+        while self._lags.get(run_id) is lag:
+            await asyncio.sleep(max(0.0, lag.due - loop.time()))
+            if self._lags.get(run_id) is not lag or loop.time() < lag.due:
+                continue
+            async with self._lock_of(run_id):
+                if self._lags.get(run_id) is lag:
+                    try:
+                        await self._index_log(run_id)
+                    except RunCorrupt as e:
+                        log.error("%s", e)
+
+    def _caught_up(self, run_id: str) -> _Lag | None:
+        """Forget a run's lag and stop its task, unless that task is the caller."""
+        lag = self._lags.pop(run_id, None)
+        if lag is not None and lag.task is not None and lag.task is not asyncio.current_task():
+            lag.task.cancel()
+        return lag
+
+    async def _drop_lag(self, run_id: str) -> None:
+        """Forget a run's lag and wait until its task has stopped."""
+        lag = self._caught_up(run_id)
+        if lag is not None and lag.task is not None and lag.task is not asyncio.current_task():
+            await asyncio.gather(lag.task, return_exceptions=True)
+
+    def _lock_of(self, run_id: str) -> contextlib.AbstractAsyncContextManager[Any]:
+        """The lock of the run's writer or sink, which orders a catch-up with its writes."""
+        handle = self._writers.get(run_id) or self._sinks.get(run_id)
+        return contextlib.nullcontext() if handle is None else handle.lock
+
+    async def _hashes(self, run_id: str, first: int, last: int) -> dict[int, str]:
+        """The hash of each logged event of a run from seq `first` to `last`: from the index, and
+        from the log past the index head while the index is behind."""
+        stored = await self._index.hashes(run_id, first, last)
+        if len(stored) > last - first:
+            return stored
+        indexed = await self._index.head(run_id)
+        start = Head() if indexed is None else indexed[0]
+
+        def read() -> dict[int, str]:
+            out: dict[int, str] = {}
+            after = start
+            while after.seq < last:
+                chunk, error = _take(self._log(run_id), run_id, after, CHUNK)
+                for _, after in chunk:
+                    if first <= after.seq <= last:
+                        out[after.seq] = after.hash
                 if error is not None or len(chunk) < CHUNK:
-                    return head, error
-        finally:
-            events.close()
+                    break
+            return out
+
+        return await asyncio.to_thread(read) | stored
 
     def _notify(self, run_id: str) -> None:
         signal = self._signals.pop(run_id, None)
@@ -1105,7 +1257,12 @@ def _follow_all(
 
 
 def _check_known(event: Event) -> None:
-    """The index reads these two payloads, so they must be valid."""
+    """The index reads the time of every event in UTC and these two payloads, so they must be
+    valid."""
+    try:
+        event.ts.astimezone(UTC)
+    except OverflowError:
+        raise ValueError("its time is past what UTC holds") from None
     if event.type == RunStarted.type:
         RunStarted.model_validate(event.data)
     elif event.type == RunFinished.type:
@@ -1113,9 +1270,11 @@ def _check_known(event: Event) -> None:
 
 
 def _take(
-    events: Generator[tuple[dict[str, Any], Head]], n: int
+    path: Path, run_id: str, head: Head, n: int
 ) -> tuple[list[tuple[dict[str, Any], Head]], ChainError | None]:
+    """Up to `n` verified events of a log after `head`, and the error that cut them short."""
     out: list[tuple[dict[str, Any], Head]] = []
+    events = read_events(path, run_id, head)
     try:
         for item in events:
             out.append(item)
@@ -1123,6 +1282,8 @@ def _take(
                 break
     except ChainError as e:
         return out, e
+    finally:
+        events.close()
     return out, None
 
 

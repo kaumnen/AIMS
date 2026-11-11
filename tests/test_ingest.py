@@ -4,6 +4,7 @@ import uuid
 from collections.abc import AsyncIterator
 from compression import zstd
 from pathlib import Path
+from typing import Any
 
 import hypothesis
 import pytest
@@ -152,6 +153,51 @@ async def test_a_bad_line_is_invalid(source: LocalEventStore, copy: LocalEventSt
     with pytest.raises(Invalid):
         await copy.ingest(run_id, [b"not json\n"])
     assert (await copy.ingest(run_id, lines[1:])).seq == 1
+
+
+def sealed(run_id: str, *events: tuple[str, str, dict[str, Any]]) -> list[bytes]:
+    """Log lines of `events`, each a time, type and data, chained from the start."""
+    out, head = [], Head()
+    for ts, type_, data in events:
+        _, line, head = seal(head, run_id=run_id, ts=ts, agent_id="a1", type=type_, data=data)
+        out.append(line)
+    return out
+
+
+START = ("2026-11-10T00:00:00.000000Z", "run.started", STARTED.model_dump(mode="json"))
+
+
+async def test_a_time_past_what_utc_holds_is_invalid(copy: LocalEventStore) -> None:
+    run_id = str(uuid.uuid7())
+    tool = {"call_id": "c", "name": "n", "arguments": "{}"}
+    lines = sealed(
+        run_id,
+        START,
+        ("2026-11-10T00:00:01.000000Z", "tool.call", tool),
+        ("9999-12-31T23:59:59.000000-01:00", "tool.call", tool),
+    )
+    await copy.ingest(run_id, lines[:2])
+    with pytest.raises(Invalid, match="UTC"):
+        await copy.ingest(run_id, lines[2:])
+    assert log_bytes(copy, run_id) == b"".join(lines[:2])
+    assert [e.seq for e in await copy.events(run_id)] == [0, 1]
+
+
+async def test_a_pause_whose_deadline_is_past_year_9999_indexes(copy: LocalEventStore) -> None:
+    run_id = str(uuid.uuid7())
+    config = {"monitor": {"config": {"policy": {"human_timeout_s": 86_400}}}}
+    started = STARTED.model_copy(update={"oversight": "human", "config": config})
+    pause = {"action": "pause", "agents": ["a1"], "flags": [], "mode": "human"}
+    lines = sealed(
+        run_id,
+        (START[0], "run.started", started.model_dump(mode="json")),
+        ("9999-12-31T23:59:59.000000Z", "monitor.action", pause),
+    )
+    assert (await copy.ingest(run_id, lines)).seq == 1
+    info = await copy.run(run_id)
+    assert info is not None
+    (hold,) = info.held
+    assert (hold.agent, hold.until) == ("a1", None)
 
 
 async def test_the_first_batch_needs_the_bundle_blobs(
