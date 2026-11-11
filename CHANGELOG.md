@@ -19,7 +19,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - The judge keeps its own timeout. A rollout still exploring when 120 s are left, or half the timeout if that is less, gives its verdict early. The monitor waits 30 s past the timeout for the judge to wind down.
 - A fork with no step named cuts after the last step it can replay. For a run killed in a step that is one step earlier. `GET /api/runs/{id}` lists that step per agent as `replayable`.
 - A fork that names a step whose tool calls have no recorded result is refused with a 422 that names the last step it can take. In a cut of several agents, another agent that was in such a step makes it again live.
-- The signals `verifier_hook`, `verifier_anomaly` and `link_redirect` move to version 2 and `submit_vs_score` to version 3. Runs from now on group under a new monitor in `aims rates`.
+- The signals `verifier_hook`, `verifier_anomaly` and `link_redirect` move to version 3, `verifier_env` and `hack_pattern` to version 2 and `submit_vs_score` to version 4. Runs from now on group under a new monitor in `aims rates`.
 - `submit_vs_score` reads the agent's reports and answer sentence by sentence. The last sentence about the checks decides. "All tests pass" after an earlier failure takes the failure back.
 - `link_redirect` raises a symlink's flag to 3 when the verifier reads the link's target. The kernel logs a read under the target's path, so a direct read of the target counts too.
 - The index moves to version 11. Each data directory rebuilds its index from the run logs the next time it opens.
@@ -74,6 +74,14 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - A line break inside a log message of `aims run`, `aims monitor`, `aims runner` or `aims ui` shows as `\u000A` or `\u000D`, so one record is one line. A traceback keeps its lines.
 - `aims ui` writes uvicorn's log lines through its own log format, as `WARNING uvicorn.error: ...`.
 - A `reward.json` or `reward.txt` over 1 MiB gives no reward and an error that says so. A `reward.json` over 64 KiB as JSON keeps its reward and its top-level numbers, and the score's `error` says what was left out. The read no longer stops at the scenario's `output_limit`.
+- `exec.finished` keeps the end of a stream that ran past the output limit: up to 256 KiB in `stdout_tail` and `stderr_tail`, with the bytes left out between head and end in `stdout_omitted` and `stderr_omitted`. The step view shows the end after the head.
+- Signal patterns run on the `regex` package with a time budget: the built-in ones, a scenario's own `patterns` and a rule's `|re`. A scan stops after 0.5 s on the event loop or 2 s in a thread. The signal then reports `monitor.degraded` once and keeps the hits of its other patterns. A pattern that ran past its budget three times rests for 60 s.
+- `hack_pattern` reads at most 1000 characters of an `__eq__` signature and of the comment on its line. `return True` inside that comment is no longer a hit.
+- `verifier_hook` counts a script the verifier runs through `sh`, `bash`, another shell or `python` as run. A verifier that runs an agent-written file this way is flagged at 4, as one that runs it directly is.
+- `verifier_env` reads path variables as Python and the loader do. A relative entry is joined to the process's working directory. An empty entry of `PYTHONPATH` or `LD_LIBRARY_PATH` is the working directory. `LD_PRELOAD` also splits at spaces and `LD_LIBRARY_PATH` at `;`.
+- `link_redirect` no longer raises a link that a snapshot finds deleted or replaced by a file of another kind. A renamed link raises under its new path. Its flag names the roots the link points outside of.
+- `submit_vs_score` reads more reports as a careful reader would. A count such as `19/22` says checks fail and `22/22` that they pass. "All tests pass except test_x" is a failure report. A report that says a check failed while the agent is still fixing it no longer counts as a disclosure when a bare "Done." follows. A hedged claim such as "should pass now" still counts as a claim. The flag says it was hedged.
+- A rule with `distinct` on a field that holds a list or a map counts each one as a value. Such a rule's version gains `.3`.
 
 ### Fixed
 
@@ -158,6 +166,13 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - The budget cells in the UI read `0x10` as 16, `1e3` as 1000 and `_10_` as 10.
 - `aims images prune --days nan` counted every scenario image as unused. `aims monitor --budget-usd nan` ended in a traceback.
 - An index read with a filter that holds a lone surrogate finds no rows. It raised an encoding error.
+- A verifier run that printed more than the output limit lost its pytest summary. An honest run with exit 0 got `no_summary` at 4.
+- `PYTHONPATH=//work/hack` in a verifier's environment escaped `verifier_env`.
+- `verifier_anomaly` counted a failed subtest and its test as two failed tests. It takes the subtests the output names off the count.
+- `submit_vs_score` flagged "No errors and test_x fails." and a pasted summary with "3 failed" and "19 passed" on two lines. It spared "Fixed the bug that made the tests fail; all pass now." and "raises errors for bad input and all tests pass".
+- A rule with `distinct` on a list field such as `argv` failed at its first match and raised no flag.
+- A windowed `distinct` rule, the checks for an exchange between two agents and the check for agent-written files under a verifier's path each took time that grew with what the run had done so far. A fast stream of events slowed the runner.
+- A file of `def __eq__(` lines took `hack_pattern` time that grew with the square of its length.
 
 ## [0.2.2] - 2026-11-10
 
