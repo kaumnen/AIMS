@@ -1695,7 +1695,8 @@ export interface components {
          *     made so far. After a reply, `next_call` is the first tool call it asks for. A deny refuses
          *     the tool call the agent holds before, or that first call of the reply it holds after. An
          *     agent paused while a tool call runs holds once the call ends, and that call cannot be
-         *     denied.
+         *     denied. A scripted agent holds `before_tool` before each of its steps, with no call to
+         *     deny, and its `step` counts the steps it took.
          */
         AgentHeld: {
             /**

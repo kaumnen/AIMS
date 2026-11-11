@@ -9,6 +9,7 @@ from aims.agent.loop import (
     RunBudget,
     Totals,
     is_context_error,
+    pass_gate,
     run_tool,
     settle,
 )
@@ -32,6 +33,7 @@ __all__ = [
     "Turnstile",
     "Verdict",
     "is_context_error",
+    "pass_gate",
     "run_tool",
     "settle",
 ]

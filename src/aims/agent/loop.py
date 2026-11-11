@@ -3,7 +3,7 @@ import json
 import logging
 import re
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 from pydantic import ValidationError
@@ -647,25 +647,7 @@ class Agent:
         self, kind: GateKind, call_id: str | None = None, calls: tuple[str, ...] = ()
     ) -> Verdict:
         point = GatePoint(kind, self.run_id, self.id, self.steps, call_id, calls)
-        verdict = await self.gate.check(point)
-        if verdict.action == "pause":
-            self.clock.hold("gate")
-            try:
-                while verdict.action == "pause":
-                    held = AgentHeld(
-                        kind=point.kind,
-                        call_id=point.call_id,
-                        step=point.step,
-                        next_call=calls[0] if calls else None,
-                    )
-                    await self._emit(held)
-                    await self.sandbox.sandbox.pause()
-                    try:
-                        verdict = await self.gate.held(point)
-                    finally:
-                        await self.sandbox.sandbox.resume()
-            finally:
-                self.clock.release("gate")
+        verdict = await pass_gate(self.gate, point, self.sandbox, self.clock, self._emit)
         if verdict.action == "kill":
             raise AgentKilled(verdict.reason or "killed by the gate")
         if verdict.action == "inject" and verdict.text:
@@ -920,6 +902,39 @@ class Agent:
 
     async def _emit(self, payload: Payload) -> None:
         await self.store.append(self.run_id, [Draft(payload, self.id)])
+
+
+async def pass_gate(
+    gate: Gate,
+    point: GatePoint,
+    sandbox: AuditedSandbox,
+    clock: PauseClock,
+    emit: Callable[[Payload], Awaitable[None]],
+) -> Verdict:
+    """Check `point` at `gate`. While the gate answers pause, log the hold, freeze the agent's
+    sandbox and wait at the gate, then unfreeze the sandbox. The hold counts as paused on
+    `clock`. Returns the verdict the agent goes on with."""
+    verdict = await gate.check(point)
+    if verdict.action != "pause":
+        return verdict
+    clock.hold("gate")
+    try:
+        while verdict.action == "pause":
+            held = AgentHeld(
+                kind=point.kind,
+                call_id=point.call_id,
+                step=point.step,
+                next_call=point.calls[0] if point.calls else None,
+            )
+            await emit(held)
+            await sandbox.sandbox.pause()
+            try:
+                verdict = await gate.held(point)
+            finally:
+                await sandbox.sandbox.resume()
+    finally:
+        clock.release("gate")
+    return verdict
 
 
 async def run_tool(

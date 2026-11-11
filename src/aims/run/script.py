@@ -16,7 +16,17 @@ import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
-from aims.agent import Gate, OpenGate, ReplayPlan, run_tool, settle
+from aims.agent import (
+    AgentKilled,
+    Gate,
+    GatePoint,
+    OpenGate,
+    PauseClock,
+    ReplayPlan,
+    pass_gate,
+    run_tool,
+    settle,
+)
 from aims.events import (
     AgentEnd,
     AgentFinished,
@@ -238,7 +248,11 @@ class ScriptedAgent:
     """One scripted agent: log its start, take its steps, log its finish. Its steps are its
     own script, a confederate's, unless `steps` gives others; a call of `submit` ends it. In a
     fork it takes its first `replay.fork_at` steps again without their triggers, each when the
-    origin's order reaches it at the turnstile, then goes on with the rest as written."""
+    origin's order reaches it at the turnstile, then goes on with the rest as written.
+
+    Before each step it checks its gate, as a model-driven agent does before a tool call, so a
+    paused agent holds there with its sandbox frozen until it is resumed. Like that agent's wall
+    limit, a step's `after_s` does not count the time the agent is paused on `clock`."""
 
     def __init__(
         self,
@@ -257,6 +271,7 @@ class ScriptedAgent:
         steps: Sequence[ScriptStep] | None = None,
         tools: Sequence[Tool] = (),
         gate: Gate | None = None,
+        clock: PauseClock | None = None,
     ) -> None:
         self.config = config
         self.id = config.id
@@ -273,13 +288,16 @@ class ScriptedAgent:
         self.script: list[ScriptStep] = list(config.script or [] if steps is None else steps)
         self.tools = {t.name: t for t in tools}
         self.gate = gate or OpenGate()
+        self.clock = clock or PauseClock()
         self.steps = 0
         self.answer: str | None = None
         self.killed: str | None = None
         self.done = False
+        self._paused_base = 0.0
 
     async def run(self) -> AgentFinished:
         start = time.monotonic()
+        self._paused_base = self.clock.paused_s(start)
         reason: AgentEnd = "error"
         detail: str | None = None
         answer: str | None = None
@@ -305,13 +323,15 @@ class ScriptedAgent:
                     if step.on is not None:
                         await self.watch.wait_trigger(step.on)
                     if step.after_s:
-                        await asyncio.sleep(step.after_s)
+                        await self._delay(step.after_s)
                     end = await self._take(n, step)
                 self.steps = n
                 self.watch.record_step(self.id, n)
                 if end is not None:
                     reason, detail, answer = end
                     break
+        except AgentKilled as e:
+            reason, detail = "killed", str(e) or None
         except asyncio.CancelledError:
             if self.killed is not None:
                 await settle(self._finish(start, "killed", self.killed))
@@ -337,7 +357,34 @@ class ScriptedAgent:
         finally:
             await turnstile.done(seq)
 
+    async def _delay(self, seconds: float) -> None:
+        """Wait until the agent has spent `seconds` not paused."""
+        changed = asyncio.Event()
+        stop = self.clock.listen(changed.set)
+        try:
+            end = time.monotonic() - self.clock.paused_s() + seconds
+            while (left := end - time.monotonic() + self.clock.paused_s()) > 0:
+                changed.clear()
+                if self.clock.paused:
+                    await changed.wait()
+                    continue
+                with contextlib.suppress(TimeoutError):
+                    async with asyncio.timeout(left):
+                        await changed.wait()
+        finally:
+            stop()
+
+    async def _gate(self) -> None:
+        """Hold at the gate before the next step while the agent is paused. A scripted agent
+        has no model to read an inject and no tool call to deny, so only a kill changes what it
+        does."""
+        point = GatePoint("before_tool", self.run_id, self.id, self.steps)
+        verdict = await pass_gate(self.gate, point, self.sandbox, self.clock, self._emit)
+        if verdict.action == "kill":
+            raise AgentKilled(verdict.reason or "killed by the gate")
+
     async def _take(self, n: int, step: ScriptStep) -> End | None:
+        await self._gate()
         if step.run is not None:
             timeout = step.timeout_s or self.sandbox_config.command_timeout_s
             command = self._render(step.run)
@@ -420,12 +467,14 @@ class ScriptedAgent:
         self.answer = answer
         if self.replay is not None and self.replay.turnstile is not None:
             await self.replay.turnstile.drop(self.replay.actions)
+        now = time.monotonic()
         finished = AgentFinished(
             reason=reason,
             detail=detail,
             answer=None if answer is None else await self.store.content(self.run_id, answer),
             steps=self.steps,
-            wall_ms=int((time.monotonic() - start) * 1000),
+            wall_ms=int((now - start) * 1000),
+            paused_ms=int((self.clock.paused_s(now) - self._paused_base) * 1000),
         )
         await self._emit(finished)
         return finished

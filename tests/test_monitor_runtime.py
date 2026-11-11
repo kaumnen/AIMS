@@ -9,6 +9,7 @@ import io
 import logging
 import os
 import tarfile
+import time
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any, ClassVar, cast
@@ -47,6 +48,7 @@ from aims.run.runner import Bench, Options, Result, RunError, Runner, _status, s
 from aims.sandbox import DockerBackend
 from aims.sandbox.base import Capture, Outcome, SandboxInfo, SandboxSpec
 from aims.scenario import Bundle, load
+from aims.scenario.model import ScriptStep
 
 pytestmark = pytest.mark.anyio
 
@@ -756,6 +758,114 @@ async def test_an_agent_paused_before_it_starts_holds_before_its_first_model_cal
     assert {a: f.reason for a, f in result.agents.items()} == {"a": "submitted", "b": "submitted"}
     (hold,) = await of(store, run_id, AgentHeld, "agent.held")
     assert (hold.kind, hold.step) == ("before_model", 0)
+
+
+class FreezeBox(Box):
+    """A box that refuses an exec while it is frozen, as Docker refuses one in a paused
+    container."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.frozen = False
+        self.refused: list[str] = []
+
+    async def pause(self) -> None:
+        await super().pause()
+        self.frozen = True
+
+    async def resume(self) -> None:
+        await super().resume()
+        self.frozen = False
+
+    async def run(self, argv: Sequence[str], **kw: Any) -> Outcome:
+        if self.frozen:
+            self.refused.append(argv[-1])
+            return Outcome("failed", None, None, 1, error="container is paused")
+        return await super().run(argv, **kw)
+
+
+class FreezeBoxes(Boxes):
+    def __init__(self) -> None:
+        super().__init__()
+        self.boxes: dict[str, FreezeBox] = {}
+
+    async def create(self, spec: SandboxSpec, *, run_id: str, agent_id: str) -> Box:
+        self.made[agent_id] = self.boxes[agent_id] = box = FreezeBox()
+        return box
+
+
+def steps(**scripts: list[dict[str, Any]]) -> dict[str, list[ScriptStep]]:
+    return {a: [ScriptStep.model_validate(s) for s in steps] for a, steps in scripts.items()}
+
+
+async def until(test: Callable[[], bool]) -> None:
+    async with asyncio.timeout(5):
+        while not test():  # noqa: ASYNC110
+            await asyncio.sleep(0.01)
+
+
+def done(runner: Runner, agent: str) -> bool:
+    scripted = runner.scripted.get(agent)
+    return scripted is not None and scripted.done
+
+
+@pytest.mark.parametrize("then", ["resume", "kill", "cancel"])
+async def test_a_scripted_agent_that_starts_during_a_pause_holds_until_it_is_let_go(
+    store: LocalEventStore, tmp_path: Path, then: Any
+) -> None:
+    backend = FreezeBoxes()
+    bundle = two_agents(tmp_path, "{delay_s: 1}")
+    scripts = steps(a=[{"run": "echo a"}], b=[{"run": "echo b"}])
+    runner = Runner(bench(store, Script(), backend), bundle, Options(scripts=scripts))
+    task = asyncio.create_task(runner.run())
+    await until(lambda: done(runner, "a"))
+    await runner.operate("pause")
+    await until(lambda: runner.control.is_held("b") or done(runner, "b"))
+    box = backend.boxes["b"]
+    assert box.refused == []
+    assert runner.control.is_held("b")
+    await runner.operate(then)
+    async with asyncio.timeout(5):
+        result = await task
+
+    run_id = result.run_id
+    assert run_id is not None
+    finished = result.agents["b"]
+    if then == "resume":
+        assert result.status == "completed", result.reason
+        assert (finished.reason, box.commands.count("echo b")) == ("no_submit", 1)
+        assert finished.paused_ms > 0
+        (hold,) = await of(store, run_id, AgentHeld, "agent.held")
+        assert (hold.kind, hold.call_id, hold.step) == ("before_tool", None, 0)
+    else:
+        assert finished.reason == ("killed" if then == "kill" else "cancelled")
+        assert "echo b" not in box.commands
+    assert box.refused == []
+
+
+async def test_a_scripted_step_waits_out_its_delay_in_time_its_agent_is_not_paused(
+    store: LocalEventStore, tmp_path: Path
+) -> None:
+    backend = FreezeBoxes()
+    scripts = steps(a=[{"after_s": 0.5, "run": "echo a"}])
+    runner = Runner(bench(store, Script(), backend), scenario(tmp_path), Options(scripts=scripts))
+    task = asyncio.create_task(runner.run())
+    await until(lambda: "a" in runner.scripted)
+    await runner.operate("pause", agent="a")
+    await asyncio.sleep(1)
+    box = backend.boxes["a"]
+    assert (box.refused, box.commands.count("echo a")) == ([], 0)
+    await runner.operate("resume", agent="a")
+    resumed = time.monotonic()
+    await until(lambda: "echo a" in box.commands)
+    waited = time.monotonic() - resumed
+    async with asyncio.timeout(5):
+        result = await task
+
+    assert result.status == "completed", result.reason
+    assert waited >= 0.3
+    assert result.agents["a"].paused_ms >= 900
+    assert box.refused == []
 
 
 async def test_a_kill_by_the_monitor_still_gets_the_final_sweeps_and_the_judge(

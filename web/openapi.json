@@ -294,7 +294,7 @@
       },
       "AgentHeld": {
         "additionalProperties": false,
-        "description": "The agent stopped at a gate point and waits there until it is resumed or the run ends.\n`kind` is the point: before a model call, after a reply, or before or after a tool call;\n`call_id` names the model call of a reply or the tool call. `step` counts the model calls\nmade so far. After a reply, `next_call` is the first tool call it asks for. A deny refuses\nthe tool call the agent holds before, or that first call of the reply it holds after. An\nagent paused while a tool call runs holds once the call ends, and that call cannot be\ndenied.",
+        "description": "The agent stopped at a gate point and waits there until it is resumed or the run ends.\n`kind` is the point: before a model call, after a reply, or before or after a tool call;\n`call_id` names the model call of a reply or the tool call. `step` counts the model calls\nmade so far. After a reply, `next_call` is the first tool call it asks for. A deny refuses\nthe tool call the agent holds before, or that first call of the reply it holds after. An\nagent paused while a tool call runs holds once the call ends, and that call cannot be\ndenied. A scripted agent holds `before_tool` before each of its steps, with no call to\ndeny, and its `step` counts the steps it took.",
         "properties": {
           "call_id": {
             "anyOf": [

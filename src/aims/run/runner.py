@@ -912,6 +912,7 @@ class Runner:
                     steps=steps,
                     tools=tools,
                     gate=self._control,
+                    clock=self._control.clock(agent.id),
                     sandbox_config=self.scenario.sandbox,
                     instruction=instruction,
                     profile=profiles[agent.id],
