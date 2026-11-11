@@ -7,7 +7,8 @@ does) or a derived field from the monitor's state. A path may carry modifiers: o
 (glob, contains, startswith, endswith, re, cidr, gt, gte, lt, lte, exists) and one quantifier
 over the rule's values (any, the default, or all). A list field matches when any of its items
 does. Strings compare case-sensitively. A glob without a `/` also matches a path's base name;
-`*` stays within one path part and `**` crosses them.
+`*` stays within one path part and `**` crosses them. A `distinct` field that holds a list or a
+map counts it whole as one value.
 """
 
 import glob
@@ -220,34 +221,74 @@ def _leaf(ann: Any) -> bool:
     return isinstance(ann, type) and issubclass(ann, BlobRef)
 
 
-def _path_ok(ann: Any, segs: Sequence[str]) -> bool:
-    """Whether `segs` walks into the type `ann`."""
+def _reach(ann: Any, segs: Sequence[str]) -> list[Any]:
+    """The types `segs` walks to in the type `ann`, none when it does not walk into it. A part
+    of unknown type gives Any."""
     if not segs:
-        return True
+        return [ann]
     ann = _strip(ann)
     if ann is Any or ann is object or isinstance(ann, TypeAliasType) or ann is JsonValue:
-        return True
+        return [Any]
     origin = get_origin(ann)
     args = [a for a in get_args(ann) if a is not types.NoneType]
     if origin in (Union, types.UnionType):
         if any(_leaf(a) for a in args):
-            return False
-        return any(_path_ok(a, segs) for a in args)
+            return []
+        return [t for a in args for t in _reach(a, segs)]
     if isinstance(ann, type) and issubclass(ann, BaseModel):
         f = ann.model_fields.get(segs[0])
-        return f is not None and _path_ok(f.annotation, segs[1:])
+        return [] if f is None else _reach(f.annotation, segs[1:])
     if origin in (list, set, frozenset, Sequence):
-        return _path_ok(args[0], segs[1:] if segs[0].isdigit() else segs)
+        return _reach(args[0], segs[1:] if segs[0].isdigit() else segs)
     if origin is tuple:
         if len(args) == 2 and args[1] is Ellipsis:
-            return _path_ok(args[0], segs[1:] if segs[0].isdigit() else segs)
+            return _reach(args[0], segs[1:] if segs[0].isdigit() else segs)
         if segs[0].isdigit():
             i = int(segs[0])
-            return i < len(args) and _path_ok(args[i], segs[1:])
-        return any(_path_ok(a, segs) for a in args)
+            return _reach(args[i], segs[1:]) if i < len(args) else []
+        return [t for a in args for t in _reach(a, segs)]
     if origin in (dict, Mapping):
-        return _path_ok(args[-1], segs[1:])
-    return False
+        return _reach(args[-1], segs[1:])
+    return []
+
+
+def _plain(ann: Any, seen: frozenset[type] = frozenset()) -> bool:
+    """Whether a value of the type `ann` can hold no list or map, so it hashes as it is."""
+    ann = _strip(ann)
+    if ann is Any or ann is object or isinstance(ann, TypeAliasType) or ann is JsonValue:
+        return False
+    origin = get_origin(ann)
+    if origin in (list, set, dict, Sequence, Mapping):
+        return False
+    if origin in (Union, types.UnionType, tuple, frozenset):
+        return all(_plain(a, seen) for a in get_args(ann) if a is not Ellipsis)
+    if isinstance(ann, type) and issubclass(ann, BaseModel) and ann not in seen:
+        return all(_plain(f.annotation, seen | {ann}) for f in ann.model_fields.values())
+    return True
+
+
+def _counts_lists(rule: Rule) -> bool:
+    """Whether the field `rule` counts as distinct can hold a list or a map."""
+    if not isinstance(rule.distinct, str):
+        return False
+    segs = rule.distinct.split(".")
+    if segs[0] in derived_fields():
+        return False
+    models = event_models()
+    reached = [t for e in rule.event if e in models for t in _reach(models[e], segs)]
+    return not all(_plain(t) for t in reached)
+
+
+def _hashable(value: Any) -> Any:
+    """`value` as a key a distinct rule can count: a list as a tuple, a map as the set of its
+    items and a model as its type and field values, all the way down."""
+    if isinstance(value, (list, tuple)):
+        return tuple(_hashable(v) for v in value)
+    if isinstance(value, Mapping):
+        return frozenset((k, _hashable(v)) for k, v in value.items())
+    if isinstance(value, BaseModel):
+        return (type(value), tuple(_hashable(v) for _, v in value))
+    return value
 
 
 def _get(obj: Any, segs: Sequence[str]) -> list[Any]:
@@ -415,9 +456,11 @@ class Compiled:
         """The field a rate rule counts as distinct, or its key, or its payload."""
         if self.distinct is not None:
             if self.distinct.derived is not None:
-                return self.distinct.derived.get(event, payload, state)
-            found = _get(payload, self.distinct.path)
-            return found[0] if found else None
+                value = self.distinct.derived.get(event, payload, state)
+            else:
+                found = _get(payload, self.distinct.path)
+                value = found[0] if found else None
+            return _hashable(value)
         if self.by_key:
             rendered = await self.render_key(event, payload, state)
             return rendered if rendered else payload.model_dump_json()
@@ -484,7 +527,7 @@ def _field(
             raise ValueError(f"{path!r}: derived field {segs[0]} does not apply to {outside[0]}")
         return d
     for t in sorted(rule_types):
-        if not _path_ok(models[t], segs):
+        if not _reach(models[t], segs):
             raise ValueError(f"{t} has no field {path!r}")
     return None
 
@@ -678,10 +721,13 @@ class RuleSignal(Base):
 
 def rule_signal(rule: Rule) -> type[RuleSignal]:
     """A signal class for one scenario rule, named by its id. Its version is the rule's hash.
-    A rule that counts distinct values over the whole run adds `.2`, since a fix changed what
-    it flags."""
+    A rule whose distinct field can hold a list or a map adds `.3`, since such a value used to
+    fail the signal. Any other rule that counts distinct values over the whole run adds `.2`,
+    since a fix changed what it flags."""
     version = rules_digest([rule])[:12]
-    if rule.distinct and rule.window_s is None:
+    if _counts_lists(rule):
+        version += ".3"
+    elif rule.distinct and rule.window_s is None:
         version += ".2"
     return type(
         f"Rule_{rule.id}", (RuleSignal,), {"name": rule.id, "version": version, "rules": (rule,)}

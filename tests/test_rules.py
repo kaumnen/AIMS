@@ -8,6 +8,8 @@ import pytest
 from test_signals import AGENT, Bench, bench, change
 
 from aims.events import (
+    BlobRef,
+    ChannelInfo,
     FileAccess,
     LocalEventStore,
     NetConnect,
@@ -19,6 +21,7 @@ from aims.monitor.config import MonitorConfig, Rule
 from aims.monitor.signals.base import SignalError
 from aims.monitor.signals.engine import SignalEngine
 from aims.monitor.signals.rules import (
+    _hashable,
     compile_glob,
     compile_rule,
     rule_signal,
@@ -375,6 +378,92 @@ async def test_a_rule_rate_without_a_window_starts_over_once_it_flags(
         await b.call(name, {"x": 1})
     await b.close()
     assert b.of("r")[-1].count == 3
+
+
+@pytest.mark.parametrize("window_s", [None, 10])
+async def test_a_rule_counts_distinct_lists(store: LocalEventStore, window_s: float | None) -> None:
+    r = rule(
+        event=["proc.exec"],
+        match={"path|startswith": "/usr/bin/"},
+        count=2,
+        window_s=window_s,
+        distinct="argv",
+        key="{program}",
+    )
+    b = await run_rule(store, r)
+    ex = await b.exec("x")
+    same = await b.emit(b.proc(ex, ["ls", "-l"]), b.proc(ex, ["ls", "-l"]))
+    assert b.of("r") == []
+    (other,) = await b.emit(b.proc(ex, ["ls", "-la"]))
+    (flag,) = b.of("r")
+    assert b.others == []
+    seqs = [e.seq for e in [*same, other]]
+    assert flag.evidence == (seqs if window_s else [seqs[0], seqs[2]])
+
+
+async def test_a_rule_counts_distinct_maps_whatever_their_order(store: LocalEventStore) -> None:
+    r = rule(event=["exec.started"], count=2, distinct="env", key="{command}")
+    b = await run_rule(store, r)
+    await b.exec("a", env={"A": "1", "B": "2"})
+    await b.exec("b", env={"B": "2", "A": "1"})
+    assert b.of("r") == []
+    await b.exec("c", env={"A": "1"})
+    assert [f.key for f in b.of("r")] == ["c"]
+    assert b.others == []
+
+
+def test_distinct_values_of_every_shape_compare_by_content() -> None:
+    blob = BlobRef(sha256="0" * 64, size=1)
+    folder = {"name": "n", "kind": "folder", "members": ["a", "b"]}
+    same = [
+        (["ls", "-l"], ["ls", "-l"]),
+        ({"a": [1, {"b": None}], "c": 2.5}, {"c": 2.5, "a": [1, {"b": None}]}),
+        (ChannelInfo.model_validate(folder), ChannelInfo.model_validate(folder)),
+        ([change("/work/a")], [change("/work/a")]),
+        (blob, BlobRef(sha256="0" * 64, size=1)),
+        ("x", "x"),
+        (3, 3),
+        (None, None),
+    ]
+    for x, y in same:
+        assert _hashable(x) == _hashable(y)
+        assert hash(_hashable(x)) == hash(_hashable(y))
+    differ = [
+        (["ls", "-l"], ["-l", "ls"]),
+        ({"a": [1]}, {"a": [2]}),
+        ({"a": 1}, [["a", 1]]),
+        (ChannelInfo.model_validate(folder), {**folder, "path": None, "read_only": []}),
+        (ChannelInfo.model_validate(folder), ChannelInfo.model_validate(folder | {"members": []})),
+        ([change("/work/a")], [change("/work/b")]),
+        ([], None),
+    ]
+    for x, y in differ:
+        assert _hashable(x) != _hashable(y)
+
+
+@pytest.mark.parametrize(
+    ("fields", "suffix"),
+    [
+        ({"event": ["proc.exec"], "distinct": "argv"}, ".3"),
+        ({"event": ["proc.exec"], "distinct": "argv", "window_s": 10}, ".3"),
+        ({"event": ["exec.started"], "distinct": "env", "window_s": 10}, ".3"),
+        ({"event": ["run.started"], "distinct": "config.x", "window_s": 10}, ".3"),
+        ({"event": ["run.started"], "distinct": "channels.0", "window_s": 10}, ".3"),
+        ({"event": ["fs.snapshot"], "distinct": "changes", "window_s": 10}, ".3"),
+        ({"event": ["proc.exec"], "distinct": "argv.0"}, ".2"),
+        ({"event": ["proc.exec"], "distinct": "argv.0", "window_s": 10}, ""),
+        ({"event": ["proc.exec"], "distinct": "fds", "window_s": 10}, ""),
+        ({"event": ["proc.exec"], "distinct": "program", "window_s": 10}, ""),
+        ({"event": ["fs.snapshot"], "distinct": "changes.path", "window_s": 10}, ""),
+        ({"event": ["tool.call"], "distinct": "arguments", "window_s": 10}, ""),
+        ({"event": ["tool.call"], "distinct": True, "window_s": 10}, ""),
+    ],
+)
+def test_a_rule_that_counts_lists_or_maps_has_a_new_version(
+    fields: dict[str, Any], suffix: str
+) -> None:
+    r = rule(count=2, **fields)
+    assert rule_signal(r).version == f"{rules_digest([r])[:12]}{suffix}"
 
 
 async def test_rule_rate_counts_do_not_mix_agents(store: LocalEventStore) -> None:
