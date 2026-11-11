@@ -4,6 +4,20 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Changed
+
+- Every sandbox captures `/dev/shm` like `/tmp`: file diffs, the archive and the kernel log of reads cover it. It keeps its 64 MiB limit and `noexec`. Task files and file plants may sit under it.
+- The end-of-run archive leaves out only the files that do not fit. One large file no longer empties the rest. It stops reading a folder after 4 GiB of files that were left out.
+
+### Fixed
+
+- The archive reads the sandbox's files as a stream. A large or sparse file in the sandbox no longer takes the runner's memory.
+- Kernel records dropped past the audit caps after their command ended, or outside any command, are logged as `audit.lost`.
+- A tool call, an answer or a `reward.json` with a lone surrogate such as `\ud800` no longer breaks the monitor's sweeps or fails the run. The text is kept as written.
+- Tool arguments nested deeper than 64 levels no longer break the monitor's sweeps. A `reward.json` nested that deep counts as unreadable.
+- A run whose agent crashed before it logged its end is `failed`. It was `completed`.
+- Long runs of whitespace or digits in agent text no longer stall the runner. Four monitor patterns took time that grew with the square of the run's length.
+
 ## [0.2.2] - 2026-11-10
 
 ### Added
