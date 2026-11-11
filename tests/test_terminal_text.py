@@ -17,12 +17,13 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+import typer
 from cp import control_plane
 from rich.console import Console
 from test_cli_monitor import run_stubbed, sealed
 from typer.testing import CliRunner
 
-from aims.cli import _command_line, _problem, app
+from aims.cli import EXIT_KILLED, _command_line, _problem, app
 from aims.events import (
     AgentReport,
     Draft,
@@ -40,7 +41,7 @@ from aims.models import Delta, DeltaBus
 from aims.monitor.core import HumanRequest
 from aims.report.escape import visible
 from aims.run.runner import Result, Runner
-from aims.run.view import HumanPrompt, JsonLines, LiveView, digest, summary
+from aims.run.view import Digest, HumanPrompt, JsonLines, LiveView, digest, summary
 from aims.server.db import ServerDB
 from aims.terminal import VisibleLog, json_text, one_line, shown
 
@@ -174,6 +175,71 @@ def test_aims_monitor_ships_its_runs_even_when_printing_fails(
     args = ["monitor", origin, "--runs-dir", str(root), "--signals-only"]
     result = invoke(*args, "--server", "http://127.0.0.1:9", env={"AIMS_TOKEN": "t"})
     assert len(pushed) == 1
+    assert result.exit_code == 1, result.output
+    assert "the results could not be printed" in result.stderr
+
+
+# 180: results that cannot be printed
+
+
+def fails_from(n: int) -> Any:
+    """Digest.json, which fails from its call number `n` on."""
+    real = Digest.json
+    calls = 0
+
+    def json(self: Digest) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        if calls >= n:
+            raise RuntimeError("the digest does not build")
+        return real(self)
+
+    return json
+
+
+def test_aims_monitor_prints_no_result_when_one_cannot_be_built(
+    runs: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, origin = runs
+    monkeypatch.setattr(Digest, "json", fails_from(2))
+    args = ["monitor", origin, "--runs-dir", str(root), "--no-server", "--signals-only"]
+    result = invoke(*args, "--json", "--samples", "2")
+    assert result.exit_code == 1, result.output
+    assert '"type": "estimate"' in result.stdout
+    assert '"type": "result"' not in result.stdout
+    assert "the results could not be printed" in result.stderr
+
+
+@pytest.mark.parametrize(("status", "code"), [("completed", 1), ("killed", EXIT_KILLED)])
+def test_aims_run_prints_no_result_when_one_cannot_be_built(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: str, code: int
+) -> None:
+    async def run(self: Runner) -> Result:
+        found = await sealed(self)
+        return Result(found.run_id, cast(Any, status))
+
+    monkeypatch.setattr(Digest, "json", fails_from(2))
+    result, _ = run_stubbed(tmp_path, monkeypatch, run, "--json", "--samples", "2")
+    assert result.exit_code == code, result.output
+    assert '"type": "result"' not in result.stdout
+    assert "the results could not be printed" in result.stderr
+
+
+def test_a_closed_pipe_keeps_the_exit_code_of_the_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = typer.echo
+
+    def echo(message: Any = None, *args: Any, **kwargs: Any) -> None:
+        if '"type": "result"' in str(message):
+            raise BrokenPipeError(32, "Broken pipe")
+        real(message, *args, **kwargs)
+
+    async def run(self: Runner) -> Result:
+        return await sealed(self)
+
+    monkeypatch.setattr(typer, "echo", echo)
+    result, _ = run_stubbed(tmp_path, monkeypatch, run, "--json")
     assert result.exit_code == 0, result.output
     assert "the results could not be printed" in result.stderr
 

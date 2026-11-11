@@ -1299,30 +1299,36 @@ async def _run(**o: Any) -> int:
                         )
                     await link.close()
         digests = {r.run_id: await digest(store, r.run_id) for r in results if r.run_id}
-    # The runs are sealed and shipped: a failed print must not change the exit code.
+    # The runs are sealed and shipped before the print. The text is built in full first, so a
+    # print that fails to build writes nothing.
+    printed = True
     try:
-        if o["json_out"]:
+        if o["json_out"] or o["quiet"]:
+            out = []
             for r in results:
                 found = digests.get(r.run_id) if r.run_id else None
-                line = {"type": "result", **result_json(r)}
-                line["monitor"] = None if found is None else found.json()
-                typer.echo(json_text(line))
-        elif o["quiet"]:
-            for r in results:
-                found = digests.get(r.run_id) if r.run_id else None
-                flags = f" flags {len(found.flags)}" if found is not None and found.flags else ""
-                line = f"{r.run_id} {r.status} ${r.cost_usd:.4f}{flags} {r.reason or ''}"
-                typer.echo(one_line(line))
+                if o["json_out"]:
+                    line = {"type": "result", **result_json(r)}
+                    line["monitor"] = None if found is None else found.json()
+                    out.append(json_text(line) + "\n")
+                else:
+                    count = 0 if found is None else len(found.flags)
+                    flags = f" flags {count}" if count else ""
+                    text = f"{r.run_id} {r.status} ${r.cost_usd:.4f}{flags} {r.reason or ''}"
+                    out.append(one_line(text) + "\n")
+            typer.echo("".join(out), nl=False)
         else:
             Console().print(summary(results, list(digests.values())))
-    except Exception:
+    except Exception as e:
         logging.getLogger("aims").exception("the results could not be printed")
+        # A closed pipe, as from `| head`, keeps the runs' own exit code
+        printed = isinstance(e, BrokenPipeError)
     statuses = {r.status for r in results}
     if stops or "cancelled" in statuses:
         return EXIT_CANCELLED
     if "killed" in statuses:
         return EXIT_KILLED
-    if "failed" in statuses:
+    if "failed" in statuses or not printed:
         return EXIT_FAILED
     return 0
 
@@ -2094,24 +2100,28 @@ async def _monitor_runs(**o: Any) -> int:
         else:
             if failed:
                 err.print("[yellow]some monitor runs did not reach the control plane[/]")
-    # The runs ship first. A failed print must neither stop that nor change the exit code.
+    # The runs ship first, so a failed print cannot stop that. The text is built in full first,
+    # so a print that fails to build writes nothing.
+    printed = True
     try:
-        if o["json_out"]:
+        if o["json_out"] or o["quiet"]:
+            out = []
             for r, d in zip(results, digests, strict=True):
-                line = {
-                    "type": "result",
-                    "run_id": r.run_id,
-                    "origin": r.origin,
-                    "status": r.status,
-                    "reason": r.reason,
-                    "cost_usd": round(r.cost_usd, 10),
-                    "monitor": d.json(),
-                }
-                typer.echo(json_text(line))
-        elif o["quiet"]:
-            for r, d in zip(results, digests, strict=True):
-                line = f"{r.run_id} {r.origin} {r.status} flags {len(d.flags)} ${r.cost_usd:.4f}"
-                typer.echo(one_line(f"{line} {r.reason or ''}"))
+                if o["json_out"]:
+                    line = {
+                        "type": "result",
+                        "run_id": r.run_id,
+                        "origin": r.origin,
+                        "status": r.status,
+                        "reason": r.reason,
+                        "cost_usd": round(r.cost_usd, 10),
+                        "monitor": d.json(),
+                    }
+                    out.append(json_text(line) + "\n")
+                else:
+                    text = f"{r.run_id} {r.origin} {r.status} flags {len(d.flags)}"
+                    out.append(one_line(f"{text} ${r.cost_usd:.4f} {r.reason or ''}") + "\n")
+            typer.echo("".join(out), nl=False)
         else:
             table = Table(title="monitor runs")
             for column in ("run", "origin", "status", "flags", "sweeps", "verdict", "cost"):
@@ -2130,17 +2140,21 @@ async def _monitor_runs(**o: Any) -> int:
                     f"${r.cost_usd:.4f}",
                 )
                 table.add_row(*(shown(cell) for cell in cells))
-            out = Console()
-            out.print(table)
+            console = Console()
+            console.print(table)
             found = monitor_table(digests)
             if found is not None:
-                out.print(found)
-    except Exception:
+                console.print(found)
+    except Exception as e:
         logging.getLogger("aims").exception("the results could not be printed")
+        # A closed pipe, as from `| head`, keeps the runs' own exit code
+        printed = isinstance(e, BrokenPipeError)
     stopped = push is not None and push.cancelled()
     if stopped or any(r.status == "cancelled" for r in results):
         return EXIT_CANCELLED
-    return EXIT_FAILED if any(r.status != "completed" for r in results) else 0
+    if any(r.status != "completed" for r in results) or not printed:
+        return EXIT_FAILED
+    return 0
 
 
 CONTROL_ACTIONS = ("pause", "resume", "deny", "inject", "kill", "cancel", "sweep")
