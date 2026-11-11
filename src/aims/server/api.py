@@ -1181,7 +1181,8 @@ async def command(
     job = await state.db.job(run_id)
     if job is not None and job.state in ("waiting", "queued", "offered"):
         if action.action in ("cancel", "kill"):
-            reason = action.reason or f"{action.action}led by {principal.name}"
+            done = "killed" if action.action == "kill" else "cancelled"
+            reason = action.reason or f"{done} by {principal.name}"
             if await state.db.cancel_queued(run_id, reason):
                 state.changes.touch(run_id)
                 await sseries.settle(state)

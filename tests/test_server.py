@@ -698,6 +698,23 @@ async def test_queued_runs_cancel_without_a_log_and_say_why_they_wait(cp: CP) ->
     await fake.client.aclose()
 
 
+@pytest.mark.parametrize(
+    ("action", "said"), [("cancel", "cancelled by op"), ("kill", "killed by op")]
+)
+async def test_a_queued_run_stopped_with_no_reason_says_who_stopped_it(
+    cp: CP, action: str, said: str
+) -> None:
+    fake = FakeRunner(cp)
+    await fake.client.hello(fake.hello_body())
+    (run_id,) = await start_run(cp)
+    async with cp.client(cp.operator) as c:
+        r = await c.post(f"/api/runs/{run_id}/{action}", json={})
+        assert r.json()["state"] == "cancelled"
+        run = (await c.get(f"/api/runs/{run_id}")).json()["run"]
+        assert (run["state"], run["reason"]) == ("cancelled", said)
+    await fake.client.aclose()
+
+
 async def test_a_run_needs_a_runner_with_its_keys(cp: CP, fake: FakeRunner) -> None:
     async with cp.client(cp.operator) as c:
         r = await c.post(
