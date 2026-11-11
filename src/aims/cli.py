@@ -2045,6 +2045,8 @@ async def _monitor_runs(**o: Any) -> int:
 
 
 CONTROL_ACTIONS = ("pause", "resume", "deny", "inject", "kill", "cancel", "sweep")
+# The exit codes of `aims control` besides 0 and EXIT_FAILED; its help lists them all
+EXIT_DROPPED, EXIT_PART_DONE, EXIT_NO_ANSWER = 4, 5, 6
 
 
 @app.command()
@@ -2077,6 +2079,13 @@ def control(
     reply. Kill skips the verifier; cancel also seals the run as cancelled, or drops it while
     it waits in the queue. Both stop the monitor's model calls and skip the judge; sent while
     the judge runs, either only cuts it short and the run keeps its outcome.
+
+    Exit codes:
+    0 done, or sent with --wait 0
+    1 refused by the runner or the control plane, or the control plane is out of reach
+    4 dropped: the run ended or its runner was replaced first, so it was not carried out
+    5 done in part: the line says what did not take effect
+    6 no answer within --wait; the runner may still carry it out
     """
     import asyncio
 
@@ -2145,10 +2154,8 @@ async def _control(
                 if r.status_code >= 400:
                     return _problem(r)
                 found = next((x for x in r.json() if x["id"] == command), None)
-                if found is not None and found["acked"] is not None:
-                    outcome = str(found["outcome"])
-                    _echo(f"{action} {run}: {outcome}")
-                    return EXIT_FAILED if outcome.startswith("failed") else 0
+                if found is not None and found["state"] != "waiting":
+                    return _answered(action, run, found)
                 await asyncio.sleep(0.2)
         except httpx2.TransportError as e:
             _echo(f"error: cannot reach the control plane at {url}: {e}", err=True)
@@ -2158,7 +2165,26 @@ async def _control(
         f" `aims control {run} list` shows it later",
         err=True,
     )
-    return EXIT_FAILED
+    return EXIT_NO_ANSWER
+
+
+def _answered(action: str, run: str, command: dict[str, Any]) -> int:
+    """Print how a command ended; the exit code that says it. A runner that carried it out
+    answers done, or says what did not take effect."""
+    outcome = str(command["outcome"])
+    match command["state"]:
+        case "done" if outcome == "done":
+            _echo(f"{action} {run}: done")
+            return 0
+        case "done":
+            _echo(f"{action} {run}: done in part: {outcome}")
+            return EXIT_PART_DONE
+        case "dropped":
+            _echo(f"{action} {run}: {outcome}; it was not carried out")
+            return EXIT_DROPPED
+        case _:
+            _echo(f"{action} {run}: {outcome}")
+            return EXIT_FAILED
 
 
 @app.command("delete")

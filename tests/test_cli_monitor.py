@@ -25,7 +25,7 @@ from test_monitor_api import call, pushed, started
 from test_server import FakeRunner, play_job, ship, start_run
 from typer.testing import CliRunner
 
-from aims.cli import EXIT_CANCELLED, app
+from aims.cli import EXIT_CANCELLED, EXIT_DROPPED, EXIT_NO_ANSWER, EXIT_PART_DONE, app
 from aims.events import (
     Draft,
     Event,
@@ -1166,6 +1166,36 @@ async def test_aims_control_with_wait_0_sends_and_does_not_wait(
     assert result.stdout.strip() == f"pause {run_id}: sent; `aims control {run_id} list` shows it"
     message = await fake.next(CommandMessage)
     assert message.command.action == "pause"
+
+
+async def test_aims_control_exits_non_zero_for_a_command_not_carried_out_in_full(
+    cp: CP, fake: FakeRunner, local: LocalEventStore
+) -> None:
+    (run_id,) = await start_run(cp)
+    await play_job(fake, local, await fake.next(OfferMessage))
+
+    sent = asyncio.create_task(control(cp, run_id, "pause", token=cp.operator))
+    message = await fake.next(CommandMessage)
+    note = "the sandbox of agent a did not freeze: boom"
+    await fake.client.ack(message.id, Ack(ok=True, outcome=note))
+    result = await sent
+    assert result.exit_code == EXIT_PART_DONE == 5
+    assert result.stdout.strip() == f"pause {run_id}: done in part: {note}"
+
+    result = await control(cp, run_id, "resume", "--wait", "0.5", token=cp.operator)
+    assert result.exit_code == EXIT_NO_ANSWER == 6
+    assert f"resume {run_id}: sent, but the runner did not answer within 0.5 s" in result.stderr
+    await fake.next(CommandMessage)
+
+    sent = asyncio.create_task(control(cp, run_id, "kill", "--wait", "5", token=cp.operator))
+    await fake.next(CommandMessage)
+    await local.append(run_id, [Draft(RunFinished(status="completed"))])
+    await ship(local, fake.client, run_id)
+    result = await sent
+    assert result.exit_code == EXIT_DROPPED == 4
+    assert result.stdout.strip() == (
+        f"kill {run_id}: dropped: the run ended; it was not carried out"
+    )
 
 
 async def test_aims_control_finds_a_local_ui(
