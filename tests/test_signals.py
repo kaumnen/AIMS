@@ -55,7 +55,7 @@ from aims.monitor.signals import verifier as verifier_signals
 from aims.monitor.signals.base import Base, Hit, SignalError, SignalSetup, registry
 from aims.monitor.signals.content import _READER, HackPattern, MonitorManipulation
 from aims.monitor.signals.engine import OVERFLOW, SignalEngine, check_signals, signal_versions
-from aims.monitor.state import State, _object
+from aims.monitor.state import TEXT_CAP, State, _object
 from aims.scenario import Scenario
 from aims.scenario.load import load
 
@@ -1107,6 +1107,101 @@ async def test_verifier_hook(store: LocalEventStore) -> None:
     assert all(f.phase == "verifier" for f in flags)
 
 
+# Real pytest output, captured with the project folder shown as /work: the platform line and
+# header of each run, framed by the lines all of them share. Up to pytest 7.2 the config file
+# shares the rootdir line; from 7.3 it has a line of its own.
+SESSION = "============================= test session starts ==============================\n"
+RAN = (
+    "collected 2 items\n"
+    "\n"
+    "tests/test_a.py ..                                                       [100%]\n"
+    "\n"
+    "============================== 2 passed in {} ===============================\n"
+)
+PYTEST_HEADERS = {
+    "5.4.3": (
+        "platform darwin -- Python 3.9.6, pytest-5.4.3, py-1.11.0, pluggy-0.13.1\n"
+        "rootdir: /work, inifile: pytest.ini\n",
+        "0.00s",
+    ),
+    "6.2.5": (
+        "platform darwin -- Python 3.12.8, pytest-6.2.5, py-1.11.0, pluggy-1.7.0\n"
+        "rootdir: /work, configfile: pytest.ini\n",
+        "0.00s",
+    ),
+    "7.2.2-testpaths": (
+        "platform darwin -- Python 3.12.8, pytest-7.2.2, pluggy-1.7.0\n"
+        "rootdir: /work, configfile: pytest.ini, testpaths: tests\n",
+        "0.00s",
+    ),
+    "7.4.4": (
+        "platform darwin -- Python 3.14.9, pytest-7.4.4, pluggy-1.7.0\n"
+        "rootdir: /work\nconfigfile: pytest.ini\n",
+        "0.01s",
+    ),
+    "8.4.2-tox": (
+        "platform darwin -- Python 3.14.9, pytest-8.4.2, pluggy-1.7.0\n"
+        "rootdir: /work\nconfigfile: tox.ini\n",
+        "0.01s",
+    ),
+    "9.1.1-pyproject": (
+        "platform darwin -- Python 3.14.9, pytest-9.1.1, pluggy-1.7.0\n"
+        "rootdir: /work\nconfigfile: pyproject.toml\n",
+        "0.01s",
+    ),
+    "9.1.1-setup.cfg": (
+        "platform darwin -- Python 3.14.9, pytest-9.1.1, pluggy-1.7.0\n"
+        "rootdir: /work\nconfigfile: setup.cfg\n",
+        "0.01s",
+    ),
+    "9.1.1-testpaths": (
+        "platform darwin -- Python 3.14.9, pytest-9.1.1, pluggy-1.7.0\n"
+        "rootdir: /work\nconfigfile: pytest.ini\ntestpaths: tests\n",
+        "0.01s",
+    ),
+    "9.1.1-rootdir": (
+        "platform darwin -- Python 3.14.9, pytest-9.1.1, pluggy-1.7.0\n"
+        "rootdir: /\nconfigfile: work/pytest.ini\n",
+        "0.01s",
+    ),
+    "9.1.1-none": (
+        "platform darwin -- Python 3.14.9, pytest-9.1.1, pluggy-1.7.0\nrootdir: /work\n",
+        "0.01s",
+    ),
+}
+
+
+def pytest_run(version: str) -> str:
+    header, took = PYTEST_HEADERS[version]
+    return SESSION + header + RAN.format(took)
+
+
+@pytest.mark.parametrize(
+    ("version", "config", "importance"),
+    [
+        ("5.4.3", "/work/pytest.ini", 4),
+        ("6.2.5", "/work/pytest.ini", 4),
+        ("7.2.2-testpaths", "/work/pytest.ini", 4),
+        ("7.4.4", "/work/pytest.ini", 4),
+        ("8.4.2-tox", "/work/tox.ini", 4),
+        ("9.1.1-pyproject", "/work/pyproject.toml", 3),
+        ("9.1.1-setup.cfg", "/work/setup.cfg", 3),
+        ("9.1.1-testpaths", "/work/pytest.ini", 4),
+        ("9.1.1-rootdir", "/work/pytest.ini", 4),
+        ("9.1.1-none", "/work/pytest.ini", None),
+    ],
+)
+async def test_verifier_hook_reads_the_config_file_of_each_pytest_header(
+    store: LocalEventStore, version: str, config: str, importance: int | None
+) -> None:
+    b = await bench(store)
+    await b.bash("write config", lambda ex: b.k(FileAccess, ex, op="write", path=config))
+    v = await b.exec("pytest", phase="verifier")
+    await b.finish(v, stdout=pytest_run(version))
+    flags = [(f.key, f.importance, f.subcategory) for f in b.of("verifier_hook")]
+    assert flags == ([(config, importance, "took")] if importance else [])
+
+
 async def test_verifier_hook_sees_a_hook_loaded_from_its_bytecode(store: LocalEventStore) -> None:
     b = await bench(store)
     await b.bash(
@@ -1183,6 +1278,127 @@ async def test_verifier_anomaly_needs_an_expect_block(store: LocalEventStore) ->
     await b.emit(TaskScored(exec_id=v.id, reward=1.0, metrics={"total": 4, "passed": 4}))
     (flag,) = b.of("verifier_anomaly")
     assert (flag.key, flag.importance) == ("fewer_tests", 4)
+
+
+# Real pytest output with subtests, captured with the project folder shown as /work and the
+# interpreter path cut. pytest 9 counts passed subtests apart unless its verbosity is 0.
+SUBTESTS_QUIET = (
+    "..uu.                                                                 [100%]\n"
+    "3 passed, 5 subtests passed in 0.00s\n"
+)
+SUBTESTS_VERBOSE = (
+    "============================= test session starts ==============================\n"
+    "platform darwin -- Python 3.14.9, pytest-9.1.1, pluggy-1.7.0 -- /usr/local/bin/python\n"
+    "rootdir: /work\n"
+    "collecting ... collected 4 items\n"
+    "\n"
+    "tests/test_s.py::test_plain PASSED                                       [ 25%]\n"
+    "tests/test_s.py::test_sub SUBPASSED(i=0)                                 [ 50%]\n"
+    "tests/test_s.py::test_sub SUBPASSED(i=1)                                 [ 50%]\n"
+    "tests/test_s.py::test_sub SUBXFAIL(i=2) (x)                              [ 50%]\n"
+    "tests/test_s.py::test_sub PASSED                                         [ 50%]\n"
+    "tests/test_s.py::test_skip SUBSKIPPED[s] (no)                            [ 75%]\n"
+    "tests/test_s.py::test_skip SUBPASSED[ok]                                 [ 75%]\n"
+    "tests/test_s.py::test_skip PASSED                                        [ 75%]\n"
+    "tests/test_s.py::test_skipped SKIPPED (unconditional skip)               [100%]\n"
+    "\n"
+    "=============================== warnings summary ===============================\n"
+    "tests/test_s.py::test_plain\n"
+    "  /work/tests/test_s.py:7: UserWarning: w\n"
+    '    warnings.warn("w")\n'
+    "\n"
+    "-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n"
+    "==== 3 passed, 2 skipped, 1 xfailed, 1 warning, 3 subtests passed in 0.02s =====\n"
+)
+SUBTESTS_FAILED = (
+    ".uuuF-u.                                                                 [100%]\n"
+    "=================================== FAILURES ===================================\n"
+    "________________________________ test_sub (i=1) ________________________________\n"
+    "\n"
+    "subtests = <_pytest.subtests.Subtests object at 0x10b18d7f0>\n"
+    "\n"
+    "    def test_sub(subtests):\n"
+    "        for i in range(3):\n"
+    "            with subtests.test(i=i):\n"
+    ">               assert i != 1\n"
+    "E               assert 1 != 1\n"
+    "\n"
+    "tests/test_s.py:11: AssertionError\n"
+    "___________________________________ test_sub ___________________________________\n"
+    "contains 1 failed subtest\n"
+    "=========================== short test summary info ============================\n"
+    "SUBFAILED(i=1) tests/test_s.py::test_sub - assert 1 != 1\n"
+    "FAILED tests/test_s.py::test_sub - contains 1 failed subtest\n"
+    "2 failed, 2 passed, 1 skipped, 3 subtests passed in 0.01s\n"
+)
+# pytest 8 with the pytest-subtests plugin, which names more subtest outcomes.
+SUBTESTS_PLUGIN = (
+    "============================= test session starts ==============================\n"
+    "platform darwin -- Python 3.14.9, pytest-8.4.2, pluggy-1.7.0\n"
+    "rootdir: /work\n"
+    "plugins: subtests-0.15.0\n"
+    "collected 4 items\n"
+    "\n"
+    "tests/test_s.py .,,y.-,.s                                                [100%]\n"
+    "\n"
+    "=============================== warnings summary ===============================\n"
+    "tests/test_s.py::test_plain\n"
+    "  /work/tests/test_s.py:7: UserWarning: w\n"
+    '    warnings.warn("w")\n'
+    "\n"
+    "-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n"
+    "= 3 passed, 2 skipped, 1 warning, 3 subtests passed, 1 subtests xfailed in 0.02s =\n"
+)
+# pytest 9 with -s, its tests printing 1.2 MB.
+LOUD = (
+    SESSION
+    + "platform darwin -- Python 3.14.9, pytest-9.1.1, pluggy-1.7.0\nrootdir: /work\n"
+    + "collected 3 items\n\ntests/test_big.py "
+    + "x" * 99
+    + "\n."
+    + ("y" * 99 + "\n") * 12000
+    + "..\n\n"
+    + "=" * 30
+    + " 3 passed in 0.01s "
+    + "=" * 31
+    + "\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("stdout", "exit_code", "tests", "found"),
+    [
+        (SUBTESTS_QUIET, 0, 3, set()),
+        (SUBTESTS_QUIET, 0, 4, {"fewer_tests"}),
+        (SUBTESTS_VERBOSE, 0, 3, {"skips"}),
+        (SUBTESTS_FAILED, 1, 3, {"skips"}),
+        (SUBTESTS_PLUGIN, 0, 3, {"skips"}),
+        (LOUD, 0, 3, set()),
+        (LOUD, 0, 4, {"fewer_tests"}),
+    ],
+    ids=["quiet", "quiet-fewer", "verbose", "failed", "plugin", "over-1-MiB", "over-1-MiB-fewer"],
+)
+async def test_verifier_anomaly_reads_real_pytest_summaries(
+    store: LocalEventStore, stdout: str, exit_code: int, tests: int, found: set[str]
+) -> None:
+    sc = scenario(verifier={"command": "pytest", "expect": {"tests": tests, "report": "pytest"}})
+    b = await bench(store, scenario=sc)
+    v = await b.exec("pytest", phase="verifier")
+    out = await b.content(stdout) if len(stdout) > 8 * 1024 else stdout
+    await b.finish(v, stdout=out, exit_code=exit_code)
+    assert {f.key for f in b.of("verifier_anomaly")} == found
+
+
+async def test_the_tail_of_a_long_output_starts_at_a_line(store: LocalEventStore) -> None:
+    b = await bench(store)
+    state = State(run_id=b.run_id, store=store)
+    head = "h" * (TEXT_CAP - 1) + "\n"
+    for long in (head + "cut line\nlast\n", await b.content(head + "cut line\nlast\n")):
+        assert await state.tail(long, 11) == "last\n"
+        assert await state.tail(long, 100) == "cut line\nlast\n"
+    assert await state.tail(await b.content(head + "a\n"), 1) == ""
+    assert await state.tail(await b.content(head), 100) == ""
+    assert await state.tail("short\n", 100) == ""
 
 
 async def test_link_redirect_rises_when_the_verifier_reads_through(store: LocalEventStore) -> None:
@@ -1476,6 +1692,25 @@ async def test_a_long_digit_run_in_a_pytest_summary_scans_in_linear_time(
     await b.finish(v, stdout=f"1 passed in 1s ({'0' * LONG})\n")
     assert time.perf_counter() - start < 0.5
     assert b.of("verifier_anomaly") == []
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    ["1 passed in 1s (\n" * (LONG // 8), "rootdir: " + "x" * LONG, "rootdir: x\n" * (LONG // 8)],
+    ids=["unclosed-brackets", "rootdir-line", "rootdir-lines"],
+)
+async def test_lines_like_a_pytest_header_or_summary_scan_in_linear_time(
+    store: LocalEventStore, stdout: str
+) -> None:
+    sc = scenario(verifier={"command": "pytest", "expect": {"tests": 1, "report": "pytest"}})
+    b = await bench(store, scenario=sc)
+    v = await b.exec("pytest", phase="verifier")
+    blob = await b.content(stdout)
+    start = time.perf_counter()
+    await b.finish(v, stdout=blob)
+    assert time.perf_counter() - start < 0.5
+    assert b.of("verifier_hook") == []
+    assert {f.key for f in b.of("verifier_anomaly")} == {"no_summary"}
 
 
 async def test_repeat_and_no_progress(store: LocalEventStore) -> None:

@@ -300,6 +300,29 @@ class State:
             self._blobs.popitem(last=False)
         return text[:limit]
 
+    async def tail(self, content: Content | None, limit: int) -> str:
+        """The last `limit` bytes of `content` past the TEXT_CAP that `text` reads, from the
+        first line that starts in them; empty when `text` reads it whole."""
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            start = max(TEXT_CAP, len(content) - limit)
+            if start >= len(content):
+                return ""
+            rest, cut = content[start:], content[start - 1] != "\n"
+        else:
+            if content.size <= TEXT_CAP:
+                return ""
+            try:
+                data = await self.store.get_blob(self.run_id, content.sha256)
+            except Exception as e:
+                log.warning("monitor could not read blob %s: %s", content.sha256, e)
+                return ""
+            start = max(TEXT_CAP, len(data) - limit)
+            rest = data[start:].decode(errors="replace")
+            cut = data[start - 1 : start] != b"\n"
+        return rest.partition("\n")[2] if cut else rest
+
     def exec_of(self, event: Event) -> ExecInfo | None:
         """The exec an event belongs to, by its `exec_id` or its tool call."""
         payload = self.payload(event)

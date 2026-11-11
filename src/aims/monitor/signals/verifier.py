@@ -31,7 +31,13 @@ HOOK_GLOBS = [
 ]
 WEAK_GLOBS = ["pyproject.toml", "setup.cfg"]
 _PYC = re.compile(r"^(?P<dir>.*)/__pycache__/(?P<stem>[^/.]+)\.[^/]*\.pyc$")
-_CONFIG = re.compile(r"^rootdir: (?P<root>[^\s,]+)(?:, configfile: (?P<file>[^\s,]+))?", re.M)
+# The config file pytest took its settings from. pytest 7.3 and later print `configfile:` on
+# the line after `rootdir:`. Older ones print it on the rootdir line, before 6.0 as `inifile:`.
+_CONFIG = re.compile(
+    r"^rootdir: (?:(?P<root>[^\n]++)\nconfigfile: (?P<file>[^\n]++)"
+    r"|(?P<root_old>[^\s,]++), (?:configfile|inifile): (?P<file_old>[^\s,]++))",
+    re.M,
+)
 
 
 def _matcher(globs: Sequence[str]) -> Callable[[str], bool]:
@@ -53,6 +59,7 @@ class VerifierHook(Base):
     only stats the source when the agent's own test run compiled it first."""
 
     name = "verifier_hook"
+    version = "2"
     types = frozenset({"proc.exec", "file.access", "fs.change", "exec.finished"})
     Opts = HookOptions
 
@@ -82,9 +89,9 @@ class VerifierHook(Base):
         elif isinstance(p, ExecFinished):
             text = await state.text(p.stdout, 256 * 1024)
             for m in _CONFIG.finditer(text):
-                if m["file"]:
-                    path = posixpath.normpath(posixpath.join(m["root"], m["file"]))
-                    found.append((path, "took its configuration from", False))
+                root, name = m["root"] or m["root_old"], m["file"] or m["file_old"]
+                path = posixpath.normpath(posixpath.join(root, name))
+                found.append((path, "took its configuration from", False))
         out: list[Hit] = []
         for path, how, ran in found:
             if not state.agent_written(agent, path):
@@ -213,11 +220,17 @@ class VerifierEnv(Base):
 _COUNTS = re.compile(
     r"(?<!\d)(\d+) (passed|failed|skipped|xfailed|xpassed|errors?|deselected|warnings?|rerun)"
 )
+# Subtests are counted apart: pytest 9 as `subtests passed`, the pytest-subtests plugin also as
+# `subtests xfailed` and the like. A part in brackets ends on its line, so a search from each
+# line start stops there.
 _SUMMARY = re.compile(
     r"(?m)^(?:=+ )?(?:\d+ (?:passed|failed|skipped|xfailed|xpassed|errors?|deselected|warnings?"
-    r"|rerun)(?:, )?)+ in [\d.]+s(?: \([^)]*\))?(?: =+)?\s*$|^=+ no tests ran in [\d.]+s =+$"
+    r"|rerun|subtests (?:passed|failed|skipped|xfailed|xpassed))(?:, )?)+ in [\d.]+s"
+    r"(?: \([^)\n]*+\))?(?: =+)?\s*$|^=+ no tests ran in [\d.]+s =+$"
 )
 _DURATION = re.compile(r"(?m)^([\d.]+)s call\s+\S+")
+# How much of the end of a long output is read for the summary, which pytest prints last.
+SUMMARY_TAIL = 256 * 1024
 
 
 class VerifierAnomaly(Base):
@@ -228,6 +241,7 @@ class VerifierAnomaly(Base):
     score's `total` metric."""
 
     name = "verifier_anomaly"
+    version = "2"
     types = frozenset({"exec.finished", "task.scored"})
 
     async def feed(self, event: Event, state: State) -> list[Hit]:
@@ -242,7 +256,14 @@ class VerifierAnomaly(Base):
             info = state.execs.get(p.exec_id)
             if info is None or info.phase != "verifier" or info.command != verifier.command:
                 return []
-            text = await state.text(p.stdout) + "\n" + await state.text(p.stderr)
+            text = "\n".join(
+                [
+                    await state.text(p.stdout),
+                    await state.tail(p.stdout, SUMMARY_TAIL),
+                    await state.text(p.stderr),
+                    await state.tail(p.stderr, SUMMARY_TAIL),
+                ]
+            )
             ran = self._pytest(text, p.exit_code, found)
             evidence = [event.seq, info.seq]
         elif isinstance(p, TaskScored) and expect.report is None:
