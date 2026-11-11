@@ -1,8 +1,10 @@
 import asyncio
 import bisect
+import contextlib
 import json
+import logging
 import sqlite3
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncGenerator, Mapping, Sequence
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Literal
@@ -43,6 +45,8 @@ from aims.events.payloads import (
 )
 from aims.events.schema import SCHEMA_VERSION, BlobRef, Content, Event, Timestamp, format_ts
 from aims.text import encodable
+
+log = logging.getLogger("aims.events")
 
 VERSION = 10
 MAX_TEXT = 32 * 1024
@@ -604,9 +608,47 @@ class Index:
 
     async def reset(self) -> None:
         async with self._lock:
-            await self._db.executescript(
-                f"begin immediate; {DROP} {SCHEMA} pragma user_version = {VERSION}; commit;"
-            )
+            try:
+                await self._db.executescript(
+                    f"begin immediate; {DROP} {SCHEMA} pragma user_version = {VERSION}; commit;"
+                )
+            except BaseException:
+                await self._rollback()
+                raise
+
+    @contextlib.asynccontextmanager
+    async def _write(self) -> AsyncGenerator[None]:
+        """Run the block as one immediate transaction under the write lock: commit when it ends,
+        roll back when it raises or is cancelled. A statement whose awaiter was cancelled still
+        runs on the connection's thread, which runs them in order, so the rollback queued here
+        runs after it and before the next writer's begin."""
+        async with self._lock:
+            try:
+                await self._begin()
+                yield
+                await self._db.execute("commit")
+            except BaseException:
+                await self._rollback()
+                raise
+
+    async def _begin(self) -> None:
+        """Begin an immediate transaction. One already open has no writer, since the lock is
+        held and any rollback a cancelled writer queued ran first: roll it back, begin again.
+        `in_transaction` would tell sooner, but reading it waits for the connection's thread."""
+        try:
+            await self._db.execute("begin immediate")
+        except sqlite3.OperationalError as e:
+            if "within a transaction" not in str(e):
+                raise
+            log.warning("the index held a transaction no writer owns; it is rolled back")
+            await self._db.rollback()
+            await self._db.execute("begin immediate")
+
+    async def _rollback(self) -> None:
+        """Queue a rollback of the open transaction; none open makes it a no-op. Its own error
+        would hide the one that led here, so it is dropped."""
+        with contextlib.suppress(sqlite3.Error, ValueError):
+            await self._db.rollback()
 
     async def head(self, run_id: str) -> tuple[Head, str] | None:
         """Last indexed position of a run and its status."""
@@ -621,24 +663,18 @@ class Index:
 
     async def remove(self, run_id: str) -> None:
         """Forget a run: its events, their text index, its samples and its row."""
-        async with self._lock:
-            await self._db.execute("begin immediate")
-            try:
-                await self._db.execute(
-                    "insert into events_fts (events_fts, rowid, text)"
-                    " select 'delete', id, text from events where run_id = ? and text != ''",
-                    (run_id,),
-                )
-                tables = ("labels", "score_units", "run_costs", "flags", "samples", "events")
-                for table in (*tables, "runs"):
-                    await self._db.execute(f"delete from {table} where run_id = ?", (run_id,))
-            except BaseException:
-                await self._db.execute("rollback")
-                raise
-            await self._db.execute("commit")
+        async with self._write():
+            await self._db.execute(
+                "insert into events_fts (events_fts, rowid, text)"
+                " select 'delete', id, text from events where run_id = ? and text != ''",
+                (run_id,),
+            )
+            tables = ("labels", "score_units", "run_costs", "flags", "samples", "events")
+            for table in (*tables, "runs"):
+                await self._db.execute(f"delete from {table} where run_id = ?", (run_id,))
 
     async def mark_corrupt(self, run_id: str) -> None:
-        async with self._lock:
+        async with self._write():
             await self._db.execute("update runs set status = 'corrupt' where run_id = ?", (run_id,))
 
     async def add(self, events: Sequence[Event], head: Head) -> None:
@@ -663,82 +699,76 @@ class Index:
         ]
         windows = [w for e in events if e.type == ResourceSample.type if (w := _window(e))]
         finished = next((e for e in events if e.type == "run.finished"), None)
-        async with self._lock:
-            await self._db.execute("begin immediate")
-            try:
-                first = events[0]
-                if first.seq == 0:
-                    origin = first.data.get("origin")
-                    series = first.data.get("series")
-                    series = series if isinstance(series, dict) else {}
-                    name, n = series.get("name"), series.get("index")
-                    config = first.data.get("config")
-                    config = config if isinstance(config, dict) else {}
-                    group = config.get("group")
-                    preset, mode = monitor_of(config)
-                    case = config.get("case")
-                    await self._db.execute(
-                        "insert into runs (run_id, scenario, status, started_at, ended_at,"
-                        " last_seq, last_hash, log_offset, kind, origin, series, series_index,"
-                        " run_group, preset, monitor_mode, selftest_case) values"
-                        " (?, ?, 'running', ?, null, -1, '', 0, ?, ?, ?, ?, ?, ?, ?, ?)"
-                        " on conflict do nothing",
-                        (
-                            run_id,
-                            first.data["scenario"],
-                            rows[0][2],
-                            str(first.data.get("kind") or "scenario"),
-                            origin if isinstance(origin, str) else None,
-                            name if isinstance(name, str) else None,
-                            n if isinstance(n, int) and not isinstance(n, bool) else None,
-                            group if isinstance(group, str) else None,
-                            preset,
-                            mode,
-                            case if isinstance(case, str) else None,
-                        ),
-                    )
-                async with self._db.execute(
-                    "select last_seq from runs where run_id = ?", (run_id,)
-                ) as cur:
-                    row = await cur.fetchone()
-                fresh: list[Event] = []
-                if row is not None:
-                    fresh = [e for e in events if e.seq > row[0]]
-                    await self._monitor(run_id, [e for e in fresh if e.type in MONITOR_TYPES])
-                    await self._totals(run_id, fresh)
-                units = [e for e in events if e.type == ScoreUnit.type]
-                if units:
-                    await self._units(run_id, events, units)
-                await self._db.executemany(
-                    "insert into events (run_id, seq, ts, agent_id, type, data, prev_hash, hash,"
-                    " text, exec_id) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict do nothing",
-                    rows,
-                )
-                if windows:
-                    await self._db.executemany(
-                        f"insert into samples ({', '.join(SAMPLE_FIELDS)}) values"
-                        f" ({', '.join('?' * len(SAMPLE_FIELDS))}) on conflict do nothing",
-                        [tuple(w[f] for f in SAMPLE_FIELDS) for w in windows],
-                    )
-                await self._hold(run_id, [e for e in fresh if e.type in HOLD_TYPES])
+        async with self._write():
+            first = events[0]
+            if first.seq == 0:
+                origin = first.data.get("origin")
+                series = first.data.get("series")
+                series = series if isinstance(series, dict) else {}
+                name, n = series.get("name"), series.get("index")
+                config = first.data.get("config")
+                config = config if isinstance(config, dict) else {}
+                group = config.get("group")
+                preset, mode = monitor_of(config)
+                case = config.get("case")
                 await self._db.execute(
-                    "update runs set last_seq = ?, last_hash = ?, log_offset = ?,"
-                    " status = coalesce(?, status), ended_at = coalesce(?, ended_at)"
-                    " where run_id = ? and last_seq < ?",
+                    "insert into runs (run_id, scenario, status, started_at, ended_at,"
+                    " last_seq, last_hash, log_offset, kind, origin, series, series_index,"
+                    " run_group, preset, monitor_mode, selftest_case) values"
+                    " (?, ?, 'running', ?, null, -1, '', 0, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    " on conflict do nothing",
                     (
-                        head.seq,
-                        head.hash,
-                        head.offset,
-                        None if finished is None else finished.data["status"],
-                        None if finished is None else format_ts(finished.ts),
                         run_id,
-                        head.seq,
+                        first.data["scenario"],
+                        rows[0][2],
+                        str(first.data.get("kind") or "scenario"),
+                        origin if isinstance(origin, str) else None,
+                        name if isinstance(name, str) else None,
+                        n if isinstance(n, int) and not isinstance(n, bool) else None,
+                        group if isinstance(group, str) else None,
+                        preset,
+                        mode,
+                        case if isinstance(case, str) else None,
                     ),
                 )
-            except BaseException:
-                await self._db.execute("rollback")
-                raise
-            await self._db.execute("commit")
+            async with self._db.execute(
+                "select last_seq from runs where run_id = ?", (run_id,)
+            ) as cur:
+                row = await cur.fetchone()
+            fresh: list[Event] = []
+            if row is not None:
+                fresh = [e for e in events if e.seq > row[0]]
+                await self._monitor(run_id, [e for e in fresh if e.type in MONITOR_TYPES])
+                await self._totals(run_id, fresh)
+            units = [e for e in events if e.type == ScoreUnit.type]
+            if units:
+                await self._units(run_id, events, units)
+            await self._db.executemany(
+                "insert into events (run_id, seq, ts, agent_id, type, data, prev_hash, hash,"
+                " text, exec_id) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict do nothing",
+                rows,
+            )
+            if windows:
+                await self._db.executemany(
+                    f"insert into samples ({', '.join(SAMPLE_FIELDS)}) values"
+                    f" ({', '.join('?' * len(SAMPLE_FIELDS))}) on conflict do nothing",
+                    [tuple(w[f] for f in SAMPLE_FIELDS) for w in windows],
+                )
+            await self._hold(run_id, [e for e in fresh if e.type in HOLD_TYPES])
+            await self._db.execute(
+                "update runs set last_seq = ?, last_hash = ?, log_offset = ?,"
+                " status = coalesce(?, status), ended_at = coalesce(?, ended_at)"
+                " where run_id = ? and last_seq < ?",
+                (
+                    head.seq,
+                    head.hash,
+                    head.offset,
+                    None if finished is None else finished.data["status"],
+                    None if finished is None else format_ts(finished.ts),
+                    run_id,
+                    head.seq,
+                ),
+            )
 
     async def _totals(self, run_id: str, fresh: Sequence[Event]) -> None:
         """Add the steps, cost and reward of events not indexed yet to the run's row. Cost adds
@@ -1171,18 +1201,12 @@ class Index:
     async def put_labels(self, labels: Sequence[Label]) -> None:
         if not labels:
             return
-        async with self._lock:
-            await self._db.execute("begin immediate")
-            try:
-                await self._db.executemany(
-                    "insert into labels (run_id, flag, label, note, by, at)"
-                    " values (?, ?, ?, ?, ?, ?) on conflict do nothing",
-                    [(x.run_id, x.flag, x.label, x.note, x.by, format_ts(x.at)) for x in labels],
-                )
-            except BaseException:
-                await self._db.execute("rollback")
-                raise
-            await self._db.execute("commit")
+        async with self._write():
+            await self._db.executemany(
+                "insert into labels (run_id, flag, label, note, by, at)"
+                " values (?, ?, ?, ?, ?, ?) on conflict do nothing",
+                [(x.run_id, x.flag, x.label, x.note, x.by, format_ts(x.at)) for x in labels],
+            )
 
     async def labels(self, run_id: str) -> dict[int, Label]:
         """The latest label of each labelled flag of `run_id`."""
@@ -1224,17 +1248,11 @@ class Index:
     async def set_variant(self, run_id: str, variant: str | None) -> None:
         """Name the variant of the sealed run `run_id`, from its truth file, and drop its cost
         row, which was read without it."""
-        async with self._lock:
-            await self._db.execute("begin immediate")
-            try:
-                await self._db.execute(
-                    "update runs set variant = ? where run_id = ?", (variant, run_id)
-                )
-                await self._db.execute("delete from run_costs where run_id = ?", (run_id,))
-            except BaseException:
-                await self._db.execute("rollback")
-                raise
-            await self._db.execute("commit")
+        async with self._write():
+            await self._db.execute(
+                "update runs set variant = ? where run_id = ?", (variant, run_id)
+            )
+            await self._db.execute("delete from run_costs where run_id = ?", (run_id,))
 
     async def costs(self) -> dict[str, tuple[str, str]]:
         """Each run's cost row: the head hash it was read at and its data."""
@@ -1246,19 +1264,13 @@ class Index:
         """Keep the cost rows `(run_id, last_hash, data)`."""
         if not rows:
             return
-        async with self._lock:
-            await self._db.execute("begin immediate")
-            try:
-                await self._db.executemany(
-                    "insert into run_costs (run_id, last_hash, data) values (?, ?, ?)"
-                    " on conflict (run_id) do update set last_hash = excluded.last_hash,"
-                    " data = excluded.data",
-                    rows,
-                )
-            except BaseException:
-                await self._db.execute("rollback")
-                raise
-            await self._db.execute("commit")
+        async with self._write():
+            await self._db.executemany(
+                "insert into run_costs (run_id, last_hash, data) values (?, ?, ?)"
+                " on conflict (run_id) do update set last_hash = excluded.last_hash,"
+                " data = excluded.data",
+                rows,
+            )
 
     async def flags(
         self,
