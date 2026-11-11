@@ -1534,6 +1534,99 @@ SUBTESTS_PLUGIN = (
     "-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n"
     "= 3 passed, 2 skipped, 1 warning, 3 subtests passed, 1 subtests xfailed in 0.02s =\n"
 )
+# Four tests: two pass and two fail. pytest 9 counts a failed subtest under `failed` besides its
+# test at any verbosity. When verbose or quiet it counts an xfailed subtest under `xfailed`.
+SUBTESTS_FAILED_VERBOSE = (
+    "============================= test session starts ==============================\n"
+    "platform darwin -- Python 3.15.2, pytest-9.2.0, pluggy-1.7.0 -- /usr/local/bin/python\n"
+    "rootdir: /work\n"
+    "configfile: pytest.ini\n"
+    "collecting ... collected 4 items\n"
+    "\n"
+    "tests/test_s.py::test_plain PASSED                                       [ 25%]\n"
+    "tests/test_s.py::test_sub SUBPASSED(i=0)                                 [ 50%]\n"
+    "tests/test_s.py::test_sub SUBFAILED(i=1)                                 [ 50%]\n"
+    "tests/test_s.py::test_sub SUBPASSED(i=2)                                 [ 50%]\n"
+    "tests/test_s.py::test_sub FAILED                                         [ 50%]\n"
+    "tests/test_s.py::test_xfail SUBXFAIL[x] (x)                              [ 75%]\n"
+    "tests/test_s.py::test_xfail SUBPASSED[ok]                                [ 75%]\n"
+    "tests/test_s.py::test_xfail PASSED                                       [ 75%]\n"
+    "tests/test_s.py::test_fails FAILED                                       [100%]\n"
+    "\n"
+    "=================================== FAILURES ===================================\n"
+    "________________________________ test_sub (i=1) ________________________________\n"
+    "\n"
+    "subtests = <_pytest.subtests.Subtests object at 0x10bb4e120>\n"
+    "\n"
+    "    def test_sub(subtests):\n"
+    "        for i in range(3):\n"
+    "            with subtests.test(i=i):\n"
+    ">               assert i != 1\n"
+    "E               assert 1 != 1\n"
+    "\n"
+    "tests/test_s.py:11: AssertionError\n"
+    "___________________________________ test_sub ___________________________________\n"
+    "contains 1 failed subtest\n"
+    "__________________________________ test_fails __________________________________\n"
+    "\n"
+    "    def test_fails():\n"
+    ">       assert False\n"
+    "E       assert False\n"
+    "\n"
+    "tests/test_s.py:22: AssertionError\n"
+    "=========================== short test summary info ============================\n"
+    "SUBFAILED(i=1) tests/test_s.py::test_sub - assert 1 != 1\n"
+    "FAILED tests/test_s.py::test_sub - contains 1 failed subtest\n"
+    "FAILED tests/test_s.py::test_fails - assert False\n"
+    "========== 3 failed, 2 passed, 1 xfailed, 3 subtests passed in 0.03s ===========\n"
+)
+# The same tests under pytest 8 with the pytest-subtests plugin. It counts a failed subtest under
+# `failed` too, while the test holding it passes. It counts an xfailed subtest apart.
+SUBTESTS_FAILED_PLUGIN = (
+    "============================= test session starts ==============================\n"
+    "platform darwin -- Python 3.14.9, pytest-8.4.2, pluggy-1.7.0 -- /usr/local/bin/python\n"
+    "rootdir: /work\n"
+    "configfile: pytest.ini\n"
+    "collecting ... collected 4 items\n"
+    "\n"
+    "tests/test_s.py::test_plain PASSED                                       [ 25%]\n"
+    "tests/test_s.py::test_sub (i=0) SUBPASS                                  [ 50%]\n"
+    "tests/test_s.py::test_sub (i=1) SUBFAIL                                  [ 50%]\n"
+    "tests/test_s.py::test_sub (i=2) SUBPASS                                  [ 50%]\n"
+    "tests/test_s.py::test_sub PASSED                                         [ 50%]\n"
+    "tests/test_s.py::test_xfail [x] SUBXFAIL (x)                             [ 75%]\n"
+    "tests/test_s.py::test_xfail [ok] SUBPASS                                 [ 75%]\n"
+    "tests/test_s.py::test_xfail PASSED                                       [ 75%]\n"
+    "tests/test_s.py::test_fails FAILED                                       [100%]\n"
+    "\n"
+    "=================================== FAILURES ===================================\n"
+    "________________________________ test_sub (i=1) ________________________________\n"
+    "\n"
+    "subtests = SubTests(ihook=<_pytest.config.compat.PathAwareHookProxy object at 0x108f541a0>,"
+    " suspend_capture_ctx=<bound method Cap..._state='started' _in_suspended=False>"
+    " _capture_fixture=None>>, request=<SubRequest 'subtests' for <Function test_sub>>)\n"
+    "\n"
+    "    def test_sub(subtests):\n"
+    "        for i in range(3):\n"
+    "            with subtests.test(i=i):\n"
+    ">               assert i != 1\n"
+    "E               assert 1 != 1\n"
+    "\n"
+    "tests/test_s.py:11: AssertionError\n"
+    "------------------------------ Captured log call -------------------------------\n"
+    "\n"
+    "__________________________________ test_fails __________________________________\n"
+    "\n"
+    "    def test_fails():\n"
+    ">       assert False\n"
+    "E       assert False\n"
+    "\n"
+    "tests/test_s.py:22: AssertionError\n"
+    "=========================== short test summary info ============================\n"
+    "(i=1) SUBFAIL tests/test_s.py::test_sub - assert 1 != 1\n"
+    "FAILED tests/test_s.py::test_fails - assert False\n"
+    "====== 2 failed, 3 passed, 3 subtests passed, 1 subtests xfailed in 0.03s ======\n"
+)
 # pytest 9 with -s, its tests printing 1.2 MB.
 LOUD = (
     SESSION
@@ -1556,12 +1649,32 @@ LOUD = (
         (SUBTESTS_QUIET, 0, 3, set()),
         (SUBTESTS_QUIET, 0, 4, {"fewer_tests"}),
         (SUBTESTS_VERBOSE, 0, 3, {"skips"}),
+        (SUBTESTS_VERBOSE, 0, 4, {"skips", "fewer_tests"}),
         (SUBTESTS_FAILED, 1, 3, {"skips"}),
+        (SUBTESTS_FAILED, 1, 4, {"skips", "fewer_tests"}),
+        (SUBTESTS_FAILED_VERBOSE, 1, 4, set()),
+        (SUBTESTS_FAILED_VERBOSE, 1, 5, {"fewer_tests"}),
         (SUBTESTS_PLUGIN, 0, 3, {"skips"}),
+        (SUBTESTS_FAILED_PLUGIN, 1, 4, set()),
+        (SUBTESTS_FAILED_PLUGIN, 1, 5, {"fewer_tests"}),
         (LOUD, 0, 3, set()),
         (LOUD, 0, 4, {"fewer_tests"}),
     ],
-    ids=["quiet", "quiet-fewer", "verbose", "failed", "plugin", "over-1-MiB", "over-1-MiB-fewer"],
+    ids=[
+        "quiet",
+        "quiet-fewer",
+        "verbose",
+        "verbose-fewer",
+        "failed",
+        "failed-fewer",
+        "failed-verbose",
+        "failed-verbose-fewer",
+        "plugin",
+        "plugin-failed",
+        "plugin-failed-fewer",
+        "over-1-MiB",
+        "over-1-MiB-fewer",
+    ],
 )
 async def test_verifier_anomaly_reads_real_pytest_summaries(
     store: LocalEventStore, stdout: str, exit_code: int, tests: int, found: set[str]
@@ -2078,6 +2191,30 @@ async def test_lines_like_a_pytest_header_or_summary_scan_in_linear_time(
     assert time.perf_counter() - start < 0.5
     assert b.of("verifier_hook") == []
     assert {f.key for f in b.of("verifier_anomaly")} == {"no_summary"}
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "[" * LONG,
+        "(" * LONG,
+        "[x] " + "(" * LONG,
+        "t.py::t " + "[" * LONG,
+        "t.py::t" + "x" * LONG,
+        "t.py" + ":" * LONG,
+        "[x] (y) SUBPASS\n" * (LONG // 16),
+    ],
+    ids=["brackets", "parens", "msg-parens", "progress", "nodeid", "colons", "lines"],
+)
+async def test_lines_like_a_subtest_scan_in_linear_time(store: LocalEventStore, body: str) -> None:
+    sc = scenario(verifier={"command": "pytest", "expect": {"tests": 1, "report": "pytest"}})
+    b = await bench(store, scenario=sc)
+    v = await b.exec("pytest", phase="verifier")
+    blob = await b.content(body + "\n1 passed in 0.01s\n")
+    start = time.perf_counter()
+    await b.finish(v, stdout=blob)
+    assert time.perf_counter() - start < 0.5
+    assert b.of("verifier_anomaly") == []
 
 
 async def test_repeat_and_no_progress(store: LocalEventStore) -> None:

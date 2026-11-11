@@ -336,6 +336,12 @@ _SUMMARY = re.compile(
     r"|rerun|subtests (?:passed|failed|skipped|xfailed|xpassed))(?:, )?)+ in [\d.]+s"
     r"(?: \([^)\n]*+\))?(?: =+)?\s*$|^=+ no tests ran in [\d.]+s =+$"
 )
+# A failed or xfailed subtest as the short summary names it: `SUBFAILED(i=1) path::test` in
+# pytest 9, `(i=1) SUBFAIL path::test` with the pytest-subtests plugin. A verbose run names it
+# on its progress line too: `path::test SUBFAILED(i=1)`, `path::test (i=1) SUBFAIL`.
+_SUBTEST = r"(?:\[[^\]\n]*+\] )?(?:\([^)\n]*+\) )?SUB(X?)FAIL(?:ED)?\b"
+_SUBTEST_SUMMARY = re.compile(rf"(?m)^{_SUBTEST}")
+_SUBTEST_PROGRESS = re.compile(rf"(?m)^[^\s:]++::\S*+ {_SUBTEST}")
 _DURATION = re.compile(r"(?m)^([\d.]+)s call\s+\S+")
 # How much of the end of a long output is read for the summary, which pytest prints last.
 SUMMARY_TAIL = 256 * 1024
@@ -346,7 +352,9 @@ class VerifierAnomaly(Base):
     that scores the agent, its own task's when it has one: fewer tests than expected, skips,
     identical test durations, or an exit 0 without the test runner's summary. With
     `report: pytest` it reads the output of the verifier command's exec as it finishes, before
-    the score is written; without it, `tests` is checked against the score's `total` metric."""
+    the score is written; without it, `tests` is checked against the score's `total` metric.
+    pytest counts a failed subtest as a failed test. pytest 9 counts an xfailed one as an
+    xfailed test unless its verbosity is 0. Those the output names are taken off the count."""
 
     name = "verifier_anomaly"
     version = "3"
@@ -416,7 +424,21 @@ class VerifierAnomaly(Base):
             counts[word] = counts.get(word, 0) + int(m[1])
         if counts.get("skipped", 0) or counts.get("deselected", 0):
             found.append(("skips", f"tests were skipped: {line}"))
+        # Subtests named in the output are taken off the outcome they were counted under, unless
+        # the summary counts them apart as `subtests failed` or the like. Only this run's output
+        # is read: from the summary before it, if any.
+        run = text[summary[-2].end() if len(summary) > 1 else 0 : summary[-1].start()]
+        for outcome, n in _subtests(run).items():
+            if f"subtests {outcome}" not in line:
+                counts[outcome] = max(0, counts.get(outcome, 0) - n)
         return sum(counts.get(k, 0) for k in ("passed", "failed", "error", "xfailed", "xpassed"))
+
+
+def _subtests(text: str) -> dict[str, int]:
+    """How many subtests failed and xfailed in a pytest run's output. A run may name each in the
+    short summary, on its progress line or both, so the larger count of the two is taken."""
+    seen = [[m[1] for m in p.finditer(text)] for p in (_SUBTEST_SUMMARY, _SUBTEST_PROGRESS)]
+    return {"failed": max(s.count("") for s in seen), "xfailed": max(s.count("X") for s in seen)}
 
 
 class LinkOptions(Options):
