@@ -8,6 +8,7 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Query
 from fastapi.responses import Response, StreamingResponse
 
+from aims.events.index import BIND_MAX
 from aims.server import audit
 from aims.server.api import MAX_PAGE, Operator, Out, State
 from aims.server.db import AuditRow, Outcome
@@ -75,7 +76,7 @@ def _seconds(at: datetime | None) -> float | None:
 async def list_audit(
     principal: Operator,
     state: State,
-    before: Annotated[int | None, Query(ge=1)] = None,
+    before: Annotated[int | None, Query(ge=1, le=BIND_MAX)] = None,
     limit: Annotated[int, Query(ge=1, le=MAX_PAGE)] = 100,
     action: Annotated[str | None, Query(max_length=100)] = None,
     token: Annotated[str | None, Query(max_length=100)] = None,

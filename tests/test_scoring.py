@@ -920,6 +920,12 @@ async def test_score_label_and_rates_on_the_command_line(
         cli.invoke, app, ["label", run_id, "2", "maybe", "--runs-dir", runs]
     )
     assert out.exit_code != 0
+    huge = str(10**20)
+    out = await asyncio.to_thread(
+        cli.invoke, app, ["label", run_id, huge, "real", "--runs-dir", runs]
+    )
+    assert (out.exit_code, type(out.exception)) == (1, SystemExit), out.output
+    assert f"has no flag at seq {huge}" in out.output
     out = await asyncio.to_thread(cli.invoke, app, ["rates", run_id, "--runs-dir", runs, "--json"])
     assert out.exit_code == 0, out.output
     data = json.loads(out.output)

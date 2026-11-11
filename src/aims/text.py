@@ -12,6 +12,11 @@ def _lone(text: str) -> bool:
     return not text.isascii() and _SURROGATE.search(text) is not None
 
 
+def encodable(text: str) -> bool:
+    """Whether UTF-8 can encode `text`: it holds no lone surrogate."""
+    return not _lone(text)
+
+
 def _whole(value: object) -> object:
     if isinstance(value, str) and _lone(value):
         raise ValueError("holds a lone surrogate, an escape such as \\ud800 without its pair")

@@ -27,6 +27,7 @@ from aims.server import db as sdb
 from aims.server.api import (
     Operator,
     ScenarioRef,
+    Seq,
     SourcesDep,
     Started,
     State,
@@ -226,7 +227,7 @@ async def get_rates(
 
 
 class LabelBody(BaseModel):
-    flag: int = Field(ge=0)
+    flag: Seq
     label: LabelKind
     note: str = Field(default="", max_length=4000)
 

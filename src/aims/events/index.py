@@ -42,10 +42,13 @@ from aims.events.payloads import (
     ToolResult,
 )
 from aims.events.schema import SCHEMA_VERSION, BlobRef, Content, Event, Timestamp, format_ts
+from aims.text import encodable
 
 VERSION = 10
 MAX_TEXT = 32 * 1024
 MAX_PAGE = 1000
+# The integers SQLite binds.
+BIND_MIN, BIND_MAX = -(2**63), 2**63 - 1
 
 SCHEMA = """
 create table runs (
@@ -314,7 +317,7 @@ class Label(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     run_id: str
-    flag: int = Field(ge=0)
+    flag: int = Field(ge=0, le=BIND_MAX)
     label: LabelKind
     note: str = ""
     by: str
@@ -1275,7 +1278,7 @@ class Index:
         args: list[Any] = [run_id]
         if after is not None:
             where.append("seq > ?")
-            args.append(after)
+            args.append(_int(after))
         if layer is not None:
             where.append("layer = ?")
             args.append(layer)
@@ -1284,7 +1287,7 @@ class Index:
             args.append(category)
         if min_importance is not None:
             where.append("importance >= ?")
-            args.append(min_importance)
+            args.append(_int(min_importance))
         if status:
             where.append(f"status in ({', '.join('?' * len(status))})")
             args.extend(status)
@@ -1327,7 +1330,9 @@ class Index:
     ) -> tuple[list[Event], int | None]:
         """Events of every run whose text holds `query`, newest indexed first, and the cursor of
         the next page, leaving out runs of `skip_kinds`. Queries of three or more characters use
-        the trigram index."""
+        the trigram index. A query the index cannot match finds nothing."""
+        if not _searchable(query):
+            return [], None
         where: list[str] = []
         args: list[Any] = []
         joins = ""
@@ -1341,7 +1346,7 @@ class Index:
             args.append(f"%{escaped}%")
         if before is not None:
             where.append("e.id < ?")
-            args.append(before)
+            args.append(_int(before))
         if skip_kinds:
             marks = ",".join("?" * len(skip_kinds))
             where.append(f"e.run_id not in (select run_id from runs where kind in ({marks}))")
@@ -1372,7 +1377,10 @@ class Index:
         execs: Sequence[str] = (),
     ) -> list[Event]:
         """One page in seq order. With only `before` set, the page is the last events before it.
-        `execs` keeps the events that name one of those execs."""
+        `execs` keeps the events that name one of those execs. A query the index cannot match
+        finds nothing."""
+        if query and not _searchable(query):
+            return []
         joins = ""
         where = ["e.run_id = ?"]
         args: list[Any] = [run_id]
@@ -1381,10 +1389,10 @@ class Index:
             args.extend(execs)
         if after is not None:
             where.append("e.seq > ?")
-            args.append(after)
+            args.append(_int(after))
         if before is not None:
             where.append("e.seq < ?")
-            args.append(before)
+            args.append(_int(before))
         if types:
             where.append(f"e.type in ({', '.join('?' * len(types))})")
             args.extend(types)
@@ -1432,15 +1440,15 @@ class Index:
             args.append(agent_id)
         if ts_from is not None:
             where.append("ts_to >= ?")
-            args.append(ts_from)
+            args.append(_int(ts_from))
         if ts_to is not None:
             where.append("ts_from <= ?")
-            args.append(ts_to)
+            args.append(_int(ts_to))
         if after is not None:
             where.append(
                 "(ts_from, seq) > (select ts_from, seq from samples where run_id = ? and seq = ?)"
             )
-            args.extend((run_id, after))
+            args.extend((run_id, _int(after)))
         args.append(_cap(limit))
         async with self._db.execute(
             f"select {', '.join(SAMPLE_FIELDS)} from samples where {' and '.join(where)}"
@@ -1463,7 +1471,7 @@ class Index:
         args: list[Any] = [run_id, AgentStep.type]
         if after is not None:
             where.append("seq > ?")
-            args.append(after)
+            args.append(_int(after))
         if agent_id is not None:
             where.append("agent_id = ?")
             args.append(agent_id)
@@ -1737,6 +1745,18 @@ def _window(event: Event) -> dict[str, Any] | None:
 
 def _cap(limit: int) -> int:
     return max(1, min(limit, MAX_PAGE))
+
+
+def _int(value: int) -> int:
+    """`value` within the integers SQLite binds. Every seq, id and time stored is inside, so a
+    bound past them compares the same."""
+    return max(BIND_MIN, min(value, BIND_MAX))
+
+
+def _searchable(text: str) -> bool:
+    """Whether the index can match `text`: FTS5 and LIKE end their text at a NUL, and UTF-8
+    cannot encode a lone surrogate for the bind."""
+    return "\x00" not in text and encodable(text)
 
 
 def _dump(value: Content) -> Any:

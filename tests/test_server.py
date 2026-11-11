@@ -1703,6 +1703,57 @@ async def test_sample_pages_hold_every_window_once(cp: CP, local: LocalEventStor
         assert await paged(c, agent="a2", limit=200) == a2
 
 
+async def test_search_text_and_cursors_the_index_cannot_bind_are_refused(
+    cp: CP, local: LocalEventStore
+) -> None:
+    run_id = await pushed(cp, local, [call(1), window("a1", 1_000, 2_000)])
+    run = f"/api/runs/{run_id}"
+    huge = "99999999999999999999"
+    refused = [
+        ("/api/events", {"q": "ab\x00c"}),
+        ("/api/events", {"q": "\x00"}),
+        ("/api/events", {"q": "shell", "before": huge}),
+        ("/api/events", {"q": "shell", "before": "-2"}),
+        (f"{run}/events", {"q": "sh\x00"}),
+        (f"{run}/events", {"after": huge}),
+        (f"{run}/events", {"before": huge}),
+        (f"{run}/events", {"after": "-" + huge}),
+        (f"{run}/events/{huge}", {}),
+        (f"{run}/events/-1", {}),
+        (f"{run}/steps", {"after": huge}),
+        (f"{run}/flags", {"after": huge}),
+        (f"{run}/samples", {"ts_from": huge}),
+        (f"{run}/samples", {"ts_to": huge}),
+        (f"{run}/samples", {"ts_from": "-1"}),
+        (f"{run}/samples", {"after": huge}),
+        ("/api/audit", {"before": huge}),
+        ("/api/stream", {"run": run_id, "after": huge}),
+    ]
+    async with cp.client(cp.operator) as c:
+        for path, params in refused:
+            r = await c.get(path, params=params)
+            assert (r.status_code, r.json()["code"]) == (422, "invalid"), (path, params, r.text)
+        r = await c.post(f"{run}/labels", json={"flag": int(huge), "label": "real"})
+        assert (r.status_code, r.json()["code"]) == (422, "invalid"), r.text
+        for q in ("\x01\x02\x03", "x" * 500, '"' * 500, "\U0010ffff" * 3):
+            r = await c.get("/api/events", params={"q": q})
+            assert r.json()["items"] == [], q[:3]
+            assert (await c.get(f"{run}/events", params={"q": q})).json()["items"] == []
+        r = await c.get("/api/events?q=%ED%A0%80sh")
+        assert r.status_code == 200, r.text
+        bound = str(2**63 - 1)
+        for path, params in [
+            ("/api/events", {"q": "shell", "before": bound}),
+            (f"{run}/events", {"after": "-1", "before": bound}),
+            (f"{run}/steps", {"after": bound}),
+            (f"{run}/flags", {"after": bound}),
+            (f"{run}/samples", {"ts_from": bound, "after": bound}),
+            ("/api/audit", {"before": bound}),
+        ]:
+            assert (await c.get(path, params=params)).status_code == 200, (path, params)
+        assert (await c.get(f"{run}/events/{bound}")).status_code == 404
+
+
 # Fixes from the security review
 
 

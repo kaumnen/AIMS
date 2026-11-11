@@ -394,6 +394,31 @@ async def test_search(store: LocalEventStore) -> None:
     assert await hits("nothing here") == []
 
 
+async def test_text_and_cursors_the_index_cannot_bind_find_nothing(
+    store: LocalEventStore,
+) -> None:
+    run_id = await store.create_run(STARTED)
+    await store.append(run_id, [call(1, "a\x00b the end"), call(2, "the end")])
+    for query in ("a\x00b", "\x00", "a\x00", "\x00\x00\x00", "end\x00", "ab\ud800", "\udfff"):
+        assert await store.search(query) == ([], None), repr(query)
+        assert await store.events(run_id, query=query) == [], repr(query)
+    for query in ("\x01\x02\x03", "x" * 100_000, '"' * 600, "\U0010ffff" * 3):
+        assert await store.search(query) == ([], None), repr(query[:3])
+    huge = 10**20
+    assert [e.seq for e in await store.events(run_id, before=huge)] == [0, 1, 2]
+    assert [e.seq for e in await store.events(run_id, after=-huge)] == [0, 1, 2]
+    assert await store.events(run_id, after=huge) == []
+    assert await store.events(run_id, before=-huge) == []
+    found, _ = await store.search("the end", before=huge)
+    assert [e.seq for e in found] == [2, 1]
+    assert await store.search("the end", before=-huge) == ([], None)
+    assert await store.steps(run_id, after=huge) == []
+    assert await store.flags(run_id, after=huge, min_importance=huge) == []
+    assert await store.samples(run_id, ts_from=huge, ts_to=-huge, after=huge) == []
+    with pytest.raises(KeyError):
+        await store.add_label(run_id, huge, "real", by="op")
+
+
 def window(sandbox: str, first_us: int, last_us: int) -> Draft:
     """A resource window of `sandbox` from `first_us` to `last_us` on the boot clock."""
     empty = dict.fromkeys(ResourceSample.COLUMNS)

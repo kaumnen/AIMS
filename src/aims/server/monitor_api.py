@@ -21,6 +21,7 @@ from aims.run.runner import RunError
 from aims.server import audit
 from aims.server.api import (
     MAX_PAGE,
+    Cursor,
     Operator,
     Out,
     Started,
@@ -50,7 +51,7 @@ async def list_flags(
     run_id: str,
     principal: Viewer,
     state: State,
-    after: int | None = None,
+    after: Cursor | None = None,
     limit: Annotated[int, Query(ge=1, le=MAX_PAGE)] = 100,
     layer: FlagLayer | None = None,
     category: Category | None = None,

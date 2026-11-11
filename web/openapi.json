@@ -6356,6 +6356,7 @@
             "type": "string"
           },
           "flag": {
+            "maximum": 9.223372036854776e+18,
             "minimum": 0.0,
             "title": "Flag",
             "type": "integer"
@@ -6402,6 +6403,7 @@
             "type": "string"
           },
           "flag": {
+            "maximum": 9.223372036854776e+18,
             "minimum": 0.0,
             "title": "Flag",
             "type": "integer"
@@ -6438,6 +6440,7 @@
       "LabelBody": {
         "properties": {
           "flag": {
+            "maximum": 9.223372036854776e+18,
             "minimum": 0.0,
             "title": "Flag",
             "type": "integer"
@@ -16016,6 +16019,7 @@
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 9223372036854775807,
                   "minimum": 1,
                   "type": "integer"
                 },
@@ -16920,6 +16924,8 @@
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 9223372036854775807,
+                  "minimum": -1,
                   "type": "integer"
                 },
                 {
@@ -18538,6 +18544,8 @@
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 9223372036854775807,
+                  "minimum": -1,
                   "type": "integer"
                 },
                 {
@@ -18554,6 +18562,8 @@
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 9223372036854775807,
+                  "minimum": -1,
                   "type": "integer"
                 },
                 {
@@ -18723,6 +18733,8 @@
             "name": "seq",
             "required": true,
             "schema": {
+              "maximum": 9223372036854775807,
+              "minimum": 0,
               "title": "Seq",
               "type": "integer"
             }
@@ -18807,6 +18819,8 @@
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 9223372036854775807,
+                  "minimum": -1,
                   "type": "integer"
                 },
                 {
@@ -20445,6 +20459,8 @@
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 9223372036854775807,
+                  "minimum": 0,
                   "type": "integer"
                 },
                 {
@@ -20461,6 +20477,8 @@
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 9223372036854775807,
+                  "minimum": 0,
                   "type": "integer"
                 },
                 {
@@ -20477,6 +20495,8 @@
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 9223372036854775807,
+                  "minimum": -1,
                   "type": "integer"
                 },
                 {
@@ -20784,6 +20804,8 @@
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 9223372036854775807,
+                  "minimum": -1,
                   "type": "integer"
                 },
                 {
@@ -23248,6 +23270,8 @@
               "anyOf": [
                 {
                   "items": {
+                    "maximum": 9223372036854775807,
+                    "minimum": -1,
                     "type": "integer"
                   },
                   "type": "array"

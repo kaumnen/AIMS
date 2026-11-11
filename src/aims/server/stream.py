@@ -14,7 +14,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 
 from aims.events import RunCorrupt
 from aims.models import Delta
-from aims.server.api import State, Viewer, _shown, hidden, summaries
+from aims.server.api import Cursor, State, Viewer, _shown, hidden, summaries
 from aims.server.problems import ProblemException, responses
 from aims.wire import (
     DeltaMessage,
@@ -91,7 +91,7 @@ async def _asked(
     principal: Viewer,
     state: State,
     run: Runs = None,
-    after: Annotated[list[int] | None, Query()] = None,
+    after: Annotated[list[Cursor] | None, Query()] = None,
     deltas: Runs = None,
 ) -> None:
     """Refuse a subscription before the stream opens: a stream's errors after that come too
@@ -134,7 +134,7 @@ async def stream(
     _: Annotated[None, Depends(_asked)],
     runs: bool = False,
     run: Runs = None,
-    after: Annotated[list[int] | None, Query()] = None,
+    after: Annotated[list[Cursor] | None, Query()] = None,
     types: Annotated[list[str] | None, Query()] = None,
     deltas: Runs = None,
     last_event_id: str | None = None,

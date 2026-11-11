@@ -16,7 +16,15 @@ from typing import IO, Annotated, Literal, Self, cast
 
 from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    ValidationError,
+    model_validator,
+)
 
 from aims import __version__
 from aims.config import Settings
@@ -39,7 +47,7 @@ from aims.events import (
     split_lines,
 )
 from aims.events.blobs import ZSTD_MAGIC, BlobError, BlobStore
-from aims.events.index import monitor_of
+from aims.events.index import BIND_MAX, monitor_of
 from aims.events.schema import blob_refs
 from aims.events.store import is_run_id
 from aims.models import Profile, ProfileError
@@ -102,6 +110,23 @@ MAX_SAMPLES = 100
 MAX_STEPS = 500
 MAX_EXECS = 100
 IMPORT_LIMIT = 4 * 1024**3
+
+# Integers the index binds: a seq, a page cursor (-1 is before the first) and a time on the
+# kernel boot clock in µs.
+Seq = Annotated[int, Field(ge=0, le=BIND_MAX)]
+Cursor = Annotated[int, Field(ge=-1, le=BIND_MAX)]
+BootUs = Annotated[int, Field(ge=0, le=BIND_MAX)]
+
+
+def _no_nul(text: str) -> str:
+    if "\x00" in text:
+        raise ValueError("holds a NUL character, which search cannot match")
+    return text
+
+
+# Text to search for: FTS5 and LIKE end their text at a NUL, and UTF-8 cannot encode a lone
+# surrogate.
+SearchText = Annotated[Utf8, AfterValidator(_no_nul)]
 
 
 def state_of(request: Request) -> ServerState:
@@ -1290,12 +1315,12 @@ async def list_events(
     run_id: str,
     principal: Viewer,
     state: State,
-    after: int | None = None,
-    before: int | None = None,
+    after: Cursor | None = None,
+    before: Cursor | None = None,
     limit: Annotated[int, Query(ge=1, le=MAX_PAGE)] = 100,
     types: Annotated[list[str] | None, Query()] = None,
     agent: str | None = None,
-    q: Annotated[str | None, Query(max_length=500)] = None,
+    q: Annotated[SearchText | None, Query(max_length=500)] = None,
     execs: Annotated[list[str] | None, Query(alias="exec")] = None,
 ) -> EventPage:
     """One page in seq order. With only `before`, the page is the events just before it and
@@ -1320,7 +1345,7 @@ async def list_events(
 
 
 @router.get("/runs/{run_id}/events/{seq}", tags=["events"], responses=responses(404))
-async def get_event(run_id: str, seq: int, principal: Viewer, state: State) -> Event:
+async def get_event(run_id: str, seq: Seq, principal: Viewer, state: State) -> Event:
     await _shown(state, principal, _run_id(run_id))
     items = await state.store.events(_run_id(run_id), after=seq - 1, limit=1)
     if not items or items[0].seq != seq:
@@ -1332,8 +1357,8 @@ async def get_event(run_id: str, seq: int, principal: Viewer, state: State) -> E
 async def search_events(
     principal: Viewer,
     state: State,
-    q: Annotated[str, Query(min_length=1, max_length=500)],
-    before: int | None = None,
+    q: Annotated[SearchText, Query(min_length=1, max_length=500)],
+    before: Cursor | None = None,
     limit: Annotated[int, Query(ge=1, le=MAX_PAGE)] = 100,
 ) -> EventPage:
     """Events of every run whose text holds `q`, newest first; a viewer's leave out the runs
@@ -1359,7 +1384,7 @@ async def list_steps(
     run_id: str,
     principal: Viewer,
     state: State,
-    after: int | None = None,
+    after: Cursor | None = None,
     limit: Annotated[int, Query(ge=1, le=MAX_STEPS)] = 200,
     agent: str | None = None,
 ) -> StepPage:
@@ -1402,9 +1427,9 @@ async def list_samples(
     principal: Viewer,
     state: State,
     agent: str | None = None,
-    ts_from: int | None = None,
-    ts_to: int | None = None,
-    after: int | None = None,
+    ts_from: BootUs | None = None,
+    ts_to: BootUs | None = None,
+    after: Cursor | None = None,
     limit: Annotated[int, Query(ge=1, le=MAX_PAGE)] = MAX_PAGE,
 ) -> SamplePage:
     """The resource timeline, one window per sandbox second, by start time then seq. `ts_from`
