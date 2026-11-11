@@ -20,6 +20,7 @@ from aims.events import BlobRef
 from aims.monitor.config import MonitorConfig
 from aims.scenario import variants
 from aims.scenario.model import SCRATCH, Scenario
+from aims.text import LONE, lone_at, scrub
 
 AGENT_UID = 1000
 FILE_MODE = 0o664
@@ -171,6 +172,13 @@ def _parse(
     if not isinstance(node, CommentedMap):
         raise ScenarioError([f"{source}: a scenario is a mapping"])
     raw = _plain(node)
+    # a YAML escape such as "\ud800" gives a lone surrogate. UTF-8 cannot encode one, so
+    # neither the run's log nor its job could carry it.
+    lone = lone_at(raw)
+    if lone is not None:
+        line = _line(node, lone)
+        at = f"{source}:{line}" if line is not None else source
+        raise ScenarioError([f"{at}: {scrub(_where(lone))}: {LONE}"])
     try:
         base = Scenario.model_validate(raw)
     except ValidationError as e:

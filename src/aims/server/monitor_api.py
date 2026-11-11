@@ -33,6 +33,7 @@ from aims.server.api import (
 )
 from aims.server.problems import ProblemException, responses
 from aims.server.state import ServerState
+from aims.text import NoLoneSurrogate
 from aims.wire import MonitorJob, MonitorMode
 
 router = APIRouter(prefix="/api", responses=responses(401, 403, 422))
@@ -93,7 +94,7 @@ class StartMonitor(BaseModel):
     signals_only: bool = False
     judge_only: bool = False
     profile: str | None = None
-    config: dict[str, JsonValue] | None = None
+    config: Annotated[dict[str, JsonValue] | None, NoLoneSurrogate] = None
     budget_usd: float | None = Field(default=None, ge=0)
     samples: int = Field(default=1, ge=1, le=100)
     parallel: int | None = Field(default=None, ge=1)

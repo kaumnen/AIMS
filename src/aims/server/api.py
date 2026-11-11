@@ -730,7 +730,7 @@ class StartFork(BaseModel):
     parallel: int | None = Field(default=None, ge=1)
     profile: str | None = None
     strict: bool = False
-    inject: str | None = None
+    inject: Utf8 | None = None
     keep: bool = False
     audit: AuditLevel = "kernel"
     runner: str | None = None

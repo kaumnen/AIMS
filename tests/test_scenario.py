@@ -103,6 +103,41 @@ def test_bad_yaml_has_a_line() -> None:
         parse("version: 1\nname: x\n  bad: [\n", source="s.yaml")
 
 
+LONE = "holds a lone surrogate, an escape such as \\ud800 without its pair"
+
+
+@pytest.mark.parametrize(
+    ("text", "problem"),
+    [
+        (BASE.replace("do it", '"do \\ud800 it"'), f"s.yaml:5: task.instruction: {LONE}"),
+        (
+            BASE + 'agents:\n  - id: a\n    prompts: {system: "be \\ud800"}\n',
+            f"s.yaml:9: agents[0].prompts.system: {LONE}",
+        ),
+        (
+            BASE + 'agents:\n  - id: a\n  - id: b\n    role: "\\udfff"\n',
+            f"s.yaml:10: agents[1].role: {LONE}",
+        ),
+        (BASE + 'variants:\n  "v\\ud800": {}\n', f"s.yaml:8: variants.v\\ud800: {LONE}"),
+        (
+            BASE + 'variants:\n  v:\n    task: {instruction: "\\uDC00"}\n',
+            f"s.yaml:9: variants.v.task.instruction: {LONE}",
+        ),
+    ],
+)
+def test_a_lone_surrogate_escape_is_refused_with_its_line(text: str, problem: str) -> None:
+    with pytest.raises(ScenarioError) as e:
+        parse(text, source="s.yaml")
+    assert e.value.problems == [problem]
+
+
+def test_an_escape_of_a_whole_character_or_a_quoted_backslash_still_loads() -> None:
+    whole = parse(BASE.replace("do it", '"do \\U0001F600 it"'))
+    assert whole.task.instruction == "do \U0001f600 it"
+    quoted = parse(BASE.replace("do it", "'do \\ud800 it'"))
+    assert quoted.task.instruction == "do \\ud800 it"
+
+
 def test_bundle_tars_files_with_group_write(tmp_path: Path) -> None:
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "a.py").write_text("a")

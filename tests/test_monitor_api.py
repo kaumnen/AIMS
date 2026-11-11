@@ -17,6 +17,7 @@ from aims.node.shipper import Shipper
 from aims.prompts import DENIED, Prompts
 from aims.run.runner import resolve_texts
 from aims.scenario import load
+from aims.text import LONE
 from aims.wire import CommandMessage, MonitorJob, OfferMessage, RunnerHello
 
 pytestmark = pytest.mark.anyio
@@ -462,6 +463,69 @@ async def test_a_job_that_does_not_load_ends_instead_of_failing_the_claim(
     assert job.state == "done"
     assert job.reason is not None
     assert job.reason.startswith("the job does not load")
+
+
+RULE = {
+    "id": "r1",
+    "title": "t",
+    "event": ["tool.call"],
+    "category": "loop_or_confusion",
+    "importance": 2,
+}
+
+
+async def test_job_text_with_a_lone_surrogate_is_refused_before_it_is_queued(
+    cp: CP, local: LocalEventStore, fake: FakeRunner
+) -> None:
+    origin = await pushed(cp, local, fake, flagged())
+    rule = {**RULE, "description": "d \ud800"}
+    # json.dumps writes each lone surrogate as its escape, as a client may
+    sent = [
+        ("forks", json.dumps({"inject": "hi \ud800", "confirm": True}), "inject"),
+        ("monitor", json.dumps({"signals_only": True, "config": {"rules": [rule]}}), "config"),
+    ]
+    async with cp.client(cp.operator) as c:
+        for route, body, field in sent:
+            r = await c.post(
+                f"/api/runs/{origin}/{route}",
+                content=body,
+                headers={"Content-Type": "application/json"},
+            )
+            assert r.status_code == 422, (route, r.text)
+            [error] = r.json()["errors"]
+            assert (error["loc"], error["msg"]) == (["body", field], f"Value error, {LONE}")
+    assert await cp.state.db.jobs() == []
+
+
+async def test_a_stored_job_with_a_lone_surrogate_is_claimed_as_text(
+    cp: CP, local: LocalEventStore, fake: FakeRunner
+) -> None:
+    origin = await pushed(cp, local, fake, flagged())
+    keyed = FakeRunner(cp, "keyed", envs=["MODEL_API_KEY"])
+    await keyed.connect()
+    db = cp.state.db
+    try:
+        async with cp.client(cp.operator) as c:
+            body = {"inject": "hi", "confirm": True, "runner": "keyed"}
+            r = await c.post(f"/api/runs/{origin}/forks", json=body)
+            assert r.status_code == 202, r.text
+            (run_id,) = r.json()["run_ids"]
+        await keyed.next(OfferMessage)
+        job = await db.job(run_id)
+        assert job is not None
+        # stored below the API, as a control plane did before it refused such text
+        job.payload["fork"]["inject"] = "hi \ud800"
+        await db._write(
+            "update jobs set payload = ? where run_id = ?", (json.dumps(job.payload), run_id)
+        )
+        r = await claim(cp, "keyed", run_id)
+        assert r.status_code == 200, r.text
+        assert r.json()["job"]["fork"]["inject"] == "hi \\ud800"
+        job = await db.job(run_id)
+        assert job is not None
+        assert job.state == "claimed"
+    finally:
+        await keyed.close()
 
 
 async def test_the_stream_sends_flag_counts_as_they_land(

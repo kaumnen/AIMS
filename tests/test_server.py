@@ -59,6 +59,7 @@ from aims.server.auth import HEADERS
 from aims.server.db import UI_TOKEN
 from aims.server.files import builtin_root
 from aims.server.state import CODES, InFlight, LaunchCodes, close_state, open_state
+from aims.text import LONE
 from aims.wire import (
     Ack,
     CommandAction,
@@ -896,6 +897,33 @@ async def test_a_stored_command_with_a_lone_surrogate_does_not_block_the_feed(
             ("pause", "a\\ud800"),
             ("kill", None),
         ]
+
+
+async def test_a_scenario_with_a_lone_surrogate_escape_is_refused_where_it_loads(cp: CP) -> None:
+    path = cp.project.parent / "scenarios/control/scenario.yaml"
+    escaped = SCENARIO + '    prompts: {system: "Be \\ud800 brief."}\n'
+    error = {"loc": [], "msg": f"agents[0].prompts.system: {LONE}", "line": 11}
+    async with cp.client(cp.operator) as c:
+        r = await c.get(f"{FILES}/scenario.yaml")
+        headers = {"Content-Type": "application/octet-stream", "If-Match": r.headers["etag"]}
+        r = await c.put(f"{FILES}/scenario.yaml", content=escaped.encode(), headers=headers)
+        assert (r.status_code, r.json()["errors"]) == (422, [error])
+        assert path.read_text() == SCENARIO
+        r = await c.post("/api/scenarios/check", json={"text": escaped})
+        assert r.json() == {"ok": False, "errors": [error], "warnings": []}
+        # written by hand, it loads nowhere and lists as a scenario that does not load
+        path.write_text(escaped)
+        r = await c.post("/api/runs", json={"scenario": {"source": "project", "name": "control"}})
+        assert (r.status_code, r.json()["errors"]) == (422, [error])
+        r = await c.post("/api/scenarios/project/control/selftest", json={})
+        assert (r.status_code, r.json()["errors"]) == (422, [error])
+        listed = (await c.get("/api/scenarios")).json()
+        assert [s["error"] for s in listed if s["source"] == "project"] == [
+            f"control:11: agents[0].prompts.system: {LONE}"
+        ]
+        detail = await c.get("/api/scenarios/project/control")
+        assert (detail.status_code, detail.json()["errors"]) == (200, [error])
+    assert await cp.state.db.jobs() == []
 
 
 async def test_hello_takes_back_claimed_jobs_it_does_not_list(cp: CP, fake: FakeRunner) -> None:

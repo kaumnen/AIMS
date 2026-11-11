@@ -12,20 +12,55 @@ def _lone(text: str) -> bool:
     return not text.isascii() and _SURROGATE.search(text) is not None
 
 
+LONE = "holds a lone surrogate, an escape such as \\ud800 without its pair"
+
+
 def encodable(text: str) -> bool:
     """Whether UTF-8 can encode `text`: it holds no lone surrogate."""
     return not _lone(text)
 
 
+def lone_at(value: object) -> tuple[str | int, ...] | None:
+    """The keys and indexes that lead to the first string or dict key in `value` that holds a
+    lone surrogate, in document order, or None when none does. Takes a string, or a value
+    json.loads or a YAML loader parsed. Walks without recursion, so any depth is fine, and in
+    time linear in its size: each node links to its parent, and only the path found is built."""
+    # a link is the index of the parent's link, -1 for the top, and the key or index under it
+    links: list[tuple[int, str | int]] = []
+    stack: list[tuple[object, int]] = [(value, -1)]
+    while stack:
+        node, link = stack.pop()
+        if isinstance(node, str):
+            if _lone(node):
+                path: list[str | int] = []
+                while link >= 0:
+                    link, key = links[link]
+                    path.append(key)
+                return tuple(reversed(path))
+        elif isinstance(node, dict):
+            for key, item in reversed(node.items()):
+                links.append((link, key))
+                # the key comes off the stack before its value
+                stack += [(item, len(links) - 1), (key, len(links) - 1)]
+        elif isinstance(node, list):
+            for i in reversed(range(len(node))):
+                links.append((link, i))
+                stack.append((node[i], len(links) - 1))
+    return None
+
+
 def _whole(value: object) -> object:
-    if isinstance(value, str) and _lone(value):
-        raise ValueError("holds a lone surrogate, an escape such as \\ud800 without its pair")
+    lone = _lone(value) if isinstance(value, str) else lone_at(value) is not None
+    if lone:
+        raise ValueError(LONE)
     return value
 
 
-# A str field for text a caller sends that the server stores or passes on: it refuses a lone
-# surrogate, which UTF-8 cannot encode. Checked before any length bound, for one clear error.
-Utf8 = Annotated[str, BeforeValidator(_whole)]
+# Annotates a field for text or JSON a caller sends that the server stores or passes on: it
+# refuses a lone surrogate, which UTF-8 cannot encode, in a string or in a key or a string at
+# any depth. Checked before the field's own type and bounds, for one clear error.
+NoLoneSurrogate = BeforeValidator(_whole)
+Utf8 = Annotated[str, NoLoneSurrogate]
 
 
 def _escape(match: re.Match[str]) -> str:
