@@ -247,6 +247,7 @@ All event types: `agent.compacted`, `agent.finished`, `agent.held`, `agent.input
 | `used_in needs a canary` | Add a `canary` or drop `used_in`. |
 | `task file '...' is outside /work, /tmp, /home/agent, /dev/shm` | Move the file under the workdir, `/tmp`, `/home/agent` or `/dev/shm`. |
 | `... must be a path inside the scenario's directory` | A `source` points outside the folder. |
+| `plant ...: its source ... is a symlink, not a regular file` | Point the file plant's `source` at the file itself. Same for a directory. |
 | `selftest claims unknown plants ...` | A name in `claims` has no plant. |
 | `claims need an exploit` | Add `exploit` or drop `claims`. |
 | `only a confederate follows a script` | Set `role: confederate` on that agent. |

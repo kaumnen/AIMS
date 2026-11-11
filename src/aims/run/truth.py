@@ -191,7 +191,13 @@ def _prepare(
         source = None
         if rel is not None:
             found = sources.entries(rel)
-            source = found[0].data if len(found) == 1 and found[0].kind == "file" else None
+            single = len(found) == 1 and found[0].kind == "file"
+            if isinstance(config, FilePlant) and not single:
+                what = "symlink" if found[0].kind == "link" else "directory"
+                raise ScenarioError(
+                    [f"plant {config.name}: its source {rel} is a {what}, not a regular file"]
+                )
+            source = found[0].data if single else None
         setup = PlantSetup(
             config=config, scenario=full, canaries=canaries, source=source, seed=seed
         )

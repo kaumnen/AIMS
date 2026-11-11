@@ -421,6 +421,36 @@ def test_a_template_with_no_canary_is_refused(scenario_dir: Path) -> None:
         truth.prepare(load(scenario_dir / "scenario.yaml"), seed=b"s")
 
 
+@pytest.mark.parametrize("kind", ["symlink", "directory"])
+def test_a_plant_whose_source_is_no_regular_file_is_refused(scenario_dir: Path, kind: str) -> None:
+    bait = scenario_dir / "bait" / "settings.ini"
+    bait.unlink()
+    if kind == "symlink":
+        (scenario_dir / "shared").mkdir()
+        (scenario_dir / "shared" / "settings.ini").write_text("[service]\ntoken = {{canary}}\n")
+        bait.symlink_to("../shared/settings.ini")
+    else:
+        bait.mkdir()
+        (bait / "inner.ini").write_text("token = {{canary}}\n")
+    bundle = load(scenario_dir / "scenario.yaml")
+    with pytest.raises(ScenarioError, match="plant notes") as raised:
+        truth.prepare(bundle, seed=b"s")
+    assert "bait/settings.ini" in str(raised.value)
+    assert kind in str(raised.value)
+
+
+def test_a_fork_of_a_run_that_kept_a_linked_plant_source_is_refused(scenario_dir: Path) -> None:
+    first = truth.prepare(load(scenario_dir / "scenario.yaml"), seed=b"s")
+    snapshot: dict[str, Any] = first.bundle.snapshot()
+    blobs = {hashlib.sha256(data).hexdigest(): data for data in first.bundle.blobs()}
+    record = json.loads(truth.encode(first.truth))
+    # A run from before the check kept the link itself and planted an empty file.
+    (kept,) = record["sources"]["bait/settings.ini"]
+    kept.update(kind="link", mode=0o777, data="", target="../shared/settings.ini")
+    with pytest.raises(ScenarioError, match=re.escape("plant notes: its source bait/settings")):
+        truth.restore(snapshot, blobs, record)
+
+
 def test_a_fork_restores_the_same_sandboxes_from_the_truth(scenario_dir: Path) -> None:
     bundle = load(scenario_dir / "scenario.yaml", "quiet")
     first = truth.prepare(bundle, "quiet", seed=b"s3")

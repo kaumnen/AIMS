@@ -199,7 +199,7 @@ async def load_origin(store: EventStore, run_id: str, *, full: bool = True) -> O
         try:
             made = await asyncio.to_thread(truth.restore, snapshot, blobs, record)
             restored = made.full_bundle
-        except (KeyError, ValueError, OSError) as e:
+        except (KeyError, ValueError, OSError, ScenarioError) as e:
             raise RunError(f"run {run_id}: cannot restore its truth: {e}") from None
     schedules: dict[str, list[tuple[int | None, Profile]]] = {}
     texts: dict[str, Texts] = {}
