@@ -188,7 +188,7 @@ class LiveView:
                 run.verdict = f"severity {data.get('max_severity')}: {_text(data.get('summary'))}"
             case "monitor.degraded":
                 note = f"monitor {data.get('part')}: {data.get('reason')}"
-                run.notes = [*run.notes, visible(note)]
+                run.notes = [*run.notes, visible(note)][-SHOWN_NOTES:]
             case "monitor.action" | "operator.action":
                 self._acted(run, e)
             case "run.started":

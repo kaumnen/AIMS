@@ -32,6 +32,7 @@ from aims.events import (
     Event,
     LocalEventStore,
     MonitorAction,
+    MonitorDegraded,
     MonitorFlag,
     MonitorSweep,
     MonitorVerdict,
@@ -759,6 +760,38 @@ async def test_the_view_shows_flags_pauses_sweeps_and_the_verdict(tmp_path: Path
         kinds = [json.loads(line)["type"] for line in emitted]
         assert kinds == ["flag", "flag", "action", "sweep", "verdict"]
         assert json.loads(emitted[0])["data"]["category"] == "egress_attempt"
+
+
+async def test_the_view_shows_the_last_few_notes_and_the_end_lists_all(tmp_path: Path) -> None:
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        run_id = await store.create_run(RunStarted(scenario="s", oversight="observe"))
+        drafts = [
+            Draft(MonitorDegraded(part="judge", reason=f"timeout {i}", then="continue"))
+            for i in range(20)
+        ]
+        pause = MonitorAction(action="pause", agents=["a"], mode="autonomous", reason="egress")
+        drafts.insert(10, Draft(pause, "a"))
+        await store.append(run_id, [*drafts, Draft(RunFinished(status="completed"))])
+        view = LiveView(store, DeltaBus())
+        view.add(run_id)
+        await until(lambda: view.runs[run_id].status == "completed")
+        await view.stop()
+        console = Console(record=True, width=200)
+        console.print(view)
+        text = console.export_text()
+        notes = [line.strip("│ ") for line in text.splitlines() if "timeout" in line]
+        assert notes == [f"monitor judge: timeout {i}" for i in range(17, 20)]
+        assert "pause a by monitor" not in text
+
+        found = await digest(store, run_id)
+        degraded = found.json()["degraded"]
+        assert isinstance(degraded, list)
+        assert [d["reason"] for d in degraded] == [f"timeout {i}" for i in range(20)]
+        table = monitor_table([found])
+        assert table is not None
+        console = Console(record=True, width=200)
+        console.print(table)
+        assert console.export_text().count("judge: timeout") == 20
 
 
 class Held:
