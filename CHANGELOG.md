@@ -60,6 +60,20 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - Ctrl-C while `aims run` or `aims monitor` closes its runs does nothing. The cleanup left is short. Ctrl-C while `aims monitor` ships its runs ends the shipping.
 - A resume tries a sandbox that does not unfreeze three times, one second apart.
 - A cancelled command in a sandbox has its processes ended, within 5 s. A frozen sandbox is left as it is.
+- Every text field of an API request body refuses a lone surrogate such as `\ud800` with a 422 that names the field. That covers run, fork, monitor, score, self-test, model check, label, token, scenario and config bodies, and a key or a string at any depth of a JSON field.
+- A scenario file with a lone surrogate escape such as `"\ud800"` is refused with its line, where it is saved, checked or run. A pair written as two `\u` escapes is refused too. Write the character itself or `\U0001F600`.
+- A text argument or option with a byte that is not UTF-8 is a usage error on every command. Paths are let through. The pause prompt refuses such an inject message and asks again.
+- `--budget` reads plain ASCII digits only. `1e3`, `inf` and `1_.5` are refused for `cost_usd` and `wall_s`. `steps` and `output_tokens` refuse a point, so `steps=5.0` and `steps=1.000` are errors. The budget cells in the UI follow the same rule: no hex, no exponent, an underscore only between two digits.
+- The wall cell in the UI takes thousands separators, also before a unit: `3,600`, `3,600s`, `1_000`.
+- `aims token create` checks the name by the API's rule: 1 to 100 ASCII letters, digits, `.`, `_`, `@` or `-`. A name stored before still lists and revokes.
+- `aims token list`, `aims token revoke` and `aims audit` need the server's database. With none at `--data-dir` they exit 1 and name the path. They made an empty database and answered as if it held nothing. `aims token create` still makes it.
+- Refused as usage errors: `aims ui --no-runner` with `--slots` or `--audit`, `aims control <run> list --wait`, `aims monitor --signals-only` with `--profile` or `--budget-usd`, and `nan` or `inf` in `--days`, `--keep-days`, `--budget-usd` and `--wait`.
+- `--json` and `--jsonl` output writes hidden characters as JSON escapes such as `\u009b`: C1 controls, bidi controls, U+2028, lone surrogates. The values parse the same. Other text stays readable. NaN and the infinities are written as `null`. `aims rates --json` and `aims audit --jsonl` put a space after `:` and `,`.
+- `aims run` and `aims monitor` build their `--json` and `--quiet` results in full before they write. When the results cannot be printed they exit 1. They exited 0. A closed pipe keeps the runs' own exit code.
+- An error no command handles prints a plain Python traceback with hidden characters shown as text. It was a boxed Rich traceback. The exit code stays 1.
+- A line break inside a log message of `aims run`, `aims monitor`, `aims runner` or `aims ui` shows as `\u000A` or `\u000D`, so one record is one line. A traceback keeps its lines.
+- `aims ui` writes uvicorn's log lines through its own log format, as `WARNING uvicorn.error: ...`.
+- A `reward.json` or `reward.txt` over 1 MiB gives no reward and an error that says so. A `reward.json` over 64 KiB as JSON keeps its reward and its top-level numbers, and the score's `error` says what was left out. The read no longer stops at the scenario's `output_limit`.
 
 ### Fixed
 
@@ -133,6 +147,17 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - A sandbox start that failed or was cancelled left its volumes and container until the next start of the runner.
 - A cancelled setup or tool command kept running in the sandbox, for good in one kept with `--keep`.
 - A late Ctrl-C in `aims run` or `aims monitor` could cut the store's close and end in a traceback. A run that completed still exits 0.
+- A fork, monitor or config request with a lone surrogate no longer answers 500, at the request or when a runner claims the job. A job stored with one is claimed with it as text. A key with one was stored as another key.
+- A `Last-Event-ID` such as `run:²`, `run:--5` or one with thousands of digits no longer breaks the live stream. A part that does not read is skipped.
+- A `reward.json` over 256 KiB no longer fails the run.
+- `aims control --text` with a byte that is not UTF-8 ended in a traceback. Such an `--inject` failed the fork's next model call, and such a `--series` name failed in the index.
+- Usage errors showed bidi and escape characters from the command line as they were. They show as text.
+- `aims ui --public-url` printed hidden characters of the URL as they were.
+- The live view kept every `monitor.degraded` note. It shows the last three. The end table and `--json` list all.
+- `aims run --budget cost_usd=2,50` names the comma. It said `'50': write key=value`.
+- The budget cells in the UI read `0x10` as 16, `1e3` as 1000 and `_10_` as 10.
+- `aims images prune --days nan` counted every scenario image as unused. `aims monitor --budget-usd nan` ended in a traceback.
+- An index read with a filter that holds a lone surrogate finds no rows. It raised an encoding error.
 
 ## [0.2.2] - 2026-11-10
 
