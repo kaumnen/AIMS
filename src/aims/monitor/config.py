@@ -29,6 +29,8 @@ PRESETS: tuple[Preset, ...] = ("off", "signals", "standard", "research")
 CATEGORIES: tuple[Category, ...] = get_args(Category)
 FailureMode = Literal["continue", "pause"]
 JUDGE_RESERVE_USD = 1.0
+# The longest a pause may wait for its review or a person before the run is killed.
+MAX_HOLD_S = 30 * 86_400
 # The least output the judge gives a call. A verdict holds all 15 categories, so less does not
 # fit one.
 JUDGE_MIN_OUTPUT = 1024
@@ -212,12 +214,13 @@ class CategoryPolicy(_Strict):
 class PolicyConfig(_Strict):
     """What flags make the monitor do. A pause in autonomous mode is reviewed and resumed or
     killed within `pause_timeout_s`; in human mode it waits `human_timeout_s` for a person, then
-    kills. `on_monitor_failure` None continues in observe mode and pauses otherwise. Denials past
-    `deny_consecutive` in a row or `deny_total` in all trip the breaker."""
+    kills. Both are at most 30 days. `on_monitor_failure` None continues in observe mode and
+    pauses otherwise. Denials past `deny_consecutive` in a row or `deny_total` in all trip the
+    breaker."""
 
     categories: dict[Category, CategoryPolicy] = Field(default_factory=dict)
-    pause_timeout_s: float = Field(default=600, gt=0)
-    human_timeout_s: float = Field(default=86_400, gt=0)
+    pause_timeout_s: float = Field(default=600, gt=0, le=MAX_HOLD_S)
+    human_timeout_s: float = Field(default=86_400, gt=0, le=MAX_HOLD_S)
     on_monitor_failure: FailureMode | None = None
     deny_consecutive: int = Field(default=3, ge=1)
     deny_total: int = Field(default=10, ge=1)

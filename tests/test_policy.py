@@ -1,9 +1,12 @@
 from datetime import UTC, datetime
 from typing import Any
 
+import pytest
+from pydantic import ValidationError
+
 from aims.events import Event, ModelRequest, MonitorFlag, ToolResult
 from aims.events.schema import Payload
-from aims.monitor.config import CategoryPolicy, PolicyConfig
+from aims.monitor.config import MAX_HOLD_S, CategoryPolicy, PolicyConfig
 from aims.monitor.policy import Cutoffs, Policy
 
 HASH = "0" * 64
@@ -262,3 +265,12 @@ def test_observe_mode_mirrors_autonomous() -> None:
     d2 = p.observe(denied(4))
     assert d2 is not None
     assert d2.action == "kill"
+
+
+@pytest.mark.parametrize("name", ["human_timeout_s", "pause_timeout_s"])
+def test_a_pause_holds_at_most_thirty_days(name: str) -> None:
+    assert MAX_HOLD_S == 30 * 86_400
+    assert getattr(PolicyConfig.model_validate({name: MAX_HOLD_S}), name) == MAX_HOLD_S
+    for value in (MAX_HOLD_S + 1, 1e12, float("inf")):
+        with pytest.raises(ValidationError):
+            PolicyConfig.model_validate({name: value})
