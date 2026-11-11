@@ -6,10 +6,35 @@ import {
   draftText,
   inForce,
   type Key,
+  KEYS,
   readCell,
   readDraft,
   type RunCaps,
 } from "./budget";
+import numbers from "./budget-numbers.json";
+
+const KIND: Record<Key, "whole" | "decimal"> = {
+  steps: "whole",
+  output_tokens: "whole",
+  cost_usd: "decimal",
+  wall_s: "decimal",
+};
+
+// The number forms of budget-numbers.json read as `aims run --budget` reads them, which
+// tests/test_budget.py checks on the same table: whole is steps and output tokens, decimal is
+// cost and wall in seconds, and null is refused.
+test("a cell reads the number forms the CLI reads and refuses the rest", () => {
+  const read: Record<string, unknown> = {};
+  const want: Record<string, unknown> = {};
+  for (const k of KEYS) {
+    for (const n of numbers) {
+      const value = readCell(k, n.text);
+      read[`${k}=${n.text}`] = typeof value === "string" ? null : value;
+      want[`${k}=${n.text}`] = n[KIND[k]];
+    }
+  }
+  expect(read).toEqual(want);
+});
 
 test("a cell keeps, lifts or sets its cap, and says when it does not read", () => {
   expect(readCell("steps", "")).toBeUndefined();

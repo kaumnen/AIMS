@@ -1,6 +1,9 @@
 """A run's budget override: how `--budget` reads, how it survives a job's JSON, how a fork's
 goes over its origin's, and what it changes in a scenario."""
 
+import json
+from pathlib import Path
+
 import pytest
 
 from aims.run.fork import Origin
@@ -49,7 +52,10 @@ def test_bare_keys_set_every_agent_a_prefix_one_agent_or_the_run() -> None:
     [
         ("steps=0", "steps: Input should be greater than or equal to 1"),
         ("run.cost_usd=-1", "run.cost_usd: Input should be greater than 0"),
-        ("bob.steps=1.5", "bob.steps: Input should be a valid integer"),
+        ("bob.steps=1.5", "bob.steps: '1.5' does not read; write a whole number in digits"),
+        ("run.cost_usd=1e3", "run.cost_usd: '1e3' does not read; write dollars in digits"),
+        ("wall_s=inf", "wall_s: 'inf' does not read; write seconds in digits, such as 600"),
+        ("output_tokens=1__0", "output_tokens: '1__0' does not read"),
         ("warn_at=0.5", "warn_at: no cap 'warn_at'; use steps, output_tokens, cost_usd, wall_s"),
         ("run.monitor_cost_usd=1", "no cap 'monitor_cost_usd'"),
         ("steps", "write key=value"),
@@ -61,6 +67,25 @@ def test_a_bad_budget_says_which_cap(text: str, problem: str) -> None:
     with pytest.raises(BudgetError) as e:
         parse(text)
     assert problem in str(e.value)
+
+
+NUMBERS = Path(__file__).resolve().parents[1] / "web" / "src" / "lib" / "budget-numbers.json"
+KIND = {"steps": "whole", "output_tokens": "whole", "cost_usd": "decimal", "wall_s": "decimal"}
+
+
+def test_a_cap_reads_the_number_forms_the_ui_reads_and_refuses_the_rest() -> None:
+    """The table web/src/lib/budget.test.ts checks the budget cells on: whole is steps and
+    output tokens, decimal is cost and wall, and None is refused."""
+    numbers = json.loads(NUMBERS.read_text(encoding="utf-8"))
+
+    def value(given: str, key: str) -> object:
+        try:
+            return parse(given).agent_caps("a")[key]
+        except BudgetError:
+            return None
+
+    read = {f"{k}={n['text']}": value(f"{k}={n['text']}", k) for k in KIND for n in numbers}
+    assert read == {f"{k}={n['text']}": n[KIND[k]] for k in KIND for n in numbers}
 
 
 def test_a_lifted_cap_survives_the_job_json_and_a_kept_one_stays_out() -> None:

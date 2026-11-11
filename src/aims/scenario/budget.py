@@ -4,6 +4,8 @@ the run records the override in `run.started` and each agent's caps in `agent.st
 
 from __future__ import annotations
 
+import math
+import re
 from collections.abc import Iterable, Mapping
 from typing import Any, Literal, TypedDict, cast, get_args
 
@@ -128,13 +130,39 @@ def load(value: object) -> BudgetOverride | None:
     return None if found.empty else found
 
 
+WHOLE: tuple[Key, ...] = ("steps", "output_tokens")
+"""The caps that take a whole number; the others take a point too."""
+
+_DIGITS = re.compile(r"[+-]?[0-9_.]+")
+_FORMS = {
+    "steps": "a whole number in digits, such as 200",
+    "output_tokens": "a whole number in digits, such as 50000",
+    "cost_usd": "dollars in digits, such as 2.5",
+    "wall_s": "seconds in digits, such as 600",
+}
+
+
+def _number(key: str, cap: str, raw: str) -> int | float:
+    """`raw` as cap `cap` reads it: ASCII digits as Python writes a number, so an underscore
+    goes only between two digits, and a point only on a cap outside WHOLE. An exponent,
+    another base, inf, nan or a number too large to hold does not read. Raises BudgetError."""
+    if _DIGITS.fullmatch(raw):
+        try:
+            value = int(raw) if cap in WHOLE else float(raw)
+            if math.isfinite(value):
+                return value
+        except ValueError, OverflowError:
+            pass
+    raise BudgetError(f"{key}: {raw!r} does not read; write {_FORMS[cap]}, or none")
+
+
 def parse(text: str) -> BudgetOverride:
     """Read `--budget`: comma separated `key=value` pairs. A bare key (`steps=200`) sets every
-    agent, `AGENT.key` one agent and `run.key` the run's limits; `none` lifts the cap. Raises
-    BudgetError."""
-    every: dict[str, str | None] = {}
-    agents: dict[str, dict[str, str | None]] = {}
-    run: dict[str, str | None] = {}
+    agent, `AGENT.key` one agent and `run.key` the run's limits; `none` lifts the cap. A value
+    is plain ASCII digits, with a point on cost_usd and wall_s. Raises BudgetError."""
+    every: dict[str, Value] = {}
+    agents: dict[str, dict[str, Value]] = {}
+    run: dict[str, Value] = {}
     for part in (p.strip() for p in text.split(",")):
         if not part:
             continue
@@ -148,7 +176,7 @@ def parse(text: str) -> BudgetOverride:
         target = every if not dot else run if scope == "run" else agents.setdefault(scope, {})
         if cap in target:
             raise BudgetError(f"{key} is given twice")
-        target[cap] = None if raw.lower() == "none" else raw
+        target[cap] = None if raw.lower() == "none" else _number(key, cap, raw)
     try:
         return BudgetOverride.model_validate(
             {
