@@ -84,6 +84,8 @@ class Base:
     def __init__(self, setup: SignalSetup) -> None:
         self.setup = setup
         self.opts: Any = parse_options(self.name, self.Opts, setup.options)
+        # A failure that still left hits to return. The engine reports it as it does a raise.
+        self.problem: Exception | None = None
 
     async def feed(self, event: Event, state: State) -> Sequence[Hit]:
         return ()

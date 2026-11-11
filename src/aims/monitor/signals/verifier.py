@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pydantic import Field
 
 from aims.events import Event, ExecFinished, ExecPhase, FileAccess, ProcExec, TaskScored
+from aims.monitor.signals import scan
 from aims.monitor.signals.base import Base, Hit, Options, SignalSetup
 from aims.monitor.signals.rules import compile_glob
 from aims.monitor.state import AGENT_PHASES, BUSYBOX, FsChangeRecord, State, program
@@ -34,10 +35,10 @@ WEAK_GLOBS = ["pyproject.toml", "setup.cfg"]
 _PYC = re.compile(r"^(?P<dir>.*)/__pycache__/(?P<stem>[^/.]+)\.[^/]*\.pyc$")
 # The config file pytest took its settings from. pytest 7.3 and later print `configfile:` on
 # the line after `rootdir:`. Older ones print it on the rootdir line, before 6.0 as `inifile:`.
-_CONFIG = re.compile(
+_CONFIG = scan.compile(
     r"^rootdir: (?:(?P<root>[^\n]++)\nconfigfile: (?P<file>[^\n]++)"
     r"|(?P<root_old>[^\s,]++), (?:configfile|inifile): (?P<file_old>[^\s,]++))",
-    re.M,
+    scan.MULTILINE,
 )
 
 
@@ -328,13 +329,13 @@ class VerifierEnv(Base):
 
 
 # A match starts only where a number starts, so a long run of digits is scanned once.
-_COUNTS = re.compile(
+_COUNTS = scan.compile(
     r"(?<!\d)(\d+) (passed|failed|skipped|xfailed|xpassed|errors?|deselected|warnings?|rerun)"
 )
 # Subtests are counted apart: pytest 9 as `subtests passed`, the pytest-subtests plugin also as
 # `subtests xfailed` and the like. A part in brackets ends on its line, so a search from each
 # line start stops there.
-_SUMMARY = re.compile(
+_SUMMARY = scan.compile(
     r"(?m)^(?:=+ )?(?:\d+ (?:passed|failed|skipped|xfailed|xpassed|errors?|deselected|warnings?"
     r"|rerun|subtests (?:passed|failed|skipped|xfailed|xpassed))(?:, )?)+ in [\d.]+s"
     r"(?: \([^)\n]*+\))?(?: =+)?\s*$|^=+ no tests ran in [\d.]+s =+$"
@@ -343,9 +344,9 @@ _SUMMARY = re.compile(
 # pytest 9, `(i=1) SUBFAIL path::test` with the pytest-subtests plugin. A verbose run names it
 # on its progress line too: `path::test SUBFAILED(i=1)`, `path::test (i=1) SUBFAIL`.
 _SUBTEST = r"(?:\[[^\]\n]*+\] )?(?:\([^)\n]*+\) )?SUB(X?)FAIL(?:ED)?\b"
-_SUBTEST_SUMMARY = re.compile(rf"(?m)^{_SUBTEST}")
-_SUBTEST_PROGRESS = re.compile(rf"(?m)^[^\s:]++::\S*+ {_SUBTEST}")
-_DURATION = re.compile(r"(?m)^([\d.]+)s call\s+\S+")
+_SUBTEST_SUMMARY = scan.compile(rf"(?m)^{_SUBTEST}")
+_SUBTEST_PROGRESS = scan.compile(rf"(?m)^[^\s:]++::\S*+ {_SUBTEST}")
+_DURATION = scan.compile(r"(?m)^([\d.]+)s call\s+\S+")
 # How much of the end of a long output is read for the summary, which pytest prints last.
 SUMMARY_TAIL = 256 * 1024
 

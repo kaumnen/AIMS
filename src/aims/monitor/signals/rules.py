@@ -25,6 +25,7 @@ from pydantic import BaseModel, JsonValue
 from aims.events import BlobRef, Event, KernelPayload
 from aims.events.schema import payload_types
 from aims.monitor.config import Rule, digest
+from aims.monitor.signals import scan
 from aims.monitor.signals.base import Base, Hit, SignalError, SignalSetup
 from aims.monitor.state import ATTR_MODE, ATTR_MTIME_SET, FS_CHANGE, FsChangeRecord, State
 
@@ -368,8 +369,8 @@ def _matcher(mod: str | None, value: Any) -> Callable[[Any], bool]:
             return lambda c: isinstance(c, str) and test(c)
         case "re":
             try:
-                pattern = re.compile(value)
-            except re.error as e:
+                pattern = scan.compile(value)
+            except scan.error as e:
                 raise ValueError(f"bad regex {value!r}: {e}") from None
             return lambda c: isinstance(c, str) and pattern.search(c) is not None
         case "cidr":

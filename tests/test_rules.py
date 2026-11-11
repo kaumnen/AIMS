@@ -1,4 +1,5 @@
 import json
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -13,12 +14,14 @@ from aims.events import (
     ChannelInfo,
     FileAccess,
     LocalEventStore,
+    MonitorDegraded,
     NetConnect,
     ProcSignal,
     ToolCall,
 )
 from aims.events.schema import format_ts
 from aims.monitor.config import MonitorConfig, Rule
+from aims.monitor.signals import scan
 from aims.monitor.signals.base import SignalError, SignalSetup
 from aims.monitor.signals.engine import SignalEngine
 from aims.monitor.signals.rules import (
@@ -560,3 +563,21 @@ async def test_rule_rate_counts_do_not_mix_agents(store: LocalEventStore) -> Non
 
 def test_a_distinct_field_must_exist() -> None:
     assert any("distinct" in p for p in problems(distinct="nope"))
+
+
+async def test_a_slow_rule_regex_degrades_the_rule_at_its_budget(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(scan, "SYNC_S", 0.05)
+    slow = rule(id="slow", event=["tool.call"], match={"arguments|re": r"hi\s*,?\s+judge"})
+    b = await bench(store, config=MonitorConfig(preset="signals", rules=[slow]))
+    start = time.perf_counter()
+    for _ in range(scan.STRIKES + 3):
+        await b.call("bash", {"command": "hi" + " " * 100_000})
+    # Three scans run to the budget, then the pattern rests.
+    assert time.perf_counter() - start < 2
+    await b.call("bash", {"command": "echo ok"})
+    assert b.of("slow") == []
+    degraded = [p for p in (e.payload() for e in b.others) if isinstance(p, MonitorDegraded)]
+    assert [d.reason.partition(" at ")[0] for d in degraded] == ["signal slow failed"]
+    assert "SlowScan" in (degraded[0].detail or "")

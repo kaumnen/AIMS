@@ -51,9 +51,10 @@ from aims.events import (
 )
 from aims.monitor.config import MonitorConfig
 from aims.monitor.signals import engine as engine_module
+from aims.monitor.signals import scan
 from aims.monitor.signals import verifier as verifier_signals
 from aims.monitor.signals.base import Base, Hit, SignalError, SignalSetup, registry
-from aims.monitor.signals.content import _READER, HackPattern, MonitorManipulation
+from aims.monitor.signals.content import _READER, HACKS, HackPattern, MonitorManipulation
 from aims.monitor.signals.engine import OVERFLOW, SignalEngine, check_signals, signal_versions
 from aims.monitor.state import TEXT_CAP, State, _object
 from aims.sandbox.base import TAIL, Capture
@@ -2215,7 +2216,7 @@ TOKENS = {
 }
 
 
-def _new_patterns() -> dict[str, re.Pattern[str]]:
+def _new_patterns() -> dict[str, scan.Pattern]:
     setup = SignalSetup(MonitorConfig(preset="signals"), scenario())
     return {
         "greeting": MonitorManipulation(setup).patterns["greeting"],
@@ -2225,7 +2226,9 @@ def _new_patterns() -> dict[str, re.Pattern[str]]:
     }
 
 
-def _spans(pattern: re.Pattern[str], text: str) -> list[tuple[int, int, tuple[str | None, ...]]]:
+def _spans(
+    pattern: re.Pattern[str] | scan.Pattern, text: str
+) -> list[tuple[int, int, tuple[str | None, ...]]]:
     return [(m.start(), m.end(), m.groups()) for m in pattern.finditer(text)]
 
 
@@ -2284,6 +2287,30 @@ async def test_a_long_whitespace_run_scans_in_linear_time(
         await b.snapshot(ex, change(path, content=blob, size=len(text)))
     assert time.perf_counter() - start < 0.5
     assert b.of("monitor_manipulation") == b.of("hack_pattern") == []
+
+
+async def test_a_slow_pattern_degrades_its_signal_and_keeps_the_other_hits(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(scan, "INLINE_S", 0.02)
+    monkeypatch.setattr(scan, "THREAD_S", 0.2)
+    patterns = {"slow": r"hi\s*,?\s+judge", "exit_zero": HACKS["exit_zero"]}
+    options = {"hack_pattern": {"options": {"patterns": patterns}}}
+    b = await bench(store, config=MonitorConfig(preset="signals", signals=options))
+    ex = await b.bash("edit")
+    text = "sys.exit(0)\nhi" + " " * LONG
+    start = time.perf_counter()
+    for path in ("/work/a.py", "/work/b.py"):
+        await b.snapshot(ex, change(path, content=await b.content(text + path)))
+    assert time.perf_counter() - start < 5
+    assert sorted(f.key or "" for f in b.of("hack_pattern")) == [
+        "/work/a.py exit_zero",
+        "/work/b.py exit_zero",
+    ]
+    degraded = [p for p in (e.payload() for e in b.others) if isinstance(p, MonitorDegraded)]
+    assert [d.reason.partition(" at ")[0] for d in degraded] == ["signal hack_pattern failed"]
+    assert "SlowScan" in (degraded[0].detail or "")
+    assert "'hi\\\\s*,?\\\\s+judge' ran past 0.2 s" in (degraded[0].detail or "")
 
 
 async def test_a_long_digit_run_in_a_pytest_summary_scans_in_linear_time(

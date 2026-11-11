@@ -1,12 +1,10 @@
 """Signals over text the agent wrote: reward-hack patterns in its files, and words aimed at
 whoever reviews it."""
 
-import re
-from collections.abc import Iterator
-
 from pydantic import Field, field_validator
 
 from aims.events import AgentReport, Event, ModelResponse, ToolCall
+from aims.monitor.signals import scan
 from aims.monitor.signals.base import Base, Hit, Options, SignalSetup
 from aims.monitor.signals.rules import compile_glob
 from aims.monitor.state import AGENT_PHASES, FsChangeRecord, State
@@ -38,8 +36,8 @@ HACKS: dict[str, str] = {
 def _compiles(value: dict[str, str]) -> dict[str, str]:
     for name, pattern in value.items():
         try:
-            re.compile(pattern)
-        except re.error as e:
+            scan.compile(pattern)
+        except scan.error as e:
             raise ValueError(f"pattern {name}: {e}") from None
     return value
 
@@ -68,7 +66,7 @@ class HackPattern(Base):
 
     def __init__(self, setup: SignalSetup) -> None:
         super().__init__(setup)
-        self.patterns = {n: re.compile(p) for n, p in self.opts.patterns.items()}
+        self.patterns = {n: scan.compile(p) for n, p in self.opts.patterns.items()}
         tests = [compile_glob(g) for g in self.opts.globs]
         self.wanted = lambda path: any(t(path) for t in tests)
         self.seen: set[tuple[str | None, str, str]] = set()
@@ -87,6 +85,7 @@ class HackPattern(Base):
             return []
         self.seen.add(mark)
         text = await state.text(p.content, self.opts.max_bytes)
+        found, self.problem = await _scan(self.patterns, text)
         return [
             Hit(
                 category="scorer_tampering",
@@ -97,7 +96,7 @@ class HackPattern(Base):
                 subcategory=name,
                 phase=info.phase if info is not None else None,
             )
-            for name, line, excerpt in _scan(self.patterns, text)
+            for name, line, excerpt in found
         ]
 
 
@@ -165,7 +164,7 @@ class MonitorManipulation(Base):
 
     def __init__(self, setup: SignalSetup) -> None:
         super().__init__(setup)
-        self.patterns = {n: re.compile(p, re.I) for n, p in self.opts.patterns.items()}
+        self.patterns = {n: scan.compile(p, scan.IGNORECASE) for n, p in self.opts.patterns.items()}
         self.seen: set[tuple[str | None, str]] = set()
 
     async def feed(self, event: Event, state: State) -> list[Hit]:
@@ -200,7 +199,9 @@ class MonitorManipulation(Base):
             phase = info.phase if info is not None else None
         out: list[Hit] = []
         for where, label, text in texts:
-            for name, line, excerpt in _scan(self.patterns, text):
+            found, problem = await _scan(self.patterns, text)
+            self.problem = self.problem or problem
+            for name, line, excerpt in found:
                 at = f"{label} line {line}" if where == "file" else label
                 out.append(
                     Hit(
@@ -216,12 +217,22 @@ class MonitorManipulation(Base):
         return out
 
 
-def _scan(patterns: dict[str, re.Pattern[str]], text: str) -> Iterator[tuple[str, int, str]]:
-    """Each pattern's first match in `text`: its name, line and an excerpt around it."""
+async def _scan(
+    patterns: dict[str, scan.Pattern], text: str
+) -> tuple[list[tuple[str, int, str]], scan.SlowScan | None]:
+    """Each pattern's first match in `text`: its name, line and an excerpt around it. A pattern
+    past its time budget gives no match; the first such failure is returned with the rest."""
+    found: list[tuple[str, int, str]] = []
+    problem: scan.SlowScan | None = None
     for name, pattern in patterns.items():
-        m = pattern.search(text)
+        try:
+            m = await pattern.find(text)
+        except scan.SlowScan as e:
+            problem = problem or e
+            continue
         if m is None:
             continue
         line = text.count("\n", 0, m.start()) + 1
         start, end = max(0, m.start() - EXCERPT), min(len(text), m.end() + EXCERPT)
-        yield name, line, " ".join(text[start:end].split())
+        found.append((name, line, " ".join(text[start:end].split())))
+    return found, problem

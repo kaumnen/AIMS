@@ -157,9 +157,10 @@ class SignalEngine:
     already skipped) and returns the `monitor.flag` drafts to write, deduplicated per (signal,
     agent, key). After writing them the caller passes the written events to `recorded`, before
     the next `feed`, so later flags of a key can name their first flag's seq. `close` returns
-    the final exact counts. A signal that raises gives one `monitor.degraded` draft and keeps
-    running. `run_id` names the run whose blobs hold the events' content: the origin, for a
-    monitor run. Raises SignalError for a config the signals do not accept.
+    the final exact counts. A signal that raises, or leaves a `problem` beside its hits, gives
+    one `monitor.degraded` draft and keeps running. `run_id` names the run whose blobs hold the
+    events' content: the origin, for a monitor run. Raises SignalError for a config the signals
+    do not accept.
     """
 
     def __init__(
@@ -201,6 +202,10 @@ class SignalEngine:
                     continue
                 for hit in hits:
                     self._add(active, hit, record, batch)
+                problem = getattr(active.signal, "problem", None)
+                if isinstance(problem, Exception):
+                    setattr(active.signal, "problem", None)  # noqa: B010
+                    batch.drafts += self._failed(active, problem, record)
         return batch.drafts
 
     def recorded(self, events: Sequence[Event]) -> None:
@@ -236,9 +241,10 @@ class SignalEngine:
     def _failed(self, active: _Active, error: Exception, event: Event | None) -> list[Draft]:
         name = active.signal.name
         at = f" at event {event.seq}" if event is not None else " at close"
-        log.exception("signal %s failed%s", name, at, exc_info=error)
         if active.failed:
+            log.debug("signal %s failed again%s: %s", name, at, error)
             return []
+        log.exception("signal %s failed%s", name, at, exc_info=error)
         active.failed = True
         return [
             Draft(
