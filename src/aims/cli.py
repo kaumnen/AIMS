@@ -138,7 +138,7 @@ def verify(
     try:
         result = verify_run(path)
     except OSError as e:
-        typer.echo(f"error: cannot read {path}: {e.strerror or e}", err=True)
+        _echo(f"error: cannot read {path}: {e.strerror or e}", err=True)
         raise typer.Exit(EXIT_FAILED) from None
     problems = [
         *([result.error] if result.error else []),
@@ -1277,7 +1277,7 @@ def _token_file(path: Path) -> str:
         problem = f"the token file {path} " + (
             "holds characters a token cannot have" if token else "is empty"
         )
-    typer.echo(f"error: {problem}", err=True)
+    _echo(f"error: {problem}", err=True)
     raise typer.Exit(EXIT_FAILED)
 
 
@@ -1295,7 +1295,7 @@ def _local_ui(info: Path) -> dict[str, Any]:
         if isinstance(data, dict) and isinstance(data.get("url"), str):
             return data
         problem = "it holds no url"
-    typer.echo(f"error: cannot read {info}: {problem}", err=True)
+    _echo(f"error: cannot read {info}: {problem}", err=True)
     raise typer.Exit(EXIT_FAILED)
 
 
@@ -1576,7 +1576,7 @@ def runner_cmd(
         try:
             Outbound(str(tls_ca))
         except OSError as e:
-            typer.echo(f"error: cannot load --tls-ca {tls_ca}: {e}", err=True)
+            _echo(f"error: cannot load --tls-ca {tls_ca}: {e}", err=True)
             raise typer.Exit(EXIT_FAILED) from None
     found = _connection(server, token_file, required=True)
     assert found is not None
@@ -1687,10 +1687,10 @@ def push(
     try:
         code = asyncio.run(_push(root, only, url, token))
     except ApiError as e:
-        typer.echo(f"error: {e}", err=True)
+        _echo(f"error: {e}", err=True)
         raise typer.Exit(EXIT_FAILED) from None
     except httpx2.TransportError as e:
-        typer.echo(f"error: cannot reach the control plane at {url}: {e}", err=True)
+        _echo(f"error: cannot reach the control plane at {url}: {e}", err=True)
         raise typer.Exit(EXIT_FAILED) from None
     raise typer.Exit(code)
 
@@ -2134,7 +2134,7 @@ async def _control(
                 _echo(f"{run}: cancelled before it started")
                 return 0
             if wait == 0:
-                typer.echo(f"{action} {run}: sent; `aims control {run} list` shows it")
+                _echo(f"{action} {run}: sent; `aims control {run} list` shows it")
                 return 0
             command = sent.get("command_id")
             deadline = time.monotonic() + wait
@@ -2356,7 +2356,7 @@ async def _db(data_dir: Path | None) -> Any:
     try:
         return await ServerDB.open(path)
     except (OSError, sqlite3.Error, RuntimeError) as e:
-        typer.echo(f"error: cannot open {path}: {e}", err=True)
+        _echo(f"error: cannot open {path}: {e}", err=True)
         raise typer.Exit(EXIT_FAILED) from None
 
 
@@ -2386,7 +2386,7 @@ def token_create(
         raise typer.BadParameter("use viewer, operator or runner", param_hint="--role")
 
     def refuse(message: str) -> NoReturn:
-        typer.echo(f"error: {message}", err=True)
+        _echo(f"error: {message}", err=True)
         raise typer.Exit(EXIT_FAILED)
 
     if file is not None and file.is_dir():
@@ -2614,7 +2614,7 @@ def _write(path: Path, text: str) -> None:
     try:
         path.write_text(text, encoding="utf-8")
     except OSError as e:
-        typer.echo(f"error: cannot write {path}: {e.strerror or e}", err=True)
+        _echo(f"error: cannot write {path}: {e.strerror or e}", err=True)
         raise typer.Exit(EXIT_FAILED) from None
 
 
