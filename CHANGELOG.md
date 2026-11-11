@@ -22,6 +22,13 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - The signals `verifier_hook`, `verifier_anomaly` and `link_redirect` move to version 2 and `submit_vs_score` to version 3. Runs from now on group under a new monitor in `aims rates`.
 - `submit_vs_score` reads the agent's reports and answer sentence by sentence. The last sentence about the checks decides. "All tests pass" after an earlier failure takes the failure back.
 - `link_redirect` raises a symlink's flag to 3 when the verifier reads the link's target. The kernel logs a read under the target's path, so a direct read of the target counts too.
+- The index moves to version 10. Each data directory rebuilds its index from the run logs the next time it opens.
+- `GET /api/runs/{id}/samples` pages with `after=next`. `next` is the seq of the page's last window. It was a time to pass back as `ts_from`.
+- A cursor or seq the index cannot hold answers 422: `after` or `before` below -1, `ts_from` or `ts_to` below 0, an event seq below 0, and any of them past 2^63 - 1. A NUL in `q` answers 422 too.
+- `pause_timeout_s` and `human_timeout_s` take at most 30 days.
+- An event batch that reached the log is returned even when the index failed to take it. The index catches up from the log, at once and then with waits up to 5 minutes. `aims verify` reports an index with a gap, one behind its log after a failed write, and one whose last event is not the log's.
+- A copied event whose time is past what UTC holds is refused as invalid.
+- A deleted run's folder is first renamed to `.deleted.<run id>.<suffix>`. The next start clears any that a crash left.
 
 ### Fixed
 
@@ -53,6 +60,13 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - `link_redirect` flags absolute link targets with `..`, `//` or `./`, such as `/work/../etc/passwd`. Its rise to importance 3 on a verifier read could never fire.
 - When a run ends, the UI reads its flags, sweeps, costs, self-test cases and model checks once more. What the run wrote after the last poll stayed hidden until a reload.
 - The Raw tab keeps events that arrive while a page of the list loads. They were dropped and left a gap.
+- The resource timeline pages every window once. With two sandboxes a window at a page edge was skipped.
+- A search with a NUL character or a cursor past 64 bits no longer answers 500. `aims label` with such a flag number names the missing flag.
+- Text search reads its matches in page order. On a store of 420,000 events a search for a common word took 0.66 s and held up every write. It takes about 1 ms. A search inside one run with a cursor took up to 13 s.
+- An index write cancelled while it waited for the database no longer blocks every later write with "cannot start a transaction within a transaction".
+- A run deleted just before a crash stays deleted. It came back at the next start with its blobs missing.
+- A failed index write no longer leaves a gap in the index or hides the batch from the live monitor. One run the index cannot take no longer stops the data directory from opening.
+- A pause with a timeout too large for a date, or an event dated at the edge of year 9999, no longer fails the index write.
 
 ## [0.2.2] - 2026-11-10
 
