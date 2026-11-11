@@ -1,4 +1,9 @@
-import { type InfiniteData, QueryClient, QueryObserver } from "@tanstack/react-query";
+import {
+  type InfiniteData,
+  InfiniteQueryObserver,
+  QueryClient,
+  QueryObserver,
+} from "@tanstack/react-query";
 import { waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
@@ -173,6 +178,163 @@ test("raw tabs at the end of the log take new events of their types; a search do
   expect(seqs(paged.queryKey)).toEqual([40]);
   expect(seqs(last.queryKey)).toEqual([40, 41, 42, 43]);
   tail.stop();
+});
+
+const range = (from: number, to: number, type = "file.access") =>
+  Array.from({ length: to - from + 1 }, (_, i) => event(from + i, type));
+
+const rawSeqs = (qc: QueryClient, key: readonly unknown[]) =>
+  qc.getQueryData<InfiniteData<RawPage>>(key)?.pages.flatMap((p) => p.items.map((e) => e.seq));
+
+interface Asked {
+  url: URL;
+  answer: (items: Event[], next?: number | null) => void;
+  fail: () => void;
+}
+
+// Page reads the test answers by hand.
+function heldReads(): Asked[] {
+  const asked: Asked[] = [];
+  fetch.mockImplementation((request) => {
+    const held = Promise.withResolvers<Response>();
+    asked.push({
+      url: new URL(request.url),
+      answer: (items, next = null) =>
+        held.resolve(Response.json({ items, next: next === null ? null : String(next) })),
+      fail: () =>
+        held.resolve(
+          Response.json(
+            { type: "about:blank", title: "Server error", status: 500 },
+            { status: 500, headers: { "content-type": "application/problem+json" } },
+          ),
+        ),
+    });
+    return held.promise;
+  });
+  return asked;
+}
+
+const asking = (asked: Asked[], param: string, value: string | null = null) => {
+  const found = asked.find((a) =>
+    value === null ? a.url.searchParams.has(param) : a.url.searchParams.get(param) === value,
+  );
+  if (!found) throw new Error(`no read with ${param}`);
+  return found;
+};
+
+test("events that come while a raw list's first page is read join it once the page lands", async () => {
+  const asked = heldReads();
+  const qc = new QueryClient();
+  const all = rawEventsQuery(RUN, {});
+  const execs = rawEventsQuery(RUN, { types: ["exec.started"] });
+  const { source, tail } = open(qc, 4);
+  const reads = [qc.fetchInfiniteQuery(all), qc.fetchInfiniteQuery(execs)];
+  await waitFor(() => expect(asked).toHaveLength(2));
+  // the server read the pages up to 4; 5 and 6 are streamed before they land, 4 again too
+  source.send({
+    kind: "events",
+    run_id: RUN,
+    events: [event(4, "file.access"), event(5, "exec.started"), event(6, "file.access")],
+  });
+  flush();
+  asking(asked, "types").answer([event(1, "exec.started")]);
+  const plain = asked.find((a) => !a.url.searchParams.has("types"));
+  plain?.answer(range(0, 4));
+  await Promise.all(reads);
+  await waitFor(() => expect(rawSeqs(qc, all.queryKey)).toEqual([0, 1, 2, 3, 4, 5, 6]));
+  expect(rawSeqs(qc, execs.queryKey)).toEqual([1, 5]);
+  source.send({ kind: "events", run_id: RUN, events: [event(7, "exec.started")] });
+  flush();
+  expect(rawSeqs(qc, all.queryKey)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+  expect(rawSeqs(qc, execs.queryKey)).toEqual([1, 5, 7]);
+  tail.stop();
+});
+
+test("events that come while the next or an earlier page is read join after it", async () => {
+  const asked = heldReads();
+  const qc = new QueryClient();
+  const start = rawEventsQuery(RUN, {});
+  const end = rawEventsQuery(RUN, {}, "end");
+  qc.setQueryData(start.queryKey, { ...page(range(0, 4), 4), pageParams: [null] });
+  qc.setQueryData(end.queryKey, {
+    ...page(range(3, 4), null, 3),
+    pageParams: [{ before: Number.MAX_SAFE_INTEGER }],
+  });
+  const { source, tail } = open(qc, 4);
+  const reads = [
+    new InfiniteQueryObserver(qc, start).fetchNextPage(),
+    new InfiniteQueryObserver(qc, end).fetchPreviousPage(),
+  ];
+  await waitFor(() => expect(asked).toHaveLength(2));
+  source.send({ kind: "events", run_id: RUN, events: range(4, 6) });
+  flush();
+  // the next page found nothing past 4 when it was read
+  asking(asked, "after", "4").answer([]);
+  asking(asked, "before", "3").answer(range(0, 2));
+  await Promise.all(reads);
+  await waitFor(() => expect(rawSeqs(qc, start.queryKey)).toEqual([0, 1, 2, 3, 4, 5, 6]));
+  expect(rawSeqs(qc, end.queryKey)).toEqual([0, 1, 2, 3, 4, 5, 6]);
+  tail.stop();
+});
+
+test("a raw list whose read fails takes the held events only if it still reaches the end", async () => {
+  const asked = heldReads();
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const first = rawEventsQuery(RUN, {});
+  const again = rawEventsQuery(RUN, {}, "end");
+  qc.setQueryData(again.queryKey, {
+    ...page(range(0, 4)),
+    pageParams: [{ before: Number.MAX_SAFE_INTEGER }],
+  });
+  const { source, tail } = open(qc, 4);
+  const reads = [
+    qc.fetchInfiniteQuery(first).catch(() => undefined),
+    new InfiniteQueryObserver(qc, again).refetch(),
+  ];
+  await waitFor(() => expect(asked).toHaveLength(2));
+  source.send({ kind: "events", run_id: RUN, events: range(5, 6) });
+  flush();
+  for (const a of asked) a.fail();
+  await Promise.all(reads);
+  await waitFor(() => expect(rawSeqs(qc, again.queryKey)).toEqual([0, 1, 2, 3, 4, 5, 6]));
+  expect(qc.getQueryData(first.queryKey)).toBeUndefined();
+  tail.stop();
+});
+
+test("past a server page of held events a raw list reads on by paging", async () => {
+  const asked = heldReads();
+  const qc = new QueryClient();
+  const all = rawEventsQuery(RUN, {});
+  const { source, tail } = open(qc, 4);
+  const read = qc.fetchInfiniteQuery(all);
+  await waitFor(() => expect(asked).toHaveLength(1));
+  source.send({ kind: "events", run_id: RUN, events: range(5, 1005) });
+  flush();
+  asked[0]?.answer(range(0, 4));
+  await read;
+  const newer = () => qc.getQueryData<InfiniteData<RawPage>>(all.queryKey)?.pages.at(-1)?.newer;
+  await waitFor(() => expect(newer()).toBe(4));
+  source.send({ kind: "events", run_id: RUN, events: [event(1006, "file.access")] });
+  flush();
+  expect(rawSeqs(qc, all.queryKey)).toEqual([0, 1, 2, 3, 4]);
+  tail.stop();
+});
+
+test("a tail stopped while a raw page is read holds nothing and leaves the cache", async () => {
+  const asked = heldReads();
+  const qc = new QueryClient();
+  const all = rawEventsQuery(RUN, {});
+  const { source, tail } = open(qc, 4);
+  const read = qc.fetchInfiniteQuery(all);
+  await waitFor(() => expect(asked).toHaveLength(1));
+  source.send({ kind: "events", run_id: RUN, events: range(5, 6) });
+  flush();
+  tail.stop();
+  expect(qc.getQueryCache().hasListeners()).toBe(false);
+  asked[0]?.answer(range(0, 4));
+  await read;
+  await new Promise((done) => setTimeout(done, 0));
+  expect(rawSeqs(qc, all.queryKey)).toEqual([0, 1, 2, 3, 4]);
 });
 
 test("step events read the rows that can still change once a frame and merge them", async () => {

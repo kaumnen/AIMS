@@ -1,4 +1,4 @@
-import { hashKey, type InfiniteData, type QueryClient } from "@tanstack/react-query";
+import { hashKey, type InfiniteData, type QueryClient, type QueryKey } from "@tanstack/react-query";
 
 import { client, type Schemas } from "./client";
 import type { Event } from "./events";
@@ -26,6 +26,8 @@ const STEP_EVENTS = new Set([
   "exec.finished",
 ]);
 const TAIL_PAGE = 500;
+// What a raw list holds back while its page is read: at most the largest page the server sends.
+const MAX_HELD = 1000;
 
 export interface ToolDraft {
   name: string;
@@ -76,6 +78,12 @@ export class RunTail {
   // waiting for a read of the steps already under way to end
   #waiting = false;
   #stopped = false;
+  // Raw lists whose page read is under way, by query hash, with the events that came meanwhile:
+  // the read writes the pages as they were when it began, so these go on once it is in. "over"
+  // when more came than a list holds back; it then reads on by paging.
+  #held = new Map<string, Event[] | "over">();
+  #unheld: (() => void) | null = null;
+  #replaying = false;
 
   constructor(
     readonly runId: string,
@@ -119,6 +127,9 @@ export class RunTail {
     this.#stopped = true;
     this.#live?.stop();
     this.#live = null;
+    this.#held.clear();
+    this.#unheld?.();
+    this.#unheld = null;
   }
 
   get inflight(): readonly InFlight[] {
@@ -221,25 +232,80 @@ export class RunTail {
     for (const fn of this.#watchers) fn();
   }
 
-  // Raw tabs that reach the end of the log take the new events; a tab with a search or more
-  // pages to load gets them by paging.
+  // Raw tabs that reach the end of the log take the new events of their types; a tab with a
+  // search or more pages to load gets them by paging. A tab whose page is being read takes them
+  // once the page is in.
   #appendRaw(events: readonly Event[]): void {
-    const queries = this.qc.getQueriesData<InfiniteData<RawPage>>({
+    for (const query of this.qc.getQueryCache().findAll({
       queryKey: ["runs", "events", this.runId],
-    });
-    for (const [key, data] of queries) {
-      const filters = (key[3] ?? {}) as RawFilters;
-      const last = data?.pages.at(-1);
-      if (!data || !last || last.newer !== null || filters.q) continue;
+    })) {
+      const filters = (query.queryKey[3] ?? {}) as RawFilters;
+      if (filters.q) continue;
       const types = filters.types ? new Set(filters.types) : null;
-      const held = last.items.at(-1)?.seq ?? -1;
-      const fresh = events.filter((e) => e.seq > held && (types === null || types.has(e.type)));
-      if (fresh.length === 0) continue;
-      this.qc.setQueryData<InfiniteData<RawPage>>(key, {
-        ...data,
-        pages: [...data.pages.slice(0, -1), { ...last, items: [...last.items, ...fresh] }],
-      });
+      const mine = types === null ? events : events.filter((e) => types.has(e.type));
+      if (mine.length === 0) continue;
+      if (query.state.fetchStatus !== "idle" || this.#held.has(query.queryHash)) {
+        this.#hold(query.queryHash, mine);
+      } else this.#append(query.queryKey, mine);
     }
+  }
+
+  #append(key: QueryKey, events: readonly Event[]): void {
+    const data = this.qc.getQueryData<InfiniteData<RawPage>>(key);
+    const last = data?.pages.at(-1);
+    if (!data || !last || last.newer !== null) return;
+    const held = lastSeq(data.pages);
+    const fresh = events.filter((e) => e.seq > held);
+    if (fresh.length === 0) return;
+    this.qc.setQueryData<InfiniteData<RawPage>>(key, {
+      ...data,
+      pages: [...data.pages.slice(0, -1), { ...last, items: [...last.items, ...fresh] }],
+    });
+  }
+
+  #hold(hash: string, events: readonly Event[]): void {
+    const held = this.#held.get(hash);
+    if (held === "over") return;
+    if ((held?.length ?? 0) + events.length > MAX_HELD) this.#held.set(hash, "over");
+    else if (held) held.push(...events);
+    else this.#held.set(hash, [...events]);
+    this.#unheld ??= this.qc.getQueryCache().subscribe(({ query }) => {
+      if (query.state.fetchStatus === "idle" && this.#held.has(query.queryHash)) this.#replay();
+    });
+  }
+
+  // Once the read's own write is in, as syncRuns does: each list whose read ended, in success,
+  // failure or cancel, takes what it held as if it had just come. A list gone takes nothing.
+  #replay(): void {
+    if (this.#replaying) return;
+    this.#replaying = true;
+    queueMicrotask(() => {
+      this.#replaying = false;
+      if (this.#stopped) return;
+      const cache = this.qc.getQueryCache();
+      for (const [hash, held] of this.#held) {
+        const query = cache.get(hash);
+        if (query !== undefined && query.state.fetchStatus !== "idle") continue;
+        this.#held.delete(hash);
+        if (query === undefined) continue;
+        if (held === "over") this.#readOn(query.queryKey);
+        else this.#append(query.queryKey, held);
+      }
+      if (this.#held.size > 0) return;
+      this.#unheld?.();
+      this.#unheld = null;
+    });
+  }
+
+  // More came during the read than the list held back: it reads on past its last event.
+  #readOn(key: QueryKey): void {
+    const data = this.qc.getQueryData<InfiniteData<RawPage>>(key);
+    const last = data?.pages.at(-1);
+    if (!data || !last || last.newer !== null) return;
+    this.qc.setQueryData<InfiniteData<RawPage>>(key, {
+      ...data,
+      pages: [...data.pages.slice(0, -1), { ...last, newer: lastSeq(data.pages) }],
+    });
   }
 
   // Reads the step rows that can still change, each agent's latest and any after it, and
@@ -293,6 +359,15 @@ export class RunTail {
       if (!this.#stopped) this.refreshSteps();
     });
   }
+}
+
+// The seq of a raw list's last event, past pages that came back empty; -1 for none.
+function lastSeq(pages: readonly RawPage[]): number {
+  for (let i = pages.length - 1; i >= 0; i--) {
+    const seq = pages[i]?.items.at(-1)?.seq;
+    if (seq !== undefined) return seq;
+  }
+  return -1;
 }
 
 // The seq to read on from: just before the earliest row that is some agent's latest.
