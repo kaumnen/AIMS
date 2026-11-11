@@ -112,6 +112,7 @@ GONE_US = 10_000_000
 EXIT_GRACE_S = 0.05
 UNKNOWN = "kernel records of an unknown process"
 OWN_GAP = "kernel record gap in the tracer's own records: heartbeats and OOM kills"
+UNHANDLED = "kernel records the tracer's reader failed on"
 # How long a closing sandbox waits for its streams' last holes and counter readings to settle.
 SETTLE_S = 3.0
 # Compile warnings bpftrace gives for this script on every start, each followed by the source
@@ -265,6 +266,7 @@ class Tracer:
         self._drops: deque[tuple[int, int]] = deque()
         self.alive = False
         self.garbled = 0
+        self.unhandled = 0
         self.unrouted = 0
         # Records of processes in no registered sandbox: the runtime's own setup in a sandbox's
         # cgroup, the runner's helpers, sandboxes already closed.
@@ -541,7 +543,7 @@ class Tracer:
                     data = pending.get(message.stream, b"") + message.data
                     *lines, pending[message.stream] = data.split(b"\n")
                     for line in lines:
-                        self._handle(line.decode("utf-8", "surrogateescape"))
+                        self._feed(line)
                     self._fed.set()
             finally:
                 await stream.close()
@@ -557,6 +559,19 @@ class Tracer:
             self._fed.set()
             for route in self._routes.values():
                 route.put(Lost(None, "tracer stopped"))
+
+    def _feed(self, raw: bytes) -> None:
+        """Handle one line. A line the handler fails on costs that record, and the reader goes
+        on. The record may be any sandbox's, so each one logs the loss."""
+        try:
+            self._handle(raw.decode("utf-8", "surrogateescape"))
+        except Exception:
+            self.unhandled += 1
+            # one traceback is enough when every line fails the same way
+            show = log.exception if self.unhandled == 1 else log.debug
+            show("tracer line could not be handled: %r", raw[:500])
+            for route in self._routes.values():
+                route.put(Lost(1, UNHANDLED, scope="tracer"))
 
     def _note(self, text: str) -> None:
         """Log what bpftrace says; known compile warnings and their source lines at debug."""

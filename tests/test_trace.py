@@ -74,6 +74,7 @@ from aims.sandbox.trace import (
 )
 from aims.sandbox.tracer import (
     OWN_GAP,
+    UNHANDLED,
     UNKNOWN,
     Tracer,
     parse_counts,
@@ -1489,3 +1490,32 @@ async def test_a_start_cut_short_leaves_no_unread_error(
     finally:
         loop.set_exception_handler(handler)
     assert errors == []
+
+
+@pytest.mark.anyio
+async def test_a_line_the_handler_fails_on_costs_one_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    route = tracer.register(99, Mounts.parse(MOUNTINFO), SYSCALLS["aarch64"])
+    feed = Feed(tracer)
+    feed("R 0 999")
+    feed(f"E 10 1 1 1000 99 5 3 {hx(b'sh\0')}")
+    drain(route)
+    real = tracer_module.parse
+
+    def parse_or_fail(text: str) -> object:
+        if "/work/bad" in text:
+            raise RuntimeError("boom")
+        return real(text)
+
+    monkeypatch.setattr(tracer_module, "parse", parse_or_fail)
+    tracer._feed(line("W 10 /work/bad", Stamp(30_000, 0, 3, CG)).encode())
+    tracer._feed(line("W 10 /work/good", Stamp(40_000, 0, 4, CG)).encode())
+
+    assert drain(route) == [
+        Lost(1, UNHANDLED, scope="tracer"),
+        File(10, "write", "/work/good", at=Stamp(40, 0, 4, CG)),
+    ]
+    assert tracer.unhandled == 1
+    await tracer.stop()
