@@ -590,6 +590,7 @@ class RuleSignal(Base):
                 self.by_type.setdefault(t, []).append(c)
         self.event_types = frozenset(self.by_type)
         self.windows: dict[tuple[str, str | None], deque[tuple[float, int, Any]]] = {}
+        self.values: dict[tuple[str, str | None], dict[Any, int]] = {}
 
     @classmethod
     def build(cls, setup: SignalSetup) -> Sequence[Rule]:
@@ -603,8 +604,20 @@ class RuleSignal(Base):
         rule = c.rule
         if rule.count <= 1 and rule.window_s is None and not rule.distinct:
             return [event.seq]
-        now = event.ts.timestamp()
         key = (rule.id, event.agent_id)
+        if rule.distinct and rule.window_s is None:
+            # Over the whole run each value is kept with the first match that had it. A key
+            # holds fewer values than the count, since reaching it flags and starts over.
+            value = await c.value(event, payload, state)
+            if value is None:
+                return None
+            values = self.values.setdefault(key, {})
+            values.setdefault(value, event.seq)
+            if len(values) < rule.count:
+                return None
+            del self.values[key]
+            return list(values.values())
+        now = event.ts.timestamp()
         seen = self.windows.setdefault(key, deque())
         if rule.window_s is not None:
             cutoff = now - rule.window_s
@@ -660,9 +673,12 @@ class RuleSignal(Base):
 
 
 def rule_signal(rule: Rule) -> type[RuleSignal]:
-    """A signal class for one scenario rule, named by its id."""
+    """A signal class for one scenario rule, named by its id. Its version is the rule's hash.
+    A rule that counts distinct values over the whole run adds `.2`, since a fix changed what
+    it flags."""
+    version = rules_digest([rule])[:12]
+    if rule.distinct and rule.window_s is None:
+        version += ".2"
     return type(
-        f"Rule_{rule.id}",
-        (RuleSignal,),
-        {"name": rule.id, "version": rules_digest([rule])[:12], "rules": (rule,)},
+        f"Rule_{rule.id}", (RuleSignal,), {"name": rule.id, "version": version, "rules": (rule,)}
     )

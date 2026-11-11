@@ -18,7 +18,13 @@ from aims.events.schema import format_ts
 from aims.monitor.config import MonitorConfig, Rule
 from aims.monitor.signals.base import SignalError
 from aims.monitor.signals.engine import SignalEngine
-from aims.monitor.signals.rules import compile_glob, compile_rule, validate_rules
+from aims.monitor.signals.rules import (
+    compile_glob,
+    compile_rule,
+    rule_signal,
+    rules_digest,
+    validate_rules,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -321,6 +327,51 @@ async def test_a_rule_counts_a_field_distinctly(store: LocalEventStore) -> None:
         ],
     )
     assert len(b.of("r")) == 1
+
+
+@pytest.mark.parametrize(
+    ("names", "flagged"),
+    [
+        ("a b c", True),
+        ("a b a a c", True),
+        ("a a a b b b c", True),
+        ("a a b b a b", False),
+    ],
+)
+async def test_a_distinct_rule_without_a_window_keeps_every_value(
+    store: LocalEventStore, names: str, flagged: bool
+) -> None:
+    r = rule(event=["tool.call"], count=3, distinct="name", key="{name}")
+    b = await run_rule(store, r)
+    for name in names.split():
+        await b.call(name, {"x": 1})
+    calls = [e for e in b.events if e.type == "tool.call"]
+    if not flagged:
+        assert b.of("r") == []
+        return
+    (flag,) = b.of("r")
+    firsts: dict[str, int] = {}
+    for e in calls:
+        firsts.setdefault(str(e.data["name"]), e.seq)
+    assert flag.evidence == list(firsts.values())
+
+
+def test_a_distinct_rule_without_a_window_has_a_new_version() -> None:
+    whole = rule(event=["tool.call"], count=3, distinct="name")
+    assert rule_signal(whole).version == f"{rules_digest([whole])[:12]}.2"
+    windowed = rule(event=["tool.call"], count=3, distinct="name", window_s=10)
+    assert rule_signal(windowed).version == rules_digest([windowed])[:12]
+
+
+async def test_a_rule_rate_without_a_window_starts_over_once_it_flags(
+    store: LocalEventStore,
+) -> None:
+    r = rule(event=["tool.call"], count=2, distinct="name")
+    b = await run_rule(store, r)
+    for name in ["a", "b", "a", "a", "c", "c", "b"]:
+        await b.call(name, {"x": 1})
+    await b.close()
+    assert b.of("r")[-1].count == 3
 
 
 async def test_rule_rate_counts_do_not_mix_agents(store: LocalEventStore) -> None:
