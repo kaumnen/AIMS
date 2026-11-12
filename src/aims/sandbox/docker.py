@@ -7,7 +7,7 @@ import re
 import socket
 import time
 import uuid
-from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from typing import Any, Self
 
 import aiodocker
@@ -532,6 +532,8 @@ class DockerSandbox:
         self._frozen_s = 0.0
         self._killed = False
         self._freeze = asyncio.Lock()
+        self._running = asyncio.Event()
+        self._running.set()
         self._deadlines: dict[asyncio.Timeout, float | None] = {}
 
     @classmethod
@@ -657,22 +659,24 @@ class DockerSandbox:
             return int((time.monotonic() - start) * 1000)
 
         user = f"{uid}:{uid if gid is None else gid}"
+        frozen = self.frozen_s()
         try:
-            exe = await self._container.exec(
-                list(argv),
-                user=user,
-                workdir=cwd,
-                stdout=True,
-                stderr=True,
-                stdin=stdin is not None,
-                environment=dict(env) if env else None,
+            exe = await self._unpaused(
+                lambda: self._container.exec(
+                    list(argv),
+                    user=user,
+                    workdir=cwd,
+                    stdout=True,
+                    stderr=True,
+                    stdin=stdin is not None,
+                    environment=dict(env) if env else None,
+                )
             )
         except aiodocker.DockerError as e:
             return Outcome("failed", None, None, elapsed(), error=e.message)
         end = "exited"
         pid: int | None = None
         feeder: asyncio.Task[None] | None = None
-        frozen = self.frozen_s()
         deadline = asyncio.timeout(timeout_ms / 1000 + GRACE_MS / 1000 + DRAIN_S)
         sent = False
 
@@ -680,12 +684,21 @@ class DockerSandbox:
             nonlocal sent
             sent = True
 
+        async def open_() -> Any:
+            nonlocal sent
+            try:
+                return await open_stream(exe.start(detach=False), on_send=sending)
+            except aiodocker.DockerError:
+                # The daemon answered, and not with a started exec.
+                sent = False
+                raise
+
         try:
             async with deadline:
                 self._deadlines[deadline] = None
                 if self._paused_at is not None:
                     self._hold(deadline)
-                stream = await open_stream(exe.start(detach=False), on_send=sending)
+                stream = await self._unpaused(open_)
                 try:
                     if stdin is not None:
                         feeder = asyncio.create_task(_feed(stream, stdin))
@@ -729,6 +742,32 @@ class DockerSandbox:
         if active >= timeout_ms:
             end = "timeout"
         return Outcome(end, exit_code, pid, duration)
+
+    async def _unpaused[T](self, call: Callable[[], Awaitable[T]]) -> T:
+        """Run `call`, an exec create or start. Docker refuses both while the container is
+        paused, and a pause can land just before either. The call then waits for the resume and
+        runs again: a refused exec starts fine once the container runs.
+
+        Docker freezes the container before `pause` returns here, so the wait first lets a
+        pause or resume under way finish. A refusal with no pause of this sandbox to wait for
+        is tried once more, as the pause may be over by then. A second one in a row is raised:
+        something else paused the container."""
+        again = True
+        while True:
+            try:
+                return await call()
+            except aiodocker.DockerError as e:
+                if self._killed or not _conflict(e, "is paused"):
+                    raise
+                async with self._freeze:
+                    pass
+                if self._paused_at is not None:
+                    await self._running.wait()
+                    again = True
+                elif again:
+                    again = False
+                else:
+                    raise
 
     async def _end(self, exe: Any, argv: Sequence[str], user: str) -> None:
         """End what a cancelled exec started. Like aims-exec at the deadline it kills the
@@ -886,6 +925,7 @@ class DockerSandbox:
 
     def _frozen(self) -> None:
         self._paused_at = time.monotonic()
+        self._running.clear()
         for deadline in self._deadlines:
             self._hold(deadline)
 
@@ -894,6 +934,7 @@ class DockerSandbox:
             return
         self._frozen_s += time.monotonic() - self._paused_at
         self._paused_at = None
+        self._running.set()
         now = asyncio.get_running_loop().time()
         for deadline, left in self._deadlines.items():
             if left is not None:

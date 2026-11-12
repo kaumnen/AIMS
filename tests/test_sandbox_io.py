@@ -747,6 +747,144 @@ async def test_a_cancelled_exec_in_a_paused_sandbox_ends_at_once(
     assert finished["end"] == "cancelled"
 
 
+async def test_an_exec_in_a_paused_sandbox_waits_for_the_resume(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    """Docker refuses an exec create in a paused container. The exec waits, and the wait does
+    not count against its timeout."""
+    _, sb = await sandbox(backend, store)
+    inner = sb.sandbox
+    assert isinstance(inner, DockerSandbox)
+    try:
+        await inner.pause()
+        task = asyncio.create_task(sb.exec("echo ok", timeout_s=1))
+        await asyncio.sleep(2)
+        assert not task.done()
+        await inner.resume()
+        async with asyncio.timeout(10):
+            result = await task
+    finally:
+        await sb.close()
+
+    assert (result.finished.end, result.finished.exit_code) == ("exited", 0)
+    assert result.stdout == b"ok\n"
+    assert result.finished.duration_ms >= 2000
+
+
+async def test_an_exec_paused_before_its_start_waits_for_the_resume(
+    backend: DockerBackend, store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Docker also refuses the start of an exec made before the pause."""
+    _, sb = await sandbox(backend, store)
+    inner = sb.sandbox
+    assert isinstance(inner, DockerSandbox)
+    container = inner._container
+    create = container.exec
+    made = asyncio.Event()
+
+    async def create_then_pause(*args: Any, **kw: Any) -> Exec:
+        exe = await create(*args, **kw)
+        monkeypatch.setattr(container, "exec", create)
+        await inner.pause()
+        made.set()
+        return exe
+
+    try:
+        monkeypatch.setattr(container, "exec", create_then_pause)
+        task = asyncio.create_task(sb.exec("echo ok", timeout_s=1))
+        async with asyncio.timeout(10):
+            await made.wait()
+        await asyncio.sleep(2)
+        assert not task.done()
+        await inner.resume()
+        async with asyncio.timeout(10):
+            result = await task
+    finally:
+        await sb.close()
+
+    assert (result.finished.end, result.finished.exit_code) == ("exited", 0)
+    assert result.stdout == b"ok\n"
+
+
+async def test_an_exec_waits_for_a_pause_docker_has_not_answered_yet(
+    backend: DockerBackend, store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Docker freezes the container before the pause call returns. An exec refused in that
+    gap waits for the pause to land, then for the resume."""
+    _, sb = await sandbox(backend, store)
+    inner = sb.sandbox
+    assert isinstance(inner, DockerSandbox)
+    container = inner._container
+    pause = container.pause
+    frozen, answer = asyncio.Event(), asyncio.Event()
+
+    async def slow_pause() -> None:
+        await pause()
+        frozen.set()
+        await answer.wait()
+
+    try:
+        monkeypatch.setattr(container, "pause", slow_pause)
+        pausing = asyncio.create_task(inner.pause())
+        async with asyncio.timeout(10):
+            await frozen.wait()
+        assert not inner.paused
+        task = asyncio.create_task(sb.exec("echo ok", timeout_s=10))
+        await asyncio.sleep(0.5)
+        assert not task.done()
+        answer.set()
+        await pausing
+        await asyncio.sleep(0.5)
+        assert inner.paused
+        assert not task.done()
+        await inner.resume()
+        async with asyncio.timeout(10):
+            result = await task
+    finally:
+        answer.set()
+        await sb.close()
+
+    assert (result.finished.end, result.finished.exit_code) == ("exited", 0)
+
+
+async def test_an_exec_fails_when_something_else_paused_the_container(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    """With no pause of this sandbox to wait out, the refusal is the exec's outcome."""
+    _, sb = await sandbox(backend, store)
+    inner = sb.sandbox
+    assert isinstance(inner, DockerSandbox)
+    try:
+        await inner._container.pause()
+        async with asyncio.timeout(10):
+            result = await sb.exec("echo ok", timeout_s=10)
+    finally:
+        await sb.close()
+
+    assert result.finished.end == "failed"
+    assert "is paused" in (result.finished.error or "")
+
+
+async def test_a_kill_ends_an_exec_that_waits_for_a_resume(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    _, sb = await sandbox(backend, store)
+    inner = sb.sandbox
+    assert isinstance(inner, DockerSandbox)
+    try:
+        await inner.pause()
+        task = asyncio.create_task(sb.exec("echo ok", timeout_s=10))
+        await asyncio.sleep(0.5)
+        assert not task.done()
+        await inner.kill()
+        async with asyncio.timeout(10):
+            result = await task
+    finally:
+        await sb.close()
+
+    assert result.finished.end == "failed"
+
+
 async def test_an_exec_stream_that_fails_to_open_is_closed(
     backend: DockerBackend, store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
