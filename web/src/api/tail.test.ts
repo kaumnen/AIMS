@@ -338,7 +338,7 @@ test("a tail stopped while a raw page is read holds nothing and leaves the cache
   expect(rawSeqs(qc, all.queryKey)).toEqual([0, 1, 2, 3, 4]);
 });
 
-test("a raw list takes the stream a page at a time and lets its oldest pages go", async () => {
+test("a raw list takes the stream a page at a time up to 10,000 events, then reads on", async () => {
   const qc = new QueryClient();
   const last = rawEventsQuery(RUN, {}, "end");
   // the list holds the last full page of the log
@@ -360,20 +360,26 @@ test("a raw list takes the stream a page at a time and lets its oldest pages go"
   expect(data()?.pages.map((p) => p.items.length)).toEqual([200, 200, 100]);
   expect(data()?.pageParams.at(-1)).toEqual({ after: 599 });
 
-  // past 10,000 events the oldest pages go, down to half
-  source.send({ kind: "events", run_id: RUN, events: range(700, 10_399) });
+  source.send({ kind: "events", run_id: RUN, events: range(700, 10_199) });
   flush();
-  expect(rawSeqs(qc, last.queryKey)).toEqual(range(5400, 10_399).map((e) => e.seq));
-  expect(data()?.pages.every((p) => p.items.length <= 200)).toBe(true);
-  expect(data()?.pageParams).toHaveLength(data()?.pages.length ?? 0);
-  expect(data()?.pages[0]?.older).toBe(5400);
-  // and are read again on the way up
-  fetch.mockImplementation(async (request) => {
-    const before = Number(new URL(request.url).searchParams.get("before"));
-    return Response.json({ items: range(before - 200, before - 1), next: String(before - 200) });
-  });
-  await new InfiniteQueryObserver(qc, last).fetchPreviousPage();
-  expect(rawSeqs(qc, last.queryKey)).toEqual(range(5200, 10_399).map((e) => e.seq));
+  expect(data()?.pages).toHaveLength(50);
+  expect(data()?.pages.every((p) => p.items.length === 200)).toBe(true);
+  expect(data()?.pageParams).toHaveLength(50);
+
+  // past 10,000 events the list takes no more: its oldest rows may be the ones in view
+  source.send({ kind: "events", run_id: RUN, events: range(10_200, 10_399) });
+  flush();
+  expect(rawSeqs(qc, last.queryKey)).toEqual(range(200, 10_199).map((e) => e.seq));
+  expect(data()?.pages.at(-1)?.newer).toBe(10_199);
+  // a reader at the end reads on, which lets the oldest page go; one at the start reads back,
+  // which lets the newest go
+  rawServer(() => range(0, 10_399));
+  const view = new InfiniteQueryObserver(qc, last);
+  await view.fetchNextPage();
+  expect(rawSeqs(qc, last.queryKey)).toEqual(range(400, 10_399).map((e) => e.seq));
+  await view.fetchPreviousPage();
+  expect(rawSeqs(qc, last.queryKey)).toEqual(range(200, 10_199).map((e) => e.seq));
+  expect(data()?.pages.at(-1)?.newer).toBe(10_199);
   tail.stop();
 });
 

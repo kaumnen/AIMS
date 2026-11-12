@@ -21,6 +21,8 @@ export type CallCost = Schemas["CallCost"];
 const STEP_PAGE = 200;
 const EXEC_PAGE = 200;
 export const RAW_PAGE = 200;
+// The pages a raw list holds at most.
+export const RAW_PAGES = 50;
 const MAX_EVENTS = 1000;
 // The scrubber reads a whole run; this caps it at 50 pages of each kind.
 const MAX_PAGES = 50;
@@ -245,6 +247,9 @@ export function rawEventsQuery(runId: string, filters: RawFilters, anchor: RawAn
     initialPageParam: (anchor === "end" ? { before: END } : null) as RawCursor,
     getNextPageParam: (last) => (last.newer === null ? null : { after: last.newer }),
     getPreviousPageParam: (first) => (first.older === null ? null : { before: first.older }),
+    // past it, a page read on lets the first page go and one read back the last: the end far
+    // from the reader
+    maxPages: RAW_PAGES,
     staleTime: Infinity,
   });
 }
