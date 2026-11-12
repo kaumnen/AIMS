@@ -3,7 +3,7 @@ import { createRootRouteWithContext, Outlet } from "@tanstack/react-router";
 import { useEffect } from "react";
 
 import { onUnauthorized } from "@/api/client";
-import { signedOut, whoami } from "@/api/session";
+import { signedOut, watchSession, whoami } from "@/api/session";
 import { Crumbs } from "@/components/crumbs";
 import { Header } from "@/components/header";
 import { LiveProvider } from "@/components/live";
@@ -28,6 +28,7 @@ function Root() {
     };
     return onUnauthorized(recheck);
   }, [queryClient]);
+  useEffect(() => watchSession(queryClient), [queryClient]);
 
   if (me.isPending) return null;
   if (me.isError) {

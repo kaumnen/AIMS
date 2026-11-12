@@ -180,6 +180,46 @@ test("a session started in another tab shows nothing the last one loaded", async
   expect(screen.queryByText("operator-only")).toBeNull();
 });
 
+const sessionReads = () =>
+  fetch.mock.calls.filter(([r]) => r.method === "GET" && new URL(r.url).pathname === "/api/session")
+    .length;
+
+test("a tab that comes back after another signed in as someone else shows the new one", async () => {
+  serveScoreRuns();
+  await renderAt("/runs?kind=score");
+  await screen.findByText("operator-only");
+  vi.mocked(reconnectLive).mockClear();
+  // another tab signs in as vera, and this one never saw its own session end
+  me = { name: "vera", role: "viewer", auth: true };
+  act(() => void window.dispatchEvent(new Event("focus")));
+  expect(await screen.findByRole("button", { name: /vera/ })).toBeTruthy();
+  expect(await screen.findByText(/No runs yet/)).toBeTruthy();
+  expect(screen.queryByText("operator-only")).toBeNull();
+  expect(reconnectLive).toHaveBeenCalled();
+});
+
+test("a tab that comes back to the same session keeps what it holds", async () => {
+  serveScoreRuns();
+  await renderAt("/runs?kind=score");
+  await screen.findByText("operator-only");
+  const reads = sessionReads();
+  const all = fetch.mock.calls.length;
+  act(() => void document.dispatchEvent(new Event("visibilitychange")));
+  await waitFor(() => expect(sessionReads()).toBe(reads + 1));
+  await act(() => Promise.resolve());
+  expect(fetch.mock.calls.length).toBe(all + 1);
+  expect(screen.getByText("operator-only")).toBeTruthy();
+  expect(screen.getByRole("button", { name: /op/ })).toBeTruthy();
+});
+
+test("a tab that comes back after its session ended elsewhere asks to sign in", async () => {
+  await renderAt("/runs");
+  await screen.findByRole("heading", { name: "Runs" });
+  signedIn = false;
+  act(() => void window.dispatchEvent(new Event("focus")));
+  expect(await screen.findByLabelText("Token")).toBeTruthy();
+});
+
 test("the header shows runner and tracer health from the stream", async () => {
   await renderAt("/runs");
   await screen.findByRole("heading", { name: "Runs" });
