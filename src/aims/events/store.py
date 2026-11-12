@@ -683,17 +683,18 @@ class LocalEventStore:
                     await signal.wait()
 
     async def _indexed(self, run_id: str, events: Sequence[Event], head: Head) -> None:
-        """Index `events`; once the run seals, name its variant from its truth file. A review's
-        first batch also notifies the run it reviews, whose `reviews` count just changed."""
-        await self._index.add(events, head)
+        """Index `events`; the batch that seals the run names its variant from its truth file
+        in the same write. A review's first batch also notifies the run it reviews, whose
+        `reviews` count just changed."""
+        variant = None
+        if head.finished and any(e.type == RunFinished.type for e in events):
+            truth = await asyncio.to_thread(_read_truth, self._dir(run_id))
+            variant = None if truth is None else _variant(truth)
+        await self._index.add(events, head, variant=variant)
         first = events[0] if events else None
         if first is not None and first.seq == 0 and isinstance(o := first.data.get("origin"), str):
             for listener in self.listeners:
                 listener(o)
-        if head.finished and any(e.type == RunFinished.type for e in events):
-            truth = await asyncio.to_thread(_read_truth, self._dir(run_id))
-            if truth is not None:
-                await self._index.set_variant(run_id, _variant(truth))
 
     def truth_path(self, run_id: str) -> Path:
         return self._dir(run_id) / TRUTH

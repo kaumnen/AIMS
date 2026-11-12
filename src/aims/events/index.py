@@ -694,10 +694,11 @@ class Index:
         async with self._write():
             await self._db.execute("update runs set status = 'corrupt' where run_id = ?", (run_id,))
 
-    async def add(self, events: Sequence[Event], head: Head) -> None:
+    async def add(self, events: Sequence[Event], head: Head, *, variant: str | None = None) -> None:
         """Index events up to `head`. Rows already present are left alone. A batch that starts
         past the event after the run's last indexed one raises IndexGap: the index never skips
-        an event."""
+        an event. The batch that seals the run names its `variant`, from its truth file, and
+        drops its cost row, as `set_variant` does."""
         if not events:
             return
         run_id = events[0].run_id
@@ -793,6 +794,11 @@ class Index:
                     head.seq,
                 ),
             )
+            if finished is not None and finished.seq > last:
+                await self._db.execute(
+                    "update runs set variant = ? where run_id = ?", (variant, run_id)
+                )
+                await self._db.execute("delete from run_costs where run_id = ?", (run_id,))
 
     async def _totals(self, run_id: str, fresh: Sequence[Event]) -> None:
         """Add the steps, cost and reward of events not indexed yet to the run's row. Cost adds

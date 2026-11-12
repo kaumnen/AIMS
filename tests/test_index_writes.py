@@ -185,12 +185,12 @@ class Breaker:
         self.raised = 0
         real = Index.add
 
-        async def add(index: Index, events: Sequence[Event], head: Head) -> None:
+        async def add(index: Index, events: Sequence[Event], head: Head, **kw: Any) -> None:
             if self.left > 0 and events and runs(events[0].run_id):
                 self.left -= 1
                 self.raised += 1
                 raise error
-            await real(index, events, head)
+            await real(index, events, head, **kw)
 
         monkeypatch.setattr(Index, "add", add)
         monkeypatch.setattr(store_module, "RETRY_S", 0.01)

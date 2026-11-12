@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from cp import CP, control_plane
 from test_estimate import load_scenario, record, write
+from test_index_writes import eventually
 from test_server import FakeRunner, ship
 
 from aims.events import (
@@ -99,6 +100,34 @@ async def test_a_sealed_run_names_its_series_and_its_variant(local: LocalEventSt
     again = await local.run(first)
     assert again is not None
     assert (again.series, again.variant) == ("nightly", "unobserved")
+
+
+async def test_a_seal_whose_variant_fails_to_index_names_it_once_caught_up(
+    local: LocalEventStore,
+) -> None:
+    tries: list[int] = []
+
+    def fail_once() -> int:
+        tries.append(1)
+        if len(tries) == 1:
+            raise RuntimeError("disk I/O error")
+        return 1
+
+    db = local._index._db
+    await db.create_function("fail_once", 0, fail_once)
+    await db.execute(
+        "create temp trigger hold before update of variant on main.runs begin"
+        " select fail_once(); end"
+    )
+    run_id = await sealed(local)
+
+    async def caught_up() -> bool:
+        return run_id not in local._lags
+
+    await eventually(local, caught_up)
+    info = await local.run(run_id)
+    assert info is not None
+    assert (info.status, info.variant, len(tries)) == ("completed", "unobserved", 2)
 
 
 async def test_a_sealed_run_ships_its_truth_by_its_own_path(cp: CP, local: LocalEventStore) -> None:
