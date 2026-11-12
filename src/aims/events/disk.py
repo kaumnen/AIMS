@@ -22,6 +22,12 @@ def write_all(fd: int, data: bytes) -> None:
 
 def make_dir(path: Path, *, parents: bool = False) -> None:
     """Make directory `path` if it is missing and sync its parent, so its entry is durable.
-    The parent is synced even when `path` existed, since another call may have just made it."""
+    The parent is synced even when `path` existed, since another call may have just made it.
+    With `parents`, each directory made above `path` is synced too, as it holds the entry of
+    the next one, and so is the directory above the topmost one made."""
+    made = [path]
+    while parents and made[-1].parent != made[-1] and not made[-1].parent.exists():
+        made.append(made[-1].parent)
     path.mkdir(parents=parents, exist_ok=True)
-    sync_dir(path.parent)
+    for new in reversed(made):
+        sync_dir(new.parent)

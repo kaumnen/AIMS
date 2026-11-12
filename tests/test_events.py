@@ -44,6 +44,7 @@ from aims.events import (
 )
 from aims.events.blobs import ZSTD_MAGIC
 from aims.events.chain import GENESIS, Head, digest, follow, seal
+from aims.events.disk import make_dir
 from aims.events.schema import now, text_of
 from aims.events.store import INLINE_LIMIT, LOG, _append_line, _write_private
 from aims.run import truth
@@ -892,6 +893,17 @@ async def test_a_new_run_syncs_its_entries_before_its_lines(
         synced.clear()
         await store.put_blob(run_id, b"first")
         assert synced.index(ident(run_dir)) < synced.index(ident(run_dir / "blobs"))
+
+
+def test_a_directory_made_with_its_parents_syncs_each_new_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    synced = fsyncs(monkeypatch)
+    make_dir(tmp_path / "a" / "b" / "c", parents=True)
+    assert synced == [ident(tmp_path), ident(tmp_path / "a"), ident(tmp_path / "a" / "b")]
+    synced.clear()
+    make_dir(tmp_path / "a" / "b" / "c", parents=True)
+    assert synced == [ident(tmp_path / "a" / "b")]
 
 
 async def test_a_copied_run_syncs_its_entries_before_its_lines(
