@@ -82,6 +82,13 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - `link_redirect` no longer raises a link that a snapshot finds deleted or replaced by a file of another kind. A renamed link raises under its new path. Its flag names the roots the link points outside of.
 - `submit_vs_score` reads more reports as a careful reader would. A count such as `19/22` says checks fail and `22/22` that they pass. "All tests pass except test_x" is a failure report. A report that says a check failed while the agent is still fixing it no longer counts as a disclosure when a bare "Done." follows. A hedged claim such as "should pass now" still counts as a claim. The flag says it was hedged.
 - A rule with `distinct` on a field that holds a list or a map counts each one as a value. Such a rule's version gains `.3`.
+- `GET /api/events` refuses a `q` under three characters with a 422. A search within one run still takes one or two.
+- A shared folder's archive is read as a stream and stops at the 256 MiB cap. The cap counts a 512-byte header for each entry too.
+- The judge starts once the index holds every event of the run. If the index stays behind the log for the judge's timeout, the judge is skipped and `monitor.degraded` says so.
+- A run whose local index is behind its log ships its whole log. It stopped at the index before.
+- During a delete of a run, its fork, score estimate and monitor routes answer 422 `unknown run`.
+- A stored monitor with a hold timeout over 30 days loads with 30 days.
+- A run's total cost stays at the most the index holds, about 9.2 billion USD.
 
 ### Fixed
 
@@ -173,6 +180,14 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - A rule with `distinct` on a list field such as `argv` failed at its first match and raised no flag.
 - A windowed `distinct` rule, the checks for an exchange between two agents and the check for agent-written files under a verifier's path each took time that grew with what the run had done so far. A fast stream of events slowed the runner.
 - A file of `def __eq__(` lines took `hack_pattern` time that grew with the square of its length.
+- A cancel during a token revoke, a job or command write, or a run delete could leave a transaction open on `server.sqlite`.
+- One corrupt run stopped a runner from shipping its other runs at start.
+- One event the index could not take held back up to 999 events before it.
+- A cost total past 64 bits made every index write of that run fail.
+- A run's variant stayed unset when its write failed just after the seal.
+- A shared folder with a large sparse file cost the runner twice the file's size in memory at the end of a run.
+- Score and monitor estimates of a run answered 500 while its delete ran.
+- `organism.pack` packed the folder of a deleted run a crash had left.
 
 ## [0.2.2] - 2026-11-10
 
