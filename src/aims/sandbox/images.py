@@ -14,9 +14,9 @@ from datetime import UTC, datetime
 from importlib.resources import files
 from importlib.resources.abc import Traversable
 from pathlib import Path
-from typing import Any
 
 import aiodocker
+from aiodocker.jsonstream import json_stream_list
 
 log = logging.getLogger("aims.sandbox")
 
@@ -84,7 +84,7 @@ async def ensure_image(
     prefix = registry(env)
     digest = published().get(tag)
     remote = f"{prefix}/{tag.partition(':')[0]}@{digest}" if prefix and digest else None
-    return await _build(docker, tag, remote=remote, fileobj=io.BytesIO(data), encoding="gzip")
+    return await _build(docker, tag, data, remote=remote)
 
 
 async def remove_old(
@@ -174,11 +174,18 @@ async def _exists(docker: aiodocker.Docker, tag: str) -> bool:
 
 
 async def _build(
-    docker: aiodocker.Docker, tag: str, *, remote: str | None = None, **kwargs: Any
+    docker: aiodocker.Docker,
+    tag: str,
+    data: bytes,
+    *,
+    dockerfile: str = "Dockerfile",
+    remote: str | None = None,
 ) -> str:
-    """Build `tag` unless it exists or the image `remote` can stand in for it, one build of a
-    tag at a time on this host: on Docker's containerd image store a second build of a tag
-    deletes the image the first one made."""
+    """Build `tag` from the gzipped tar build context `data` unless it exists or the image
+    `remote` can stand in for it, one build of a tag at a time on this host: on Docker's
+    containerd image store a second build of a tag deletes the image the first one made. A
+    cancel stops Docker's build before the lock goes. A build that fails or is cut leaves no
+    step container."""
     if await _exists(docker, tag):
         return tag
     async with _host_lock(tag):
@@ -187,8 +194,37 @@ async def _build(
         if remote is not None and await _pull(docker, remote, tag):
             return tag
         log.info("building %s", tag)
-        await docker.images.build(tag=tag, labels={"aims.managed": "1"}, **kwargs)
+        params = {
+            "t": tag,
+            "dockerfile": dockerfile,
+            "labels": json.dumps({"aims.managed": "1"}),
+            "forcerm": "1",
+        }
+        headers = {"Content-Type": "application/x-tar", "Content-Encoding": "gzip"}
+        await _post(docker, "build", params, data=data, headers=headers)
     return tag
+
+
+async def _post(
+    docker: aiodocker.Docker,
+    path: str,
+    params: dict[str, str],
+    *,
+    data: bytes | None = None,
+    headers: dict[str, str] | None = None,
+) -> None:
+    """Make the Docker call `path`, a build or a pull, and read its progress to the end; an
+    error in the progress raises. A cancel or an error closes the call's connection, which
+    makes Docker stop the work. aiodocker's own build and pull keep it open, so Docker goes
+    on to the end."""
+    # aiodocker has no public call that closes it, so this uses its private one.
+    async with docker._query(
+        path, "POST", params=params, data=data, headers=headers, timeout=None
+    ) as response:
+        try:
+            await json_stream_list(response)
+        finally:
+            response.close()
 
 
 async def _pull(docker: aiodocker.Docker, remote: str, tag: str) -> bool:
@@ -199,7 +235,7 @@ async def _pull(docker: aiodocker.Docker, remote: str, tag: str) -> bool:
     try:
         if not await _exists(docker, remote):
             log.info("pulling %s", remote)
-            await docker.images.pull(source, tag=digest)
+            await _post(docker, "images/create", {"fromImage": source, "tag": digest})
         await docker.images.tag(remote, repo, tag=version)
     except aiodocker.DockerError as e:
         if e.status == DAEMON_DOWN:
@@ -211,12 +247,14 @@ async def _pull(docker: aiodocker.Docker, remote: str, tag: str) -> bool:
     return True
 
 
+def _lock_path(tag: str) -> Path:
+    name = tag.replace(":", "-").replace("/", "-")
+    return Path(tempfile.gettempdir()) / f"aims-build-{name}.lock"
+
+
 @contextlib.asynccontextmanager
 async def _host_lock(tag: str, poll: float = 0.2) -> AsyncGenerator[None]:
-    path = (
-        Path(tempfile.gettempdir()) / f"aims-build-{tag.replace(':', '-').replace('/', '-')}.lock"
-    )
-    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    fd = os.open(_lock_path(tag), os.O_RDWR | os.O_CREAT, 0o600)
     try:
         while True:
             try:
@@ -241,7 +279,7 @@ async def ensure_pulled(docker: aiodocker.Docker, image: str) -> dict:
         name, tag = image.split("@", 1)
     elif ":" in image.rsplit("/", 1)[-1]:
         name, tag = image.rsplit(":", 1)
-    await docker.images.pull(name, tag=tag)
+    await _post(docker, "images/create", {"fromImage": name, "tag": tag})
     return await docker.images.inspect(image)
 
 
@@ -262,13 +300,7 @@ async def ensure_built(
     tag = built_tag(context, dockerfile)
     if await _exists(docker, tag) and await _touch(docker, tag):
         return tag
-    return await _build(
-        docker,
-        tag,
-        fileobj=io.BytesIO(gzip.compress(context, mtime=0)),
-        encoding="gzip",
-        path_dockerfile=dockerfile,
-    )
+    return await _build(docker, tag, gzip.compress(context, mtime=0), dockerfile=dockerfile)
 
 
 async def _touch(docker: aiodocker.Docker, tag: str) -> bool:

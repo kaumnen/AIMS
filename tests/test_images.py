@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import fcntl
 import importlib.util
 import io
 import json
@@ -9,7 +10,7 @@ import socket
 import sys
 import tarfile
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from datetime import datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import Any, Self
@@ -68,9 +69,33 @@ class Images:
         return True
 
 
+class Ended:
+    """The progress of a build or pull that has ended."""
+
+    def __init__(self) -> None:
+        self.content = self
+
+    async def readline(self) -> bytes:
+        return b""
+
+    def close(self) -> None:
+        pass
+
+
 class Docker:
     def __init__(self) -> None:
         self.images = Images()
+
+    @contextlib.asynccontextmanager
+    async def _query(
+        self, path: str, method: str, *, params: dict[str, str], **_: Any
+    ) -> AsyncGenerator[Ended]:
+        """The builds and pulls `images` sends, made by the fake image API."""
+        if path == "build":
+            await self.images.build(tag=params["t"])
+        else:
+            await self.images.pull(params["fromImage"], tag=params["tag"])
+        yield Ended()
 
 
 async def test_builds_of_one_image_at_once_build_it_once() -> None:
@@ -92,6 +117,70 @@ async def test_a_failed_build_raises() -> None:
     docker.images.build = broken
     with pytest.raises(aiodocker.DockerError):
         await ensure_built(docker, uuid.uuid4().bytes)
+
+
+def held(tag: str) -> bool:
+    """Whether a build of `tag` holds the host lock now."""
+    try:
+        fd = os.open(images._lock_path(tag), os.O_RDWR)
+    except FileNotFoundError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    finally:
+        os.close(fd)
+    return False
+
+
+class Endless:
+    """The progress of a build or pull that never ends. Each close records whether the build
+    lock of `tag` is held then."""
+
+    def __init__(self, tag: str) -> None:
+        self.content = self
+        self.tag = tag
+        self.reading = asyncio.Event()
+        self.closes: list[bool] = []
+
+    async def readline(self) -> bytes:
+        self.reading.set()
+        await asyncio.Event().wait()
+        return b""
+
+    def close(self) -> None:
+        self.closes.append(held(self.tag))
+
+
+@pytest.mark.parametrize("call", ["build", "pull"])
+async def test_a_cancelled_build_or_pull_hangs_up_before_the_lock_goes(
+    call: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Docker goes on with a build or pull while its connection is open."""
+    context = uuid.uuid4().bytes
+    tag = images.built_tag(context)
+    progress = Endless(tag)
+    docker = aiodocker.Docker(url="unix:///nonexistent/docker.sock")
+
+    async def query(path: str, method: str = "GET", **_: Any) -> Any:
+        if path in ("build", "images/create"):
+            return progress
+        raise aiodocker.DockerError(404, "no such image")
+
+    monkeypatch.setattr(docker, "_do_query", query)
+    work = ensure_built(docker, context) if call == "build" else ensure_pulled(docker, tag)
+    task = asyncio.create_task(work)
+    try:
+        await asyncio.wait_for(progress.reading.wait(), 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert len(progress.closes) == 1
+        assert progress.closes[0] == (call == "build")
+        assert not held(tag)
+    finally:
+        await docker.close()
 
 
 @pytest.fixture
@@ -329,14 +418,15 @@ async def test_an_asset_image_comes_from_a_registry_and_is_built_without_one(
     refs = [f"{source}:{version}", tag]
     pins: dict[str, str] = {tag: "sha256:" + "0" * 64}
     monkeypatch.setattr(images, "published", lambda: pins)
-    build = docker.images.build
+    post = images._post
     builds: list[str] = []
 
-    async def counted(**kwargs: Any) -> Any:
-        builds.append(kwargs["tag"])
-        return await build(**kwargs)
+    async def counted(docker: aiodocker.Docker, path: str, params: Any, **kwargs: Any) -> None:
+        if path == "build":
+            builds.append(params["t"])
+        await post(docker, path, params, **kwargs)
 
-    monkeypatch.setattr(docker.images, "build", counted)
+    monkeypatch.setattr(images, "_post", counted)
 
     await ensure_pulled(docker, REGISTRY_IMAGE)
     registry = await docker.containers.run(
@@ -464,12 +554,17 @@ async def test_an_old_pulled_asset_image_goes_with_its_registry_reference(
 
 def scenario_context() -> bytes:
     """The build context of a tiny image that no other test builds."""
+    return dockerfile_context("FROM scratch\nCOPY marker /marker\n", uuid.uuid4().hex)
+
+
+def dockerfile_context(dockerfile: str, marker: str | None = None) -> bytes:
+    """A tar build context of `dockerfile`, and of a file `marker` when given."""
+    files = [("Dockerfile", dockerfile.encode())]
+    if marker is not None:
+        files.append(("marker", marker.encode()))
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tar:
-        for name, data in [
-            ("Dockerfile", b"FROM scratch\nCOPY marker /marker\n"),
-            ("marker", uuid.uuid4().hex.encode()),
-        ]:
+        for name, data in files:
             info = tarfile.TarInfo(name)
             info.size = len(data)
             tar.addfile(info, io.BytesIO(data))
@@ -500,6 +595,13 @@ def days_later(monkeypatch: pytest.MonkeyPatch, days: float) -> None:
             return super().now(tz) + timedelta(days=days)
 
     monkeypatch.setattr(images, "datetime", Later)
+
+
+async def until(test: Callable[[], Awaitable[bool]], within: float) -> None:
+    """Return once `test` holds; TimeoutError after `within` seconds."""
+    async with asyncio.timeout(within):
+        while not await test():  # noqa: ASYNC110
+            await asyncio.sleep(0.05)
 
 
 async def present(docker: aiodocker.Docker, *refs: str) -> set[str]:
@@ -553,6 +655,75 @@ async def test_a_reused_scenario_image_counts_as_used_now(
     assert await ensure_built(docker, context) == tag
     assert await tagged() > used
     assert await present(docker, tag, f"{tag}-used") == {tag, f"{tag}-used"}
+
+
+@pytest.mark.docker
+async def test_a_cancelled_build_stops_the_daemons_build(
+    docker: aiodocker.Docker, env_repo: str
+) -> None:
+    """A cancel stops the build's step at once, leaves no step container and no tag, and a
+    retry at once is the only build of the tag that runs."""
+    base = await ensure_image(docker, "toolbox")
+    nonce = uuid.uuid4().hex
+    context = dockerfile_context(
+        f"FROM {base}\nRUN echo {nonce} > /a\nRUN sleep 6 && echo {nonce} > /b\n"
+    )
+    tag = images.built_tag(context)
+
+    async def steps(**filters: Any) -> list[str]:
+        """The `sleep` step containers of this context's builds."""
+        found = await docker.containers.list(**filters)
+        return [c.id for c in found if nonce in c["Command"] and "sleep" in c["Command"]]
+
+    async def running() -> bool:
+        return bool(await steps())
+
+    async def gone() -> bool:
+        return not await steps(all=True)
+
+    async def idle() -> bool:
+        return not await steps()
+
+    most = 0
+
+    async def watch() -> None:
+        nonlocal most
+        while True:
+            most = max(most, len(await steps()))
+            await asyncio.sleep(0.05)
+
+    watcher = asyncio.create_task(watch())
+    task = asyncio.create_task(ensure_built(docker, context))
+    try:
+        await until(running, 60)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await until(gone, 3)
+        assert await present(docker, tag) == set()
+        assert await ensure_built(docker, context) == tag
+        assert most == 1
+        assert await gone()
+    finally:
+        watcher.cancel()
+        task.cancel()
+        # A build the cancel did not stop ends before the images go.
+        with contextlib.suppress(TimeoutError):
+            await until(idle, 10)
+
+
+@pytest.mark.docker
+async def test_a_failed_build_leaves_no_step_container(
+    docker: aiodocker.Docker, env_repo: str
+) -> None:
+    base = await ensure_image(docker, "toolbox")
+    nonce = uuid.uuid4().hex
+    with pytest.raises(aiodocker.DockerError):
+        await ensure_built(docker, dockerfile_context(f"FROM {base}\nRUN echo {nonce} && exit 3\n"))
+    left = [c for c in await docker.containers.list(all=True) if nonce in c["Command"]]
+    for c in left:
+        await c.delete(force=True)
+    assert left == []
 
 
 @pytest.mark.docker
