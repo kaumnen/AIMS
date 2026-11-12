@@ -263,16 +263,37 @@ def _lock_path(tag: str) -> Path:
 
 @contextlib.asynccontextmanager
 async def _host_lock(tag: str, poll: float = 0.2) -> AsyncGenerator[None]:
-    fd = os.open(_lock_path(tag), os.O_RDWR | os.O_CREAT, 0o600)
+    """Hold the build lock of `tag` on this host. Its file goes with the lock."""
+    path = _lock_path(tag)
+    fd = await _lock(path, poll)
     try:
-        while True:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                await asyncio.sleep(poll)
         yield
     finally:
+        # Only a holder removes the file, so the path still names this one.
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+        os.close(fd)
+
+
+async def _lock(path: Path, poll: float) -> int:
+    """An fd of the file `path`, made if it is not there, that holds its lock. A waiter whose
+    file the holder removed meanwhile locks the file at `path` now instead, so no two hold
+    the lock at once."""
+    while True:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    await asyncio.sleep(poll)
+            with contextlib.suppress(FileNotFoundError):
+                if os.path.samestat(os.fstat(fd), os.stat(path)):
+                    return fd
+        except BaseException:
+            os.close(fd)
+            raise
         os.close(fd)
 
 

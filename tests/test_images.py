@@ -8,8 +8,11 @@ import json
 import logging
 import os
 import socket
+import subprocess
 import sys
 import tarfile
+import tempfile
+import time
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from datetime import datetime, timedelta, tzinfo
@@ -152,6 +155,100 @@ class Endless:
 
     def close(self) -> None:
         self.closes.append(held(self.tag))
+
+
+@pytest.fixture
+def lock_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A temp dir of the test's own, where the build locks go."""
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    return tmp_path
+
+
+async def test_builds_leave_no_lock_file(lock_dir: Path) -> None:
+    docker: Any = Docker()
+    contexts = [uuid.uuid4().bytes for _ in range(3)]
+    await asyncio.gather(*(ensure_built(docker, c) for c in [*contexts, *contexts]))
+    assert docker.images.builds == 3
+
+    async def broken(**_: Any) -> None:
+        raise aiodocker.DockerError(500, "no space left")
+
+    docker.images.build = broken
+    with pytest.raises(aiodocker.DockerError):
+        await ensure_built(docker, uuid.uuid4().bytes)
+    docker.images.build = lambda **_: asyncio.Event().wait()
+    task = asyncio.create_task(ensure_built(docker, uuid.uuid4().bytes))
+    await asyncio.sleep(0.1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert os.listdir(lock_dir) == []
+
+
+async def test_a_waiter_whose_lock_file_went_waits_for_the_next_holder(lock_dir: Path) -> None:
+    """The waiter locks the file the first holder removed; the newcomer locked a new one."""
+    inside: list[str] = []
+    most = 0
+    first_in = asyncio.Event()
+    first_out = asyncio.Event()
+
+    async def hold(name: str, poll: float, out: asyncio.Event | None = None) -> None:
+        nonlocal most
+        async with images._host_lock("aims-env:race", poll=poll):
+            inside.append(name)
+            most = max(most, len(inside))
+            if name == "first":
+                first_in.set()
+            await (out.wait() if out is not None else asyncio.sleep(0.3))
+            inside.remove(name)
+
+    first = asyncio.create_task(hold("first", 0.01, first_out))
+    await first_in.wait()
+    waiter = asyncio.create_task(hold("waiter", 0.3))
+    await asyncio.sleep(0.05)
+    first_out.set()
+    await first
+    newcomer = asyncio.create_task(hold("newcomer", 0.01))
+    await asyncio.gather(waiter, newcomer)
+    assert most == 1
+    assert os.listdir(lock_dir) == []
+
+
+RACE = """
+import asyncio, os, sys, time
+from aims.sandbox.images import _host_lock
+
+async def main(start, seconds, marker):
+    while time.time() < start:
+        await asyncio.sleep(0.001)
+    rounds = overlaps = 0
+    while time.time() < start + seconds:
+        async with _host_lock("aims-env:race", poll=0.0002):
+            rounds += 1
+            try:
+                os.close(os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            except FileExistsError:
+                overlaps += 1
+                continue
+            await asyncio.sleep(0)
+            os.unlink(marker)
+    print(rounds, overlaps)
+
+asyncio.run(main(float(sys.argv[1]), float(sys.argv[2]), sys.argv[3]))
+"""
+
+
+def test_processes_never_hold_a_build_lock_at_once(tmp_path: Path) -> None:
+    """Each holder makes a marker file that a second holder inside at once cannot make."""
+    env = {**os.environ, "TMPDIR": str(tmp_path)}
+    start = time.time() + 1.5
+    args = [sys.executable, "-c", RACE, str(start), "1", str(tmp_path / "inside")]
+    procs = [subprocess.Popen(args, env=env, stdout=subprocess.PIPE, text=True) for _ in range(3)]
+    counts = [proc.communicate(timeout=60)[0].split() for proc in procs]
+    assert [proc.returncode for proc in procs] == [0, 0, 0]
+    assert sum(int(rounds) for rounds, _ in counts) > 100
+    assert sum(int(overlaps) for _, overlaps in counts) == 0
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.parametrize("call", ["build", "pull"])
