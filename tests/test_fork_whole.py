@@ -13,9 +13,11 @@ from test_agent import FakeSandbox, Gate, echo, payloads
 
 from aims.agent import Agent, ReplayPlan, RunBudget, Verdict
 from aims.events import (
+    AgentFinished,
     AgentStep,
     Draft,
     LocalEventStore,
+    ModelUsage,
     RunFinished,
     RunStarted,
     ToolCall,
@@ -297,6 +299,33 @@ async def test_a_cut_names_a_whole_step_and_others_mid_step_go_live_from_it(
     assert first.steps == {"a": 1, "b": 1}
     lines = preview(origin, Fork(origin=run_id, step=1, steps=at.steps, cut=at.seq, agent="a"))
     assert "  b: replays 1 of 2 steps, goes live after" in lines
+
+
+async def test_an_agent_that_ended_mid_step_in_a_running_run_says_it_ended(
+    store: LocalEventStore,
+) -> None:
+    """Agent a was killed in its step 2 before its tool call returned, and b goes on: the step
+    will never be whole, so the refusal says a ended rather than that it is not yet."""
+    run_id = await started(store, PAIR)
+    end = AgentFinished(
+        reason="killed", steps=2, usage=ModelUsage(), cost_usd=0, wall_ms=1, paused_ms=0
+    )
+    await store.append(
+        run_id, [*step("a", 1), *step("a", 2, done=False), Draft(end, "a"), *step("b", 1)]
+    )
+    origin = await load_origin(store, run_id)
+    assert (origin.running, origin.ended, origin.replayable) == (True, {"a"}, {"a": 1, "b": 1})
+    with pytest.raises(RunError) as refused:
+        cut_at(origin, "a:2")
+    assert str(refused.value) == (
+        "step 2 of agent a cannot be replayed: the agent ended before its tool calls returned,"
+        " so they have no recorded output; fork at a:1 or before"
+    )
+
+    await store.append(run_id, [*step("b", 2, done=False)])
+    with pytest.raises(RunError) as refused:
+        cut_at(await load_origin(store, run_id), "b:2")
+    assert "step 2 of agent b cannot be replayed yet: its tool calls have not" in str(refused.value)
 
 
 async def test_a_step_without_tool_calls_is_whole(store: LocalEventStore) -> None:

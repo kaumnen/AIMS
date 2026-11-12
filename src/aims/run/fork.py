@@ -61,6 +61,8 @@ class Origin:
     """The last step of each agent a fork can replay, from `replayable_steps`."""
     running: bool = False
     """Whether the origin was still running when it was loaded."""
+    ended: set[str] = field(default_factory=set)
+    """The agents whose end is in the origin's log."""
 
     @property
     def seed(self) -> bytes | None:
@@ -228,12 +230,15 @@ async def load_origin(store: EventStore, run_id: str, *, full: bool = True) -> O
     steps: dict[str, int] = defaultdict(int)
     outputs: dict[str, dict[str, RecordedOutput]] = defaultdict(dict)
     injects: dict[str, dict[int, list[str]]] = defaultdict(lambda: defaultdict(list))
-    types = ("agent.step", "tool.result", "agent.input")
+    types = ("agent.step", "tool.result", "agent.input", "agent.finished")
     cursor: int | None = None
     while page := await store.events(run_id, after=cursor, limit=PAGE, types=types):
         for event in page:
             cursor = event.seq
             agent = event.agent_id or ""
+            if event.type == "agent.finished":
+                origin.ended.add(agent)
+                continue
             payload = event.payload()
             if event.type == "agent.step":
                 steps[agent] += 1
@@ -523,14 +528,15 @@ def _check_whole(origin: Origin, agent_id: str, step: int, name: str) -> None:
     last = origin.replayable.get(agent_id, 0)
     if step <= last:
         return
-    if origin.running:
-        why = f"step {step} of agent {agent_id} cannot be replayed yet: its tool calls have not"
-        why += " returned, so they have no recorded output"
+    if origin.running and agent_id not in origin.ended:
+        why = "cannot be replayed yet: its tool calls have not returned"
     else:
-        why = f"step {step} of agent {agent_id} cannot be replayed: the run ended before its"
-        why += " tool calls returned, so they have no recorded output"
+        who = "the agent" if origin.running else "the run"
+        why = f"cannot be replayed: {who} ended before its tool calls returned"
     where = f"{name}{last} or before" if last else f"{name}0 to make every step again live"
-    raise RunError(f"{why}; fork at {where}")
+    raise RunError(
+        f"step {step} of agent {agent_id} {why}, so they have no recorded output; fork at {where}"
+    )
 
 
 def planner(bench: Bench, origin: Origin, fork: Fork, *, source: EventStore | None = None):
