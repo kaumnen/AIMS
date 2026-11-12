@@ -8,7 +8,7 @@ from typing import Any, cast
 
 import httpx2
 import pytest
-from scripted import Script, call, models, profile, say
+from scripted import Script, call, models, profile, respond, say
 from test_judge import verdict as judge_verdict
 
 from aims.agent import GatePoint
@@ -1040,6 +1040,32 @@ async def test_a_stalled_rollout_leaves_the_verdict_of_the_other(tmp_path: Path)
         for e in await h.store.every(h.run_id):
             e.payload()
         assert (await h.store.verify(h.run_id)).ok
+
+
+async def test_a_rollout_that_fails_beside_a_verdict_shows_in_the_verdict_alone(
+    tmp_path: Path,
+) -> None:
+    """The real judge: the blind rollout's call is refused, the other gives its verdict. Only a
+    timeout writes `monitor.degraded` beside a verdict."""
+    script = Script(say(json.dumps(judge_verdict(summary="seeing", max_severity=4))))
+    original = script.handle
+
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        content = json.loads(request.content)["messages"][1]["content"]
+        if "flags" not in json.loads(content.split("\n")[-2]):
+            return respond(400, {"error": {"message": "refused"}})
+        return original(request)
+
+    script.handle = handle
+    config = {"sweeps": [], "judge": {"rollouts": 2, "blind": 1}}
+    async with harness(tmp_path, config=config, script=script, real_judge=True) as h:
+        await h.monitor.judge()
+        [verdict] = await h.of("monitor.verdict")
+        seeing, blind = MonitorVerdict.model_validate(verdict.data).rollouts
+        assert seeing.error is None
+        assert blind.error is not None
+        assert blind.error.startswith("model call failed: ")
+        assert await h.of("monitor.degraded") == []
 
 
 async def test_a_cut_of_the_real_judge_is_no_timeout(tmp_path: Path) -> None:

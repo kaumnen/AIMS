@@ -359,7 +359,8 @@ class Monitor:
         starts once the index holds every event fed, and is skipped if the index stays behind
         the log for the judge's timeout. A `cut` ends it early and the run still seals. A judge
         its timeout cut short writes the verdicts it has, and `monitor.degraded` names the
-        rollouts that gave none."""
+        rollouts that gave none. A rollout that failed otherwise beside a verdict shows only in
+        the verdict's `rollouts`."""
         config = self.config.judge
         if skip or config is None or self.monitor.judge is None:
             return
@@ -415,14 +416,11 @@ class Monitor:
             drafts.append(self._with_taint(result.verdict))
         written = await self._append(drafts)
         self._flags.extend(e for e in written if e.type == "monitor.flag")
-        if result.verdict is None or result.error is not None:
-            if result.timed_out:
-                reason = f"the judge reached its {config.timeout_s:g} s timeout"
-            elif result.verdict is None:
-                reason = "the judge gave no verdict"
-            else:
-                reason = "the judge erred"
+        if result.timed_out:
+            reason = f"the judge reached its {config.timeout_s:g} s timeout"
             await self._degrade("judge", reason, "skip", result.error)
+        elif result.verdict is None:
+            await self._degrade("judge", "the judge gave no verdict", "skip", result.error)
 
     async def _indexed(self, within: float) -> bool:
         """Wait until the index the judge reads holds every event fed so far. False when a cut
