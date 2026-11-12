@@ -30,6 +30,7 @@ from aims.events import (
     LocalEventStore,
     ModelParams,
     ModelRequest,
+    ModelUsage,
     MonitorFlag,
     MonitorSweep,
     MonitorVerdict,
@@ -42,12 +43,13 @@ from aims.events import (
     ToolCall,
     ToolResult,
 )
-from aims.models import ModelClient, Profile, ToolRequest
+from aims.models import ModelClient, Profile, Prompt, Reply, ToolRequest
 from aims.monitor import judge_texts
 from aims.monitor.config import CATEGORIES, JudgeConfig, MonitorConfigError, layer
 from aims.monitor.judge import (
     ANOMALY_CHARS,
     BLOB_MAX,
+    CHARS_PER_TOKEN,
     EVENTS_PAGE,
     MIN_OUTPUT,
     OUTPUT_CHARS,
@@ -1035,6 +1037,68 @@ async def test_budget_pressure_forces_the_verdict(store: LocalEventStore) -> Non
     assert "tools" not in script.requests[1]
     assert result.cost_usd == pytest.approx(2.0)
     assert judge.cost_usd == pytest.approx(2.0)
+
+
+def whole(prompt: Prompt) -> int:
+    """The judge's own count of every input token `prompt` sends."""
+    schema = [] if prompt.output_schema is None else [prompt.output_schema]
+    sent = [*prompt.items, *prompt.tools, *schema]
+    return sum(len(x.model_dump_json()) for x in sent) // CHARS_PER_TOKEN
+
+
+def planned_contexts(
+    judge: Judge, monkeypatch: pytest.MonkeyPatch, usage: Callable[[int, Prompt, Reply], ModelUsage]
+) -> list[tuple[int, int]]:
+    """For each call the judge makes, the input it planned the call with and the input the call
+    sends by the judge's own count. Each reply reports `usage(n, prompt, reply)`, n from 1."""
+    planned: list[int] = []
+    out: list[tuple[int, int]] = []
+    room = judge._room
+    real = judge.client.call
+
+    def spy(left: float, context: int, **kw: Any) -> int | None:
+        planned.append(context)
+        return room(left, context, **kw)
+
+    async def counted(profile: Profile, prompt: Prompt, **kw: Any) -> Reply:
+        out.append((planned[-1], whole(prompt)))
+        reply = await real(profile, prompt, **kw)
+        return reply.model_copy(update={"usage": usage(len(out), prompt, reply)})
+
+    monkeypatch.setattr(judge, "_room", spy)
+    monkeypatch.setattr(judge.client, "call", counted)
+    return out
+
+
+@pytest.mark.parametrize("missing", [{2: "both"}, {1: "both", 2: "both"}, {2: "output"}])
+async def test_a_reply_without_usage_keeps_the_context(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch, missing: dict[int, str]
+) -> None:
+    """A provider that leaves out token counts on some replies: the judge never plans a call
+    with less input than the call sends."""
+    run = await make_run(store)
+    script = Script(
+        call("events"),
+        call("events", from_seq=40),
+        call("search", text="conftest"),
+        say(json.dumps(verdict())),
+    )
+    judge = make_judge(store, run, script)
+
+    def usage(n: int, prompt: Prompt, reply: Reply) -> ModelUsage:
+        read = whole(prompt) + 1
+        wrote = -(-len(reply.turn.model_dump_json()) // CHARS_PER_TOKEN)
+        match missing.get(n):
+            case "both":
+                return ModelUsage()
+            case "output":
+                return ModelUsage(input_tokens=read)
+        return ModelUsage(input_tokens=read, output_tokens=wrote)
+
+    calls = planned_contexts(judge, monkeypatch, usage)
+    payload_of(await judge.run(flags=[], sweeps=[]))
+    assert len(calls) == 4
+    assert all(plan >= sent for plan, sent in calls), calls
 
 
 async def test_budget_stop(store: LocalEventStore) -> None:

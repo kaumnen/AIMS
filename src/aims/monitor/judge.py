@@ -662,11 +662,20 @@ class Rollout:
     def label(self) -> str:
         return f"{self.name} (blind)" if self.blind else self.name
 
-    def charge(self, reply: Reply) -> None:
+    def charge(self, reply: Reply, prompt: Prompt | None = None) -> None:
+        """Add what `reply` cost. With the `prompt` it answered, its token counts become the
+        context the next call builds on: `context` counts the items before `mark`. A reply
+        without counts leaves both as they were, so the items since are counted by size."""
         self.cost += reply.cost_usd or 0.0
         usage = reply.usage
-        if usage.input_tokens is not None:
-            self.context = usage.input_tokens + (usage.output_tokens or 0)
+        if prompt is None or usage.input_tokens is None:
+            return
+        # The reply's turn goes right after the prompt's items.
+        self.context = usage.input_tokens
+        self.mark = len(prompt.items)
+        if usage.output_tokens is not None:
+            self.context += usage.output_tokens
+            self.mark += 1
 
 
 class Judge:
@@ -1044,7 +1053,7 @@ class Judge:
             limit = self.profile.max_output_tokens
             capped = out is not None and (limit is None or out < limit)
             reply = await self._call(r, prompt, out if capped else None)
-            r.mark = len(items) + 1
+            at = len(items)
             completed = reply.status == "completed"
             items.append(reply.turn if completed else Turn(text=reply.text))
             calls = reply.tool_calls if completed else []
@@ -1081,8 +1090,8 @@ class Judge:
                 items.append(ToolOutput(call_id=call.id, output=text))
             if not forced and not self._fits(r, items, specs):
                 # Not even the short answers fit: the reply is kept without its tool calls.
-                del items[r.mark :]
-                items[-1] = Turn(text=reply.text)
+                del items[at + 1 :]
+                items[at] = Turn(text=reply.text)
                 r.seen, r.tool_calls, full = seen, used, True
 
     async def _call(self, r: Rollout, prompt: Prompt, out: int | None = None) -> Reply:
@@ -1092,12 +1101,12 @@ class Judge:
         reply = await self.client.call(
             self.profile, prompt, role="judge", overrides=overrides, recorded=r.calls.append
         )
-        r.charge(reply)
+        r.charge(reply, prompt)
         return reply
 
     def _context(self, r: Rollout, items: Sequence[Item], specs: Sequence[ToolSpec]) -> int:
-        """At most how many input tokens the next call sends: what the last call read and
-        wrote plus the items since, else the whole prompt."""
+        """At most how many input tokens the next call sends: what the last call with token
+        counts read and wrote plus the items since, else the whole prompt."""
         added = items[r.mark :] if r.context else [*items, *specs]
         return r.context + sum(len(x.model_dump_json()) for x in added) // CHARS_PER_TOKEN
 
