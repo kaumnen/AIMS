@@ -840,13 +840,46 @@ class LocalEventStore:
         """Label the flag at seq `flag` of run `run_id`, in the run's labels file beside its
         log, never in the log itself. Raises KeyError when there is no such flag."""
         events = await self._index.events(run_id, after=flag - 1, before=flag + 1, limit=1)
-        if not events or events[0].seq != flag or events[0].type != "monitor.flag":
+        if events and events[0].seq == flag:
+            kind: str | None = events[0].type
+        else:
+            # the index may be behind the log, or emptied by a rebuild in another process
+            kind = await self._logged_type(run_id, flag)
+        if kind != "monitor.flag":
             raise KeyError(f"run {run_id} has no flag at seq {flag}")
         made = Label(run_id=run_id, flag=flag, label=label, note=note, by=by, at=now())
         line = made.model_dump_json().encode() + b"\n"
         await asyncio.to_thread(_append_line, self._dir(run_id) / LABELS, line)
         await self._index.put_labels([made])
         return made
+
+    async def _logged_type(self, run_id: str, seq: int) -> str | None:
+        """The type of event `seq` of a run the index did not give: read from the log past
+        where the index ends, or asked of the index again when it ends past `seq`, since a
+        rebuild may have filled it in since. None when there is no such event."""
+        if not is_run_id(run_id):
+            return None
+        indexed = await self._index.head(run_id)
+        start = Head() if indexed is None else indexed[0]
+        if start.seq >= seq:
+            events = await self._index.events(run_id, after=seq - 1, before=seq + 1, limit=1)
+            return events[0].type if events and events[0].seq == seq else None
+
+        def find() -> str | None:
+            after = start
+            while after.seq < seq:
+                chunk, error = _take(self._log(run_id), run_id, after, CHUNK)
+                for event, after in chunk:
+                    if after.seq == seq:
+                        return event["type"]
+                if error is not None or len(chunk) < CHUNK:
+                    return None
+            return None
+
+        try:
+            return await asyncio.to_thread(find)
+        except FileNotFoundError:
+            return None
 
     async def merge_labels(self, run_id: str, labels: Sequence[Label]) -> int:
         """Keep the labels of `run_id` another store made that this one lacks; returns how

@@ -459,6 +459,56 @@ async def test_labels_sent_again_after_a_failed_index_write_are_indexed(
         assert await store.label_history(run_id) == sent
 
 
+FLAG = MonitorFlag(
+    layer="signal",
+    source="s",
+    category="scorer_tampering",
+    importance=3,
+    evidence=[0],
+    justification="j",
+)
+NOT_FLAGS = [0, 2, 3, 4, 10**20, -1]
+
+
+async def test_a_flag_a_rebuild_elsewhere_took_from_the_index_is_labelled_from_the_log(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "runs"
+    async with await LocalEventStore.open(root) as store:
+        run_id = await store.create_run(STARTED)
+        await store.append(run_id, [Draft(FLAG, "a1"), call(2)])
+        await store.append(run_id, [Draft(RunFinished(status="completed"))])
+        other = await Index.open(root / INDEX)
+        try:
+            await other.reset()
+            made = await store.add_label(run_id, 1, "real", by="op")
+            for seq in NOT_FLAGS:
+                with pytest.raises(KeyError, match="no flag"):
+                    await store.add_label(run_id, seq, "real", by="op")
+        finally:
+            await other.close()
+        assert await store.label_history(run_id) == [made]
+        await store.sync()
+        assert list(await store.labels(run_id)) == [1]
+
+
+async def test_a_flag_the_index_is_behind_on_is_labelled_from_the_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    breaker = Breaker(monkeypatch, sqlite3.OperationalError("disk I/O error"))
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        run_id = await store.create_run(STARTED)
+        breaker.left = 10**6
+        await store.append(run_id, [Draft(FLAG, "a1"), call(2)])
+        await store.append(run_id, [Draft(RunFinished(status="completed"))])
+        assert await indexed(store, run_id) == [0]
+        made = await store.add_label(run_id, 1, "real", by="op")
+        for seq in NOT_FLAGS:
+            with pytest.raises(KeyError, match="no flag"):
+                await store.add_label(run_id, seq, "real", by="op")
+        assert await store.label_history(run_id) == [made]
+
+
 async def test_an_event_the_index_cannot_take_holds_back_none_before_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
