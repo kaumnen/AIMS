@@ -25,6 +25,7 @@ from aims.events import (
     ToolResult,
     split_lines,
 )
+from aims.events.index import BIND_MAX
 from aims.events.schema import BlobRef
 from aims.events.store import LOG
 from aims.node.client import ControlClient
@@ -231,6 +232,19 @@ async def test_any_batching_and_a_rebuild_give_the_same_totals(
             for i in range(1, len(lines), size):
                 await copy.ingest(run_id, lines[i : i + size])
             assert runs_table(copy.root) == before, name
+
+
+@pytest.mark.parametrize("batch", [1, 3])
+async def test_a_cost_past_what_the_index_holds_stays_at_its_most(
+    store: LocalEventStore, batch: int
+) -> None:
+    run_id = await store.create_run(STARTED)
+    drafts = [response(f"m{i}", "a1", 5e9) for i in range(3)]
+    for i in range(0, len(drafts), batch):
+        await store.append(run_id, drafts[i : i + batch])
+    info = await store.run(run_id)
+    assert info is not None
+    assert (info.events, info.cost_usd) == (4, BIND_MAX / 1e9)
 
 
 async def test_steps_carry_their_tool_calls_execs_and_results(store: LocalEventStore) -> None:

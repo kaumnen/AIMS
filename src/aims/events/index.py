@@ -796,7 +796,8 @@ class Index:
 
     async def _totals(self, run_id: str, fresh: Sequence[Event]) -> None:
         """Add the steps, cost and reward of events not indexed yet to the run's row. Cost adds
-        up in whole nano-dollars, so any batching of the same events gives the same total."""
+        up in whole nano-dollars, so any batching of the same events gives the same total. A
+        total past what SQLite holds stays at the most it holds."""
         steps, nanos, priced, scored, reward = 0, 0, False, False, None
         for e in fresh:
             if e.type == AgentStep.type:
@@ -813,11 +814,12 @@ class Index:
                 is_number = isinstance(value, int | float) and not isinstance(value, bool)
                 reward = value if is_number else None
         if steps or priced or scored:
+            # an integer sum past 64 bits turns REAL in SQLite, which the column refuses
             await self._db.execute(
-                "update runs set steps = steps + ?,"
-                " nano_usd = case when ? then coalesce(nano_usd, 0) + ? else nano_usd end,"
+                "update runs set steps = steps + ?, nano_usd = case when ?"
+                " then max(min(coalesce(nano_usd, 0) + ?, ?), ?) else nano_usd end,"
                 " reward = case when ? then ? else reward end where run_id = ?",
-                (steps, priced, nanos, scored, reward, run_id),
+                (steps, priced, _int(nanos), BIND_MAX, BIND_MIN, scored, reward, run_id),
             )
 
     async def _hold(self, run_id: str, fresh: Sequence[Event]) -> None:
