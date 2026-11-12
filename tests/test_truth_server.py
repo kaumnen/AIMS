@@ -2,7 +2,9 @@
 run seals, read by operators only, the variant and series they put in the run list, the cost
 rows that keep the history from reading every log again, and the live projection."""
 
+import asyncio
 import stat
+import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -25,6 +27,7 @@ from aims.events import (
     RunStarted,
     Series,
 )
+from aims.events import store as store_module
 from aims.events.blobs import decode
 from aims.events.chain import Head as LogHead
 from aims.events.store import TruthRefused
@@ -210,6 +213,42 @@ async def test_the_control_plane_checks_a_truth_file_before_it_keeps_it(
         )
         assert r.status_code == 422
         assert r.json()["code"] == "truth"
+
+
+async def test_one_of_two_uploads_of_a_truth_file_at_once_keeps_it(
+    cp: CP, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = cp.state.store
+    run_id = await sealed(local)
+    await copy(cp, local, run_id)
+    write_private = store_module._write_private
+
+    def slow(path: Path, data: bytes) -> None:
+        time.sleep(0.2)
+        write_private(path, data)
+
+    monkeypatch.setattr(store_module, "_write_private", slow)
+    data = truth.encode(RECORD)
+    kept = await asyncio.gather(store.put_truth(run_id, data), store.put_truth(run_id, data))
+    assert sorted(kept) == [False, True]
+    info = await store.run(run_id)
+    assert info is not None
+    assert info.variant == "unobserved"
+
+
+async def test_a_truth_file_kept_before_names_a_variant_the_index_lost(
+    cp: CP, local: LocalEventStore
+) -> None:
+    store = cp.state.store
+    run_id = await sealed(local)
+    await copy(cp, local, run_id)
+    data = truth.encode(RECORD)
+    assert await store.put_truth(run_id, data)
+    await store._index.set_variant(run_id, None)
+    assert not await store.put_truth(run_id, data)
+    info = await store.run(run_id)
+    assert info is not None
+    assert info.variant == "unobserved"
 
 
 async def test_a_refused_truth_file_does_not_hold_the_shipper(

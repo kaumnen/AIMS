@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import io
 import shutil
+import sqlite3
 import tarfile
 import uuid
 from collections.abc import AsyncIterator
@@ -35,6 +36,7 @@ from aims.models.check import Check, Verdict
 from aims.monitor.config import JUDGE_MIN_OUTPUT, merge
 from aims.monitor.setup import ResolvedMonitor
 from aims.monitor.texts import resolve
+from aims.node.client import ApiError
 from aims.prompts import Prompts
 from aims.run import truth
 from aims.run.job import Job, bundle_of, job_bundle
@@ -455,6 +457,50 @@ async def test_a_score_that_fails_to_queue_keeps_the_truth_file(
         await fake.client.put_truth(run_id, truth.encode(RECORD))
         assert cp.state.store.truth_path(run_id).is_file()
         assert [j for j in await cp.state.db.jobs() if j.payload.get("kind") == "score"] == []
+    finally:
+        await fake.close()
+
+
+async def test_a_truth_upload_the_index_refused_scores_the_run_once_on_its_retry(
+    cp: CP, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    index = cp.state.store._index
+    set_variant = index.set_variant
+    errors = [sqlite3.OperationalError("database is locked")]
+
+    async def locked_once(run_id: str, variant: str | None) -> None:
+        if errors:
+            raise errors.pop()
+        await set_variant(run_id, variant)
+
+    monkeypatch.setattr(index, "set_variant", locked_once)
+    fake = ScoreRunner(cp, "scorer")
+    await fake.connect()
+    try:
+        async with cp.client(cp.operator) as c:
+            (run_id,) = (await c.post("/api/runs", json=body(score=True))).json()["run_ids"]
+        offer = await fake.next(OfferMessage)
+        assert await fake.client.claim(offer.run_id) is not None
+        first, blobs = started(cp)
+        first = first.model_copy(update={"truth": truth.digest(RECORD)})
+        await local.create_run(first, blobs=blobs, run_id=run_id)
+        await local.append(run_id, [call(1), Draft(RunFinished(status="completed"))])
+        await ship(local, fake.client, run_id)
+        data = truth.encode(RECORD)
+        with pytest.raises(ApiError) as caught:
+            await fake.client.put_truth(run_id, data)
+        assert caught.value.status == 500
+        # the runner sends it again, and again after a reply it lost
+        await fake.client.put_truth(run_id, data)
+        await fake.client.put_truth(run_id, data)
+        info = await cp.state.store.run(run_id)
+        assert info is not None
+        assert info.variant == "v1"
+        # no runner has the classifier's key, so the score ends before it starts
+        scores = await cp.state.db.jobs_page(before=None, limit=10, kind="score")
+        assert [(j.payload["origin"], j.reason) for j in scores] == [
+            (run_id, "no runner has MODEL_API_KEY set")
+        ]
     finally:
         await fake.close()
 

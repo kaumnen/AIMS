@@ -252,6 +252,7 @@ class LocalEventStore:
         self.listeners: list[Callable[[str], None]] = []
         self._taps: dict[str, list[Callable[[Sequence[Event]], None]]] = {}
         self._lags: dict[str, _Lag] = {}
+        self._truths = asyncio.Lock()
         self._closed = False
 
     @classmethod
@@ -736,9 +737,17 @@ class LocalEventStore:
         return self._dir(run_id) / TRUTH
 
     async def put_truth(self, run_id: str, data: bytes) -> bool:
-        """Keep the truth file of the sealed run `run_id`, outside its log and blobs, mode 0600.
-        It must hash to the truth run.started committed to. Returns False when the same file is
-        already kept. Raises TruthRefused."""
+        """Keep the truth file of the sealed run `run_id`, outside its log and blobs, mode 0600,
+        and name the run's variant from it. It must hash to the truth run.started committed to.
+        Returns True from the one call that kept it, False when the same file was kept before.
+        Raises TruthRefused.
+
+        The variant is named before the file is written, so a call that fails leaves no file
+        and the next one keeps it, names the variant and returns True."""
+        async with self._truths:
+            return await self._put_truth(run_id, data)
+
+    async def _put_truth(self, run_id: str, data: bytes) -> bool:
         info = await self._index.run(run_id)
         if info is None:
             raise TruthRefused(f"no run {run_id}", status=404)
@@ -761,10 +770,14 @@ class LocalEventStore:
         if not isinstance(truth, dict):
             raise TruthRefused("the truth file is not a JSON object", status=422)
         target = self.truth_path(run_id)
+        variant = _variant(truth)
         if await asyncio.to_thread(_same_file, target, data):
+            # a power cut can lose the index write that named it
+            if info.variant != variant:
+                await self._index.set_variant(run_id, variant)
             return False
+        await self._index.set_variant(run_id, variant)
         await asyncio.to_thread(_write_private, target, data)
-        await self._index.set_variant(run_id, _variant(truth))
         return True
 
     async def add_label(
