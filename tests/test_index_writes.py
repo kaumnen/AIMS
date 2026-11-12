@@ -463,8 +463,8 @@ async def test_verify_takes_events_that_land_after_it_read_the_log(
         loop = asyncio.get_running_loop()
         verify_run = store_module.verify_run
 
-        def then_append(run_dir: Path) -> Verification:
-            found = verify_run(run_dir)
+        def then_append(run_dir: Path, **kw: Any) -> Verification:
+            found = verify_run(run_dir, **kw)
             more = store.append(run_id, [call(2), call(3)])
             asyncio.run_coroutine_threadsafe(more, loop).result(10)
             return found

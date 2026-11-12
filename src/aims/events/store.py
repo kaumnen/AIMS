@@ -978,7 +978,9 @@ class LocalEventStore:
         writes it, and must hold the head's event where the index says."""
         indexed = await self._index.head(run_id)
         head = None if indexed is None else indexed[0]
-        result = await asyncio.to_thread(verify_run, self._dir(run_id))
+        result = await asyncio.to_thread(
+            verify_run, self._dir(run_id), where=f"the folder of run {run_id}"
+        )
         if result.error is not None:
             return result
         held = 0 if head is None else head.seq + 1
@@ -1278,14 +1280,15 @@ class LocalEventStore:
         return await self._index.search(query, limit=limit, before=before, skip_kinds=skip_kinds)
 
 
-def verify_run(run_dir: Path) -> Verification:
-    """Check the whole chain of one run and every blob it references."""
+def verify_run(run_dir: Path, *, where: str | None = None) -> Verification:
+    """Check the whole chain of one run and every blob it references. `where` names the folder
+    in an error, for a reader who must not learn the path."""
     run_id = run_dir.name
     try:
         head, refs, chain_error = scan(run_dir / LOG, run_id)
     except FileNotFoundError:
         head, refs, chain_error = Head(), set(), None
-        error: str | None = f"no {LOG} in {run_dir}"
+        error: str | None = f"no {LOG} in {where or run_dir}"
     else:
         error = None if chain_error is None else str(chain_error)
     torn = (

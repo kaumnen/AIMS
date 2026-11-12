@@ -2102,6 +2102,18 @@ async def push_forged(
     return run_id
 
 
+async def test_a_missing_run_folder_is_reported_without_the_data_path(
+    cp: CP, local: LocalEventStore
+) -> None:
+    run_id = await push_forged(cp, local, "http://model.invalid/v1")
+    shutil.rmtree(cp.state.store.root / run_id)
+    async with cp.client(cp.viewer) as c:
+        r = await c.get(f"/api/runs/{run_id}/verification")
+    assert r.status_code == 200, r.text
+    assert r.json()["error"] == f"no events.jsonl in the folder of run {run_id}"
+    assert str(cp.state.store.root.parent) not in r.text
+
+
 async def test_a_fork_never_sends_keys_where_a_pushed_log_says(
     cp: CP, fake: FakeRunner, local: LocalEventStore
 ) -> None:
