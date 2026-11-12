@@ -17,7 +17,8 @@ from typing import Any, cast
 
 import pytest
 from cp import CP, control_plane
-from test_cli_monitor import node
+from test_cli_monitor import node, queue_monitor
+from test_monitor_api import call, pushed
 from test_server import (
     FakeRunner,
     log_of,
@@ -39,11 +40,14 @@ from aims.events import store as event_store
 from aims.events.index import Index
 from aims.events.schema import format_ts
 from aims.models import DeltaBus
+from aims.monitor import offline
 from aims.node.link import Link
 from aims.node.service import Node, NodeOptions
+from aims.run.job import Job as RunJob
 from aims.server import dispatch, retention
 from aims.server.db import Job, JobState
 from aims.server.serve import UiOptions, _spawn_runner
+from aims.wire import MonitorJob, ScoreJob
 
 pytestmark = pytest.mark.anyio
 
@@ -595,6 +599,85 @@ async def test_a_runner_cancels_a_deleted_run_it_still_runs_then_drops_it(
         assert stop.is_set()
         assert await store.run(run_id) is None
         assert not (store.root / run_id).exists()
+
+
+@pytest.mark.parametrize("kind", ["monitor", "score", "models.check"])
+async def test_a_runner_cancels_a_job_with_no_runner_whose_run_was_deleted_then_drops_it(
+    tmp_path: Path, kind: str
+) -> None:
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        run_id = await store.create_run(
+            RunStarted(scenario="control", oversight="observe", agents=["a"])
+        )
+        made_node = Node(NodeOptions(url="http://cp", token="t", name="n", data=tmp_path))
+        claimed: Any
+        if kind == "monitor":
+            claimed = MonitorJob.model_construct(run_id=run_id)
+        elif kind == "score":
+            claimed = ScoreJob.model_construct(run_id=run_id)
+        else:
+            claimed = RunJob(kind="models.check", run_id=run_id)
+        cut = asyncio.Event()
+
+        async def works() -> None:
+            # stands for a model call, which only a cancel ends
+            try:
+                await asyncio.sleep(300)
+            except asyncio.CancelledError:
+                cut.set()
+                await store.append(run_id, [Draft(RunFinished(status="cancelled"))])
+                raise
+
+        made_node._open = cast(Any, SimpleNamespace(store=store, link=SimpleNamespace(runners={})))
+        made_node.claimed[run_id] = claimed
+        made_node._jobs[run_id] = asyncio.create_task(works())
+        await asyncio.sleep(0)
+        async with asyncio.timeout(10):
+            await made_node._drop(run_id)
+        assert cut.is_set()
+        assert await store.run(run_id) is None
+        assert not (store.root / run_id).exists()
+
+
+async def test_a_monitor_job_whose_run_a_forced_delete_took_is_cancelled_and_dropped(
+    cp: CP, local: LocalEventStore, runner: FakeRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    origin = await pushed(cp, local, runner, [call(1)], monitor=None)
+    feeding, poke, cut = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    data = local.root.parent / "node"
+
+    async def feed(monitor: Any, *args: Any) -> None:
+        # stands for the monitor's model calls, which only a cancel ends; one more line first
+        # makes the shipper call the control plane, where it learns of the delete
+        feeding.set()
+        try:
+            await poke.wait()
+            await n.ctx.store.append(monitor.run_id, [call(2)])
+            await asyncio.sleep(300)
+        except asyncio.CancelledError:
+            cut.set()
+            raise
+
+    monkeypatch.setattr(offline, "_feed", feed)
+    async with node(cp, data) as n:
+        run_id = await queue_monitor(cp, origin)
+        async with asyncio.timeout(20):
+            await feeding.wait()
+        await until(lambda: cp.state.store.run(run_id), lambda info: info is not None)
+        # what a forced delete does once the runner looks offline
+        async with cp.state.delete_lock:
+            found = await retention.family(cp.state, origin)
+            assert found is not None
+            assert set(found.runs) == {origin, run_id}
+            await retention.delete(cp.state, found.runs)
+        poke.set()
+        async with asyncio.timeout(20):
+            await cut.wait()
+        await until(lambda: asyncio.sleep(0, (data / "runs" / run_id).exists()), False, 20)
+        assert await n.ctx.store.run(run_id) is None
+        await until(lambda: asyncio.sleep(0, bool(n.claimed)), False, 20)
+    assert await cp.state.store.run(run_id) is None
+    assert not (cp.state.store.root / run_id).exists()
 
 
 async def test_import_takes_back_a_deleted_run(

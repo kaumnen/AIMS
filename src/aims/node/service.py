@@ -655,14 +655,24 @@ class Node:
 
     async def _drop(self, run_id: str) -> None:
         """Delete the copy of a run the control plane deleted, unless a job reads it. A run still
-        running here, which a forced delete takes, is cancelled first."""
+        running here, which a forced delete takes, is cancelled first: through its runner, or
+        through its job's task for a monitor or score job or a model check, which have none."""
         if self._open is None:
             return
         runner = self.ctx.link.runners.get(run_id)
+        task = self._jobs.get(run_id)
+        job = self.claimed.get(run_id)
         if runner is not None and not runner.finished:
             runner.cancel()
-            if (task := self._jobs.get(run_id)) is not None:
-                await asyncio.wait([task], timeout=DROP_WAIT_S)
+        elif task is not None and (
+            isinstance(job, MonitorJob | ScoreJob)
+            or (isinstance(job, Job) and job.kind == "models.check")
+        ):
+            task.cancel()
+        else:
+            task = None
+        if task is not None:
+            await asyncio.wait([task], timeout=DROP_WAIT_S)
         async with self._pruning:
             if self._read(run_id):
                 return
