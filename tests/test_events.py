@@ -44,6 +44,7 @@ from aims.events import (
     split_lines,
     verify_run,
 )
+from aims.events import store as store_module
 from aims.events.blobs import ZSTD_MAGIC, BlobStore
 from aims.events.chain import GENESIS, Head, digest, follow, seal
 from aims.events.disk import make_dir
@@ -324,6 +325,37 @@ async def test_a_torn_tail_stays_until_its_bytes_are_stored(
         page = await store.events(run_id)
         assert [e.type for e in page[-2:]] == ["log.truncated", "tool.call"]
         truncated = page[-2].payload()
+        assert isinstance(truncated, LogTruncated)
+        assert await store.get_blob(run_id, truncated.dropped.sha256) == torn
+    assert verify_run(root / run_id).ok
+
+
+async def test_the_record_of_a_cut_tail_goes_with_the_next_batch_that_is_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "runs"
+    async with await LocalEventStore.open(root) as store:
+        run_id = await store.create_run(STARTED)
+    path = root / run_id / "events.jsonl"
+    good = path.read_bytes()
+    torn = b'{"agent_id":"a1","data":{"argu'
+    path.write_bytes(good + torn)
+
+    async with await LocalEventStore.open(root) as store:
+        seen: list[str] = []
+        store.tap(run_id, lambda events: seen.extend(e.type for e in events))
+        with monkeypatch.context() as patch:
+            patch.setattr(LogFile, "sync", broken)
+            with pytest.raises(OSError, match="Input/output error"):
+                await store.append(run_id, [call(1)])
+        assert path.read_bytes() == good
+        # the caller gets its own events back, the record of the cut is in the log before them
+        assert calls_of(await store.append(run_id, [call(1)])) == ["c1"]
+        assert calls_of(await store.append(run_id, [call(2)])) == ["c2"]
+        assert seen == ["log.truncated", "tool.call", "tool.call"]
+        page = await store.events(run_id)
+        assert [e.type for e in page] == ["run.started", "log.truncated", "tool.call", "tool.call"]
+        truncated = page[1].payload()
         assert isinstance(truncated, LogTruncated)
         assert await store.get_blob(run_id, truncated.dropped.sha256) == torn
     assert verify_run(root / run_id).ok
@@ -664,7 +696,7 @@ async def test_a_filter_with_a_lone_surrogate_finds_no_rows(store: LocalEventSto
     index = store._index
     # every read that binds a caller's text: none holds one, and no bind refuses it
     assert await index.head(lone) is None
-    assert await index.count(lone, 10) == 0
+    assert await index.held(lone) is None
     assert await index.run(lone) is None
     assert await index.labels(lone) == await index.hashes(lone, 0, 10) == {}
     assert await index.type_counts(lone) == {}
@@ -1256,6 +1288,34 @@ def test_a_truth_file_cut_short_by_a_full_disk_is_an_error(tmp_path: Path) -> No
     assert list((tmp_path / "run").iterdir()) == []
 
 
+def test_a_truth_file_whose_folder_does_not_sync_is_taken_away(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(store_module, "sync_dir", broken)
+    with pytest.raises(OSError, match="Input/output error"):
+        _write_private(tmp_path / "run" / "truth.json", b"x" * 100)
+    assert list((tmp_path / "run").iterdir()) == []
+
+
+async def test_a_truth_file_sent_again_after_its_folder_did_not_sync_is_kept(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = {"variant": "b"}
+    data = json.dumps(record).encode()
+    async with await LocalEventStore.open(tmp_path) as store:
+        started = STARTED.model_copy(update={"truth": hashlib.sha256(data).hexdigest()})
+        run_id = await store.create_run(started)
+        await store.append(run_id, [Draft(RunFinished(status="completed"))])
+        with monkeypatch.context() as patch:
+            patch.setattr(store_module, "sync_dir", broken)
+            with pytest.raises(OSError, match="Input/output error"):
+                await store.put_truth(run_id, data)
+        # the call that kept it says so, which starts the run's score
+        assert await store.put_truth(run_id, data) is True
+        assert await store.put_truth(run_id, data) is False
+        assert store.truth_path(run_id).read_bytes() == data
+
+
 def test_a_label_line_cut_short_by_a_full_disk_is_taken_back(
     tmp_path: Path, request: pytest.FixtureRequest
 ) -> None:
@@ -1369,6 +1429,40 @@ async def test_a_store_closed_under_a_failed_append_leaves_the_closed_file_alone
     assert other.read_bytes() == b"x" * 100_000
 
 
+async def test_a_store_closed_under_a_failed_ingest_leaves_the_closed_file_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop = asyncio.get_running_loop()
+    async with await LocalEventStore.open(tmp_path / "source") as source:
+        run_id = await source.create_run(STARTED)
+        await source.append(run_id, [call(1)])
+        lines = split_lines(log_path(source, run_id).read_bytes())
+    copy = await LocalEventStore.open(tmp_path / "copy", ingest_only=True)
+    await copy.ingest(run_id, lines[:1])
+    other = tmp_path / "other"
+    other.write_bytes(b"x" * 100_000)
+    reused: list[int] = []
+
+    def sync(self: LogFile) -> None:
+        fd = self._fd
+        asyncio.run_coroutine_threadsafe(copy.close(), loop).result()
+        opened = os.open(other, os.O_RDWR)
+        os.dup2(opened, fd)
+        os.close(opened)
+        reused.append(fd)
+        raise OSError(9, "Bad file descriptor")
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(LogFile, "sync", sync)
+            with pytest.raises(OSError, match="Bad file descriptor"):
+                await copy.ingest(run_id, lines[1:])
+    finally:
+        for fd in reused:
+            os.close(fd)
+    assert other.read_bytes() == b"x" * 100_000
+
+
 def failing(patch: pytest.MonkeyPatch, how: str) -> None:
     """Make the next log append fail: as a full Linux disk does, with a short write and then
     ENOSPC; as macOS does, with ENOSPC at once; or in its fsync."""
@@ -1460,3 +1554,51 @@ async def test_an_index_that_does_not_open_on_a_full_disk_says_why(
     with pytest.raises(sqlite3.OperationalError, match="unable to open database file") as other:
         await LocalEventStore.open(root)
     assert getattr(other.value, "__notes__", []) == []
+
+
+async def test_cut_lines_another_process_indexes_late_never_mix_with_the_new_ones(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop = asyncio.get_running_loop()
+    async with (
+        await LocalEventStore.open(tmp_path) as store,
+        await LocalEventStore.open(tmp_path) as other,
+    ):
+        run_id = await store.create_run(STARTED)
+        await store.append(run_id, [call(1)])
+        read, commit = asyncio.Event(), asyncio.Event()
+        add = other._index.add
+        syncs: list[asyncio.Task[None]] = []
+
+        async def late(*args: Any, **kw: Any) -> None:
+            read.set()
+            await commit.wait()
+            await add(*args, **kw)
+
+        async def reads() -> None:
+            syncs.append(asyncio.create_task(other.sync()))
+            await read.wait()
+
+        def sync(self: LogFile) -> None:
+            # the other store reads the batch from the log, then the fsync fails; its index
+            # write comes after the writer has cut the batch and gone on
+            asyncio.run_coroutine_threadsafe(reads(), loop).result()
+            raise OSError(5, "Input/output error")
+
+        monkeypatch.setattr(other._index, "add", late)
+        with monkeypatch.context() as patch:
+            patch.setattr(LogFile, "sync", sync)
+            with pytest.raises(OSError, match="Input/output error"):
+                await store.append(run_id, [call(2), call(3)])
+        await store.append(run_id, [call(4)])
+        commit.set()
+        await syncs[0]
+        await store.append(run_id, [call(5), call(6)])
+        await store.append(run_id, [Draft(RunFinished(status="completed"))])
+        kept = ["run.started", "c1", "c4", "c5", "c6", "run.finished"]
+        assert calls_of(await store.every(run_id)) == kept
+        assert (await store.verify(run_id)).ok
+        await other.sync()
+        assert calls_of(await other.every(run_id)) == kept
+        assert (await other.verify(run_id)).ok
+    assert verify_run(tmp_path / run_id).ok

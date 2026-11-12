@@ -7,9 +7,10 @@ import os
 import re
 import shutil
 import sqlite3
+import stat
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC
 from functools import partial
@@ -204,13 +205,35 @@ class EventStore(Protocol):
 @dataclass(slots=True)
 class _Writer:
     """`cut` says a batch failed since the last write: its lines may still be in the log past
-    `head`, or in the index of a process that read them there."""
+    `head`, or in the index of a process that read them there. `truncated` is the record of
+    an unfinished tail cut off the log when it was opened, which goes first in the next batch
+    that is written."""
 
     file: LogFile
     head: Head
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     closed: bool = False
     cut: bool = False
+    truncated: LogTruncated | None = None
+
+
+class _Keyed:
+    """One lock per key, kept only while it is held or waited for."""
+
+    def __init__(self) -> None:
+        self._locks: dict[str, tuple[asyncio.Lock, list[int]]] = {}
+
+    @contextlib.asynccontextmanager
+    async def __call__(self, key: str) -> AsyncGenerator[None]:
+        lock, users = self._locks.setdefault(key, (asyncio.Lock(), [0]))
+        users[0] += 1
+        try:
+            async with lock:
+                yield
+        finally:
+            users[0] -= 1
+            if not users[0]:
+                del self._locks[key]
 
 
 @dataclass(slots=True)
@@ -259,12 +282,13 @@ class LocalEventStore:
         self._ingested: set[str] = set()
         self._signals: dict[str, asyncio.Event] = {}
         self._changed = asyncio.Event()
-        self._opening = asyncio.Lock()
+        self._opening = _Keyed()
         self.listeners: list[Callable[[str], None]] = []
         self._taps: dict[str, list[Callable[[Sequence[Event]], None]]] = {}
         self._lags: dict[str, _Lag] = {}
         self._truths = asyncio.Lock()
         self._sealed: dict[str, Head] = {}
+        self._corrupt: set[str] = set()
         self._closed = False
 
     @classmethod
@@ -340,11 +364,15 @@ class LocalEventStore:
     async def log_head(self, run_id: str) -> Head | None:
         """Where the synced part of a run's log ends: the index head, or past it while the
         index is behind the log. With no writer or sink here the log is read under the lock
-        that opens one, so a writer opening meanwhile cannot add lines it has not synced yet; a
-        writer in another process still can. A sealed run's head is read once."""
+        that opens one for the run, so a writer opening meanwhile cannot add lines it has not
+        synced yet; a writer in another process still can. A sealed run's head is read once.
+        None too for a run another process deleted while its index was behind here."""
         head = await self.head(run_id)
         if run_id not in self._lags:
             return head
+        if not self.holds(run_id):
+            await self._gone(run_id)
+            return None
         if (sealed := self._sealed.get(run_id)) is not None:
             return sealed
 
@@ -357,20 +385,80 @@ class LocalEventStore:
                 if error is not None or len(chunk) < CHUNK:
                     return after
 
-        while True:
-            handle = self._writers.get(run_id) or self._sinks.get(run_id)
-            if handle is not None:
-                # a write sets the handle's head before its fsync, and holds the lock past it
-                async with handle.lock:
-                    if not handle.closed:
-                        return handle.head
-            async with self._opening:
-                if (self._writers.get(run_id) or self._sinks.get(run_id)) is None:
-                    found = await asyncio.to_thread(read)
-                    break
+        try:
+            async with self._still(run_id) as handle:
+                if handle is not None:
+                    # a write sets the handle's head before its fsync, and holds the lock
+                    # past it
+                    return handle.head
+                found = await asyncio.to_thread(read)
+        except FileNotFoundError:
+            if self.holds(run_id):
+                raise
+            await self._gone(run_id)
+            return None
         if found.finished:
             self._sealed[run_id] = found
         return found if found.seq >= 0 else head
+
+    def holds(self, run_id: str) -> bool:
+        """Whether the run has a directory here. A run that was deleted has none, whichever
+        process deleted it. A directory that cannot be read for another reason counts as
+        there."""
+        try:
+            return stat.S_ISDIR(os.stat(self._dir(run_id)).st_mode)
+        except FileNotFoundError, NotADirectoryError:
+            return False
+        except OSError:
+            return True
+
+    def _forget(self, run_id: str) -> None:
+        """Drop what this store remembers of a run another process deleted."""
+        self._caught_up(run_id)
+        self._sealed.pop(run_id, None)
+        self._corrupt.discard(run_id)
+
+    async def _gone(self, run_id: str) -> None:
+        """Forget a lagging run another process deleted, once no catch-up of it is under way,
+        and take back the rows one left in the index."""
+        async with self._still(run_id):
+            if run_id in self._lags:
+                with contextlib.suppress(RunCorrupt):
+                    await self._index_log(run_id)
+            else:
+                self._sealed.pop(run_id, None)
+
+    async def _take_back(self, run_id: str) -> None:
+        """Remove the index rows of a run that has no directory. An empty grave goes first, so
+        the next open ends a removal that is cut short."""
+        grave = self.root / f"{GRAVE}{run_id}.{uuid.uuid4().hex[:8]}"
+
+        def dig() -> None:
+            grave.mkdir()
+            sync_dir(self.root)
+
+        await asyncio.to_thread(dig)
+        await self._index.remove(run_id)
+        await asyncio.to_thread(_clear, grave)
+
+    @contextlib.asynccontextmanager
+    async def _still(self, run_id: str) -> AsyncGenerator[_Writer | _Sink | None]:
+        """Hold the run's log still in this process: under the lock of its writer or sink,
+        which is given, or with none open under the lock that opens one, so that every line
+        the log holds meanwhile is synced. Not for a caller that holds either lock."""
+        while True:
+            handle = self._writers.get(run_id) or self._sinks.get(run_id)
+            if handle is None:
+                async with self._opening(run_id):
+                    if (self._writers.get(run_id) or self._sinks.get(run_id)) is None:
+                        yield None
+                        return
+            else:
+                async with handle.lock:
+                    if not handle.closed:
+                        yield handle
+                        return
+            await asyncio.sleep(0)
 
     async def wait_indexed(self, run_id: str, seq: int) -> None:
         """Wait until the run's index holds event `seq`, while it is behind the log."""
@@ -386,8 +474,12 @@ class LocalEventStore:
         a copy whose last lines never came, unless an ingest is writing it.
 
         The directory is first renamed to a grave, a name no run has, so a crash at any later
-        point leaves nothing that reads as the run; the next open finishes the delete. A grave
-        that will not go is logged and left for that open."""
+        point leaves nothing that reads as the run; the next open finishes the delete. A run
+        with no directory gets an empty grave, so its index rows go at that open too. A grave
+        that will not go is logged and left for that open.
+
+        The lock that opens the run's writer or sink is held throughout, so a run made again
+        under the same id starts once the rows of the old one are gone."""
         sink = self._sinks.get(run_id)
         if run_id in self._writers or (
             sink is not None and (not self.ingest_only or sink.lock.locked())
@@ -401,19 +493,23 @@ class LocalEventStore:
                 raise RuntimeError(f"run {run_id} is not sealed")
         self._ingested.discard(run_id)
         self._sealed.pop(run_id, None)
+        self._corrupt.discard(run_id)
         await self._drop_lag(run_id)
-        grave = await asyncio.to_thread(self._bury, run_id)
-        await self._index.remove(run_id)
-        if grave is not None:
+        async with self._opening(run_id):
+            if run_id in self._writers or run_id in self._sinks:
+                raise RuntimeError(f"run {run_id} is open for writing")
+            grave = await asyncio.to_thread(self._bury, run_id)
+            await self._index.remove(run_id)
             await asyncio.to_thread(_clear, grave)
 
-    def _bury(self, run_id: str) -> Path | None:
-        """Rename a run's directory to a new grave, durably. None when it has no directory."""
+    def _bury(self, run_id: str) -> Path:
+        """Rename a run's directory to a new grave, durably. A run with no directory gets an
+        empty one."""
         grave = self.root / f"{GRAVE}{run_id}.{uuid.uuid4().hex[:8]}"
         try:
             self._dir(run_id).rename(grave)
         except FileNotFoundError:
-            return None
+            grave.mkdir()
         sync_dir(self.root)
         return grave
 
@@ -560,8 +656,11 @@ class LocalEventStore:
                 sink.file.write(b"".join(fresh))
                 await asyncio.to_thread(sink.file.sync)
             except OSError:
-                with contextlib.suppress(OSError):
-                    sink.file.truncate(head.offset)
+                # a store close during the fsync closed the file, and its number may be
+                # another file's by now
+                if not sink.closed:
+                    with contextlib.suppress(OSError):
+                        sink.file.truncate(head.offset)
                 self._drop_sink(run_id, sink)
                 raise
             sink.head = after
@@ -605,7 +704,7 @@ class LocalEventStore:
         return list(lines[known:])
 
     async def _sink(self, run_id: str) -> _Sink:
-        async with self._opening:
+        async with self._opening(run_id):
             sink = self._sinks.get(run_id)
             if sink is not None:
                 return sink
@@ -637,7 +736,9 @@ class LocalEventStore:
     async def append(self, run_id: str, drafts: Sequence[Draft]) -> list[Event]:
         """Chain, write, fsync and index `drafts` as one batch. Completes even if cancelled.
         Once the batch is in the log it is returned, even when the index failed to take it: the
-        log is the record, and the index catches up from it."""
+        log is the record, and the index catches up from it. The first batch after an
+        unfinished tail was cut off the log starts with the record of that cut, which the
+        taps see and the call does not return."""
         if self.ingest_only:
             raise RuntimeError("this store only ingests runs")
         if not drafts:
@@ -654,6 +755,9 @@ class LocalEventStore:
             start = head = writer.head
             events: list[Event] = []
             lines: list[bytes] = []
+            extra = writer.truncated is not None
+            if writer.truncated is not None:
+                drafts = [Draft(writer.truncated), *drafts]
             for draft in drafts:
                 kind, data = draft.payload.type, draft.payload.model_dump(mode="json")
                 chain = partial(
@@ -685,6 +789,7 @@ class LocalEventStore:
                     except OSError as e:
                         log.error("run %s: a failed batch is not cut off the log: %s", run_id, e)
                 raise
+            writer.truncated = None
             await self._keep_up(run_id, events, head)
             if head.finished:
                 self._discard(run_id, writer)
@@ -694,7 +799,7 @@ class LocalEventStore:
                 except Exception:
                     log.exception("an append tap of run %s failed", run_id)
         self._notify(run_id)
-        return events
+        return events[extra:]
 
     async def _cut(self, run_id: str, writer: _Writer) -> None:
         """Cut the lines of a batch that failed off the open log of `writer`, before it writes
@@ -889,7 +994,8 @@ class LocalEventStore:
             return None
 
         try:
-            return await asyncio.to_thread(find)
+            async with self._still(run_id):
+                return await asyncio.to_thread(find)
         except FileNotFoundError:
             return None
 
@@ -1073,11 +1179,13 @@ class LocalEventStore:
         the last it holds, and all the log holds once an index write failed here. A shorter
         index is not an error otherwise, since a write may be under way.
 
-        The index head is read before the log. A store writes each batch to the log before it
-        indexes it, so the log of a live run is at or past that head, whichever process
-        writes it, and must hold the head's event where the index says."""
-        indexed = await self._index.head(run_id)
-        head = None if indexed is None else indexed[0]
+        The index head is read before the log, with the count of the events the index holds up
+        to it, in one read: a rebuild in another process empties the index before or after
+        both. A store writes each batch to the log before it indexes it, so the log of a live
+        run is at or past that head, whichever process writes it, and must hold the head's
+        event where the index says."""
+        indexed = await self._index.held(run_id)
+        head, count = (None, 0) if indexed is None else indexed
         result = await asyncio.to_thread(
             verify_run, self._dir(run_id), where=f"the folder of run {run_id}"
         )
@@ -1091,7 +1199,7 @@ class LocalEventStore:
             checkpoint_ok, self._log(run_id), head
         ):
             error = "the last event the index holds is not the log's"
-        elif (count := await self._index.count(run_id, held - 1)) != held:
+        elif count != held:
             error = f"the index has {count} of the {held} events up to its last: it has a gap"
         elif held < result.events and run_id in self._lags:
             error = f"the index holds {held} of the log's {result.events} events"
@@ -1100,6 +1208,7 @@ class LocalEventStore:
     async def rebuild(self) -> None:
         """Drop the index and rebuild it from every run log, accepting each log as it is."""
         await self._index.reset()
+        self._corrupt.clear()
         await self.sync()
 
     async def sync(self) -> None:
@@ -1108,7 +1217,7 @@ class LocalEventStore:
         await self._lost_variants()
         for run_id in self._run_ids():
             try:
-                async with self._lock_of(run_id):
+                async with self._still(run_id):
                     caught = await self._index_log(run_id)
             except RunCorrupt as e:
                 log.error("%s", e)
@@ -1147,7 +1256,7 @@ class LocalEventStore:
                 log.error("run %s: its variant is not indexed: %s", run_id, e)
 
     async def _writer(self, run_id: str) -> _Writer:
-        async with self._opening:
+        async with self._opening(run_id):
             writer = self._writers.get(run_id)
             if writer is not None:
                 return writer
@@ -1170,25 +1279,32 @@ class LocalEventStore:
                     ref = await self.put_blob(run_id, dropped)
                     await asyncio.to_thread(file.truncate, error.offset)
                     log.warning("run %s: cut %d bytes off the log: %s", run_id, len(dropped), error)
-                    truncated = LogTruncated(offset=error.offset, dropped=ref, reason=error.reason)
+                    if head.seq >= 0 and not head.finished:
+                        # written with the batch this writer was opened for, and with the
+                        # next one when that write fails. A crash before it loses the record
+                        truncated = LogTruncated(
+                            offset=error.offset, dropped=ref, reason=error.reason
+                        )
             except BaseException:
                 file.close()
                 raise
-            writer = _Writer(file, head)
+            writer = _Writer(file, head, truncated=truncated)
             self._writers[run_id] = writer
-        if truncated is not None and head.seq >= 0 and not head.finished:
-            await self._append(run_id, [Draft(truncated)])
         return writer
 
     async def _catch_up(self, run_id: str) -> tuple[Head, ChainError | None]:
         """Index verified events past the index head, up to the first one the index cannot take.
-        RunCorrupt if the log lost that head."""
+        RunCorrupt if the log lost that head. FileNotFoundError when the run has no log, as
+        when another process deleted it, even after its log was read here."""
         path = self._log(run_id)
         head = Head()
         indexed = await self._index.head(run_id)
         if indexed is not None:
             head, status = indexed
             if status == "corrupt" or not await asyncio.to_thread(checkpoint_ok, path, head):
+                if not self.holds(run_id):
+                    await self._take_back(run_id)
+                    raise FileNotFoundError(path)
                 if status != "corrupt":
                     await self._index.mark_corrupt(run_id)
                 raise RunCorrupt(
@@ -1211,6 +1327,10 @@ class LocalEventStore:
                     for e, after in chunk:
                         await self._indexed(run_id, [Event.model_validate(e)], after)
                 head = chunk[-1][1]
+                if not self.holds(run_id):
+                    # deleted by another process after its log was read: take the rows back
+                    await self._take_back(run_id)
+                    raise FileNotFoundError(path)
             if error is not None or len(chunk) < CHUNK:
                 return head, error
 
@@ -1219,6 +1339,12 @@ class LocalEventStore:
         log instead, when a try is due, so no batch is indexed past a gap. Never raises: a
         failure leaves the run behind, and the log holds the batch either way."""
         lag = self._lags.get(run_id)
+        if run_id in self._corrupt:
+            # told once; the index takes the run again after a rebuild, here or elsewhere
+            indexed = await self._index.head(run_id)
+            if indexed is not None and indexed[1] == "corrupt":
+                return
+            self._corrupt.discard(run_id)
         if lag is None:
             try:
                 await self._indexed(run_id, events, head)
@@ -1232,14 +1358,19 @@ class LocalEventStore:
 
     async def _index_log(self, run_id: str) -> tuple[Head, ChainError | None] | None:
         """`_catch_up`, where a failure leaves the run behind instead of raising and gives None.
-        RunCorrupt still raises: the log lost what the index holds."""
+        RunCorrupt still raises: the log lost what the index holds. A run another process
+        deleted is not behind: it is forgotten, and gives None."""
         try:
             caught = await self._catch_up(run_id)
         except RunCorrupt:
             self._caught_up(run_id)
+            self._corrupt.add(run_id)
             raise
         except Exception as e:
-            self._behind(run_id, e)
+            if isinstance(e, FileNotFoundError) and not self.holds(run_id):
+                self._forget(run_id)
+            else:
+                self._behind(run_id, e)
             return None
         lag = self._caught_up(run_id)
         if lag is not None:
@@ -1279,14 +1410,14 @@ class LocalEventStore:
             )
 
     async def _heal(self, run_id: str, lag: _Lag) -> None:
-        """Catch a lagging run's index up from its log at each time `lag` is due, under the lock
-        of its writer or sink, until it works or the lag is dropped."""
+        """Catch a lagging run's index up from its log at each time `lag` is due, with the log
+        held still, until it works or the lag is dropped."""
         loop = asyncio.get_running_loop()
         while self._lags.get(run_id) is lag:
             await asyncio.sleep(max(0.0, lag.due - loop.time()))
             if self._lags.get(run_id) is not lag or loop.time() < lag.due:
                 continue
-            async with self._lock_of(run_id):
+            async with self._still(run_id):
                 if self._lags.get(run_id) is lag:
                     try:
                         await self._index_log(run_id)
@@ -1305,11 +1436,6 @@ class LocalEventStore:
         lag = self._caught_up(run_id)
         if lag is not None and lag.task is not None and lag.task is not asyncio.current_task():
             await asyncio.gather(lag.task, return_exceptions=True)
-
-    def _lock_of(self, run_id: str) -> contextlib.AbstractAsyncContextManager[Any]:
-        """The lock of the run's writer or sink, which orders a catch-up with its writes."""
-        handle = self._writers.get(run_id) or self._sinks.get(run_id)
-        return contextlib.nullcontext() if handle is None else handle.lock
 
     async def _hashes(self, run_id: str, first: int, last: int) -> dict[int, str]:
         """The hash of each logged event of a run from seq `first` to `last`: from the index, and
@@ -1538,7 +1664,9 @@ def _same_file(path: Path, data: bytes) -> bool:
 
 
 def _write_private(path: Path, data: bytes) -> None:
-    """Write `data` to `path` mode 0600, whole or not at all."""
+    """Write `data` to `path` mode 0600, whole or not at all. When its name could not be made
+    durable the file is taken away again, so a call that raised left none and the next one
+    writes it."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}")
     try:
@@ -1552,7 +1680,12 @@ def _write_private(path: Path, data: bytes) -> None:
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
-    sync_dir(path.parent)
+    try:
+        sync_dir(path.parent)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            path.unlink(missing_ok=True)
+        raise
 
 
 def _append_line(path: Path, line: bytes) -> None:

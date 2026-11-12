@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import shutil
 import sqlite3
 import threading
 import uuid
@@ -21,9 +22,10 @@ from aims.events import (
     Verification,
     split_lines,
 )
+from aims.events import index as index_module
 from aims.events import store as store_module
 from aims.events.chain import Head, seal
-from aims.events.index import BUSY_TRIES, Index, IndexGap, Label
+from aims.events.index import BUSY_TRIES, Index, IndexDiverged, IndexGap, Label
 from aims.events.schema import now
 from aims.events.store import INDEX, LOG
 
@@ -219,6 +221,31 @@ async def test_a_lock_that_lasts_fails_the_write_after_its_tries(
         holder.close()
     await index.put_labels([label(2)])
     assert list(await index.labels(RUN)) == [2]
+
+
+async def test_a_write_that_waits_out_a_lock_lets_a_queued_batch_try_in_between(
+    index: Index, tmp_path: Path
+) -> None:
+    holder = Holder(index, tmp_path / "index.sqlite")
+    try:
+        await holder.hold(100)
+        labels = asyncio.create_task(index.put_labels([label(1)]))
+        await settle()
+
+        async def batch() -> None:
+            async with index._write(tries=1):
+                pass
+
+        # a batch of another run waits for one try of the labels, not for all three
+        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+            await batch()
+        assert holder.begins == 2
+        assert not labels.done()
+        holder.other.rollback()
+        await labels
+        assert list(await index.labels(RUN)) == [1]
+    finally:
+        holder.close()
 
 
 async def test_an_index_batch_tries_the_lock_once(index: Index, tmp_path: Path) -> None:
@@ -577,6 +604,235 @@ async def test_a_log_head_read_while_a_writer_opens_counts_no_line_it_has_not_sy
         await store.close()
 
 
+async def test_a_log_head_read_of_one_run_holds_up_no_writer_of_another(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id, store = await behind_at_open(tmp_path / "runs", monkeypatch, sealed=False)
+    try:
+        reading, go = threading.Event(), threading.Event()
+        take = store_module._take
+
+        def held_take(*args: Any) -> Any:
+            reading.set()
+            go.wait(10)
+            return take(*args)
+
+        monkeypatch.setattr(store_module, "_take", held_take)
+        head = asyncio.create_task(store.log_head(run_id))
+        assert await asyncio.to_thread(reading.wait, 10)
+        monkeypatch.setattr(store_module, "_take", take)
+        async with asyncio.timeout(5):
+            other = await store.create_run(STARTED)
+            await store.append(other, [call(1)])
+        assert not head.done()
+        go.set()
+        found = await head
+        assert found is not None
+        assert found.seq == 1
+        assert store._opening._locks == {}
+    finally:
+        go.set()
+        await store.close()
+
+
+async def test_a_sync_while_a_writer_opens_indexes_no_line_it_has_not_synced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "runs"
+    async with await LocalEventStore.open(root) as store:
+        run_id = await store.create_run(STARTED)
+        await store.append(run_id, [call(1)])
+    reset_index(root)
+    store = await LocalEventStore.open(root)
+    try:
+        await store._index.reset()
+        armed, reading, go = threading.Event(), threading.Event(), threading.Event()
+        written, release = threading.Event(), threading.Event()
+        take, sync = store_module._take, store_module.LogFile.sync
+
+        def held_take(*args: Any) -> Any:
+            if armed.is_set():
+                armed.clear()
+                reading.set()
+                go.wait(10)
+            return take(*args)
+
+        def held_sync(self: Any) -> None:
+            written.set()
+            release.wait(10)
+            sync(self)
+
+        monkeypatch.setattr(store_module, "_take", held_take)
+        monkeypatch.setattr(store_module.LogFile, "sync", held_sync)
+        armed.set()
+        synced = asyncio.create_task(store.sync())
+        assert await asyncio.to_thread(reading.wait, 10)
+        append = asyncio.create_task(store.append(run_id, [call(2)]))
+        # a writer that opened now would write its line here, before its fsync
+        await asyncio.to_thread(written.wait, 0.5)
+        go.set()
+        await synced
+        assert await indexed(store, run_id) == [0, 1]
+        release.set()
+        await append
+        assert await indexed(store, run_id) == [0, 1, 2]
+    finally:
+        go.set()
+        release.set()
+        await store.close()
+
+
+def deleted_elsewhere(store: LocalEventStore, run_id: str) -> None:
+    """What a delete of the run by another process leaves in its folder's place."""
+    (store.root / run_id).rename(store.root / f".deleted.{run_id}.0a0a0a0a")
+
+
+async def test_a_run_another_process_deleted_is_not_behind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id, store = await behind_at_open(tmp_path / "runs", monkeypatch, sealed=True)
+    try:
+        assert await store.log_head(run_id) is not None
+        assert run_id in store._sealed
+        deleted_elsewhere(store, run_id)
+        assert await store.log_head(run_id) is None
+        assert run_id not in store._lags
+        assert run_id not in store._sealed
+    finally:
+        await store.close()
+
+
+async def test_a_catch_up_of_a_run_another_process_deleted_forgets_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    run_id, store = await behind_at_open(tmp_path / "runs", monkeypatch, sealed=False)
+    try:
+        deleted_elsewhere(store, run_id)
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="aims.events"):
+            assert await store._index_log(run_id) is None
+        assert run_id not in store._lags
+        assert caplog.messages == []
+    finally:
+        await store.close()
+
+
+async def test_a_run_deleted_while_its_log_is_indexed_leaves_no_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "runs"
+    async with await LocalEventStore.open(root) as store:
+        run_id = await store.create_run(STARTED)
+        await store.append(run_id, [call(1), Draft(RunFinished(status="completed"))])
+        kept = await store.create_run(STARTED)
+        await store._index.reset()
+        take = store_module._take
+
+        def then_deleted(path: Path, *args: Any) -> Any:
+            found = take(path, *args)
+            if path.parent.name == run_id:
+                deleted_elsewhere(store, run_id)
+            return found
+
+        monkeypatch.setattr(store_module, "_take", then_deleted)
+        await store.sync()
+        assert await store.run(run_id) is None
+        assert await indexed(store, run_id) == []
+        assert run_id not in store._lags
+        assert await indexed(store, kept) == [0]
+
+
+async def lagging_with_rows(root: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[str, Any]:
+    """An open store with a sealed run whose index holds its first event only and is behind,
+    with its own catch up stopped."""
+    breaker = Breaker(monkeypatch, sqlite3.OperationalError("disk I/O error"))
+    store = await LocalEventStore.open(root)
+    run_id = await store.create_run(STARTED)
+    breaker.left = 10**6
+    await store.append(run_id, [call(1), Draft(RunFinished(status="completed"))])
+    task = store._lags[run_id].task
+    assert task is not None
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    assert await indexed(store, run_id) == [0]
+    return run_id, store
+
+
+async def test_the_rows_of_a_lagging_run_another_process_deleted_are_taken_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id, store = await lagging_with_rows(tmp_path / "runs", monkeypatch)
+    try:
+        deleted_elsewhere(store, run_id)
+        shutil.rmtree(store.root / f".deleted.{run_id}.0a0a0a0a")
+        assert await store.log_head(run_id) is None
+        assert await store.run(run_id) is None
+        assert await indexed(store, run_id) == []
+        assert run_id not in store._lags
+        assert list(store.root.glob(".deleted.*")) == []
+    finally:
+        await store.close()
+
+
+async def test_rows_taken_back_in_part_go_at_the_next_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "runs"
+    run_id, store = await lagging_with_rows(root, monkeypatch)
+    try:
+        deleted_elsewhere(store, run_id)
+        shutil.rmtree(root / f".deleted.{run_id}.0a0a0a0a")
+        await store._index._db.execute(
+            "create temp trigger cut before delete on main.events"
+            " begin select raise(abort, 'cut short'); end"
+        )
+        assert await store.log_head(run_id) is None
+        assert len(await store._index.hashes(run_id, 0, 9)) == 1
+    finally:
+        await store.close()
+    async with await LocalEventStore.open(root) as store:
+        assert await store._index.hashes(run_id, 0, 9) == {}
+    assert list(root.glob(".deleted.*")) == []
+
+
+async def test_a_run_whose_index_is_corrupt_says_so_once_and_takes_its_events_after_a_rebuild(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(store_module, "RETRY_S", 0.01)
+    root = tmp_path / "runs"
+    async with await LocalEventStore.open(root) as store:
+        run_id = await store.create_run(STARTED)
+        await store.append(run_id, [call(1)])
+        # what cut lines another process indexed just before this writer went on leave
+        db = sqlite3.connect(root / INDEX)
+        db.execute("update events set hash = 'cut' where run_id = ? and seq = 1", (run_id,))
+        db.execute("update runs set last_hash = 'cut' where run_id = ?", (run_id,))
+        db.commit()
+        db.close()
+        with caplog.at_level(logging.WARNING, logger="aims.events"):
+            await store.append(run_id, [call(2)])
+
+            async def corrupt() -> bool:
+                info = await store.run(run_id)
+                return info is not None and info.status == "corrupt"
+
+            async with asyncio.timeout(10):
+                while not await corrupt():  # noqa: ASYNC110
+                    await asyncio.sleep(0.01)
+            await asyncio.sleep(0.1)
+            told = len(caplog.records)
+            assert told == 2
+            for n in range(3, 6):
+                await store.append(run_id, [call(n)])
+            await asyncio.sleep(0.1)
+            assert len(caplog.records) == told
+        assert logged(store, run_id) == [0, 1, 2, 3, 4, 5]
+        await store.rebuild()
+        await store.append(run_id, [call(6)])
+        assert await indexed(store, run_id) == [0, 1, 2, 3, 4, 5, 6]
+        assert (await store.verify(run_id)).ok
+
+
 async def test_a_sealed_run_the_index_is_behind_on_reads_its_log_head_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -685,6 +941,103 @@ async def test_the_index_refuses_a_batch_past_the_event_after_its_last(index: In
     assert await index.hashes(RUN, 0, 3) == {e.seq: e.hash for e in events}
 
 
+def fork(heads: list[Head], at: int, n: int) -> tuple[list[Event], list[Head]]:
+    """`n` other events after the event `at` of a chain: what a batch cut off the log held."""
+    events, out, head = [], [], heads[at]
+    for i in range(n):
+        payload = ToolCall(call_id=f"cut{i}", name="n", arguments="{}")
+        body, _, head = seal(
+            head,
+            run_id=RUN,
+            ts=now(),
+            agent_id="a1",
+            type=payload.type,
+            data=payload.model_dump(mode="json"),
+        )
+        events.append(Event.model_validate(body))
+        out.append(head)
+    return events, out
+
+
+async def test_the_index_refuses_a_batch_that_overlaps_other_events(index: Index) -> None:
+    events, heads = chain(5)
+    cut, cut_heads = fork(heads, 1, 2)
+    await index.add(events[:3], heads[2])
+    # a reader that took the cut lines from the log commits them after the writer went on
+    with pytest.raises(IndexDiverged, match="event 2"):
+        await index.add(cut, cut_heads[1])
+    with pytest.raises(IndexDiverged, match="event 2"):
+        await index.add([*events[:2], *cut], cut_heads[1])
+    assert await index.hashes(RUN, 0, 9) == {e.seq: e.hash for e in events[:3]}
+    await index.add(events[2:], heads[4])
+    found = await index.head(RUN)
+    assert found is not None
+    assert found[0] == heads[4]
+    assert await index.hashes(RUN, 0, 9) == {e.seq: e.hash for e in events}
+
+
+async def test_the_index_refuses_a_batch_that_follows_another_event(index: Index) -> None:
+    events, heads = chain(4)
+    cut, cut_heads = fork(heads, 1, 2)
+    await index.add(events[:3], heads[2])
+    with pytest.raises(IndexDiverged, match="event 3"):
+        await index.add(cut[1:], cut_heads[1])
+    assert await index.hashes(RUN, 0, 9) == {e.seq: e.hash for e in events[:3]}
+    # and the writer's own batch after cut lines a reader got in first
+    await index.reset()
+    await index.add(events[:2], heads[1])
+    await index.add(cut, cut_heads[1])
+    with pytest.raises(IndexDiverged, match="event 2"):
+        await index.add(events[2:3], heads[2])
+    with pytest.raises(IndexDiverged, match="event 3"):
+        await index.add(events[2:], heads[3])
+    found = await index.head(RUN)
+    assert found is not None
+    assert found[0] == cut_heads[1]
+
+
+async def test_the_index_drops_rows_no_run_owns_when_their_run_id_starts_again(
+    index: Index, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(index_module, "REMOVE_ROWS", 2)
+    old, old_heads = chain(6)
+    await index.add(old, old_heads[5])
+    await index._db.execute(
+        "create temp trigger cut before delete on main.events when old.seq >= 2"
+        " begin select raise(abort, 'cut short'); end"
+    )
+    with pytest.raises(sqlite3.Error, match="cut short"):
+        await index.remove(RUN)
+    await index._db.execute("drop trigger cut")
+    assert len(await index.hashes(RUN, 0, 9)) == 4
+    events, heads = chain(3)
+    await index.add(events[:2], heads[1])
+    assert await index.hashes(RUN, 0, 9) == {e.seq: e.hash for e in events[:2]}
+    await index.add(events[2:], heads[2])
+    assert await index.hashes(RUN, 0, 9) == {e.seq: e.hash for e in events}
+
+
+async def test_the_index_refuses_a_batch_over_rows_another_run_left(
+    index: Index, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rows that land after the check for leftovers, as a remove in another process leaves."""
+    old, old_heads = chain(4)
+    await index.add(old, old_heads[3])
+    events, heads = chain(3)
+    await index._db.execute("delete from runs")
+
+    async def none(run_id: str) -> bool:
+        return False
+
+    with monkeypatch.context() as m:
+        m.setattr(index, "_orphaned", none)
+        with pytest.raises(IndexDiverged, match="event 2"):
+            await index.add(events, heads[2])
+    assert await index.head(RUN) is None
+    await index.add(events, heads[2])
+    assert await index.hashes(RUN, 0, 9) == {e.seq: e.hash for e in events}
+
+
 async def test_verify_tells_of_a_gap_in_the_index(tmp_path: Path) -> None:
     root = tmp_path / "runs"
     async with await LocalEventStore.open(root) as store:
@@ -704,16 +1057,44 @@ async def test_verify_takes_events_that_land_while_it_compares(
     async with await LocalEventStore.open(tmp_path / "runs") as store:
         run_id = await store.create_run(STARTED)
         await store.append(run_id, [call(1)])
-        head = store._index.head
+        held = store._index.held
 
         async def then_append(run: str) -> object:
-            found = await head(run)
-            monkeypatch.setattr(store._index, "head", head)
+            found = await held(run)
+            monkeypatch.setattr(store._index, "held", held)
             await store.append(run_id, [call(2), call(3)])
             return found
 
-        monkeypatch.setattr(store._index, "head", then_append)
+        monkeypatch.setattr(store._index, "held", then_append)
         assert (await store.verify(run_id)).error is None
+
+
+async def test_verify_takes_a_rebuild_in_another_process_while_it_compares(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "runs"
+    async with await LocalEventStore.open(root) as store:
+        run_id = await store.create_run(STARTED)
+        await store.append(run_id, [call(1), call(2), Draft(RunFinished(status="completed"))])
+        other = await Index.open(root / INDEX)
+        loop = asyncio.get_running_loop()
+        verify_run = store_module.verify_run
+
+        def then_reset(run_dir: Path, **kw: Any) -> Verification:
+            found = verify_run(run_dir, **kw)
+            asyncio.run_coroutine_threadsafe(other.reset(), loop).result(10)
+            return found
+
+        try:
+            monkeypatch.setattr(store_module, "verify_run", then_reset)
+            verified = await store.verify(run_id)
+            assert (verified.error, verified.events) == (None, 4)
+            assert await store.run(run_id) is None
+            # and with the index empty before it starts
+            verified = await store.verify(run_id)
+            assert (verified.error, verified.events) == (None, 4)
+        finally:
+            await other.close()
 
 
 async def test_verify_takes_events_that_land_after_it_read_the_log(

@@ -247,6 +247,11 @@ class IndexGap(Exception):
     """A batch that starts past the event after the last one the run's index holds."""
 
 
+class IndexDiverged(Exception):
+    """A batch that does not continue the events the run's index holds: one of its events has
+    another hash there, or its first new event does not follow the last one there."""
+
+
 class HoldInfo(BaseModel):
     """An agent the monitor or an operator paused that has not been let go. `seq` and `since`
     are the action that paused it, `flags` the flags behind a monitor's pause and `mode` the
@@ -616,58 +621,63 @@ class Index:
 
     async def reset(self) -> None:
         script = f"begin immediate; {DROP} {SCHEMA} pragma user_version = {VERSION}; commit;"
-        async with self._lock:
-            try:
-                await self._locking(lambda: self._db.executescript(script), BUSY_TRIES)
-            except BaseException:
-                await self._rollback()
-                raise
+        await self._locked(lambda: self._db.executescript(script), BUSY_TRIES)
+        self._lock.release()
 
     @contextlib.asynccontextmanager
     async def _write(self, tries: int = BUSY_TRIES) -> AsyncGenerator[None]:
         """Run the block as one immediate transaction under the write lock: commit when it ends,
         roll back when it raises or is cancelled. A statement whose awaiter was cancelled still
         runs on the connection's thread, which runs them in order, so the rollback queued here
-        runs after it and before the next writer's begin. `tries` is as `_locking` takes it."""
-        async with self._lock:
-            try:
-                await self._begin(tries)
-                yield
-                await self._db.execute("commit")
-            except BaseException:
-                await self._rollback()
-                raise
+        runs after it and before the next writer's begin. `tries` is as `_locked` takes it."""
+        await self._locked(self._begin, tries)
+        try:
+            yield
+            await self._db.execute("commit")
+        except BaseException:
+            await self._rollback()
+            raise
+        finally:
+            self._lock.release()
 
-    async def _begin(self, tries: int) -> None:
+    async def _begin(self) -> None:
         """Begin an immediate transaction. One already open has no writer, since the lock is
         held and any rollback a cancelled writer queued ran first: roll it back, begin again.
         `in_transaction` would tell sooner, but reading it waits for the connection's thread."""
-
-        def begin() -> Awaitable[object]:
-            return self._db.execute("begin immediate")
-
         try:
-            await self._locking(begin, tries)
+            await self._db.execute("begin immediate")
         except sqlite3.OperationalError as e:
             if "within a transaction" not in str(e):
                 raise
             log.warning("the index held a transaction no writer owns; it is rolled back")
             await self._db.rollback()
-            await self._locking(begin, tries)
+            await self._db.execute("begin immediate")
 
-    async def _locking(self, begin: Callable[[], Awaitable[object]], tries: int) -> None:
-        """Await `begin`, which takes the write lock. Each time it waited out the busy timeout
-        while another connection held the lock, it begins again, `tries` times in all; then the
-        last error raises, so a lock that lasts fails the write instead of hanging it."""
+    async def _locked(self, begin: Callable[[], Awaitable[object]], tries: int) -> None:
+        """Take the write lock of this index and await `begin`, which takes SQLite's. Returns
+        with the lock of this index held, for the caller to release. When `begin` raises, its
+        transaction is rolled back and the lock released. Each time it waited out the busy
+        timeout while another connection held SQLite's lock, it begins again, `tries` times in
+        all; then the last error raises, so a lock that lasts fails the write instead of
+        hanging it. Between two tries the lock of this index is free: the writes that queued
+        here meanwhile each get a try of their own first, so none waits out all of this one's."""
         for left in reversed(range(tries)):
+            await self._lock.acquire()
             try:
                 await begin()
-                return
-            except sqlite3.OperationalError as e:
-                if not left or e.sqlite_errorcode & 0xFF != sqlite3.SQLITE_BUSY:
+            except BaseException as e:
+                try:
+                    await self._rollback()
+                finally:
+                    self._lock.release()
+                busy = isinstance(e, sqlite3.OperationalError) and (
+                    e.sqlite_errorcode & 0xFF == sqlite3.SQLITE_BUSY
+                )
+                if not left or not busy:
                     raise
-                await self._rollback()
                 log.warning("another connection held the index's write lock past the busy timeout")
+            else:
+                return
 
     async def _rollback(self) -> None:
         """Queue a rollback of the open transaction; none open makes it a no-op. Its own error
@@ -688,16 +698,21 @@ class Index:
         head = Head(seq=row[0], hash=row[1], offset=row[2], finished=row[3] != "running")
         return head, row[3]
 
-    async def count(self, run_id: str, upto: int) -> int:
-        """How many events of a run the index holds up to seq `upto`. Events past it may land
-        while a caller compares, so they are left out."""
+    async def held(self, run_id: str) -> tuple[Head, int] | None:
+        """Last indexed position of a run and how many of its events up to there the index
+        holds, both as one read sees them: a rebuild in another process cannot empty the
+        index between the two."""
         if not _held(run_id):
-            return 0
+            return None
         async with self._db.execute(
-            "select count(*) from events where run_id = ? and seq <= ?", (run_id, upto)
+            "select last_seq, last_hash, log_offset, status, (select count(*) from events e"
+            " where e.run_id = r.run_id and e.seq <= r.last_seq) from runs r where run_id = ?",
+            (run_id,),
         ) as cur:
             row = await cur.fetchone()
-        return 0 if row is None else row[0]
+        if row is None:
+            return None
+        return Head(seq=row[0], hash=row[1], offset=row[2], finished=row[3] != "running"), row[4]
 
     async def remove(self, run_id: str) -> None:
         """Forget a run. Its row goes first, with its labels, units, costs and flags, so no
@@ -746,13 +761,20 @@ class Index:
             await self._db.execute("update runs set status = 'corrupt' where run_id = ?", (run_id,))
 
     async def add(self, events: Sequence[Event], head: Head, *, variant: str | None = None) -> None:
-        """Index events up to `head`. Rows already present are left alone. A batch that starts
-        past the event after the run's last indexed one raises IndexGap: the index never skips
-        an event. The batch that seals the run names its `variant`, from its truth file, and
-        drops its cost row, as `set_variant` does."""
+        """Index events up to `head`, which follow each other in the run's chain. Rows already
+        present are left alone. A batch that starts past the event after the run's last indexed
+        one raises IndexGap: the index never skips an event. One that is not of the chain the
+        index holds raises IndexDiverged, so lines that were cut from a log, which a reader in
+        another process took from it first, never mix with the lines written in their place.
+        Rows no run owns, which a remove cut short left, go before their run id starts again.
+        The batch that seals the run names its `variant`, from its truth file, and drops its
+        cost row, as `set_variant` does."""
         if not events:
             return
         run_id = events[0].run_id
+        if events[0].seq == 0 and await self._orphaned(run_id):
+            log.warning("run %s: the index held rows of a deleted run of that id", run_id)
+            await self.remove(run_id)
         rows = [
             (
                 e.run_id,
@@ -807,15 +829,24 @@ class Index:
                     ),
                 )
             async with self._db.execute(
-                "select last_seq from runs where run_id = ?", (run_id,)
+                "select last_seq, last_hash from runs where run_id = ?", (run_id,)
             ) as cur:
                 row = await cur.fetchone()
-            last = -1 if row is None else row[0]
+            last, last_hash = (-1, "") if row is None else row
             if first.seq > last + 1:
                 raise IndexGap(
                     f"run {run_id}: a batch from seq {first.seq}, the index ends at {last}"
                 )
             fresh = [e for e in events if e.seq > last]
+            known = next((e for e in reversed(events) if e.seq <= last), None)
+            if known is not None:
+                # a hash covers every event before it, so the last shared one speaks for all
+                await self._same(known)
+            elif last >= 0 and first.prev_hash != last_hash:
+                raise IndexDiverged(
+                    f"run {run_id}: event {first.seq} follows {first.prev_hash[:16]}, the index"
+                    f" ends at event {last} with {last_hash[:16]}"
+                )
             await self._monitor(run_id, [e for e in fresh if e.type in MONITOR_TYPES])
             await self._totals(run_id, fresh)
             units = [e for e in events if e.type == ScoreUnit.type]
@@ -832,6 +863,9 @@ class Index:
                     f" ({', '.join('?' * len(SAMPLE_FIELDS))}) on conflict do nothing",
                     [tuple(w[f] for f in SAMPLE_FIELDS) for w in windows],
                 )
+            if fresh:
+                # a row that was there before the run's row kept its place in the insert
+                await self._same(fresh[-1])
             await self._hold(run_id, [e for e in fresh if e.type in HOLD_TYPES])
             await self._db.execute(
                 "update runs set last_seq = ?, last_hash = ?, log_offset = ?,"
@@ -852,6 +886,30 @@ class Index:
                     "update runs set variant = ? where run_id = ?", (variant, run_id)
                 )
                 await self._db.execute("delete from run_costs where run_id = ?", (run_id,))
+
+    async def _same(self, e: Event) -> None:
+        """Raise IndexDiverged unless the index holds `e` with its hash."""
+        async with self._db.execute(
+            "select hash from events where run_id = ? and seq = ?", (e.run_id, e.seq)
+        ) as cur:
+            row = await cur.fetchone()
+        stored = None if row is None else row[0]
+        if stored != e.hash:
+            raise IndexDiverged(
+                f"run {e.run_id}: event {e.seq} has hash {e.hash[:16]}, the index holds"
+                f" {'none' if stored is None else stored[:16]} there"
+            )
+
+    async def _orphaned(self, run_id: str) -> bool:
+        """Whether the index holds event or sample rows of `run_id` and no run of that id."""
+        async with self._db.execute(
+            "select not exists (select 1 from runs where run_id = ?1) and (exists (select 1"
+            " from events where run_id = ?1) or exists (select 1 from samples where"
+            " run_id = ?1))",
+            (run_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        return bool(row and row[0])
 
     async def _totals(self, run_id: str, fresh: Sequence[Event]) -> None:
         """Add the steps, cost and reward of events not indexed yet to the run's row. Cost adds

@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 import itertools
 import logging
@@ -219,6 +220,99 @@ async def test_a_remove_cut_short_between_batches_shows_no_run_and_the_next_open
         assert (await store.verify(kept)).ok
     text_index_ok(root)
     assert entries(root) == [kept]
+
+
+CUT = (
+    "create temp trigger cut before delete on main.events when old.seq >= 5"
+    " begin select raise(abort, 'cut short'); end"
+)
+
+
+async def test_a_run_id_made_again_after_a_remove_cut_short_keeps_the_new_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(index_module, "REMOVE_ROWS", 3)
+    root = tmp_path / "runs"
+    async with await LocalEventStore.open(root) as store:
+        run_id = await long_run(store)
+        await store._index._db.execute(CUT)
+        with pytest.raises(sqlite3.Error, match="cut short"):
+            await store.remove(run_id)
+        await store._index._db.execute("drop trigger cut")
+        assert await rows(store._index, run_id) > 0
+        await store.create_run(STARTED, run_id=run_id)
+        await store.append(run_id, [Draft(RunFinished(status="completed"))])
+        info = await store.run(run_id)
+        assert info is not None
+        assert (info.status, info.events) == ("completed", 2)
+        assert await rows(store._index, run_id) == 2
+        assert [e.type for e in await store.every(run_id)] == ["run.started", "run.finished"]
+        assert await store.search("needle") == ([], None)
+        assert (await store.verify(run_id)).ok
+    async with await LocalEventStore.open(root) as store:
+        assert (await store.verify(run_id)).ok
+    assert entries(root) == [run_id]
+
+
+async def test_a_remove_cut_short_of_a_run_with_no_folder_is_ended_by_the_next_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(index_module, "REMOVE_ROWS", 3)
+    root = tmp_path / "runs"
+    async with await LocalEventStore.open(root) as store:
+        run_id = await long_run(store)
+        shutil.rmtree(root / run_id)
+        await store._index._db.execute(CUT)
+        with pytest.raises(sqlite3.Error, match="cut short"):
+            await store.remove(run_id)
+        assert await rows(store._index, run_id) > 0
+    async with await LocalEventStore.open(root) as store:
+        assert await rows(store._index, run_id) == 0
+    assert entries(root) == []
+
+
+async def test_a_remove_of_a_run_with_no_folder_and_no_rows_leaves_nothing(tmp_path: Path) -> None:
+    root = tmp_path / "runs"
+    async with await LocalEventStore.open(root) as store:
+        await store.remove("019a6f00-0000-7000-8000-00000000000f")
+    assert entries(root) == []
+
+
+async def test_a_run_id_made_again_during_its_remove_starts_after_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "runs"
+    async with await LocalEventStore.open(root) as store:
+        run_id = await long_run(store)
+        removing, go = asyncio.Event(), asyncio.Event()
+        remove = Index.remove
+
+        async def slow(self: Index, run: str) -> None:
+            removing.set()
+            await go.wait()
+            await remove(self, run)
+
+        async def again() -> None:
+            await store.create_run(STARTED, run_id=run_id)
+            await store.append(run_id, [Draft(RunFinished(status="completed"))])
+
+        monkeypatch.setattr(Index, "remove", slow)
+        removed = asyncio.create_task(store.remove(run_id))
+        await removing.wait()
+        made = asyncio.create_task(again())
+        await asyncio.sleep(0.1)
+        assert not made.done()
+        go.set()
+        await removed
+        await made
+        info = await store.run(run_id)
+        assert info is not None
+        assert (info.status, info.events) == ("completed", 2)
+        assert await rows(store._index, run_id) == 2
+        assert (await store.verify(run_id)).ok
+    async with await LocalEventStore.open(root) as store:
+        assert (await store.verify(run_id)).ok
+    assert entries(root) == [run_id]
 
 
 async def test_a_delete_of_a_running_run_is_refused_and_moves_nothing(tmp_path: Path) -> None:
