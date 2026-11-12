@@ -12,6 +12,14 @@ def sync_dir(path: Path) -> None:
         os.close(fd)
 
 
+def write_all(fd: int, data: bytes) -> None:
+    """Write all of `data` to `fd`. One `os.write` may take only a part with no error, as on a
+    disk that fills up; the next call then raises."""
+    view = memoryview(data)
+    while view:
+        view = view[os.write(fd, view) :]
+
+
 def make_dir(path: Path, *, parents: bool = False) -> None:
     """Make directory `path` if it is missing and sync its parent, so its entry is durable.
     The parent is synced even when `path` existed, since another call may have just made it."""

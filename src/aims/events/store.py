@@ -15,7 +15,7 @@ from typing import Any, Protocol, Self
 
 from aims.events.blobs import BlobStore, BlobWriter, read_blob, stored_size
 from aims.events.chain import ChainError, Head, follow, seal
-from aims.events.disk import make_dir, sync_dir
+from aims.events.disk import make_dir, sync_dir, write_all
 from aims.events.index import (
     MAX_PAGE,
     CallCost,
@@ -1382,22 +1382,39 @@ def _write_private(path: Path, data: bytes) -> None:
     """Write `data` to `path` mode 0600, whole or not at all."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
-        os.write(fd, data)
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    os.replace(tmp, path)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            write_all(fd, data)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    sync_dir(path.parent)
 
 
 def _append_line(path: Path, line: bytes) -> None:
-    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    """Append `line`, which ends with a newline, to `path`, whole or not at all. A tail an
+    earlier crash left without its newline gets one first, so `line` stays a line of its own."""
+    new = not path.exists()
+    fd = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o644)
     try:
-        os.write(fd, line)
-        os.fsync(fd)
+        size = os.fstat(fd).st_size
+        if size and os.pread(fd, 1, size - 1) != b"\n":
+            line = b"\n" + line
+        try:
+            write_all(fd, line)
+            os.fsync(fd)
+        except BaseException:
+            os.ftruncate(fd, size)
+            raise
     finally:
         os.close(fd)
+    if new:
+        sync_dir(path.parent)
 
 
 def _read_labels(path: Path) -> list[Label]:

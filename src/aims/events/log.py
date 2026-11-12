@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from aims.events.chain import MAX_LINE, Head, follow
-from aims.events.disk import sync_dir
+from aims.events.disk import sync_dir, write_all
 
 
 class RunLocked(Exception):
@@ -84,9 +84,7 @@ class LogFile:
             raise
 
     def write(self, data: bytes) -> None:
-        view = memoryview(data)
-        while view:
-            view = view[os.write(self._fd, view) :]
+        write_all(self._fd, data)
 
     def sync(self) -> None:
         os.fsync(self._fd)

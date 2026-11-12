@@ -44,7 +44,8 @@ from aims.events import (
 from aims.events.blobs import ZSTD_MAGIC
 from aims.events.chain import GENESIS, Head, digest, follow, seal
 from aims.events.schema import now, text_of
-from aims.events.store import INLINE_LIMIT, LOG
+from aims.events.store import INLINE_LIMIT, LOG, _append_line, _write_private
+from aims.run import truth
 
 pytestmark = pytest.mark.anyio
 
@@ -1116,3 +1117,55 @@ async def test_a_cut_log_keeps_the_lines_before_the_cut(
         assert result.torn
         assert result.error is not None
         assert result.error.endswith("incomplete line")
+
+
+@pytest.fixture
+def full_disk(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A disk that fills up as Linux shows it: a write takes a part with no error, the next
+    one fails."""
+    write = os.write
+    taken: set[int] = set()
+
+    def short(fd: int, data: Any) -> int:
+        if fd in taken:
+            raise OSError(28, "No space left on device")
+        taken.add(fd)
+        return write(fd, bytes(data)[: len(data) // 2])
+
+    monkeypatch.setattr(os, "write", short)
+
+
+@pytest.mark.usefixtures("full_disk")
+def test_a_truth_file_cut_short_by_a_full_disk_is_an_error(tmp_path: Path) -> None:
+    with pytest.raises(OSError, match="No space left"):
+        truth.write(tmp_path, {"plants": ["x" * 100]})
+    with pytest.raises(OSError, match="No space left"):
+        _write_private(tmp_path / "run" / "truth.json", b"x" * 100)
+    # the file was never put in place and its temp file is gone
+    assert list((tmp_path / "run").iterdir()) == []
+
+
+def test_a_label_line_cut_short_by_a_full_disk_is_taken_back(
+    tmp_path: Path, request: pytest.FixtureRequest
+) -> None:
+    path = tmp_path / "labels.jsonl"
+    _append_line(path, b"one\n")
+    with pytest.MonkeyPatch.context() as patch:
+        write = os.write
+        calls: list[int] = []
+
+        def short(fd: int, data: Any) -> int:
+            calls.append(fd)
+            if len(calls) > 1:
+                raise OSError(28, "No space left on device")
+            return write(fd, bytes(data)[:2])
+
+        patch.setattr(os, "write", short)
+        with pytest.raises(OSError, match="No space left"):
+            _append_line(path, b"two\n")
+    assert path.read_bytes() == b"one\n"
+    # a tail a crash left without its newline does not swallow the next line
+    with path.open("ab") as f:
+        f.write(b"tor")
+    _append_line(path, b"three\n")
+    assert path.read_bytes() == b"one\ntor\nthree\n"

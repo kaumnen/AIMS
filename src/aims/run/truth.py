@@ -27,6 +27,7 @@ from typing import Any
 import rfc8785
 from pydantic import JsonValue
 
+from aims.events.disk import write_all
 from aims.events.store import TRUTH
 from aims.plants import PlacedFile, Placement, Plant, PlantSetup, build
 from aims.plants.canary import Canary, make, render
@@ -149,7 +150,7 @@ def write(run_dir: Path | str, record: Mapping[str, Any]) -> str:
     data = encode(record)
     fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        os.write(fd, data)
+        write_all(fd, data)
         os.fsync(fd)
     finally:
         os.close(fd)
