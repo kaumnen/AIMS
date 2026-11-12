@@ -258,7 +258,7 @@ def repack(source: io.RawIOBase | io.BufferedIOBase, *, cap: int = ARCHIVE_CAP) 
     """Docker's tar of a directory, read from `source` as a stream, as a deterministic tar of
     what is under it: names relative to it, sorted, whole-second mtimes, no owner names or
     extended headers. None, with the rest unread, once its entries pass `cap` bytes: a header
-    block each plus their content."""
+    block each plus their content. It holds the content once plus the largest file."""
     members: list[tuple[tarfile.TarInfo, bytes | None]] = []
     total = 0
     with tarfile.open(fileobj=source, mode="r|") as tar:
@@ -277,9 +277,13 @@ def repack(source: io.RawIOBase | io.BufferedIOBase, *, cap: int = ARCHIVE_CAP) 
                 f = tar.extractfile(m)
                 body = f.read() if f is not None else b""
             members.append((m, body))
+    # Written in name order off the end of the list, so each body is freed once it is in.
+    members.sort(key=lambda item: item[0].name)
+    members.reverse()
     out = io.BytesIO()
     with tarfile.open(fileobj=out, mode="w", format=tarfile.PAX_FORMAT) as tar:
-        for m, body in sorted(members, key=lambda item: item[0].name):
+        while members:
+            m, body = members.pop()
             info = tarfile.TarInfo(m.name)
             info.type = m.type
             info.mode = m.mode

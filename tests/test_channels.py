@@ -6,6 +6,7 @@ import io
 import json
 import os
 import tarfile
+import tracemalloc
 from collections.abc import AsyncGenerator, AsyncIterator
 from pathlib import Path
 from typing import Any, cast
@@ -408,6 +409,34 @@ def test_repack_is_deterministic_and_relative() -> None:
     empty = docker_tar("shared", *((f"f{i}", b"") for i in range(10)))
     assert repack(io.BytesIO(empty), cap=10 * 512) is not None
     assert repack(io.BytesIO(empty), cap=9 * 512) is None
+
+
+def test_repack_keeps_members_of_one_name_in_their_order() -> None:
+    raw = docker_tar("shared", ("b", b"1"), ("a", b"a"), ("b", b"22"), ("b", b"333"))
+    packed = repack(io.BytesIO(raw))
+    assert packed is not None
+    with tarfile.open(fileobj=io.BytesIO(packed)) as tar:
+        assert [(m.name, m.size) for m in tar.getmembers()] == [
+            ("a", 1),
+            ("b", 1),
+            ("b", 2),
+            ("b", 3),
+        ]
+
+
+def test_repack_frees_each_file_once_it_is_written() -> None:
+    size = 256 * 1024
+    raw = docker_tar("shared", *((f"f{i:03d}", os.urandom(size)) for i in range(64)))
+    source = io.BytesIO(raw)
+    tracemalloc.start()
+    try:
+        start = tracemalloc.get_traced_memory()[0]
+        packed = repack(source)
+        peak = tracemalloc.get_traced_memory()[1] - start
+    finally:
+        tracemalloc.stop()
+    assert packed is not None
+    assert peak < 1.5 * 64 * size
 
 
 async def start_folder(
