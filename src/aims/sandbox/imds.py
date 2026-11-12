@@ -14,6 +14,7 @@ import aiodocker
 from aiodocker.containers import DockerContainer
 
 from aims.sandbox.base import TOOLBOX
+from aims.sandbox.containers import create_container
 
 log = logging.getLogger("aims.sandbox")
 STOP_S = 1
@@ -418,7 +419,7 @@ async def start(
             "LogConfig": {"Type": "json-file", "Config": {"max-size": "1m"}},
         },
     }
-    container = await docker.containers.create(config=config, name=name)
+    container = await create_container(docker, config=config, name=name)
     attached: Any = None
     follower: asyncio.Task[None] | None = None
     try:

@@ -36,6 +36,7 @@ from aims.sandbox.base import (
     Tree,
     check_name,
 )
+from aims.sandbox.containers import create_container
 from aims.sandbox.images import KEEP_DAYS, ensure_built, ensure_image, ensure_pulled, remove_old
 from aims.sandbox.imds import Identity
 from aims.sandbox.imds import start as start_imds_server
@@ -300,7 +301,7 @@ class DockerBackend:
                 "NetworkDisabled": True,
                 "HostConfig": host,
             }
-            container = await self.docker.containers.create(config=config, name=name)
+            container = await create_container(self.docker, config=config, name=name)
             await container.start()
             reader = await self._reader(name, kept, volumes, logged)
             return await DockerSandbox.attach(
@@ -434,8 +435,8 @@ class DockerBackend:
         self, labels: dict[str, str], reader: Reader | str | None, volumes: list[str]
     ) -> None:
         """Remove what a create made before it failed. Containers go first: each one with all of
-        its `labels`, so its helpers and one whose create call was cut short go too. Then
-        `volumes` go, except one that another sandbox's container still mounts."""
+        its `labels`, its helpers among them. Then `volumes` go, except one that another
+        sandbox's container still mounts."""
         if isinstance(reader, Reader):
             await reader.close()
         query = {"label": [f"{k}={v}" for k, v in labels.items()]}
@@ -954,7 +955,8 @@ class DockerVolumeView:
 
     async def put_archive(self, data: bytes) -> None:
         docker = self._backend.docker
-        container = await docker.containers.create(
+        container = await create_container(
+            docker,
             config={
                 "Image": self._backend._toolbox_image,
                 "Cmd": ["true"],
@@ -966,7 +968,7 @@ class DockerVolumeView:
                     "Mounts": [{"Type": "volume", "Source": self.name, "Target": "/v"}],
                     "LogConfig": {"Type": "none"},
                 },
-            }
+            },
         )
         try:
             await container.put_archive("/v", data)
@@ -1135,7 +1137,8 @@ async def _helper(
     caps: list[str],
     entrypoint: list[str] | None = None,
 ) -> None:
-    container = await docker.containers.create(
+    container = await create_container(
+        docker,
         config={
             "Image": image,
             "Entrypoint": entrypoint,
@@ -1149,7 +1152,7 @@ async def _helper(
                 "SecurityOpt": ["no-new-privileges"],
                 "Mounts": mounts,
             },
-        }
+        },
     )
     try:
         await container.start()

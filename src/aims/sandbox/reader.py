@@ -12,6 +12,7 @@ from aiodocker.stream import Stream
 
 from aims.events import MAX_INT, FsChangeType, FsKind
 from aims.sandbox.base import Change, Tree
+from aims.sandbox.containers import create_container
 
 log = logging.getLogger("aims.sandbox")
 
@@ -75,7 +76,8 @@ class Reader:
         walked = [(volume, target.rstrip("/") or "/") for volume, target in volumes]
         hashed = [(volume, target.rstrip("/") or "/") for volume, target in hash_only]
         volumes = [*walked, *hashed]
-        container = await docker.containers.create(
+        container = await create_container(
+            docker,
             config={
                 "Image": image,
                 "Entrypoint": ["/bin/busybox"],

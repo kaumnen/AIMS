@@ -33,6 +33,7 @@ from aims.sandbox.base import (
     Setattr,
     Sync,
 )
+from aims.sandbox.containers import create_container
 from aims.sandbox.execs import exec_output
 from aims.sandbox.images import ensure_image
 from aims.sandbox.trace import (
@@ -302,7 +303,8 @@ class Tracer:
             self._name,
         )
         env = [] if self._ring_pages is None else [f"BPFTRACE_PERF_RB_PAGES={self._ring_pages}"]
-        self._container = await self._docker.containers.create(
+        self._container = await create_container(
+            self._docker,
             config={
                 "Image": image,
                 "Env": env,

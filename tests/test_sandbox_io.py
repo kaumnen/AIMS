@@ -1,19 +1,23 @@
 import asyncio
+import contextlib
 import io
 import json
 import os
 import tarfile
 import tracemalloc
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import aiodocker
 import pytest
 from aiodocker.containers import DockerContainer
 from aiodocker.execs import Exec
 from aiodocker.volumes import DockerVolume
 
+from aims.aio import shielded
 from aims.events import ExecStarted, LocalEventStore, RunStarted, SandboxArchived
 from aims.sandbox import (
     AGENT_UID,
@@ -258,16 +262,52 @@ async def leftovers(backend: DockerBackend, run_id: str) -> tuple[set[str], set[
     return {c.id for c in found}, {v["Name"] for v in listing.get("Volumes") or []}
 
 
+async def scrub(backend: DockerBackend, run_id: str) -> None:
+    """Remove what a failed test left of run `run_id`, labelled or not."""
+    await backend.remove_run(run_id)
+    listing = await backend.docker.volumes.list(filters={"name": [f"aims-{run_id}-"]})
+    for volume in listing.get("Volumes") or []:
+        with contextlib.suppress(aiodocker.DockerError):
+            await DockerVolume(backend.docker, volume["Name"]).delete()
+
+
+@dataclass
+class Hold:
+    """Where a create stopped. A held Docker call goes on in the daemon whatever its caller
+    does, and ends once `release` is set."""
+
+    reached: asyncio.Event = field(default_factory=asyncio.Event)
+    release: asyncio.Event = field(default_factory=asyncio.Event)
+    calls: list[asyncio.Future[Any]] = field(default_factory=list)
+
+    def call(self, work: Callable[[], Awaitable[Any]]) -> Awaitable[Any]:
+        """Send `work` to the daemon: it runs once released, even if the caller is cancelled."""
+
+        async def daemon() -> Any:
+            await self.release.wait()
+            return await work()
+
+        self.calls.append(asyncio.ensure_future(daemon()))
+        self.reached.set()
+        return shielded(self.calls[-1])
+
+    async def settled(self) -> None:
+        """Release the daemon and wait for the calls it still carries out."""
+        self.release.set()
+        await asyncio.gather(*self.calls, return_exceptions=True)
+
+
 def hold_create(
     backend: DockerBackend, run_id: str, where: str, monkeypatch: pytest.MonkeyPatch
-) -> asyncio.Event:
-    """Make the create of agent a1 of `run_id` stop for good once it reaches `where`: the wait
-    for the helper that fills the work volume, the second tmpfs volume, or that helper or the
-    sandbox container made by the daemon but not yet handed back."""
-    reached = asyncio.Event()
+) -> Hold:
+    """Make the create of agent a1 of `run_id` stop once it reaches `where`: for good at the
+    wait for the helper that fills the work volume or at the second tmpfs volume; or in the
+    create call of that helper, of the sandbox container or of its reader, which the daemon
+    carries out once released."""
+    hold = Hold()
 
     async def stop() -> None:
-        reached.set()
+        hold.reached.set()
         await asyncio.Event().wait()
 
     if where == "fill":
@@ -298,38 +338,60 @@ def hold_create(
 
         async def held_create(**kw: Any) -> DockerContainer:
             nonlocal helpers
-            container = await create(**kw)
-            if kw["config"]["Labels"].get("aims.role") == "helper":
-                helpers += 1
-                if where == "helper" and helpers == 2:
-                    await stop()
-            elif where == "create" and kw.get("name") == f"aims-{run_id}-a1":
-                await stop()
-            return container
+            labels = kw["config"]["Labels"]
+            role = labels.get("aims.role") if labels.get("aims.run") == run_id else "other"
+            helpers += role == "helper"
+            if (
+                (where == "helper" and role == "helper" and helpers == 2)
+                or (where == "create" and kw.get("name") == f"aims-{run_id}-a1")
+                or (where == "reader" and role == "reader")
+            ):
+                return await hold.call(lambda: create(**kw))
+            return await create(**kw)
 
         monkeypatch.setattr(backend.docker.containers, "create", held_create)
-    return reached
+    return hold
 
 
 SHARED = SandboxSpec(image=IMAGE, runner_mb=8, mounts=[Mount(volume="shared", target="/shared")])
 
 
-@pytest.mark.parametrize("where", ["fill", "helper", "scratch", "create"])
+@pytest.mark.parametrize(
+    ("where", "keep"),
+    [
+        ("fill", False),
+        ("helper", False),
+        ("scratch", False),
+        ("create", False),
+        ("create", True),
+        ("reader", True),
+    ],
+)
 async def test_a_cancelled_create_removes_what_it_made(
-    backend: DockerBackend, monkeypatch: pytest.MonkeyPatch, where: str
+    backend: DockerBackend, monkeypatch: pytest.MonkeyPatch, where: str, keep: bool
 ) -> None:
     run_id = f"test-{uuid.uuid4().hex[:12]}"
     before, _ = await leftovers(backend, run_id)
-    reached = hold_create(backend, run_id, where, monkeypatch)
-    task = asyncio.create_task(backend.create(SHARED, run_id=run_id, agent_id="a1"))
-    async with asyncio.timeout(60):
-        await reached.wait()
-    assert (await leftovers(backend, run_id))[1]
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
+    hold = hold_create(backend, run_id, where, monkeypatch)
+    spec = SHARED.model_copy(update={"keep": keep})
+    task = asyncio.create_task(backend.create(spec, run_id=run_id, agent_id="a1"))
+    try:
         async with asyncio.timeout(60):
-            await task
-    assert await leftovers(backend, run_id) == (before, set())
+            await hold.reached.wait()
+        assert (await leftovers(backend, run_id))[1]
+        task.cancel()
+        # A cleanup that does not wait for the call in flight is over before the daemon makes
+        # the container, which then mounts volumes the cleanup removed.
+        await asyncio.wait({task}, timeout=1)
+        hold.release.set()
+        with pytest.raises(asyncio.CancelledError):
+            async with asyncio.timeout(60):
+                await task
+        await hold.settled()
+        assert await leftovers(backend, run_id) == (before, set())
+    finally:
+        await hold.settled()
+        await scrub(backend, run_id)
 
 
 async def test_a_create_that_fails_removes_what_it_made(
@@ -352,7 +414,7 @@ async def test_a_second_cancel_while_a_create_cleans_up_still_removes_all(
 ) -> None:
     run_id = f"test-{uuid.uuid4().hex[:12]}"
     before, _ = await leftovers(backend, run_id)
-    reached = hold_create(backend, run_id, "create", monkeypatch)
+    hold = hold_create(backend, run_id, "create", monkeypatch)
     cancelled, undoing, release = False, asyncio.Event(), asyncio.Event()
     delete = DockerVolume.delete
 
@@ -365,9 +427,10 @@ async def test_a_second_cancel_while_a_create_cleans_up_still_removes_all(
     monkeypatch.setattr(DockerVolume, "delete", held_delete)
     task = asyncio.create_task(backend.create(SHARED, run_id=run_id, agent_id="a1"))
     async with asyncio.timeout(60):
-        await reached.wait()
+        await hold.reached.wait()
     cancelled = True
     task.cancel()
+    hold.release.set()
     waiter = asyncio.ensure_future(undoing.wait())
     await asyncio.wait({task, waiter}, timeout=60, return_when=asyncio.FIRST_COMPLETED)
     waiter.cancel()
@@ -381,6 +444,43 @@ async def test_a_second_cancel_while_a_create_cleans_up_still_removes_all(
             await task
     assert await leftovers(backend, run_id) == (before, set())
     assert undoing.is_set()
+
+
+async def test_a_put_archive_cancelled_in_its_create_call_leaves_no_helper(
+    backend: DockerBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = f"test-{uuid.uuid4().hex[:12]}"
+    name = f"aims-{run_id}-shared"
+    await backend.docker.volumes.create({"Name": name, "Labels": {"aims.run": run_id}})
+    view = await backend.volume(run_id, Mount(volume="shared", target="/shared"))
+    hold, create = Hold(), backend.docker.containers.create
+
+    async def held_create(**kw: Any) -> DockerContainer:
+        if kw["config"]["Labels"].get("aims.role") == "helper":
+            return await hold.call(lambda: create(**kw))
+        return await create(**kw)
+
+    monkeypatch.setattr(backend.docker.containers, "create", held_create)
+    data = io.BytesIO()
+    with tarfile.open(fileobj=data, mode="w"):
+        pass
+    try:
+        before = await leftovers(backend, run_id)
+        task = asyncio.create_task(view.put_archive(data.getvalue()))
+        async with asyncio.timeout(60):
+            await hold.reached.wait()
+        task.cancel()
+        await asyncio.wait({task}, timeout=1)
+        hold.release.set()
+        with pytest.raises(asyncio.CancelledError):
+            async with asyncio.timeout(60):
+                await task
+        await hold.settled()
+        assert await leftovers(backend, run_id) == before
+    finally:
+        await hold.settled()
+        await view.close()
+        await scrub(backend, run_id)
 
 
 class HeldTracer:

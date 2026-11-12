@@ -17,6 +17,7 @@ from aiodocker.execs import Exec as DockerExec
 
 from aims.events import ResourceSample
 from aims.sandbox.base import RUNNER_UID, Lost, Sample
+from aims.sandbox.containers import create_container
 from aims.sandbox.execs import exec_output
 
 log = logging.getLogger("aims.sandbox")
@@ -209,7 +210,8 @@ class Sampler:
         self._container = await self._create()
 
     async def _create(self) -> DockerContainer:
-        container = await self._docker.containers.create(
+        container = await create_container(
+            self._docker,
             config={
                 "Image": self._image,
                 "Cmd": ["sleep", "infinity"],
