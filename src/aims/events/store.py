@@ -971,22 +971,28 @@ class LocalEventStore:
     async def verify(self, run_id: str) -> Verification:
         """Check a run's log and blobs as `verify_run` does, then its index: every event up to
         the last it holds, and all the log holds once an index write failed here. A shorter
-        index is not an error otherwise, since a write may be under way."""
+        index is not an error otherwise, since a write may be under way.
+
+        The index head is read before the log. A store writes each batch to the log before it
+        indexes it, so the log of a live run is at or past that head, whichever process
+        writes it, and must hold the head's event where the index says."""
+        indexed = await self._index.head(run_id)
+        head = None if indexed is None else indexed[0]
         result = await asyncio.to_thread(verify_run, self._dir(run_id))
         if result.error is not None:
             return result
-        indexed = await self._index.head(run_id)
-        head = None if indexed is None else indexed[0]
         held = 0 if head is None else head.seq + 1
         error = None
         if held > result.events:
             error = f"log has {result.events} events, the index recorded {held}"
+        elif head is not None and not await asyncio.to_thread(
+            checkpoint_ok, self._log(run_id), head
+        ):
+            error = "the last event the index holds is not the log's"
         elif (count := await self._index.count(run_id, held - 1)) != held:
             error = f"the index has {count} of the {held} events up to its last: it has a gap"
         elif held < result.events and run_id in self._lags:
             error = f"the index holds {held} of the log's {result.events} events"
-        elif head is not None and held == result.events and head.hash != result.head:
-            error = "the last event the index holds is not the log's"
         return result if error is None else replace(result, error=error)
 
     async def rebuild(self) -> None:

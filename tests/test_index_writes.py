@@ -18,6 +18,7 @@ from aims.events import (
     RunFinished,
     RunStarted,
     ToolCall,
+    Verification,
     split_lines,
 )
 from aims.events import store as store_module
@@ -451,3 +452,60 @@ async def test_verify_takes_events_that_land_while_it_compares(
 
         monkeypatch.setattr(store._index, "head", then_append)
         assert (await store.verify(run_id)).error is None
+
+
+async def test_verify_takes_events_that_land_after_it_read_the_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        run_id = await store.create_run(STARTED)
+        await store.append(run_id, [call(1)])
+        loop = asyncio.get_running_loop()
+        verify_run = store_module.verify_run
+
+        def then_append(run_dir: Path) -> Verification:
+            found = verify_run(run_dir)
+            more = store.append(run_id, [call(2), call(3)])
+            asyncio.run_coroutine_threadsafe(more, loop).result(10)
+            return found
+
+        monkeypatch.setattr(store_module, "verify_run", then_append)
+        verified = await store.verify(run_id)
+        assert (verified.error, verified.events) == (None, 2)
+
+
+async def test_verify_fails_a_log_behind_its_index(tmp_path: Path) -> None:
+    root = tmp_path / "runs"
+    async with await LocalEventStore.open(root) as store:
+        run_id = await store.create_run(STARTED)
+        await store.append(run_id, [call(1), call(2), Draft(RunFinished(status="completed"))])
+        path = root / run_id / LOG
+        path.write_bytes(b"".join(path.read_bytes().splitlines(keepends=True)[:2]))
+        verified = await store.verify(run_id)
+        assert verified.error == "log has 2 events, the index recorded 4"
+
+
+async def test_verify_fails_a_log_past_its_index_that_holds_another_event_at_its_head(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "runs"
+    async with await LocalEventStore.open(root) as store:
+        run_id = await store.create_run(STARTED)
+        await store.append(run_id, [call(1), Draft(RunFinished(status="completed"))])
+        # the log written again from its start, one event longer, verifies on its own
+        head, lines = Head(), []
+        for agent, payload in (
+            (None, STARTED),
+            ("a1", ToolCall(call_id="x1", name="shell", arguments="{}")),
+            ("a1", ToolCall(call_id="x2", name="shell", arguments="{}")),
+            (None, RunFinished(status="completed")),
+        ):
+            data = payload.model_dump(mode="json")
+            _, line, head = seal(
+                head, run_id=run_id, ts=now(), agent_id=agent, type=payload.type, data=data
+            )
+            lines.append(line)
+        (root / run_id / LOG).write_bytes(b"".join(lines))
+        verified = await store.verify(run_id)
+        assert verified.events == 4
+        assert verified.error == "the last event the index holds is not the log's"
