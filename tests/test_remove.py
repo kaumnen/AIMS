@@ -178,8 +178,8 @@ async def test_a_remove_deletes_a_few_rows_per_transaction(
         left = [await rows(index, run_id)]
 
         @contextlib.asynccontextmanager
-        async def counted() -> AsyncGenerator[None]:
-            async with write():
+        async def counted(**kw: Any) -> AsyncGenerator[None]:
+            async with write(**kw):
                 yield
                 left.append(await rows(index, run_id))
 

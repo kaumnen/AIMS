@@ -14,7 +14,9 @@ run without one counts as the base scenario.
 
 import asyncio
 import json
+import logging
 import math
+import sqlite3
 import statistics
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -39,6 +41,8 @@ from aims.scenario import AgentConfig, Bundle, Scenario
 from aims.scenario import budget as budgets
 from aims.scenario.budget import BudgetOverride
 from aims.wire import MonitorMode
+
+log = logging.getLogger("aims.run")
 
 Tier = Literal["scenario", "models", "cap"]
 MonitorKey = tuple[str, tuple[tuple[str, str | None], ...]]
@@ -287,7 +291,7 @@ class _Run:
 async def history(store: LocalEventStore) -> History:
     """Every run in `store` for the estimate and the spend. A sealed run is read once; its
     cost row in the index serves it after that, until the index is rebuilt or its truth file
-    arrives."""
+    arrives. Cost rows the index will not keep are read again next time."""
     out = History()
     spend: dict[str, float] = defaultdict(float)
     cached: dict[str, list[int]] = defaultdict(lambda: [0, 0])
@@ -310,7 +314,10 @@ async def history(store: LocalEventStore) -> History:
             for model, (part, total) in run.cached.items():
                 cached[model][0] += part
                 cached[model][1] += total
-    await store.put_costs(fresh)
+    try:
+        await store.put_costs(fresh)
+    except sqlite3.Error as e:
+        log.warning("the cost rows of %d runs are not kept: %s", len(fresh), e)
     out.spend = dict(spend)
     out.shares = {m: c / total for m, (c, total) in cached.items() if total > 0}
     return out

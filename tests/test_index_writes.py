@@ -23,7 +23,7 @@ from aims.events import (
 )
 from aims.events import store as store_module
 from aims.events.chain import Head, seal
-from aims.events.index import Index, IndexGap, Label
+from aims.events.index import BUSY_TRIES, Index, IndexGap, Label
 from aims.events.schema import now
 from aims.events.store import INDEX, LOG
 
@@ -149,6 +149,89 @@ async def test_a_failed_begin_raises_its_own_error(index: Index, tmp_path: Path)
         other.close()
     await index.put_labels([label(2)])
     assert list(await index.labels(RUN)) == [2]
+
+
+class Holder:
+    """Another connection holding the index's write lock, and each begin the index tries."""
+
+    def __init__(self, index: Index, path: Path) -> None:
+        self.index = index
+        self.other = sqlite3.connect(path, isolation_level=None)
+        self.begins = 0
+        self.again = asyncio.Event()
+        self._loop = asyncio.get_running_loop()
+
+    def _traced(self, sql: str) -> None:
+        if sql.startswith("begin immediate"):
+            self.begins += 1
+            if self.begins == 2:
+                self._loop.call_soon_threadsafe(self.again.set)
+
+    async def hold(self, timeout_ms: int) -> None:
+        await self.index._db.set_trace_callback(self._traced)
+        await self.index._db.execute(f"pragma busy_timeout = {timeout_ms}")
+        self.other.execute("begin immediate")
+
+    def close(self) -> None:
+        self.other.close()
+
+
+RETRIED: dict[str, Callable[[Index], Coroutine[Any, Any, None]]] = {
+    **{name: write for name, write in WRITES.items() if name != "add"},
+    "reset": lambda index: index.reset(),
+}
+
+
+@pytest.mark.parametrize("write", list(RETRIED))
+async def test_a_write_begins_again_when_another_connection_held_the_lock_past_the_timeout(
+    index: Index, tmp_path: Path, caplog: pytest.LogCaptureFixture, write: str
+) -> None:
+    holder = Holder(index, tmp_path / "index.sqlite")
+    try:
+        await holder.hold(200)
+        with caplog.at_level(logging.WARNING, logger="aims.events"):
+            task = asyncio.create_task(RETRIED[write](index))
+            again = asyncio.create_task(holder.again.wait())
+            await asyncio.wait([task, again], return_when=asyncio.FIRST_COMPLETED)
+            again.cancel()
+            holder.other.rollback()
+            await task
+    finally:
+        holder.close()
+    assert holder.begins >= 2
+    assert any("past the busy timeout" in m for m in caplog.messages)
+    assert not index._db.in_transaction
+    await index.put_labels([label(2)])
+    assert 2 in await index.labels(RUN)
+
+
+async def test_a_lock_that_lasts_fails_the_write_after_its_tries(
+    index: Index, tmp_path: Path
+) -> None:
+    holder = Holder(index, tmp_path / "index.sqlite")
+    try:
+        await holder.hold(10)
+        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+            await index.put_labels([label(1)])
+        assert holder.begins == BUSY_TRIES
+        assert not index._db.in_transaction
+    finally:
+        holder.close()
+    await index.put_labels([label(2)])
+    assert list(await index.labels(RUN)) == [2]
+
+
+async def test_an_index_batch_tries_the_lock_once(index: Index, tmp_path: Path) -> None:
+    """The store catches a batch the index did not take up from the log later, so the
+    writer does not wait here."""
+    holder = Holder(index, tmp_path / "index.sqlite")
+    try:
+        await holder.hold(10)
+        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+            await index.add(*started())
+        assert holder.begins == 1
+    finally:
+        holder.close()
 
 
 async def test_a_transaction_no_writer_owns_is_rolled_back(
@@ -342,6 +425,38 @@ async def test_a_run_the_index_cannot_take_does_not_stop_the_store_opening(
 
             await eventually(store, back)
             assert await indexed(store, bad) == logged(store, bad) == [0, 1, 2]
+
+
+async def test_labels_sent_again_after_a_failed_index_write_are_indexed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    flag = MonitorFlag(
+        layer="signal",
+        source="s",
+        category="scorer_tampering",
+        importance=3,
+        evidence=[0],
+        justification="j",
+    )
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        run_id = await store.create_run(STARTED)
+        await store.append(run_id, [Draft(flag, "a1"), Draft(RunFinished(status="completed"))])
+        sent = [Label(run_id=run_id, flag=1, label="real", by="op", at=now())]
+        real = Index.put_labels
+        fails = [sqlite3.OperationalError("database is locked")]
+
+        async def put_labels(index: Index, labels: Sequence[Label]) -> None:
+            if fails:
+                raise fails.pop()
+            await real(index, labels)
+
+        monkeypatch.setattr(Index, "put_labels", put_labels)
+        with pytest.raises(sqlite3.OperationalError):
+            await store.merge_labels(run_id, sent)
+        assert await store.labels(run_id) == {}
+        assert await store.merge_labels(run_id, sent) == 0
+        assert list(await store.labels(run_id)) == [1]
+        assert await store.label_history(run_id) == sent
 
 
 async def test_an_event_the_index_cannot_take_holds_back_none_before_it(

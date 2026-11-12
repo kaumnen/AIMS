@@ -850,14 +850,15 @@ class LocalEventStore:
 
     async def merge_labels(self, run_id: str, labels: Sequence[Label]) -> int:
         """Keep the labels of `run_id` another store made that this one lacks; returns how
-        many were new."""
+        many were new. Every label sent is indexed, so the sender's retry after an index write
+        that failed indexes those the file took."""
         path = self._dir(run_id) / LABELS
         held = {(x.flag, x.at, x.by) for x in await asyncio.to_thread(_read_labels, path)}
         fresh = [x for x in labels if (x.flag, x.at, x.by) not in held]
         if fresh:
             data = b"".join(x.model_dump_json().encode() + b"\n" for x in fresh)
             await asyncio.to_thread(_append_line, path, data)
-            await self._index.put_labels(fresh)
+        await self._index.put_labels(labels)
         return len(fresh)
 
     def labels_path(self, run_id: str) -> Path:

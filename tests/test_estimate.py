@@ -1,6 +1,8 @@
 import asyncio
 import json
+import logging
 import math
+import sqlite3
 import statistics
 from collections.abc import AsyncIterator
 from dataclasses import replace
@@ -466,6 +468,26 @@ async def test_past_runs_match_on_scenario_variant_models_and_effort(
     base_estimate = one(settings, found, base)
     assert base_estimate.parts[0].agents.runs == 1
     assert base_estimate.parts[0].agents.typical_usd == pytest.approx(0.01)
+
+
+@pytest.mark.anyio
+async def test_cost_rows_the_index_will_not_keep_leave_the_history_whole(
+    tmp_path: Path,
+    store: LocalEventStore,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    settings, path = write(tmp_path)
+    await record(store, settings, load_scenario(path), 1.0)
+
+    async def locked(rows: Any) -> None:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(store, "put_costs", locked)
+    with caplog.at_level(logging.WARNING, logger="aims.run"):
+        found = await history(store)
+    assert len(found.runs) == 1
+    assert any("database is locked" in m for m in caplog.messages)
 
 
 @pytest.mark.anyio

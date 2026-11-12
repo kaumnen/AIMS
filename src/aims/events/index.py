@@ -4,7 +4,7 @@ import contextlib
 import json
 import logging
 import sqlite3
-from collections.abc import AsyncGenerator, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
@@ -53,6 +53,8 @@ MAX_TEXT = 32 * 1024
 MAX_PAGE = 1000
 # Events a remove deletes in one transaction: about 0.3 ms each with 8 KB of text.
 REMOVE_ROWS = 200
+# Times a write waits out the busy timeout, 5 s, while another connection holds the lock.
+BUSY_TRIES = 3
 # The integers SQLite binds.
 BIND_MIN, BIND_MAX = -(2**63), 2**63 - 1
 
@@ -613,42 +615,59 @@ class Index:
         await self._db.close()
 
     async def reset(self) -> None:
+        script = f"begin immediate; {DROP} {SCHEMA} pragma user_version = {VERSION}; commit;"
         async with self._lock:
             try:
-                await self._db.executescript(
-                    f"begin immediate; {DROP} {SCHEMA} pragma user_version = {VERSION}; commit;"
-                )
+                await self._locking(lambda: self._db.executescript(script), BUSY_TRIES)
             except BaseException:
                 await self._rollback()
                 raise
 
     @contextlib.asynccontextmanager
-    async def _write(self) -> AsyncGenerator[None]:
+    async def _write(self, tries: int = BUSY_TRIES) -> AsyncGenerator[None]:
         """Run the block as one immediate transaction under the write lock: commit when it ends,
         roll back when it raises or is cancelled. A statement whose awaiter was cancelled still
         runs on the connection's thread, which runs them in order, so the rollback queued here
-        runs after it and before the next writer's begin."""
+        runs after it and before the next writer's begin. `tries` is as `_locking` takes it."""
         async with self._lock:
             try:
-                await self._begin()
+                await self._begin(tries)
                 yield
                 await self._db.execute("commit")
             except BaseException:
                 await self._rollback()
                 raise
 
-    async def _begin(self) -> None:
+    async def _begin(self, tries: int) -> None:
         """Begin an immediate transaction. One already open has no writer, since the lock is
         held and any rollback a cancelled writer queued ran first: roll it back, begin again.
         `in_transaction` would tell sooner, but reading it waits for the connection's thread."""
+
+        def begin() -> Awaitable[object]:
+            return self._db.execute("begin immediate")
+
         try:
-            await self._db.execute("begin immediate")
+            await self._locking(begin, tries)
         except sqlite3.OperationalError as e:
             if "within a transaction" not in str(e):
                 raise
             log.warning("the index held a transaction no writer owns; it is rolled back")
             await self._db.rollback()
-            await self._db.execute("begin immediate")
+            await self._locking(begin, tries)
+
+    async def _locking(self, begin: Callable[[], Awaitable[object]], tries: int) -> None:
+        """Await `begin`, which takes the write lock. Each time it waited out the busy timeout
+        while another connection held the lock, it begins again, `tries` times in all; then the
+        last error raises, so a lock that lasts fails the write instead of hanging it."""
+        for left in reversed(range(tries)):
+            try:
+                await begin()
+                return
+            except sqlite3.OperationalError as e:
+                if not left or e.sqlite_errorcode & 0xFF != sqlite3.SQLITE_BUSY:
+                    raise
+                await self._rollback()
+                log.warning("another connection held the index's write lock past the busy timeout")
 
     async def _rollback(self) -> None:
         """Queue a rollback of the open transaction; none open makes it a no-op. Its own error
@@ -752,7 +771,9 @@ class Index:
         ]
         windows = [w for e in events if e.type == ResourceSample.type if (w := _window(e))]
         finished = next((e for e in events if e.type == "run.finished"), None)
-        async with self._write():
+        # one try: the store catches a batch the index did not take up from the log later,
+        # and the writer that waits here holds its run's appends
+        async with self._write(tries=1):
             first = events[0]
             if first.seq == 0:
                 origin = first.data.get("origin")
