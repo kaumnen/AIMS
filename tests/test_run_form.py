@@ -419,6 +419,25 @@ async def test_a_cancelled_model_check_is_sealed_as_cancelled(
     assert last.data["reason"] == "cancelled before the checks finished"
 
 
+async def test_a_model_check_an_error_ends_is_sealed_as_failed_with_the_error(
+    cp: CP, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    models = cp.state.config.settings().models
+
+    async def broken(client: object, profile: Profile) -> list[Check]:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(check, "check_profile", broken)
+    run_id = str(uuid.uuid7())
+    with pytest.raises(OSError, match="disk full"):
+        await check.record_check(local, models, [models.get("scripted")], run_id=run_id)
+    info = await local.run(run_id)
+    assert info is not None
+    assert info.status == "failed"
+    (last,) = await local.events(run_id, types=["run.finished"])
+    assert last.data["reason"] == "OSError: disk full"
+
+
 async def test_a_run_that_cannot_be_scored_says_why(cp: CP, local: LocalEventStore) -> None:
     # no runner has the classifier's key
     fake = ScoreRunner(cp, "scorer")

@@ -172,6 +172,9 @@ async def record_check(
     except asyncio.CancelledError:
         status, reason = "cancelled", "cancelled before the checks finished"
         raise
+    except Exception as e:
+        reason = f"{type(e).__name__}: {e}"
+        raise
     finally:
         # The seal lands even when a second cancel, such as another Ctrl-C, comes meanwhile.
         await settle(store.append(run_id, [Draft(RunFinished(status=status, reason=reason))]))
