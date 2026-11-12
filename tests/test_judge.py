@@ -53,6 +53,7 @@ from aims.monitor.judge import (
     EVENTS_PAGE,
     MIN_OUTPUT,
     OUTPUT_CHARS,
+    PROBLEM_CHARS,
     TOOL_PARAMETERS,
     VERDICT_S,
     VERDICT_SCHEMA,
@@ -581,6 +582,18 @@ async def test_no_valid_forced_verdict_fails(store: LocalEventStore) -> None:
     assert result.error is not None
     assert "no valid verdict" in result.error
     assert "not accepted" in script.requests[2]["messages"][-1]["content"]
+
+
+async def test_a_long_refusal_is_cut(store: LocalEventStore) -> None:
+    run = await make_run(store)
+    bad = json.dumps(verdict(flags=[1] * 2000))
+    script = Script(call("events"), say(bad), say(json.dumps(verdict(summary="second"))))
+    judge = make_judge(store, run, script, max_tool_calls=1)
+    assert payload_of(await judge.run(flags=[], sweeps=[])).summary == "second"
+    refusal = script.requests[2]["messages"][-1]["content"]
+    assert refusal.startswith("The verdict was not accepted")
+    assert "chars cut" in refusal
+    assert len(refusal) < len(judge_texts.INVALID) + PROBLEM_CHARS + 30
 
 
 async def test_a_reply_without_tools_is_nudged_and_counted(store: LocalEventStore) -> None:
@@ -1225,7 +1238,7 @@ def reads(run: Run, *offsets: int) -> dict[str, Any]:
 
 
 # Just above the budget at which the judge explores once at Wonder's prices.
-EXPLORE = 0.21
+EXPLORE = 0.39
 
 
 async def test_parallel_reads_leave_room_for_the_verdict(store: LocalEventStore) -> None:
@@ -1263,6 +1276,45 @@ async def test_a_larger_budget_never_loses_the_verdict(
         judged.append(result.verdict is not None)
     first = judged.index(True)
     assert all(judged[first:]), [2 + i for i, ok in enumerate(judged) if i > first and not ok]
+
+
+def refused_once(explore: dict[str, Any]) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """`uncached`, whose first forced answer is no verdict and nearly as long as it may be. The
+    fake's count also holds the body's own keys, such as `model`, so it writes 50 tokens less."""
+    forced = [0]
+
+    def answer(body: dict[str, Any]) -> dict[str, Any]:
+        prompt = len(dumps(body)) // 3
+        if "tools" in body:
+            return explore | {"usage": {"prompt_tokens": prompt, "completion_tokens": 900}}
+        forced[0] += 1
+        if forced[0] == 1:
+            usage = {"prompt_tokens": prompt, "completion_tokens": body["max_tokens"] - 50}
+            return say("{}") | {"usage": usage}
+        usage = {"prompt_tokens": prompt, "completion_tokens": 900}
+        return say(json.dumps(verdict(summary="second"))) | {"usage": usage}
+
+    return answer
+
+
+async def test_a_refused_forced_answer_gets_its_second_try(store: LocalEventStore) -> None:
+    """Room is kept for every forced try: once a budget explores, a refused first forced answer
+    still leaves the second try its room."""
+    run = await make_run(store)
+    p = profile(price=WONDER, max_output_tokens=16384)
+    explored: list[bool] = []
+    judged: list[bool] = []
+    for cents in range(2, 60):
+        budget = cents / 100
+        script = Script(*[refused_once(reads(run, 0))] * 40)
+        judge = make_judge(store, run, script, budget=budget, p=p, max_tool_calls=40)
+        result = await judge.run(flags=[], sweeps=[])
+        assert result.cost_usd <= budget
+        explored.append(any("tools" in body for body in script.requests))
+        judged.append(result.verdict is not None)
+    assert any(explored)
+    missed = [2 + i for i, (e, j) in enumerate(zip(explored, judged, strict=True)) if e and not j]
+    assert missed == [], f"no verdict at these budgets in cents: {missed}"
 
 
 async def test_a_result_left_unread_is_no_evidence(store: LocalEventStore) -> None:
