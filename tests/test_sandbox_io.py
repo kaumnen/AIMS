@@ -32,6 +32,7 @@ from aims.sandbox import (
 )
 from aims.sandbox.base import RUNNER_DIR, TOOLBOX, Capture
 from aims.sandbox.docker import INSTANCE, VOLUME_S
+from aims.sandbox.execs import open_stream
 from aims.sandbox.shared import SharedFolder
 
 pytestmark = [pytest.mark.anyio, pytest.mark.docker]
@@ -782,3 +783,92 @@ async def test_an_exec_stream_that_fails_to_open_is_closed(
     (stream,) = streams
     assert stream._resp is not None
     assert stream._resp.closed
+
+
+async def test_a_cancel_before_the_exec_start_is_sent_ends_at_once(
+    backend: DockerBackend,
+    store: LocalEventStore,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An exec whose start request never went out never starts, so a cancel then does not wait
+    for it."""
+    _, sb = await sandbox(backend, store)
+    inner = sb.sandbox
+    assert isinstance(inner, DockerSandbox)
+    docker = backend.docker
+    query = docker._do_query
+    held = asyncio.Event()
+    execs: list[Exec] = []
+    start = Exec.start
+
+    def kept(self: Exec, **kw: Any) -> Any:
+        execs.append(self)
+        return start(self, **kw)
+
+    async def slow_connect(path: Any, *args: Any, **kw: Any) -> Any:
+        if str(path).startswith("exec/") and str(path).endswith("/start"):
+            held.set()
+            await asyncio.sleep(30)
+        return await query(path, *args, **kw)
+
+    try:
+        with monkeypatch.context() as m:
+            m.setattr(Exec, "start", kept)
+            m.setattr(docker, "_do_query", slow_connect)
+            task = asyncio.create_task(
+                inner.run(
+                    [f"{TOOLBOX}/busybox", "sleep", "285"],
+                    uid=AGENT_UID,
+                    cwd="/",
+                    timeout_ms=60_000,
+                    capture=Capture(1024),
+                )
+            )
+            async with asyncio.timeout(10):
+                await held.wait()
+            begun = asyncio.get_running_loop().time()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                async with asyncio.timeout(30):
+                    await task
+            took = asyncio.get_running_loop().time() - begun
+        await asyncio.sleep(0.5)
+        (exe,) = execs
+        state = await exe.inspect()
+        left = [p for p in await inner.processes() if p.command == "sleep 285"]
+    finally:
+        await sb.close()
+
+    assert took < 1
+    assert "did not end" not in caplog.text
+    assert (state["Running"], state["ExitCode"], state["Pid"]) == (False, None, 0)
+    assert left == []
+
+
+async def test_an_exec_start_says_when_its_request_goes_out(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    """A cancel tells an exec that never started from one still starting by this call, so it
+    must come for every start that reaches the daemon."""
+    _, sb = await sandbox(backend, store)
+    inner = sb.sandbox
+    assert isinstance(inner, DockerSandbox)
+    sent: list[bool] = []
+    try:
+        exe = await inner._container.exec(
+            [f"{TOOLBOX}/busybox", "echo", "hi"], user=f"{AGENT_UID}:{AGENT_UID}"
+        )
+        stream = await open_stream(exe.start(detach=False), on_send=lambda: sent.append(True))
+        assert sent == [True]
+        out = b""
+        try:
+            while (message := await stream.read_out()) is not None:
+                out += message.data
+        finally:
+            await stream.close()
+    finally:
+        await sb.close()
+
+    assert out == b"hi\n"
+    assert sent == [True]

@@ -680,12 +680,18 @@ class DockerSandbox:
         feeder: asyncio.Task[None] | None = None
         frozen = self.frozen_s()
         deadline = asyncio.timeout(timeout_ms / 1000 + GRACE_MS / 1000 + DRAIN_S)
+        sent = False
+
+        def sending() -> None:
+            nonlocal sent
+            sent = True
+
         try:
             async with deadline:
                 self._deadlines[deadline] = None
                 if self._paused_at is not None:
                     self._hold(deadline)
-                stream = await open_stream(exe.start(detach=False))
+                stream = await open_stream(exe.start(detach=False), on_send=sending)
                 try:
                     if stdin is not None:
                         feeder = asyncio.create_task(_feed(stream, stdin))
@@ -708,8 +714,10 @@ class DockerSandbox:
         except aiodocker.DockerError as e:
             return Outcome("failed", None, pid, elapsed(), error=e.message)
         except asyncio.CancelledError:
-            # Docker leaves an exec running when its stream closes.
-            await settle(self._end(exe, argv, user))
+            # Docker leaves an exec running when its stream closes. One whose start request
+            # body never went out was never started, and never will be.
+            if sent:
+                await settle(self._end(exe, argv, user))
             raise
         finally:
             self._deadlines.pop(deadline, None)

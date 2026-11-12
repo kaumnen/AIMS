@@ -1,19 +1,55 @@
 import asyncio
+from collections.abc import Callable
+from typing import Any
 
 from aiodocker.containers import DockerContainer
 from aiodocker.stream import Stream
+from aiohttp import BytesPayload
+from aiohttp.abc import AbstractStreamWriter
 
 GRACE_S = 5
 
 
-async def open_stream(stream: Stream) -> Stream:
+async def open_stream(stream: Stream, on_send: Callable[[], None] | None = None) -> Stream:
     """Open `stream`, an exec start or a container attach not yet sent. One that fails or is
-    cancelled part way is closed before it raises, so its connection does not stay open."""
+    cancelled part way is closed before it raises, so its connection does not stay open.
+
+    `on_send` is called just before aiohttp writes the request body. The daemon reads the
+    whole body before it starts an exec, so until then the exec cannot have started."""
+    if on_send is not None:
+        setup = stream._setup
+
+        async def marked() -> tuple[Any, Any, bool]:
+            url, body, tty = await setup()
+            if not body:
+                on_send()
+                return url, body, tty
+            return url, _Marked(body, on_send), tty
+
+        stream._setup = marked
     try:
         return await stream.__aenter__()
     except BaseException:
         _drop(stream)
         raise
+
+
+class _Marked(BytesPayload):
+    """A request body that calls `on_write` before any of it is written."""
+
+    def __init__(self, value: bytes, on_write: Callable[[], None]) -> None:
+        super().__init__(value)
+        self._on_write = on_write
+
+    async def write(self, writer: AbstractStreamWriter) -> None:
+        self._on_write()
+        await super().write(writer)
+
+    async def write_with_length(
+        self, writer: AbstractStreamWriter, content_length: int | None
+    ) -> None:
+        self._on_write()
+        await super().write_with_length(writer, content_length)
 
 
 def _drop(stream: Stream) -> None:
