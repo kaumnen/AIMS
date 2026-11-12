@@ -21,7 +21,7 @@ import rfc8785
 from aims.channels import ChannelSetup
 from aims.channels.folder import Folder
 from aims.events import BlobError, LocalEventStore, RunStarted
-from aims.monitor.config import JUDGE_MIN_OUTPUT
+from aims.monitor.config import JUDGE_MIN_OUTPUT, MAX_HOLD_S
 from aims.plants.canary import Canary, check, make, render
 from aims.run import truth
 from aims.run.fork import Origin, same_scenario
@@ -517,6 +517,25 @@ def test_a_truth_record_with_a_judge_output_cap_below_the_least_restores_at_the_
         assert scenario.monitor is not None
         assert scenario.monitor.judge is not None
         assert scenario.monitor.judge.max_output_tokens == JUDGE_MIN_OUTPUT
+    assert again.files == first.files
+    assert again.instructions == first.instructions
+
+
+def test_a_truth_record_with_a_hold_past_thirty_days_restores_at_thirty_days(
+    scenario_dir: Path,
+) -> None:
+    path = scenario_dir / "scenario.yaml"
+    path.write_text(SCENARIO + "monitor: {policy: {human_timeout_s: 86400}}\n")
+    first = truth.prepare(load(path, "quiet"), "quiet", seed=b"s5")
+    snapshot: dict[str, Any] = first.bundle.snapshot()
+    blobs = {hashlib.sha256(data).hexdigest(): data for data in first.bundle.blobs()}
+    record = json.loads(truth.encode(first.truth))
+    # Written before a hold was bounded.
+    record["scenario"] = record["scenario"].replace("86400", "5184000")
+    again = truth.restore(snapshot, blobs, record)
+    for scenario in (again.scenario, again.full_bundle.scenario):
+        assert scenario.monitor is not None
+        assert scenario.monitor.policy.human_timeout_s == MAX_HOLD_S
     assert again.files == first.files
     assert again.instructions == first.instructions
 

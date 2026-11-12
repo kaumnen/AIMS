@@ -33,7 +33,7 @@ from aims.events.blobs import decode
 from aims.events.store import LOG
 from aims.models import Profile, check
 from aims.models.check import Check, Verdict
-from aims.monitor.config import JUDGE_MIN_OUTPUT, merge
+from aims.monitor.config import JUDGE_MIN_OUTPUT, MAX_HOLD_S, merge
 from aims.monitor.setup import ResolvedMonitor
 from aims.monitor.texts import resolve
 from aims.node.client import ApiError
@@ -598,3 +598,33 @@ def test_a_job_queued_with_a_judge_output_cap_below_the_least_runs_at_the_least(
         assert watched.config.model_copy(update={"judge": None}) == resolved.config.model_copy(
             update={"judge": None}
         )
+
+
+LONG_HOLD = """\
+version: 1
+name: held
+oversight: human
+task:
+  instruction: Do it.
+  environment: {image: python:3.13-slim}
+monitor: {policy: {pause_timeout_s: 5184000, human_timeout_s: 5184000}}
+"""
+
+
+def test_a_job_queued_with_a_hold_past_thirty_days_runs_at_thirty_days(tmp_path: Path) -> None:
+    """A job queued before a hold was bounded."""
+    (tmp_path / "scenario.yaml").write_text(LONG_HOLD)
+    folder = folder_tar(tmp_path / "scenario.yaml")
+    sha = hashlib.sha256(folder).hexdigest()
+    recorded = Bundle(parse(LONG_HOLD.replace("5184000", "600")), LONG_HOLD.encode())
+    job = Job(run_id="r", scenario=recorded.snapshot(), folder=sha)
+    blobs = {sha: folder, hashlib.sha256(recorded.text).hexdigest(): recorded.text}
+
+    with job_bundle(job, blobs) as bundle:
+        assert bundle.digest == recorded.digest
+        assert bundle.scenario.monitor is not None
+        policy = bundle.scenario.monitor.policy
+        assert policy.pause_timeout_s == policy.human_timeout_s == MAX_HOLD_S
+    snapshot = bundle_of(job.model_copy(update={"folder": None}), blobs).scenario.monitor
+    assert snapshot is not None
+    assert snapshot.policy.pause_timeout_s == snapshot.policy.human_timeout_s == MAX_HOLD_S

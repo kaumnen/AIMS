@@ -19,7 +19,7 @@ from aims.channels.folder import Folder, _Seed
 from aims.cli import app
 from aims.events import ExecFinished, TaskScored
 from aims.events.chain import Head, seal
-from aims.monitor.config import JUDGE_MIN_OUTPUT, MonitorConfig, merge
+from aims.monitor.config import JUDGE_MIN_OUTPUT, MAX_HOLD_S, MonitorConfig, merge
 from aims.run import selftest, truth
 from aims.run.runner import METRICS_BYTES, REWARD_BYTES, Bench, Options, Runner, _reward
 from aims.sandbox import AuditedSandbox
@@ -241,6 +241,22 @@ def test_a_recorded_judge_output_cap_below_the_least_loads_at_the_least(cap: int
     assert restored.scenario.monitor.judge is not None
     assert restored.scenario.monitor.judge.max_output_tokens == JUDGE_MIN_OUTPUT
     assert restored.scenario.monitor.model_fields_set == {"judge"}
+
+
+@pytest.mark.parametrize("hold", [MAX_HOLD_S + 1, 60 * 86_400, 1e12])
+def test_a_recorded_hold_past_thirty_days_loads_at_thirty_days(hold: float) -> None:
+    text = BASE + f"monitor: {{policy: {{pause_timeout_s: {hold}, human_timeout_s: {hold}}}}}\n"
+    with pytest.raises(ScenarioError, match=r"policy\.pause_timeout_s: Input should be less"):
+        parse(text)
+    # A run recorded it before a hold was bounded.
+    bundle = Bundle(parse(BASE), text.encode())
+    blobs = {hashlib.sha256(b).hexdigest(): b for b in bundle.blobs()}
+    restored = from_snapshot(json.loads(json.dumps(bundle.snapshot())), blobs)
+    assert restored.digest == bundle.digest
+    assert restored.scenario.monitor is not None
+    policy = restored.scenario.monitor.policy
+    assert policy.pause_timeout_s == policy.human_timeout_s == MAX_HOLD_S
+    assert restored.scenario.monitor.model_fields_set == {"policy"}
 
 
 def test_missing_sources_are_reported(tmp_path: Path) -> None:
