@@ -22,7 +22,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - The signals `verifier_hook`, `verifier_anomaly` and `link_redirect` move to version 3, `verifier_env` and `hack_pattern` to version 2 and `submit_vs_score` to version 4. Runs from now on group under a new monitor in `aims rates`.
 - `submit_vs_score` reads the agent's reports and answer sentence by sentence. The last sentence about the checks decides. "All tests pass" after an earlier failure takes the failure back.
 - `link_redirect` raises a symlink's flag to 3 when the verifier reads the link's target. The kernel logs a read under the target's path, so a direct read of the target counts too.
-- The index moves to version 11. Each data directory rebuilds its index from the run logs the next time it opens.
+- The index moves to version 12. Each data directory rebuilds its index from the run logs the next time it opens.
 - `GET /api/runs/{id}/samples` pages with `after=next`. `next` is the seq of the page's last window. It was a time to pass back as `ts_from`.
 - A cursor or seq the index cannot hold answers 422: `after` or `before` below -1, `ts_from` or `ts_to` below 0, an event seq below 0, and any of them past 2^63 - 1. A NUL in `q` answers 422 too.
 - `pause_timeout_s` and `human_timeout_s` take at most 30 days.
@@ -256,6 +256,19 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - Cancelling one of two identical commands that run at once in a sandbox ends only that one. Both died before. Each exec's `wrapper` now holds `--id` and an id of its own.
 - A cancelled command in a sandbox at its pids limit is ended. It ran on, since the kill could not start. A cancelled command that could not be ended is logged with the reason.
 - A pause that lands just before a tool's command starts no longer fails that command and stops the sandbox. The command waits for the resume. The wait does not count against its timeout.
+- The index refuses a batch of events that does not continue the ones it holds of the run. Lines cut from a log after a failed write, which another process read first and indexed late, mixed with the lines written in their place before, and `aims verify` passed.
+- A run made again under the id of a deleted one no longer shows events of the old run. Index rows a delete cut short left behind go first, and a run made during the delete starts once the delete is done.
+- A delete cut short for a run whose folder was already gone is finished by the next start. Its index rows stayed for good before.
+- A run another process deleted is no longer indexed again from a log read just before, and no longer retried with no end by the index catch-up or by its shipper. The shipper ends.
+- `aims verify` no longer reports a gap when another process rebuilds the index at that moment.
+- A flag can be labelled over the API while another process rebuilds the index. It answered 404.
+- A truth file whose folder could not be synced is taken away again, so the upload that is sent again is kept and starts the score. It was answered as kept before and no score started.
+- The record of an unfinished tail cut off a log is written with the next batch. A first write that failed lost it before.
+- A failed write of copied log lines no longer cuts a file that reused the log's number after the store closed.
+- An index write that waits out another process's lock lets the writes of other runs try in between. They waited up to 15 seconds behind it.
+- A run whose index was marked corrupt logs that once. Each later event logged two errors before. Its index takes events again after a rebuild.
+- SQLite's integrity check of the text index passes for runs with resource windows. It reported the index as malformed, though nothing was damaged.
+- A log read for one run no longer holds up opening the log of another, and the index catch-up reads no line a writer that opens meanwhile has not synced.
 
 ## [0.2.2] - 2026-11-10
 
