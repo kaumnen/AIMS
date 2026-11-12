@@ -387,6 +387,34 @@ test("a raw page read on from an event can read the events before it", async () 
   expect(read.pages[0]).toMatchObject({ older: 100, newer: 299 });
 });
 
+// Answers raw reads from `log` as the server does: a page of `limit`, read back from `before`
+// when only it is given.
+function rawServer(log: () => Event[]) {
+  fetch.mockImplementation(async (request) => {
+    const q = new URL(request.url).searchParams;
+    const items = log().filter(
+      (e) => e.seq > Number(q.get("after") ?? -1) && e.seq < Number(q.get("before") ?? Infinity),
+    );
+    const limit = Number(q.get("limit"));
+    const back = q.has("before") && !q.has("after");
+    const got = back ? items.slice(-limit) : items.slice(0, limit);
+    const edge = back ? got[0] : got.at(-1);
+    return Response.json({ items: got, next: got.length === limit ? String(edge?.seq) : null });
+  });
+}
+
+test("a raw list read back from the end reads each page it held again on a refetch", async () => {
+  rawServer(() => range(0, 449));
+  const qc = new QueryClient();
+  const last = rawEventsQuery(RUN, {}, "end");
+  await qc.fetchInfiniteQuery(last);
+  const view = new InfiniteQueryObserver(qc, last);
+  await view.fetchPreviousPage();
+  expect(rawSeqs(qc, last.queryKey)).toEqual(range(50, 449).map((e) => e.seq));
+  await view.refetch();
+  expect(rawSeqs(qc, last.queryKey)).toEqual(range(50, 449).map((e) => e.seq));
+});
+
 // Answers step reads from `rows` and reads of agent ends with `ends`; the URLs asked, by kind.
 function stepReads(rows: () => StepInfo[], ends: Event[] = []) {
   const asked = { steps: [] as URL[], ends: [] as URL[] };

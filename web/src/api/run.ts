@@ -210,6 +210,8 @@ export interface RawPage {
 }
 
 type RawCursor = { after: number } | { before: number } | null;
+// the cursor of a read back from past the last event
+const END = Number.MAX_SAFE_INTEGER;
 
 export function rawEventsQuery(runId: string, filters: RawFilters, anchor: RawAnchor = "start") {
   return infiniteQueryOptions({
@@ -229,13 +231,18 @@ export function rawEventsQuery(runId: string, filters: RawFilters, anchor: RawAn
       });
       if (error) throw error;
       const next = data.next === null || data.next === undefined ? null : Number(data.next);
-      if (pageParam !== null && "before" in pageParam)
-        return { items: data.items, older: next, newer: null };
+      if (pageParam !== null && "before" in pageParam) {
+        // a page read back from an event has that event and the ones after it below, so a
+        // refetch reads on to them; one read from the end has none
+        const { before } = pageParam;
+        const newer = before === END ? null : (data.items.at(-1)?.seq ?? before - 1);
+        return { items: data.items, older: next, newer };
+      }
       // a page read on from an event has that event and the ones before it above
       const older = pageParam === null ? null : pageParam.after + 1;
       return { items: data.items, older, newer: next };
     },
-    initialPageParam: (anchor === "end" ? { before: Number.MAX_SAFE_INTEGER } : null) as RawCursor,
+    initialPageParam: (anchor === "end" ? { before: END } : null) as RawCursor,
     getNextPageParam: (last) => (last.newer === null ? null : { after: last.newer }),
     getPreviousPageParam: (first) => (first.older === null ? null : { before: first.older }),
     staleTime: Infinity,
