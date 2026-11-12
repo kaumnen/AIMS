@@ -3147,6 +3147,7 @@
           "run.finished",
           "run.started",
           "sandbox.archived",
+          "sandbox.freeze_failed",
           "sandbox.started",
           "sandbox.stopped",
           "score.answer",
@@ -3305,6 +3306,9 @@
           "sandbox.archived": {
             "$ref": "#/components/schemas/SandboxArchived"
           },
+          "sandbox.freeze_failed": {
+            "$ref": "#/components/schemas/SandboxFreezeFailed"
+          },
           "sandbox.started": {
             "$ref": "#/components/schemas/SandboxStarted"
           },
@@ -3387,6 +3391,7 @@
           "run.finished",
           "run.started",
           "sandbox.archived",
+          "sandbox.freeze_failed",
           "sandbox.started",
           "sandbox.stopped",
           "score.answer",
@@ -12711,6 +12716,35 @@
           "errors"
         ],
         "title": "SandboxArchived",
+        "type": "object"
+      },
+      "SandboxFreezeFailed": {
+        "additionalProperties": false,
+        "description": "The sandbox did not freeze or unfreeze when asked. `wanted` is the state asked for.\n\nAfter a freeze that failed, the agent's processes may have run on while the agent was\npaused. After an unfreeze that failed, the sandbox may still be frozen: its next exec waits\nuntil a resume works or the run ends.",
+        "properties": {
+          "error": {
+            "title": "Error",
+            "type": "string"
+          },
+          "sandbox_id": {
+            "title": "Sandbox Id",
+            "type": "string"
+          },
+          "wanted": {
+            "enum": [
+              "frozen",
+              "running"
+            ],
+            "title": "Wanted",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sandbox_id",
+          "wanted",
+          "error"
+        ],
+        "title": "SandboxFreezeFailed",
         "type": "object"
       },
       "SandboxStarted": {

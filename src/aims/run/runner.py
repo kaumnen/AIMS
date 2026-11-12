@@ -89,10 +89,6 @@ REWARD_BYTES = 1024 * 1024
 """The most bytes of reward.json or reward.txt the runner reads."""
 METRICS_BYTES = 64 * 1024
 """The most bytes of canonical JSON a score keeps of reward.json, a quarter of an event."""
-UNFREEZE_TRIES = 3
-UNFREEZE_WAIT_S = 1.0
-"""How often the runner tries to unfreeze a sandbox on a resume, and how long it waits
-between tries."""
 SCORED_ENDS: frozenset[AgentEnd] = frozenset(
     {
         "submitted",
@@ -488,49 +484,37 @@ class Runner:
         failed: list[str] = []
         for agent_id in targets:
             sb = self.sandboxes.get(agent_id)
-            agent = self.agents.get(agent_id)
-            scripted = self.scripted.get(agent_id)
-            done = (agent is not None and agent.done) or (scripted is not None and scripted.done)
-            if sb is None or sb.stopped or done:
+            if sb is None or sb.stopped or self._done(agent_id):
                 continue
-            try:
-                await sb.sandbox.pause()
-            except Exception as e:
-                log.warning("freezing the sandbox of agent %s failed: %s", agent_id, e)
-                failed.append(f"the sandbox of agent {agent_id} did not freeze: {e}")
+            error = await sb.pause()
+            if error is not None:
+                log.warning("freezing the sandbox of agent %s failed: %s", agent_id, error)
+                failed.append(f"the sandbox of agent {agent_id} did not freeze: {error}")
+            elif self._done(agent_id):
+                # The agent finished while its sandbox froze.
+                await sb.resume()
         return failed
+
+    def _done(self, agent_id: str) -> bool:
+        agent = self.agents.get(agent_id)
+        scripted = self.scripted.get(agent_id)
+        return (agent is not None and agent.done) or (scripted is not None and scripted.done)
 
     async def _resume(self, targets: Sequence[str], verdict: Verdict) -> list[str]:
         """Let `targets` go on and unfreeze the sandboxes of those not held at a gate point; a
-        held agent unfreezes its own. Returns a line for each sandbox that did not unfreeze."""
+        held agent unfreezes its own. An agent stopped in the middle of a tool call cannot go on
+        while its sandbox is frozen, so the unfreeze is tried a few times, until the agent is
+        paused again. Returns a line for each sandbox that did not unfreeze."""
         failed: list[str] = []
         for agent_id in self._control.resume(targets, verdict):
-            error = await self._unfreeze(agent_id)
+            sb = self.sandboxes.get(agent_id)
+            if sb is None:
+                continue
+            error = await sb.resume(lambda a=agent_id: not self._control.is_paused(a))
             if error is not None:
                 log.warning("unfreezing the sandbox of agent %s failed: %s", agent_id, error)
                 failed.append(f"the sandbox of agent {agent_id} did not unfreeze: {error}")
         return failed
-
-    async def _unfreeze(self, agent_id: str) -> Exception | None:
-        """Unfreeze the sandbox of `agent_id`, trying again up to UNFREEZE_TRIES times in all,
-        since an agent stopped in the middle of a tool call cannot go on while it is frozen.
-        It stops trying once the agent is paused again or its sandbox stops. Returns the last
-        error when no try worked."""
-        error: Exception | None = None
-        for n in range(UNFREEZE_TRIES):
-            if n:
-                await asyncio.sleep(UNFREEZE_WAIT_S)
-                if self._control.is_paused(agent_id):
-                    return None
-            sb = self.sandboxes.get(agent_id)
-            if sb is None or sb.stopped:
-                return None
-            try:
-                await sb.sandbox.resume()
-                return None
-            except Exception as e:
-                error = e
-        return error
 
     # The monitor's Actuator: it records `monitor.action` itself before each of these.
 
@@ -1072,7 +1056,13 @@ class Runner:
                 answer = self.agents[agent_id].answer
             elif agent_id in self.scripted:
                 answer = self.scripted[agent_id].answer
-            scored = await self._verify(sb, agent_id, finished.reason, answer, verifier)
+            # An exec waits while its sandbox is frozen, and an unfreeze that failed can have
+            # left this one so.
+            stuck = await sb.resume()
+            if stuck is None:
+                scored = await self._verify(sb, agent_id, finished.reason, answer, verifier)
+            else:
+                scored = TaskScored(error=f"the sandbox did not unfreeze: {stuck}")
             scored = scored.model_copy(update={"tainted": await self._tainted(agent_id)})
             result.scores[agent_id] = scored
             await self.bench.store.append(self.run_id or "", [Draft(scored, agent_id)])

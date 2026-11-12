@@ -370,6 +370,20 @@ class SandboxStopped(Payload):
     detail: str | None = None
 
 
+class SandboxFreezeFailed(Payload):
+    """The sandbox did not freeze or unfreeze when asked. `wanted` is the state asked for.
+
+    After a freeze that failed, the agent's processes may have run on while the agent was
+    paused. After an unfreeze that failed, the sandbox may still be frozen: its next exec waits
+    until a resume works or the run ends."""
+
+    type = "sandbox.freeze_failed"
+
+    sandbox_id: str
+    wanted: Literal["frozen", "running"]
+    error: str
+
+
 class ExecStarted(Payload):
     """Written before the command reaches the sandbox. The argv sent is `wrapper + [command]`.
 

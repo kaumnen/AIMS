@@ -10,7 +10,7 @@ import tarfile
 import time
 import uuid
 from collections import OrderedDict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -51,6 +51,7 @@ from aims.events import (
     ProcSignal,
     PtraceEvent,
     SandboxArchived,
+    SandboxFreezeFailed,
     SandboxStarted,
     SandboxStopped,
     SysDenied,
@@ -93,6 +94,7 @@ from aims.sandbox.base import (
 )
 from aims.sandbox.resources import Windows
 from aims.sandbox.trace import ENV_CAP, PIPEFS_MAGIC
+from aims.text import scrub
 
 if TYPE_CHECKING:
     from aims.events import Event
@@ -121,6 +123,9 @@ FLUSH_N = 500
 BARRIER_S = 2.0
 SETTLE_S = 0.5
 SETTLE_POLL_S = 0.005
+# How often a resume tries to unfreeze a sandbox, and how long it waits between tries.
+UNFREEZE_TRIES = 3
+UNFREEZE_WAIT_S = 1.0
 MEMORY = 4096
 ARCHIVE_CAP = 256 * 1024 * 1024
 # Bytes of skipped entries an archive reads past to reach later ones: about 15 s of Docker tar.
@@ -507,6 +512,44 @@ class AuditedSandbox:
                     break
                 await asyncio.sleep(SETTLE_POLL_S)
         await self._flush()
+
+    async def pause(self) -> str | None:
+        """Freeze the sandbox. A freeze that fails is logged as `sandbox.freeze_failed` and its
+        error returned, so the caller can go on: an agent holds at its gate all the same."""
+        try:
+            await self.sandbox.pause()
+        except Exception as e:
+            return await self._not("frozen", e)
+        return None
+
+    async def resume(self, wanted: Callable[[], bool] | None = None) -> str | None:
+        """Unfreeze the sandbox, trying up to UNFREEZE_TRIES times in all, since nothing runs in
+        a sandbox left frozen. It stops trying once the sandbox stops or `wanted` says no, as
+        when its agent is paused again. When no try works the failure is logged as
+        `sandbox.freeze_failed` and its error returned; a later resume tries again."""
+        error: Exception | None = None
+        for n in range(UNFREEZE_TRIES):
+            if n:
+                await asyncio.sleep(UNFREEZE_WAIT_S)
+                if wanted is not None and not wanted():
+                    return None
+            if self._stopped:
+                return None
+            try:
+                await self.sandbox.resume()
+                return None
+            except Exception as e:
+                error = e
+        assert error is not None
+        return await self._not("running", error)
+
+    async def _not(self, wanted: Literal["frozen", "running"], error: Exception) -> str:
+        text = scrub(str(error)) or type(error).__name__
+        failed = SandboxFreezeFailed(
+            sandbox_id=self.sandbox.info.sandbox_id, wanted=wanted, error=text
+        )
+        await self._append([failed])
+        return text
 
     async def stop(
         self, reason: Literal["killed", "exec_failed"] = "killed", detail: str | None = None

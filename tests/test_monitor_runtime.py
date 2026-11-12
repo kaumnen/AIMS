@@ -31,6 +31,7 @@ from aims.events import (
     RunFinished,
     RunStarted,
     SandboxArchived,
+    SandboxFreezeFailed,
     SandboxStopped,
     TaskScored,
     ToolResult,
@@ -46,6 +47,7 @@ from aims.run import runner as runner_module
 from aims.run.job import Job, bundle_of, monitor_for, runner_for, scenario_jobs
 from aims.run.runner import Bench, Options, Result, RunError, Runner, _status, seeded
 from aims.sandbox import DockerBackend
+from aims.sandbox import audit as audit_module
 from aims.sandbox.base import Capture, Outcome, SandboxInfo, SandboxSpec
 from aims.scenario import Bundle, load
 from aims.scenario.model import ScriptStep
@@ -676,7 +678,7 @@ async def test_a_sandbox_that_does_not_freeze_leaves_the_others_paused_and_resum
     monkeypatch: pytest.MonkeyPatch,
     by: str,
 ) -> None:
-    monkeypatch.setattr(runner_module, "UNFREEZE_WAIT_S", 0)
+    monkeypatch.setattr(audit_module, "UNFREEZE_WAIT_S", 0)
     script = Script(call("submit", answer="a"), call("submit", answer="b"))
     backend = FirstBoxes(DeadBox)
     bundle = two_agents(tmp_path, "{agent: a, on: finished}")
@@ -706,6 +708,14 @@ async def test_a_sandbox_that_does_not_freeze_leaves_the_others_paused_and_resum
 
     assert result.status == "completed", result.reason
     assert seen == [(True, True, 1, 0), (False, False, 1, 1)]
+    assert result.run_id is not None
+    failed = await store.events(result.run_id, types=["sandbox.freeze_failed"])
+    # This box never unfreezes, so the unfreeze before its verifier fails as well.
+    assert [(e.agent_id, e.data["wanted"], e.data["error"]) for e in failed] == [
+        ("a", "frozen", "409 container is not running"),
+        ("a", "running", "409 container is not running"),
+        ("a", "running", "409 container is not running"),
+    ]
     if by == "operator":
         assert notes == [
             "the sandbox of agent a did not freeze: 409 container is not running",
@@ -937,15 +947,22 @@ async def paused_mid_exec(
 async def test_an_unfreeze_that_fails_is_tried_again(
     store: LocalEventStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fails: int
 ) -> None:
-    monkeypatch.setattr(runner_module, "UNFREEZE_WAIT_S", 0)
+    monkeypatch.setattr(audit_module, "UNFREEZE_WAIT_S", 0)
     runner, task, box = await paused_mid_exec(store, tmp_path, ThawBoxes())
     box.fails = fails
     note = await runner.operate("resume", agent="a")
-    if fails < runner_module.UNFREEZE_TRIES:
+    if fails < audit_module.UNFREEZE_TRIES:
         assert (note, box.frozen, box.tries) == (None, False, fails + 1)
     else:
         assert note == "the sandbox of agent a did not unfreeze: 500 cannot thaw"
-        assert (box.frozen, box.tries) == (True, runner_module.UNFREEZE_TRIES)
+        assert (box.frozen, box.tries) == (True, audit_module.UNFREEZE_TRIES)
+        assert runner.run_id is not None
+        (failed,) = await of(store, runner.run_id, SandboxFreezeFailed, "sandbox.freeze_failed")
+        assert (failed.sandbox_id, failed.wanted, failed.error) == (
+            "sb",
+            "running",
+            "500 cannot thaw",
+        )
         assert await runner.operate("resume", agent="a") is None
         assert not box.frozen
     box.release.set()
@@ -957,7 +974,7 @@ async def test_an_unfreeze_that_fails_is_tried_again(
 async def test_an_unfreeze_tried_again_leaves_an_agent_paused_meanwhile_frozen(
     store: LocalEventStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(runner_module, "UNFREEZE_WAIT_S", 0)
+    monkeypatch.setattr(audit_module, "UNFREEZE_WAIT_S", 0)
     runner, task, box = await paused_mid_exec(store, tmp_path, ThawBoxes())
     box.fails = 1
     box.on_fail = lambda: runner.control.pause(["a"], "paused again")
@@ -1015,6 +1032,67 @@ async def test_an_agent_whose_sandbox_does_not_freeze_at_its_gate_still_holds(
     assert "agent a holds at its gate, but its sandbox did not freeze: 500 cannot freeze" in (
         caplog.text
     )
+    assert result.run_id is not None
+    failed = await of(store, result.run_id, SandboxFreezeFailed, "sandbox.freeze_failed")
+    assert [(f.wanted, f.error) for f in failed] == [("frozen", "500 cannot freeze")] * 2
+
+
+async def held_at_a_gate_then_stuck(
+    store: LocalEventStore, tmp_path: Path, fails: int
+) -> tuple[Result, ThawBox]:
+    """A run whose agent a holds at a gate point, then is resumed while its sandbox fails to
+    unfreeze `fails` times."""
+    script = Script(call("submit", answer="ok"))
+    backend = ThawBoxes()
+    runner = Runner(bench(store, script, backend), scenario(tmp_path), Options())
+    started = asyncio.Event()
+    runner.on_start = lambda run_id: started.set()
+    task = asyncio.create_task(runner.run())
+    await started.wait()
+    await runner.operate("pause", agent="a")
+    await held(runner, "a")
+    box = backend.boxes["a"]
+    assert box.frozen
+    box.fails = fails
+    assert await runner.operate("resume", agent="a") is None
+    async with asyncio.timeout(5):
+        return await task, box
+
+
+async def test_a_held_agent_goes_on_when_its_sandbox_does_not_unfreeze(
+    store: LocalEventStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(audit_module, "UNFREEZE_WAIT_S", 0)
+    tries = audit_module.UNFREEZE_TRIES
+    with caplog.at_level(logging.WARNING, logger="aims.agent"):
+        result, box = await held_at_a_gate_then_stuck(store, tmp_path, tries)
+
+    assert result.status == "completed", result.reason
+    assert result.run_id is not None
+    assert result.agents["a"].reason == "submitted"
+    assert "agent a left its gate, but its sandbox did not unfreeze: 500 cannot thaw" in caplog.text
+    (failed,) = await of(store, result.run_id, SandboxFreezeFailed, "sandbox.freeze_failed")
+    assert (failed.wanted, failed.error) == ("running", "500 cannot thaw")
+    # The verifier unfreezes the sandbox before it runs.
+    assert (box.frozen, box.refused, box.tries) == (False, [], tries + 1)
+    assert result.scores["a"].reward == 1.0
+
+
+async def test_a_sandbox_that_stays_frozen_is_scored_as_an_error_with_no_verifier_run(
+    store: LocalEventStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(audit_module, "UNFREEZE_WAIT_S", 0)
+    result, box = await held_at_a_gate_then_stuck(store, tmp_path, 100)
+
+    assert result.run_id is not None
+    scored = result.scores["a"]
+    assert (scored.reward, scored.error) == (None, "the sandbox did not unfreeze: 500 cannot thaw")
+    assert (box.frozen, box.refused) == (True, [])
+    failed = await of(store, result.run_id, SandboxFreezeFailed, "sandbox.freeze_failed")
+    assert [f.wanted for f in failed] == ["running", "running"]
 
 
 async def test_a_kill_by_the_monitor_still_gets_the_final_sweeps_and_the_judge(

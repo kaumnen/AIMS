@@ -64,6 +64,8 @@ export function summary(e: Event): string {
       return `${str(d["kind"])}: ${firstLine(str(d["text"]) ?? "")}`;
     case "agent.held":
       return heldText(str(d["kind"]));
+    case "sandbox.freeze_failed":
+      return `did not ${str(d["wanted"]) === "frozen" ? "freeze" : "unfreeze"}: ${str(d["error"]) ?? ""}`;
     case "monitor.action": {
       const agents = Array.isArray(d["agents"]) ? d["agents"].join(", ") : "";
       const simulated = d["simulated"] === true ? " (simulated)" : "";

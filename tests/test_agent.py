@@ -65,6 +65,14 @@ class FakeSandbox:
         self.stopped = False
         self.commands: list[str] = []
 
+    async def pause(self) -> str | None:
+        await self.sandbox.pause()
+        return None
+
+    async def resume(self) -> str | None:
+        await self.sandbox.resume()
+        return None
+
     async def exec(self, command: str, **kw: Any) -> ExecResult:
         self.commands.append(command)
         out, code = self.handler(command, kw.get("stdin"))

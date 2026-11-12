@@ -923,7 +923,9 @@ async def pass_gate(
     """Check `point` at `gate`. While the gate answers pause, log the hold, freeze the agent's
     sandbox and wait at the gate, then unfreeze the sandbox. The hold counts as paused on
     `clock`. A sandbox that does not freeze is logged and the agent holds all the same, since
-    it takes no step while it holds. Returns the verdict the agent goes on with."""
+    it takes no step while it holds. One that does not unfreeze is logged too and the agent
+    goes on with its verdict: its next exec waits until a resume unfreezes the sandbox.
+    Returns the verdict the agent goes on with."""
     verdict = await gate.check(point)
     if verdict.action != "pause":
         return verdict
@@ -937,18 +939,23 @@ async def pass_gate(
                 next_call=point.calls[0] if point.calls else None,
             )
             await emit(held)
-            try:
-                await sandbox.sandbox.pause()
-            except Exception as e:
+            error = await sandbox.pause()
+            if error is not None:
                 log.warning(
                     "agent %s holds at its gate, but its sandbox did not freeze: %s",
                     point.agent_id,
-                    e,
+                    error,
                 )
             try:
                 verdict = await gate.held(point)
             finally:
-                await sandbox.sandbox.resume()
+                error = await sandbox.resume()
+                if error is not None:
+                    log.warning(
+                        "agent %s left its gate, but its sandbox did not unfreeze: %s",
+                        point.agent_id,
+                        error,
+                    )
     finally:
         clock.release("gate")
     return verdict

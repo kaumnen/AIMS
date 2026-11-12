@@ -39,6 +39,7 @@ export const stepTypes = [
   "agent.finished",
   "agent.compacted",
   "agent.held",
+  "sandbox.freeze_failed",
   "monitor.flag",
   "monitor.action",
   "operator.action",

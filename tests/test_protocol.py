@@ -18,6 +18,7 @@ TYPES = {
     "model.response",
     "model.checked",
     "sandbox.started",
+    "sandbox.freeze_failed",
     "sandbox.stopped",
     "exec.started",
     "exec.finished",

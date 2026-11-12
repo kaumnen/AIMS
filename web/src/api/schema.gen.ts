@@ -2782,7 +2782,7 @@ export interface components {
             next: string | null;
         };
         /** @enum {string} */
-        EventType: "agent.compacted" | "agent.finished" | "agent.held" | "agent.input" | "agent.report" | "agent.started" | "agent.step" | "audit.lost" | "audit.spill" | "cache.probe" | "channel.message" | "channel.read" | "channel.snapshot" | "exec.finished" | "exec.started" | "file.access" | "file.setattr" | "file.sync" | "file.write" | "fs.snapshot" | "ipc.event" | "log.truncated" | "mem.exec" | "model.checked" | "model.request" | "model.response" | "monitor.action" | "monitor.cleared" | "monitor.degraded" | "monitor.flag" | "monitor.sweep" | "monitor.verdict" | "net.connect" | "ns.event" | "operator.action" | "plant.triggered" | "proc.exec" | "proc.exit" | "proc.fork" | "proc.output" | "proc.signal" | "ptrace.event" | "replay.divergence" | "resource.sample" | "run.finished" | "run.started" | "sandbox.archived" | "sandbox.started" | "sandbox.stopped" | "score.answer" | "score.awareness" | "score.unexplained" | "score.unit" | "selftest.case" | "sys.denied" | "task.scored" | "tool.call" | "tool.result";
+        EventType: "agent.compacted" | "agent.finished" | "agent.held" | "agent.input" | "agent.report" | "agent.started" | "agent.step" | "audit.lost" | "audit.spill" | "cache.probe" | "channel.message" | "channel.read" | "channel.snapshot" | "exec.finished" | "exec.started" | "file.access" | "file.setattr" | "file.sync" | "file.write" | "fs.snapshot" | "ipc.event" | "log.truncated" | "mem.exec" | "model.checked" | "model.request" | "model.response" | "monitor.action" | "monitor.cleared" | "monitor.degraded" | "monitor.flag" | "monitor.sweep" | "monitor.verdict" | "net.connect" | "ns.event" | "operator.action" | "plant.triggered" | "proc.exec" | "proc.exit" | "proc.fork" | "proc.output" | "proc.signal" | "ptrace.event" | "replay.divergence" | "resource.sample" | "run.finished" | "run.started" | "sandbox.archived" | "sandbox.freeze_failed" | "sandbox.started" | "sandbox.stopped" | "score.answer" | "score.awareness" | "score.unexplained" | "score.unit" | "selftest.case" | "sys.denied" | "task.scored" | "tool.call" | "tool.result";
         /** @description Each event type and the schema of its `data`. */
         EventTypes: {
             "agent.compacted": components["schemas"]["AgentCompacted"];
@@ -2832,6 +2832,7 @@ export interface components {
             "run.finished": components["schemas"]["RunFinished"];
             "run.started": components["schemas"]["RunStarted"];
             "sandbox.archived": components["schemas"]["SandboxArchived"];
+            "sandbox.freeze_failed": components["schemas"]["SandboxFreezeFailed"];
             "sandbox.started": components["schemas"]["SandboxStarted"];
             "sandbox.stopped": components["schemas"]["SandboxStopped"];
             "score.answer": components["schemas"]["ScoreAnswer"];
@@ -6452,6 +6453,25 @@ export interface components {
              * @default false
              */
             truncated: boolean;
+        };
+        /**
+         * SandboxFreezeFailed
+         * @description The sandbox did not freeze or unfreeze when asked. `wanted` is the state asked for.
+         *
+         *     After a freeze that failed, the agent's processes may have run on while the agent was
+         *     paused. After an unfreeze that failed, the sandbox may still be frozen: its next exec waits
+         *     until a resume works or the run ends.
+         */
+        SandboxFreezeFailed: {
+            /** Error */
+            error: string;
+            /** Sandbox Id */
+            sandbox_id: string;
+            /**
+             * Wanted
+             * @enum {string}
+             */
+            wanted: "frozen" | "running";
         };
         /** SandboxStarted */
         SandboxStarted: {
@@ -14348,7 +14368,7 @@ export const costFiguresTierValues: ReadonlyArray<FlattenedDeepRequired<componen
 export const deltaMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["DeltaMessage"]["kind"]> = ["delta"];
 export const deltasDroppedMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["DeltasDroppedMessage"]["kind"]> = ["deltas_dropped"];
 export const endMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EndMessage"]["kind"]> = ["end"];
-export const eventTypeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventType"]> = ["agent.compacted", "agent.finished", "agent.held", "agent.input", "agent.report", "agent.started", "agent.step", "audit.lost", "audit.spill", "cache.probe", "channel.message", "channel.read", "channel.snapshot", "exec.finished", "exec.started", "file.access", "file.setattr", "file.sync", "file.write", "fs.snapshot", "ipc.event", "log.truncated", "mem.exec", "model.checked", "model.request", "model.response", "monitor.action", "monitor.cleared", "monitor.degraded", "monitor.flag", "monitor.sweep", "monitor.verdict", "net.connect", "ns.event", "operator.action", "plant.triggered", "proc.exec", "proc.exit", "proc.fork", "proc.output", "proc.signal", "ptrace.event", "replay.divergence", "resource.sample", "run.finished", "run.started", "sandbox.archived", "sandbox.started", "sandbox.stopped", "score.answer", "score.awareness", "score.unexplained", "score.unit", "selftest.case", "sys.denied", "task.scored", "tool.call", "tool.result"];
+export const eventTypeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventType"]> = ["agent.compacted", "agent.finished", "agent.held", "agent.input", "agent.report", "agent.started", "agent.step", "audit.lost", "audit.spill", "cache.probe", "channel.message", "channel.read", "channel.snapshot", "exec.finished", "exec.started", "file.access", "file.setattr", "file.sync", "file.write", "fs.snapshot", "ipc.event", "log.truncated", "mem.exec", "model.checked", "model.request", "model.response", "monitor.action", "monitor.cleared", "monitor.degraded", "monitor.flag", "monitor.sweep", "monitor.verdict", "net.connect", "ns.event", "operator.action", "plant.triggered", "proc.exec", "proc.exit", "proc.fork", "proc.output", "proc.signal", "ptrace.event", "replay.divergence", "resource.sample", "run.finished", "run.started", "sandbox.archived", "sandbox.freeze_failed", "sandbox.started", "sandbox.stopped", "score.answer", "score.awareness", "score.unexplained", "score.unit", "selftest.case", "sys.denied", "task.scored", "tool.call", "tool.result"];
 export const eventsMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventsMessage"]["kind"]> = ["events"];
 export const execFinishedEndValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ExecFinished"]["end"]> = ["exited", "timeout", "cancelled", "failed"];
 export const execStartedAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ExecStarted"]["audit"]> = ["kernel", "snapshot"];
@@ -14437,6 +14457,7 @@ export const runSummaryKindValues: ReadonlyArray<FlattenedDeepRequired<component
 export const runnerHealthMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunnerHealthMessage"]["kind"]> = ["runner"];
 export const runnerHelloKindsValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunnerHello"]["kinds"]> = ["scenario", "models.check", "monitor", "score", "selftest"];
 export const runnerInfoKindsValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunnerInfo"]["kinds"]> = ["scenario", "models.check", "monitor", "score", "selftest"];
+export const sandboxFreezeFailedWantedValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["SandboxFreezeFailed"]["wanted"]> = ["frozen", "running"];
 export const sandboxStartedAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["SandboxStarted"]["audit"]> = ["kernel", "snapshot"];
 export const sandboxStoppedReasonValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["SandboxStopped"]["reason"]> = ["closed", "killed", "exec_failed"];
 export const scenarioInfoOversightAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScenarioInfo"]["oversight"]> = ["observe", "autonomous", "human"];
