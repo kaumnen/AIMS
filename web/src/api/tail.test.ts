@@ -603,3 +603,38 @@ test("a step event while the steps are read reads on once that read is in", asyn
   expect(fetch).toHaveBeenCalledTimes(3);
   tail.stop();
 });
+
+test("a step event while the first or the next steps page is read reads on once it is in", async () => {
+  for (const first of [true, false]) {
+    const qc = new QueryClient();
+    const steps = stepsQuery(RUN);
+    const held = Promise.withResolvers<Response>();
+    fetch.mockReset();
+    fetch.mockImplementationOnce(() => held.promise);
+    let read: Promise<unknown>;
+    if (first) read = qc.prefetchInfiniteQuery(steps);
+    else {
+      qc.setQueryData<InfiniteData<StepPage, number | null>>(steps.queryKey, {
+        pages: [{ items: [step(10, 1, "a", true)], next: 10 }],
+        pageParams: [null],
+      });
+      read = new InfiniteQueryObserver(qc, steps).fetchNextPage();
+    }
+    // oxlint-disable-next-line no-await-in-loop
+    await waitFor(() => expect(qc.getQueryState(steps.queryKey)?.fetchStatus).toBe("fetching"));
+    const asked = stepReads(() => [step(10, 1, "a", true), step(30, 2), step(50, 3)]);
+    const { source, tail } = open(qc);
+    source.send({ kind: "events", run_id: RUN, events: [event(50, "agent.step")] });
+    flush();
+    expect(asked.steps).toHaveLength(0);
+    // the page was read before step 50 was logged
+    const items = first ? [step(10, 1, "a", true), step(30, 2)] : [step(30, 2)];
+    held.resolve(Response.json({ items, next: null }));
+    // oxlint-disable-next-line no-await-in-loop
+    await read;
+    // oxlint-disable-next-line no-await-in-loop
+    await waitFor(() => expect(stepSeqs(qc)).toEqual([10, 30, 50]));
+    expect(asked.steps.map((u) => u.searchParams.get("after"))).toEqual(["10"]);
+    tail.stop();
+  }
+});

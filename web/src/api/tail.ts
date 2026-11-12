@@ -340,14 +340,14 @@ export class RunTail {
       return;
     }
     const key = ["runs", "steps", this.runId] as const;
-    const state = this.qc.getQueryState(key);
-    const data = this.qc.getQueryData<InfiniteData<StepPage, number | null>>(key);
-    if (!data || (data.pages.at(-1)?.next ?? null) !== null) return;
-    if (state?.fetchStatus === "fetching") {
-      // that read may have started before these events: read on from it once it is in
+    if (this.qc.getQueryState(key)?.fetchStatus === "fetching") {
+      // that read, of the first page, the next or all, may have started before these events:
+      // read on from it once it is in
       this.#afterRead(hashKey(key));
       return;
     }
+    const data = this.qc.getQueryData<InfiniteData<StepPage, number | null>>(key);
+    if (!data || (data.pages.at(-1)?.next ?? null) !== null) return;
     const rows = data.pages.flatMap((p) => p.items);
     const first = firstOpen(rows, this.#settled);
     // a row with steps after it may be the last of an agent that ended before the stream opened
