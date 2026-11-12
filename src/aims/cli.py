@@ -1645,7 +1645,7 @@ def runner_cmd(
 
     from aims.config import ConfigError, image_keep_days, layers
     from aims.net import Outbound
-    from aims.node.service import Node, NodeOptions
+    from aims.node.service import Node, NodeOptions, Refused
     from aims.node.service import data_dir as default_dir
     from aims.sandbox import AuditMode
     from aims.terminal import VisibleLog, on_hangup
@@ -1740,6 +1740,9 @@ def runner_cmd(
         asyncio.run(main())
     except asyncio.CancelledError:
         raise typer.Exit(EXIT_CANCELLED) from None
+    except Refused as e:
+        _echo(f"error: {e}", err=True)
+        raise typer.Exit(EXIT_FAILED) from None
     finally:
         if by_ui:
             # The stop is over and the exit code says how it went. A SIGTERM from a late

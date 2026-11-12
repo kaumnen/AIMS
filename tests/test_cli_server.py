@@ -25,7 +25,7 @@ from typer.testing import CliRunner
 from aims.cli import EXIT_CANCELLED, app
 from aims.events import Draft, LocalEventStore, RunFinished, RunStarted, ToolCall
 from aims.net import Outbound
-from aims.node.service import Node, NodeOptions
+from aims.node.service import Node, NodeOptions, Refused
 from aims.report.escape import visible
 from aims.sandbox import DockerBackend, SandboxSpec
 from aims.server.db import ServerDB
@@ -262,6 +262,24 @@ def test_the_runner_gets_its_audit_mode(monkeypatch: pytest.MonkeyPatch, tmp_pat
         result = CliRunner().invoke(app, args, env={"AIMS_TOKEN": "x"})
         assert result.exit_code == 0, result.output
         assert seen.pop().audit == mode
+
+
+def test_a_runner_the_control_plane_refused_exits_1_with_the_reason(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class Stub:
+        def __init__(self, options: NodeOptions) -> None:
+            pass
+
+        async def run(self, stop: asyncio.Event) -> None:
+            raise Refused("the control plane at http://cp refused this runner: 401 \x1b[2Jno")
+
+    monkeypatch.setattr("aims.node.service.Node", Stub)
+    args = ["runner", "--server", "http://127.0.0.1:9", "--data-dir", str(tmp_path)]
+    result = CliRunner().invoke(app, args, env={"AIMS_TOKEN": "x"})
+    assert result.exit_code == 1
+    assert "error: the control plane at http://cp refused this runner: 401" in result.output
+    assert "\x1b" not in result.output
 
 
 def test_the_runner_reads_how_long_unused_scenario_images_stay(

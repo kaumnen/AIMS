@@ -87,6 +87,8 @@ docker run -d --name aims-runner --restart unless-stopped --user root --stop-tim
 
 `runner.env` holds `AIMS_TOKEN` and the model keys. `--stop-timeout 180` gives the runner the same 3 minutes to stop as Compose. Docker's default is 10 seconds.
 
+A runner stops when the control plane answers 401 or 403 five times in a row, as it does for a wrong or revoked token. It stops its runs as for a first Ctrl-C and exits 1 with the reason. A container with a restart policy starts again and stops the same way, so give it a valid token or remove it.
+
 ## Proxies
 
 Runners, the CLI and model calls go through the proxy in `HTTPS_PROXY`, `HTTP_PROXY` or `ALL_PROXY`, except to hosts, domains and networks in `NO_PROXY`. Loopback always goes direct. A private CA can come from `SSL_CERT_FILE`, or from the runner's `--tls-ca`, which wins over it.

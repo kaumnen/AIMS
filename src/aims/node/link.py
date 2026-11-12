@@ -37,6 +37,9 @@ KINDS: tuple[JobKindName, ...] = (*BASE_KINDS, "monitor", "score", "selftest")
 DELTA_EVERY_S = 0.05
 DELTA_BATCH = 2000
 MAX_DONE = 10_000
+# Answers 401 or 403 in a row after which a link with `on_refused` stops asking: a wrong or
+# revoked token does not pass by waiting, and a proxy's short trouble does.
+REFUSED_MAX = 5
 
 
 def arch() -> str:
@@ -57,10 +60,14 @@ class Link:
         jobs: Callable[[], list[str]] = list,
         kinds: tuple[JobKindName, ...] = KINDS,
         on_deleted: Callable[[str], Awaitable[None]] | None = None,
+        on_refused: Callable[[ApiError], None] | None = None,
     ) -> None:
-        """`on_deleted` gets each run the control plane deleted, to drop the local copy."""
+        """`on_deleted` gets each run the control plane deleted, to drop the local copy.
+        `on_refused` gets the last of `REFUSED_MAX` answers 401 or 403 in a row to the hello or
+        the stream; the link then stops asking for commands and offers."""
         self.client = client
         self.on_deleted = on_deleted
+        self.on_refused = on_refused
         self.kinds = kinds
         self.store = store
         self.bus = bus
@@ -247,6 +254,7 @@ class Link:
         backoff = Backoff()
         streak = Streak(f"the link to the control plane at {self.client.url}")
         refused = False
+        denied = 0
         while True:
             try:
                 reply = await self.client.hello(self.hello())
@@ -261,6 +269,7 @@ class Link:
                     backoff.reset()
                     streak.works()
                     refused = False
+                    denied = 0
                     async for sse in source:
                         if sse.event not in ("command", "offer"):
                             continue
@@ -274,6 +283,10 @@ class Link:
                 raise
             except ApiError as e:
                 self.connected.clear()
+                denied = denied + 1 if e.status in (401, 403) else 0
+                if denied >= REFUSED_MAX and self.on_refused is not None:
+                    self.on_refused(e)
+                    return
                 # the first refusal since the last good connect shows at once, as a bad token
                 # or a version mismatch will not pass by waiting
                 if not streak.failed(e) and not refused:

@@ -18,6 +18,7 @@ from collections.abc import AsyncGenerator, AsyncIterator
 from pathlib import Path
 from typing import Any, cast
 
+import httpx2
 import pytest
 from cp import CP, control_plane
 from rich.console import Console
@@ -48,10 +49,10 @@ from aims.events import (
 from aims.models import DeltaBus
 from aims.monitor import offline
 from aims.monitor.core import HumanRequest
-from aims.node import service
-from aims.node.client import ControlClient
+from aims.node import service, shipper
+from aims.node.client import ApiError, ControlClient
 from aims.node.link import Link
-from aims.node.service import Node, NodeOptions
+from aims.node.service import Node, NodeOptions, Refused
 from aims.run import truth
 from aims.run.runner import Bench, Options, Result, RunError, Runner
 from aims.run.view import HumanPrompt, JsonLines, LiveView, _args, digest, monitor_table
@@ -1030,6 +1031,93 @@ async def node(
         stop.set()
         async with asyncio.timeout(60):
             await task
+
+
+async def test_a_runner_the_control_plane_keeps_refusing_stops_with_an_error(
+    cp: CP, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(shipper, "BACKOFF_MIN_S", 0.01)
+    stopped: list[bool] = []
+
+    async def stop_runs(self: Node) -> None:
+        stopped.append(self.ctx.link.connected.is_set())
+
+    monkeypatch.setattr(Node, "_stop", stop_runs)
+    options = NodeOptions(
+        url=cp.url, token="revoked", name="n1", data=tmp_path, backend=cast(Any, NoDocker())
+    )
+    async with asyncio.timeout(20):
+        with pytest.raises(Refused) as e:
+            await Node(options).run(asyncio.Event())
+    assert str(e.value).startswith(f"the control plane at {cp.url} refused this runner 5 times")
+    assert "401" in str(e.value)
+    # its runs got the first stop, as for a Ctrl-C
+    assert stopped == [False]
+
+
+async def test_a_stop_under_way_is_not_turned_into_a_refusal(
+    cp: CP, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(shipper, "BACKOFF_MIN_S", 0.01)
+    asked = asyncio.Event()
+
+    async def stop_runs(self: Node) -> None:
+        # the stop lasts until the link gave up
+        await asked.wait()
+
+    seen = Link._stream
+
+    async def stream(self: Link) -> None:
+        await seen(self)
+        asked.set()
+
+    monkeypatch.setattr(Node, "_stop", stop_runs)
+    monkeypatch.setattr(Link, "_stream", stream)
+    options = NodeOptions(
+        url=cp.url, token="revoked", name="n1", data=tmp_path, backend=cast(Any, NoDocker())
+    )
+    stop = asyncio.Event()
+    stop.set()
+    async with asyncio.timeout(20):
+        await Node(options).run(stop)
+    assert asked.is_set()
+
+
+async def test_a_link_gives_up_only_on_refusals_in_a_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(shipper, "BACKOFF_MIN_S", 0.001)
+    answers = [401, 403, 401, 403, 502, 401, 401, 409, 403, 401, 401, 403, 401]
+    calls: list[str] = []
+
+    def answer(request: httpx2.Request) -> httpx2.Response:
+        calls.append(request.url.path)
+        status = answers[len(calls) - 1] if len(calls) <= len(answers) else 401
+        return httpx2.Response(status, json={"title": "no"})
+
+    client = ControlClient(
+        "http://cp.test", "t", runner="r", transport=httpx2.MockTransport(answer)
+    )
+    refused: list[ApiError] = []
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        link = Link(client, store, DeltaBus(), on_refused=refused.append)
+        async with asyncio.timeout(10):
+            await link._stream()
+        # 502 and 409 start the count again: the fifth refusal in a row is the last answer
+        assert len(calls) == len(answers)
+        assert [e.status for e in refused] == [401]
+        # without `on_refused` a link asks on, as `aims run --server` does
+        calls.clear()
+        patient = Link(client, store, DeltaBus())
+        task = asyncio.create_task(patient._stream())
+        async with asyncio.timeout(10):
+            while len(calls) < 8:  # noqa: ASYNC110
+                await asyncio.sleep(0.01)
+        assert not task.done()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        await client.aclose()
 
 
 @pytest.mark.parametrize("held", ["job", "link"])

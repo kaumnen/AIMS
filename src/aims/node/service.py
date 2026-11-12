@@ -37,7 +37,7 @@ from aims.monitor.config import MonitorConfigError
 from aims.monitor.offline import monitor_offline, stamped
 from aims.monitor.texts import MonitorTexts, resolve
 from aims.node.client import ApiError, ControlClient
-from aims.node.link import Link
+from aims.node.link import REFUSED_MAX, Link
 from aims.node.shipper import Backoff
 from aims.prompts import TextError
 from aims.run import selftest as st
@@ -92,6 +92,10 @@ class NodeOptions:
     transport: httpx2.AsyncBaseTransport | None = None
     model_transport: httpx2.AsyncBaseTransport | None = None
     backend: DockerBackend | None = None
+
+
+class Refused(Exception):
+    """The control plane kept refusing this runner's token or name, so it stopped."""
 
 
 @dataclass(slots=True)
@@ -165,6 +169,16 @@ class Node:
                 client = ControlClient(
                     o.url, o.token, runner=o.name, transport=o.transport, verify=o.verify
                 )
+                refused: list[ApiError] = []
+
+                def on_refused(error: ApiError) -> None:
+                    # With no commands from the control plane nobody can stop a run here, so
+                    # the runner stops as for a first Ctrl-C. A stop under way stays as it is.
+                    if not stop.is_set():
+                        refused.append(error)
+                        log.error("the control plane refuses this runner (%s); stopping", error)
+                        stop.set()
+
                 link = Link(
                     client,
                     store,
@@ -174,6 +188,7 @@ class Node:
                     on_offer=self._offer,
                     jobs=lambda: list(self.claimed),
                     on_deleted=self._drop,
+                    on_refused=on_refused,
                 )
                 self._open = _Open(store, origins, backend, bench, link)
                 await link.start()
@@ -189,6 +204,11 @@ class Node:
                 finally:
                     # A second stop meanwhile waits for this, then the runner exits 130.
                     await settle(self._end(chores, link))
+                if refused:
+                    raise Refused(
+                        f"the control plane at {client.url} refused this runner {REFUSED_MAX}"
+                        f" times in a row: {refused[0]}"
+                    )
 
     async def _end(self, chores: list[asyncio.Task[None]], link: Link) -> None:
         for task in chores:
