@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import shutil
+import sqlite3
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Sequence
@@ -49,6 +50,7 @@ CHUNK = 1000
 RETRY_S = 1.0
 RETRY_MAX_S = 300.0
 TEMP_AGE_S = 3600.0
+LOW_SPACE = 1024 * 1024
 # the name of the file truth.json is written to before it is put in place
 TRUTH_TEMP = re.compile(rf"\.{re.escape(TRUTH)}\.[0-9a-f]{{32}}")
 
@@ -267,7 +269,12 @@ class LocalEventStore:
     @classmethod
     async def open(cls, root: Path, *, ingest_only: bool = False) -> LocalEventStore:
         await asyncio.to_thread(make_dir, root, parents=True)
-        store = cls(root, await Index.open(root / INDEX), ingest_only=ingest_only)
+        try:
+            index = await Index.open(root / INDEX)
+        except sqlite3.Error as e:
+            await asyncio.to_thread(_note_space, e, root)
+            raise
+        store = cls(root, index, ingest_only=ingest_only)
         try:
             await store._sweep()
             await store.sync()
@@ -1438,6 +1445,17 @@ def _clear(grave: Path) -> None:
     except OSError as e:
         if grave.exists():
             log.warning("%s stays until the next open: %s", grave, e)
+
+
+def _note_space(error: Exception, path: Path) -> None:
+    """Note on `error` when the disk that holds `path` is full. SQLite then says only `unable to
+    open database file` or `disk I/O error`."""
+    try:
+        free = shutil.disk_usage(path).free
+    except OSError:
+        return
+    if free < LOW_SPACE:
+        error.add_note(f"likely cause: the disk that holds {path} is full ({free} bytes free)")
 
 
 def _close(writer: _Writer | _Sink) -> None:

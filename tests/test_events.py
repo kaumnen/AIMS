@@ -10,6 +10,7 @@ import random
 import shutil
 import sqlite3
 import time
+import traceback
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
@@ -46,6 +47,7 @@ from aims.events import (
 from aims.events.blobs import ZSTD_MAGIC, BlobStore
 from aims.events.chain import GENESIS, Head, digest, follow, seal
 from aims.events.disk import make_dir
+from aims.events.index import Index
 from aims.events.log import LogFile
 from aims.events.schema import now, text_of
 from aims.events.store import INLINE_LIMIT, LOG, TEMP_AGE_S, _append_line, _write_private
@@ -1435,3 +1437,26 @@ async def test_cut_lines_another_process_indexed_stop_the_writer_until_a_rebuild
         await store.append(run_id, [call(2)])
         assert calls_of(await store.events(run_id)) == ["run.started", "c2"]
     assert verify_run(tmp_path / run_id).ok
+
+
+async def test_an_index_that_does_not_open_on_a_full_disk_says_why(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def refused(path: Path) -> Index:
+        raise sqlite3.OperationalError("unable to open database file")
+
+    monkeypatch.setattr(Index, "open", refused)
+    usage = shutil.disk_usage(tmp_path)
+    root = tmp_path / "runs"
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: usage._replace(free=4096))
+    with pytest.raises(sqlite3.OperationalError, match="unable to open database file") as full:
+        await LocalEventStore.open(root)
+    assert full.value.__notes__ == [
+        f"likely cause: the disk that holds {root} is full (4096 bytes free)"
+    ]
+    assert "is full (4096 bytes free)" in "".join(traceback.format_exception(full.value))
+    # with room on the disk the error is left as it is
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: usage._replace(free=1 << 30))
+    with pytest.raises(sqlite3.OperationalError, match="unable to open database file") as other:
+        await LocalEventStore.open(root)
+    assert getattr(other.value, "__notes__", []) == []
