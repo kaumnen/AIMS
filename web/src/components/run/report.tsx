@@ -3,7 +3,7 @@ import { type ComponentType, useEffect, useRef, useState } from "react";
 
 import { reportMarkdown, reportQuery, type SectionId } from "@/api/report";
 import { type RunDetail, stepsQuery } from "@/api/run";
-import { ended } from "@/api/runs";
+import { ended, reviewsQuery } from "@/api/runs";
 import { isProblem } from "@/api/session";
 import { Button } from "@/components/ui/button";
 import { fullTime } from "@/lib/format";
@@ -49,6 +49,16 @@ export default function ReportTab({
 }) {
   const open = !ended(detail.run);
   const q = useQuery(reportQuery(runId, source, open));
+  // The stream keeps the reviews current: once the review the report is built from ends there,
+  // the report is built once more, not at the next refresh.
+  const going = q.data?.sources.find((s) => s.chosen && s.review && s.status === "running");
+  const reviews = useQuery({ ...reviewsQuery(runId), enabled: going !== undefined });
+  const review = reviews.data?.items.find((r) => r.run_id === going?.run_id);
+  const reviewEnded = review !== undefined && review.status !== "running";
+  const { refetch } = q;
+  useEffect(() => {
+    if (reviewEnded) void refetch();
+  }, [reviewEnded, refetch]);
   // Every step, so evidence names its step. The Steps tab shares these pages.
   const steps = useInfiniteQuery(stepsQuery(runId));
   const more = steps.hasNextPage;

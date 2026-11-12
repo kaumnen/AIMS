@@ -1,7 +1,9 @@
-import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { reportSections, type ReportWarning } from "@/api/report";
+import type { RunSummary } from "@/api/runs";
+import { FakeEventSource } from "@/test/event-source";
 import {
   fullReport,
   renderAt,
@@ -13,6 +15,7 @@ import {
   served,
 } from "@/test/report";
 import { preloadRoutes } from "@/test/routes";
+import { run as summary } from "@/test/runs";
 
 import { SECTIONS } from "./report";
 import { visible } from "./report/parts";
@@ -189,6 +192,36 @@ test("the report of a run cancelled in the queue is not built again", async () =
     .findAll({ queryKey: ["runs", "report", RUN] });
   const every = query?.observers[0]?.options.refetchInterval;
   expect(typeof every === "function" ? every(query as never) : every).toBe(false);
+});
+
+// The review the report is built from, as the run list holds it.
+const review = (over: Partial<RunSummary>) =>
+  summary(REVIEW, { kind: "monitor", origin: RUN, started_at: "2026-10-30T11:30:00Z", ...over });
+
+test("a report built from a review still going is built again as the review ends", async () => {
+  const report = fullReport();
+  const going = (status: string) => ({
+    ...report,
+    sources: report.sources.map((s) => (s.chosen ? { ...s, status } : s)),
+  });
+  state.report = going("running");
+  const base = fetch.getMockImplementation();
+  if (!base) throw new Error("no fetch");
+  fetch.mockImplementation(async (request) => {
+    const url = new URL(request.url);
+    if (url.pathname !== "/api/runs" || url.searchParams.get("kind") !== "monitor") {
+      return base(request);
+    }
+    return Response.json({ items: [review({})], next: null });
+  });
+  renderAt(`/runs/${RUN}?tab=report`);
+  await screen.findByRole("region", { name: "Judge summary" });
+  expect(reportRequests()).toHaveLength(1);
+  state.report = going("completed");
+  const stream = FakeEventSource.all.findLast((s) => s.url.includes("runs=true"));
+  if (!stream) throw new Error("no list stream");
+  act(() => stream.send({ kind: "run", run: review({ status: "completed", state: "done" }) }));
+  await waitFor(() => expect(reportRequests()).toHaveLength(2));
 });
 
 test("a failed build again keeps the report on screen", async () => {
