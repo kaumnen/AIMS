@@ -1,14 +1,18 @@
+import contextlib
+import itertools
 import logging
 import shutil
-from collections.abc import Callable
+import sqlite3
+from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from aims.events import Draft, LocalEventStore, RunFinished, RunStarted, ToolCall
+from aims.events import Draft, LocalEventStore, ResourceSample, RunFinished, RunStarted, ToolCall
+from aims.events import index as index_module
 from aims.events.index import Index
-from aims.events.store import LOG
+from aims.events.store import INDEX, LOG
 
 pytestmark = pytest.mark.anyio
 
@@ -123,6 +127,98 @@ async def test_a_run_id_deleted_and_made_again_keeps_the_new_run(
         assert (info.status, info.events) == ("completed", 2)
         assert (await store.verify(run_id)).ok
     assert entries(root) == [run_id]
+
+
+def window(n: int) -> Draft:
+    empty = dict.fromkeys(ResourceSample.COLUMNS)
+    return Draft(ResourceSample(sandbox_id="s", hz=10, ts=[n * 1_000_000, 900_000], **empty), "s")
+
+
+async def long_run(store: LocalEventStore) -> str:
+    """A sealed run of ten tool calls whose text holds `needle` and five resource windows."""
+    run_id = await store.create_run(STARTED)
+    calls = [Draft(ToolCall(call_id=f"c{n}", name="n", arguments=f"needle {n}")) for n in range(10)]
+    await store.append(run_id, [*calls, *(window(n) for n in range(5))])
+    await store.append(run_id, [Draft(RunFinished(status="completed"))])
+    return run_id
+
+
+async def rows(index: Index, run_id: str) -> int:
+    """The event and sample rows of `run_id` the index holds."""
+    count = 0
+    for table in ("events", "samples"):
+        async with index._db.execute(
+            f"select count(*) from {table} where run_id = ?", (run_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        count += 0 if row is None else row[0]
+    return count
+
+
+def text_index_ok(root: Path) -> None:
+    """Check the text index against the events. A row with no text, such as a resource
+    window, fails it, so the runs it checks hold none."""
+    db = sqlite3.connect(root / INDEX)
+    try:
+        db.execute("insert into events_fts (events_fts, rank) values ('integrity-check', 1)")
+    finally:
+        db.close()
+
+
+async def test_a_remove_deletes_a_few_rows_per_transaction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(index_module, "REMOVE_ROWS", 3)
+    root = tmp_path / "runs"
+    async with await LocalEventStore.open(root) as store:
+        kept = await sealed_run(store)
+        run_id = await long_run(store)
+        index = store._index
+        write = index._write
+        left = [await rows(index, run_id)]
+
+        @contextlib.asynccontextmanager
+        async def counted() -> AsyncGenerator[None]:
+            async with write():
+                yield
+                left.append(await rows(index, run_id))
+
+        monkeypatch.setattr(index, "_write", counted)
+        await store.remove(run_id)
+        assert left[0] == 22
+        assert left[-1] == 0
+        assert all(a - b <= 3 for a, b in itertools.pairwise(left))
+    text_index_ok(root)
+    async with await LocalEventStore.open(root) as store:
+        assert (await store.verify(kept)).ok
+        assert store.run_ids() == [kept]
+
+
+async def test_a_remove_cut_short_between_batches_shows_no_run_and_the_next_open_ends_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(index_module, "REMOVE_ROWS", 3)
+    root = tmp_path / "runs"
+    async with await LocalEventStore.open(root) as store:
+        kept = await sealed_run(store)
+        run_id = await long_run(store)
+        await store._index._db.execute(
+            "create temp trigger cut before delete on main.events when old.seq >= 5"
+            " begin select raise(abort, 'cut short'); end"
+        )
+        with pytest.raises(sqlite3.Error, match="cut short"):
+            await store.remove(run_id)
+        assert await rows(store._index, run_id) > 0
+        assert await store.run(run_id) is None
+        assert [r.run_id for r in await store.runs()] == [kept]
+        assert await store.search("needle") == ([], None)
+        assert await store.search("needle", skip_kinds=["score"]) == ([], None)
+    async with await LocalEventStore.open(root) as store:
+        assert await rows(store._index, run_id) == 0
+        assert await store.run(run_id) is None
+        assert (await store.verify(kept)).ok
+    text_index_ok(root)
+    assert entries(root) == [kept]
 
 
 async def test_a_delete_of_a_running_run_is_refused_and_moves_nothing(tmp_path: Path) -> None:

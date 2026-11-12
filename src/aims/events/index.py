@@ -51,6 +51,8 @@ log = logging.getLogger("aims.events")
 VERSION = 11
 MAX_TEXT = 32 * 1024
 MAX_PAGE = 1000
+# Events a remove deletes in one transaction: about 0.3 ms each with 8 KB of text.
+REMOVE_ROWS = 200
 # The integers SQLite binds.
 BIND_MIN, BIND_MAX = -(2**63), 2**63 - 1
 
@@ -679,16 +681,46 @@ class Index:
         return 0 if row is None else row[0]
 
     async def remove(self, run_id: str) -> None:
-        """Forget a run: its events, their text index, its samples and its row."""
+        """Forget a run. Its row goes first, with its labels, units, costs and flags, so no
+        reader takes what is left for a run. Its events, with their text index, and its
+        samples then go REMOVE_ROWS to a transaction, so no transaction holds the write lock
+        for long. After each comes a pause half as long, so a writer in another process, whose
+        busy handler only polls, gets the lock in between. A remove cut short leaves rows no run
+        owns, which the next remove of the run deletes."""
         async with self._write():
-            await self._db.execute(
-                "insert into events_fts (events_fts, rowid, text)"
-                " select 'delete', id, text from events where run_id = ? and text != ''",
-                (run_id,),
-            )
-            tables = ("labels", "score_units", "run_costs", "flags", "samples", "events")
-            for table in (*tables, "runs"):
+            for table in ("runs", "labels", "score_units", "run_costs", "flags"):
                 await self._db.execute(f"delete from {table} where run_id = ?", (run_id,))
+        loop = asyncio.get_running_loop()
+        for table in ("events", "samples"):
+            while True:
+                start = loop.time()
+                if not await self._remove_some(table, run_id):
+                    break
+                await asyncio.sleep((loop.time() - start) / 2)
+
+    async def _remove_some(self, table: Literal["events", "samples"], run_id: str) -> bool:
+        """Delete the first REMOVE_ROWS rows of `run_id` in `table`, in seq order, in one
+        transaction. False when it had none."""
+        async with self._write():
+            async with self._db.execute(
+                f"select max(seq) from (select seq from {table} where run_id = ?"
+                " order by seq limit ?)",
+                (run_id, REMOVE_ROWS),
+            ) as cur:
+                row = await cur.fetchone()
+            last = None if row is None else row[0]
+            if last is None:
+                return False
+            if table == "events":
+                await self._db.execute(
+                    "insert into events_fts (events_fts, rowid, text) select 'delete', id, text"
+                    " from events where run_id = ? and seq <= ? and text != ''",
+                    (run_id, last),
+                )
+            await self._db.execute(
+                f"delete from {table} where run_id = ? and seq <= ?", (run_id, last)
+            )
+        return True
 
     async def mark_corrupt(self, run_id: str) -> None:
         async with self._write():
@@ -1415,10 +1447,11 @@ class Index:
         if before is not None:
             where.append(f"{key} < ?")
             args.append(_int(before))
-        if skip_kinds:
-            marks = ",".join("?" * len(skip_kinds))
-            where.append(f"e.run_id not in (select run_id from runs where kind in ({marks}))")
-            args.extend(skip_kinds)
+        # events whose run's row went are left by a remove under way or cut short; `exists`
+        # keeps the scan in id order, where `in` would sort every match
+        kinds = f" and r.kind not in ({','.join('?' * len(skip_kinds))})" if skip_kinds else ""
+        where.append(f"exists (select 1 from runs r where r.run_id = e.run_id{kinds})")
+        args.extend(skip_kinds)
         size = _cap(limit)
         args.append(size + 1)
         async with self._db.execute(
