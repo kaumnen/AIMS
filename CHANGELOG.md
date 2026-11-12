@@ -101,6 +101,15 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - A verdict's rollouts list every judge call, also one cancelled at the timeout or one that failed.
 - `aims run` and `aims monitor` name each judge rollout that failed beside a verdict, in the live view and the end table. The report shows each as a warning of the new kind `rollout_failed`. The UI lists them all with their labels.
 - `aims runner` stops when the control plane answers 401 or 403 five times in a row, as for a wrong or revoked token. It stops its runs as for a first Ctrl-C and exits 1 with the reason. It asked again forever before.
+- Every scenario timeout takes at most 86400 s: `setup_timeout_s`, the verifier's `timeout_s`, `command_timeout_s`, `max_command_timeout_s` and a script step's `timeout_s`. So does the judge's `timeout_s`. A longer one in a stored run, job or truth record loads at 86400.
+- No number in a scenario or a monitor config may be inf or nan.
+- API budgets for a run, a fork and an estimate take finite JSON numbers only. So does `budget_usd` for a monitor run. A string, `true`, `Infinity` or `1e400` answers 422.
+- `keep_days` in the config, `--keep-days` and `aims images prune --days` take at most 36500. Config amounts refuse inf and nan.
+- `aims verify` also checks the index when the run sits in a folder of runs that has one. It fails when the index cannot take the log. It opens that folder as `aims check` does, and prints a note when the index does not open.
+- Verifying a run fails a log that was rewritten past the last event the index holds.
+- Deleting a run hides it from lists and search at once, then frees its index rows in short steps. A large run takes about twice as long to delete and no longer blocks other index writes.
+- An index write waits out the lock of another process up to three times, with a warning, before it fails. A write for new events still fails at once and catches up from the log.
+- Opening a data directory deletes temp files of blob and truth writes that are over an hour old.
 
 ### Fixed
 
@@ -222,6 +231,20 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - A problem in a scenario file with mixed line endings is marked on the right line after a lone carriage return.
 - A self-test script that is a named pipe is refused. A task file swapped for a named pipe while its scenario loads is skipped. Both made the load wait for a writer.
 - On a full Linux disk a truth file or a label line could be cut short with no error. The write now fails and leaves nothing half written. A truth file the control plane stored is synced with its folder.
+- Forking, scoring or monitoring a run with a missing or damaged blob answers 422 with the reason. It was a 500.
+- One run that fails on a runner no longer stops the others shipping at start. The runner tries again and warns when the failure lasts. A prune that fails is logged and tried again the next hour.
+- A truth upload whose index write failed is kept on the retry, names the variant and starts the score once. Two uploads at once start one score. Opening a data directory names a variant its index lost.
+- Verifying a run that is still going no longer says "log has N events, the index recorded M". A report of a live run said its chain did not verify.
+- The verification of a run whose folder is missing no longer shows the server's data path.
+- A batch whose sync to disk fails is cut back off the log. A retry wrote it twice before. The run stays locked to its writer, so a runner started on the same data directory no longer seals it as failed.
+- A torn log tail is stored before it is cut, so a full disk no longer loses it.
+- An index that does not open on a full disk names the disk as the likely cause.
+- A stored hold over 30 days loads at 30 days in a scenario too. Forks, scores and monitor runs of such runs work again.
+- Old runs that record a scenario key since removed, or no agent texts, load again for a fork, a score or a monitor run.
+- A recorded cost below 0 counts as no price and a huge one is capped. A run's total no longer depends on how its events were batched.
+- An estimate no longer fails when its cost rows cannot be saved.
+- Labels a runner sends again after a failed index write are indexed. A flag can be labelled while the index is behind or being rebuilt.
+- Shipping no longer sends log lines a writer opening at that moment has not synced.
 
 ## [0.2.2] - 2026-11-10
 
