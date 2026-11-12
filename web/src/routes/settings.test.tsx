@@ -808,6 +808,22 @@ test("a config draft asks once before a layer or a link drops it", async () => {
   expect(asked.questions).toHaveLength(3);
 });
 
+test("sign out asks before it drops a config draft", async () => {
+  const asked = confirms(false);
+  renderAt("/settings/config");
+  const view = await configEditor("Contents of aims.toml");
+  retype(view, "150", "151");
+  expect(await screen.findByText("unsaved changes")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: /^me/ }));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Sign out" }));
+  await waitFor(() =>
+    expect(asked.questions).toEqual(["Discard your changes to /work/aims.toml?"]),
+  );
+  const ended = fetch.mock.calls.filter(([r]) => r.method === "DELETE");
+  expect(ended).toEqual([]);
+  expect(view.state.doc.toString()).toContain("151");
+});
+
 test("a config with no draft never asks", async () => {
   const asked = confirms(false);
   const router = renderAt("/settings/config");

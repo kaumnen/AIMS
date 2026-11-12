@@ -381,6 +381,33 @@ test("another file asks once, then opens", async () => {
   expect(screen.queryByText("unsaved changes")).toBeNull();
 });
 
+async function signOut() {
+  fireEvent.click(screen.getByRole("button", { name: /^me/ }));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Sign out" }));
+}
+
+// How often the session was ended.
+const ended = () =>
+  fetch.mock.calls.filter(
+    ([r]) => r.method === "DELETE" && new URL(r.url).pathname === "/api/session",
+  ).length;
+
+test("sign out asks before it drops a draft; a no keeps the draft and the session", async () => {
+  const asked = confirms(false);
+  renderAt("/scenarios/project/cache-keys?tab=files");
+  const view = await draft();
+  await signOut();
+  await waitFor(() => expect(asked.questions).toEqual(["Discard your changes to scenario.yaml?"]));
+  expect(ended()).toBe(0);
+  expect(view.state.doc.toString()).toContain("mine-");
+  expect(screen.getByText("unsaved changes")).toBeTruthy();
+
+  asked.yes = true;
+  await signOut();
+  await waitFor(() => expect(ended()).toBe(1));
+  expect(asked.questions).toHaveLength(2);
+});
+
 test("deleting the scenario under a draft lands on the list without asking", async () => {
   const asked = confirms(false);
   const router = renderAt("/scenarios/project/cache-keys?tab=files");

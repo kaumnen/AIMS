@@ -5,6 +5,7 @@ import type { Schemas } from "@/api/client";
 import { client } from "@/api/client";
 import { forgetSession, whoami } from "@/api/session";
 import { setTheme, type Theme, themes, useTheme } from "@/lib/theme";
+import { mayDiscard } from "@/lib/unsaved";
 
 import { openShortcuts } from "./shortcuts";
 import { Button } from "./ui/button";
@@ -28,6 +29,7 @@ export function UserMenu({ me }: { me: Schemas["Whoami"] }) {
   const theme = useTheme();
 
   async function signOut() {
+    if (!mayDiscard()) return;
     await client.DELETE("/api/session").catch(() => undefined);
     // the tabs' shared stream still holds the old session until it connects again
     reconnectLive();

@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useBlocker } from "@tanstack/react-router";
-import { lazy, Suspense, useRef } from "react";
+import { lazy, Suspense } from "react";
 
 import { SCENARIO_FILE } from "@/api/scenario-files";
 import { scenarioQuery, sourceLabel, sourcesQuery } from "@/api/scenarios";
@@ -13,6 +13,7 @@ import { PromptsTab } from "@/components/scenarios/prompts";
 import { SelfTestButton } from "@/components/scenarios/selftest-button";
 import { buttonVariants } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { hasUnsaved, mayDiscard, setUnsaved } from "@/lib/unsaved";
 import { useOperator } from "@/lib/use-operator";
 
 // The editor is the heaviest part of the app; it loads when the Files tab opens.
@@ -69,16 +70,11 @@ function ScenarioPage() {
   const operator = useOperator();
   const detail = useQuery(scenarioQuery(source, name));
   const sources = useQuery(sourcesQuery);
-  // whether the open file has changes not saved
-  const dirty = useRef(false);
   // Anything that leaves the file, such as a tab, a link, another file or Back, drops its draft,
   // so it asks first. Closing the browser tab asks too.
   useBlocker({
-    shouldBlockFn: ({ current, next }) =>
-      dirty.current &&
-      fileAt(next) !== fileAt(current) &&
-      !window.confirm(`Discard your changes to ${fileIn(current)}?`),
-    enableBeforeUnload: () => dirty.current,
+    shouldBlockFn: ({ current, next }) => fileAt(next) !== fileAt(current) && !mayDiscard(),
+    enableBeforeUnload: hasUnsaved,
   });
   if (detail.isPending) return <p className="text-muted-foreground">Loading scenario</p>;
   if (detail.isError) {
@@ -167,9 +163,7 @@ function ScenarioPage() {
                     ignoreBlocker: how?.discard ?? false,
                   })
                 }
-                onDirty={(has) => {
-                  dirty.current = has;
-                }}
+                onDirty={(has) => setUnsaved(has ? (search.file ?? SCENARIO_FILE) : null)}
               />
             </Suspense>
           </TabsContent>

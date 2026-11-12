@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useBlocker } from "@tanstack/react-router";
-import { lazy, Suspense, useRef } from "react";
+import { lazy, Suspense } from "react";
 
 import { isProblem } from "@/api/session";
 import { configQuery } from "@/api/settings";
@@ -8,6 +8,7 @@ import { problemText } from "@/components/form";
 import type { View } from "@/components/settings/config-pane";
 import { Button } from "@/components/ui/button";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { hasUnsaved, mayDiscard, setUnsaved } from "@/lib/unsaved";
 import { useOperator } from "@/lib/use-operator";
 
 // The editor is heavy; the page around it shows first.
@@ -44,8 +45,6 @@ function ConfigPage() {
   const search = Route.useSearch();
   const navigate = Route.useNavigate();
   const config = useQuery(configQuery);
-  // whether the open file has changes not saved
-  const dirty = useRef(false);
   const layers = config.data?.layers ?? [];
   const project = layers.find((l) => l.layer === "project");
   const fallback: View = project?.exists ? "project" : "user";
@@ -55,10 +54,8 @@ function ConfigPage() {
   // asks too.
   useBlocker({
     shouldBlockFn: ({ current, next }) =>
-      dirty.current &&
-      viewAt(next, fallback) !== viewAt(current, fallback) &&
-      !window.confirm(`Discard your changes to ${file?.path ?? "the file"}?`),
-    enableBeforeUnload: () => dirty.current,
+      viewAt(next, fallback) !== viewAt(current, fallback) && !mayDiscard(),
+    enableBeforeUnload: hasUnsaved,
   });
 
   if (config.isPending) return <p className="text-muted-foreground">Loading config</p>;
@@ -138,9 +135,7 @@ function ConfigPage() {
           view={view}
           file={file}
           editable={operator}
-          onDirty={(d) => {
-            dirty.current = d;
-          }}
+          onDirty={(d) => setUnsaved(d ? (file?.path ?? "the file") : null)}
         />
       </Suspense>
     </div>
