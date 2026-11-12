@@ -1,3 +1,5 @@
+import contextlib
+from collections.abc import Generator
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -130,6 +132,40 @@ def _settings(config: Path | None) -> Any:
     except (ConfigError, ProfileError, TextError) as e:
         _echo(f"error: {e}", err=True)
         raise typer.Exit(1) from None
+
+
+@contextlib.contextmanager
+def _stoppable() -> Generator[None]:
+    """Within it, the first Ctrl-C, SIGTERM or hangup cancels the task that entered it, which
+    seals its run as cancelled. Later ones do nothing, so they cannot cut that seal. Once it is
+    left they do nothing either, as the close after it is bounded. The handlers stay in until
+    asyncio.run closes the loop. Without them a second Ctrl-C raises KeyboardInterrupt wherever
+    the seal is, and a SIGTERM ends the process with no seal. Off the main thread, as in a
+    test, no signal comes, so none is handled."""
+    import asyncio
+    import signal
+    import threading
+
+    from aims.terminal import on_hangup
+
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    main = asyncio.current_task()
+    loop = asyncio.get_running_loop()
+    live = True
+
+    def stop() -> None:
+        if live and main is not None and not main.cancelling():
+            main.cancel()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stop)
+    on_hangup(loop, stop)
+    try:
+        yield
+    finally:
+        live = False
 
 
 def _version(value: bool) -> None:
@@ -308,6 +344,7 @@ def models_check(
 ) -> None:
     """Call each provider with small requests and report what works. Recorded as a run."""
     import asyncio
+    import uuid
 
     from aims.models import ProfileError
 
@@ -320,12 +357,26 @@ def models_check(
     except ProfileError as e:
         _echo(f"error: {e}", err=True)
         raise typer.Exit(1) from None
-    failed = asyncio.run(_check(models, chosen, runs_dir))
+    run_id = str(uuid.uuid7())
+    try:
+        failed = asyncio.run(_check(models, chosen, runs_dir, run_id))
+    except asyncio.CancelledError:
+        _stopped(runs_dir, run_id, "run")
+        raise typer.Exit(EXIT_CANCELLED) from None
     if failed:
         raise typer.Exit(1)
 
 
-async def _check(models: Any, chosen: list[Any], runs_dir: Path) -> bool:
+def _stopped(runs_dir: Path, run_id: str, kind: str) -> None:
+    """Say where a command that was stopped left its run `run_id`. A stop that came as the run
+    sealed leaves the status it had, so the line does not name one."""
+    if (runs_dir / run_id).is_dir():
+        typer.echo(f"stopped; {kind} {run_id} is sealed", err=True)
+    else:
+        typer.echo(f"stopped before the {kind} was made", err=True)
+
+
+async def _check(models: Any, chosen: list[Any], runs_dir: Path, run_id: str) -> bool:
     from aims.events import LocalEventStore
     from aims.models.check import record_check
 
@@ -333,7 +384,8 @@ async def _check(models: Any, chosen: list[Any], runs_dir: Path) -> bool:
         _echo(f"{c.verdict:4}  {c.profile}  {c.name}: {c.detail}")
 
     async with await LocalEventStore.open(runs_dir) as store:
-        run_id, checks = await record_check(store, models, chosen, on_check=show)
+        with _stoppable():
+            _, checks = await record_check(store, models, chosen, run_id=run_id, on_check=show)
     typer.echo(f"run {run_id}")
     return any(c.verdict == "fail" for c in checks)
 
@@ -2860,6 +2912,7 @@ def score_cmd(
     it was tested, and whether each subject that took a plant told the operator and gave true
     reasons. Writes a run of kind score; the run itself never changes."""
     import asyncio
+    import uuid
 
     from aims.events import LocalEventStore
     from aims.run.runner import RunError
@@ -2874,26 +2927,34 @@ def score_cmd(
 
     settings = _settings(config)
     cost: ScoreEstimate | None = None
+    score_id = str(uuid.uuid7())
 
     async def main() -> ScoreResult:
         nonlocal cost
         async with await LocalEventStore.open(runs_dir) as store:
-            cost = await estimate_sealed(store, settings, run, awareness=awareness, answer=answer)
-            if not json_out:
-                for line in cost.lines:
-                    _echo(line, err=True)
-            return await score_sealed(
-                store,
-                settings,
-                run,
-                monitor=monitor,
-                awareness=awareness,
-                answer=answer,
-                plants_from=plants_from,
-            )
+            with _stoppable():
+                cost = await estimate_sealed(
+                    store, settings, run, awareness=awareness, answer=answer
+                )
+                if not json_out:
+                    for line in cost.lines:
+                        _echo(line, err=True)
+                return await score_sealed(
+                    store,
+                    settings,
+                    run,
+                    monitor=monitor,
+                    awareness=awareness,
+                    answer=answer,
+                    plants_from=plants_from,
+                    run_id=score_id,
+                )
 
     try:
         result = asyncio.run(main())
+    except asyncio.CancelledError:
+        _stopped(runs_dir, score_id, "score run")
+        raise typer.Exit(EXIT_CANCELLED) from None
     except (ScoreError, RunError, KeyError) as e:
         _echo(f"error: {e}", err=True)
         raise typer.Exit(EXIT_FAILED) from None

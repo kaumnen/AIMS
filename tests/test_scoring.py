@@ -7,6 +7,8 @@ they need no plant of their own."""
 import asyncio
 import json
 import math
+import os
+import signal
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -16,7 +18,7 @@ import pytest
 from scripted import Script, models, profile, say
 from typer.testing import CliRunner
 
-from aims.cli import app
+from aims.cli import EXIT_CANCELLED, app
 from aims.events import (
     AgentFinished,
     AgentReport,
@@ -32,6 +34,7 @@ from aims.events import (
     MonitorVerdict,
     RunFinished,
     RunStarted,
+    ScoreUnit,
     ToolCall,
 )
 from aims.models import ModelClient
@@ -649,6 +652,55 @@ async def test_a_cancelled_score_is_sealed_as_cancelled(
     events = await store.events(score_id, limit=100)
     assert events[-1].data["reason"] == "cancelled before the score finished"
     assert not [e for e in events if e.type == "score.unit"]
+
+
+@pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGTERM])
+def test_a_second_signal_while_aims_score_seals_leaves_the_seal_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sig: signal.Signals
+) -> None:
+    """A Ctrl-C or SIGTERM during `aims score` seals the score run as cancelled and exits 130.
+    Another one while it seals does not cut the seal."""
+    root = tmp_path / "runs"
+
+    async def make() -> str:
+        async with await LocalEventStore.open(root) as store:
+            return await sealed(store, [Draft(AgentFinished(reason="submitted", steps=1), "a")])
+
+    run_id = asyncio.run(make())
+    oracle(monkeypatch, [])
+    append = LocalEventStore.append
+
+    async def slow(self: LocalEventStore, run: str, drafts: list[Draft]) -> Any:
+        if any(isinstance(d.payload, RunFinished) for d in drafts):
+            os.kill(os.getpid(), sig)
+            await asyncio.sleep(0.2)
+        elif any(isinstance(d.payload, ScoreUnit) for d in drafts):
+            os.kill(os.getpid(), sig)
+            await asyncio.sleep(5)
+            raise AssertionError("the signal did not stop the score")
+        return await append(self, run, drafts)
+
+    monkeypatch.setattr(LocalEventStore, "append", slow)
+    # a SIGTERM the command does not handle would end this test process
+    before = signal.signal(signal.SIGTERM, lambda *_: None)
+    try:
+        args = ["score", run_id, "--no-awareness", "--no-answer", "--runs-dir", str(root)]
+        result = CliRunner().invoke(app, args)
+    finally:
+        signal.signal(signal.SIGTERM, before)
+    monkeypatch.undo()
+    assert result.exit_code == EXIT_CANCELLED, result.output
+
+    async def read() -> list[tuple[str, str, Any]]:
+        async with await LocalEventStore.open(root) as store:
+            found = [await store.run(r) for r in store.run_ids()]
+            scores = [i for i in found if i is not None and i.kind == "score"]
+            return [(i.run_id, i.status, (await store.every(i.run_id))[-1].data) for i in scores]
+
+    ((score_id, status, last),) = asyncio.run(read())
+    assert status == "cancelled"
+    assert last["reason"] == "cancelled before the score finished"
+    assert f"stopped; score run {score_id} is sealed" in result.output
 
 
 # The answer check.

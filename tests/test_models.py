@@ -1,9 +1,12 @@
 import asyncio
 import itertools
 import json
+import os
+import signal
 import time
 from collections.abc import AsyncIterator, Callable, Iterable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import httpx2
@@ -12,13 +15,14 @@ from proxy import Server, environ, serving
 from pydantic import ValidationError
 from typer.testing import CliRunner
 
-from aims.cli import app
+from aims.cli import EXIT_CANCELLED, app
 from aims.events import (
     Event,
     LocalEventStore,
     ModelRequest,
     ModelResponse,
     RateLimit,
+    RunFinished,
     RunStarted,
     ToolCall,
 )
@@ -46,6 +50,7 @@ from aims.models import (
     ToolRequest,
     ToolSpec,
     Turn,
+    check,
     check_weights,
     first_difference,
     load_models,
@@ -965,6 +970,52 @@ def test_cli_models_list(tmp_path: Path) -> None:
     result = CliRunner().invoke(app, ["models", "check", "nope", "--config", str(path)])
     assert result.exit_code == 1
     assert "unknown profile" in result.output
+
+
+@pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGTERM])
+def test_a_second_signal_while_aims_models_check_seals_leaves_the_seal_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sig: signal.Signals
+) -> None:
+    """A Ctrl-C or SIGTERM during `aims models check` seals its run as cancelled and exits 130.
+    Another one while it seals does not cut the seal."""
+    root = tmp_path / "runs"
+    append = LocalEventStore.append
+
+    async def hang(client: object, p: Profile) -> list[Any]:
+        os.kill(os.getpid(), sig)
+        await asyncio.sleep(5)
+        raise AssertionError("the signal did not stop the check")
+
+    async def slow(self: LocalEventStore, run: str, drafts: list[Any]) -> Any:
+        if any(isinstance(d.payload, RunFinished) for d in drafts):
+            os.kill(os.getpid(), sig)
+            await asyncio.sleep(0.2)
+        return await append(self, run, drafts)
+
+    settings = SimpleNamespace(models=config(profile()))
+    monkeypatch.setattr("aims.cli._settings", lambda config: settings)
+    monkeypatch.setattr(check, "check_profile", hang)
+    monkeypatch.setattr(LocalEventStore, "append", slow)
+    # a SIGTERM the command does not handle would end this test process
+    before = signal.signal(signal.SIGTERM, lambda *_: None)
+    try:
+        result = CliRunner().invoke(app, ["models", "check", "--runs-dir", str(root)])
+    finally:
+        signal.signal(signal.SIGTERM, before)
+    monkeypatch.undo()
+    assert result.exit_code == EXIT_CANCELLED, result.output
+
+    async def read() -> list[tuple[str, str, Any]]:
+        async with await LocalEventStore.open(root) as store:
+            found = [await store.run(r) for r in store.run_ids()]
+            return [
+                (i.run_id, i.status, (await store.every(i.run_id))[-1].data) for i in found if i
+            ]
+
+    ((run_id, status, last),) = asyncio.run(read())
+    assert status == "cancelled"
+    assert last["reason"] == "cancelled before the checks finished"
+    assert f"stopped; run {run_id} is sealed" in result.output
 
 
 async def test_replay_can_keep_the_recorded_pace(store: LocalEventStore) -> None:
