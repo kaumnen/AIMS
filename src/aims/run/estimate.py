@@ -31,11 +31,10 @@ from aims.events.store import TRUTH
 from aims.models import Profile, ProfileError
 from aims.models.profiles import Price
 from aims.monitor.config import Preset
-from aims.monitor.offline import origin_agents
 from aims.monitor.setup import ResolvedMonitor, planned_steps
-from aims.run.fork import CutAt, Origin, next_profiles
+from aims.run.fork import Origin, fork_agents, fork_profiles
 from aims.run.job import monitor_for
-from aims.run.runner import agent_profile
+from aims.run.runner import Fork, agent_profile
 from aims.scenario import AgentConfig, Bundle, Scenario
 from aims.scenario import budget as budgets
 from aims.scenario.budget import BudgetOverride
@@ -438,36 +437,28 @@ def plan(
 def plan_fork(
     settings: Settings,
     origin: Origin,
-    step: int,
+    fork: Fork,
     *,
-    cut: CutAt | None = None,
-    profile: str | None = None,
     preset: Preset | None = None,
     budget: BudgetOverride | None = None,
 ) -> Plan:
-    """The plan of a fork of `origin` after `step`, or at `cut`, its monitor resolved as the
-    fork resolves it, `budget` laid over the origin's. Raises RunError, ProfileError,
+    """The plan of `fork` of `origin`, its live profiles and monitor resolved as the fork
+    resolves them, `budget` laid over the origin's. Raises RunError, ProfileError,
     MonitorConfigError, TextError or BudgetError."""
     bundle = origin.full_bundle or origin.bundle
     merged = origin.fork_budget(budget)
     scenario = budgets.apply(bundle.scenario, merged)
-    steps = dict(cut.steps) if cut is not None else {a.id: step for a in scenario.agents}
-    if profile is not None:
-        chosen = settings.models.get(profile)
-        profiles = {a.id: chosen for a in scenario.agents}
-    else:
-        profiles = next_profiles(settings.models, origin, steps)
     monitor = monitor_for(
         settings.models,
         settings.prompts,
         bundle.scenario,
-        [*profiles.values(), *origin_agents(origin)],
+        fork_agents(settings.models, origin, fork),
         layers=settings.monitor,
         preset=preset,
         budget=merged,
     )
-    model = {a.id for a in scenario.agents if not a.scripted}
-    done = {a: n for a, n in steps.items() if a in model}
+    done = {a.id: fork.at(a.id) for a in scenario.agents if not a.scripted}
+    profiles = fork_profiles(settings.models, origin, fork)
     return Plan(scenario, profiles, monitor, bundle.variant, done)
 
 
@@ -497,20 +488,18 @@ def estimate_fork(
     found: History,
     settings: Settings,
     origin: Origin,
-    step: int,
+    fork: Fork,
     *,
-    cut: CutAt | None = None,
-    profile: str | None = None,
     preset: Preset | None = None,
     samples: int = 1,
     budget: BudgetOverride | None = None,
 ) -> Estimate:
-    """The estimate of `samples` forks of `origin`, `budget` over the origin's: what `aims run
-    --replay` and the UI's fork dialog show. Raises RunError, ProfileError,
+    """The estimate of `samples` forks like `fork` of `origin`, `budget` over the origin's:
+    what `aims run --replay` and the UI's fork dialog show. Raises RunError, ProfileError,
     MonitorConfigError, TextError or BudgetError."""
     return estimate(
         found,
-        [plan_fork(settings, origin, step, cut=cut, profile=profile, preset=preset, budget=budget)],
+        [plan_fork(settings, origin, fork, preset=preset, budget=budget)],
         samples=samples,
         credits=settings.credits,
         confirm_above_usd=settings.confirm_above_usd,

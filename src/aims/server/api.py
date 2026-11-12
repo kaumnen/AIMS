@@ -55,7 +55,6 @@ from aims.models.check import Verdict
 from aims.monitor import sweep_texts
 from aims.monitor import texts as monitor_texts
 from aims.monitor.config import MonitorConfigError, Preset
-from aims.monitor.offline import origin_agents
 from aims.monitor.setup import ResolvedMonitor
 from aims.prompts import PLACEHOLDERS, AgentTexts, Prompts, TextError, load_prompts
 from aims.run import selftest
@@ -65,13 +64,14 @@ from aims.run.fork import (
     Origin,
     check_fork,
     cut_at,
+    fork_agents,
+    fork_of,
     fork_step,
-    live_profiles,
     load_origin,
     replayable_steps,
 )
 from aims.run.job import Job, fork_jobs, monitor_for, scenario_jobs, selftest_job
-from aims.run.runner import RunError, agent_profile, check
+from aims.run.runner import Fork, RunError, agent_profile, check
 from aims.scenario import Bundle, Scenario, ScenarioError, folder_tar, load, parse
 from aims.scenario import budget as budgets
 from aims.scenario.budget import BudgetError, BudgetOverride
@@ -748,6 +748,12 @@ class ForkPoint:
     step: int
     cut: CutAt | None = None
 
+    def fork(self, body: StartFork) -> Fork:
+        """The fork `body` asks for here, as far as its cost and monitor go."""
+        return fork_of(
+            self.origin, self.step, self.cut, profile=body.profile, keep_others=body.keep_others
+        )
+
 
 class Started(Out):
     run_ids: list[str]
@@ -997,9 +1003,7 @@ def fork_estimate(settings: Settings, history: History, at: ForkPoint, body: Sta
         history,
         settings,
         at.origin,
-        at.step,
-        cut=at.cut,
-        profile=body.profile,
+        at.fork(body),
         preset=body.monitor,
         samples=body.samples,
         budget=body.budget,
@@ -1017,13 +1021,9 @@ async def fork_run(
     at = await fork_point(state, run_id, body)
     origin, step = at.origin, at.step
     try:
-        if body.profile is not None:
-            live = [settings.models.get(body.profile)]
-        else:
-            live = list(live_profiles(settings.models, origin, step).values())
+        agents = fork_agents(settings.models, origin, at.fork(body))
     except (RunError, ProfileError, KeyError) as e:
         raise ProblemException(422, "Cannot fork", str(e), code="fork") from None
-    agents = [*live, *origin_agents(origin)]
     # the scenario and caps the fork runs under, as its estimate prices them
     scenario = (origin.full_bundle or origin.bundle).scenario
     monitor = _monitor(settings, scenario, agents, body.monitor, origin.fork_budget(body.budget))

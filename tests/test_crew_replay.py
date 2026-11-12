@@ -147,7 +147,7 @@ async def test_record_the_crew_fixture(tmp_path: Path) -> None:
             bench,
             origin.full_bundle,
             Options(fork=fork, seed=origin.seed, inherited=origin.inherited, profile=AGENTS),
-            profiles=fork_profiles(bench, origin, fork),
+            profiles=fork_profiles(bench.models, origin, fork),
             schedules=fork_schedules(origin, fork),
             texts=origin.texts,
             replay=planner(bench, origin, fork),

@@ -905,10 +905,11 @@ async def _run(**o: Any) -> int:
         CutAt,
         check_fork,
         cut_at,
+        fork_agents,
+        fork_of,
         fork_profiles,
         fork_schedules,
         fork_step,
-        live_profiles,
         load_origin,
         planner,
         preview,
@@ -944,6 +945,7 @@ async def _run(**o: Any) -> int:
     models, prompts = settings.models, settings.prompts
     async with await LocalEventStore.open(o["runs_dir"]) as store:
         origin = None
+        fork_base: Fork | None = None
         try:
             cut: CutAt | None = None
             if o["replay"] is not None:
@@ -965,6 +967,9 @@ async def _run(**o: Any) -> int:
                 fork_profile = o["profile"]
                 if fork_profile is not None:
                     models.get(fork_profile)
+                fork_base = fork_of(
+                    origin, step, cut, profile=fork_profile, keep_others=o["keep_others"]
+                )
                 budget = origin.fork_budget(o["budget"])
                 replayed = (
                     dict(cut.steps)
@@ -991,12 +996,10 @@ async def _run(**o: Any) -> int:
         if (line := _budget_line(base, budget)) is not None:
             err.print(shown(line))
         try:
-            if origin is not None and o["profile"] is None:
-                agents = list(live_profiles(models, origin, step).values())
+            if origin is not None and fork_base is not None:
+                agents = fork_agents(models, origin, fork_base)
             else:
                 agents = [agent_profile(models, a, o["profile"]) for a in bundle.scenario.agents]
-            if origin is not None:
-                agents += [p for s in origin.schedules.values() for _, p in s]
             monitor = monitor_for(
                 models,
                 prompts,
@@ -1023,14 +1026,12 @@ async def _run(**o: Any) -> int:
                     )
         cost = None
         try:
-            if origin is not None:
+            if origin is not None and fork_base is not None:
                 cost = estimate_fork(
                     await history(store),
                     settings,
                     origin,
-                    step,
-                    cut=cut,
-                    profile=o["profile"],
+                    fork_base,
                     preset=o["monitor"],
                     samples=o["samples"],
                     budget=o["budget"],
@@ -1120,19 +1121,9 @@ async def _run(**o: Any) -> int:
                     options.series = series_run
                     options.inherited = inherited
                     options.restored = restored
-                elif origin is not None:
-                    fork = Fork(
-                        origin=origin.run_id,
-                        step=step,
-                        sample=i,
-                        group=group,
-                        strict=o["strict_env"],
-                        inject=o["inject"],
-                        profile=o["profile"],
-                        steps=None if cut is None else dict(cut.steps),
-                        cut=None if cut is None else cut.seq,
-                        agent=None if cut is None else cut.agent,
-                        keep_others=o["keep_others"],
+                elif origin is not None and fork_base is not None:
+                    fork = replace(
+                        fork_base, sample=i, group=group, strict=o["strict_env"], inject=o["inject"]
                     )
                     if i == 0:
                         for line in preview(origin, fork):
@@ -1142,7 +1133,7 @@ async def _run(**o: Any) -> int:
                     options.inherited = origin.inherited
                     options.restored = dict(origin.restored) or None
                     kwargs = {
-                        "profiles": fork_profiles(bench, origin, fork),
+                        "profiles": fork_profiles(bench.models, origin, fork),
                         "schedules": fork_schedules(origin, fork),
                         "texts": origin.texts,
                         "replay": planner(bench, origin, fork),

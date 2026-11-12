@@ -1008,7 +1008,7 @@ async def test_a_planted_run_is_scored_and_forked_with_its_canaries(
             bench,
             origin.full_bundle,
             Options(fork=fork, seed=origin.seed, inherited=origin.inherited),
-            profiles=fork_profiles(bench, origin, fork),
+            profiles=fork_profiles(bench.models, origin, fork),
             schedules=fork_schedules(origin, fork),
             texts=origin.texts,
             replay=planner(bench, origin, fork),

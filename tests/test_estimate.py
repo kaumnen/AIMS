@@ -58,7 +58,7 @@ from aims.run.estimate import (
     spend_lines,
     usd,
 )
-from aims.run.fork import Origin
+from aims.run.fork import Origin, fork_of
 from aims.run.view import LiveView, _Run
 from aims.scenario import Bundle
 from aims.scenario import load as load_scenario
@@ -738,7 +738,7 @@ async def test_a_fork_matches_past_runs_of_its_origin_s_variant(
         steps={"a": 10},
         full_bundle=hinted,
     )
-    e = estimate_fork(await history(store), settings, origin, 5)
+    e = estimate_fork(await history(store), settings, origin, fork_of(origin, 5))
     agents = e.parts[0].agents
     assert (e.parts[0].variant, agents.tier, agents.runs) == ("hinted", "scenario", 3)
     assert agents.typical_usd == pytest.approx(0.4 * 0.75)

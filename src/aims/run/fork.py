@@ -453,31 +453,53 @@ def configured(models: ModelsConfig, recorded: Profile) -> Profile:
     return recorded
 
 
-def live_profiles(models: ModelsConfig, origin: Origin, step: int) -> dict[str, Profile]:
-    """The profiles the origin's agents used right after `step`, checked against `models`."""
-    agents = origin.bundle.scenario.agents
-    found = next_profiles(models, origin, {a.id: step for a in agents})
-    return {p.name: p for p in found.values()}
+def fork_of(
+    origin: Origin,
+    step: int,
+    cut: CutAt | None = None,
+    *,
+    profile: str | None = None,
+    keep_others: bool = False,
+) -> Fork:
+    """The fork of `origin` after `step`, or at `cut` in a run of several agents."""
+    return Fork(
+        origin=origin.run_id,
+        step=step,
+        profile=profile,
+        steps=None if cut is None else dict(cut.steps),
+        cut=None if cut is None else cut.seq,
+        agent=None if cut is None else cut.agent,
+        keep_others=keep_others,
+    )
 
 
-def next_profiles(
-    models: ModelsConfig, origin: Origin, steps: Mapping[str, int]
-) -> dict[str, Profile]:
-    """The profile each agent of the origin used right after its step in `steps`, checked
-    against `models`, by agent id."""
-    return {a: configured(models, _at(origin.schedules[a], step + 1)) for a, step in steps.items()}
-
-
-def fork_profiles(bench: Bench, origin: Origin, fork: Fork) -> dict[str, Profile]:
-    """The profile each agent uses once it is live: the one the origin used next, checked
-    against the bench's config, or `fork.profile`."""
+def fork_profiles(models: ModelsConfig, origin: Origin, fork: Fork) -> dict[str, Profile]:
+    """The profile each agent uses once it is live, by agent id: the one the origin used
+    after the agent's last replayed step, checked against `models`, or `fork.profile` with the
+    agent's overrides."""
     out: dict[str, Profile] = {}
     for agent in origin.bundle.scenario.agents:
         if fork.profile is None:
             recorded = _at(origin.schedules[agent.id], fork.at(agent.id) + 1)
-            out[agent.id] = configured(bench.models, recorded)
+            out[agent.id] = configured(models, recorded)
         else:
-            out[agent.id] = bench.models.get(fork.profile).apply(agent.overrides)
+            out[agent.id] = models.get(fork.profile).apply(agent.overrides)
+    return out
+
+
+def fork_agents(models: ModelsConfig, origin: Origin, fork: Fork) -> list[Profile]:
+    """The profiles the agents of `fork` run, which its monitor is resolved with: those of the
+    steps each agent replays, as recorded, then the one it goes live with. An agent that keeps
+    its recorded answers may answer with any profile the origin used. Raises RunError or
+    ProfileError."""
+    replayed = fork_schedules(origin, fork)
+    live = fork_profiles(models, origin, fork)
+    out: list[Profile] = []
+    for agent in origin.bundle.scenario.agents:
+        kept = fork.keep_others and agent.id != fork.agent
+        schedule = origin.schedules[agent.id] if kept else replayed[agent.id]
+        out += [p for _, p in schedule]
+        out.append(live[agent.id])
     return out
 
 

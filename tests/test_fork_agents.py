@@ -171,7 +171,7 @@ async def fork_run(
         bench,
         origin.full_bundle,
         options,
-        profiles=fork_profiles(bench, origin, fork),
+        profiles=fork_profiles(bench.models, origin, fork),
         schedules=fork_schedules(origin, fork),
         texts=origin.texts,
         replay=planner(bench, origin, fork),

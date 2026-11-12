@@ -21,7 +21,7 @@ from aims.monitor.setup import ResolvedMonitor, resolve_config, resolve_monitor
 from aims.monitor.signals import signal_versions
 from aims.monitor.signals.base import SignalError
 from aims.prompts import Prompts
-from aims.run.fork import CutAt, Origin, fork_profiles, fork_schedules, live_profiles, planner
+from aims.run.fork import CutAt, Origin, fork_of, fork_profiles, fork_schedules, planner
 from aims.run.runner import Bench, Fork, Options, RunError, Runner, Texts, agent_profile
 from aims.run.runner import resolve_texts as texts_of
 from aims.scenario import Bundle, Scenario, ScenarioError, from_snapshot, load
@@ -294,7 +294,8 @@ def fork_jobs(
     origin's override. Raises RunError, ProfileError or BudgetError."""
     budget = origin.fork_budget(budget)
     if profile is None:
-        named = live_profiles(models, origin, step)
+        fork = fork_of(origin, step, cut, keep_others=keep_others)
+        named = {p.name: p for p in fork_profiles(models, origin, fork).values()}
     else:
         named = {profile: models.get(profile)}
     group = uuid.uuid4().hex[:12] if samples > 1 else None
@@ -443,7 +444,7 @@ def runner_for(
         run_bench,
         bundle,
         options,
-        profiles=fork_profiles(run_bench, origin, fork),
+        profiles=fork_profiles(run_bench.models, origin, fork),
         schedules=fork_schedules(origin, fork),
         texts=origin.texts,
         replay=planner(run_bench, origin, fork, source=origins),

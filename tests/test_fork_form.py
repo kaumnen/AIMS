@@ -13,6 +13,7 @@ import pytest
 from cp import CONFIG, CP, control_plane
 from cp import SCENARIO as CONTROL
 from test_cli_monitor import backend
+from test_fork_whole import step
 from test_server import FakeRunner, push_forged, ship
 from typer.testing import CliRunner
 
@@ -27,12 +28,16 @@ from aims.events import (
     ToolCall,
     ToolResult,
 )
+from aims.monitor.setup import ResolvedMonitor
 from aims.prompts import Prompts
 from aims.run import truth
+from aims.run.estimate import plan_fork
+from aims.run.fork import CutAt, cut_at, fork_agents, fork_of, load_origin
 from aims.run.runner import Result, Runner, resolve_texts
 from aims.sandbox import DockerBackend
-from aims.scenario import load
+from aims.scenario import load, parse
 from aims.scenario.budget import BudgetOverride
+from aims.scenario.load import Bundle
 
 pytestmark = pytest.mark.anyio
 
@@ -465,3 +470,164 @@ def test_aims_run_is_watched_by_the_monitor_its_estimate_prices(
         ["--replay", origin, "--budget", "steps=5"],
     ):
         assert ceiling(*args) == watched[-1] != plain
+
+
+PAIR = """\
+version: 1
+name: pair
+oversight: observe
+task:
+  instruction: Do what you are told.
+  environment: {image: python:3.13-slim}
+agents:
+  - id: a
+  - id: b
+"""
+
+# The run used a profile old, which this config no longer has.
+SWITCHED = """\
+[profiles.new]
+backend = "chat"
+base_url = "http://model.invalid/v1"
+model = "new"
+weights = "w-new"
+reasoning = "full"
+stream = false
+
+[profiles.other]
+extends = "new"
+model = "other"
+weights = "w-other"
+
+[profiles.extract]
+extends = "new"
+model = "extract"
+weights = "w-extract"
+
+[roles]
+agent = "new"
+
+[monitor]
+extract = ["extract"]
+"""
+
+
+async def switched(store: LocalEventStore, config: Path) -> str:
+    """A sealed run of PAIR: agent a took its steps 1 and 2 with profile old and its step 3
+    with new; b took its step 1 with new, after a's first."""
+    bundle = Bundle(scenario=parse(PAIR), text=PAIR.encode())
+    new = load_settings(config).models.get("new")
+    old = new.model_copy(update={"name": "old", "model": "old", "weights": "w-old"})
+    schedules = {"a": [[2, old.snapshot()], [None, new.snapshot()]], "b": [[None, new.snapshot()]]}
+    agents = {
+        a.id: {
+            "profile": new.snapshot(),
+            "schedule": schedules[a.id],
+            "texts": resolve_texts(Prompts(), a).snapshot(),
+        }
+        for a in bundle.scenario.agents
+    }
+    started = RunStarted(
+        scenario="pair",
+        oversight="observe",
+        agents=["a", "b"],
+        config={"scenario": bundle.snapshot(), "agents": agents},
+    )
+    run_id = await store.create_run(started, blobs=bundle.blobs())
+    drafts = [*step("a", 1), *step("b", 1), *step("a", 2), *step("a", 3)]
+    await store.append(run_id, [*drafts, Draft(RunFinished(status="completed"))])
+    return run_id
+
+
+async def test_a_forks_monitor_is_resolved_with_the_profiles_its_agents_run(
+    local: LocalEventStore, tmp_path: Path
+) -> None:
+    """The steps an agent replays as recorded, then its live profile: a profile the origin used
+    only after the cut is left out, unless the agent keeps its recorded answers."""
+    config = tmp_path / "aims.toml"
+    config.write_text(SWITCHED)
+    models = load_settings(config).models
+    origin = await load_origin(local, await switched(local, config))
+
+    def names(at: str, **options: Any) -> list[str]:
+        cut = cut_at(origin, at)
+        assert isinstance(cut, CutAt)
+        fork = fork_of(origin, min(cut.steps.values()), cut, **options)
+        return sorted({p.name for p in fork_agents(models, origin, fork)})
+
+    assert names("a:3") == ["new", "old"]
+    assert names("a:1", profile="other") == ["old", "other"]
+    assert names("a:1", profile="other", keep_others=True) == ["new", "old", "other"]
+    assert names("a:0", profile="other") == ["other"]
+
+
+def test_aims_run_watches_a_cut_fork_with_the_monitor_its_estimate_prices(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fork at a:3 replays a's steps with old and b's first with new, then each goes live with
+    new: it needs no old in the config, and its monitor is the one its estimate prices."""
+    config = tmp_path / "aims.toml"
+    config.write_text(SWITCHED)
+    runs = tmp_path / "runs"
+
+    async def priced() -> tuple[str, ResolvedMonitor | None]:
+        async with await LocalEventStore.open(runs) as store:
+            run_id = await switched(store, config)
+            origin = await load_origin(store, run_id)
+        cut = cut_at(origin, "a:3")
+        assert isinstance(cut, CutAt)
+        assert cut.steps == {"a": 3, "b": 1}
+        fork = fork_of(origin, 1, cut)
+        return run_id, plan_fork(load_settings(config), origin, fork, preset="standard").monitor
+
+    run_id, estimated = asyncio.run(priced())
+    assert estimated is not None
+    assert estimated.extract is not None
+    watched: list[Runner] = []
+
+    async def run(self: Runner) -> Result:
+        watched.append(self)
+        return Result(None, "cancelled", "not run")
+
+    monkeypatch.setattr(DockerBackend, "open", backend)
+    monkeypatch.setattr(Runner, "run", run)
+    monkeypatch.setenv("MODEL_API_KEY", "key")
+    args = ["run", "--replay", run_id, "--fork-at", "a:3", "--config", str(config)]
+    args += ["--runs-dir", str(runs), "--no-server", "--monitor", "standard", "--json", "--yes"]
+    result = CliRunner().invoke(app, args)
+    assert len(watched) == 1, result.output
+    (runner,) = watched
+    assert runner.watch is not None
+    assert (runner.watch.identity, runner.watch.extract) == (estimated.identity, estimated.extract)
+    assert runner.given_profiles is not None
+    assert {a: p.name for a, p in runner.given_profiles.items()} == {"a": "new", "b": "new"}
+
+
+async def test_the_control_plane_queues_a_cut_fork_with_the_monitor_its_estimate_prices(
+    cp: CP, local: LocalEventStore
+) -> None:
+    """The fork job carries the monitor the estimate prices and the profile its runner needs
+    for each agent's live steps."""
+    cp.project.write_text(SWITCHED)
+    run_id = await switched(local, cp.project)
+    keyed = FakeRunner(cp, "keyed", envs=["MODEL_API_KEY"])
+    await keyed.client.hello(keyed.hello_body())
+    await ship(local, keyed.client, run_id)
+    await keyed.client.aclose()
+    origin = await load_origin(local, run_id)
+    cut = cut_at(origin, "a:3")
+    assert isinstance(cut, CutAt)
+    fork = fork_of(origin, 1, cut)
+    estimated = plan_fork(cp.state.config.settings(), origin, fork, preset="standard").monitor
+    assert estimated is not None
+    body = {"at": "a:3", "monitor": "standard", "confirm": True}
+    async with cp.client(cp.operator) as c:
+        r = await c.post(f"/api/runs/{run_id}/forks", json=body)
+        assert r.status_code == 202, r.text
+        (fork_id,) = r.json()["run_ids"]
+    job = await cp.state.db.job(fork_id)
+    assert job is not None
+    assert job.payload["monitor"]["identity"] == estimated.identity
+    assert job.payload["monitor"]["extract"]["name"] == "extract"
+    assert "new" in job.payload["models"]
+    assert "old" not in job.payload["models"]
