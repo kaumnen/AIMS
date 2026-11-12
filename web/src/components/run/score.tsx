@@ -172,6 +172,7 @@ export function ScoreTab({
         <p className="text-muted-foreground">The score did not load.</p>
       ) : read.get(current.run_id) ? (
         <ScoreView
+          key={current.run_id}
           runId={runId}
           detail={detail}
           run={current}

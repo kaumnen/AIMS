@@ -281,6 +281,7 @@ function Run() {
           <TabsContent value="report" className="flex min-h-0 flex-col pt-1">
             <Suspense fallback={<p className="text-muted-foreground">Loading the report</p>}>
               <ReportTab
+                key={search.source}
                 runId={runId}
                 detail={detail.data}
                 source={search.source}

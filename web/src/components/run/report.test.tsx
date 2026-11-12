@@ -118,6 +118,24 @@ test("Download Markdown saves the report of the source shown", async () => {
   revoke.mockRestore();
 });
 
+test("a download that failed says so on its own source only", async () => {
+  const base = fetch.getMockImplementation()!;
+  fetch.mockImplementation(async (request) => {
+    if (new URL(request.url).searchParams.get("format") === "md") throw new TypeError("down");
+    return base(request);
+  });
+  const router = renderAt(`/runs/${RUN}?tab=report`);
+  fireEvent.click(await screen.findByRole("button", { name: "Download Markdown" }));
+  expect(await screen.findByText("The Markdown did not download.")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Build from this source: the live monitor" }));
+  await waitFor(() =>
+    expect(router.state.location.search).toEqual({ tab: "report", source: "live" }),
+  );
+  await waitFor(() => expect(reportRequests().at(-1)?.get("source")).toBe("live"));
+  expect(await screen.findByRole("button", { name: "Download Markdown" })).toBeTruthy();
+  expect(screen.queryByText("The Markdown did not download.")).toBeNull();
+});
+
 test("hidden characters from the log show as visible escapes", () => {
   expect(visible(`a${ch(0x202e)}b${ch(0x200b)}c${ch(0x2066)}d`)).toBe("a\\u202Eb\\u200Bc\\u2066d");
   expect(visible("tab\tline\r\nend\rx")).toBe("tab\tline\nend\nx");

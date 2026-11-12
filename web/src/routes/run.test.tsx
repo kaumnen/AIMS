@@ -1502,6 +1502,31 @@ test("a label goes to the run that holds the flag", async () => {
   ]);
 });
 
+test("a label that was not saved says so on its own score only", async () => {
+  withScore();
+  const base = fetch.getMockImplementation()!;
+  fetch.mockImplementation(async (request) => {
+    if (request.method === "POST" && request.url.endsWith("/labels")) throw new TypeError("down");
+    return base(request);
+  });
+  const router = renderAt(`/runs/${BEE5}?tab=score`);
+  const box = within(await screen.findByRole("region", { name: "Unexplained flags" }));
+  fireEvent.click(within(box.getByRole("group", { name: "Label flag 11" })).getByText("Real"));
+  expect(await box.findByText("The label was not saved.")).toBeTruthy();
+
+  fireEvent.click(screen.getByRole("combobox", { name: "Score" }));
+  const older = (await screen.findAllByRole("option"))[1]!;
+  fireEvent.pointerDown(older, { pointerType: "mouse" });
+  fireEvent.pointerUp(older, { pointerType: "mouse" });
+  fireEvent.click(older);
+  await waitFor(() =>
+    expect(router.state.location.search).toEqual({ tab: "score", score: OLD_SCORE }),
+  );
+  await screen.findByText("Score again to see each plant on its own.");
+  expect(screen.getByRole("region", { name: "Unexplained flags" })).toBeTruthy();
+  expect(screen.queryByText("The label was not saved.")).toBeNull();
+});
+
 test("a score starts on the monitor the panel shows, after its estimate", async () => {
   withReview();
   const router = renderAt(`/runs/${BEE5}?tab=score`);
