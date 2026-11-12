@@ -998,7 +998,8 @@ class LocalEventStore:
         return writer
 
     async def _catch_up(self, run_id: str) -> tuple[Head, ChainError | None]:
-        """Index verified events past the index head. RunCorrupt if the log lost that head."""
+        """Index verified events past the index head, up to the first one the index cannot take.
+        RunCorrupt if the log lost that head."""
         path = self._log(run_id)
         head = Head()
         indexed = await self._index.head(run_id)
@@ -1014,8 +1015,19 @@ class LocalEventStore:
         while True:
             chunk, error = await asyncio.to_thread(_take, path, run_id, head, CHUNK)
             if chunk:
+                try:
+                    events = [Event.model_validate(e) for e, _ in chunk]
+                    await self._indexed(run_id, events, chunk[-1][1])
+                    whole = True
+                except Exception:
+                    if len(chunk) == 1:
+                        raise
+                    whole = False
+                if not whole:
+                    # one event the index cannot take would hold back those before it
+                    for e, after in chunk:
+                        await self._indexed(run_id, [Event.model_validate(e)], after)
                 head = chunk[-1][1]
-                await self._indexed(run_id, [Event.model_validate(e) for e, _ in chunk], head)
             if error is not None or len(chunk) < CHUNK:
                 return head, error
 

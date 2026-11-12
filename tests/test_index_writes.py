@@ -343,6 +343,28 @@ async def test_a_run_the_index_cannot_take_does_not_stop_the_store_opening(
             assert await indexed(store, bad) == logged(store, bad) == [0, 1, 2]
 
 
+async def test_an_event_the_index_cannot_take_holds_back_none_before_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "runs"
+    async with await LocalEventStore.open(root) as store:
+        run_id = await store.create_run(STARTED)
+        await store.append(run_id, [call(1), call(2), call(3), call(4)])
+    reset_index(root)
+    real = Index.add
+
+    async def add(index: Index, events: Sequence[Event], head: Head) -> None:
+        if any(e.seq == 3 for e in events):
+            raise ValueError("the index cannot take seq 3")
+        await real(index, events, head)
+
+    monkeypatch.setattr(Index, "add", add)
+    async with await LocalEventStore.open(root) as store:
+        assert await indexed(store, run_id) == [0, 1, 2]
+        verified = await store.verify(run_id)
+        assert verified.error == "the index holds 3 of the log's 5 events"
+
+
 async def test_an_old_log_with_a_time_past_what_utc_holds_still_indexes(tmp_path: Path) -> None:
     root = tmp_path / "runs"
     run_id = str(uuid.uuid7())
