@@ -8,6 +8,7 @@
   },
   "ignorePatterns": ["src/routeTree.gen.ts", "src/api/schema.gen.ts"],
   "rules": {
+    "no-shadow": "error",
     "react/react-in-jsx-scope": "off",
     "react/jsx-no-constructed-context-values": "off",
     "import/no-unassigned-import": [
