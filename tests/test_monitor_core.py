@@ -32,6 +32,7 @@ from aims.events import (
     ToolCall,
     ToolResult,
 )
+from aims.events import store as store_module
 from aims.events.schema import Payload
 from aims.models import Message, ModelClient, Profile, Prompt, ToolSpec
 from aims.monitor import core, review_texts
@@ -1102,6 +1103,100 @@ async def test_cancelling_the_judge_is_not_taken_for_a_cut(tmp_path: Path) -> No
             await judging
         [degraded] = await h.of("monitor.degraded")
         assert degraded.data["reason"] == "the judge was cancelled"
+
+
+def behind(h: H, monkeypatch: pytest.MonkeyPatch) -> list[bool]:
+    """Make the run's index refuse every batch while the flag returned holds, and try to catch
+    up often."""
+    broken = [True]
+    real = h.store._index.add
+
+    async def add(events: Sequence[Event], head: Any) -> None:
+        if broken[0]:
+            raise ValueError("the index cannot take it")
+        await real(events, head)
+
+    monkeypatch.setattr(h.store._index, "add", add)
+    monkeypatch.setattr(store_module, "RETRY_S", 0.01)
+    monkeypatch.setattr(store_module, "RETRY_MAX_S", 0.05)
+    return broken
+
+
+def reading(seen: list[list[int]], hs: list[H]) -> JudgeFn:
+    """A judge that notes the seqs the index holds when it runs."""
+
+    async def read(flags: Sequence[Event], sweeps: Sequence[Event]) -> JudgeResult:
+        h = hs[0]
+        seen.append([e.seq for e in await h.store.every(h.run_id)])
+        return JudgeResult()
+
+    return read
+
+
+def degraded_in_log(h: H) -> list[dict[str, Any]]:
+    """The data of each `monitor.degraded` the run's log holds, whatever the index holds."""
+    path = h.store.root / h.run_id / "events.jsonl"
+    events = [json.loads(line) for line in path.read_bytes().splitlines()]
+    return [e["data"] for e in events if e["type"] == "monitor.degraded"]
+
+
+async def test_the_judge_waits_for_an_index_behind_the_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[list[int]] = []
+    hs: list[H] = []
+    config = {"sweeps": [], "judge": {}}
+    async with harness(tmp_path, config=config, judge=reading(seen, hs)) as h:
+        hs.append(h)
+        await h.add(started())
+        broken = behind(h, monkeypatch)
+        await h.add(ToolCall(call_id="c", name="exec", arguments="{}"))
+        judging = asyncio.create_task(h.monitor.judge())
+        await h.until(lambda: h.monitor._judging is not None)
+        broken[0] = False
+        async with asyncio.timeout(5):
+            await judging
+        assert seen == [[0, 1, 2]]
+        assert [d["reason"] for d in degraded_in_log(h)] == ["the judge gave no verdict"]
+
+
+async def test_the_judge_never_reads_an_index_that_stays_behind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[list[int]] = []
+    hs: list[H] = []
+    config = {"sweeps": [], "judge": {"timeout_s": 0.1}}
+    async with harness(tmp_path, config=config, judge=reading(seen, hs)) as h:
+        hs.append(h)
+        await h.add(started())
+        behind(h, monkeypatch)
+        await h.add(ToolCall(call_id="c", name="exec", arguments="{}"))
+        async with asyncio.timeout(3):
+            await h.monitor.judge()
+        assert seen == []
+        [degraded] = degraded_in_log(h)
+        assert (degraded["part"], degraded["then"]) == ("judge", "skip")
+        assert degraded["reason"] == "the index stayed behind the log for 0.1 s"
+
+
+async def test_a_cut_ends_the_judges_wait_for_the_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[list[int]] = []
+    hs: list[H] = []
+    config = {"sweeps": [], "judge": {}}
+    async with harness(tmp_path, config=config, judge=reading(seen, hs)) as h:
+        hs.append(h)
+        await h.add(started())
+        behind(h, monkeypatch)
+        await h.add(ToolCall(call_id="c", name="exec", arguments="{}"))
+        judging = asyncio.create_task(h.monitor.judge())
+        await h.until(lambda: h.monitor._judging is not None)
+        h.monitor.cut()
+        async with asyncio.timeout(1):
+            await judging
+        assert seen == []
+        assert degraded_in_log(h) == []
 
 
 async def test_a_cut_stops_the_sweep_in_flight_and_every_later_one(tmp_path: Path) -> None:

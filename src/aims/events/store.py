@@ -187,6 +187,8 @@ class EventStore(Protocol):
 
     async def verify(self, run_id: str) -> Verification: ...
 
+    async def wait_indexed(self, run_id: str, seq: int) -> None: ...
+
     async def rebuild(self) -> None: ...
 
     async def close(self) -> None: ...
@@ -335,6 +337,15 @@ class LocalEventStore:
 
         found = await asyncio.to_thread(read)
         return found if found.seq >= 0 else head
+
+    async def wait_indexed(self, run_id: str, seq: int) -> None:
+        """Wait until the run's index holds event `seq`, while it is behind the log."""
+        while True:
+            changed = self.changed()
+            indexed = await self._index.head(run_id)
+            if (-1 if indexed is None else indexed[0].seq) >= seq:
+                return
+            await changed.wait()
 
     async def remove(self, run_id: str) -> None:
         """Delete a sealed run's directory and its index rows. An ingest-only store also drops

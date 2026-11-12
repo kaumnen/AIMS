@@ -215,6 +215,7 @@ class Monitor:
         self._wake = asyncio.Event()
         self._progress = asyncio.Event()
         self._fed = 0
+        self._seen = -1
         self._done = 0
         self._consumer: asyncio.Task[None] | None = None
         self._tasks: list[asyncio.Task[None]] = []
@@ -233,7 +234,7 @@ class Monitor:
         self._operator_paused: set[str] = set()
         self._killed = False
         self._cut = False
-        self._judging: asyncio.Future[JudgeResult] | None = None
+        self._judging: asyncio.Future[Any] | None = None
         self._closed = False
         self._spent = 0.0
         self._flags: list[Event] = []
@@ -264,6 +265,8 @@ class Monitor:
         """Queue a batch the store appended. Runs under the store's write lock: no awaits."""
         if self._closed:
             return
+        if events:
+            self._seen = max(self._seen, events[-1].seq)
         batch: list[Event] = []
         for e in events:
             if e.type.startswith("monitor."):
@@ -352,9 +355,11 @@ class Monitor:
         self._notify_swept()
 
     async def judge(self, *, skip: bool = False) -> None:
-        """Run the judge after the verifier, before the seal; `skip` on a cancelled run. A
-        `cut` ends it early and the run still seals. A judge its timeout cut short writes the
-        verdicts it has, and `monitor.degraded` names the rollouts that gave none."""
+        """Run the judge after the verifier, before the seal; `skip` on a cancelled run. It
+        starts once the index holds every event fed, and is skipped if the index stays behind
+        the log for the judge's timeout. A `cut` ends it early and the run still seals. A judge
+        its timeout cut short writes the verdicts it has, and `monitor.degraded` names the
+        rollouts that gave none."""
         config = self.config.judge
         if skip or config is None or self.monitor.judge is None:
             return
@@ -364,6 +369,8 @@ class Monitor:
         left = self.monitor.budget_usd - self._spent
         if left <= 0:
             await self._degrade("judge", "the monitor budget is spent", "skip")
+            return
+        if not await self._indexed(config.timeout_s):
             return
         judge = self._judge_factory(
             source=self.source,
@@ -416,6 +423,28 @@ class Monitor:
             else:
                 reason = "the judge erred"
             await self._degrade("judge", reason, "skip", result.error)
+
+    async def _indexed(self, within: float) -> bool:
+        """Wait until the index the judge reads holds every event fed so far. False when a cut
+        ends the wait, or when the index is still behind the log after `within` seconds, which
+        skips the judge with `monitor.degraded`."""
+        waiting = asyncio.ensure_future(self.store.wait_indexed(self.source, self._seen))
+        self._judging = waiting
+        try:
+            async with asyncio.timeout(within):
+                await waiting
+        except TimeoutError:
+            reason = f"the index stayed behind the log for {within:g} s"
+            await self._degrade("judge", reason, "skip")
+            return False
+        except asyncio.CancelledError:
+            task = asyncio.current_task()
+            if self._cut and task is not None and not task.cancelling():
+                return False
+            raise
+        finally:
+            self._judging = None
+        return True
 
     async def close(self) -> None:
         """Write the signals' final counts and stop every task."""

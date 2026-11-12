@@ -523,6 +523,9 @@ class OriginStore:
     async def verify(self, run_id: str) -> Verification:
         return await self._of(run_id).verify(run_id)
 
+    async def wait_indexed(self, run_id: str, seq: int) -> None:
+        await self._of(run_id).wait_indexed(run_id, seq)
+
     async def rebuild(self) -> None:
         return None
 
