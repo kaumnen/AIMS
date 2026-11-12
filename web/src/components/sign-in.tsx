@@ -78,6 +78,12 @@ export function SignIn() {
 }
 
 export function Unreachable({ retry }: { retry: () => void }) {
+  const queryClient = useQueryClient();
+  // The stream keeps the page's runs current. None is open now, so once the page is back each
+  // read of runs goes again.
+  useEffect(() => {
+    void queryClient.invalidateQueries({ queryKey: ["runs"], refetchType: "none" });
+  }, [queryClient]);
   return (
     <main className="grid min-h-dvh place-items-center px-4">
       <div className="flex max-w-sm flex-col gap-3">

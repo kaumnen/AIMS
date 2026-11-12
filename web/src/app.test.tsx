@@ -108,6 +108,30 @@ test("a 401 elsewhere brings the sign-in form back", async () => {
   expect(await screen.findByLabelText("Token")).toBeTruthy();
 });
 
+test("runs that ended while the control plane was out of reach show it once it is back", async () => {
+  let down = false;
+  let r1 = run("r1");
+  const base = fetch.getMockImplementation();
+  if (!base) throw new Error("no fetch");
+  fetch.mockImplementation(async (request) => {
+    if (down) throw new TypeError("offline");
+    if (new URL(request.url).pathname === "/api/runs") {
+      return Response.json({ items: [r1], next: null });
+    }
+    return base(request);
+  });
+  await renderAt("/runs");
+  expect(await screen.findByText("Running")).toBeTruthy();
+  down = true;
+  act(() => FakeEventSource.all[0]?.fail(true));
+  const again = await screen.findByRole("button", { name: "Try again" });
+  down = false;
+  r1 = run("r1", { status: "completed", state: "done" });
+  fireEvent.click(again);
+  expect(await screen.findByText("Completed")).toBeTruthy();
+  expect(screen.queryByText("Running")).toBeNull();
+});
+
 // The server lists score runs to an operator only; `me` says who the cookie belongs to.
 function serveScoreRuns() {
   const base = fetch.getMockImplementation();

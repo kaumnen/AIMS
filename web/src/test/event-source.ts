@@ -19,8 +19,11 @@ export class FakeEventSource extends EventTarget {
     this.dispatchEvent(new Event("open"));
   }
 
-  send(message: StreamMessage): void {
-    this.dispatchEvent(new MessageEvent(message.kind, { data: JSON.stringify(message) }));
+  // `id` is the SSE id the server gave this message or one before it
+  send(message: StreamMessage, id = ""): void {
+    this.dispatchEvent(
+      new MessageEvent(message.kind, { data: JSON.stringify(message), lastEventId: id }),
+    );
   }
 
   fail(closed: boolean): void {

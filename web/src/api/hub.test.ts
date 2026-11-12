@@ -230,6 +230,26 @@ test("state reaches every tab; a refusal closes them all until someone subscribe
   expect(sources).toHaveLength(2);
 });
 
+test("after a refused session the next list stream resumes the run list from its version", () => {
+  const hub = new Hub(open);
+  const tab = new Tab();
+  join(hub, tab);
+  hub.receive(tab, { t: "sub", id: 1, wanted: { runs: true, run: [], deltas: [] } });
+  settle();
+  push(sources[0], { kind: "runner", runner: runnerInfo() }, "@7");
+  sources[0]?.on.error(true);
+  // the sign-in form takes the page's place, then a sign-in brings it back
+  hub.receive(tab, { t: "unsub", id: 1 });
+  settle();
+  hub.receive(tab, { t: "reconnect" });
+  hub.receive(tab, { t: "sub", id: 2, wanted: { runs: true, run: [], deltas: [] } });
+  settle();
+  expect(sources.map((s) => s.url)).toEqual([
+    "/api/stream?runs=true",
+    "/api/stream?runs=true&last_event_id=%407",
+  ]);
+});
+
 test("reconnect opens a new stream though nothing changed, and the old one goes quiet", () => {
   const hub = new Hub(open);
   const tab = new Tab();

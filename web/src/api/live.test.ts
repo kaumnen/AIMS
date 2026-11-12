@@ -48,6 +48,27 @@ test("state goes connecting, open, retrying and a refusal reports closed", () =>
   expect(source?.readyState).toBe(FakeEventSource.CLOSED);
 });
 
+test("a new list stream resumes the run list where the last one got to", async () => {
+  // a module of its own, so what this test's streams got to stays here
+  vi.resetModules();
+  const { Live: Fresh } = await import("./live");
+  const first = new Fresh({ runs: true });
+  first.start();
+  FakeEventSource.all[0]?.send({ kind: "runner", runner }, "@7");
+  // a session ends: the page and its stream go
+  first.stop();
+  const page = new Fresh({ run: [{ id: "r1", after: 3 }] });
+  page.start();
+  FakeEventSource.all[1]?.send({ kind: "end", run_id: "r1" }, "@9,r1:3");
+  // a sign-in later
+  new Fresh({ runs: true }).start();
+  expect(FakeEventSource.all.map((s) => s.url)).toEqual([
+    "/api/stream?runs=true",
+    "/api/stream?run=r1&after=3",
+    "/api/stream?runs=true&last_event_id=%407",
+  ]);
+});
+
 test("starting again replaces the connection", () => {
   const live = new Live({ runs: true });
   live.start();

@@ -14,6 +14,11 @@ export type MessageOf<K extends StreamKind> = Extract<StreamMessage, { kind: K }
 export type RunnerInfo = MessageOf<"runner">["runner"];
 type Listener = (message: StreamMessage) => void;
 
+// The run list's version where this tab's last own list stream got to. A new one resumes
+// there, as the shared worker's does, so runs that changed while none was open, as before a
+// sign-in, still come.
+let listed: string | undefined;
+
 // One subscription of the page. Tabs share one connection through a shared worker; where
 // that fails, the subscription opens its own EventSource. Parts of the page register by
 // message kind.
@@ -104,11 +109,17 @@ export class Live {
 
   #own(): void {
     const run = [...this.#cursors].map(([id, after]) => ({ id, after }));
-    const source = new EventSource(streamUrl({ ...this.subscriptions, run }));
+    const list = this.subscriptions.runs === true;
+    const source = new EventSource(
+      streamUrl({ ...this.subscriptions, run }, list ? listed : undefined),
+    );
     for (const kind of streamKinds) {
-      source.addEventListener(kind, (e) =>
-        this.#deliver(parseMessage((e as MessageEvent<string>).data)),
-      );
+      source.addEventListener(kind, (e) => {
+        const m = e as MessageEvent<string>;
+        const version = m.lastEventId.split(",")[0];
+        if (list && version?.startsWith("@")) listed = version;
+        this.#deliver(parseMessage(m.data));
+      });
     }
     source.addEventListener("open", () => this.#update("open", null));
     source.addEventListener("error", () => {
