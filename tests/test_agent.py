@@ -36,6 +36,7 @@ from aims.events import (
 from aims.models import Message, ModelClient, Profile, ToolOutput
 from aims.prompts import AgentTexts, Prompts
 from aims.run.control import ControlGate
+from aims.run.estimate import _agent_ceiling, step_usd
 from aims.sandbox import AuditedSandbox
 from aims.sandbox.audit import ExecResult
 from aims.scenario import AgentConfig, Budget, Compaction, Limits, SandboxConfig
@@ -375,6 +376,87 @@ async def test_summary_compaction_rewrites_the_history(store: LocalEventStore) -
     assert compacted.summary == "I listed files twice."
     steps = await payloads(store, run_id, AgentStep)
     assert [s.n for s in steps] == [1, 2, 3]
+
+
+def summarizing(body: dict[str, Any]) -> dict[str, Any]:
+    """The most calls summary compaction makes: each call fills the context, each step runs a
+    tool and each summary request gets a summary."""
+    full = {"prompt_tokens": 900, "completion_tokens": 10}
+    if body["messages"][-1] == {"role": "user", "content": prompts.SUMMARY_REQUEST}:
+        return {**say("Steps so far."), "usage": full}
+    return {**call("bash", command="true"), "usage": full}
+
+
+async def test_the_estimate_bounds_the_calls_of_summary_compaction(store: LocalEventStore) -> None:
+    p = profile(context_tokens=1000, max_output_tokens=100)
+    step = step_usd(p)
+    assert step is not None
+    for keep in (1, 2, 5):
+        compaction = Compaction(at=0.5, strategy="summary", keep_recent=keep)
+        for steps in (1, 2, 3, 4, 7, 10):
+            budget = Budget(steps=steps, cost_usd=None)
+            script = Script(*[summarizing] * 30)
+            agent, _ = await make_agent(store, script, p=p, budget=budget, compaction=compaction)
+            assert (await agent.run()).reason == "budget_steps"
+            ceiling, _ = _agent_ceiling(AgentConfig(budget=budget, compaction=compaction), p)
+            assert ceiling == pytest.approx(len(script.requests) * step), (keep, steps)
+
+
+async def test_the_estimate_bounds_the_calls_of_a_fork_that_compacts(
+    store: LocalEventStore,
+) -> None:
+    from aims.models import Recording
+
+    p = profile(context_tokens=1000, max_output_tokens=100)
+    step = step_usd(p)
+    assert step is not None
+    for keep in (1, 3):
+        compaction = Compaction(at=0.5, strategy="summary", keep_recent=keep)
+        before = Budget(steps=6, cost_usd=None)
+        script = Script(*[summarizing] * 30)
+        agent, origin = await make_agent(store, script, p=p, budget=before, compaction=compaction)
+        await agent.run()
+        recorded = {
+            r.call_id: RecordedOutput(str(r.output), r.error)
+            for r in await payloads(store, origin, ToolResult)
+        }
+        for fork_at in (1, 3, 5):
+            for steps in (fork_at, fork_at + 1, 8):
+                live = Script(*[summarizing] * 30)
+                run_id = await store.create_run(RunStarted(scenario="t", oversight="observe"))
+                budget = Budget(steps=steps, cost_usd=None)
+                config = AgentConfig(budget=budget, compaction=compaction)
+                recording = await Recording.load(store, origin)
+                transport = live.transport()
+                fork = Agent(
+                    config=config,
+                    sandbox_config=SandboxConfig(),
+                    instruction="do the task",
+                    texts=AgentTexts(),
+                    profile=p,
+                    client=ModelClient(store, run_id, models(p), transport=transport, env={}),
+                    sandbox=cast(AuditedSandbox, FakeSandbox(echo)),
+                    store=store,
+                    run_id=run_id,
+                    tools=load_tools(config.tool_names),
+                    run_budget=RunBudget(Limits()),
+                    replay=ReplayPlan(
+                        client=ModelClient(store, run_id, models(p), replay=recording, env={}),
+                        fork_at=fork_at,
+                        schedule=[(None, p)],
+                        outputs=recorded,
+                        budget=before,
+                    ),
+                )
+                assert (await fork.run()).reason == "budget_steps"
+                ceiling, _ = _agent_ceiling(config, p, fork_at)
+                assert ceiling is not None
+                calls = len(live.requests) * step
+                where = (keep, fork_at, steps)
+                if steps > fork_at:
+                    assert ceiling == pytest.approx(calls), where
+                else:
+                    assert ceiling >= calls, where
 
 
 class Gate:

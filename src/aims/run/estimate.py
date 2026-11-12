@@ -836,26 +836,49 @@ def step_usd(p: Profile) -> float | None:
     return (p.context_tokens * p.price.input + p.max_output_tokens * p.price.output) / MILLION
 
 
-def _step_cost(agent: AgentConfig, p: Profile) -> float | None:
-    """The most one step of `agent` on `p` can cost: its call, and with summary compaction the
-    summary call it may make before that, once the caps are checked. None when a call's cost is
-    unbounded."""
+def _calls(agent: AgentConfig, steps: int, done: int = 0) -> int:
+    """The most model calls `agent` makes in `steps` steps after the `done` steps a fork
+    replays: one per step and, with summary compaction, a summary call before each step with
+    more than `keep_recent` steps before it."""
+    c = agent.compaction
+    if c is None or c.strategy != "summary":
+        return steps
+    return steps + max(0, steps - max(0, c.keep_recent + 1 - done))
+
+
+def _live(agent: AgentConfig, done: int = 0) -> int | None:
+    """The steps a fork's agent has left after the `done` it replays, at least one; None
+    without a step cap."""
+    steps = agent.budget.steps
+    return None if steps is None else max(steps - done, 1)
+
+
+def _step_cost(agent: AgentConfig, p: Profile, done: int = 0) -> float | None:
+    """The most one step of `agent` on `p` can cost once the caps are checked: its call, and
+    the summary call before it when its step cap leaves room for one. None when a call's cost
+    is unbounded."""
     step = step_usd(p)
+    if step is None:
+        return None
+    live = _live(agent, done)
     summary = agent.compaction is not None and agent.compaction.strategy == "summary"
-    return None if step is None else step * (2 if summary else 1)
+    if live is not None:
+        summary = _calls(agent, live, done) > live
+    return step * (2 if summary else 1)
 
 
 def _agent_ceiling(agent: AgentConfig, p: Profile, done: int = 0) -> tuple[float | None, bool]:
     """What the agent's caps let it spend, and whether that counts one last step past its cost
     cap. The step cap bounds the cost only when a call's cost is bounded; a fork's agent has
     the steps it did not replay left, at least one."""
-    step = _step_cost(agent, p)
-    b = agent.budget
+    step = step_usd(p)
+    last = _step_cost(agent, p, done)
+    live = _live(agent, done)
     caps: list[tuple[float, bool]] = []
-    if b.cost_usd is not None:
-        caps.append((b.cost_usd + (step or 0.0), step is not None))
-    if b.steps is not None and step is not None:
-        caps.append((max(b.steps - done, 1) * step, False))
+    if agent.budget.cost_usd is not None:
+        caps.append((agent.budget.cost_usd + (last or 0.0), last is not None))
+    if live is not None and step is not None:
+        caps.append((_calls(agent, live, done) * step, False))
     if not caps:
         return None, False
     value, stepped = min(caps)
@@ -872,17 +895,26 @@ def _ceiling(p: Plan) -> tuple[float | None, bool]:
     each = [_agent_ceiling(a, p.profiles[a.id], p.done.get(a.id, 0)) for a in priced]
     if all(value is not None for value, _ in each):
         options.append((sum(v for v, _ in each if v is not None), any(s for _, s in each)))
-    steps = [_step_cost(a, p.profiles[a.id]) for a in priced]
+    steps = [_step_cost(a, p.profiles[a.id], p.done.get(a.id, 0)) for a in priced]
     known = [s for s in steps if s is not None]
     limits = p.scenario.limits
     if limits.cost_usd is not None:
         options.append((limits.cost_usd + sum(known), bool(known)))
     if limits.steps is not None and len(known) == len(priced):
-        left = max(limits.steps - sum(p.done.values()), 1)
-        options.append(((left + len(priced) - 1) * max(known), False))
+        live = max(limits.steps - sum(p.done.values()), 1) + len(priced) - 1
+        # an agent's calls cost more per step once it summarizes, so all the steps the run
+        # allows, given to one agent, cost the most
+        options.append((max(_run_steps(a, p, live) for a in priced), False))
     if not options:
         return None, False
     return min(options)
+
+
+def _run_steps(agent: AgentConfig, p: Plan, steps: int) -> float:
+    """The most `steps` steps of `agent` cost, its calls priced."""
+    step = step_usd(p.profiles[agent.id])
+    assert step is not None
+    return _calls(agent, steps, p.done.get(agent.id, 0)) * step
 
 
 def _uncapped(p: Plan) -> list[str]:

@@ -279,20 +279,39 @@ def test_steps_and_context_bound_an_agent_below_its_cost_cap(tmp_path: Path) -> 
     assert e.parts[0].agents.ceiling_usd == pytest.approx(min(10 * STEP, 0.5 + STEP))
 
 
-def test_an_agent_that_compacts_by_summary_may_pay_two_calls_a_step_under_every_cap(
+def test_an_agent_that_compacts_by_summary_pays_a_summary_call_after_its_kept_steps(
     tmp_path: Path,
 ) -> None:
-    # the summary call comes before the step's own call, after the caps are checked
+    # the summary call comes before the step's own call, after the caps are checked, from the
+    # step with more than keep_recent steps before it
     summary = "\n    compaction: {at: 0.5, strategy: summary, keep_recent: 1}"
     for budget, extra, ceiling in [
         ("{steps: 100, cost_usd: 1}", "", 1 + 2 * STEP),
-        ("{steps: 10, cost_usd: 50}", "", 10 * 2 * STEP),
+        ("{steps: 10, cost_usd: 50}", "", (10 + 8) * STEP),
+        ("{steps: 2, cost_usd: 50}", "", 2 * STEP),
+        ("{steps: 2, cost_usd: 0.1}", "", 0.1 + STEP),
         ("{steps: 100, cost_usd: 50}", "limits: {cost_usd: 1}\n", 1 + 2 * STEP),
-        ("{steps: 100, cost_usd: 50}", "limits: {steps: 10}\n", 10 * 2 * STEP),
+        ("{steps: 2, cost_usd: 50}", "limits: {cost_usd: 0.1}\n", 0.1 + STEP),
+        ("{steps: 100, cost_usd: 50}", "limits: {steps: 10}\n", (10 + 8) * STEP),
     ]:
         settings, path = write(tmp_path, budget=budget + summary, extra=extra)
         e = one(settings, History(), load_scenario(path))
         assert e.parts[0].agents.ceiling_usd == pytest.approx(ceiling), (budget, extra)
+
+
+def test_the_run_step_cap_bounds_summary_calls_as_one_agent_taking_every_step(
+    tmp_path: Path,
+) -> None:
+    extra = (
+        "    compaction: {at: 0.5, strategy: summary, keep_recent: 3}\n"
+        "  - id: b\n"
+        "    budget: {steps: 100, cost_usd: 50}\n"
+        "limits: {steps: 10}\n"
+    )
+    settings, path = write(tmp_path, budget="{steps: 100, cost_usd: 50}", extra=extra)
+    e = one(settings, History(), load_scenario(path))
+    # 11 steps with two agents: a summarizes before 7 of them
+    assert e.parts[0].agents.ceiling_usd == pytest.approx((11 + 7) * STEP)
 
 
 def test_no_cap_set_is_said_with_a_warning(tmp_path: Path) -> None:
