@@ -663,7 +663,6 @@ class Rollout:
         return f"{self.name} (blind)" if self.blind else self.name
 
     def charge(self, reply: Reply) -> None:
-        self.calls.append(reply.call_id)
         self.cost += reply.cost_usd or 0.0
         usage = reply.usage
         if usage.input_tokens is not None:
@@ -1087,8 +1086,12 @@ class Judge:
                 r.seen, r.tool_calls, full = seen, used, True
 
     async def _call(self, r: Rollout, prompt: Prompt, out: int | None = None) -> Reply:
+        """One call, linked from the rollout as soon as its request is in the log, so a call
+        that is cancelled or raises is linked too."""
         overrides = None if out is None else Overrides(max_output_tokens=out)
-        reply = await self.client.call(self.profile, prompt, role="judge", overrides=overrides)
+        reply = await self.client.call(
+            self.profile, prompt, role="judge", overrides=overrides, recorded=r.calls.append
+        )
         r.charge(reply)
         return reply
 

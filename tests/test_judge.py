@@ -1004,6 +1004,7 @@ async def test_a_failed_rollout_is_kept(store: LocalEventStore) -> None:
     errors = [r.error for r in v.rollouts]
     assert sum(e is not None for e in errors) == 1
     assert any(e and "model call failed" in e for e in errors)
+    assert [len(r.calls) for r in v.rollouts] == [1, 1]
 
 
 async def test_every_rollout_failing_is_an_error(store: LocalEventStore) -> None:
@@ -1263,6 +1264,20 @@ async def test_a_timeout_keeps_the_finished_verdicts(store: LocalEventStore) -> 
     responses = await store.events(run.id, types=["model.response"])
     assert sorted(str(e.data["status"]) for e in responses) == ["cancelled", "completed"]
     await check_events(store, run.id)
+
+
+async def test_a_cancelled_call_is_linked_from_its_rollout(store: LocalEventStore) -> None:
+    run = await make_run(store)
+    answer = say(json.dumps(verdict(summary="seeing")))
+    script = stalls(Script(answer), is_blind)
+    judge = make_judge(store, run, script, rollouts=2, blind=1, timeout_s=1.5)
+    with anyio.fail_after(5):
+        v = payload_of(await judge.run(flags=[], sweeps=[]))
+    responses = await store.events(run.id, types=["model.response"])
+    status = {str(e.data["call_id"]): e.data["status"] for e in responses}
+    seeing, blind = v.rollouts
+    assert [status[c] for c in seeing.calls] == ["completed"]
+    assert [status[c] for c in blind.calls] == ["cancelled"]
 
 
 async def test_every_rollout_timed_out_keeps_the_cost(store: LocalEventStore) -> None:

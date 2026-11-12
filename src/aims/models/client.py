@@ -7,7 +7,7 @@ import random
 import re
 import time
 import uuid
-from collections.abc import Awaitable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -126,11 +126,13 @@ class ModelClient:
         agent_id: str | None = None,
         overrides: Overrides | None = None,
         role: ModelRole | None = None,
+        recorded: Callable[[str], None] | None = None,
     ) -> Reply:
         """One model call, retried per the profile. The reply's cost sums every attempt, since a
         failed one may have been billed. Raises ModelCallError when every attempt failed, and
         ReplayError when a replay has no answer for the request. `role` marks a call the
-        monitor makes."""
+        monitor makes. `recorded` gets the call's id once its first `model.request` is in the
+        log, so a caller knows the id of a call that is then cancelled or raises."""
         if isinstance(profile, str):
             profile = self.config.get(profile)
         if prompt.output_schema is not None and not profile.structured_output:
@@ -173,6 +175,8 @@ class ModelClient:
                     role=role,
                 )
                 await self.store.append(self.run_id, [Draft(request, agent_id)])
+                if attempt == 1 and recorded is not None:
+                    recorded(call_id)
                 outcome = await self._attempt(
                     client, backend, profile, content, call_id, attempt, agent_id
                 )
