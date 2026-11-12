@@ -450,9 +450,10 @@ async def test_the_estimate_bounds_the_calls_of_a_fork_that_compacts(
         script = Script(*[summarizing] * 30)
         agent, origin = await make_agent(store, script, p=p, budget=before, compaction=compaction)
         await agent.run()
+        # one tool call a step
         recorded = {
-            r.call_id: RecordedOutput(str(r.output), r.error)
-            for r in await payloads(store, origin, ToolResult)
+            (n, r.call_id): RecordedOutput(str(r.output), r.error)
+            for n, r in enumerate(await payloads(store, origin, ToolResult), 1)
         }
         for fork_at in (1, 3, 5):
             for steps in (fork_at, fork_at + 1, 8):
