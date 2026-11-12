@@ -365,6 +365,63 @@ async def test_rate_limit_is_retried_after_the_wait(store: LocalEventStore) -> N
     assert events[3].status == "completed"
 
 
+FAILED = {
+    "id": "resp_2",
+    "status": "failed",
+    "error": {"message": "overloaded"},
+    "output": [],
+    "usage": {"input_tokens": 20, "output_tokens": 7},
+}
+
+
+async def test_the_reply_costs_every_attempt_that_used_tokens(store: LocalEventStore) -> None:
+    failed = [{"type": "response.failed", "response": FAILED}]
+    stalled = [*sse(RESPONSES_EVENTS, done=False), 1.0]
+    p = profile(backend="responses", reasoning="summary", timeouts=Timeouts(stall=0.2))
+    run_id = await new_run(store)
+    handler, _ = scripted(
+        lambda: stream(sse(failed)),
+        lambda: stream(stalled),
+        lambda: stream(sse(RESPONSES_EVENTS)),
+    )
+    async with client(store, run_id, p, handler) as mc:
+        reply = await mc.call("test", PROMPT)
+    events = payloads(await model_events(store, run_id))
+    responses = [e for e in events if isinstance(e, ModelResponse)]
+    assert [(r.status, r.error_kind) for r in responses] == [
+        ("error", "provider"),
+        ("error", "stall"),
+        ("completed", None),
+    ]
+    costs = [r.cost_usd for r in responses]
+    assert costs == pytest.approx([34e-6, 38e-6, 38e-6])
+    assert reply.attempts == 3
+    assert reply.cost_usd == pytest.approx(sum(costs))
+
+    run_id = await new_run(store)
+    handler, _ = scripted(*[lambda: stream(sse(failed))] * 3)
+    async with client(store, run_id, p, handler) as mc:
+        with pytest.raises(ModelCallError) as info:
+            await mc.call("test", PROMPT)
+    assert info.value.reply.cost_usd == pytest.approx(3 * 34e-6)
+
+    run_id = await new_run(store)
+    handler, _ = scripted(
+        lambda: stream([b'{"error": {"message": "busy"}}'], 503),
+        lambda: stream(sse(RESPONSES_EVENTS)),
+    )
+    async with client(store, run_id, p, handler) as mc:
+        reply = await mc.call("test", PROMPT)
+    assert reply.cost_usd == pytest.approx(38e-6)
+    unpriced = profile(price=None)
+    handler, _ = scripted(
+        lambda: stream([b'{"error": {"message": "busy"}}'], 503),
+        lambda: stream(sse(CHAT_EVENTS)),
+    )
+    async with client(store, run_id, unpriced, handler) as mc:
+        assert (await mc.call(unpriced, PROMPT)).cost_usd is None
+
+
 async def test_a_profile_without_structured_output_refuses_a_schema(
     store: LocalEventStore,
 ) -> None:

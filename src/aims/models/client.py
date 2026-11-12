@@ -48,7 +48,8 @@ _RETRY_STATUS = frozenset({408, 409, 425, 429})
 
 
 class ModelCallError(Exception):
-    """Every attempt of a model call failed. `reply` describes the last one."""
+    """Every attempt of a model call failed. `reply` describes the last one, with the cost of
+    them all."""
 
     def __init__(self, reply: Reply) -> None:
         super().__init__(
@@ -126,9 +127,10 @@ class ModelClient:
         overrides: Overrides | None = None,
         role: ModelRole | None = None,
     ) -> Reply:
-        """One model call, retried per the profile. Raises ModelCallError when every attempt
-        failed, and ReplayError when a replay has no answer for the request. `role` marks a call
-        the monitor makes."""
+        """One model call, retried per the profile. The reply's cost sums every attempt, since a
+        failed one may have been billed. Raises ModelCallError when every attempt failed, and
+        ReplayError when a replay has no answer for the request. `role` marks a call the
+        monitor makes."""
         if isinstance(profile, str):
             profile = self.config.get(profile)
         if prompt.output_schema is not None and not profile.structured_output:
@@ -152,6 +154,7 @@ class ModelClient:
         call_id = str(uuid.uuid7())
         request_params = params(profile, prompt)
         attempts = profile.retries.attempts
+        spent: float | None = None
         for attempt in range(1, attempts + 1):
             lease = None if group is None else await group.acquire(estimate)
             outcome: _Outcome | None = None
@@ -186,8 +189,9 @@ class ModelClient:
             last = attempt == attempts
             retry = outcome.retryable and not last and outcome.reraise is None
             reply = await settle(
-                self._finish(profile, backend, call_id, attempt, agent_id, outcome, retry)
+                self._finish(profile, backend, call_id, attempt, agent_id, outcome, retry, spent)
             )
+            spent = reply.cost_usd
             if outcome.reraise is not None:
                 raise outcome.reraise
             if outcome.status in ("completed", "incomplete"):
@@ -362,7 +366,10 @@ class ModelClient:
         agent_id: str | None,
         o: _Outcome,
         retry: bool,
+        spent: float | None,
     ) -> Reply:
+        """Log the attempt with its own cost; the reply adds `spent`, what the attempts before
+        it cost."""
         a = o.assembled
         ex = o.exchange
         datas: list[bytes] = []
@@ -429,7 +436,7 @@ class ModelClient:
             reasoning_kind=a.reasoning_kind,
             finish_reason=a.finish_reason,
             usage=a.usage,
-            cost_usd=cost,
+            cost_usd=_plus(spent, cost),
             error=o.error,
         )
 
@@ -515,6 +522,13 @@ def _cost(price: Price | None, usage: ModelUsage) -> float | None:
         + usage.output_tokens * price.output
     )
     return round(total / 1_000_000, 10)
+
+
+def _plus(spent: float | None, cost: float | None) -> float | None:
+    """The cost of the attempts so far: the sum of the priced ones, None while none is."""
+    if spent is None or cost is None:
+        return cost if spent is None else spent
+    return round(spent + cost, 10)
 
 
 _DURATION = re.compile(r"(\d+(?:\.\d+)?)(ms|h|m|s)")

@@ -66,7 +66,8 @@ class Prompt(_Strict):
 
 
 class Reply(_Strict):
-    """The outcome of a model call, from its last attempt."""
+    """The outcome of a model call, from its last attempt. `cost_usd` sums every attempt that
+    had a price, None when none had one."""
 
     call_id: str
     profile: str
