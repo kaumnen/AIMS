@@ -102,6 +102,7 @@ export class RunTail {
 
   start(after: number): void {
     this.#stopped = false;
+    this.#readOnAll(after);
     const live = new Live({ run: [{ id: this.runId, after }], deltas: [this.runId] }, () =>
       this.#closed(),
     );
@@ -139,6 +140,7 @@ export class RunTail {
     this.#held.clear();
     this.#unheld?.();
     this.#unheld = null;
+    this.#readOnAll(Number.POSITIVE_INFINITY);
   }
 
   get inflight(): readonly InFlight[] {
@@ -246,11 +248,8 @@ export class RunTail {
   // search or more pages to load gets them by paging. A tab whose page is being read takes them
   // once the page is in.
   #appendRaw(events: readonly Event[]): void {
-    for (const query of this.qc.getQueryCache().findAll({
-      queryKey: ["runs", "events", this.runId],
-    })) {
+    for (const query of this.#rawLists()) {
       const filters = (query.queryKey[3] ?? {}) as RawFilters;
-      if (filters.q) continue;
       const types = filters.types ? new Set(filters.types) : null;
       const mine = types === null ? events : events.filter((e) => types.has(e.type));
       if (mine.length === 0) continue;
@@ -287,10 +286,31 @@ export class RunTail {
     this.qc.setQueryData<InfiniteData<RawPage>>(key, { pages, pageParams: params });
   }
 
-  #hold(hash: string, events: readonly Event[]): void {
+  // The raw lists that take the stream; a search gets new events by paging.
+  #rawLists() {
+    return this.qc
+      .getQueryCache()
+      .findAll({ queryKey: ["runs", "events", this.runId] })
+      .filter((q) => !(q.queryKey[3] as RawFilters | undefined)?.q);
+  }
+
+  // A list that stops before `after`, where the stream starts, reads on past its last event once
+  // shown: one kept from an earlier visit, or one a stopped tail no longer keeps current. A list
+  // whose page is read does so once the read is in, while the tail runs.
+  #readOnAll(after: number): void {
+    for (const query of this.#rawLists()) {
+      const data = query.state.data as InfiniteData<RawPage> | undefined;
+      if (data === undefined || lastSeq(data.pages) >= after) continue;
+      if (query.state.fetchStatus === "idle") this.#readOn(query.queryKey);
+      else if (!this.#stopped) this.#hold(query.queryHash, "over");
+    }
+  }
+
+  #hold(hash: string, events: readonly Event[] | "over"): void {
     const held = this.#held.get(hash);
     if (held === "over") return;
-    if ((held?.length ?? 0) + events.length > MAX_HELD) this.#held.set(hash, "over");
+    if (events === "over" || (held?.length ?? 0) + events.length > MAX_HELD)
+      this.#held.set(hash, "over");
     else if (held) held.push(...events);
     else this.#held.set(hash, [...events]);
     this.#unheld ??= this.qc.getQueryCache().subscribe(({ query }) => {

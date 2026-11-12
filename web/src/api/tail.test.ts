@@ -415,6 +415,47 @@ test("a raw list read back from the end reads each page it held again on a refet
   expect(rawSeqs(qc, last.queryKey)).toEqual(range(50, 449).map((e) => e.seq));
 });
 
+const lastNewer = (qc: QueryClient, key: readonly unknown[]) =>
+  qc.getQueryData<InfiniteData<RawPage>>(key)?.pages.at(-1)?.newer;
+
+test("a raw list kept from an earlier visit reads on to what the run logged since", async () => {
+  rawServer(() => range(0, 10));
+  const qc = new QueryClient();
+  const all = rawEventsQuery(RUN, {});
+  // the last visit left the list at 4; the run logged up to 9 meanwhile
+  qc.setQueryData(all.queryKey, page(range(0, 4)));
+  const { source, tail } = open(qc, 9);
+  source.send({ kind: "events", run_id: RUN, events: [event(10, "file.access")] });
+  flush();
+  expect(rawSeqs(qc, all.queryKey)).toEqual([0, 1, 2, 3, 4]);
+  await new InfiniteQueryObserver(qc, all).fetchNextPage();
+  expect(rawSeqs(qc, all.queryKey)).toEqual(range(0, 10).map((e) => e.seq));
+  source.send({ kind: "events", run_id: RUN, events: [event(11, "file.access")] });
+  flush();
+  expect(rawSeqs(qc, all.queryKey)).toEqual(range(0, 11).map((e) => e.seq));
+  // with no tail, the run goes on past the list: it reads on once shown again
+  tail.stop();
+  expect(lastNewer(qc, all.queryKey)).toBe(11);
+});
+
+test("a raw list kept from an earlier visit whose page is read reads on once it is in", async () => {
+  const asked = heldReads();
+  const qc = new QueryClient();
+  const last = rawEventsQuery(RUN, {}, "end");
+  qc.setQueryData(last.queryKey, {
+    ...page(range(3, 4), null, 3),
+    pageParams: [{ before: Number.MAX_SAFE_INTEGER }],
+  });
+  const read = new InfiniteQueryObserver(qc, last).fetchPreviousPage();
+  await waitFor(() => expect(asked).toHaveLength(1));
+  const { tail } = open(qc, 9);
+  asking(asked, "before", "3").answer(range(0, 2));
+  await read;
+  await waitFor(() => expect(lastNewer(qc, last.queryKey)).toBe(4));
+  expect(rawSeqs(qc, last.queryKey)).toEqual([0, 1, 2, 3, 4]);
+  tail.stop();
+});
+
 // Answers step reads from `rows` and reads of agent ends with `ends`; the URLs asked, by kind.
 function stepReads(rows: () => StepInfo[], ends: Event[] = []) {
   const asked = { steps: [] as URL[], ends: [] as URL[] };
