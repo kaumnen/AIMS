@@ -61,7 +61,8 @@ async def test_an_awaited_scan_of_a_long_text_leaves_the_loop_free() -> None:
     took = time.perf_counter() - start
     done = True
     await ticker
-    assert took >= 0.3
+    # the loop's clock and this one differ by a little: 0.2997 s was seen
+    assert took >= 0.29
     assert worst < took / 2
 
 
