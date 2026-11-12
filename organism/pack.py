@@ -3,7 +3,8 @@
     uv run python -m organism.pack organism/build/pack/aims-organism-runs
 
 Same input, same bytes: names sorted, times, owners and gzip header fixed. Run indexes
-(index.sqlite) are left out, since the store rebuilds them.
+(index.sqlite) are left out, since the store rebuilds them, and so are the folders of deleted
+runs (graves) that the store's next open removes.
 """
 
 import gzip
@@ -12,6 +13,8 @@ import sys
 import tarfile
 from pathlib import Path
 
+from aims.events.store import GRAVE
+
 MTIME = 1793750400  # 2026-11-04 00:00 UTC
 SKIP = {"index.sqlite", "index.sqlite-wal", "index.sqlite-shm", ".DS_Store"}
 
@@ -19,7 +22,7 @@ SKIP = {"index.sqlite", "index.sqlite-wal", "index.sqlite-shm", ".DS_Store"}
 def members(root: Path):
     yield root
     for path in sorted(root.rglob("*")):
-        if path.name in SKIP or any(p.name in SKIP for p in path.parents):
+        if any(p in SKIP or p.startswith(GRAVE) for p in path.relative_to(root).parts):
             continue
         if path.is_symlink() or not (path.is_file() or path.is_dir()):
             raise SystemExit(f"not a plain file or folder: {path}")
