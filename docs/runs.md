@@ -27,7 +27,7 @@ A fork replays a step only when the run recorded a result for each of its tool c
 - `aims delete <run>` or **Delete** on the run page removes a run from the control plane with its monitor runs and scores.
 - A run that still runs, or that a queued job uses, stays.
 - A run marked running whose runner is offline goes with `--force` or **Delete anyway**. A runner that still holds a deleted run drops its copy.
-- `aims ui --keep-days 30` deletes runs that ended more than 30 days ago in the same way, at start and once a day. Its local runner drops its own copies after the same days.
+- `aims ui --keep-days 30` deletes runs that ended more than 30 days ago in the same way, at start and once a day. Its local runner drops its own copies after the same days. It takes up to 36500 days.
 
 ## Reports
 

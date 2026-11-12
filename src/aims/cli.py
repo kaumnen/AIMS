@@ -106,6 +106,19 @@ def _finite(value: float | None) -> float | None:
     return value
 
 
+def _days(value: float | None) -> float | None:
+    """The value of a keep days option: finite and at most MAX_KEEP_DAYS, so the date it
+    reaches back to stays one a timestamp holds."""
+    value = _finite(value)
+    if value is None:
+        return None
+    from aims.config import MAX_KEEP_DAYS
+
+    if value > MAX_KEEP_DAYS:
+        raise typer.BadParameter(f"give at most {MAX_KEEP_DAYS} days")
+    return value
+
+
 def _settings(config: Path | None) -> Any:
     """Every config layer merged, or exit 1 with the problem."""
     from aims.config import ConfigError, load
@@ -335,7 +348,7 @@ def images_prune(
         float | None,
         typer.Option(
             min=0,
-            callback=_finite,
+            callback=_days,
             help="Remove scenario images unused this many days. By default \\[images] keep_days.",
         ),
     ] = None,
@@ -1516,7 +1529,7 @@ def ui(
         float | None,
         typer.Option(
             min=0,
-            callback=_finite,
+            callback=_days,
             help="Delete runs that ended this many days ago, with their monitor runs and scores,"
             " at start and once a day; a run in use stays. The local runner gets it too.",
         ),
@@ -1647,7 +1660,7 @@ def runner_cmd(
         float | None,
         typer.Option(
             min=0,
-            callback=_finite,
+            callback=_days,
             help="Delete runs sealed this many days ago once the control plane has them."
             " Copies of other runners' runs go once unused this long, 7 days at most.",
         ),

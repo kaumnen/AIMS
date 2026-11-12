@@ -7,6 +7,7 @@ from typer.testing import CliRunner
 
 from aims.cli import app
 from aims.config import (
+    MAX_KEEP_DAYS,
     STARTER,
     ConfigError,
     audit_keep_days,
@@ -130,6 +131,37 @@ def test_audit_keep_days_comes_from_the_top_layer_that_sets_it(tmp_path: Path) -
             load(project, env)
         with pytest.raises(ConfigError, match=r"\[audit\]"):
             audit_keep_days(layers(project, env))
+
+
+@pytest.mark.parametrize("table", ["images", "audit"])
+def test_keep_days_is_finite_and_at_most_a_century(tmp_path: Path, table: str) -> None:
+    env = {"AIMS_CONFIG_DIR": str(tmp_path / "none")}
+    project = tmp_path / "aims.toml"
+    read = image_keep_days if table == "images" else audit_keep_days
+    project.write_text(f"[{table}]\nkeep_days = {MAX_KEEP_DAYS}\n")
+    assert read(layers(project, env)) == MAX_KEEP_DAYS
+    for bad in ("inf", "-inf", "nan", "1e300", str(MAX_KEEP_DAYS + 1)):
+        project.write_text(f"[{table}]\nkeep_days = {bad}\n")
+        problem = rf"\[{table}\] keep_days must be a number of days from 0 to {MAX_KEEP_DAYS}"
+        with pytest.raises(ConfigError, match=problem):
+            load(project, env)
+        with pytest.raises(ConfigError, match=problem):
+            read(layers(project, env))
+
+
+@pytest.mark.parametrize(
+    ("text", "problem"),
+    [
+        ("[credits]\nmeta = inf\n", r"\[credits\] maps each provider to a USD amount"),
+        ("[credits]\nmeta = nan\n", r"\[credits\] maps each provider to a USD amount"),
+        ("[estimate]\nconfirm_above_usd = inf\n", r"\[estimate\] confirm_above_usd must be"),
+    ],
+)
+def test_an_amount_is_finite(tmp_path: Path, text: str, problem: str) -> None:
+    project = tmp_path / "aims.toml"
+    project.write_text(text)
+    with pytest.raises(ConfigError, match=problem):
+        load(project, {"AIMS_CONFIG_DIR": str(tmp_path / "none")})
 
 
 def test_a_config_file_that_is_not_utf8_is_a_config_error(tmp_path: Path) -> None:

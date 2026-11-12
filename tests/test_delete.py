@@ -33,6 +33,7 @@ from test_server import (
 from typer.testing import CliRunner
 
 from aims.cli import app
+from aims.config import MAX_KEEP_DAYS
 from aims.events import Draft, LocalEventStore, RunFinished, RunStarted, ToolCall, split_lines
 from aims.events import store as event_store
 from aims.events.index import Index
@@ -311,6 +312,14 @@ async def test_keep_days_deletes_old_runs_with_their_family_and_skips_those_in_u
     assert await cp.state.db.job(recent.run_id) is not None
     assert await cp.state.db.job(reads.run_id) is not None
     assert await retention.prune(cp.state, 5) == []
+
+
+async def test_keep_days_at_its_most_reaches_back_to_a_date_a_timestamp_holds(
+    cp: CP, local: LocalEventStore, runner: FakeRunner
+) -> None:
+    kept = await made(cp, local, runner)
+    assert await retention.prune(cp.state, MAX_KEEP_DAYS) == []
+    assert await cp.state.store.run(kept) is not None
 
 
 async def test_housekeeping_keeps_runs_the_days_the_server_was_given(

@@ -26,6 +26,7 @@ from proxy import Server, environ, serving
 from typer.testing import CliRunner
 
 from aims.cli import EXIT_CANCELLED, app
+from aims.config import MAX_KEEP_DAYS
 from aims.events import Draft, LocalEventStore, RunFinished, RunStarted, ToolCall
 from aims.net import Outbound
 from aims.node.service import Node, NodeOptions, Refused
@@ -248,6 +249,41 @@ def test_a_float_option_needs_a_finite_number(
         assert "give a finite number" in r.output
     assert started == []
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("value", [str(MAX_KEEP_DAYS + 1), "1e300"])
+def test_a_keep_days_option_is_at_most_a_century(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, value: str
+) -> None:
+    """Housekeeping turns the days into the date it deletes before; past about a century that
+    date leaves what a timestamp holds."""
+    started: list[object] = []
+
+    async def serve(o: UiOptions) -> int:
+        started.append(o)
+        return 0
+
+    class Stub:
+        def __init__(self, options: NodeOptions) -> None:
+            started.append(options)
+
+        async def run(self, stop: asyncio.Event) -> None:
+            pass
+
+    monkeypatch.setattr("aims.server.serve.serve", serve)
+    monkeypatch.setattr("aims.node.service.Node", Stub)
+    data = ["--data-dir", str(tmp_path / "data")]
+    for args in (
+        ["images", "prune", "--dry-run", "--days"],
+        ["ui", "--no-open", "--no-runner", *data, "--keep-days"],
+        ["runner", "--server", "http://127.0.0.1:9", *data, "--keep-days"],
+    ):
+        r = CliRunner().invoke(app, [*args, value], env={"AIMS_TOKEN": "x"})
+        assert (r.exit_code, type(r.exception)) == (2, SystemExit), (args, r.output)
+        assert f"give at most {MAX_KEEP_DAYS} days" in r.output
+    r = CliRunner().invoke(app, ["ui", "--no-open", "--no-runner", *data, "--keep-days", "36500"])
+    assert r.exit_code == 0, r.output
+    assert [getattr(o, "keep_days", None) for o in started] == [MAX_KEEP_DAYS]
 
 
 def test_the_runner_gets_its_audit_mode(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

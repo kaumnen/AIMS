@@ -16,6 +16,7 @@ A scenario overrides all of them for its agents. A missing file adds nothing; no
 """
 
 import hashlib
+import math
 import os
 import tomllib
 from collections.abc import Mapping
@@ -49,6 +50,9 @@ TABLES = frozenset(
 )
 CONFIRM_ABOVE_USD = 20.0
 AUDIT_KEEP_DAYS = 90.0
+# The most days a `keep_days` or `--keep-days` may say: about a century, so the date it reaches
+# back to stays one a timestamp holds.
+MAX_KEEP_DAYS = 36_500
 
 
 class ConfigError(Exception):
@@ -195,7 +199,9 @@ def _scenario_paths(path: Path, table: object) -> list[Path]:
 
 
 def _amount(value: object) -> bool:
-    return isinstance(value, int | float) and not isinstance(value, bool) and value >= 0
+    """Whether `value` is a finite number, 0 or more. TOML writes inf and nan too."""
+    number = isinstance(value, int | float) and not isinstance(value, bool)
+    return number and math.isfinite(value) and value >= 0
 
 
 def _credits(path: Path, table: object) -> dict[str, float]:
@@ -227,8 +233,10 @@ def _keep_days(path: Path, name: str, table: object, current: float) -> float:
     if not isinstance(table, dict) or set(table) - {"keep_days"}:
         raise ConfigError(f"{path}: [{name}] takes only `keep_days`")
     value = table.get("keep_days", current)
-    if not _amount(value):
-        raise ConfigError(f"{path}: [{name}] keep_days must be a number of days, 0 or more")
+    if not _amount(value) or value > MAX_KEEP_DAYS:
+        raise ConfigError(
+            f"{path}: [{name}] keep_days must be a number of days from 0 to {MAX_KEEP_DAYS}"
+        )
     return float(value)
 
 

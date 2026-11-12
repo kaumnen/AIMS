@@ -121,8 +121,8 @@ Do the same for `aims-toolbox`. Then run `docker load -i aims-tracer.tar` on the
 
 Scenario images build from their Dockerfiles, which often need the network. Run `aims scenario check` on a connected host first. Then move the `aims-env:<hash>` images it built with `docker save` and `docker load`.
 
-A scenario image that no run used in 30 days is removed when `aims run`, `aims runner` or a self-test starts. So are the helper images of other AIMS versions. A runner that stays up checks again every hour. Images a container uses always stay. `keep_days` under `[images]` in a config file changes the 30 days. On an offline host, set it high enough to keep the images you loaded. `aims images prune` removes these images now. Add `--dry-run` to only list them.
+A scenario image that no run used in 30 days is removed when `aims run`, `aims runner` or a self-test starts. So are the helper images of other AIMS versions. A runner that stays up checks again every hour. Images a container uses always stay. `keep_days` under `[images]` in a config file changes the 30 days, up to 36500. On an offline host, set it high enough to keep the images you loaded. `aims images prune` removes these images now. Add `--dry-run` to only list them.
 
 ## Audit log
 
-The control plane keeps an audit log of every change sent to it and every failed sign-in. Operators read it under **Settings** > **Audit** or with `aims audit`. Rows stay 90 days. `keep_days` under `[audit]` changes that. 0 keeps them all. [SECURITY.md](../SECURITY.md#audit-log) says what a row holds.
+The control plane keeps an audit log of every change sent to it and every failed sign-in. Operators read it under **Settings** > **Audit** or with `aims audit`. Rows stay 90 days. `keep_days` under `[audit]` changes that, up to 36500. 0 keeps them all. [SECURITY.md](../SECURITY.md#audit-log) says what a row holds.
