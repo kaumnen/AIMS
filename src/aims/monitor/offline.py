@@ -293,9 +293,11 @@ async def monitor_offline(
             result.status, result.reason = "failed", f"{type(e).__name__}: {e}"
     except asyncio.CancelledError:
         result.status, result.reason = "cancelled", "cancelled before the monitor finished"
-        await settle(_end(store, monitor, client, result))
         raise
-    await _end(store, monitor, client, result)
+    finally:
+        # The seal lands even when a cancel comes as the run closes, on either path. The cancel
+        # goes on after it.
+        await settle(_end(store, monitor, client, result))
     return result
 
 

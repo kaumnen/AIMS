@@ -333,6 +333,39 @@ async def test_a_second_cancel_while_the_monitor_run_seals_leaves_it_sealed(
     assert info.status == "cancelled"
 
 
+async def test_a_cancel_while_a_finished_monitor_run_closes_leaves_it_sealed(
+    recorded: tuple[LocalEventStore, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The monitor did all its work, so the run is sealed as completed, and the cancel goes on."""
+    store, origin_id = recorded
+    origin, _ = await monitored(store, origin_id)
+    m = models(WATCHER)
+    resolved = offline_monitor(
+        m, Prompts(), origin.bundle.scenario, origin_agents(origin), signals_only=True
+    )
+    closing = asyncio.Event()
+    aclose = ModelClient.aclose
+
+    async def slow(self: ModelClient) -> None:
+        closing.set()
+        await asyncio.sleep(0.2)
+        await aclose(self)
+
+    monkeypatch.setattr(ModelClient, "aclose", slow)
+    made: list[str] = []
+    task = asyncio.create_task(
+        monitor_offline(store, origin, resolved, models=m, on_start=made.append)
+    )
+    async with asyncio.timeout(5):
+        await closing.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    info = await store.run(made[0])
+    assert info is not None
+    assert info.status == "completed"
+
+
 def test_the_resolution_order_and_the_mode_checks(tmp_path: Path) -> None:
     bundle = synthetic(tmp_path, "monitor: {preset: signals, sweeps: {every: 9}}\n")
     m = models(WATCHER)
