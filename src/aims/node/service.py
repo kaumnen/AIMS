@@ -334,6 +334,10 @@ class Node:
         except Exception as e:
             log.exception("job %s failed", job.run_id)
             if await store.run(job.run_id) is None:
+                if await store.log_head(job.run_id) is None:
+                    # A score job and a model check ship their run from before it begins. With
+                    # no line written that shipper would wait for one without end.
+                    link.unship(job.run_id)
                 with contextlib.suppress(ApiError, httpx2.TransportError, OSError):
                     await link.client.release(job.run_id, f"{type(e).__name__}: {e}")
         finally:

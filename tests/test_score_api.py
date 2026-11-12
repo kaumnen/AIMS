@@ -24,7 +24,7 @@ from aims.monitor.texts import resolve
 from aims.node.link import Link
 from aims.prompts import Prompts
 from aims.run import scoring, truth
-from aims.run.score import Added, Taken
+from aims.run.score import Added, CheckError, Taken
 from aims.run.scoring import score_with
 from aims.server.db import OPEN_STATES
 from aims.wire import OfferMessage, RunnerHello, ScoreJob
@@ -461,6 +461,38 @@ async def test_a_runners_first_stop_ends_a_score_job_at_once(
         # nothing began: the job goes back for the next runner
         assert info is None
         assert (job.state, job.releases) in (("queued", 1), ("offered", 1))
+
+
+async def test_a_score_job_that_fails_before_its_run_begins_stops_shipping_it(
+    cp: CP,
+    local: LocalEventStore,
+    fake: FakeRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    origin = await planted(cp, local, fake)
+
+    async def broken(store: Any, run_id: str, added: Any = None) -> list[Taken]:
+        raise CheckError("the run does not check")
+
+    monkeypatch.setattr(scoring, "check_run", broken)
+    async with node(cp, tmp_path / "node") as n:
+        async with cp.client(cp.operator) as c:
+            r = await c.post(
+                f"/api/runs/{origin}/score",
+                json={"awareness": False, "answer": False, "runner": "n1"},
+            )
+            assert r.status_code == 202, r.text
+            (run_id,) = r.json()["run_ids"]
+        # each failure gives the job back, and the last one ends it
+        job = await job_until(cp, run_id, lambda j: j.state == "done")
+        await until(lambda: not n.claimed, 10)
+        assert job.reason is not None
+        assert "the run does not check" in job.reason
+        assert await n.ctx.store.run(run_id) is None
+        link = n.ctx.link
+        assert run_id not in link.shippers
+        assert run_id not in link._ships
 
 
 async def scored(
