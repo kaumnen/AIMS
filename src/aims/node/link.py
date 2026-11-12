@@ -199,7 +199,7 @@ class Link:
             heads = await self.client.heads(chunk)
             for run_id in chunk:
                 try:
-                    local = await self.store.head(run_id)
+                    local = await self.store.log_head(run_id)
                 except RunCorrupt as e:
                     log.error("%s; it is not shipped", e)
                     continue

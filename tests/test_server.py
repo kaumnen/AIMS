@@ -2495,6 +2495,67 @@ async def test_a_corrupt_run_does_not_stop_the_others_shipping(
     assert await cp.state.store.run(bad) is None
 
 
+def refuse_from(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch, run_id: str, seq: int
+) -> None:
+    """Make the store's index refuse each batch of `run_id` that reaches `seq`, so it stays
+    behind the log."""
+    real = store._index.add
+
+    async def add(events: list[Any], head: Any) -> None:
+        if events and events[0].run_id == run_id and events[-1].seq >= seq:
+            raise ValueError("the index cannot take it")
+        await real(events, head)
+
+    monkeypatch.setattr(store._index, "add", add)
+
+
+async def server_seq(cp: CP, run_id: str) -> int:
+    head = await cp.state.store.head(run_id)
+    return -1 if head is None else head.seq
+
+
+async def test_a_run_whose_index_stays_behind_ships_its_whole_log(
+    cp: CP, local: LocalEventStore, fake: FakeRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = await local.create_run(STARTED)
+    await local.append(run_id, [call(1)])
+    refuse_from(local, monkeypatch, run_id, 2)
+    task = asyncio.create_task(Shipper(local, fake.client, run_id).run())
+    await until(lambda: server_seq(cp, run_id), 1)
+    await local.append(run_id, [call(2)])
+    await until(lambda: server_seq(cp, run_id), 2)
+    await local.append(run_id, [Draft(RunFinished(status="completed"))])
+    async with asyncio.timeout(10):
+        await task
+    head = await cp.state.store.head(run_id)
+    assert head is not None
+    assert (head.seq, head.finished) == (3, True)
+    indexed = await local.head(run_id)
+    assert indexed is not None
+    assert indexed.seq == 1
+
+
+async def test_ship_all_ships_a_run_whose_index_stays_behind(
+    cp: CP, local: LocalEventStore, fake: FakeRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = await local.create_run(STARTED)
+    await local.append(run_id, [call(1)])
+    await fake.client.post_events(
+        run_id, split_lines((local.root / run_id / "events.jsonl").read_bytes())
+    )
+    refuse_from(local, monkeypatch, run_id, 2)
+    await local.append(run_id, [call(2), Draft(RunFinished(status="completed"))])
+    link = Link(fake.client, local, DeltaBus())
+    await link.ship_all()
+    assert list(link.shippers) == [run_id]
+    assert await link.drain(20)
+    await link.close()
+    head = await cp.state.store.head(run_id)
+    assert head is not None
+    assert (head.seq, head.finished) == (3, True)
+
+
 @pytest.mark.parametrize(
     ("fails", "refused_from", "lines"),
     [

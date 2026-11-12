@@ -200,7 +200,7 @@ class Shipper:
 
     async def _ship(self) -> bool:
         """Send one batch. False when there was nothing new."""
-        head = await self.store.head(self.run_id)
+        head = await self.store.log_head(self.run_id)
         if head is None or head.seq <= self.local.seq:
             self.done = self.local.finished
             return False

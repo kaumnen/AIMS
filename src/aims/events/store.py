@@ -311,6 +311,31 @@ class LocalEventStore:
             raise RunCorrupt(f"run {run_id} is marked corrupt")
         return head
 
+    async def log_head(self, run_id: str) -> Head | None:
+        """Where the synced part of a run's log ends: the index head, or past it while the
+        index is behind the log."""
+        head = await self.head(run_id)
+        if run_id not in self._lags:
+            return head
+        handle = self._writers.get(run_id) or self._sinks.get(run_id)
+        if handle is not None:
+            # a write sets the handle's head before its fsync, and holds the lock past it
+            async with handle.lock:
+                if not handle.closed:
+                    return handle.head
+
+        def read() -> Head:
+            after = head or Head()
+            while True:
+                chunk, error = _take(self._log(run_id), run_id, after, CHUNK)
+                if chunk:
+                    after = chunk[-1][1]
+                if error is not None or len(chunk) < CHUNK:
+                    return after
+
+        found = await asyncio.to_thread(read)
+        return found if found.seq >= 0 else head
+
     async def remove(self, run_id: str) -> None:
         """Delete a sealed run's directory and its index rows. An ingest-only store also drops
         a copy whose last lines never came, unless an ingest is writing it.
