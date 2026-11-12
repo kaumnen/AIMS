@@ -55,60 +55,63 @@ export function SelfTestCases({ runId, detail }: { runId: string; detail: RunDet
           <span className="text-muted-foreground"> {detail.run.reason}</span>
         )}
       </p>
-      <table className="w-full">
-        <thead className="text-muted-foreground text-left">
-          <tr className="border-b">
-            <th className="py-1 pr-4 font-normal">Case</th>
-            <th className="py-1 pr-4 font-normal">Result</th>
-            <th className="py-1 pr-4 font-normal">Run</th>
-            <th className="py-1 font-normal">What it saw</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map(({ name, state, run, r }) => {
-            return (
-              <tr key={name} className="border-b align-top last:border-0">
-                <td className="py-1.5 pr-4">{name}</td>
-                <td
-                  className={cn(
-                    "py-1.5 pr-4",
-                    state === "failed" && "font-medium",
-                    state === "running" && "text-pen-1",
-                    (state === "waiting" || state === "not run") && "text-muted-foreground",
-                  )}
-                >
-                  {state}
-                </td>
-                <td className="py-1.5 pr-4 font-mono">
-                  {run && (
-                    <Link
-                      to="/runs/$runId"
-                      params={{ runId: run }}
-                      className="underline-offset-2 hover:underline"
-                    >
-                      {shortId(run)}
-                    </Link>
-                  )}
-                </td>
-                <td className="py-1.5">
-                  {r && (
-                    <ul className="flex flex-col gap-0.5">
-                      {r.problems.map((p) => (
-                        <li key={p}>{p}</li>
-                      ))}
-                      {r.notes.map((n) => (
-                        <li key={n} className="text-muted-foreground">
-                          {n}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+      {/* a self-test cancelled before it started knows no cases */}
+      {rows.length > 0 && (
+        <table className="w-full">
+          <thead className="text-muted-foreground text-left">
+            <tr className="border-b">
+              <th className="py-1 pr-4 font-normal">Case</th>
+              <th className="py-1 pr-4 font-normal">Result</th>
+              <th className="py-1 pr-4 font-normal">Run</th>
+              <th className="py-1 font-normal">What it saw</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(({ name, state, run, r }) => {
+              return (
+                <tr key={name} className="border-b align-top last:border-0">
+                  <td className="py-1.5 pr-4">{name}</td>
+                  <td
+                    className={cn(
+                      "py-1.5 pr-4",
+                      state === "failed" && "font-medium",
+                      state === "running" && "text-pen-1",
+                      (state === "waiting" || state === "not run") && "text-muted-foreground",
+                    )}
+                  >
+                    {state}
+                  </td>
+                  <td className="py-1.5 pr-4 font-mono">
+                    {run && (
+                      <Link
+                        to="/runs/$runId"
+                        params={{ runId: run }}
+                        className="underline-offset-2 hover:underline"
+                      >
+                        {shortId(run)}
+                      </Link>
+                    )}
+                  </td>
+                  <td className="py-1.5">
+                    {r && (
+                      <ul className="flex flex-col gap-0.5">
+                        {r.problems.map((p) => (
+                          <li key={p}>{p}</li>
+                        ))}
+                        {r.notes.map((n) => (
+                          <li key={n} className="text-muted-foreground">
+                            {n}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
     </section>
   );
 }

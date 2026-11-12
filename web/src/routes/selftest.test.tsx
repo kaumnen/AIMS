@@ -222,6 +222,31 @@ test("a self-test cancelled in the queue says so and polls nothing", async () =>
   expect(query?.observers.map((o) => o.options.refetchInterval)).toEqual([false]);
 });
 
+test("a self-test cancelled before it started shows no case table", async () => {
+  parent = run(PARENT, {
+    kind: "selftest",
+    status: "cancelled",
+    state: "cancelled",
+    started_at: null,
+    reason: "cancelled by op",
+  });
+  ended = [];
+  // a run that never started has no run.started to name its cases
+  const base = fetch.getMockImplementation();
+  if (!base) throw new Error("no fetch");
+  fetch.mockImplementation(async (request) => {
+    const answer = await base(request);
+    if (new URL(request.url).pathname !== `/api/runs/${PARENT}`) return answer;
+    return Response.json({ ...(await answer.json()), started: null });
+  });
+  renderAt(`/runs/${PARENT}`);
+  const cases = await screen.findByRole("region", { name: "Cases" });
+  expect(
+    await within(cases).findByText("Cancelled before it started: cancelled by op."),
+  ).toBeTruthy();
+  expect(within(cases).queryByRole("table")).toBeNull();
+});
+
 test("self-tests list their cases nested", async () => {
   renderAt("/runs?kind=selftest");
   fireEvent.click(await screen.findByRole("button", { name: "Cases" }));

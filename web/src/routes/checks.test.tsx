@@ -144,3 +144,28 @@ test("a model check cancelled in the queue says so and polls nothing", async () 
     .find({ queryKey: modelChecksQuery(CHECK).queryKey });
   expect(query?.observers.map((o) => o.options.refetchInterval)).toEqual([false]);
 });
+
+test("a model check cancelled before it started shows no table", async () => {
+  check = {
+    ...check,
+    status: "cancelled",
+    state: "cancelled",
+    started_at: null,
+    reason: "cancelled by op",
+  };
+  checked = [];
+  // a run that never started has no run.started to name its profiles
+  const base = fetch.getMockImplementation();
+  if (!base) throw new Error("no fetch");
+  fetch.mockImplementation(async (request) => {
+    const answer = await base(request);
+    if (new URL(request.url).pathname !== `/api/runs/${CHECK}`) return answer;
+    return Response.json({ ...(await answer.json()), started: null });
+  });
+  renderAt(`/runs/${CHECK}`);
+  const checks = await screen.findByRole("region", { name: "Checks" });
+  expect(
+    await within(checks).findByText("Cancelled before it started: cancelled by op."),
+  ).toBeTruthy();
+  expect(within(checks).queryByRole("table")).toBeNull();
+});

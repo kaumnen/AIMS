@@ -48,59 +48,62 @@ export function ModelChecks({ runId, detail }: { runId: string; detail: RunDetai
           <span className="text-muted-foreground"> {detail.run.reason}</span>
         )}
       </p>
-      <table className="w-full">
-        <thead className="text-muted-foreground text-left">
-          <tr className="border-b">
-            <th className="py-1 pr-4 font-normal">Profile</th>
-            <th className="py-1 pr-4 font-normal">Test</th>
-            <th className="py-1 pr-4 font-normal">Verdict</th>
-            <th className="py-1 font-normal">What it saw</th>
-          </tr>
-        </thead>
-        <tbody>
-          {names.flatMap((name) => {
-            const mine = results.filter((r) => r.profile === name);
-            if (mine.length === 0) {
-              const state = !running ? "not run" : waiting ? "waiting" : "running";
-              waiting ||= running;
-              return [
-                <tr key={name} className="border-b align-top last:border-0">
-                  <td className="py-1.5 pr-4">{name}</td>
-                  <td className="py-1.5 pr-4" />
+      {/* a check cancelled before it started knows no profiles */}
+      {names.length > 0 && (
+        <table className="w-full">
+          <thead className="text-muted-foreground text-left">
+            <tr className="border-b">
+              <th className="py-1 pr-4 font-normal">Profile</th>
+              <th className="py-1 pr-4 font-normal">Test</th>
+              <th className="py-1 pr-4 font-normal">Verdict</th>
+              <th className="py-1 font-normal">What it saw</th>
+            </tr>
+          </thead>
+          <tbody>
+            {names.flatMap((name) => {
+              const mine = results.filter((r) => r.profile === name);
+              if (mine.length === 0) {
+                const state = !running ? "not run" : waiting ? "waiting" : "running";
+                waiting ||= running;
+                return [
+                  <tr key={name} className="border-b align-top last:border-0">
+                    <td className="py-1.5 pr-4">{name}</td>
+                    <td className="py-1.5 pr-4" />
+                    <td
+                      className={cn(
+                        "py-1.5 pr-4",
+                        state === "running" ? "text-pen-1" : "text-muted-foreground",
+                      )}
+                    >
+                      {state}
+                    </td>
+                    <td className="py-1.5" />
+                  </tr>,
+                ];
+              }
+              return mine.map((r, i) => (
+                <tr
+                  key={`${name}/${r.name}`}
+                  className={cn("align-top", i === mine.length - 1 && "border-b last:border-0")}
+                >
+                  <td className="py-1.5 pr-4">{i === 0 ? name : ""}</td>
+                  <td className="py-1.5 pr-4">{r.name}</td>
                   <td
                     className={cn(
                       "py-1.5 pr-4",
-                      state === "running" ? "text-pen-1" : "text-muted-foreground",
+                      r.verdict === "fail" && "font-medium",
+                      r.verdict === "ok" && "text-muted-foreground",
                     )}
                   >
-                    {state}
+                    {VERDICT[r.verdict]}
                   </td>
-                  <td className="py-1.5" />
-                </tr>,
-              ];
-            }
-            return mine.map((r, i) => (
-              <tr
-                key={`${name}/${r.name}`}
-                className={cn("align-top", i === mine.length - 1 && "border-b last:border-0")}
-              >
-                <td className="py-1.5 pr-4">{i === 0 ? name : ""}</td>
-                <td className="py-1.5 pr-4">{r.name}</td>
-                <td
-                  className={cn(
-                    "py-1.5 pr-4",
-                    r.verdict === "fail" && "font-medium",
-                    r.verdict === "ok" && "text-muted-foreground",
-                  )}
-                >
-                  {VERDICT[r.verdict]}
-                </td>
-                <td className="py-1.5 wrap-anywhere">{r.detail}</td>
-              </tr>
-            ));
-          })}
-        </tbody>
-      </table>
+                  <td className="py-1.5 wrap-anywhere">{r.detail}</td>
+                </tr>
+              ));
+            })}
+          </tbody>
+        </table>
+      )}
     </section>
   );
 }
