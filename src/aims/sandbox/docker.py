@@ -1004,8 +1004,7 @@ class DockerVolumeView:
         try:
             await container.put_archive("/v", data)
         finally:
-            with contextlib.suppress(aiodocker.DockerError):
-                await container.delete(force=True)
+            await remove_container(container)
 
     async def close(self) -> None:
         await self._reader.close()

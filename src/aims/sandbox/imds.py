@@ -14,7 +14,7 @@ import aiodocker
 from aiodocker.containers import DockerContainer
 
 from aims.sandbox.base import TOOLBOX
-from aims.sandbox.containers import create_container
+from aims.sandbox.containers import create_container, remove_container
 
 log = logging.getLogger("aims.sandbox")
 STOP_S = 1
@@ -454,8 +454,7 @@ async def start(
         if attached is not None:
             with contextlib.suppress(Exception):
                 await attached.close()
-        with contextlib.suppress(aiodocker.DockerError):
-            await container.delete(force=True)
+        await remove_container(container)
         raise
     assert follower is not None
     return ImdsServer(docker, container, log_path, follower)

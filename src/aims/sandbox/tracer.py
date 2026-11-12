@@ -33,7 +33,7 @@ from aims.sandbox.base import (
     Setattr,
     Sync,
 )
-from aims.sandbox.containers import create_container
+from aims.sandbox.containers import create_container, remove_container
 from aims.sandbox.execs import exec_output
 from aims.sandbox.images import ensure_image
 from aims.sandbox.trace import (
@@ -475,8 +475,7 @@ class Tracer:
         if self._ready.done() and not self._ready.cancelled():
             self._ready.exception()
         if self._container is not None:
-            with contextlib.suppress(aiodocker.DockerError):
-                await self._container.delete(force=True)
+            await remove_container(self._container)
             self._container = None
 
     def register(self, pidns: int, mounts: Mounts, syscalls: dict[int, str]) -> Route:

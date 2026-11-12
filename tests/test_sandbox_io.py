@@ -567,6 +567,41 @@ async def test_a_put_archive_cancelled_in_its_create_call_leaves_no_helper(
         await scrub(backend, run_id)
 
 
+async def test_a_reader_cancelled_before_its_delete_is_sent_still_goes(
+    backend: DockerBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = f"test-{uuid.uuid4().hex[:12]}"
+    name = f"aims-{run_id}-shared"
+    await backend.docker.volumes.create({"Name": name, "Labels": {"aims.run": run_id}})
+    view = await backend.volume(run_id, Mount(volume="shared", target="/shared"))
+    reached, release, delete = asyncio.Event(), asyncio.Event(), DockerContainer.delete
+
+    async def slow_delete(self: DockerContainer, **kw: Any) -> None:
+        # Stands for a slow connect: the request is not sent yet.
+        reached.set()
+        await release.wait()
+        await delete(self, **kw)
+
+    monkeypatch.setattr(DockerContainer, "delete", slow_delete)
+    try:
+        before, _ = await leftovers(backend, run_id)
+        task = asyncio.create_task(view.close())
+        async with asyncio.timeout(60):
+            await reached.wait()
+        task.cancel()
+        await asyncio.wait({task}, timeout=1)
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            async with asyncio.timeout(60):
+                await task
+        reader = view._reader._container.id
+        assert reader in before
+        assert (await leftovers(backend, run_id))[0] == before - {reader}
+    finally:
+        release.set()
+        await scrub(backend, run_id)
+
+
 class HeldTracer:
     """A live tracer whose confirm never answers."""
 

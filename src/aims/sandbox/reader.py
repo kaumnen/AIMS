@@ -12,7 +12,7 @@ from aiodocker.stream import Stream
 
 from aims.events import MAX_INT, FsChangeType, FsKind
 from aims.sandbox.base import Change, Tree
-from aims.sandbox.containers import create_container
+from aims.sandbox.containers import create_container, remove_container
 
 log = logging.getLogger("aims.sandbox")
 
@@ -140,9 +140,10 @@ class Reader:
                 raise ReaderError(self.broken) from e
 
     async def close(self) -> None:
-        await self._end()
-        with contextlib.suppress(aiodocker.DockerError):
-            await self._container.delete(force=True)
+        try:
+            await self._end()
+        finally:
+            await remove_container(self._container)
 
     def get_archive(self, path: str) -> AsyncGenerator[bytes]:
         """The files under `path`, a root as the sandbox sees it, as Docker's tar of it, in

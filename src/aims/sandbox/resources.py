@@ -17,7 +17,7 @@ from aiodocker.execs import Exec as DockerExec
 
 from aims.events import ResourceSample
 from aims.sandbox.base import RUNNER_UID, Lost, Sample
-from aims.sandbox.containers import create_container
+from aims.sandbox.containers import create_container, remove_container
 from aims.sandbox.execs import exec_output
 
 log = logging.getLogger("aims.sandbox")
@@ -233,8 +233,7 @@ class Sampler:
         try:
             await container.start()
         except BaseException:
-            with contextlib.suppress(aiodocker.DockerError):
-                await container.delete(force=True)
+            await remove_container(container)
             raise
         return container
 
