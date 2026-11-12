@@ -518,6 +518,7 @@ def test_the_command_line_checks_the_fork_and_series_flags(tmp_path: Path) -> No
     assert "agent:N" in said("--replay", "x", "--keep-others")
     assert "needs --replay" in said("--keep-others", "--fork-at", "a:1", str(tmp_path / "s.yaml"))
     assert "needs --series" in said("--series-restart", str(tmp_path / "s.yaml"))
+    assert "keeps its origin's variant" in said("--replay", "x", "--variant", "v")
 
 
 async def test_the_api_takes_a_cut_and_checks_it(tmp_path: Path) -> None:

@@ -717,7 +717,11 @@ def run(
     ] = False,
     monitor: MonitorPresetOption = None,
     variant: Annotated[
-        str | None, typer.Option("--variant", help="A named scenario variant to apply.")
+        str | None,
+        typer.Option(
+            "--variant",
+            help="A named scenario variant to apply. A fork keeps its origin's variant.",
+        ),
     ] = None,
     series: Annotated[
         str | None,
@@ -778,6 +782,8 @@ def run(
         raise typer.BadParameter(
             "needs --replay", param_hint="--fork-at/--strict-env/--inject/--keep-others"
         )
+    if replay is not None and variant is not None:
+        raise typer.BadParameter("a fork keeps its origin's variant", param_hint="--variant")
     if keep_others and (fork_at is None or ":" not in fork_at):
         raise typer.BadParameter("needs --fork-at agent:N", param_hint="--keep-others")
     if series_restart and series is None:
