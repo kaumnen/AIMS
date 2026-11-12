@@ -37,6 +37,7 @@ from aims.sandbox.base import (
     check_name,
 )
 from aims.sandbox.containers import create_container, remove_container
+from aims.sandbox.execs import open_stream
 from aims.sandbox.images import KEEP_DAYS, ensure_built, ensure_image, ensure_pulled, remove_old
 from aims.sandbox.imds import Identity
 from aims.sandbox.imds import start as start_imds_server
@@ -684,7 +685,7 @@ class DockerSandbox:
                 self._deadlines[deadline] = None
                 if self._paused_at is not None:
                     self._hold(deadline)
-                stream = await exe.start(detach=False).__aenter__()
+                stream = await open_stream(exe.start(detach=False))
                 try:
                     if stdin is not None:
                         feeder = asyncio.create_task(_feed(stream, stdin))
@@ -1052,7 +1053,7 @@ def _cmdline(argv: Sequence[str]) -> bytes:
 async def _call(container: DockerContainer, argv: list[str], user: str) -> None:
     """Run `argv` in `container` as `user` and wait for it to end."""
     exe = await container.exec(argv, user=user, workdir="/", stdout=True, stderr=True)
-    stream = await exe.start(detach=False).__aenter__()
+    stream = await open_stream(exe.start(detach=False))
     try:
         while await stream.read_out() is not None:
             pass

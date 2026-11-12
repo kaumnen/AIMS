@@ -34,7 +34,7 @@ from aims.sandbox.base import (
     Sync,
 )
 from aims.sandbox.containers import create_container, remove_container
-from aims.sandbox.execs import exec_output
+from aims.sandbox.execs import exec_output, open_stream
 from aims.sandbox.images import ensure_image
 from aims.sandbox.trace import (
     Delete,
@@ -365,7 +365,7 @@ class Tracer:
         reading: list[str] = []
         pending = b""
         try:
-            stream = await skips.start(detach=False).__aenter__()
+            stream = await open_stream(skips.start(detach=False))
             try:
                 while (message := await stream.read_out()) is not None:
                     if message.stream != 1:
@@ -538,7 +538,7 @@ class Tracer:
         """Read bpftrace's output as bytes, so file names that are not UTF-8 keep their bytes."""
         pending = {1: b"", 2: b""}
         try:
-            stream = await trace.start(detach=False).__aenter__()
+            stream = await open_stream(trace.start(detach=False))
             try:
                 while (message := await stream.read_out()) is not None:
                     data = pending.get(message.stream, b"") + message.data

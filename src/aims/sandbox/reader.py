@@ -13,6 +13,7 @@ from aiodocker.stream import Stream
 from aims.events import MAX_INT, FsChangeType, FsKind
 from aims.sandbox.base import Change, Tree
 from aims.sandbox.containers import create_container, remove_container
+from aims.sandbox.execs import open_stream
 
 log = logging.getLogger("aims.sandbox")
 
@@ -116,7 +117,7 @@ class Reader:
             if hashed:
                 args += ["--", *(f"{target}={MOUNT}{target}" for _, target in hashed)]
             exe = await container.exec([HELPER, *args], stdin=True, stdout=True, stderr=True)
-            reader._stream = await exe.start(detach=False).__aenter__()
+            reader._stream = await open_stream(exe.start(detach=False))
         except BaseException:
             await reader.close()
             raise

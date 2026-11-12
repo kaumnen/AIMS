@@ -18,7 +18,7 @@ from aiodocker.execs import Exec as DockerExec
 from aims.events import ResourceSample
 from aims.sandbox.base import RUNNER_UID, Lost, Sample
 from aims.sandbox.containers import create_container, remove_container
-from aims.sandbox.execs import exec_output
+from aims.sandbox.execs import exec_output, open_stream
 
 log = logging.getLogger("aims.sandbox")
 
@@ -159,7 +159,7 @@ class Watch:
         errors = b""
         delivered = False
         try:
-            stream = await trace.start(detach=False).__aenter__()
+            stream = await open_stream(trace.start(detach=False))
             try:
                 while (message := await stream.read_out()) is not None:
                     if message.stream == 2:

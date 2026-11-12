@@ -15,6 +15,7 @@ from aiodocker.containers import DockerContainer
 
 from aims.sandbox.base import TOOLBOX
 from aims.sandbox.containers import create_container, remove_container
+from aims.sandbox.execs import open_stream
 
 log = logging.getLogger("aims.sandbox")
 STOP_S = 1
@@ -423,7 +424,7 @@ async def start(
     attached: Any = None
     follower: asyncio.Task[None] | None = None
     try:
-        attached = await container.attach(stdout=True, stderr=True).__aenter__()
+        attached = await open_stream(container.attach(stdout=True, stderr=True))
         follower = asyncio.create_task(_follow(attached, log_path, name))
         await container.start()
         _check_follower(follower, name)
@@ -435,7 +436,7 @@ async def start(
         exec_ = await container.exec(
             [f"{TOOLBOX}/busybox", "sh", "-c", probe], stdout=True, stderr=True
         )
-        stream = await exec_.start(detach=False).__aenter__()
+        stream = await open_stream(exec_.start(detach=False))
         try:
             while await stream.read_out() is not None:
                 pass

@@ -11,10 +11,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import aiodocker
+import aiodocker.stream
 import pytest
 from aiodocker.containers import DockerContainer
 from aiodocker.execs import Exec
+from aiodocker.stream import Stream
 from aiodocker.volumes import DockerVolume
 
 from aims.aio import shielded
@@ -29,7 +30,7 @@ from aims.sandbox import (
     SandboxError,
     SandboxSpec,
 )
-from aims.sandbox.base import RUNNER_DIR
+from aims.sandbox.base import RUNNER_DIR, TOOLBOX, Capture
 from aims.sandbox.docker import INSTANCE, VOLUME_S
 from aims.sandbox.shared import SharedFolder
 
@@ -742,3 +743,42 @@ async def test_a_cancelled_exec_in_a_paused_sandbox_ends_at_once(
 
     finished = (await store.events(run_id, types=["exec.finished"]))[0].data
     assert finished["end"] == "cancelled"
+
+
+async def test_an_exec_stream_that_fails_to_open_is_closed(
+    backend: DockerBackend, store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A start that fails after the daemon answered, such as in the socket set-up, closes the
+    connection it opened."""
+    _, sb = await sandbox(backend, store)
+    inner = sb.sandbox
+    assert isinstance(inner, DockerSandbox)
+    streams: list[Stream] = []
+    start = Exec.start
+
+    def kept(self: Exec, **kw: Any) -> Any:
+        stream = start(self, **kw)
+        streams.append(stream)
+        return stream
+
+    def broken(*args: Any, **kw: Any) -> Any:
+        raise OSError("socket set-up failed")
+
+    try:
+        with monkeypatch.context() as m:
+            m.setattr(Exec, "start", kept)
+            m.setattr(aiodocker.stream, "FlowControlDataQueue", broken)
+            with pytest.raises(OSError, match="socket set-up failed"):
+                await inner.run(
+                    [f"{TOOLBOX}/busybox", "true"],
+                    uid=AGENT_UID,
+                    cwd="/",
+                    timeout_ms=10_000,
+                    capture=Capture(1024),
+                )
+    finally:
+        await sb.close()
+
+    (stream,) = streams
+    assert stream._resp is not None
+    assert stream._resp.closed
