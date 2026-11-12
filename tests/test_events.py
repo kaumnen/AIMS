@@ -45,6 +45,7 @@ from aims.events import (
 from aims.events.blobs import ZSTD_MAGIC, BlobStore
 from aims.events.chain import GENESIS, Head, digest, follow, seal
 from aims.events.disk import make_dir
+from aims.events.log import LogFile
 from aims.events.schema import now, text_of
 from aims.events.store import INLINE_LIMIT, LOG, _append_line, _write_private
 from aims.run import truth
@@ -1252,3 +1253,90 @@ def test_a_label_line_cut_short_by_a_full_disk_is_taken_back(
         f.write(b"tor")
     _append_line(path, b"three\n")
     assert path.read_bytes() == b"one\ntor\nthree\n"
+
+
+def broken(*args: Any) -> Any:
+    raise OSError(5, "Input/output error")
+
+
+def calls_of(events: list[Event]) -> list[str]:
+    return [str(e.data.get("call_id", e.type)) for e in events]
+
+
+async def test_a_batch_whose_fsync_failed_is_cut_off_the_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "runs"
+    async with await LocalEventStore.open(root) as store:
+        run_id = await store.create_run(STARTED)
+        before = log_path(store, run_id).read_bytes()
+        with monkeypatch.context() as patch:
+            patch.setattr(LogFile, "sync", broken)
+            with pytest.raises(OSError, match="Input/output error"):
+                await store.append(run_id, [call(1), call(2)])
+        assert log_path(store, run_id).read_bytes() == before
+        # the caller's retry writes the batch once
+        await store.append(run_id, [call(1), call(2)])
+    async with await LocalEventStore.open(root) as store:
+        assert calls_of(await store.events(run_id)) == ["run.started", "c1", "c2"]
+        assert (await store.verify(run_id)).ok
+
+
+async def test_a_log_that_will_not_cut_takes_no_line_until_it_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    root = tmp_path / "runs"
+    async with await LocalEventStore.open(root) as store:
+        run_id = await store.create_run(STARTED)
+        path = log_path(store, run_id)
+        before = path.read_bytes()
+        with monkeypatch.context() as patch:
+            patch.setattr(LogFile, "sync", broken)
+            patch.setattr(os, "ftruncate", broken)
+            with pytest.raises(OSError, match="Input/output error"):
+                await store.append(run_id, [call(1)])
+            left = path.read_bytes()
+            assert len(left) > len(before)
+            assert left.startswith(before)
+            patch.undo()
+            patch.setattr(os, "ftruncate", broken)
+            # no line goes after the stray one, which would make it part of the run
+            with pytest.raises(OSError, match="Input/output error"):
+                await store.append(run_id, [call(2)])
+            assert path.read_bytes() == left
+        assert "a failed batch is not cut off the log" in caplog.text
+        await store.append(run_id, [call(3)])
+        assert calls_of(await store.events(run_id)) == ["run.started", "c3"]
+    assert verify_run(root / run_id).events == 2
+
+
+async def test_a_store_closed_under_a_failed_append_leaves_the_closed_file_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop = asyncio.get_running_loop()
+    store = await LocalEventStore.open(tmp_path / "runs")
+    run_id = await store.create_run(STARTED)
+    other = tmp_path / "other"
+    other.write_bytes(b"x" * 100_000)
+    reused: list[int] = []
+
+    def sync(self: LogFile) -> None:
+        # a caller that stopped waiting for the append closes the store, and the number of the
+        # closed log goes to another file
+        fd = self._fd
+        asyncio.run_coroutine_threadsafe(store.close(), loop).result()
+        opened = os.open(other, os.O_RDWR)
+        os.dup2(opened, fd)
+        os.close(opened)
+        reused.append(fd)
+        raise OSError(9, "Bad file descriptor")
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(LogFile, "sync", sync)
+            with pytest.raises(OSError, match="Bad file descriptor"):
+                await store.append(run_id, [call(1)])
+    finally:
+        for fd in reused:
+            os.close(fd)
+    assert other.read_bytes() == b"x" * 100_000

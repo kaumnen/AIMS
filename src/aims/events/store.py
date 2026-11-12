@@ -196,10 +196,13 @@ class EventStore(Protocol):
 
 @dataclass(slots=True)
 class _Writer:
+    """`cut` says lines of a batch that failed may be in the log past `head`."""
+
     file: LogFile
     head: Head
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     closed: bool = False
+    cut: bool = False
 
 
 @dataclass(slots=True)
@@ -277,7 +280,13 @@ class LocalEventStore:
         self._closed = True
         for run_id in list(self._lags):
             await self._drop_lag(run_id)
-        for writer in self._writers.values():
+        for run_id, writer in self._writers.items():
+            if writer.cut:
+                # the next open would take in what a failed batch left in the log
+                try:
+                    writer.file.truncate(writer.head.offset)
+                except OSError as e:
+                    log.error("run %s: a failed batch may stay in the log: %s", run_id, e)
             _close(writer)
         self._writers.clear()
         for sink in self._sinks.values():
@@ -595,9 +604,11 @@ class LocalEventStore:
     async def _append(self, run_id: str, drafts: Sequence[Draft]) -> list[Event]:
         writer = await self._writer(run_id)
         async with writer.lock:
+            if writer.cut and not writer.closed:
+                await self._cut(run_id, writer)
             if writer.closed:
                 raise RuntimeError(f"writer for run {run_id} was closed after an I/O error")
-            head = writer.head
+            start = head = writer.head
             events: list[Event] = []
             lines: list[bytes] = []
             for draft in drafts:
@@ -616,16 +627,21 @@ class LocalEventStore:
                 lines.append(line)
             try:
                 writer.file.write(b"".join(lines))
-            except OSError:
-                with contextlib.suppress(OSError):
-                    writer.file.truncate(writer.head.offset)
-                self._discard(run_id, writer)
-                raise
-            writer.head = head
-            try:
+                writer.head = head
                 await asyncio.to_thread(writer.file.sync)
             except OSError:
-                self._discard(run_id, writer)
+                # lines of the batch may be in the log: the next open would take them in, and a
+                # retry would write them twice. A log that will not cut keeps its writer, which
+                # cuts it before it writes again. Not in a thread, where a store close could
+                # close the file under the cut
+                writer.head, writer.cut = start, True
+                if not writer.closed:
+                    try:
+                        writer.file.truncate(start.offset)
+                    except OSError as e:
+                        log.error("run %s: a failed batch is not cut off the log: %s", run_id, e)
+                    else:
+                        self._discard(run_id, writer)
                 raise
             await self._keep_up(run_id, events, head)
             if head.finished:
@@ -637,6 +653,14 @@ class LocalEventStore:
                     log.exception("an append tap of run %s failed", run_id)
         self._notify(run_id)
         return events
+
+    async def _cut(self, run_id: str, writer: _Writer) -> None:
+        """Cut the lines of a batch that failed off the open log of `writer`, before it writes
+        again. RunCorrupt when another process indexed them while they were there. The cut is
+        not run in a thread, where a store close could close the file under it."""
+        writer.file.truncate(writer.head.offset)
+        await self._index_log(run_id)
+        writer.cut = False
 
     async def put_blob(self, run_id: str, data: bytes) -> BlobRef:
         return await asyncio.to_thread(self._blobs(run_id).put, data)
