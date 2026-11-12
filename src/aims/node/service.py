@@ -112,6 +112,8 @@ class Node:
         self.options = options
         self.claimed: dict[str, Job | MonitorJob | ScoreJob | None] = {}
         self.stopping = False
+        # set once the runner stops its jobs for good and closes; a stop then does nothing
+        self.closing = False
         self.ready = asyncio.Event()
         self.backend: DockerBackend | None = None
         self._open: _Open | None = None
@@ -202,7 +204,9 @@ class Node:
                     await stop.wait()
                     await self._stop()
                 finally:
-                    # A second stop meanwhile waits for this, then the runner exits 130.
+                    # What is left is bounded. A cut store close can leave the store open,
+                    # which holds the process at exit.
+                    self.closing = True
                     await settle(self._end(chores, link))
                 if refused:
                     raise Refused(

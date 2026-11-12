@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterator, Sequence
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,12 +24,14 @@ import pytest
 from children import create_child
 from cp import CP, control_plane
 from proxy import Server, environ, serving
+from test_cli_monitor import NoDocker
 from typer.testing import CliRunner
 
 from aims.cli import EXIT_CANCELLED, app
 from aims.config import MAX_KEEP_DAYS
 from aims.events import Draft, LocalEventStore, RunFinished, RunStarted, ToolCall
 from aims.net import Outbound
+from aims.node.link import Link
 from aims.node.service import Node, NodeOptions, Refused
 from aims.node.shipper import WARN_AFTER, Backoff
 from aims.report.escape import visible
@@ -373,6 +376,8 @@ def signalled_runner(
     held = [write_end]
 
     class Stub:
+        closing = False
+
         def __init__(self, options: NodeOptions) -> None:
             pass
 
@@ -421,6 +426,61 @@ def signalled_runner(
     if said is not None:
         said.append(result.output)
     return result.exit_code, seen["stop"], seen["done"], "killing now" in result.output
+
+
+@pytest.mark.parametrize("when", ["after a stop", "after a kill", "after a kill as it starts"])
+def test_a_stop_while_the_runner_closes_leaves_the_close_alone(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, when: str
+) -> None:
+    """A stop once the runner closes its stores does nothing: after a first stop, after a
+    second that killed now, or after a second that killed it as it started."""
+    cut: list[str] = []
+    start, close = Link.start, LocalEventStore.close
+
+    class Docked(Node):
+        def __init__(self, options: NodeOptions) -> None:
+            super().__init__(replace(options, backend=cast(Any, NoDocker())))
+
+    async def started(self: Link) -> None:
+        await start(self)
+        os.kill(os.getpid(), signal.SIGINT)
+
+    async def stop_runs(self: Node) -> None:
+        # the second stop: kill now
+        os.kill(os.getpid(), signal.SIGINT)
+        await asyncio.sleep(5)
+        raise AssertionError("the second stop did not kill")
+
+    async def sealing(store: LocalEventStore) -> list[str]:
+        for _ in range(2):
+            os.kill(os.getpid(), signal.SIGINT)
+            await asyncio.sleep(0.05)
+        await asyncio.sleep(5)
+        raise AssertionError("the second stop did not kill")
+
+    async def closing(self: LocalEventStore) -> None:
+        """The close with a stop sent as it starts, which must leave it alone."""
+        try:
+            os.kill(os.getpid(), signal.SIGINT)
+            await asyncio.sleep(0.2)
+        except BaseException as e:
+            cut.append(type(e).__name__)
+        await close(self)
+
+    monkeypatch.setattr("aims.node.service.Node", Docked)
+    monkeypatch.setattr(Link, "start", started)
+    if when == "after a kill":
+        monkeypatch.setattr(Node, "_stop", stop_runs)
+    elif when == "after a kill as it starts":
+        monkeypatch.setattr("aims.node.service.seal_unsealed", sealing)
+    monkeypatch.setattr(LocalEventStore, "close", closing)
+    args = ["runner", "--server", "http://127.0.0.1:9", "--data-dir", str(tmp_path)]
+    result = CliRunner().invoke(app, args, env={"AIMS_TOKEN": "x"})
+    monkeypatch.undo()
+    killed = when != "after a stop"
+    assert cut == []
+    assert result.exit_code == (EXIT_CANCELLED if killed else 0), result.output
+    assert ("killing now" in result.output) == killed
 
 
 def test_a_runner_aims_ui_starts_stops_once_for_a_ctrl_c(

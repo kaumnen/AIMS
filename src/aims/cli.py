@@ -1790,14 +1790,18 @@ def runner_cmd(
 
         def on_signal() -> None:
             nonlocal stops
+            # Once the runner closes, or a stop killed it, a stop does nothing. What is left is
+            # bounded, and a cut store close can leave the store open, which holds the process
+            # at exit.
+            if node.closing or (current is not None and current.cancelling()):
+                return
             stops += 1
             if stops == 1:
                 stop.set()
                 say("stopping: runs are sealed as cancelled; again to kill now")
             elif current is not None:
                 current.cancel()
-                if stops == 2:
-                    say("killing now")
+                say("killing now")
 
         for sig in (signal.SIGTERM,) if by_ui else (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, on_signal)
