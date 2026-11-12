@@ -52,6 +52,7 @@ DRAIN_S = 5.0
 SAMPLES_END_S = 1.0
 QUIESCE_S = 2.0
 STATE_S = 5.0
+OUTSIDE_POLL_S = 1.0
 STDIN_POLL_S = 0.1
 STDIN_GRACE_S = 1.0
 END_S = 5.0
@@ -534,6 +535,7 @@ class DockerSandbox:
         self._freeze = asyncio.Lock()
         self._running = asyncio.Event()
         self._running.set()
+        self._outside = False
         self._deadlines: dict[asyncio.Timeout, float | None] = {}
 
     @classmethod
@@ -745,13 +747,15 @@ class DockerSandbox:
 
     async def _unpaused[T](self, call: Callable[[], Awaitable[T]]) -> T:
         """Run `call`, an exec create or start. Docker refuses both while the container is
-        paused, and a pause can land just before either. The call then waits for the resume and
-        runs again: a refused exec starts fine once the container runs.
+        paused, and a pause can land just before either. The call then waits until the
+        container runs and is made again: a refused exec starts fine then.
 
         Docker freezes the container before `pause` returns here, so the wait first lets a
         pause or resume under way finish. A refusal with no pause of this sandbox to wait for
-        is tried once more, as the pause may be over by then. A second one in a row is raised:
-        something else paused the container."""
+        is tried once more, as the pause may be over by then. After a second one in a row
+        something else paused the container, a person with the Docker CLI for one. The call
+        waits for that pause to end too, and it is raised only when Docker does not say the
+        container is paused."""
         again = True
         while True:
             try:
@@ -761,13 +765,46 @@ class DockerSandbox:
                     raise
                 async with self._freeze:
                     pass
-                if self._paused_at is not None:
+                if self._paused_at is None:
+                    if again:
+                        again = False
+                        continue
+                    if not await self._paused_outside():
+                        raise
+                await self._thaw()
+                again = True
+
+    async def _paused_outside(self) -> bool:
+        """Count the sandbox as paused when Docker says something else paused its container.
+        Exec deadlines then stop as in a pause of its own, and `_thaw` watches for the end."""
+        async with self._freeze:
+            if self._paused_at is not None:
+                return True
+            if self._killed or await self._paused_in_docker() is not True:
+                return False
+            log.warning(
+                "sandbox %s was paused outside AIMS, so its exec waits until the container"
+                " runs again",
+                self._container.id[:12],
+            )
+            self._outside = True
+            self._frozen()
+            return True
+
+    async def _thaw(self) -> None:
+        """Wait until the sandbox runs again. Nothing here ends a pause made outside AIMS, so
+        while one holds Docker is asked every OUTSIDE_POLL_S whether it is over."""
+        while not self._running.is_set():
+            if not self._outside:
+                await self._running.wait()
+                return
+            try:
+                async with asyncio.timeout(OUTSIDE_POLL_S):
                     await self._running.wait()
-                    again = True
-                elif again:
-                    again = False
-                else:
-                    raise
+            except TimeoutError:
+                async with self._freeze:
+                    if self._outside and await self._paused_in_docker() is False:
+                        self._thawed()
 
     async def _end(self, exe: Any, argv: Sequence[str], user: str) -> None:
         """End what a cancelled exec started. Like aims-exec at the deadline it kills the
@@ -874,6 +911,8 @@ class DockerSandbox:
         resume still unfreezes it. The call raises unless Docker says the container froze."""
         async with self._freeze:
             if self._paused_at is not None or self._killed:
+                # A pause made outside AIMS is this sandbox's own from here on.
+                self._outside = False
                 return
             try:
                 await self._container.pause()
@@ -897,9 +936,9 @@ class DockerSandbox:
         """Unfreeze the sandbox. An unpause call that fails or is cut short may still have
         thawed the container: the sandbox counts as running once Docker says the container is
         not paused. Otherwise it stays paused and the call raises, so a later resume tries
-        again."""
+        again. A pause made outside AIMS is left to end there."""
         async with self._freeze:
-            if self._paused_at is None:
+            if self._paused_at is None or (self._outside and not self._killed):
                 return
             if not self._killed:
                 try:
@@ -934,6 +973,7 @@ class DockerSandbox:
             return
         self._frozen_s += time.monotonic() - self._paused_at
         self._paused_at = None
+        self._outside = False
         self._running.set()
         now = asyncio.get_running_loop().time()
         for deadline, left in self._deadlines.items():
