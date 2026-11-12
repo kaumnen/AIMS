@@ -48,7 +48,7 @@ from aims.text import encodable
 
 log = logging.getLogger("aims.events")
 
-VERSION = 11
+VERSION = 12
 MAX_TEXT = 32 * 1024
 MAX_PAGE = 1000
 # Events a remove deletes in one transaction: about 0.3 ms each with 8 KB of text.
@@ -142,8 +142,12 @@ create index events_by_type on events (run_id, type, seq);
 create index events_by_agent on events (run_id, agent_id, seq);
 create index events_by_exec on events (run_id, exec_id, seq) where exec_id is not null;
 
+-- the text index leaves out events with no text, such as resource windows; its content is
+-- this view of the events it holds, so its integrity check compares the same rows
+create view events_text as select id, text from events where text != '';
+
 create virtual table events_fts using fts5 (
-    text, content = 'events', content_rowid = 'id', tokenize = 'trigram'
+    text, content = 'events_text', content_rowid = 'id', tokenize = 'trigram'
 );
 
 create trigger events_fts_insert after insert on events when new.text != '' begin
@@ -223,6 +227,7 @@ drop table if exists flags;
 drop table if exists samples;
 drop trigger if exists events_fts_insert;
 drop table if exists events_fts;
+drop view if exists events_text;
 drop table if exists events;
 drop table if exists runs;
 """

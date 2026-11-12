@@ -157,8 +157,8 @@ async def rows(index: Index, run_id: str) -> int:
 
 
 def text_index_ok(root: Path) -> None:
-    """Check the text index against the events. A row with no text, such as a resource
-    window, fails it, so the runs it checks hold none."""
+    """Check the text index against the events it holds, those with text. Rows with no text,
+    such as resource windows, are left out of both."""
     db = sqlite3.connect(root / INDEX)
     try:
         db.execute("insert into events_fts (events_fts, rank) values ('integrity-check', 1)")
@@ -220,6 +220,33 @@ async def test_a_remove_cut_short_between_batches_shows_no_run_and_the_next_open
         assert (await store.verify(kept)).ok
     text_index_ok(root)
     assert entries(root) == [kept]
+
+
+async def test_the_text_index_passes_its_check_while_runs_hold_resource_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(index_module, "REMOVE_ROWS", 3)
+    root = tmp_path / "runs"
+    async with await LocalEventStore.open(root) as store:
+        kept = await long_run(store)
+        removed = await long_run(store)
+        cut = await long_run(store)
+        text_index_ok(root)
+        await store.remove(removed)
+        text_index_ok(root)
+        await store._index._db.execute(
+            "create temp trigger cut before delete on main.events when old.seq >= 5"
+            " begin select raise(abort, 'cut short'); end"
+        )
+        with pytest.raises(sqlite3.Error, match="cut short"):
+            await store.remove(cut)
+        assert await rows(store._index, cut) > 0
+        text_index_ok(root)
+    async with await LocalEventStore.open(root) as store:
+        assert await rows(store._index, cut) == 0
+        assert store.run_ids() == [kept]
+        assert len(await store.events(kept, query="needle")) == 10
+    text_index_ok(root)
 
 
 CUT = (
