@@ -17,6 +17,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { mayDiscard } from "@/lib/unsaved";
 import { useOperator } from "@/lib/use-operator";
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
@@ -60,6 +61,8 @@ function Form({
 
   const submit = async () => {
     if (!chosen || !valid) return;
+    // it leaves the page, so it asks about a draft there before it makes anything
+    if (!mayDiscard(from ? "The copy is made from the saved files. " : "")) return;
     setBusy(true);
     setProblem(null);
     try {
@@ -71,6 +74,7 @@ function Form({
         to: "/scenarios/$source/$name",
         params: to,
         search: { tab: "files" },
+        ignoreBlocker: true,
       });
     } catch (e) {
       setProblem(isProblem(e) ? problemText(e) : "The request failed.");

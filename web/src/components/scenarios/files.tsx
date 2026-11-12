@@ -21,6 +21,7 @@ import { conflictText, problemText } from "@/components/form";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { fileTree, type TreeNode } from "@/lib/scenario";
+import { mayDiscard } from "@/lib/unsaved";
 import { useDebounced } from "@/lib/use-debounced";
 import { cn } from "@/lib/utils";
 
@@ -180,12 +181,13 @@ export default function FilesTab({
 
   const add = async (path: string) => {
     const clean = path.trim().replace(/^\/+/, "");
-    if (!clean) return;
+    // the new file opens in place of this one, so a draft here is asked about first
+    if (!clean || !mayDiscard()) return;
     try {
       await saveFile(source, name, clean, "", null);
       setAdding(null);
       refresh();
-      open(clean);
+      onFile(clean, { discard: true });
     } catch (e) {
       setStatus(`Not created: ${isProblem(e) ? problemText(e) : "the request failed."}`);
     }

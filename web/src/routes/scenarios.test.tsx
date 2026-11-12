@@ -432,6 +432,108 @@ test("deleting the open file asks only whether to delete it", async () => {
   expect(asked.questions).toEqual(["Delete notes.md?"]);
 });
 
+// The requests made with `method` to a path that ends with `end`.
+const sent = (method: string, end: string) =>
+  fetch.mock.calls.filter(([r]) => r.method === method && new URL(r.url).pathname.endsWith(end))
+    .length;
+
+const NEW_RUN = "01a19300-0000-7000-8000-000000000000";
+
+// The server starts runs and self-tests. It has no page for the run they make.
+function startsRuns() {
+  const base = fetch.getMockImplementation()!;
+  fetch.mockImplementation(async (request) => {
+    const path = new URL(request.url).pathname;
+    if (request.method === "POST" && (path === "/api/runs" || path.endsWith("/selftest"))) {
+      return Response.json({ run_ids: [NEW_RUN], group: null }, { status: 202 });
+    }
+    if (path.startsWith("/api/runs/")) {
+      return Response.json(
+        { type: "about:blank", title: "Not found", status: 404 },
+        { status: 404, headers: { "content-type": "application/problem+json" } },
+      );
+    }
+    return base(request);
+  });
+}
+
+test("Duplicate under a draft asks first, true to what the copy holds", async () => {
+  const asked = confirms(false);
+  const router = renderAt("/scenarios/project/cache-keys?tab=files");
+  const view = await draft();
+  fireEvent.click(screen.getByRole("button", { name: "Duplicate" }));
+  const dialog = within(await screen.findByRole("dialog", { name: "Duplicate cache-keys" }));
+  fireEvent.click(dialog.getByRole("button", { name: "Duplicate" }));
+  const question = "The copy is made from the saved files. Discard your changes to scenario.yaml?";
+  await waitFor(() => expect(asked.questions).toEqual([question]));
+  expect(sent("POST", "/duplicate")).toBe(0);
+  expect(view.state.doc.toString()).toContain("mine-");
+
+  asked.yes = true;
+  fireEvent.click(dialog.getByRole("button", { name: "Duplicate" }));
+  await waitFor(() =>
+    expect(router.state.location.pathname).toBe("/scenarios/project/cache-keys-copy"),
+  );
+  expect(sent("POST", "/duplicate")).toBe(1);
+  expect(asked.questions).toEqual([question, question]);
+});
+
+test("Run under a draft asks before the run starts", async () => {
+  startsRuns();
+  const asked = confirms(false);
+  const router = renderAt("/scenarios/project/cache-keys?tab=files");
+  await draft();
+  fireEvent.click(screen.getByRole("button", { name: "Run" }));
+  const dialog = within(await screen.findByRole("dialog"));
+  fireEvent.click(await dialog.findByRole("button", { name: "Start run" }));
+  const question = "The run uses the saved files. Discard your changes to scenario.yaml?";
+  await waitFor(() => expect(asked.questions).toEqual([question]));
+  expect(sent("POST", "/api/runs")).toBe(0);
+
+  asked.yes = true;
+  fireEvent.click(dialog.getByRole("button", { name: "Start run" }));
+  await waitFor(() => expect(router.state.location.pathname).toBe(`/runs/${NEW_RUN}`));
+  expect(sent("POST", "/api/runs")).toBe(1);
+  expect(asked.questions).toEqual([question, question]);
+});
+
+test("Self-test under a draft asks before it starts", async () => {
+  startsRuns();
+  const asked = confirms(false);
+  const router = renderAt("/scenarios/project/cache-keys?tab=files");
+  await draft();
+  fireEvent.click(screen.getByRole("button", { name: "Self-test" }));
+  const question = "The self-test uses the saved files. Discard your changes to scenario.yaml?";
+  await waitFor(() => expect(asked.questions).toEqual([question]));
+  expect(sent("POST", "/selftest")).toBe(0);
+
+  asked.yes = true;
+  fireEvent.click(screen.getByRole("button", { name: "Self-test" }));
+  await waitFor(() => expect(router.state.location.pathname).toBe(`/runs/${NEW_RUN}`));
+  expect(sent("POST", "/selftest")).toBe(1);
+  expect(asked.questions).toEqual([question, question]);
+});
+
+test("a new file under a draft asks before it is made", async () => {
+  const asked = confirms(false);
+  const router = renderAt("/scenarios/project/cache-keys?tab=files");
+  await draft();
+  fireEvent.click(screen.getByRole("button", { name: "New file" }));
+  const path = screen.getByRole("textbox", { name: "New file path" });
+  fireEvent.change(path, { target: { value: "extra.md" } });
+  fireEvent.submit(path);
+  await waitFor(() => expect(asked.questions).toEqual(["Discard your changes to scenario.yaml?"]));
+  expect(sent("PUT", "/files/extra.md")).toBe(0);
+
+  asked.yes = true;
+  fireEvent.submit(path);
+  await waitFor(() =>
+    expect(router.state.location.search).toEqual({ tab: "files", file: "extra.md" }),
+  );
+  expect(sent("PUT", "/files/extra.md")).toBe(1);
+  expect(asked.questions).toHaveLength(2);
+});
+
 const lists = () =>
   fetch.mock.calls.filter(([r]) => new URL(r.url).pathname === "/api/scenarios").length;
 

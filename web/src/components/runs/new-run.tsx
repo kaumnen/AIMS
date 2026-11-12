@@ -34,6 +34,7 @@ import { Input } from "@/components/ui/input";
 import { draftText, EMPTY_DRAFT, readDraft } from "@/lib/budget";
 import { started } from "@/lib/format";
 import { checkProblem, checkState, confirmWhy, oversightNote } from "@/lib/launch";
+import { mayDiscard } from "@/lib/unsaved";
 import { useDebounced } from "@/lib/use-debounced";
 import { cn } from "@/lib/utils";
 
@@ -157,6 +158,8 @@ function NewRunForm({ onDone, initial }: { onDone: () => void; initial: string }
     setDraft(EMPTY_DRAFT);
   };
   const submit = async () => {
+    // it leaves the page, so it asks about a draft there before it starts anything
+    if (!mayDiscard("The run uses the saved files. ")) return;
     setBusy(true);
     setProblem(null);
     try {
@@ -181,11 +184,15 @@ function NewRunForm({ onDone, initial }: { onDone: () => void; initial: string }
       onDone();
       const [first] = out.run_ids;
       if (out.run_ids.length === 1 && first) {
-        void navigate({ to: "/runs/$runId", params: { runId: first } });
+        void navigate({ to: "/runs/$runId", params: { runId: first }, ignoreBlocker: true });
       } else if (series !== null) {
-        void navigate({ to: "/runs", search: { series } });
+        void navigate({ to: "/runs", search: { series }, ignoreBlocker: true });
       } else {
-        void navigate({ to: "/runs", search: { scenario: scenario.title ?? scenario.name } });
+        void navigate({
+          to: "/runs",
+          search: { scenario: scenario.title ?? scenario.name },
+          ignoreBlocker: true,
+        });
       }
     } catch (e) {
       setProblem(isProblem(e) ? problemText(e) : "The run did not start.");
