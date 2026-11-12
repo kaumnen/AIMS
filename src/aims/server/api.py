@@ -1118,9 +1118,6 @@ class CommandSent(Out):
     state: str
 
 
-CommandState = Literal["waiting", "done", "failed", "dropped"]
-
-
 class CommandInfo(Out):
     """A command sent to a run and the runner's answer. `state` reads the answer: waiting
     until the runner acks, failed when it refused, saying why in `outcome`, dropped when the
@@ -1141,17 +1138,8 @@ class CommandInfo(Out):
     created: float
     acked: float | None
     outcome: str | None
-    state: CommandState
+    state: sdb.CommandState
     final: bool
-
-
-def command_state(c: sdb.Command) -> CommandState:
-    outcome = c.outcome or ""
-    if c.acked is None:
-        return "waiting"
-    if outcome.startswith("failed"):
-        return "failed"
-    return "dropped" if outcome.startswith("dropped") else "done"
 
 
 def command_info(c: sdb.Command) -> CommandInfo:
@@ -1169,7 +1157,7 @@ def command_info(c: sdb.Command) -> CommandInfo:
         created=c.created,
         acked=c.acked,
         outcome=c.outcome,
-        state=command_state(c),
+        state=c.state,
         final=c.acked is not None and not c.run_ended,
     )
 

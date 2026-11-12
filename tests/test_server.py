@@ -872,6 +872,31 @@ async def test_a_command_carried_out_ends_done_when_the_run_ends_before_its_answ
         assert (run["commands"], run["commands_waiting"], run["commands_dropped"]) == (2, 0, 1)
 
 
+async def test_a_commands_state_comes_from_the_answer_never_from_its_text(
+    cp: CP, fake: FakeRunner, local: LocalEventStore
+) -> None:
+    (run_id,) = await start_run(cp)
+    await play_job(fake, local, await fake.next(OfferMessage))
+    answers = [
+        Ack(ok=True, outcome="failed: the sandbox of a"),
+        Ack(ok=True, outcome="dropped: the sandbox of a"),
+        Ack(ok=False, outcome="dropped: no such agent"),
+    ]
+    async with cp.client(cp.operator) as c:
+        for ack in answers:
+            sent = (await c.post(f"/api/runs/{run_id}/pause", json={})).json()["command_id"]
+            await fake.next(CommandMessage)
+            await fake.client.ack(sent, ack)
+        listed = (await c.get(f"/api/runs/{run_id}/commands")).json()
+        assert [(x["state"], x["outcome"], x["final"]) for x in listed] == [
+            ("done", "failed: the sandbox of a", True),
+            ("done", "dropped: the sandbox of a", True),
+            ("failed", "failed: dropped: no such agent", True),
+        ]
+        run = (await c.get(f"/api/runs/{run_id}")).json()["run"]
+        assert (run["commands"], run["commands_waiting"], run["commands_dropped"]) == (3, 0, 0)
+
+
 # operator bodies as JSON text, each with the escape of a lone surrogate in one field
 LONE_SURROGATE = [
     ("pause", '{"agent": "a\\ud800"}', "agent"),

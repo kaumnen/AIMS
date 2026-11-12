@@ -1625,6 +1625,20 @@ async def test_aims_control_reports_a_kill_done_when_its_answer_comes_after_the_
     assert result.stdout.strip() == f"kill {run_id}: done"
 
 
+@pytest.mark.parametrize("note", ["failed: the sandbox of a", "dropped: the sandbox of a"])
+async def test_aims_control_reads_a_done_answer_as_done_whatever_its_text_says(
+    cp: CP, fake: FakeRunner, local: LocalEventStore, note: str
+) -> None:
+    (run_id,) = await start_run(cp)
+    await play_job(fake, local, await fake.next(OfferMessage))
+    sent = asyncio.create_task(control(cp, run_id, "pause", token=cp.operator))
+    message = await fake.next(CommandMessage)
+    await fake.client.ack(message.id, Ack(ok=True, outcome=note))
+    result = await sent
+    assert result.exit_code == EXIT_PART_DONE, result.output
+    assert result.stdout.strip() == f"pause {run_id}: done in part: {note}"
+
+
 async def test_aims_control_finds_a_local_ui(
     cp: CP,
     fake: FakeRunner,

@@ -137,15 +137,18 @@ async def test_commands_have_a_seq_per_runner_and_ack_once(db: ServerDB) -> None
     assert [c.id for c in await db.pending_commands("r1")] == [c1.id, c2.id]
     assert [c.id for c in await db.pending_commands("r1", after=1)] == [c2.id]
     assert not await db.ack(c1.id, "r2", "ok")
-    assert await db.ack(c1.id, "r1", "ok")
+    assert await db.ack(c1.id, "r1", "failed: a note", done=False)
     assert not await db.ack(c1.id, "r1", "ok")
+    refused = await db.command(c1.id)
+    assert refused is not None
+    assert (refused.state, refused.outcome) == ("failed", "failed: a note")
     assert await db.drop_commands(run) == 2
     assert await db.pending_commands("r1") == []
     late = await db.add_command("r1", run, {"action": "kill"})
     assert await db.drop_runner_commands("r1", "dropped: gone") == [run]
     settled = await db.command(late.id)
     assert settled is not None
-    assert settled.outcome == "dropped: gone"
+    assert (settled.state, settled.outcome) == ("dropped", "dropped: gone")
     assert await db.drop_runner_commands("r1", "dropped: gone") == []
 
 
@@ -163,12 +166,12 @@ async def test_a_done_answer_after_the_run_ended_replaces_the_drop(db: ServerDB)
     assert not await db.ack(refused.id, "r1", "done")
     assert not await db.ack(answered.id, "r1", "again")
     assert not await db.ack(done.id, "r1", "again")
-    got = {c.id: (c.outcome, c.run_ended) for c in await db.commands_of(run)}
+    got = {c.id: (c.state, c.outcome, c.run_ended) for c in await db.commands_of(run)}
     assert got == {
-        done.id: ("the sandbox of agent a did not freeze: boom", False),
-        refused.id: ("dropped: the run ended", False),
-        answered.id: ("done", False),
-        unanswered.id: ("dropped: the run ended", True),
+        done.id: ("done", "the sandbox of agent a did not freeze: boom", False),
+        refused.id: ("dropped", "dropped: the run ended", False),
+        answered.id: ("done", "done", False),
+        unanswered.id: ("dropped", "dropped: the run ended", True),
     }
     assert await db.command_counts([run]) == {run: (4, 0, 2)}
     # another token took the runner name: no answer changes the old runner's commands
@@ -208,7 +211,9 @@ async def test_runs_keep_their_first_runner_and_divergence(db: ServerDB) -> None
 def downgrade(path: Path, version: int) -> None:
     """Make the database at `path` look like one of schema `version`."""
     raw = sqlite3.connect(path)
-    raw.execute("alter table commands drop column run_ended")
+    raw.execute("alter table commands drop column state")
+    if version < 5:
+        raw.execute("alter table commands drop column run_ended")
     if version < 4:
         raw.execute("drop table audit")
         raw.execute("alter table tokens drop column last_used")
@@ -352,7 +357,7 @@ async def test_an_older_db_learns_to_keep_deleted_runs(tmp_path: Path, version: 
     raw.close()
 
 
-@pytest.mark.parametrize("version", [2, 3, 4])
+@pytest.mark.parametrize("version", [2, 3, 4, 5])
 async def test_an_older_db_keeps_its_drops_and_takes_late_answers_after(
     tmp_path: Path, version: int
 ) -> None:
@@ -377,8 +382,40 @@ async def test_an_older_db_keeps_its_drops_and_takes_late_answers_after(
     finally:
         await db.close()
     raw = sqlite3.connect(path)
-    assert raw.execute("pragma user_version").fetchone() == (VERSION,) == (5,)
+    assert raw.execute("pragma user_version").fetchone() == (VERSION,) == (6,)
     raw.close()
+
+
+@pytest.mark.parametrize("version", [4, 5])
+async def test_an_older_db_keeps_the_state_of_each_command_its_outcome_said(
+    tmp_path: Path, version: int
+) -> None:
+    path = tmp_path / "server.sqlite"
+    db = await ServerDB.open(path)
+    run = str(uuid.uuid7())
+    sent = [await db.add_command("r1", run, {"action": "pause"}) for _ in range(5)]
+    await db.close()
+    downgrade(path, version)
+    raw = sqlite3.connect(path)
+    outcomes = ["done", "the sandbox of agent a did not freeze", "failed: no agent b"]
+    outcomes.append("dropped: the run ended")
+    for c, outcome in zip(sent, outcomes, strict=False):
+        raw.execute("update commands set acked = 1, outcome = ? where id = ?", (outcome, c.id))
+    raw.commit()
+    raw.close()
+    db = await ServerDB.open(path)
+    try:
+        got = [(c.state, c.outcome) for c in await db.commands_of(run)]
+        assert got == [
+            ("done", "done"),
+            ("done", "the sandbox of agent a did not freeze"),
+            ("failed", "failed: no agent b"),
+            ("dropped", "dropped: the run ended"),
+            ("waiting", None),
+        ]
+        assert await db.command_counts([run]) == {run: (5, 1, 1)}
+    finally:
+        await db.close()
 
 
 async def test_forgetting_runs_drops_their_rows_and_keeps_them_deleted(db: ServerDB) -> None:

@@ -21,7 +21,7 @@ from pydantic import Field, TypeAdapter, ValidationError
 
 log = logging.getLogger("aims.server")
 
-VERSION = 5
+VERSION = 6
 SESSION_DAYS = 30
 # a token's last use is noted at most this often
 USE_S = 60.0
@@ -29,6 +29,7 @@ TOKEN_PREFIX = "aims_"
 
 Role = Literal["viewer", "operator", "runner"]
 JobState = Literal["waiting", "queued", "offered", "claimed", "running", "done", "cancelled"]
+CommandState = Literal["waiting", "done", "failed", "dropped"]
 Outcome = Literal["ok", "refused", "error"]
 ROLES: tuple[Role, ...] = ("viewer", "operator", "runner")
 # The operator token `aims ui` rotates at each start, for its launch link and local commands.
@@ -122,6 +123,8 @@ create table commands (
     acked real,
     outcome text,
     run_ended integer not null default 0,
+    state text not null default 'waiting'
+        check (state in ('waiting', 'done', 'failed', 'dropped')),
     unique (runner, seq)
 ) strict;
 
@@ -167,7 +170,23 @@ MIGRATE_3 = "alter table tokens add column last_used real;" + AUDIT + DELETES
 # v4 could not tell the drop a run's end wrote from a runner's answer. `run_ended` is 1 while
 # the outcome is that drop and the runner's answer may still come. Drops made before stay.
 MIGRATE_4 = "alter table commands add column run_ended integer not null default 0;"
-MIGRATIONS = {2: MIGRATE_2 + MIGRATE_3 + MIGRATE_4, 3: MIGRATE_3 + MIGRATE_4, 4: MIGRATE_4}
+# v5 read a command's state from the start of its outcome text, which a runner's answer could
+# also start with. Rows from before have only that text to go by.
+MIGRATE_5 = """
+alter table commands add column state text not null default 'waiting'
+    check (state in ('waiting', 'done', 'failed', 'dropped'));
+update commands set state = case
+    when substr(outcome, 1, 6) = 'failed' then 'failed'
+    when substr(outcome, 1, 7) = 'dropped' then 'dropped'
+    else 'done' end
+    where acked is not null;
+"""
+MIGRATIONS = {
+    2: MIGRATE_2 + MIGRATE_3 + MIGRATE_4 + MIGRATE_5,
+    3: MIGRATE_3 + MIGRATE_4 + MIGRATE_5,
+    4: MIGRATE_4 + MIGRATE_5,
+    5: MIGRATE_5,
+}
 
 
 def _private_dir(path: Path) -> None:
@@ -258,7 +277,8 @@ class Job:
 @dataclass(frozen=True, slots=True)
 class Command:
     """`run_ended` while the outcome is the drop the run's end wrote and the runner's answer
-    may still come; see `ServerDB.ack`."""
+    may still come; see `ServerDB.ack`. `state` says how it ended; `outcome` is only text to
+    show, which a runner's answer fills."""
 
     id: str
     runner: str
@@ -269,6 +289,7 @@ class Command:
     acked: float | None
     outcome: str | None
     run_ended: bool = False
+    state: CommandState = "waiting"
 
 
 @dataclass(frozen=True, slots=True)
@@ -734,7 +755,7 @@ class ServerDB:
         marks = ", ".join("?" * len(run_ids))
         rows = await self._all(
             "select run_id, count(*), sum(acked is null),"
-            " sum(acked is not null and substr(outcome, 1, 7) = 'dropped') from commands"
+            " sum(state = 'dropped') from commands"
             f" where run_id in ({marks}) group by run_id",
             tuple(run_ids),
         )
@@ -860,12 +881,13 @@ class ServerDB:
         return Command(command_id, runner, seq, run_id, payload, at, None, None)
 
     _COMMAND = (
-        "select id, runner, seq, run_id, payload, created, acked, outcome, run_ended from commands"
+        "select id, runner, seq, run_id, payload, created, acked, outcome, run_ended, state"
+        " from commands"
     )
 
     @staticmethod
     def _command(r: tuple[Any, ...]) -> Command:
-        return Command(r[0], r[1], r[2], r[3], json.loads(r[4]), r[5], r[6], r[7], bool(r[8]))
+        return Command(r[0], r[1], r[2], r[3], json.loads(r[4]), r[5], r[6], r[7], bool(r[8]), r[9])
 
     async def pending_commands(self, runner: str, after: int = 0) -> list[Command]:
         rows = await self._all(
@@ -883,10 +905,13 @@ class ServerDB:
         answer stays, with one exception: the run's end dropped the command before the answer
         came. A done answer then replaces the drop, as the command did take effect. A refusal
         keeps the drop, which says as much, and makes it final. False if nothing changed."""
-        sets = "acked = ?, outcome = ?"
+        sets = "acked = ?, outcome = ?, state = 'done'"
         if not done:
-            # an unanswered command has neither; a drop keeps both
-            sets = "acked = coalesce(acked, ?), outcome = coalesce(outcome, ?)"
+            # an unanswered command has neither; a drop keeps both and its state
+            sets = (
+                "acked = coalesce(acked, ?), outcome = coalesce(outcome, ?),"
+                " state = iif(acked is null, 'failed', state)"
+            )
         return (
             await self._write(
                 f"update commands set {sets}, run_ended = 0"
@@ -901,7 +926,7 @@ class ServerDB:
         runs they were for. No answer changes a command of the old runner after this."""
         async with self._tx():
             async with self._db.execute(
-                "update commands set acked = ?, outcome = ? where runner = ?"
+                "update commands set acked = ?, outcome = ?, state = 'dropped' where runner = ?"
                 " and acked is null returning run_id",
                 (time.time(), outcome, runner),
             ) as cur:
@@ -916,7 +941,7 @@ class ServerDB:
         """Settle the commands still waiting for a run that has ended. The runner may have
         carried one out and its answer may still be on the way; see `ack`."""
         return await self._write(
-            "update commands set acked = ?, outcome = ?, run_ended = 1"
+            "update commands set acked = ?, outcome = ?, state = 'dropped', run_ended = 1"
             " where run_id = ? and acked is null",
             (time.time(), outcome, run_id),
         )
