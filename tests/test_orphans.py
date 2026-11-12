@@ -479,7 +479,6 @@ async def test_scenario_images_go_once_unused_for_keep_days() -> None:
         {"Id": "loaded", "RepoTags": ["aims-env:4444444444444444"]},
         {"Id": "unknown", "RepoTags": ["aims-env:5555555555555555"]},
         {"Id": "shared", "RepoTags": ["mine/env:1", "aims-env:6666666666666666"]},
-        {"Id": "untagged", "RepoTags": None},
     ]
     tagged = {str(i["Id"]): (now - timedelta(days=31)).isoformat() for i in found} | {
         "month": (now - timedelta(days=29)).isoformat(),
@@ -504,6 +503,38 @@ async def test_scenario_images_go_once_unused_for_keep_days() -> None:
         "aims-env:1111111111111111",
         "aims-env:6666666666666666",
     ]
+
+
+async def test_untagged_images_go_unless_used_or_just_untagged() -> None:
+    """Images a cut build or a second build of a tag left with no name. On Docker's containerd
+    image store LastTagTime is when the last tag went."""
+    now = datetime.now(UTC)
+    found = [
+        {"Id": "old", "RepoTags": None, "RepoDigests": None},
+        {"Id": "empty", "RepoTags": [], "RepoDigests": []},
+        {"Id": "fresh", "RepoTags": []},
+        {"Id": "never", "RepoTags": []},
+        {"Id": "unknown", "RepoTags": []},
+        {"Id": "used", "RepoTags": []},
+        {"Id": "digest", "RepoTags": [], "RepoDigests": ["mine/other@sha256:d"]},
+    ]
+    tagged = {str(i["Id"]): (now - timedelta(seconds=MIN_AGE_S * 2)).isoformat() for i in found}
+    tagged |= {
+        "fresh": (now - timedelta(seconds=MIN_AGE_S / 2)).isoformat(),
+        "never": "0001-01-01T00:00:00Z",
+        "unknown": "error",
+    }
+    images = Images(found, tagged)
+
+    class Client:
+        containers = Used(["used"])
+
+    docker: Any = Client()
+    docker.images = images
+    assert await remove_old(docker, dry_run=True) == ["old", "empty"]
+    assert images.deleted == []
+    assert await remove_old(docker) == ["old", "empty"]
+    assert images.deleted == ["old", "empty"]
 
 
 async def test_a_toolbox_volume_goes_with_its_image(

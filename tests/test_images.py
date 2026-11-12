@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import fcntl
+import gzip
 import importlib.util
 import io
 import json
@@ -635,6 +636,43 @@ async def test_a_scenario_image_goes_30_days_after_its_last_use_unless_a_contain
     finally:
         with contextlib.suppress(aiodocker.DockerError):
             await holder.delete(force=True)
+
+
+@pytest.mark.docker
+async def test_an_image_a_second_build_of_its_tag_untagged_goes_unless_used(
+    docker: aiodocker.Docker, env_repo: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What two builds of one tag at once leave. A dry run, as other images on this daemon are
+    not this test's to remove."""
+    tag = f"{env_repo}:{uuid.uuid4().hex[:16]}"
+    made = []
+    try:
+        for _ in range(2):
+            await docker.images.build(
+                fileobj=io.BytesIO(gzip.compress(scenario_context())),
+                encoding="gzip",
+                tag=tag,
+                labels={"aims.managed": "1"},
+            )
+            made.append((await docker.images.inspect(tag))["Id"])
+        first = made[0]
+        found = await docker.images.inspect(first)
+        assert not found["RepoTags"]
+        assert not found["RepoDigests"]
+        monkeypatch.setattr(images, "MIN_AGE_S", 0)
+        holder = await docker.containers.create(
+            config={"Image": first, "Cmd": ["/marker"], "Labels": {"aims.test": "images"}}
+        )
+        try:
+            assert first not in await images.remove_old(docker, dry_run=True)
+        finally:
+            await holder.delete(force=True)
+        assert first in await images.remove_old(docker, dry_run=True)
+        assert made[1] not in await images.remove_old(docker, dry_run=True)
+    finally:
+        for image in made:
+            with contextlib.suppress(aiodocker.DockerError):
+                await docker.images.delete(image, force=True)
 
 
 @pytest.mark.docker

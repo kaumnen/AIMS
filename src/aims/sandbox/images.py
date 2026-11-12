@@ -91,7 +91,8 @@ async def remove_old(
     docker: aiodocker.Docker, keep_days: float = KEEP_DAYS, *, dry_run: bool = False
 ) -> list[str]:
     """Remove the images no container uses that AIMS needs no more: the asset images of other
-    AIMS versions and the scenario images last used more than `keep_days` ago. An asset image
+    AIMS versions, the scenario images last used more than `keep_days` ago, and the images
+    with no tag and no digest that a cut build or a second build of a tag left. An asset image
     that carries a current tag under any registry or namespace stays. Returns the references
     removed, or with `dry_run` those it would remove."""
     current = {context(node.name)[0] for node in ASSETS.iterdir() if node.is_dir()}
@@ -112,6 +113,13 @@ async def remove_old(
             if await _used_within(docker, image["Id"], keep_days * 86400):
                 continue
             refs, why = scenario, f"unused for {keep_days:g} days"
+        elif not tags and not image.get("RepoDigests"):
+            # Nothing can name it, so only a process that read its tag before the tag went
+            # can still use it. On Docker's containerd image store LastTagTime is when the tag
+            # went. An image never tagged, such as a build's own before its tag, stays.
+            if await _used_within(docker, image["Id"], MIN_AGE_S):
+                continue
+            refs, why = [image["Id"]], "untagged"
         else:
             continue
         if dry_run:
@@ -143,8 +151,9 @@ async def _tagged_within(docker: aiodocker.Docker, image: str, seconds: float) -
 
 
 async def _used_within(docker: aiodocker.Docker, image: str, seconds: float) -> bool:
-    """Whether scenario image `image` was built or used here in the last `seconds`, or in the
-    last MIN_AGE_S. True when Docker cannot tell, as for an image loaded and not used since."""
+    """Whether `image` was built, used or untagged here in the last `seconds`, or in the last
+    MIN_AGE_S. True when Docker cannot tell or it was never tagged, as for an image loaded and
+    not used since."""
     tagged = await _tagged(docker, image)
     if tagged is None or tagged == NEVER:
         return True
