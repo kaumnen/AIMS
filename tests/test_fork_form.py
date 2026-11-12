@@ -90,6 +90,30 @@ async def test_forks_are_estimated_and_above_the_confirm_limit_need_confirm(
         assert (r.status_code, r.json()["detail"]) == (422, "give step or at, not both")
 
 
+async def test_a_run_with_a_missing_or_damaged_blob_is_refused_with_the_reason(
+    cp: CP, local: LocalEventStore
+) -> None:
+    origin = await push_forged(cp, local, "http://model.invalid/v1")
+    started: Any = (await cp.state.store.events(origin, limit=1))[0].data
+    sha = started["config"]["scenario"]["file"]["sha256"]
+    path = cp.state.store.blob_path(origin, sha)
+    asks: list[tuple[str, str, dict[str, str] | None, dict[str, str] | None]] = [
+        ("GET", "score/estimate", None, None),
+        ("GET", "monitor/estimate", {"preset": "signals"}, None),
+        ("POST", "monitor", None, {"preset": "signals"}),
+        ("GET", "forks/estimate", None, None),
+        ("POST", "forks", None, {"monitor": "signals"}),
+    ]
+    path.write_bytes(b"other bytes")
+    async with cp.client(cp.operator) as c:
+        for reason in (f"blob {sha} does not match its hash", f"missing blob {sha}"):
+            for method, ask, params, body in asks:
+                r = await c.request(method, f"/api/runs/{origin}/{ask}", params=params, json=body)
+                assert (r.status_code, r.json()["detail"]) == (422, f"run {origin}: {reason}"), ask
+            path.unlink(missing_ok=True)
+    assert await cp.state.db.jobs() == []
+
+
 # Step 1 returned; the run ended in step 2 before its tool call returned.
 MID_STEP = [
     Draft(ToolCall(call_id="t1", name="bash", arguments="{}", model_call="m1"), "a"),

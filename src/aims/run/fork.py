@@ -14,6 +14,7 @@ from aims.events import (
     MAX_INT,
     AgentInput,
     AgentStep,
+    BlobError,
     BlobRef,
     Content,
     EventStore,
@@ -108,9 +109,20 @@ class Origin:
         return budgets.over(self.budget, budget, ids)
 
 
+async def _blob(store: EventStore, run_id: str, sha256: str) -> bytes:
+    """A blob of the origin. Raises RunError when the run or the blob is gone or damaged."""
+    try:
+        return await store.get_blob(run_id, sha256)
+    except KeyError:
+        # a delete moves the run's folder away before it forgets the run's rows
+        raise RunError(f"unknown run {run_id}") from None
+    except BlobError as e:
+        raise RunError(f"run {run_id}: {e}") from None
+
+
 async def _text(store: EventStore, run_id: str, content: Content) -> str:
     if isinstance(content, BlobRef):
-        return (await store.get_blob(run_id, content.sha256)).decode()
+        return (await _blob(store, run_id, content.sha256)).decode()
     return content
 
 
@@ -190,11 +202,7 @@ async def load_origin(store: EventStore, run_id: str, *, full: bool = True) -> O
         ref = snapshot.get(name)
         if isinstance(ref, dict):
             sha = str(ref["sha256"])
-            try:
-                blobs[sha] = await store.get_blob(run_id, sha)
-            except KeyError:
-                # a delete moves the run's folder away before it forgets the run's rows
-                raise RunError(f"unknown run {run_id}") from None
+            blobs[sha] = await _blob(store, run_id, sha)
     try:
         bundle = from_snapshot(snapshot, blobs)
     except ScenarioError as e:
@@ -259,7 +267,7 @@ async def load_origin(store: EventStore, run_id: str, *, full: bool = True) -> O
     await _order(store, run_id, origin)
     for c in started.channels:
         if c.restored is not None:
-            origin.restored[c.name] = await store.get_blob(run_id, c.restored.sha256)
+            origin.restored[c.name] = await _blob(store, run_id, c.restored.sha256)
     return origin
 
 
