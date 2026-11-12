@@ -69,6 +69,13 @@ from aims.monitor.texts import MonitorTexts
 log = logging.getLogger("aims.monitor")
 
 OUTPUT_CHARS = 16_000
+# The most characters one tool output holds as the judge reads it, escapes included. Rows past
+# OUTPUT_CHARS wait for the next page; a first row too long for this cap is shown cut.
+TOOL_CHARS = 20_000
+TOO_LONG = "too long to show"
+BLOB_CUT = (
+    "fewer bytes than asked, as their escapes would pass the output cap; read on from next_offset"
+)
 EVENT_CHARS = 3_000
 TEXT_CHARS = 400
 LIST_ITEMS = 20
@@ -91,7 +98,7 @@ PROBLEM_CHARS = 2_000
 MIN_OUTPUT = JUDGE_MIN_OUTPUT
 VERDICT_OUTPUT = 4096
 # Input tokens an exploring call keeps for the tool results it brings back: about one result at
-# its cap, such as a full blob read, as the prompt holds it.
+# TOOL_CHARS, such as a full blob read, as the prompt holds it.
 RESULT_TOKENS = 8192
 CHARS_PER_TOKEN = 3
 MILLION = 1_000_000
@@ -133,6 +140,11 @@ class JudgeResult:
 
 def dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def cut_row(e: Event) -> dict[str, Any]:
+    """In place of an event too long for one tool output: its place, and that it is cut."""
+    return {"seq": e.seq, "type": e.type, "cut": TOO_LONG}
 
 
 def clip(text: str, limit: int) -> str:
@@ -1201,6 +1213,21 @@ class Judge:
     # The tools.
 
     async def _tool(self, r: Rollout, call: ToolRequest) -> str:
+        """The answer to `call`, at most TOOL_CHARS long. Each tool keeps its output within
+        that cap; one that still passes it is refused in full."""
+        before = r.seen.copy()
+        out = await self._answer(r, call)
+        if len(out) <= TOOL_CHARS:
+            return out
+        # The judge never reads it, so what it holds is no evidence.
+        r.seen = before
+        error = (
+            f"the output had {len(out)} characters, more than the {TOOL_CHARS} one tool output"
+            " may hold; ask for less"
+        )
+        return dumps({"error": error})
+
+    async def _answer(self, r: Rollout, call: ToolRequest) -> str:
         model = TOOL_ARGS.get(call.name)
         if model is None or (r.blind and call.name == "flags"):
             known = ", ".join(n for n in TOOL_PARAMETERS if not (r.blind and n == "flags"))
@@ -1233,7 +1260,12 @@ class Judge:
         for f in flags[offset : offset + FLAGS_PAGE]:
             row = await self._flag_row(f, NOTE_CHARS)
             n = len(dumps(row))
-            if rows and size + n > OUTPUT_CHARS:
+            if not rows and size + n > TOOL_CHARS:
+                row = await self._flag_row(f, NOTE_CHARS // 8)
+                if size + len(dumps(row)) > TOOL_CHARS:
+                    row = {"flag": f.number, "cut": TOO_LONG}
+                n = len(dumps(row))
+            elif rows and size + n > OUTPUT_CHARS:
                 break
             rows.append(row)
             size += n
@@ -1263,6 +1295,11 @@ class Judge:
         for e in events:
             row = await self.reader.row(e, drop=self._drop(r, e))
             n = len(dumps(row)) + 1
+            if not rows and size + n > TOOL_CHARS:
+                row = cut_row(e)
+                rows.append(row)
+                size += len(dumps(row)) + 1
+                continue
             if rows and size + n > OUTPUT_CHARS:
                 nxt = e.seq
                 break
@@ -1278,7 +1315,9 @@ class Judge:
             after=(args.from_seq or 0) - 1, query=args.text, limit=SEARCH_PAGE
         )
         needle = args.text.casefold()
-        rows = []
+        rows: list[dict[str, Any]] = []
+        size = WRAPPER
+        nxt = None if cursor is None else cursor + 1
         for e in events:
             text = e.search_text()
             at = text.casefold().find(needle)
@@ -1288,9 +1327,14 @@ class Judge:
             if e.agent_id is not None:
                 row["agent"] = e.agent_id
             row["snippet"] = snippet
+            # A row is at most a few thousand characters, so the first always fits the cap.
+            n = len(dumps(row)) + 1
+            if rows and size + n > OUTPUT_CHARS:
+                nxt = e.seq
+                break
             rows.append(row)
+            size += n
             r.seen.add(e.seq)
-        nxt = None if cursor is None else cursor + 1
         return dumps({"matches": rows, "next_from_seq": nxt})
 
     async def _blob(self, args: BlobArgs) -> str:
@@ -1300,17 +1344,37 @@ class Judge:
             return dumps({"error": f"the run has no blob {args.sha256}"})
         offset = args.offset or 0
         chunk = data[offset : offset + (args.length or BLOB_LENGTH)]
-        end = offset + len(chunk)
-        return dumps(
-            {
+
+        def page(n: int, cut: bool = False) -> str:
+            end = offset + n
+            out: dict[str, Any] = {
                 "sha256": args.sha256,
                 "size": len(data),
                 "offset": offset,
-                "length": len(chunk),
-                "text": chunk.decode("utf-8", "replace"),
+                "length": n,
+                "text": chunk[:n].decode("utf-8", "replace"),
                 "next_offset": end if end < len(data) else None,
             }
-        )
+            if cut:
+                out["cut"] = BLOB_CUT
+            return dumps(out)
+
+        out = page(len(chunk))
+        if len(out) <= TOOL_CHARS:
+            return out
+        # Escapes make the bytes asked for too long: the most of them that fit, by halving.
+        lo, hi = 0, len(chunk)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if len(page(mid, cut=True)) <= TOOL_CHARS:
+                lo = mid
+            else:
+                hi = mid - 1
+        # Not in the middle of a UTF-8 character, so the next page starts on one.
+        for _ in range(3):
+            if lo > 1 and chunk[lo] & 0xC0 == 0x80:
+                lo -= 1
+        return page(lo, cut=True)
 
     async def _proc_tree(self, r: Rollout, args: ProcTreeArgs) -> str:
         exec_id = args.exec_id
@@ -1496,6 +1560,11 @@ class Judge:
         nxt = stop
         for seq, row in rows:
             n = len(dumps(row)) + 1
+            if not out_rows and size + n > TOOL_CHARS:
+                row = {"seq": seq, "type": row["type"], "cut": TOO_LONG}
+                out_rows.append(row)
+                size += len(dumps(row)) + 1
+                continue
             if len(out_rows) >= HISTORY_ROWS or (out_rows and size + n > OUTPUT_CHARS):
                 nxt = seq
                 break

@@ -35,6 +35,7 @@ from aims.events import (
     MonitorSweep,
     MonitorVerdict,
     Payload,
+    Proc,
     ProcExec,
     ProcExit,
     ProcFork,
@@ -54,6 +55,7 @@ from aims.monitor.judge import (
     MIN_OUTPUT,
     OUTPUT_CHARS,
     PROBLEM_CHARS,
+    TOOL_CHARS,
     TOOL_PARAMETERS,
     VERDICT_S,
     VERDICT_SCHEMA,
@@ -462,6 +464,122 @@ async def test_blob_reads_a_window(store: LocalEventStore) -> None:
     assert "invalid arguments" in big["error"]
     missing = await tool(judge, "blob", sha256="f" * 64)
     assert "no blob" in missing["error"]
+
+
+async def test_a_blob_of_control_bytes_pages_under_the_cap(store: LocalEventStore) -> None:
+    run = await make_run(store)
+    data = bytes(range(32)) * 600 + "é".encode() * 4000
+    ref = await store.put_blob(run.id, data)
+    judge = make_judge(store, run, Script())
+    await judge.reader.load()
+    await judge._prepare()
+    r = Rollout(1, False, 1.0)
+    text = ""
+    offset: int | None = 0
+    pages = 0
+    while offset is not None:
+        args = json.dumps({"sha256": ref.sha256, "offset": offset, "length": BLOB_MAX})
+        out = await judge._tool(r, ToolRequest(id="t", name="blob", arguments=args))
+        assert len(out) <= TOOL_CHARS
+        page = json.loads(out)
+        assert ("cut" in page) is (page["length"] < min(BLOB_MAX, len(data) - offset))
+        text += page["text"]
+        offset = page["next_offset"]
+        pages += 1
+    assert text == data.decode()
+    assert pages > len(data) // BLOB_MAX + 1
+
+
+async def test_search_pages_under_the_cap(store: LocalEventStore) -> None:
+    run_id = await store.create_run(RunStarted(scenario="t", oversight="observe"))
+    run = Run(store, run_id)
+    noise = "\x1b" * 200
+    for i in range(30):
+        await run.add(f"r{i}", ToolResult(call_id=f"c{i}", output=f"{noise}needle {i}{noise}"))
+    judge = make_judge(store, run, Script())
+    found: list[int] = []
+    start: int | None = 0
+    while start is not None:
+        out = await tool(judge, "search", text="needle", from_seq=start)
+        assert len(dumps(out)) <= OUTPUT_CHARS
+        found += [m["seq"] for m in out["matches"]]
+        start = out["next_from_seq"]
+    assert found == [run.seqs[f"r{i}"] for i in range(30)]
+
+
+async def test_an_event_too_long_for_one_output_is_cut(store: LocalEventStore) -> None:
+    config: dict[str, Any] = {f"key{i}": "\x00" * 20 for i in range(1000)}
+    run_id = await store.create_run(RunStarted(scenario="t", oversight="observe", config=config))
+    run = Run(store, run_id)
+    after = await run.add("after", ToolResult(call_id="c", output="fine"))
+    judge = make_judge(store, run, Script())
+    r = Rollout(1, False, 1.0)
+    out = await tool(judge, "events", r, from_seq=0)
+    first, second = out["events"]
+    assert first == {"seq": 0, "type": "run.started", "cut": "too long to show"}
+    assert second["seq"] == after.seq
+    assert r.seen == {after.seq}
+    assert out["next_from_seq"] is None
+
+
+async def test_a_flag_too_long_for_one_output_is_cut(store: LocalEventStore) -> None:
+    run = await make_run(store)
+    noise = "\x00" * 2500
+    long = await flag(run, "long", [run.seqs["write"]], subcategory=noise, justification=noise)
+    longer = await flag(run, "longer", [run.seqs["open"]], subcategory=noise * 3, importance=2)
+    judge = make_judge(store, run, Script())
+    n = flag_numbers([long, longer])
+    for e in (long, longer):
+        payload = MonitorFlag.model_validate(e.data)
+        judge.flags[e.seq] = Flag(e.seq, e.run_id, e.agent_id, payload, number=n[e.seq])
+    out = await tool(judge, "flags")
+    [row] = out["flags"]
+    assert row["flag"] == n[long.seq]
+    assert "chars cut" in row["justification"]
+    assert out["next_offset"] == 1
+    rest = await tool(judge, "flags", offset=1)
+    assert rest["flags"] == [{"flag": n[longer.seq], "cut": "too long to show"}]
+    assert rest["next_offset"] is None
+
+
+async def test_a_tool_output_past_the_cap_is_refused(store: LocalEventStore) -> None:
+    run_id = await store.create_run(RunStarted(scenario="t", oversight="observe"))
+    run = Run(store, run_id)
+    started = ExecStarted(
+        exec_id="e",
+        call_id="c",
+        command="\x00" * 2500,
+        wrapper=[],
+        user="agent",
+        cwd="/work",
+        timeout_ms=1000,
+        audit="kernel",
+    )
+    await run.add("started", started)
+    leftover = [Proc(pid=i, ppid=1, uid=0, command="\x00" * 250) for i in range(20)]
+    finished = ExecFinished(
+        exec_id="e",
+        call_id="c",
+        end="exited",
+        exit_code=0,
+        pid=1,
+        duration_ms=5,
+        stdout="",
+        stderr="",
+        stdout_bytes=0,
+        stderr_bytes=0,
+        truncated=False,
+        leftover=leftover,
+    )
+    await run.add("finished", finished)
+    judge = make_judge(store, run, Script())
+    r = Rollout(1, False, 1.0)
+    out = await tool(judge, "proc_tree", r, exec_id="e")
+    assert out["error"].startswith("the output had ")
+    assert out["error"].endswith("ask for less")
+    assert r.seen == set()
+    bad = await tool(judge, "events", r, types=["no.such\x00" * 3000])
+    assert bad["error"].startswith("the output had ")
 
 
 async def test_proc_tree_builds_the_tree(store: LocalEventStore) -> None:
