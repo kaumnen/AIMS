@@ -74,12 +74,17 @@ class Deleted(Exception):
     pass
 
 
+class Gone(Exception):
+    """The run is no longer in the local store."""
+
+
 class Shipper:
     """Copies one run's log and blobs to the control plane as the log grows: blobs first, then
     exact lines from where the server's copy ends. Once the server holds the sealed run, sends
     the run's truth file and its labels, each by its own path, and ends. Local writes never
-    wait for it. A run the server deleted ends it with `deleted` set. It retries without end;
-    `streak` counts the tries that failed in a row."""
+    wait for it. A run the server deleted ends it with `deleted` set, one deleted from the
+    local store meanwhile with `gone` set. It retries without end; `streak` counts the tries
+    that failed in a row."""
 
     def __init__(self, store: LocalEventStore, client: ControlClient, run_id: str) -> None:
         self.store = store
@@ -92,6 +97,8 @@ class Shipper:
         self.diverged: str | None = None
         self.refused: str | None = None
         self.deleted = False
+        self.gone = False
+        self.seen = False
         self.batches = 0
         self.lines = 0
         self.truthful = False
@@ -128,6 +135,15 @@ class Shipper:
                 self.deleted, self.refused = True, str(e)
                 log.info("run %s: %s", self.run_id, e)
                 return
+            except Gone:
+                self._gone()
+                return
+            except KeyError:
+                # the store names a run with no folder that way, as when it reads a blob
+                if not self.seen or self.store.holds(self.run_id):
+                    raise
+                self._gone()
+                return
             except ApiError as e:
                 if e.code == "deleted":
                     self.deleted, self.refused = True, str(e)
@@ -140,10 +156,21 @@ class Shipper:
                 self.streak.failed(e)
                 await backoff.wait(e.retry_after)
             except (httpx2.TransportError, OSError) as e:
+                if (
+                    self.seen
+                    and isinstance(e, FileNotFoundError)
+                    and not self.store.holds(self.run_id)
+                ):
+                    self._gone()
+                    return
                 log.debug("run %s: control plane unreachable: %s", self.run_id, e)
                 self.streak.failed(e)
                 await backoff.wait()
         self.streak.works()
+
+    def _gone(self) -> None:
+        self.gone, self.refused = True, "the run was deleted here"
+        log.info("run %s: deleted here, its shipping ends", self.run_id)
 
     async def _resume(self) -> None:
         """Find where the server's copy ends and the same place in the local log."""
@@ -152,6 +179,7 @@ class Shipper:
         if server.deleted:
             raise Deleted("the control plane deleted it")
         local = await self._seek(server.seq) if server.seq >= 0 else LogHead()
+        self.seen = self.seen or server.seq >= 0
         if server.seq >= 0 and local.hash != server.hash:
             raise Diverged(f"event {server.seq} has another hash there")
         self.server, self.local = server, local
@@ -201,6 +229,11 @@ class Shipper:
     async def _ship(self) -> bool:
         """Send one batch. False when there was nothing new."""
         head = await self.store.log_head(self.run_id)
+        if head is not None:
+            self.seen = True
+        elif self.seen and not self.store.holds(self.run_id):
+            # a shipper may start before its run does, so only a run it saw can be gone
+            raise Gone
         if head is None or head.seq <= self.local.seq:
             self.done = self.local.finished
             return False

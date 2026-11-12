@@ -176,8 +176,8 @@ class Link:
             task.cancel()
 
     def _shipped(self, run_id: str, task: asyncio.Task[None]) -> None:
-        """Forget a run's shipper once the run has shipped, or once the control plane deleted
-        it. One that failed stays with its reason."""
+        """Forget a run's shipper once the run has shipped, or once the control plane or the
+        local store deleted it. One that failed stays with its reason."""
         if task.cancelled():
             return
         if (error := task.exception()) is not None:
@@ -190,7 +190,7 @@ class Link:
             del self._ships[run_id]
             del self.shippers[run_id]
             self._deleted(run_id)
-        elif s.done and s.truthful and not (s.diverged or s.refused or s.truth_refused):
+        elif s.gone or (s.done and s.truthful and not (s.diverged or s.refused or s.truth_refused)):
             del self._ships[run_id]
             del self.shippers[run_id]
 

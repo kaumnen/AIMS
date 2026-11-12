@@ -17,6 +17,8 @@ from test_server import FakeRunner, ship, sse
 
 from aims.events import Draft, LocalEventStore, RunFinished, RunInfo, RunStarted
 from aims.events.chain import Head as LogHead
+from aims.events.index import Index
+from aims.events.store import INDEX
 from aims.models import DeltaBus
 from aims.monitor.texts import resolve
 from aims.node.link import Link
@@ -184,6 +186,27 @@ async def test_a_runner_scores_a_run_another_store_holds(
         assert info is not None
         assert (info.kind, info.origin) == ("score", origin)
         assert await mine.run(origin) is None
+
+
+async def test_a_flag_is_labelled_while_another_process_rebuilds_the_index(
+    cp: CP, local: LocalEventStore, fake: FakeRunner
+) -> None:
+    origin = await planted(cp, local, fake)
+    other = await Index.open(cp.state.store.root / INDEX)
+    try:
+        await other.reset()
+        async with cp.client(cp.operator) as c:
+            assert await cp.state.store.run(origin) is None
+            r = await c.post(f"/api/runs/{origin}/labels", json={"flag": 2, "label": "real"})
+            assert r.status_code == 201, r.text
+            r = await c.post(f"/api/runs/{origin}/labels", json={"flag": 1, "label": "real"})
+            assert r.status_code == 404
+            unknown = "019a6f00-0000-7000-8000-00000000000f"
+            r = await c.post(f"/api/runs/{unknown}/labels", json={"flag": 2, "label": "real"})
+            assert (r.status_code, r.json()["detail"]) == (404, f"no run {unknown}")
+    finally:
+        await other.close()
+    assert [x.flag for x in await cp.state.store.label_history(origin)] == [2]
 
 
 async def test_labels_from_the_api_and_from_runners_and_the_rates(

@@ -47,6 +47,7 @@ from aims.events import (
 )
 from aims.events.blobs import decode
 from aims.models import DeltaBus
+from aims.node import shipper as shipper_module
 from aims.node.client import FEED, ApiError, ControlClient
 from aims.node.link import Link
 from aims.node.shipper import WARN_AFTER, Shipper
@@ -636,6 +637,67 @@ async def test_a_job_is_offered_claimed_run_and_done(
         assert [(r["run_id"], r["status"], r["state"]) for r in listed] == [
             (run_id, "completed", "done")
         ]
+
+
+async def test_a_shipper_ends_when_its_run_is_deleted_from_the_local_store(
+    cp: CP, fake: FakeRunner, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(shipper_module, "IDLE_S", 0.05)
+    run_id = await local.create_run(STARTED)
+    await local.append(run_id, [call(1)])
+    link = Link(fake.client, local, DeltaBus())
+    link.ship(run_id)
+    shipper, task = link.shippers[run_id], link._ships[run_id]
+
+    async def shipped() -> int:
+        head = await cp.state.store.head(run_id)
+        return -1 if head is None else head.seq
+
+    await until(shipped, 1)
+    # what a delete by another process on the same data folder leaves
+    shutil.rmtree(local.root / run_id)
+    await local._index.remove(run_id)
+    async with asyncio.timeout(10):
+        await task
+    assert (shipper.gone, shipper.refused) == (True, "the run was deleted here")
+    await asyncio.sleep(0)
+    assert run_id not in link.shippers
+
+
+async def test_a_shipper_whose_run_is_deleted_while_it_reads_a_blob_ends(
+    cp: CP, fake: FakeRunner, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = await local.create_run(STARTED)
+    ref = await local.put_blob(run_id, b"x" * 20000)
+    await local.append(run_id, [Draft(ToolCall(call_id="c", name="n", arguments=ref), "a1")])
+    shipper = Shipper(local, fake.client, run_id)
+    missing = fake.client.missing
+
+    async def then_deleted(*args: Any) -> Any:
+        found = await missing(*args)
+        shutil.rmtree(local.root / run_id)
+        return found
+
+    monkeypatch.setattr(fake.client, "missing", then_deleted)
+    async with asyncio.timeout(10):
+        await shipper.run()
+    assert (shipper.gone, shipper.refused) == (True, "the run was deleted here")
+
+
+async def test_a_shipper_that_starts_before_its_run_waits_for_it(
+    cp: CP, fake: FakeRunner, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(shipper_module, "IDLE_S", 0.05)
+    run_id = str(uuid.uuid7())
+    shipper = Shipper(local, fake.client, run_id)
+    task = asyncio.create_task(shipper.run())
+    await asyncio.sleep(0.3)
+    assert not task.done()
+    await local.create_run(STARTED, run_id=run_id)
+    await local.append(run_id, [Draft(RunFinished(status="completed"))])
+    async with asyncio.timeout(10):
+        await task
+    assert (shipper.done, shipper.gone) == (True, False)
 
 
 async def test_an_unclaimed_offer_goes_back_to_the_queue(

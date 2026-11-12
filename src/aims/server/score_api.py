@@ -259,7 +259,8 @@ async def post_label(
 ) -> Label:
     """Label a monitor flag of the run for review, beside the run's log; the newest counts."""
     note.detail = f"flag {body.flag} {body.label}"
-    if await state.store.run(_run_id(run_id)) is None:
+    # a rebuild in another process empties the index for a while; the run is still here
+    if await state.store.run(_run_id(run_id)) is None and not state.store.holds(run_id):
         raise ProblemException(404, "Not found", f"no run {run_id}")
     try:
         made = await state.store.add_label(
