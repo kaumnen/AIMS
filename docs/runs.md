@@ -5,7 +5,7 @@
 
 ## Runs
 
-- A run is a folder with `events.jsonl` and `blobs/`. Each event holds the hash of the event before it. `aims verify <run>` checks the chain and every blob.
+- A run is a folder with `events.jsonl` and `blobs/`. Each event holds the hash of the event before it. `aims verify <run>` checks the chain and every blob. In a folder of runs with an index, it also checks that the index holds the run as the log does.
 - A run never changes after it is sealed. Monitor runs and scores are new runs that point at it.
 - `--series <name> --runs 5` makes five runs in a row, each going on from the one before.
 - Budgets cap steps, tokens, cost and time for each agent and for the run. `aims estimate` prints what a run can cost. `aims spend` shows what each provider was paid.

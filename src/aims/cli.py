@@ -190,12 +190,36 @@ def verify(
     run: Annotated[str, typer.Argument(help="Run id or run directory.")],
     runs_dir: RunsDirOption = Path("runs"),
 ) -> None:
-    """Check the hash chain of a run and the blobs it references."""
-    from aims.events import verify_run
+    """Check the hash chain of a run and the blobs it references, and in a folder of runs with
+    an index, that the index holds the run as it should."""
+    import asyncio
+    import sqlite3
+
+    from aims.events import LocalEventStore, Verification, verify_run
+    from aims.events.store import INDEX, is_run_id
 
     path = Path(run) if Path(run).is_dir() else runs_dir / run
+
+    async def indexed() -> Verification | None:
+        """What the store says of the run, as the server and a report say it. None when the
+        index does not open."""
+        try:
+            store = await LocalEventStore.open(path.parent)
+        except (OSError, sqlite3.Error) as e:
+            _echo(
+                f"note: the index in {path.parent} did not open, so it was not checked: {e}",
+                err=True,
+            )
+            return None
+        async with store:
+            return await store.verify(path.name)
+
     try:
-        result = verify_run(path)
+        result = None
+        if is_run_id(path.name) and (path.parent / INDEX).is_file():
+            result = asyncio.run(indexed())
+        if result is None:
+            result = verify_run(path)
     except OSError as e:
         _echo(f"error: cannot read {path}: {e.strerror or e}", err=True)
         raise typer.Exit(EXIT_FAILED) from None

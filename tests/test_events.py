@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import random
+import shutil
 import sqlite3
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
@@ -973,7 +974,8 @@ def test_duplicate_type_rejected() -> None:
 async def test_cli_verify(store: LocalEventStore) -> None:
     run_id = await finished_run(store)
     runner = CliRunner()
-    ok = runner.invoke(app, ["verify", run_id, "--runs-dir", str(store.root)])
+    args = ["verify", run_id, "--runs-dir", str(store.root)]
+    ok = await asyncio.to_thread(runner.invoke, app, args)
     assert ok.exit_code == 0
     assert ok.stdout.startswith("ok: 5 events, finished, head ")
 
@@ -981,9 +983,49 @@ async def test_cli_verify(store: LocalEventStore) -> None:
     lines = path.read_bytes().splitlines(keepends=True)
     delete(lines)
     path.write_bytes(b"".join(lines))
-    bad = runner.invoke(app, ["verify", str(store.root / run_id)])
+    bad = await asyncio.to_thread(runner.invoke, app, ["verify", str(store.root / run_id)])
     assert bad.exit_code == 1
     assert "expected seq 2" in bad.stderr
+
+
+async def test_cli_verify_tells_of_a_log_the_index_cannot_take(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "runs"
+    async with await LocalEventStore.open(root) as store:
+        run_id = await store.create_run(STARTED)
+        await store.append(run_id, [call(1)])
+    # a line the chain takes and the index does not: its time is no time
+    path = root / run_id / LOG
+    last = json.loads(path.read_bytes().splitlines()[-1])
+    head = Head(seq=last["seq"], hash=last["hash"], offset=path.stat().st_size)
+    data = RunFinished(status="completed").model_dump(mode="json")
+    _, line, _ = seal(
+        head, run_id=run_id, ts="not a time", agent_id=None, type=RunFinished.type, data=data
+    )
+    with path.open("ab") as f:
+        f.write(line)
+    runner = CliRunner()
+    for args in ([run_id, "--runs-dir", str(root)], [str(root / run_id)]):
+        r = await asyncio.to_thread(runner.invoke, app, ["verify", *args])
+        assert r.exit_code == 1
+        assert "error: the index holds 2 of the log's 3 events" in r.stderr
+    # a run folder on its own has no index to hold it to
+    bare = tmp_path / "bare" / run_id
+    shutil.copytree(root / run_id, bare)
+    r = await asyncio.to_thread(runner.invoke, app, ["verify", str(bare)])
+    assert r.exit_code == 0
+    assert r.stdout.startswith("ok: 3 events, finished, head ")
+
+    # nor has a folder whose index does not open, such as one on a read-only disk
+    async def readonly(*args: object, **kwargs: object) -> LocalEventStore:
+        raise sqlite3.OperationalError("attempt to write a readonly database")
+
+    monkeypatch.setattr(LocalEventStore, "open", readonly)
+    r = await asyncio.to_thread(runner.invoke, app, ["verify", run_id, "--runs-dir", str(root)])
+    assert r.exit_code == 0
+    assert r.stdout.startswith("ok: 3 events, finished, head ")
+    assert f"the index in {root} did not open, so it was not checked" in r.stderr
 
 
 async def test_blobs_are_compressed_on_disk(store: LocalEventStore) -> None:
