@@ -145,9 +145,12 @@ function Run() {
   // An open run shows its latest step until someone picks one, on every tab of this visit.
   const [follow, setFollow] = useState<{ runId: string; on: boolean }>();
   if (run !== undefined && follow?.runId !== runId) setFollow({ runId, on: !ended(run) });
+  // The run's own stream, from the first sight of it open on to its end message, which comes
+  // after its last events: a read of its detail may tell the page of the end first. A run
+  // cancelled in the queue has no log to end.
   const inflight = useRunTail(
     runId,
-    run !== undefined && !ended(run) && !deleted,
+    (follow?.on ?? false) && run?.state !== "cancelled" && !deleted,
     (run?.events ?? 0) - 1,
   );
 

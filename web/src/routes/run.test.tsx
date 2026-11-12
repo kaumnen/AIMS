@@ -1783,6 +1783,35 @@ test("an open run that ends stays on its latest step across tabs", async () => {
   await waitFor(() => expect(chosenStep()).toContain("edit"));
 });
 
+test("an open run whose detail is read sealed before its last events still shows them", async () => {
+  detail = { ...detail, run: run(BEE5, { status: "running", state: "running", events: 15 }) };
+  const router = renderAt(`/runs/${BEE5}`);
+  await screen.findByRole("listbox", { name: "Steps" });
+  await waitFor(() => expect(chosenStep()).toContain("edit"));
+  const tail = await waitFor(() => {
+    const s = runStream();
+    if (!s) throw new Error("no run stream");
+    return s;
+  });
+  // a read of the run's detail lands sealed before the stream brings the last step
+  const landed = [
+    ev(15, "model.response", { call_id: "m3", text: "Done." }),
+    ev(16, "agent.step", { n: 3, call_id: "m3", status: "completed" }),
+  ];
+  events.push(...landed);
+  steps.push(step({ seq: 16, n: 3, seq_from: 15, seq_to: 16 }));
+  detail = { ...detail, run: { ...detail.run, status: "completed", state: "done", events: 17 } };
+  const qc = router.options.context.queryClient;
+  await act(() => qc.refetchQueries({ queryKey: ["runs", "detail", BEE5] }));
+  act(() => {
+    tail.send({ kind: "events", run_id: BEE5, events: landed });
+    tail.send({ kind: "end", run_id: BEE5 });
+  });
+  // the run's summary then tells the page nothing new
+  act(() => listStream()?.send({ kind: "run", run: detail.run }));
+  await waitFor(() => expect(chosenStep()).toContain("no tool call"));
+});
+
 test("an open run shows its steps as a feed, the newest open and each one before it a line", async () => {
   detail = { ...detail, run: run(BEE5, { status: "running", state: "running", events: 15 }) };
   renderAt(`/runs/${BEE5}`);

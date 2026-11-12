@@ -9,7 +9,7 @@ import { PROSE } from "./transcript";
 const NONE: readonly InFlight[] = [];
 const quiet = () => () => undefined;
 
-// While the run is open, one stream of its events and model output keeps the page current.
+// While `open`, one stream of the run's events and model output keeps the page current.
 // `after` is the last seq the page holds when the stream opens.
 export function useRunTail(runId: string, open: boolean, after: number): readonly InFlight[] {
   const qc = useQueryClient();
