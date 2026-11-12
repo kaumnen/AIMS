@@ -109,6 +109,30 @@ test("no answer in time says whether the runner got it", async () => {
   expect(sent[0]?.body).toEqual({ reason: "enough" });
 });
 
+test("an abort ends the wait for an answer and leaves the command sent", async () => {
+  serve(SENT, "done", 1000);
+  const page = new AbortController();
+  const answer = send(RUN, { action: "pause" }, { every: 1, signal: page.signal });
+  await vi.waitFor(() => expect(polls).toBeGreaterThan(0));
+  page.abort();
+  await expect(answer).rejects.toThrow(DOMException);
+  const after = polls;
+  await new Promise((done) => setTimeout(done, 20));
+  expect(polls).toBe(after);
+  expect(sent).toHaveLength(1);
+});
+
+test("an abort while the command is sent lets it go out and waits for nothing", async () => {
+  serve(SENT, "done", 1);
+  const page = new AbortController();
+  const answer = send(RUN, { action: "pause" }, { every: 1, signal: page.signal });
+  page.abort();
+  await expect(answer).rejects.toThrow(DOMException);
+  expect(sent).toHaveLength(1);
+  expect(fetch.mock.calls[0]?.[0].signal.aborted).toBe(false);
+  expect(polls).toBe(0);
+});
+
 test("a run cancelled in the queue needs no answer", async () => {
   serve({ command_id: null, delivered: false, state: "cancelled" });
   expect(await send(RUN, { action: "cancel" })).toEqual({

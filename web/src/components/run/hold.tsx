@@ -103,7 +103,7 @@ function Pause({
   const answerAll = async (choice: "continue" | "deny" | "inject", message?: string) => {
     for (const h of holds) {
       const next = choice === "deny" && !canDeny(h) ? "continue" : choice;
-      // one agent at a time, so a refusal stops the rest
+      // one agent at a time, so a refusal stops the rest; a page left midway still answers all
       // oxlint-disable-next-line no-await-in-loop
       const got = await run({
         action: "resume",
@@ -112,7 +112,7 @@ function Pause({
         reason: REASON,
         ...(next === "inject" ? { text: message ?? "" } : {}),
       });
-      if (got.state === "failed") return;
+      if (got?.state === "failed") return;
     }
   };
 
@@ -206,7 +206,7 @@ function Pause({
                 answer={answer}
                 onStop={(reason) =>
                   void run({ action: "kill", reason: reason || "killed in the UI" }).then(
-                    (got) => got.state !== "failed" && setKilling(false),
+                    (got) => got && got.state !== "failed" && setKilling(false),
                   )
                 }
                 onClose={() => setKilling(false)}

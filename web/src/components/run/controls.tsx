@@ -1,5 +1,5 @@
 import { ChevronDown } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { type Answer, type Command, send } from "@/api/control";
 import type { RunDetail } from "@/api/run";
@@ -37,20 +37,32 @@ const DONE: Record<Command["action"], string> = {
 const problemText = (e: unknown) =>
   isProblem(e) ? (e.detail ?? e.title) : "The control plane did not answer.";
 
-// Sends commands to a run and keeps the runner's last answer to show.
+// Sends commands to a run and keeps the runner's last answer to show. Once the page is gone a
+// command still goes out, but nobody waits for its answer: it comes back null.
 export function useCommand(runId: string) {
   const [busy, setBusy] = useState(false);
   const [answer, setAnswer] = useState<Answer | null>(null);
-  const run = async (c: Command): Promise<Answer> => {
-    setBusy(true);
-    setAnswer(null);
+  const page = useRef<AbortController>(null);
+  useEffect(() => {
+    const here = new AbortController();
+    page.current = here;
+    return () => here.abort();
+  }, []);
+  const run = async (c: Command): Promise<Answer | null> => {
+    const signal = page.current?.signal;
+    const shown = () => !signal?.aborted;
+    if (shown()) {
+      setBusy(true);
+      setAnswer(null);
+    }
     let got: Answer;
     try {
-      got = await send(runId, c);
+      got = await send(runId, c, { signal });
       if (got.state === "done" && got.text === "done") got = { ...got, text: DONE[c.action] };
     } catch (error) {
       got = { state: "failed", text: problemText(error) };
     }
+    if (!shown()) return null;
     setBusy(false);
     setAnswer(got);
     return got;
@@ -95,7 +107,7 @@ export function RunControls({ detail }: { detail: RunDetail }) {
   const close = () => setDialog(null);
   const act = (c: Command) => {
     void command(c).then((a) => {
-      if (a.state !== "failed") close();
+      if (a && a.state !== "failed") close();
     });
   };
   return (

@@ -63,11 +63,15 @@ const answerOf = (c: CommandInfo): Answer => {
 
 // Sends `c` and waits for the runner's answer, as `aims control` does. A drop as the run
 // ended is not final: the runner may have carried the command out, and its answer may still
-// come and say done.
+// come and say done. `signal` ends the wait with its abort error; the command stays sent.
 export async function send(
   runId: string,
   c: Command,
-  { wait = ACK_MS, every = POLL_MS } = {},
+  {
+    wait = ACK_MS,
+    every = POLL_MS,
+    signal,
+  }: { wait?: number; every?: number; signal?: AbortSignal | undefined } = {},
 ): Promise<Answer> {
   const sent = await post(runId, c);
   if (sent.state === "cancelled") return { state: "done", text: "Cancelled before it started." };
@@ -75,10 +79,12 @@ export async function send(
   const deadline = Date.now() + (id ? wait : 0);
   let found: CommandInfo | undefined;
   while (Date.now() < deadline) {
+    signal?.throwIfAborted();
     // one poll at a time, like `aims control`
     // oxlint-disable-next-line no-await-in-loop
     const { data, error } = await client.GET("/api/runs/{run_id}/commands", {
       params: { path: { run_id: runId } },
+      ...(signal ? { signal } : {}),
     });
     if (error) throw error;
     found = data.find((x) => x.id === id);

@@ -2070,10 +2070,56 @@ test("an answer that lands after the operator went to another run does not show 
   await screen.findByText(OTHER);
   expect(screen.getByRole("button", { name: "Pause" }).hasAttribute("disabled")).toBe(false);
   held.resolve();
-  await waitFor(() => expect(requests("commands")).not.toHaveLength(0));
+  await waitFor(() => expect(posted).toHaveLength(1));
   await act(() => new Promise((r) => setTimeout(r, 50)));
   expect(posted.map((p) => p.path)).toEqual([`/api/runs/${BEE5}/pause`]);
+  // the command went out; nothing waits for its answer
+  expect(requests("commands")).toEqual([]);
   expect(screen.queryByText("Paused.")).toBeNull();
+});
+
+test("a wait for the runner's answer ends when the operator goes to another run", async () => {
+  twoOpenRuns();
+  const base = fetch.getMockImplementation()!;
+  fetch.mockImplementation(async (request) => {
+    const reply = await base(request);
+    // the runner never answers
+    for (const c of commands) c.acked = null;
+    return reply;
+  });
+  const router = renderAt(`/runs/${BEE5}`);
+  fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
+  await waitFor(() => expect(requests("commands")).not.toHaveLength(0));
+  await act(() => router.navigate({ to: "/runs/$runId", params: { runId: OTHER } }));
+  await screen.findByText(OTHER);
+  const polls = requests("commands").length;
+  await act(() => new Promise((r) => setTimeout(r, 500)));
+  expect(requests("commands")).toHaveLength(polls);
+  expect(posted.map((p) => p.path)).toEqual([`/api/runs/${BEE5}/pause`]);
+  expect(screen.queryByText(/Sent;|Not done/)).toBeNull();
+});
+
+test("a pause answered for several agents reaches each though the page is left midway", async () => {
+  twoOpenRuns();
+  detail = open({ held: [hold({ agent: "a" }), hold({ agent: "b" })] });
+  const base = fetch.getMockImplementation()!;
+  fetch.mockImplementation(async (request) => {
+    const reply = await base(request);
+    // the runner never answers
+    for (const c of commands) c.acked = null;
+    return reply;
+  });
+  const router = renderAt(`/runs/${BEE5}`);
+  const banner = await screen.findByRole("region", { name: "Monitor pause of a, b" });
+  fireEvent.click(within(banner).getByRole("button", { name: "Allow" }));
+  await waitFor(() => expect(requests("commands")).not.toHaveLength(0));
+  await act(() => router.navigate({ to: "/runs/$runId", params: { runId: OTHER } }));
+  await screen.findByText(OTHER);
+  await waitFor(() => expect(posted).toHaveLength(2));
+  expect(posted.map((p) => p.body["agent"])).toEqual(["a", "b"]);
+  const polls = requests("commands").length;
+  await act(() => new Promise((r) => setTimeout(r, 300)));
+  expect(requests("commands")).toHaveLength(polls);
 });
 
 test("a pause under human oversight waits for an answer like the terminal's", async () => {
