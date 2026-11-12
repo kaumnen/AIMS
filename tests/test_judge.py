@@ -1101,6 +1101,51 @@ async def test_a_reply_without_usage_keeps_the_context(
     assert all(plan >= sent for plan, sent in calls), calls
 
 
+def counted(n: int, prompt: Prompt, reply: Reply) -> ModelUsage:
+    """Token counts as the judge's own count gives them, rounded up."""
+    wrote = -(-len(reply.turn.model_dump_json()) // CHARS_PER_TOKEN)
+    return ModelUsage(input_tokens=whole(prompt) + 1, output_tokens=wrote)
+
+
+def late_at_once() -> Callable[[], float]:
+    """A clock past the point where a rollout of a 600 s judge gives its verdict, from the
+    first reading after the start."""
+    now = [0.0]
+
+    def clock() -> float:
+        t, now[0] = now[0], 500.0
+        return t
+
+    return clock
+
+
+async def test_a_forced_call_counts_the_schema_it_sends(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = await make_run(store)
+    answer = say(json.dumps(verdict(summary="forced")))
+    judge = make_judge(store, run, Script(answer), clock=late_at_once())
+    calls = planned_contexts(judge, monkeypatch, counted)
+    assert payload_of(await judge.run(flags=[], sweeps=[])).summary == "forced"
+    [(planned, sent)] = calls
+    assert planned == sent
+
+    # A budget that pays for the forced call as it is sent gets the verdict.
+    budget = (sent * 1.0 + MIN_OUTPUT * 2.0) / 1_000_000 + 1e-7
+    script = Script(answer)
+    judge = make_judge(store, run, script, budget=budget, clock=late_at_once())
+    assert payload_of(await judge.run(flags=[], sweeps=[])).summary == "forced"
+    assert script.requests[0]["max_tokens"] == MIN_OUTPUT
+
+    # After a counted exploring call, the specs it sent stay in its count.
+    judge = make_judge(store, run, Script(call("events"), answer), max_tool_calls=1)
+    calls = planned_contexts(judge, monkeypatch, counted)
+    await judge.run(flags=[], sweeps=[])
+    (_, _), (planned, sent) = calls
+    specs = sum(len(s.model_dump_json()) for s in judge._specs(False)) // CHARS_PER_TOKEN
+    assert sent <= planned <= sent + specs + 2
+
+
 async def test_budget_stop(store: LocalEventStore) -> None:
     run = await make_run(store)
     script = Script(call("events") | {"usage": MILLION}, call("verdict", **verdict()))
@@ -1180,7 +1225,7 @@ def reads(run: Run, *offsets: int) -> dict[str, Any]:
 
 
 # Just above the budget at which the judge explores once at Wonder's prices.
-EXPLORE = 0.20
+EXPLORE = 0.21
 
 
 async def test_parallel_reads_leave_room_for_the_verdict(store: LocalEventStore) -> None:

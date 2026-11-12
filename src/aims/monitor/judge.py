@@ -389,6 +389,9 @@ TOOL_PARAMETERS: dict[str, dict[str, JsonValue]] = {
     },
     "verdict": VERDICT_SCHEMA,
 }
+# What a forced call sends in place of the tool specs.
+VERDICT_FORMAT = OutputSchema(name="verdict", json_schema=VERDICT_SCHEMA)
+FORMAT_TOKENS = len(VERDICT_FORMAT.model_dump_json()) // CHARS_PER_TOKEN
 TOOL_ARGS: dict[str, type[_Args]] = {
     "flags": FlagsArgs,
     "events": EventsArgs,
@@ -651,6 +654,8 @@ class Rollout:
     cost: float = 0.0
     context: int = 0
     mark: int = 0
+    # Whether the call `context` counts sent the verdict schema, not the tool specs.
+    schema: bool = False
     judged: Judged | None = None
     error: str | None = None
 
@@ -673,6 +678,7 @@ class Rollout:
         # The reply's turn goes right after the prompt's items.
         self.context = usage.input_tokens
         self.mark = len(prompt.items)
+        self.schema = prompt.output_schema is not None
         if usage.output_tokens is not None:
             self.context += usage.output_tokens
             self.mark += 1
@@ -1028,7 +1034,7 @@ class Judge:
         tries = 0
         while True:
             left = r.budget - r.cost
-            context = self._context(r, items, specs)
+            context = self._context(r, items, specs, forced=forced)
             room = self._room(left, context, explore=True)
             late = self.clock() >= self._force_at
             if not forced and (
@@ -1036,7 +1042,7 @@ class Judge:
             ):
                 forced = True
                 items.append(self._force())
-                context = self._context(r, items, specs)
+                context = self._context(r, items, specs, forced=True)
             out = self._room(left, context, explore=not forced)
             if out is not None and out < MIN_OUTPUT:
                 r.error = "the judge budget ran out before a verdict"
@@ -1046,8 +1052,7 @@ class Judge:
                     r.error = f"no valid verdict after {tries} forced calls"
                     return
                 tries += 1
-                schema = OutputSchema(name="verdict", json_schema=VERDICT_SCHEMA)
-                prompt = Prompt(items=items, output_schema=schema)
+                prompt = Prompt(items=items, output_schema=VERDICT_FORMAT)
             else:
                 prompt = Prompt(items=items, tools=specs)
             limit = self.profile.max_output_tokens
@@ -1104,18 +1109,29 @@ class Judge:
         r.charge(reply, prompt)
         return reply
 
-    def _context(self, r: Rollout, items: Sequence[Item], specs: Sequence[ToolSpec]) -> int:
+    def _context(
+        self, r: Rollout, items: Sequence[Item], specs: Sequence[ToolSpec], *, forced: bool
+    ) -> int:
         """At most how many input tokens the next call sends: what the last call with token
-        counts read and wrote plus the items since, else the whole prompt."""
-        added = items[r.mark :] if r.context else [*items, *specs]
+        counts read and wrote plus the items since, else the whole prompt. Beside its items a
+        call sends the tool specs, or the verdict schema when `forced`. When the counted call
+        sent the other one, this one is added; what the counted call sent stays in its count,
+        which does not tell it apart."""
+        beside: list[ToolSpec | OutputSchema] = [VERDICT_FORMAT] if forced else list(specs)
+        if not r.context:
+            added = [*items, *beside]
+        elif r.schema == forced:
+            added = list(items[r.mark :])
+        else:
+            added = [*items[r.mark :], *beside]
         return r.context + sum(len(x.model_dump_json()) for x in added) // CHARS_PER_TOKEN
 
     def _room(self, left: float, context: int, *, explore: bool) -> int | None:
         """How many output tokens the next call may write within `left` dollars, its input
         priced uncached. An exploring call also leaves room for a verdict call after it, which
         reads the context again with all the exploring call writes, RESULT_TOKENS of tool
-        results and the force message; it gets -1 when it cannot write MIN_OUTPUT beside that.
-        None when the profile has no price."""
+        results, the force message and the verdict schema; it gets -1 when it cannot write
+        MIN_OUTPUT beside that. None when the profile has no price."""
         price = self.profile.price
         if price is None:
             return None
@@ -1123,7 +1139,7 @@ class Judge:
         reading = context * price.input / MILLION
         if explore:
             force = len(self._force().model_dump_json()) // CHARS_PER_TOKEN
-            after = context + RESULT_TOKENS + force
+            after = context + RESULT_TOKENS + force + FORMAT_TOKENS
             left -= reading + (after * price.input + self._verdict() * price.output) / MILLION
             # The verdict call reads again each token the exploring call writes.
             per = price.input + price.output
@@ -1142,7 +1158,7 @@ class Judge:
 
     def _fits(self, r: Rollout, items: Sequence[Item], specs: Sequence[ToolSpec]) -> bool:
         """Whether a forced verdict call after `items` still gets its planned output."""
-        context = self._context(r, [*items, self._force()], specs)
+        context = self._context(r, [*items, self._force()], specs, forced=True)
         out = self._room(r.budget - r.cost, context, explore=False)
         return out is None or out >= self._verdict()
 
