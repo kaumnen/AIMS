@@ -37,22 +37,24 @@ log = logging.getLogger("aims.run")
 @dataclass(slots=True)
 class Origin:
     """What a fork needs from the run it forks: the scenario as recorded, each agent's profiles
-    and texts, its step count, the tool outputs it was given and the messages injected."""
+    and texts, its step count, the tool outputs it was given and the messages injected. What
+    the origin recorded of a tool call is keyed by its step and call id, since a provider may
+    give calls of different steps the same id."""
 
     run_id: str
     bundle: Bundle
     schedules: dict[str, list[tuple[int | None, Profile]]]
     texts: dict[str, Texts]
     steps: dict[str, int] = field(default_factory=dict)
-    outputs: dict[str, dict[str, RecordedOutput]] = field(default_factory=dict)
+    outputs: dict[str, dict[tuple[int, str], RecordedOutput]] = field(default_factory=dict)
     injects: dict[str, dict[int, list[str]]] = field(default_factory=dict)
     full_bundle: Bundle | None = None
     truth: dict[str, Any] | None = None
     step_seqs: dict[str, list[int]] = field(default_factory=dict)
-    step_calls: dict[str, list[list[str]]] = field(default_factory=dict)
-    call_seqs: dict[str, dict[str, int]] = field(default_factory=dict)
+    step_calls: dict[str, list[dict[str, int]]] = field(default_factory=dict)
+    """The origin seq of each tool call of each step, by call id."""
     actions: dict[str, list[int]] = field(default_factory=dict)
-    versions: dict[str, ChannelVersions] = field(default_factory=dict)
+    versions: dict[str, dict[tuple[int, str], ChannelVersions]] = field(default_factory=dict)
     restored: dict[str, bytes] = field(default_factory=dict)
     last_seq: int = -1
     budget: BudgetOverride | None = None
@@ -228,7 +230,7 @@ async def load_origin(store: EventStore, run_id: str, *, full: bool = True) -> O
         budget=budgets.load(config.get("budget")),
     )
     steps: dict[str, int] = defaultdict(int)
-    outputs: dict[str, dict[str, RecordedOutput]] = defaultdict(dict)
+    outputs: dict[str, dict[tuple[int, str], RecordedOutput]] = defaultdict(dict)
     injects: dict[str, dict[int, list[str]]] = defaultdict(lambda: defaultdict(list))
     types = ("agent.step", "tool.result", "agent.input", "agent.finished")
     cursor: int | None = None
@@ -244,7 +246,8 @@ async def load_origin(store: EventStore, run_id: str, *, full: bool = True) -> O
                 steps[agent] += 1
             elif isinstance(payload, ToolResult):
                 text = await _text(store, run_id, payload.output)
-                outputs[agent][payload.call_id] = RecordedOutput(text, payload.error)
+                # a step's tool results come after its agent.step and before the next
+                outputs[agent][steps[agent], payload.call_id] = RecordedOutput(text, payload.error)
             elif isinstance(payload, AgentInput) and payload.kind == "inject":
                 injects[agent][payload.step].append(await _text(store, run_id, payload.text))
     origin.steps = dict(steps)
@@ -262,15 +265,17 @@ async def load_origin(store: EventStore, run_id: str, *, full: bool = True) -> O
 
 async def _order(store: EventStore, run_id: str, origin: Origin) -> None:
     """When each agent took each step and tool call in the origin, a scripted agent's steps,
-    and what each tool call met of the channels."""
+    and what each tool call met of the channels. A model's tool calls come before the step
+    that made them; the execs and reads of a call come after it."""
     step_seqs: dict[str, list[int]] = defaultdict(list)
-    step_calls: dict[str, list[list[str]]] = defaultdict(list)
-    call_seqs: dict[str, dict[str, int]] = defaultdict(dict)
+    step_calls: dict[str, list[dict[str, int]]] = defaultdict(list)
+    replies: dict[tuple[str, str], dict[str, int]] = defaultdict(dict)
     actions: dict[str, list[int]] = defaultdict(list)
-    execs: dict[str, tuple[str, str]] = {}
-    reads: dict[str, dict[str, int]] = defaultdict(dict)
-    writes: dict[str, dict[str, str | None]] = defaultdict(dict)
-    where: dict[str, dict[str, str]] = defaultdict(dict)
+    # a tool call by its agent, its step and its call id
+    execs: dict[str, tuple[str, int, str]] = {}
+    reads: dict[tuple[str, int, str], dict[str, int]] = defaultdict(dict)
+    writes: dict[tuple[str, int, str], dict[str, str | None]] = defaultdict(dict)
+    where: dict[tuple[str, int, str], dict[str, str]] = defaultdict(dict)
     types = (
         "agent.step",
         "tool.call",
@@ -290,17 +295,19 @@ async def _order(store: EventStore, run_id: str, origin: Origin) -> None:
                 case "agent.step":
                     step = AgentStep.model_validate(d)
                     step_seqs[agent].append(e.seq)
-                    step_calls[agent].append(list(step.tool_calls))
+                    seqs = replies.pop((agent, step.call_id), {})
+                    step_calls[agent].append({c: seqs[c] for c in step.tool_calls if c in seqs})
                 case "tool.call":
                     made = ToolCall.model_validate(d)
-                    call_seqs[agent][made.call_id] = e.seq
                     # A call no model made is a scripted agent's step.
                     if made.model_call is None:
                         actions[agent].append(e.seq)
+                    else:
+                        replies[agent, made.model_call][made.call_id] = e.seq
                 case "exec.started":
                     call = d.get("call_id")
                     if isinstance(call, str):
-                        execs[str(d.get("exec_id"))] = (call, agent)
+                        execs[str(d.get("exec_id"))] = (agent, len(step_seqs[agent]), call)
                     elif d.get("phase") == "agent":
                         actions[agent].append(e.seq)
                 case "channel.message" if d.get("call_id") is None:
@@ -308,28 +315,28 @@ async def _order(store: EventStore, run_id: str, origin: Origin) -> None:
                 case "channel.read" if isinstance(d.get("call_id"), str):
                     through = d.get("through")
                     if isinstance(through, int):
-                        reads[str(d["call_id"])][str(d.get("channel"))] = through
+                        key = (agent, len(step_seqs[agent]), str(d["call_id"]))
+                        reads[key][str(d.get("channel"))] = through
                 case "channel.snapshot" if str(d.get("exec_id")) in execs:
-                    call, writer = execs[str(d.get("exec_id"))]
+                    key = execs[str(d.get("exec_id"))]
                     changes = d.get("changes")
                     for c in changes if isinstance(changes, list) else []:
                         path = c.get("path") if isinstance(c, dict) else None
-                        own = isinstance(c, dict) and c.get("agent") == writer
+                        own = isinstance(c, dict) and c.get("agent") == key[0]
                         if own and isinstance(c, dict) and isinstance(path, str):
                             sha = c.get("sha256")
-                            writes[call][path] = sha if isinstance(sha, str) else None
-                            where[call][path] = str(d.get("channel"))
+                            writes[key][path] = sha if isinstance(sha, str) else None
+                            where[key][path] = str(d.get("channel"))
     origin.step_seqs = dict(step_seqs)
     origin.step_calls = dict(step_calls)
-    origin.call_seqs = dict(call_seqs)
     origin.actions = dict(actions)
-    seqs = {c: s for calls in call_seqs.values() for c, s in calls.items()}
-    for call in set(reads) | set(writes):
-        origin.versions[call] = ChannelVersions(
-            seq=seqs.get(call, 0),
-            reads=dict(reads.get(call, {})),
-            writes=dict(writes.get(call, {})),
-            channels=dict(where.get(call, {})),
+    for key in set(reads) | set(writes):
+        agent, n, call = key
+        origin.versions.setdefault(agent, {})[n, call] = ChannelVersions(
+            seq=step_calls[agent][n - 1].get(call, 0) if n else 0,
+            reads=dict(reads.get(key, {})),
+            writes=dict(writes.get(key, {})),
+            channels=dict(where.get(key, {})),
         )
 
 
@@ -498,11 +505,11 @@ def _at(schedule: list[tuple[int | None, Profile]], step: int) -> Profile:
     return schedule[-1][1]
 
 
-def _replayed(origin: Origin, agent_id: str, step: int) -> dict[str, int]:
-    """The origin seq of each tool call of the agent's first `step` steps."""
-    seqs = origin.call_seqs.get(agent_id, {})
+def _replayed(origin: Origin, agent_id: str, step: int) -> dict[tuple[int, str], int]:
+    """The origin seq of each tool call of the agent's first `step` steps, by step and call
+    id."""
     calls = origin.step_calls.get(agent_id, [])[:step]
-    return {c: seqs[c] for cs in calls for c in cs if c in seqs}
+    return {(n, c): seq for n, seqs in enumerate(calls, 1) for c, seq in seqs.items()}
 
 
 def check_fork(origin: Origin, step: int) -> None:
@@ -563,6 +570,7 @@ def planner(bench: Bench, origin: Origin, fork: Fork, *, source: EventStore | No
             step = fork.at(agent.id)
             injects = origin.injects.get(agent.id, {})
             order = orders[agent.id]
+            versions = origin.versions.get(agent.id, {})
             out[agent.id] = ReplayPlan(
                 client=client,
                 fork_at=step,
@@ -573,7 +581,7 @@ def planner(bench: Bench, origin: Origin, fork: Fork, *, source: EventStore | No
                 inject=fork.inject if fork.agent in (None, agent.id) else None,
                 turnstile=turnstile,
                 order=order,
-                versions={c: v for c, v in origin.versions.items() if c in order},
+                versions={k: v for k, v in versions.items() if k in order},
                 keep=fork.keep_others and agent.id != fork.agent,
                 actions=actions.get(agent.id, []),
                 budget=caps[agent.id],

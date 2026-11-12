@@ -318,11 +318,12 @@ async def test_a_replayed_read_at_another_version_is_a_channel_divergence(
     origin_id = await origin_run(store, backend, tmp_path)
 
     def tamper(origin: Any) -> None:
-        for call_id, v in list(origin.versions.items()):
-            if v.reads:
-                origin.versions[call_id] = ChannelVersions(
-                    seq=v.seq, reads=dict.fromkeys(v.reads, 99), writes=v.writes
-                )
+        for calls in origin.versions.values():
+            for key, v in list(calls.items()):
+                if v.reads:
+                    calls[key] = ChannelVersions(
+                        seq=v.seq, reads=dict.fromkeys(v.reads, 99), writes=v.writes
+                    )
 
     plays = {"a": [call("submit", answer="a")] * 3, "b": [call("submit", answer="b")] * 3}
     result, events = await fork_run(
@@ -605,8 +606,51 @@ async def test_a_call_is_held_only_to_its_own_writes_of_a_shared_folder(
     await store.append(run_id, [Draft(call_event, "a"), Draft(started, "a"), Draft(snapshot)])
     origin = Origin(run_id, cast(Any, None), {}, {})
     await _order(store, run_id, origin)
-    assert origin.versions["c1"].writes == {"/shared/mine": "s1"}
-    assert origin.versions["c1"].channels == {"/shared/mine": "notes"}
+    # a call before any step of its agent
+    assert origin.versions["a"][0, "c1"].writes == {"/shared/mine": "s1"}
+    assert origin.versions["a"][0, "c1"].channels == {"/shared/mine": "notes"}
+
+
+async def test_calls_that_share_an_id_keep_their_own_turn_and_board_reads(
+    store: LocalEventStore,
+) -> None:
+    """Agents a and b both name their tool calls c1, and a names its next one c1 again: each
+    call keeps the seq it ran at and what it read of the board."""
+    from typing import cast
+
+    from aims.events import AgentStep, ChannelRead, Draft, ToolCall
+    from aims.run.fork import Origin, _order
+
+    def step(agent: str, n: int, through: int) -> list[Draft]:
+        model = f"m{agent}{n}"
+        return [
+            Draft(
+                ToolCall(call_id="c1", name="read_messages", arguments="{}", model_call=model),
+                agent,
+            ),
+            Draft(AgentStep(n=n, call_id=model, status="completed", tool_calls=["c1"]), agent),
+            Draft(
+                ChannelRead(channel="chat", after=0, through=through, count=through, call_id="c1"),
+                agent,
+            ),
+        ]
+
+    run_id = await store.create_run(RunStarted(scenario="s", oversight="observe"))
+    await store.append(run_id, [*step("a", 1, 1), *step("b", 1, 2), *step("a", 2, 3)])
+    made = [e.seq for e in await store.events(run_id, types=["tool.call"], limit=10)]
+    origin = Origin(run_id, cast(Any, None), {}, {})
+    await _order(store, run_id, origin)
+    assert origin.step_calls == {"a": [{"c1": made[0]}, {"c1": made[2]}], "b": [{"c1": made[1]}]}
+    seen = {
+        (agent, key): (v.seq, v.reads)
+        for agent, calls in origin.versions.items()
+        for key, v in calls.items()
+    }
+    assert seen == {
+        ("a", (1, "c1")): (made[0], {"chat": 1}),
+        ("b", (1, "c1")): (made[1], {"chat": 2}),
+        ("a", (2, "c1")): (made[2], {"chat": 3}),
+    }
 
 
 def test_a_recorded_symlink_seeds_a_symlink(tmp_path: Path) -> None:

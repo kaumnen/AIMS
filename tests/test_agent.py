@@ -556,9 +556,10 @@ async def test_a_fork_feeds_recorded_outputs_and_logs_divergence(store: LocalEve
     assert (await agent.run()).reason == "submitted"
     from aims.models import Recording
 
+    # one tool call a step
     recorded = {
-        r.call_id: RecordedOutput(str(r.output), r.error)
-        for r in await payloads(store, origin, ToolResult)
+        (n, r.call_id): RecordedOutput(str(r.output), r.error)
+        for n, r in enumerate(await payloads(store, origin, ToolResult), 1)
     }
 
     def changed(command: str, stdin: bytes | None) -> tuple[bytes, int]:
@@ -736,9 +737,12 @@ async def test_a_denied_replayed_call_gives_up_its_turn(store: LocalEventStore) 
         client=agent.client,
         fork_at=2,
         schedule=[(None, agent.profile)],
-        outputs={"call_1": RecordedOutput("x", False), "call_2": RecordedOutput("y", False)},
+        outputs={
+            (1, "call_1"): RecordedOutput("x", False),
+            (2, "call_2"): RecordedOutput("y", False),
+        },
         turnstile=turnstile,
-        order={"call_1": 10, "call_2": 30},
+        order={(1, "call_1"): 10, (2, "call_2"): 30},
     )
 
     async def other() -> None:

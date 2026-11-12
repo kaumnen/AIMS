@@ -251,7 +251,8 @@ class ChannelVersions:
 class ReplayPlan:
     """How a fork replays its origin: model answers for steps 1 to `fork_at` come from
     `client`; each of their tool calls runs again here, and the model is given the output
-    recorded in `outputs`. A replayed step uses the profile the origin used for it, from
+    recorded in `outputs`. `outputs`, `order` and `versions` hold each tool call by its step
+    and call id. A replayed step uses the profile the origin used for it, from
     `schedule` (each profile with the last step it ran, None for no end), so its request
     matches; later steps use the agent's own profile. `injects` are the messages the origin was
     given, by step.
@@ -273,13 +274,13 @@ class ReplayPlan:
     client: ModelClient
     fork_at: int
     schedule: list[tuple[int | None, Profile]]
-    outputs: dict[str, RecordedOutput]
+    outputs: dict[tuple[int, str], RecordedOutput]
     injects: dict[int, list[str]] = field(default_factory=dict)
     strict: bool = False
     inject: str | None = None
     turnstile: Turnstile | None = None
-    order: dict[str, int] = field(default_factory=dict)
-    versions: dict[str, ChannelVersions] = field(default_factory=dict)
+    order: dict[tuple[int, str], int] = field(default_factory=dict)
+    versions: dict[tuple[int, str], ChannelVersions] = field(default_factory=dict)
     keep: bool = False
     actions: list[int] = field(default_factory=list)
     budget: Budget | None = None
@@ -666,7 +667,7 @@ class Agent:
         replayed = self.replay is not None and self.steps <= self.replay.fork_at
         turn = None
         if replayed and self.replay is not None and self.replay.turnstile is not None:
-            turn = self.replay.order.get(call.id)
+            turn = self.replay.order.get((self.steps, call.id))
         if turn is None:
             return await self._run_logged(call, replayed)
         assert self.replay is not None
@@ -679,7 +680,7 @@ class Agent:
             outcome = await self._run_logged(call, replayed)
         finally:
             await turnstile.done(turn)
-        versions = self.replay.versions.get(call.id)
+        versions = self.replay.versions.get((self.steps, call.id))
         if versions is not None:
             await self._check_channels(call, mark, versions)
         return outcome
@@ -687,7 +688,7 @@ class Agent:
     async def _pass_turn(self, call: ToolRequest) -> None:
         """Give up the turn of a replayed call that will not run, so the others go on."""
         if self.replay is not None and self.replay.turnstile is not None:
-            turn = self.replay.order.get(call.id)
+            turn = self.replay.order.get((self.steps, call.id))
             if turn is not None:
                 await self.replay.turnstile.done(turn)
 
@@ -708,7 +709,7 @@ class Agent:
         error = outcome.error
         if replayed:
             assert self.replay is not None
-            recorded = self.replay.outputs.get(call.id)
+            recorded = self.replay.outputs.get((self.steps, call.id))
             if recorded is None:
                 raise _End("error", f"the origin has no output for tool call {call.id}")
             if (recorded.output, recorded.error) != (text, error):

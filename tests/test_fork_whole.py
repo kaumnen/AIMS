@@ -3,6 +3,7 @@ that ends at a gate, mid-call or in a crash leaves its last step without them, s
 that step, names the last one it can replay and cuts there by default."""
 
 import asyncio
+import itertools
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any, cast
@@ -326,6 +327,36 @@ async def test_an_agent_that_ended_mid_step_in_a_running_run_says_it_ended(
     with pytest.raises(RunError) as refused:
         cut_at(await load_origin(store, run_id), "b:2")
     assert "step 2 of agent b cannot be replayed yet: its tool calls have not" in str(refused.value)
+
+
+async def test_a_call_id_used_again_in_a_later_step_replays_its_own_output(
+    store: LocalEventStore,
+) -> None:
+    """A provider that gives every tool call the same id: each replayed call gets the output of
+    its own step and waits for its own turn, so the replayed requests match the recorded ones."""
+    script = Script(
+        call("bash", command="ls"), call("bash", command="pwd"), call("submit", answer="x")
+    )
+    script.calls = itertools.count(1, 0)
+    run_id = await origin_run(store, script)
+    origin = await load_origin(store, run_id)
+    made = [e.seq for e in await store.events(run_id, types=["tool.call"], limit=10)]
+    assert [list(calls) for calls in origin.step_calls["agent"]] == [["call_1"]] * 3
+    outputs = ["stdout:\nran ls\nexit code: 0", "stdout:\nran pwd\nexit code: 0"]
+
+    fork_id = await fork_live(store, origin, 2, Script(call("submit", answer="forked")))
+    assert [r.output for r in await payloads(store, fork_id, ToolResult)][:2] == outputs
+
+    at = cut_at(origin, f"@{origin.step_seqs['agent'][1]}")
+    assert isinstance(at, CutAt)
+    fork = Fork(origin=run_id, step=2, steps=at.steps, cut=at.seq)
+    bench = Bench(store, cast(Any, None), models(profile()))
+    fork_id = await store.create_run(RunStarted(scenario="t", oversight="observe"))
+    plan = (await planner(bench, origin, fork)(fork_id))["agent"]
+    assert plan.order == {(1, "call_1"): made[0], (2, "call_1"): made[1]}
+    finished = await agent(store, fork_id, Script(call("submit", answer="cut")), replay=plan).run()
+    assert (finished.reason, finished.answer) == ("submitted", "cut"), finished.detail
+    assert [r.output for r in await payloads(store, fork_id, ToolResult)][:2] == outputs
 
 
 async def test_a_step_without_tool_calls_is_whole(store: LocalEventStore) -> None:
