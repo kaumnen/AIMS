@@ -12,6 +12,7 @@ from aims.events import Oversight
 from aims.models import ModelsConfig, Profile, ProfileError
 from aims.models.profiles import check_weights
 from aims.monitor.config import (
+    MAX_HOLD_S,
     MonitorConfig,
     MonitorConfigError,
     Preset,
@@ -81,7 +82,8 @@ class ResolvedMonitor:
 
     @classmethod
     def restore(cls, value: Mapping[str, Any]) -> ResolvedMonitor:
-        """A monitor from its `snapshot`. Raises MonitorConfigError."""
+        """A monitor from its `snapshot`. A hold timeout past MAX_HOLD_S, as a snapshot stored
+        before that bound may hold, is cut to it. Raises MonitorConfigError."""
         try:
 
             def profile(v: Any) -> Profile | None:
@@ -89,7 +91,7 @@ class ResolvedMonitor:
 
             sweeps = {n: Profile.model_validate(p) for n, p in value["sweeps"].items()}
             return cls(
-                config=MonitorConfig.model_validate(value["config"]),
+                config=MonitorConfig.model_validate(_bounded(value["config"])),
                 texts=MonitorTexts.restore(value["texts"]),
                 oversight=value["oversight"],
                 budget_usd=float(value["budget_usd"]),
@@ -103,6 +105,21 @@ class ResolvedMonitor:
             )
         except (KeyError, TypeError, ValueError, ValidationError) as e:
             raise MonitorConfigError(f"the monitor snapshot does not load: {e}") from None
+
+
+def _bounded(config: Any) -> Any:
+    """A snapshot's config with each hold timeout past MAX_HOLD_S cut to it."""
+    policy = config.get("policy") if isinstance(config, Mapping) else None
+    if not isinstance(policy, Mapping):
+        return config
+    cut = {
+        name: MAX_HOLD_S
+        for name in ("pause_timeout_s", "human_timeout_s")
+        if isinstance(v := policy.get(name), int | float)
+        and not isinstance(v, bool)
+        and v > MAX_HOLD_S
+    }
+    return {**config, "policy": {**policy, **cut}} if cut else config
 
 
 def identity(

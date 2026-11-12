@@ -6,8 +6,11 @@ from pydantic import ValidationError
 
 from aims.events import Event, ModelRequest, MonitorFlag, ToolResult
 from aims.events.schema import Payload
-from aims.monitor.config import MAX_HOLD_S, CategoryPolicy, PolicyConfig
+from aims.monitor.config import MAX_HOLD_S, CategoryPolicy, PolicyConfig, merge
 from aims.monitor.policy import Cutoffs, Policy
+from aims.monitor.setup import ResolvedMonitor
+from aims.monitor.texts import resolve
+from aims.prompts import Prompts
 
 HASH = "0" * 64
 
@@ -274,3 +277,24 @@ def test_a_pause_holds_at_most_thirty_days(name: str) -> None:
     for value in (MAX_HOLD_S + 1, 1e12, float("inf")):
         with pytest.raises(ValidationError):
             PolicyConfig.model_validate({name: value})
+
+
+@pytest.mark.parametrize("value", [60 * 86_400, 1e12, float("inf")])
+def test_a_snapshot_stored_with_a_longer_hold_restores_at_thirty_days(value: float) -> None:
+    resolved = ResolvedMonitor(
+        config=merge({"preset": "signals"}),
+        texts=resolve(Prompts()),
+        oversight="human",
+        budget_usd=0.0,
+        identity="id",
+    )
+    snapshot = resolved.snapshot()
+    config = snapshot["config"]
+    assert isinstance(config, dict)
+    policy = config["policy"]
+    assert isinstance(policy, dict)
+    policy["pause_timeout_s"] = policy["human_timeout_s"] = value
+    again = ResolvedMonitor.restore(snapshot)
+    assert again.config.policy.pause_timeout_s == again.config.policy.human_timeout_s == MAX_HOLD_S
+    assert again.identity == "id"
+    assert again.config.model_copy(update={"policy": resolved.config.policy}) == resolved.config
