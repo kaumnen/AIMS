@@ -802,16 +802,15 @@ class Index:
 
     async def _totals(self, run_id: str, fresh: Sequence[Event]) -> None:
         """Add the steps, cost and reward of events not indexed yet to the run's row. Cost adds
-        up in whole nano-dollars, so any batching of the same events gives the same total. A
-        total past what SQLite holds stays at the most it holds."""
+        up in whole nano-dollars, none below 0, so any batching of the same events gives the
+        same total. A total past what SQLite holds stays at the most it holds."""
         steps, nanos, priced, scored, reward = 0, 0, False, False, None
         for e in fresh:
             if e.type == AgentStep.type:
                 steps += 1
             elif e.type == ModelResponse.type and e.data.get("source", "live") == "live":
-                value = e.data.get("cost_usd")
-                is_number = isinstance(value, int | float) and not isinstance(value, bool)
-                if is_number and _fits(cost := round(value * 1e9)):
+                cost = _nanos(e.data.get("cost_usd"))
+                if cost is not None:
                     nanos += cost
                     priced = True
             elif e.type == TaskScored.type:
@@ -1655,7 +1654,8 @@ class Index:
 
     async def call_costs(self, run_id: str) -> list[CallCost]:
         """What the run's live model calls cost, per role and output schema, in the order each
-        kind first called. Costs add up in whole nano-dollars, like the run's total."""
+        kind first called. Costs add up in whole nano-dollars, like the run's total: none below
+        0, at most what the index holds."""
         if not _held(run_id):
             return []
         async with self._db.execute(
@@ -1677,8 +1677,8 @@ class Index:
                 continue
             row = found.setdefault(kinds[call], [set(), 0, False, 0, 0])
             row[0].add(call)
-            if isinstance(cost, int | float):
-                row[1] += round(cost * 1e9)
+            if (nanos := _nanos(cost)) is not None:
+                row[1] += nanos
                 row[2] = True
             row[3] += given or 0
             row[4] += made or 0
@@ -1687,7 +1687,7 @@ class Index:
                 role=role,
                 schema_name=schema,
                 calls=len(calls),
-                cost_usd=nanos / 1e9 if priced else None,
+                cost_usd=min(nanos, BIND_MAX) / 1e9 if priced else None,
                 input_tokens=given,
                 output_tokens=made,
             )
@@ -1856,6 +1856,16 @@ def _end_status(finished: Event) -> str:
 
 def _cap(limit: int) -> int:
     return max(1, min(limit, MAX_PAGE))
+
+
+def _nanos(value: object) -> int | None:
+    """A recorded cost in whole nano-dollars, at most BIND_MAX. None for no price: not a
+    number, nan or below 0, which no provider charges."""
+    if not isinstance(value, int | float) or isinstance(value, bool) or not value >= 0:
+        return None
+    if value >= BIND_MAX / 1e9:
+        return BIND_MAX
+    return round(value * 1e9)
 
 
 def _int(value: int) -> int:

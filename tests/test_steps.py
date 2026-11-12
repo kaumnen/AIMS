@@ -247,6 +247,33 @@ async def test_a_cost_past_what_the_index_holds_stays_at_its_most(
     assert (info.events, info.cost_usd) == (4, BIND_MAX / 1e9)
 
 
+@pytest.mark.parametrize(
+    ("costs", "total"),
+    [
+        ([5e9, 5e9, -5e9], BIND_MAX / 1e9),
+        ([1.0, -0.5, 0.25], 1.25),
+        ([1.0, 1e300], BIND_MAX / 1e9),
+        ([-1.0], None),
+    ],
+)
+@pytest.mark.parametrize("batch", [1, 2, 3])
+async def test_a_cost_below_0_is_no_price_and_any_batching_gives_one_total(
+    store: LocalEventStore, costs: list[float], total: float | None, batch: int
+) -> None:
+    """A provider charges nothing below 0. A log from elsewhere may still record one."""
+    run_id = await store.create_run(STARTED)
+    drafts: list[Draft] = []
+    for i, cost in enumerate(costs):
+        drafts += [request(f"m{i}", "a1"), response(f"m{i}", "a1", cost)]
+    for i in range(0, len(drafts), 2 * batch):
+        await store.append(run_id, drafts[i : i + 2 * batch])
+    info = await store.run(run_id)
+    assert info is not None
+    assert (info.events, info.cost_usd) == (1 + len(drafts), total)
+    (calls,) = await store.call_costs(run_id)
+    assert (calls.calls, calls.cost_usd) == (len(costs), total)
+
+
 async def test_steps_carry_their_tool_calls_execs_and_results(store: LocalEventStore) -> None:
     run_id = await told(store)
     first, other, last = await store.steps(run_id)

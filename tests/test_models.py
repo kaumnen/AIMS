@@ -766,6 +766,19 @@ def test_cost() -> None:
     assert _cost(p.price, ModelUsage()) is None
 
 
+def test_a_cost_is_never_below_0() -> None:
+    """A provider that says more tokens were cached than read, or a count below 0."""
+    p = profile()
+    from aims.events import ModelUsage
+
+    assert _cost(p.price, ModelUsage(input_tokens=1000, cached_tokens=5000, output_tokens=0)) == (
+        pytest.approx(1000 * 0.1 / 1e6)
+    )
+    for given, cached, made in ((-1000, 0, 10), (1000, -5, 10), (1000, 0, -10)):
+        usage = ModelUsage(input_tokens=given, cached_tokens=cached, output_tokens=made)
+        assert _cost(p.price, usage) is None
+
+
 async def test_limiter_waits_for_the_headers_and_slots() -> None:
     group = Limiters().group("g", Limits(rpm=600, concurrency=1))
     lease = await group.acquire(0)

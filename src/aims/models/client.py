@@ -517,14 +517,13 @@ def _classify(
 
 
 def _cost(price: Price | None, usage: ModelUsage) -> float | None:
-    if price is None or usage.input_tokens is None or usage.output_tokens is None:
+    """What one attempt cost at `price`, never below 0. None without a price or token counts,
+    or with a count below 0, which counts nothing. Cached tokens are at most the input."""
+    given, made, cached = usage.input_tokens, usage.output_tokens, usage.cached_tokens or 0
+    if price is None or given is None or made is None or min(given, made, cached) < 0:
         return None
-    cached = usage.cached_tokens or 0
-    total = (
-        (usage.input_tokens - cached) * price.input
-        + cached * price.cached
-        + usage.output_tokens * price.output
-    )
+    cached = min(cached, given)
+    total = (given - cached) * price.input + cached * price.cached + made * price.output
     return round(total / 1_000_000, 10)
 
 
