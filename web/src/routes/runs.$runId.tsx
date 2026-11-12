@@ -26,7 +26,6 @@ import {
 import { deletedQuery, ended, reviewsQuery } from "@/api/runs";
 import { isProblem } from "@/api/session";
 import type { InFlight } from "@/api/tail";
-import { ModelChecks } from "@/components/run/checks";
 import { agentsOf } from "@/components/run/controls";
 import { Feed } from "@/components/run/feed";
 import { ForkHere } from "@/components/run/fork";
@@ -39,7 +38,6 @@ import { RAW_SEARCH_ID, RawEvents, type RawSearch } from "@/components/run/raw";
 import { ResizeHandle, useStoredWidth } from "@/components/run/resize";
 import { ScoreTab, type StepsLink } from "@/components/run/score";
 import { Scrubber } from "@/components/run/scrubber";
-import { SelfTestCases } from "@/components/run/selftest";
 import { type StepFlags, StepList } from "@/components/run/step-list";
 import { type Focus, Transcript } from "@/components/run/transcript";
 import { cancelledText } from "@/components/runs/cells";
@@ -62,6 +60,12 @@ import { useOperator } from "@/lib/use-operator";
 
 const ReviewSweeps = lazy(() => import("@/components/run/sweeps"));
 const ReportTab = lazy(() => import("@/components/run/report"));
+const SelfTestCases = lazy(() =>
+  import("@/components/run/selftest").then((m) => ({ default: m.SelfTestCases })),
+);
+const ModelChecks = lazy(() =>
+  import("@/components/run/checks").then((m) => ({ default: m.ModelChecks })),
+);
 
 interface RunSearch extends RawSearch {
   tab?: "raw" | "score" | "report";
@@ -247,9 +251,13 @@ function Run() {
         </TabsList>
         <TabsContent value="steps" className="flex min-h-0 flex-col pt-1">
           {kind === "selftest" ? (
-            <SelfTestCases runId={runId} detail={detail.data} />
+            <Suspense fallback={<p className="text-muted-foreground">Loading cases</p>}>
+              <SelfTestCases runId={runId} detail={detail.data} />
+            </Suspense>
           ) : kind === "models.check" ? (
-            <ModelChecks runId={runId} detail={detail.data} />
+            <Suspense fallback={<p className="text-muted-foreground">Loading checks</p>}>
+              <ModelChecks runId={runId} detail={detail.data} />
+            </Suspense>
           ) : kind === "monitor" ? (
             <Suspense fallback={<p className="text-muted-foreground">Loading sweeps</p>}>
               <ReviewSweeps
