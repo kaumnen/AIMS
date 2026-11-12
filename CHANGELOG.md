@@ -206,6 +206,19 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - The fork refusal for an agent that ended in the middle of a step while the run goes on says the agent ended. It said "yet".
 - The judge plans its next call right after a reply with no token counts. It planned too little input before.
 - A judge forced to a verdict at its first call no longer stops for budget when its money covers the call.
+- On the run page a step logged while the step list loaded was missing until the next step.
+- The run page follows a run to its last event. A run that ended while its page loaded again could miss its last steps and raw events.
+- The Raw tab of a run opened again after a visit elsewhere shows the events logged in between.
+- A live Raw list past 10,000 events keeps the rows in view. It let the oldest go, also under a reader. Past that size it reads new events a page at a time.
+- A tab notices when another tab signed in as someone else or signed out. It checks when it comes back into view, then shows the new session with none of the old one's data.
+- Runs that ended while the control plane was out of reach show as ended after **Try again**. They stayed "Running" until a reload.
+- A report built from a review still going is built again when the review ends. It could lag 15 seconds.
+- A self-test or model check cancelled in the queue shows no empty table.
+- An error under a score label or a report download no longer stays after another score or source is picked.
+- The run page stops asking for a command's answer once the page is left. The command stays sent.
+- **Sign out** asks before it drops an unsaved file or config draft.
+- **Duplicate**, **Run**, **Self-test** and a new file on a scenario page ask about an unsaved draft before they act. They asked after the copy, run or file was made.
+- A problem in a scenario file with mixed line endings is marked on the right line after a lone carriage return.
 
 ## [0.2.2] - 2026-11-10
 
