@@ -38,7 +38,7 @@ from aims.monitor.offline import monitor_offline, stamped
 from aims.monitor.texts import MonitorTexts, resolve
 from aims.node.client import ApiError, ControlClient
 from aims.node.link import REFUSED_MAX, Link
-from aims.node.shipper import Backoff
+from aims.node.shipper import Backoff, Streak
 from aims.prompts import TextError
 from aims.run import selftest as st
 from aims.run import truth
@@ -214,8 +214,12 @@ class Node:
         for task in chores:
             task.cancel()
         for task in chores:
-            with contextlib.suppress(asyncio.CancelledError, Exception):
+            try:
                 await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                log.exception("a background task of the runner had failed")
         for task in self._jobs.values():
             task.cancel()
         for task in list(self._jobs.values()):
@@ -240,14 +244,21 @@ class Node:
             log.warning("some runs were not fully shipped; they ship when the runner restarts")
 
     async def _ship_all(self) -> None:
-        backoff = Backoff()
+        """Ship what earlier runs of this runner left, trying again until every run was looked
+        at. An error of another kind, such as a locked index, is tried again too and warned of
+        when it lasts."""
+        backoff, streak = Backoff(), Streak("shipping the runs kept here")
         while True:
             try:
                 await self.ctx.link.ship_all()
+                streak.works()
                 return
             except (ApiError, httpx2.TransportError, OSError) as e:
                 log.debug("listing what to ship failed: %s", e)
                 await backoff.wait(getattr(e, "retry_after", None))
+            except Exception as e:
+                streak.failed(e)
+                await backoff.wait()
 
     async def _offer(self, offer: OfferMessage) -> None:
         if self.stopping or offer.run_id in self.claimed:
@@ -586,6 +597,9 @@ class Node:
                     await self._prune_runs(days)
             except (ApiError, httpx2.TransportError, OSError) as e:
                 log.debug("prune skipped: %s", e)
+            except Exception as e:
+                # such as a locked index: the next hour tries again
+                log.warning("prune failed: %s", e)
             await asyncio.sleep(PRUNE_EVERY_S)
             await self._prune_images()
 

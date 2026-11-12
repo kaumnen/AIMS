@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import shutil
+import sqlite3
 import stat
 import tarfile
 import tempfile
@@ -2493,6 +2494,36 @@ async def test_a_corrupt_run_does_not_stop_the_others_shipping(
     assert head is not None
     assert (head.seq, head.finished) == (2, True)
     assert await cp.state.store.run(bad) is None
+
+
+async def test_a_run_that_fails_here_does_not_stop_the_others_shipping(
+    cp: CP, fake: FakeRunner, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bad, good = sorted(str(uuid.uuid7()) for _ in range(2))
+    for run_id in (bad, good):
+        await local.create_run(STARTED, run_id=run_id)
+        await local.append(run_id, [call(1), Draft(RunFinished(status="completed"))])
+    real = local.log_head
+
+    async def log_head(run_id: str) -> Any:
+        if run_id == bad:
+            raise sqlite3.OperationalError("database is locked")
+        return await real(run_id)
+
+    monkeypatch.setattr(local, "log_head", log_head)
+    link = Link(fake.client, local, DeltaBus())
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        await link.ship_all()
+    assert list(link.shippers) == [good]
+    assert await link.drain(20)
+    monkeypatch.undo()
+    await link.ship_all()
+    assert await link.drain(20)
+    await link.close()
+    for run_id in (bad, good):
+        head = await cp.state.store.head(run_id)
+        assert head is not None
+        assert (head.seq, head.finished) == (2, True)
 
 
 def refuse_from(

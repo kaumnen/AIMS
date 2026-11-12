@@ -1,10 +1,12 @@
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import re
 import signal
 import socket
+import sqlite3
 import stat
 import sys
 import threading
@@ -12,6 +14,7 @@ import time
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterator, Sequence
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import aiodocker
@@ -26,6 +29,7 @@ from aims.cli import EXIT_CANCELLED, app
 from aims.events import Draft, LocalEventStore, RunFinished, RunStarted, ToolCall
 from aims.net import Outbound
 from aims.node.service import Node, NodeOptions, Refused
+from aims.node.shipper import WARN_AFTER, Backoff
 from aims.report.escape import visible
 from aims.sandbox import DockerBackend, SandboxSpec
 from aims.server.db import ServerDB
@@ -801,6 +805,34 @@ async def test_a_snapshot_runner_never_starts_the_tracer(tmp_path: Path) -> None
     assert "--audit snapshot" in health.detail
     async with asyncio.timeout(1):
         await node._watch_tracer()
+
+
+async def test_a_runner_tries_again_when_listing_what_to_ship_fails_another_way(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    class Link:
+        calls = 0
+
+        async def ship_all(self) -> None:
+            self.calls += 1
+            if self.calls <= WARN_AFTER:
+                raise sqlite3.OperationalError("database is locked")
+
+    async def wait(self: Backoff, retry_after: float | None = None) -> None:
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(Backoff, "wait", wait)
+    node = Node(NodeOptions(url="http://x", token="t", name="n", data=tmp_path, audit="snapshot"))
+    link = Link()
+    node._open = cast(Any, SimpleNamespace(link=link))
+    with caplog.at_level(logging.WARNING, logger="aims.node"):
+        async with asyncio.timeout(5):
+            await node._ship_all()
+    assert link.calls == WARN_AFTER + 1
+    assert [r.getMessage() for r in caplog.records] == [
+        f"shipping the runs kept here failed {WARN_AFTER} times in a row: database is locked",
+        f"shipping the runs kept here works again after {WARN_AFTER} failures",
+    ]
 
 
 def test_tokens_from_the_cli(tmp_path: Path) -> None:

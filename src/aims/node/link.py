@@ -23,6 +23,7 @@ from aims.wire import (
     Ack,
     CommandMessage,
     Deltas,
+    Head,
     JobKindName,
     OfferMessage,
     RunnerHello,
@@ -199,36 +200,42 @@ class Link:
 
     async def ship_all(self) -> None:
         """Ship every local run the server does not hold sealed, but none it deleted and none
-        marked corrupt here."""
+        marked corrupt here. A run that fails here does not stop the others; the first such
+        error is raised once all were looked at."""
         run_ids = self.store.run_ids()
+        failed: Exception | None = None
         for i in range(0, len(run_ids), 1000):
             chunk = run_ids[i : i + 1000]
             heads = await self.client.heads(chunk)
             for run_id in chunk:
                 try:
-                    local = await self.store.log_head(run_id)
-                except RunCorrupt as e:
-                    log.error("%s; it is not shipped", e)
-                    continue
-                server = heads.get(run_id)
-                if local is None:
-                    continue
-                if server is not None and server.deleted:
-                    if self.on_deleted is not None:
-                        await self.on_deleted(run_id)
-                elif (
-                    server is None
-                    or server.seq < local.seq
-                    or server.hash != local.hash
-                    or (
-                        local.finished
-                        and not server.truth
-                        and self.store.truth_path(run_id).is_file()
-                    )
-                ):
-                    self.ship(run_id)
-                elif server is not None and server.seq >= 0:
-                    await self._labels(run_id)
+                    await self._ship_one(run_id, heads.get(run_id))
+                except Exception as e:
+                    log.debug("run %s: not looked at for shipping: %s", run_id, e)
+                    failed = failed or e
+        if failed is not None:
+            raise failed
+
+    async def _ship_one(self, run_id: str, server: Head | None) -> None:
+        try:
+            local = await self.store.log_head(run_id)
+        except RunCorrupt as e:
+            log.error("%s; it is not shipped", e)
+            return
+        if local is None:
+            return
+        if server is not None and server.deleted:
+            if self.on_deleted is not None:
+                await self.on_deleted(run_id)
+        elif (
+            server is None
+            or server.seq < local.seq
+            or server.hash != local.hash
+            or (local.finished and not server.truth and self.store.truth_path(run_id).is_file())
+        ):
+            self.ship(run_id)
+        elif server.seq >= 0:
+            await self._labels(run_id)
 
     async def _labels(self, run_id: str) -> None:
         """Send the labels people gave the flags of a run the server holds; it keeps those it
