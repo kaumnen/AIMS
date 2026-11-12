@@ -288,7 +288,7 @@ class Reader:
 async def stream_archive(container: DockerContainer, path: str) -> AsyncGenerator[bytes]:
     """Docker's tar of `path` in `container`, in chunks as they arrive. Closing it ends the
     transfer."""
-    # aiodocker's own get_archive reads the whole reply into memory.
+    # aiodocker has no public call that streams an archive, so this uses its private one.
     query = f"containers/{container.id}/archive"
     async with container.docker._query(query, params={"path": path}) as response:
         try:

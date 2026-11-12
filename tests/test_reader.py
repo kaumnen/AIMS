@@ -1,6 +1,8 @@
 import asyncio
+import inspect
 from typing import Any, cast
 
+import aiodocker
 import pytest
 
 from aims.sandbox.reader import Reader, ReaderError
@@ -41,3 +43,18 @@ async def test_a_cancelled_diff_breaks_the_reader_instead_of_desyncing() -> None
     assert reader.broken == "file reader was cancelled mid-reply"
     with pytest.raises(ReaderError, match="cancelled mid-reply"):
         await reader.tree()
+
+
+def test_aiodocker_still_has_the_private_call_the_archive_stream_uses() -> None:
+    hint = (
+        "stream_archive in src/aims/sandbox/reader.py streams a tar through aiodocker's private "
+        "Docker._query, which this aiodocker dropped or changed. Use a public call that streams "
+        "an archive if it has one, or follow the change."
+    )
+    query = getattr(aiodocker.Docker, "_query", None)
+    assert query is not None, hint
+    params = inspect.signature(query).parameters
+    assert list(params)[:3] == ["self", "path", "method"], hint
+    assert params["method"].default == "GET", hint
+    assert "params" in params, hint
+    assert inspect.isasyncgenfunction(inspect.unwrap(query)), hint
