@@ -481,6 +481,12 @@ REGISTRY_IMAGE = (
 )
 
 
+def registry_env(port: int) -> list[str]:
+    """The registry listens on `port` only. Its debug server, on :5001 by default, is off, so
+    two tests can each run one at once."""
+    return [f"REGISTRY_HTTP_ADDR=127.0.0.1:{port}", "REGISTRY_HTTP_DEBUG_ADDR="]
+
+
 @pytest.fixture
 async def docker() -> AsyncIterator[aiodocker.Docker]:
     client = aiodocker.Docker()
@@ -530,7 +536,7 @@ async def test_an_asset_image_comes_from_a_registry_and_is_built_without_one(
     registry = await docker.containers.run(
         config={
             "Image": REGISTRY_IMAGE,
-            "Env": [f"REGISTRY_HTTP_ADDR=127.0.0.1:{port}"],
+            "Env": registry_env(port),
             "Labels": {
                 "aims.managed": "1",
                 "aims.host": socket.gethostname(),
@@ -611,7 +617,7 @@ async def test_an_old_pulled_asset_image_goes_with_its_registry_reference(
     registry = await docker.containers.run(
         config={
             "Image": REGISTRY_IMAGE,
-            "Env": [f"REGISTRY_HTTP_ADDR=127.0.0.1:{port}"],
+            "Env": registry_env(port),
             "HostConfig": {"NetworkMode": "host", "AutoRemove": True},
         },
         name=f"aims-test-registry-{port}",
