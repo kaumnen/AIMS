@@ -245,6 +245,17 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - An estimate no longer fails when its cost rows cannot be saved.
 - Labels a runner sends again after a failed index write are indexed. A flag can be labelled while the index is behind or being rebuilt.
 - Shipping no longer sends log lines a writer opening at that moment has not synced.
+- A kill that did not stop a sandbox says so in the command's answer. It was only logged. Closing the sandbox kills it again.
+- A shared folder left out of the archive says why in its `audit.lost` reason: the cap or the error.
+- Archiving a shared folder with many files no longer holds all of them in memory at once.
+- A cancel while Docker creates a container no longer leaves that container or its volumes behind. A helper container being deleted when a cancel lands is still deleted.
+- A cancelled image build or pull stops in the daemon at once. It ran on to its end before. Images a cut build left with no tag are removed with the old ones.
+- The build lock file is deleted when the lock is released.
+- A cancel no longer leaves the connection of an exec or attach stream open when the stream was still opening.
+- A cancel before an exec started returns at once. It waited 5 seconds and logged a warning.
+- Cancelling one of two identical commands that run at once in a sandbox ends only that one. Both died before. Each exec's `wrapper` now holds `--id` and an id of its own.
+- A cancelled command in a sandbox at its pids limit is ended. It ran on, since the kill could not start. A cancelled command that could not be ended is logged with the reason.
+- A pause that lands just before a tool's command starts no longer fails that command and stops the sandbox. The command waits for the resume. The wait does not count against its timeout.
 
 ## [0.2.2] - 2026-11-10
 
