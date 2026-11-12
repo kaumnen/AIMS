@@ -12,12 +12,13 @@ from pydantic import (
     Field,
     JsonValue,
     Tag,
+    ValidationInfo,
     model_validator,
 )
 
 from aims.events import Category, Oversight
 from aims.models import Overrides
-from aims.monitor.config import MonitorConfig, Rule
+from aims.monitor.config import MonitorConfig, Rule, cut_stored
 from aims.prompts import Prompts
 from aims.sandbox.base import RUNNER_DIR, TOOLBOX, AbsPath, Name
 
@@ -26,6 +27,9 @@ HOME = "/home/agent"
 # The folders besides the workdir that every sandbox captures as scratch volumes.
 SCRATCH = ("/tmp", HOME, "/dev/shm")
 DEFAULT_AGENT_COST_USD = 5.0
+# The longest one setup command, verifier run, agent command or script step may take: a day.
+# Its milliseconds stay far inside what an event can seal.
+MAX_TIMEOUT_S = 86_400
 _MODE = re.compile(r"^0?[0-7]{3}$")
 # Paths no shared folder may sit on or under.
 _RESERVED = ("/proc", "/sys", "/dev", "/etc", "/usr", "/bin", "/sbin", "/lib", TOOLBOX, RUNNER_DIR)
@@ -53,8 +57,14 @@ def _mode(value: object) -> str:
     return value
 
 
+def _stored_timeout(value: Any, info: ValidationInfo) -> Any:
+    return cut_stored(value, info, MAX_TIMEOUT_S)
+
+
 RelPath = Annotated[str, AfterValidator(_relative)]
 Mode = Annotated[str, BeforeValidator(_mode)]
+Timeout = Annotated[float, BeforeValidator(_stored_timeout), Field(gt=0, le=MAX_TIMEOUT_S)]
+"""Seconds, at most MAX_TIMEOUT_S. One stored past it is read back at it."""
 
 
 class _Strict(BaseModel):
@@ -117,7 +127,7 @@ class Verifier(_Strict):
     command: str
     files: RelPath | None = None
     user: Literal["runner", "agent"] = "runner"
-    timeout_s: float = Field(default=600, gt=0)
+    timeout_s: Timeout = 600
     env: dict[str, str] = Field(default_factory=dict)
     expect: Expect | None = None
     restore: list[str] = Field(default_factory=list)
@@ -128,7 +138,7 @@ class Task(_Strict):
     environment: Environment
     files: list[FileEntry] = Field(default_factory=list)
     setup: list[str] = Field(default_factory=list)
-    setup_timeout_s: float = Field(default=600, gt=0)
+    setup_timeout_s: Timeout = 600
     verifier: Verifier | None = None
 
 
@@ -144,8 +154,8 @@ class SandboxConfig(_Strict):
     tmp_mb: int = Field(default=256, ge=1)
     env: dict[str, str] = Field(default_factory=dict)
     kill_leftovers: bool = False
-    command_timeout_s: float = Field(default=120, gt=0)
-    max_command_timeout_s: float = Field(default=600, gt=0)
+    command_timeout_s: Timeout = 120
+    max_command_timeout_s: Timeout = 600
     mask_proc: bool = False
 
     @model_validator(mode="after")
@@ -264,7 +274,7 @@ class ScriptStep(_Strict):
     run: str | None = Field(default=None, min_length=1)
     post: Post | None = None
     call: Call | None = None
-    timeout_s: float | None = Field(default=None, gt=0)
+    timeout_s: Timeout | None = None
 
     @model_validator(mode="after")
     def _one(self) -> Self:

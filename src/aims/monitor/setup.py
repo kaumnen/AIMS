@@ -83,9 +83,9 @@ class ResolvedMonitor:
 
     @classmethod
     def restore(cls, value: Mapping[str, Any]) -> ResolvedMonitor:
-        """A monitor from its `snapshot`. A hold timeout past MAX_HOLD_S is cut to it and a judge
-        output cap below JUDGE_MIN_OUTPUT is raised to it, as a snapshot stored before those
-        bounds may hold them. Raises MonitorConfigError."""
+        """A monitor from its `snapshot`. A value past a bound added since the snapshot was
+        stored, such as a hold past MAX_HOLD_S or a judge output cap below JUDGE_MIN_OUTPUT, is
+        brought to that bound. Raises MonitorConfigError."""
         try:
 
             def profile(v: Any) -> Profile | None:

@@ -245,6 +245,32 @@ async def test_bad_arguments_and_unknown_tools_are_tool_errors(store: LocalEvent
     assert "command: Field required" in str(results[2].output)
 
 
+async def test_a_command_timeout_the_model_asks_for_stays_within_the_scenario_s_most(
+    store: LocalEventStore,
+) -> None:
+    timeouts: list[float] = []
+
+    class Timed(FakeSandbox):
+        async def exec(self, command: str, **kw: Any) -> ExecResult:
+            timeouts.append(kw["timeout_s"])
+            return await super().exec(command, **kw)
+
+    asked = ["Infinity", "1e308", "1e400", "30", "NaN", "-Infinity", "0"]
+    script = Script(
+        *(raw_call("bash", f'{{"command": "true", "timeout_s": {t}}}') for t in asked),
+        call("submit", answer="x"),
+    )
+    agent, run_id = await make_agent(store, script, sandbox=Timed(echo))
+    finished = await agent.run()
+    assert finished.reason == "submitted"
+    most = SandboxConfig().max_command_timeout_s
+    assert timeouts == [most, most, most, 30]
+    results = await payloads(store, run_id, ToolResult)
+    for result in results[4:7]:
+        assert result.error
+        assert "timeout_s: Input should be greater than 0" in str(result.output)
+
+
 async def test_a_lone_surrogate_in_tool_arguments_is_kept_as_text(store: LocalEventStore) -> None:
     script = Script(
         raw_call("bash", '{"command": "echo \\ud800"}'),

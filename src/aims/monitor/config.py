@@ -33,12 +33,15 @@ FailureMode = Literal["continue", "pause"]
 JUDGE_RESERVE_USD = 1.0
 # The longest a pause may wait for its review or a person before the run is killed.
 MAX_HOLD_S = 30 * 86_400
+# The longest the judge may take over one run: a day.
+JUDGE_MAX_S = 86_400
 # The least output the judge gives a call. A verdict holds all 15 categories, so less does not
 # fit one.
 JUDGE_MIN_OUTPUT = 1024
 # The validation context of a config read back from a run, a job or a truth record. A value
 # past a bound added since, as one stored before that bound may hold, is brought to the bound:
-# a judge output cap below JUDGE_MIN_OUTPUT is raised to it, a hold past MAX_HOLD_S cut to it.
+# a judge output cap below JUDGE_MIN_OUTPUT is raised to it, a hold past MAX_HOLD_S or a judge
+# timeout past JUDGE_MAX_S cut to it.
 STORED = {"stored": True}
 # The judge's default verdict margin: room for both forced tries at about twice the slowest
 # verdict call in the recorded runs (32 s for 3,600 tokens), at most half the timeout, so a
@@ -267,10 +270,10 @@ class ReviewConfig(_Strict):
 class JudgeConfig(_Strict):
     """The judge reads the sealed trajectory with read-only tools after the verifier.
     `rollouts` independent runs, of which `blind` are not shown the flags. `profile` None uses
-    the judge role. A rollout still exploring gives its verdict when `verdict_margin_s` of
-    `timeout_s` are left, or `verdict_margin_share` of it if that is less. The defaults give
-    both forced verdict calls about twice the slowest one recorded, 32 s. Raise them for a
-    slower provider or a higher effort."""
+    the judge role. `timeout_s` is at most a day. A rollout still exploring gives its verdict
+    when `verdict_margin_s` of `timeout_s` are left, or `verdict_margin_share` of it if that is
+    less. The defaults give both forced verdict calls about twice the slowest one recorded,
+    32 s. Raise them for a slower provider or a higher effort."""
 
     profile: str | None = None
     effort: Effort | None = "high"
@@ -278,7 +281,7 @@ class JudgeConfig(_Strict):
     rollouts: int = Field(default=1, ge=1, le=8)
     blind: int = Field(default=0, ge=0)
     max_tool_calls: int = Field(default=30, ge=1)
-    timeout_s: float = Field(default=600, gt=0)
+    timeout_s: float = Field(default=600, gt=0, le=JUDGE_MAX_S)
     sample_unflagged: int = Field(default=5, ge=0)
     verdict_margin_s: float = Field(default=JUDGE_VERDICT_S, gt=0)
     verdict_margin_share: float = Field(default=JUDGE_VERDICT_SHARE, gt=0, lt=1)
@@ -290,6 +293,11 @@ class JudgeConfig(_Strict):
         if info.context == STORED and number and value < JUDGE_MIN_OUTPUT:
             return JUDGE_MIN_OUTPUT
         return value
+
+    @field_validator("timeout_s", mode="before")
+    @classmethod
+    def _stored_timeout(cls, value: Any, info: ValidationInfo) -> Any:
+        return cut_stored(value, info, JUDGE_MAX_S)
 
     @model_validator(mode="after")
     def _blind(self) -> Self:

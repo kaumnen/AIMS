@@ -259,6 +259,63 @@ def test_a_recorded_hold_past_thirty_days_loads_at_thirty_days(hold: float) -> N
     assert restored.scenario.monitor.model_fields_set == {"policy"}
 
 
+TIMEOUTS = {
+    "task.setup_timeout_s": "  setup_timeout_s: {}\n",
+    "task.verifier.timeout_s": "  verifier: {{command: 'true', timeout_s: {}}}\n",
+    "sandbox.command_timeout_s": (
+        "sandbox: {{command_timeout_s: {}, max_command_timeout_s: 86400}}\n"
+    ),
+    "sandbox.max_command_timeout_s": "sandbox: {{max_command_timeout_s: {}}}\n",
+    "agents[1].script[0].timeout_s": (
+        "agents:\n  - id: agent\n  - id: helper\n    role: confederate\n"
+        "    script: [{{run: 'true', timeout_s: {}}}]\n"
+    ),
+    "monitor.judge.timeout_s": "monitor: {{judge: {{timeout_s: {}}}}}\n",
+}
+
+
+def _timeout(scenario: Scenario, where: str) -> float | None:
+    if where.startswith("monitor"):
+        assert scenario.monitor is not None
+        assert scenario.monitor.judge is not None
+        return scenario.monitor.judge.timeout_s
+    if where.startswith("agents"):
+        script = scenario.agent("helper").script
+        assert script is not None
+        return script[0].timeout_s
+    if where == "task.verifier.timeout_s":
+        assert scenario.task.verifier is not None
+        return scenario.task.verifier.timeout_s
+    if where == "task.setup_timeout_s":
+        return scenario.task.setup_timeout_s
+    return getattr(scenario.sandbox, where.split(".")[1])
+
+
+@pytest.mark.parametrize("where", TIMEOUTS)
+@pytest.mark.parametrize("value", [".inf", ".nan", "-.inf", "'inf'", "1.8e305", "1e13", "86401"])
+def test_a_timeout_past_a_day_or_not_finite_is_refused(where: str, value: str) -> None:
+    with pytest.raises(ScenarioError) as e:
+        parse(BASE + TIMEOUTS[where].format(value))
+    assert f": {where}: Input should be" in str(e.value)
+
+
+@pytest.mark.parametrize("where", TIMEOUTS)
+def test_a_timeout_of_a_day_is_taken(where: str) -> None:
+    assert _timeout(parse(BASE + TIMEOUTS[where].format(86_400)), where) == 86_400
+
+
+@pytest.mark.parametrize("where", TIMEOUTS)
+@pytest.mark.parametrize("value", ["86401", "1e13", ".inf"])
+def test_a_recorded_timeout_past_a_day_loads_at_a_day(where: str, value: str) -> None:
+    text = BASE + TIMEOUTS[where].format(value)
+    # A run or a job recorded it before a timeout was bounded.
+    bundle = Bundle(parse(BASE), text.encode())
+    blobs = {hashlib.sha256(b).hexdigest(): b for b in bundle.blobs()}
+    restored = from_snapshot(json.loads(json.dumps(bundle.snapshot())), blobs)
+    assert restored.digest == bundle.digest
+    assert _timeout(restored.scenario, where) == 86_400
+
+
 def test_missing_sources_are_reported(tmp_path: Path) -> None:
     path = tmp_path / "s.yaml"
     path.write_text(
