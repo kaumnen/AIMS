@@ -1,4 +1,6 @@
+import contextlib
 import os
+import re
 from pathlib import Path
 
 
@@ -31,3 +33,22 @@ def make_dir(path: Path, *, parents: bool = False) -> None:
     path.mkdir(parents=parents, exist_ok=True)
     for new in reversed(made):
         sync_dir(new.parent)
+
+
+def sweep(path: Path, name: re.Pattern[str], before: float) -> int:
+    """Delete the files in directory `path` whose whole name matches `name` and that were last
+    written before the time `before`. Returns how many went."""
+    gone = 0
+    try:
+        with os.scandir(path) as it:
+            entries = list(it)
+    except FileNotFoundError:
+        return 0
+    for entry in entries:
+        if not name.fullmatch(entry.name):
+            continue
+        with contextlib.suppress(FileNotFoundError):
+            if entry.stat(follow_symlinks=False).st_mtime < before:
+                os.unlink(entry.path)
+                gone += 1
+    return gone

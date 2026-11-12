@@ -9,6 +9,7 @@ import os
 import random
 import shutil
 import sqlite3
+import time
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
@@ -47,7 +48,7 @@ from aims.events.chain import GENESIS, Head, digest, follow, seal
 from aims.events.disk import make_dir
 from aims.events.log import LogFile
 from aims.events.schema import now, text_of
-from aims.events.store import INLINE_LIMIT, LOG, _append_line, _write_private
+from aims.events.store import INLINE_LIMIT, LOG, TEMP_AGE_S, _append_line, _write_private
 from aims.run import truth
 from aims.run.runner import seal_unsealed
 
@@ -1089,6 +1090,29 @@ async def test_blobs_are_compressed_on_disk(store: LocalEventStore) -> None:
         await store.append(run_id, [Draft(ToolCall(call_id="o", name="shell", arguments=old))])
     await store.append(run_id, [Draft(ToolCall(call_id="c", name="shell", arguments=ref)), call(2)])
     assert verify_run(store.root / run_id).ok
+
+
+async def test_temp_files_a_killed_write_left_go_once_no_write_can_own_them(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "runs"
+    async with await LocalEventStore.open(root) as store:
+        run_id = await store.create_run(STARTED)
+        ref = await store.put_blob(run_id, b"x")
+    run_dir = root / run_id
+    blobs = run_dir / "blobs"
+    old = [blobs / f".{'a' * 64}.0123abcd", run_dir / f".truth.json.{'c' * 32}"]
+    # a temp file a live write may still own, and files that are not temp files
+    kept = [blobs / f".{'b' * 64}.0123abcd", blobs / ".notes", run_dir / ".truth.json.x"]
+    for path in old + kept:
+        path.write_bytes(b"part")
+    then = time.time() - TEMP_AGE_S - 60
+    for path in [*old, *kept[1:]]:
+        os.utime(path, (then, then))
+    async with await LocalEventStore.open(root) as store:
+        assert await store.get_blob(run_id, ref.sha256) == b"x"
+    assert [p for p in old if p.exists()] == []
+    assert [p for p in kept if p.exists()] == kept
 
 
 async def test_a_self_test_case_keeps_its_name_through_a_reindex(tmp_path: Path) -> None:

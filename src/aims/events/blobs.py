@@ -1,6 +1,7 @@
 import contextlib
 import hashlib
 import os
+import re
 import secrets
 from collections.abc import Sequence
 from compression import zstd
@@ -16,6 +17,8 @@ class BlobError(Exception):
 
 ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 CHUNK = 1024 * 1024
+# the name of the file a blob is written to before it is put in place
+TEMP = re.compile(r"\.[0-9a-f]{64}\.[0-9a-f]{8}")
 
 
 def decode(raw: bytes) -> bytes:

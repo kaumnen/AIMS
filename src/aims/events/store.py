@@ -4,7 +4,9 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
+import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, field, replace
@@ -13,9 +15,9 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Protocol, Self
 
-from aims.events.blobs import BlobStore, BlobWriter, read_blob, stored_size
+from aims.events.blobs import TEMP, BlobStore, BlobWriter, read_blob, stored_size
 from aims.events.chain import ChainError, Head, follow, seal
-from aims.events.disk import make_dir, sync_dir, write_all
+from aims.events.disk import make_dir, sweep, sync_dir, write_all
 from aims.events.index import (
     MAX_PAGE,
     CallCost,
@@ -46,6 +48,9 @@ INLINE_LIMIT = 8 * 1024
 CHUNK = 1000
 RETRY_S = 1.0
 RETRY_MAX_S = 300.0
+TEMP_AGE_S = 3600.0
+# the name of the file truth.json is written to before it is put in place
+TRUTH_TEMP = re.compile(rf"\.{re.escape(TRUTH)}\.[0-9a-f]{{32}}")
 
 
 class RunCorrupt(Exception):
@@ -395,7 +400,8 @@ class LocalEventStore:
 
     async def _sweep(self) -> None:
         """Finish the deletes a crash cut short: forget the index rows of each grave's run,
-        unless the run was made again since, then delete the grave."""
+        unless the run was made again since, then delete the grave. Then delete the temp files
+        that writes a kill cut short left."""
 
         def graves() -> list[tuple[Path, str | None]]:
             """Each grave with the run whose index rows go: None when the run is here again."""
@@ -415,6 +421,23 @@ class LocalEventStore:
                     log.warning("%s stays until the next open: %s", grave, e)
                     continue
             await asyncio.to_thread(_clear, grave)
+        await asyncio.to_thread(self._sweep_temps)
+
+    def _sweep_temps(self) -> None:
+        """Delete the temp files that truth and blob writes a kill cut short left in the runs.
+        Only those last written TEMP_AGE_S ago or more go: a newer one may be the file of a
+        write still going on, here or in another process, which would fail without it."""
+        before = time.time() - TEMP_AGE_S
+        for path in self.root.iterdir():
+            if not is_run_id(path.name):
+                continue
+            try:
+                gone = sweep(path, TRUTH_TEMP, before) + sweep(path / BLOBS, TEMP, before)
+            except OSError as e:
+                log.warning("%s: its temp files stay until the next open: %s", path, e)
+                continue
+            if gone:
+                log.info("run %s: deleted %d temp files that stopped writes left", path.name, gone)
 
     def run_ids(self) -> list[str]:
         """Every run with a log here."""
