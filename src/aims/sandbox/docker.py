@@ -1,6 +1,5 @@
 import asyncio
 import contextlib
-import hashlib
 import json
 import logging
 import os
@@ -60,21 +59,6 @@ END_POLL_S = 0.05
 VOLUME_S = 2.0
 VOLUME_POLL_S = 0.05
 MIB = 1024 * 1024
-# Kills the exec whose command line hashes to $1, with the busybox at $2. It sends SIGKILL to
-# the process group of each child of the exec, the group aims-exec ends at the deadline, then
-# to the exec itself.
-KILL_EXEC = r"""
-b=$2
-for p in $($b sha256sum /proc/[0-9]*/cmdline 2>/dev/null |
-    $b sed -n "s|^$1  /proc/\([0-9]*\)/cmdline\$|\1|p"); do
-  for c in $($b grep -l "^PPid:[[:space:]]*$p\$" /proc/[0-9]*/status 2>/dev/null |
-      $b sed "s|^/proc/\([0-9]*\)/status\$|\1|"); do
-    $b kill -KILL -$c $c
-  done
-  $b kill -KILL $p
-done 2>/dev/null
-exit 0
-"""
 # Tells this process from an earlier one with its pid, such as pid 1 of a restarted container.
 INSTANCE = uuid.uuid4().hex
 MOUNTINFO = "/proc/self/mountinfo"
@@ -749,32 +733,44 @@ class DockerSandbox:
     async def _end(self, exe: Any, argv: Sequence[str], user: str) -> None:
         """End what a cancelled exec started. Like aims-exec at the deadline it kills the
         process group of the exec's child, but with SIGKILL at once. Docker has no call for
-        this, so a kill runs in the sandbox as the exec's user and finds the exec by its command
-        line, which the ID in `wrapper` makes its own. An exec still starting is waited for, up
-        to `END_S` in all.
+        this, so `aims-exec -k` runs in the sandbox as the exec's user and finds the exec by its
+        whole command line, which the ID in `wrapper` makes its own. It forks nothing, so it
+        also runs in a sandbox at its pids limit: Docker adds an exec's first process to the
+        cgroup by moving it there, which the limit does not stop. An exec still starting is
+        waited for, up to `END_S` in all.
 
         A paused sandbox runs nothing, so there the exec stays frozen until the sandbox is
-        resumed or killed."""
+        resumed or killed. An exec that did not end is logged: its command may still run."""
         if self._killed or self._paused_at is not None:
             return
-        digest = hashlib.sha256(_cmdline(argv)).hexdigest()
-        busybox = f"{TOOLBOX}/busybox"
-        kill = [busybox, "sh", "-c", KILL_EXEC, "sh", digest, busybox]
+        kill = [f"{TOOLBOX}/aims-exec", "-k", *argv]
         sandbox = self._container.id[:12]
+        why = "Docker never said it started"
         try:
             async with asyncio.timeout(END_S):
                 while True:
                     state = await exe.inspect()
                     if state.get("Running"):
+                        why = "it was still starting"
                         if state.get("Pid"):
-                            await _call(self._container, kill, user)
+                            code = await _call(self._container, kill, user)
+                            why = f"the kill exited {code}" if code else "it ran on after the kill"
                     elif state.get("ExitCode") is not None or state.get("Pid"):
                         return
                     await asyncio.sleep(END_POLL_S)
         except TimeoutError:
-            log.warning("a cancelled exec in %s did not end in %s s", sandbox, END_S)
+            log.warning(
+                "a cancelled exec in %s did not end in %s s and its command may still run: %s",
+                sandbox,
+                END_S,
+                why,
+            )
         except Exception as e:
-            log.warning("could not end a cancelled exec in %s: %s", sandbox, e)
+            log.warning(
+                "could not end a cancelled exec in %s, so its command may still run: %s",
+                sandbox,
+                e,
+            )
 
     async def processes(self) -> list[Proc]:
         top = await self._container.top(ps_args="-o pid,ppid,uid,args")
@@ -1062,15 +1058,8 @@ async def _read_feeding(
             await reader
 
 
-def _cmdline(argv: Sequence[str]) -> bytes:
-    """`argv` as /proc/PID/cmdline shows it once Docker ran it. Docker reads each lone
-    surrogate as U+FFFD, as the UTF-16 decoder here does."""
-    text = "".join(f"{a}\0" for a in argv)
-    return text.encode("utf-16", "surrogatepass").decode("utf-16", "replace").encode()
-
-
-async def _call(container: DockerContainer, argv: list[str], user: str) -> None:
-    """Run `argv` in `container` as `user` and wait for it to end."""
+async def _call(container: DockerContainer, argv: list[str], user: str) -> int | None:
+    """Run `argv` in `container` as `user`, wait for it to end and return its exit code."""
     exe = await container.exec(argv, user=user, workdir="/", stdout=True, stderr=True)
     stream = await open_stream(exe.start(detach=False))
     try:
@@ -1078,6 +1067,7 @@ async def _call(container: DockerContainer, argv: list[str], user: str) -> None:
             pass
     finally:
         await stream.close()
+    return (await exe.inspect()).get("ExitCode")
 
 
 async def _feed(stream: Any, data: bytes) -> None:

@@ -30,6 +30,7 @@ from aims.sandbox import (
     SandboxError,
     SandboxSpec,
 )
+from aims.sandbox import docker as docker_module
 from aims.sandbox.base import RUNNER_DIR, TOOLBOX, Capture
 from aims.sandbox.docker import INSTANCE, VOLUME_S
 from aims.sandbox.execs import open_stream
@@ -940,3 +941,62 @@ async def test_the_exec_id_shows_only_in_the_wrapper(
     assert parent == " ".join([*wrapper, command]) + " "
     assert exec_id not in own
     assert not any(exec_id in line for line in env)
+
+
+async def test_a_cancelled_exec_ends_in_a_sandbox_at_its_pids_limit(
+    backend: DockerBackend, store: LocalEventStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The kill forks nothing, so a command that took every pid still ends."""
+    pids = 32
+    run_id, sb = await sandbox(backend, store, pids=pids)
+    inner = sb.sandbox
+    assert isinstance(inner, DockerSandbox)
+    fill = "while :; do sleep 287 & done"
+    try:
+        task = asyncio.create_task(sb.exec(fill, timeout_s=60))
+        async with asyncio.timeout(30):
+            while True:
+                if len(await inner.processes()) >= pids:
+                    break
+                await asyncio.sleep(0.1)
+        begun = asyncio.get_running_loop().time()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            async with asyncio.timeout(30):
+                await task
+        took = asyncio.get_running_loop().time() - begun
+        left = [p for p in await inner.processes() if p.command == "sleep 287"]
+    finally:
+        await sb.close()
+
+    assert left == []
+    assert took < 3
+    assert "did not end" not in caplog.text
+    finished = (await store.events(run_id, types=["exec.finished"]))[0].data
+    assert (finished["end"], finished["leftover"]) == ("cancelled", [])
+
+
+async def test_a_cancelled_exec_that_does_not_end_says_why(
+    backend: DockerBackend,
+    store: LocalEventStore,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _, sb = await sandbox(backend, store)
+
+    async def failed_kill(*args: Any) -> int:
+        return 2
+
+    try:
+        task = await sleeping(sb)
+        with monkeypatch.context() as m:
+            m.setattr(docker_module, "_call", failed_kill)
+            m.setattr(docker_module, "END_S", 0.5)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                async with asyncio.timeout(30):
+                    await task
+    finally:
+        await sb.close()
+
+    assert "its command may still run: the kill exited 2" in caplog.text
