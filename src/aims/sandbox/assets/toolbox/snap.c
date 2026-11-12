@@ -541,8 +541,8 @@ static void hash_one(const char *path, long long cap) {
     probe.size = st.st_size;
     probe.mtime_ns = ns_of(st.st_mtim);
     probe.ctime_ns = ns_of(st.st_ctim);
-    long long mtime_us = st.st_mtim.tv_sec * 1000000LL + st.st_mtim.tv_nsec / 1000;
-    long long ctime_us = st.st_ctim.tv_sec * 1000000LL + st.st_ctim.tv_nsec / 1000;
+    long long mtime_us = us_of(st.st_mtim);
+    long long ctime_us = us_of(st.st_ctim);
     entry *was = find_old(path);
     if (was && was->kind == 'f' && was->hashed && same_stat(was, &probe)) {
         hex(was->sha, sha);
