@@ -4,17 +4,22 @@ changed. Kept apart from index.sqlite, which a rebuild wipes."""
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import json
+import logging
 import secrets
+import sqlite3
 import time
-from collections.abc import Sequence
+from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import aiosqlite
 from pydantic import Field, TypeAdapter, ValidationError
+
+log = logging.getLogger("aims.server")
 
 VERSION = 5
 SESSION_DAYS = 30
@@ -330,6 +335,34 @@ class ServerDB:
             cur = await self._db.execute(sql, args)
             return cur.rowcount
 
+    @contextlib.asynccontextmanager
+    async def _tx(self) -> AsyncGenerator[None]:
+        """Run the block as one immediate transaction under the write lock: commit when it ends,
+        roll back when it raises or is cancelled. A statement whose awaiter was cancelled still
+        runs on the connection's thread, which runs them in order, so the rollback queued here
+        runs after it and before the next writer's begin."""
+        async with self._lock:
+            try:
+                await self._begin()
+                yield
+                await self._db.execute("commit")
+            except BaseException:
+                with contextlib.suppress(sqlite3.Error, ValueError):
+                    await self._db.rollback()
+                raise
+
+    async def _begin(self) -> None:
+        """Begin an immediate transaction. One already open has no writer, since the lock is
+        held and any rollback a cancelled writer queued ran first: roll it back, begin again."""
+        try:
+            await self._db.execute("begin immediate")
+        except sqlite3.OperationalError as e:
+            if "within a transaction" not in str(e):
+                raise
+            log.warning("server.sqlite held a transaction no writer owns; it is rolled back")
+            await self._db.rollback()
+            await self._db.execute("begin immediate")
+
     # Tokens and sessions
 
     async def create_token(self, name: str, role: Role) -> str:
@@ -379,18 +412,12 @@ class ServerDB:
         )
 
     async def revoke_token(self, name: str) -> bool:
-        async with self._lock:
-            await self._db.execute("begin immediate")
-            try:
-                cur = await self._db.execute(
-                    "update tokens set revoked = ? where name = ? and revoked is null",
-                    (time.time(), name),
-                )
-                await self._db.execute("delete from sessions where token = ?", (name,))
-            except BaseException:
-                await self._db.execute("rollback")
-                raise
-            await self._db.execute("commit")
+        async with self._tx():
+            cur = await self._db.execute(
+                "update tokens set revoked = ? where name = ? and revoked is null",
+                (time.time(), name),
+            )
+            await self._db.execute("delete from sessions where token = ?", (name,))
         return cur.rowcount > 0
 
     async def token_for(self, secret: str, *, used: bool = True) -> Token | None:
@@ -588,42 +615,36 @@ class ServerDB:
         )
 
     async def add_jobs(self, jobs: Sequence[Job]) -> None:
-        async with self._lock:
-            await self._db.execute("begin immediate")
-            try:
-                await self._db.executemany(
-                    "insert into jobs (run_id, grp, parallel, state, payload, needs, target,"
-                    " runner, offered_at, tried, token, created, updated, reason)"
-                    " values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    [
-                        (
-                            j.run_id,
-                            j.group,
-                            j.parallel,
-                            j.state,
-                            json.dumps(j.payload),
-                            json.dumps(j.needs),
-                            j.target,
-                            j.runner,
-                            j.offered_at,
-                            json.dumps(j.tried),
-                            j.token,
-                            j.created,
-                            j.updated,
-                            j.reason,
-                        )
-                        for j in jobs
-                    ],
-                )
-                await self._db.executemany(
-                    "insert into runs (run_id, source, token, created) values (?, 'job', ?, ?)"
-                    " on conflict do nothing",
-                    [(j.run_id, j.token, j.created) for j in jobs],
-                )
-            except BaseException:
-                await self._db.execute("rollback")
-                raise
-            await self._db.execute("commit")
+        async with self._tx():
+            await self._db.executemany(
+                "insert into jobs (run_id, grp, parallel, state, payload, needs, target,"
+                " runner, offered_at, tried, token, created, updated, reason)"
+                " values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        j.run_id,
+                        j.group,
+                        j.parallel,
+                        j.state,
+                        json.dumps(j.payload),
+                        json.dumps(j.needs),
+                        j.target,
+                        j.runner,
+                        j.offered_at,
+                        json.dumps(j.tried),
+                        j.token,
+                        j.created,
+                        j.updated,
+                        j.reason,
+                    )
+                    for j in jobs
+                ],
+            )
+            await self._db.executemany(
+                "insert into runs (run_id, source, token, created) values (?, 'job', ?, ?)"
+                " on conflict do nothing",
+                [(j.run_id, j.token, j.created) for j in jobs],
+            )
 
     async def job(self, run_id: str) -> Job | None:
         row = await self._one(f"{self._JOB} where run_id = ?", (run_id,))
@@ -825,23 +846,17 @@ class ServerDB:
     async def add_command(self, runner: str, run_id: str, payload: dict[str, Any]) -> Command:
         at = time.time()
         command_id = secrets.token_hex(12)
-        async with self._lock:
-            await self._db.execute("begin immediate")
-            try:
-                async with self._db.execute(
-                    "select coalesce(max(seq), 0) + 1 from commands where runner = ?", (runner,)
-                ) as cur:
-                    row = await cur.fetchone()
-                seq = 1 if row is None else row[0]
-                await self._db.execute(
-                    "insert into commands (id, runner, seq, run_id, payload, created)"
-                    " values (?, ?, ?, ?, ?, ?)",
-                    (command_id, runner, seq, run_id, json.dumps(payload), at),
-                )
-            except BaseException:
-                await self._db.execute("rollback")
-                raise
-            await self._db.execute("commit")
+        async with self._tx():
+            async with self._db.execute(
+                "select coalesce(max(seq), 0) + 1 from commands where runner = ?", (runner,)
+            ) as cur:
+                row = await cur.fetchone()
+            seq = 1 if row is None else row[0]
+            await self._db.execute(
+                "insert into commands (id, runner, seq, run_id, payload, created)"
+                " values (?, ?, ?, ?, ?, ?)",
+                (command_id, runner, seq, run_id, json.dumps(payload), at),
+            )
         return Command(command_id, runner, seq, run_id, payload, at, None, None)
 
     _COMMAND = (
@@ -884,23 +899,17 @@ class ServerDB:
     async def drop_runner_commands(self, runner: str, outcome: str) -> list[str]:
         """Settle the commands still waiting for `runner`, whose name another token took; the
         runs they were for. No answer changes a command of the old runner after this."""
-        async with self._lock:
-            await self._db.execute("begin immediate")
-            try:
-                async with self._db.execute(
-                    "update commands set acked = ?, outcome = ? where runner = ?"
-                    " and acked is null returning run_id",
-                    (time.time(), outcome, runner),
-                ) as cur:
-                    rows = await cur.fetchall()
-                await self._db.execute(
-                    "update commands set run_ended = 0 where runner = ? and run_ended = 1",
-                    (runner,),
-                )
-            except BaseException:
-                await self._db.execute("rollback")
-                raise
-            await self._db.execute("commit")
+        async with self._tx():
+            async with self._db.execute(
+                "update commands set acked = ?, outcome = ? where runner = ?"
+                " and acked is null returning run_id",
+                (time.time(), outcome, runner),
+            ) as cur:
+                rows = await cur.fetchall()
+            await self._db.execute(
+                "update commands set run_ended = 0 where runner = ? and run_ended = 1",
+                (runner,),
+            )
         return sorted({r[0] for r in rows})
 
     async def drop_commands(self, run_id: str, outcome: str = "dropped: the run ended") -> int:
@@ -999,21 +1008,15 @@ class ServerDB:
             return
         marks = ", ".join("?" * len(run_ids))
         at = time.time()
-        async with self._lock:
-            await self._db.execute("begin immediate")
-            try:
-                await self._db.executemany(
-                    "insert into deleted_runs values (?, ?) on conflict do nothing",
-                    [(r, at) for r in run_ids],
+        async with self._tx():
+            await self._db.executemany(
+                "insert into deleted_runs values (?, ?) on conflict do nothing",
+                [(r, at) for r in run_ids],
+            )
+            for table in ("jobs", "commands", "runs"):
+                await self._db.execute(
+                    f"delete from {table} where run_id in ({marks})", tuple(run_ids)
                 )
-                for table in ("jobs", "commands", "runs"):
-                    await self._db.execute(
-                        f"delete from {table} where run_id in ({marks})", tuple(run_ids)
-                    )
-            except BaseException:
-                await self._db.execute("rollback")
-                raise
-            await self._db.execute("commit")
 
     async def undelete(self, run_id: str) -> None:
         await self._write("delete from deleted_runs where run_id = ?", (run_id,))

@@ -1,8 +1,12 @@
+import asyncio
+import logging
 import sqlite3
+import threading
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable, Coroutine
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -399,3 +403,116 @@ async def test_runners_hello_and_status(db: ServerDB) -> None:
     runner = await db.runner("r1")
     assert runner is not None
     assert runner.info == {"version": "0.1.0", "slots": 2, "free": 1}
+
+
+class Gate:
+    """A SQL function that holds the connection's thread until the test opens it."""
+
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.opened = threading.Event()
+
+    def __call__(self) -> int:
+        self.entered.set()
+        self.opened.wait(10)
+        return 1
+
+    async def held(self) -> None:
+        assert await asyncio.to_thread(self.entered.wait, 10)
+
+
+@pytest.fixture
+async def gate(db: ServerDB) -> AsyncIterator[Gate]:
+    gate = Gate()
+    await db._db.create_function("gate", 0, gate)
+    yield gate
+    gate.opened.set()
+
+
+RUN = "019a6f00-0000-7000-8000-000000000001"
+
+TRANSACTIONS: dict[str, Callable[[ServerDB], Coroutine[Any, Any, object]]] = {
+    "revoke_token": lambda db: db.revoke_token("op"),
+    "add_jobs": lambda db: db.add_jobs([job()]),
+    "add_command": lambda db: db.add_command("r1", RUN, {"action": "pause"}),
+    "drop_runner_commands": lambda db: db.drop_runner_commands("r1", "dropped: gone"),
+    "forget": lambda db: db.forget([RUN]),
+}
+
+
+async def settle() -> None:
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+
+@pytest.mark.parametrize("write", list(TRANSACTIONS))
+async def test_a_writer_cancelled_while_its_begin_waits_leaves_no_transaction(
+    db: ServerDB, gate: Gate, write: str
+) -> None:
+    await db.create_token("op", "operator")
+    slow = asyncio.create_task(db._db.execute("select gate()"))
+    await gate.held()
+    task = asyncio.create_task(TRANSACTIONS[write](db))
+    await settle()
+    task.cancel()
+    gate.opened.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await slow
+    await db.add_command("r2", RUN, {"action": "kill"})
+    assert not db._db.in_transaction
+    assert [t.revoked for t in await db.tokens()] == [None]
+    assert [c.runner for c in await db.commands_of(RUN)] == ["r2"]
+
+
+@pytest.mark.parametrize("cancels", [1, 2])
+async def test_a_writer_cancelled_mid_statement_rolls_back(
+    db: ServerDB, gate: Gate, cancels: int
+) -> None:
+    await db._db.execute(
+        "create temp trigger hold after insert on main.commands begin select gate(); end"
+    )
+    task = asyncio.create_task(db.add_command("r1", RUN, {"action": "pause"}))
+    await gate.held()
+    for _ in range(cancels):
+        task.cancel()
+        await settle()
+    if cancels == 1:
+        gate.opened.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    later = asyncio.create_task(db.add_jobs([job()]))
+    await settle()
+    gate.opened.set()
+    await later
+    assert not db._db.in_transaction
+    assert await db.commands_of(RUN) == []
+
+
+async def test_a_failed_begin_raises_its_own_error(db: ServerDB, tmp_path: Path) -> None:
+    other = sqlite3.connect(tmp_path / "server.sqlite", isolation_level=None)
+    try:
+        other.execute("begin immediate")
+        await db._db.execute("pragma busy_timeout = 0")
+        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+            await db.add_jobs([job()])
+        assert not db._db.in_transaction
+    finally:
+        other.close()
+    await db.add_jobs([job()])
+
+
+async def test_a_transaction_no_writer_owns_is_rolled_back(
+    db: ServerDB, caplog: pytest.LogCaptureFixture
+) -> None:
+    await db._db.execute("begin immediate")
+    await db._db.execute(
+        "insert into commands (id, runner, seq, run_id, payload, created)"
+        " values ('x', 'r9', 1, ?, '{}', 0)",
+        (RUN,),
+    )
+    with caplog.at_level(logging.WARNING, logger="aims.server"):
+        await db.add_command("r1", RUN, {"action": "pause"})
+    assert not db._db.in_transaction
+    assert [c.runner for c in await db.commands_of(RUN)] == ["r1"]
+    assert any("no writer" in m for m in caplog.messages)
