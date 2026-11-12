@@ -102,11 +102,6 @@ VERDICT_OUTPUT = 4096
 RESULT_TOKENS = 8192
 CHARS_PER_TOKEN = 3
 MILLION = 1_000_000
-# Seconds before the judge's timeout from which a rollout still exploring gives its verdict:
-# room for both forced tries at about twice the slowest verdict call in the recorded runs
-# (32 s for 3,600 tokens). At most VERDICT_SHARE of the timeout, so a short one still explores.
-VERDICT_S = 120.0
-VERDICT_SHARE = 0.5
 BRIEF_FLAGS = 60
 BRIEF_SWEEPS = 30
 INSTRUCTION_CHARS = 16_000
@@ -715,8 +710,9 @@ class Judge:
     with the same key sends the same requests.
 
     `run` keeps to `config.timeout_s`, read on `clock`. A rollout still exploring when
-    VERDICT_S are left, or VERDICT_SHARE of the timeout if less, gives its verdict early. At the
-    timeout the rollouts still open are cancelled and the verdicts of the others are merged.
+    `config.verdict_margin_s` are left, or `config.verdict_margin_share` of the timeout if
+    less, gives its verdict early. At the timeout the rollouts still open are cancelled and the
+    verdicts of the others are merged.
     """
 
     def __init__(
@@ -770,7 +766,8 @@ class Judge:
         start = self.clock()
         timeout = self.config.timeout_s
         end = start + timeout
-        self._force_at = end - min(VERDICT_S, timeout * VERDICT_SHARE)
+        margin = min(self.config.verdict_margin_s, timeout * self.config.verdict_margin_share)
+        self._force_at = end - margin
         for e in flags:
             if e.type == "monitor.flag":
                 payload = MonitorFlag.model_validate(e.data)

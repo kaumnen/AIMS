@@ -46,7 +46,14 @@ from aims.events import (
 )
 from aims.models import ModelClient, Profile, Prompt, Reply, ToolRequest
 from aims.monitor import judge_texts
-from aims.monitor.config import CATEGORIES, JudgeConfig, MonitorConfigError, layer
+from aims.monitor.config import (
+    CATEGORIES,
+    JUDGE_VERDICT_S,
+    JudgeConfig,
+    MonitorConfig,
+    MonitorConfigError,
+    layer,
+)
 from aims.monitor.judge import (
     ANOMALY_CHARS,
     BLOB_MAX,
@@ -57,7 +64,6 @@ from aims.monitor.judge import (
     PROBLEM_CHARS,
     TOOL_CHARS,
     TOOL_PARAMETERS,
-    VERDICT_S,
     VERDICT_SCHEMA,
     Flag,
     Judge,
@@ -1606,7 +1612,12 @@ async def test_a_cancel_from_outside_is_not_a_timeout(store: LocalEventStore) ->
 
 @pytest.mark.parametrize(
     ("limit", "left", "forced"),
-    [(600, VERDICT_S + 1, False), (600, VERDICT_S, True), (10, 5.1, False), (10, 5, True)],
+    [
+        (600, JUDGE_VERDICT_S + 1, False),
+        (600, JUDGE_VERDICT_S, True),
+        (10, 5.1, False),
+        (10, 5, True),
+    ],
 )
 async def test_a_rollout_gives_its_verdict_before_the_timeout(
     store: LocalEventStore, limit: float, left: float, forced: bool
@@ -1629,6 +1640,44 @@ async def test_a_rollout_gives_its_verdict_before_the_timeout(
     assert ("tools" not in second) is forced
     assert ("response_format" in second) is forced
     assert (second["messages"][-1]["content"] == judge_texts.FORCE) is forced
+
+
+@pytest.mark.parametrize(("left", "forced"), [(301, False), (300, True)])
+async def test_the_verdict_margin_is_set_in_the_config(
+    store: LocalEventStore, left: float, forced: bool
+) -> None:
+    """A slow provider gets more time for its forced verdict calls."""
+    run = await make_run(store)
+    now = [0.0]
+
+    def explore(body: dict[str, Any]) -> dict[str, Any]:
+        now[0] = 1000 - left
+        return call("events")
+
+    script = Script(explore, say(json.dumps(verdict(summary="in time"))))
+    judge = make_judge(
+        store,
+        run,
+        script,
+        clock=lambda: now[0],
+        timeout_s=1000,
+        verdict_margin_s=300,
+        verdict_margin_share=0.9,
+    )
+    assert payload_of(await judge.run(flags=[], sweeps=[])).summary == "in time"
+    assert ("tools" not in script.requests[1]) is forced
+
+
+def test_the_verdict_margin_is_checked() -> None:
+    assert JudgeConfig().verdict_margin_s == 120
+    assert JudgeConfig().verdict_margin_share == 0.5
+    for bad in ({"verdict_margin_s": 0}, {"verdict_margin_share": 0}, {"verdict_margin_share": 1}):
+        with pytest.raises(MonitorConfigError, match="verdict_margin"):
+            layer({"judge": bad}, "scenario")
+    old = MonitorConfig().model_dump(mode="json")
+    for key in ("verdict_margin_s", "verdict_margin_share"):
+        del old["judge"][key]
+    assert MonitorConfig.model_validate(old) == MonitorConfig()
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "runs" / "word-count"

@@ -39,6 +39,11 @@ JUDGE_MIN_OUTPUT = 1024
 # The validation context of a config read back from a run, a job or a truth record. A judge
 # output cap below JUDGE_MIN_OUTPUT, as one stored before that bound may hold, is raised to it.
 STORED = {"stored": True}
+# The judge's default verdict margin: room for both forced tries at about twice the slowest
+# verdict call in the recorded runs (32 s for 3,600 tokens), at most half the timeout, so a
+# short one still explores.
+JUDGE_VERDICT_S = 120.0
+JUDGE_VERDICT_SHARE = 0.5
 # Tokens a sweep lane reads and writes per agent step. Below them, one judge rollout's. From the
 # twelve standard reviews of 80-step cache-keys runs on Nov 10 2026: medians of 22k in and 480 out
 # per step over two lanes; the judge read up to 1.28M (86% cached) and wrote up to 8.6k.
@@ -248,7 +253,10 @@ class ReviewConfig(_Strict):
 class JudgeConfig(_Strict):
     """The judge reads the sealed trajectory with read-only tools after the verifier.
     `rollouts` independent runs, of which `blind` are not shown the flags. `profile` None uses
-    the judge role."""
+    the judge role. A rollout still exploring gives its verdict when `verdict_margin_s` of
+    `timeout_s` are left, or `verdict_margin_share` of it if that is less. The defaults give
+    both forced verdict calls about twice the slowest one recorded, 32 s. Raise them for a
+    slower provider or a higher effort."""
 
     profile: str | None = None
     effort: Effort | None = "high"
@@ -258,6 +266,8 @@ class JudgeConfig(_Strict):
     max_tool_calls: int = Field(default=30, ge=1)
     timeout_s: float = Field(default=600, gt=0)
     sample_unflagged: int = Field(default=5, ge=0)
+    verdict_margin_s: float = Field(default=JUDGE_VERDICT_S, gt=0)
+    verdict_margin_share: float = Field(default=JUDGE_VERDICT_SHARE, gt=0, lt=1)
 
     @field_validator("max_output_tokens", mode="before")
     @classmethod
