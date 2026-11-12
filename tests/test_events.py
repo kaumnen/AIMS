@@ -49,6 +49,7 @@ from aims.events.log import LogFile
 from aims.events.schema import now, text_of
 from aims.events.store import INLINE_LIMIT, LOG, _append_line, _write_private
 from aims.run import truth
+from aims.run.runner import seal_unsealed
 
 pytestmark = pytest.mark.anyio
 
@@ -1340,3 +1341,73 @@ async def test_a_store_closed_under_a_failed_append_leaves_the_closed_file_alone
         for fd in reused:
             os.close(fd)
     assert other.read_bytes() == b"x" * 100_000
+
+
+def failing(patch: pytest.MonkeyPatch, how: str) -> None:
+    """Make the next log append fail: as a full Linux disk does, with a short write and then
+    ENOSPC; as macOS does, with ENOSPC at once; or in its fsync."""
+    if how == "fsync":
+        patch.setattr(LogFile, "sync", broken)
+        return
+    write = os.write
+    taken: list[int] = []
+
+    def short(fd: int, data: Any) -> int:
+        data = bytes(data)
+        if how == "no space" or taken:
+            raise OSError(28, "No space left on device")
+        taken.append(fd)
+        return write(fd, data[: data.index(b"\n") + 10])
+
+    patch.setattr(os, "write", short)
+
+
+@pytest.mark.parametrize("how", ["short write", "no space", "fsync"])
+async def test_a_failed_append_keeps_the_run_to_its_writer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    async with await LocalEventStore.open(tmp_path) as store:
+        run_id = await store.create_run(STARTED)
+        before = log_path(store, run_id).read_bytes()
+        with monkeypatch.context() as patch:
+            failing(patch, how)
+            with pytest.raises(OSError, match=r"No space left|Input/output error"):
+                await store.append(run_id, [call(1), call(2)])
+        assert log_path(store, run_id).read_bytes() == before
+        # a runner that starts on the same data directory leaves the run alone
+        async with await LocalEventStore.open(tmp_path) as second:
+            assert await seal_unsealed(second) == []
+        await store.append(run_id, [call(1), call(2)])
+        assert calls_of(await store.events(run_id)) == ["run.started", "c1", "c2"]
+
+
+async def test_cut_lines_another_process_indexed_stop_the_writer_until_a_rebuild(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop = asyncio.get_running_loop()
+    async with (
+        await LocalEventStore.open(tmp_path) as store,
+        await LocalEventStore.open(tmp_path) as other,
+    ):
+        run_id = await store.create_run(STARTED)
+
+        def sync(self: LogFile) -> None:
+            # the other store opens while the batch is in the log, then the fsync fails
+            asyncio.run_coroutine_threadsafe(other.sync(), loop).result()
+            raise OSError(5, "Input/output error")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(LogFile, "sync", sync)
+            with pytest.raises(OSError, match="Input/output error"):
+                await store.append(run_id, [call(1)])
+        info = await store.run(run_id)
+        assert info is not None
+        assert info.events == 2
+        # the index holds an event the log does not: never written over
+        for _ in range(2):
+            with pytest.raises(RunCorrupt):
+                await store.append(run_id, [call(2)])
+        await store.rebuild()
+        await store.append(run_id, [call(2)])
+        assert calls_of(await store.events(run_id)) == ["run.started", "c2"]
+    assert verify_run(tmp_path / run_id).ok

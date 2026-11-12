@@ -196,7 +196,8 @@ class EventStore(Protocol):
 
 @dataclass(slots=True)
 class _Writer:
-    """`cut` says lines of a batch that failed may be in the log past `head`."""
+    """`cut` says a batch failed since the last write: its lines may still be in the log past
+    `head`, or in the index of a process that read them there."""
 
     file: LogFile
     head: Head
@@ -607,7 +608,7 @@ class LocalEventStore:
             if writer.cut and not writer.closed:
                 await self._cut(run_id, writer)
             if writer.closed:
-                raise RuntimeError(f"writer for run {run_id} was closed after an I/O error")
+                raise RuntimeError(f"writer for run {run_id} is closed")
             start = head = writer.head
             events: list[Event] = []
             lines: list[bytes] = []
@@ -631,17 +632,16 @@ class LocalEventStore:
                 await asyncio.to_thread(writer.file.sync)
             except OSError:
                 # lines of the batch may be in the log: the next open would take them in, and a
-                # retry would write them twice. A log that will not cut keeps its writer, which
-                # cuts it before it writes again. Not in a thread, where a store close could
-                # close the file under the cut
+                # retry would write them twice. The writer cuts them off, now and before it
+                # writes again, and keeps the log's lock: the run goes on in this process, and
+                # no other one may take it over meanwhile. Not in a thread, where a store close
+                # could close the file under the cut
                 writer.head, writer.cut = start, True
                 if not writer.closed:
                     try:
                         writer.file.truncate(start.offset)
                     except OSError as e:
                         log.error("run %s: a failed batch is not cut off the log: %s", run_id, e)
-                    else:
-                        self._discard(run_id, writer)
                 raise
             await self._keep_up(run_id, events, head)
             if head.finished:
