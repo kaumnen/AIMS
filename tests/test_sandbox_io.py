@@ -30,7 +30,7 @@ from aims.sandbox import (
     SandboxSpec,
 )
 from aims.sandbox.base import RUNNER_DIR
-from aims.sandbox.docker import INSTANCE
+from aims.sandbox.docker import INSTANCE, VOLUME_S
 from aims.sandbox.shared import SharedFolder
 
 pytestmark = [pytest.mark.anyio, pytest.mark.docker]
@@ -444,6 +444,90 @@ async def test_a_second_cancel_while_a_create_cleans_up_still_removes_all(
             await task
     assert await leftovers(backend, run_id) == (before, set())
     assert undoing.is_set()
+
+
+async def test_a_cancel_while_a_helper_is_deleted_waits_for_the_delete(
+    backend: DockerBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = f"test-{uuid.uuid4().hex[:12]}"
+    before, _ = await leftovers(backend, run_id)
+    hold, helpers = Hold(), set[str]()
+    create, delete = backend.docker.containers.create, DockerContainer.delete
+
+    async def noted_create(**kw: Any) -> DockerContainer:
+        container = await create(**kw)
+        labels = kw["config"]["Labels"]
+        if labels.get("aims.run") == run_id and labels.get("aims.role") == "helper":
+            helpers.add(container.id)
+        return container
+
+    async def held_delete(self: DockerContainer, **kw: Any) -> None:
+        if self.id in helpers and not hold.calls:
+            await hold.call(lambda: delete(self, **kw))
+        else:
+            await delete(self, **kw)
+
+    monkeypatch.setattr(backend.docker.containers, "create", noted_create)
+    monkeypatch.setattr(DockerContainer, "delete", held_delete)
+    task = asyncio.create_task(backend.create(SHARED, run_id=run_id, agent_id="a1"))
+    try:
+        async with asyncio.timeout(60):
+            await hold.reached.wait()
+        task.cancel()
+        await asyncio.wait({task}, timeout=1)
+        # The cleanup would find the helper's volumes still in use.
+        assert not task.done()
+        hold.release.set()
+        with pytest.raises(asyncio.CancelledError):
+            async with asyncio.timeout(60):
+                await task
+        assert await leftovers(backend, run_id) == (before, set())
+    finally:
+        await hold.settled()
+        await scrub(backend, run_id)
+
+
+async def test_undo_waits_for_a_volume_only_while_its_container_goes(
+    backend: DockerBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = f"test-{uuid.uuid4().hex[:12]}"
+    busy, free = f"aims-{run_id}-busy", f"aims-{run_id}-free"
+    for name in (busy, free):
+        await backend.docker.volumes.create({"Name": name, "Labels": {"aims.run": run_id}})
+    other = await backend.docker.containers.create(
+        config={
+            "Image": IMAGE,
+            "Cmd": ["true"],
+            "Labels": {"aims.instance": INSTANCE},
+            "HostConfig": {
+                "NetworkMode": "none",
+                "Mounts": [{"Type": "volume", "Source": busy, "Target": "/v"}],
+            },
+        }
+    )
+    delete, refused = DockerVolume.delete, 0
+
+    async def going(self: DockerVolume) -> None:
+        # As Docker answers while the container that mounted the volume is still going.
+        nonlocal refused
+        if self.name == free and refused < 2:
+            refused += 1
+            raise aiodocker.DockerError(409, f"remove {free}: volume is in use")
+        await delete(self)
+
+    monkeypatch.setattr(DockerVolume, "delete", going)
+    loop = asyncio.get_running_loop()
+    try:
+        start = loop.time()
+        await backend._undo({"aims.run": run_id}, None, [busy, free])
+        took = loop.time() - start
+        assert (await leftovers(backend, run_id))[1] == {busy}
+        assert refused == 2
+        assert took < VOLUME_S
+    finally:
+        with contextlib.suppress(aiodocker.DockerError):
+            await other.delete(force=True)
+        await scrub(backend, run_id)
 
 
 async def test_a_put_archive_cancelled_in_its_create_call_leaves_no_helper(

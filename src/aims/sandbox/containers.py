@@ -37,6 +37,12 @@ async def create_container(
         raise
 
 
+async def remove_container(container: DockerContainer) -> None:
+    """Delete `container` if it is still there. A cancel waits for the delete to end, so the
+    daemon no longer holds the container's volumes once this returns or raises."""
+    await settle(_delete(container))
+
+
 async def _delete(container: DockerContainer) -> None:
     with contextlib.suppress(aiodocker.DockerError):
         await container.delete(force=True)

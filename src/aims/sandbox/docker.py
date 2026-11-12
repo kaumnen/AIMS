@@ -36,7 +36,7 @@ from aims.sandbox.base import (
     Tree,
     check_name,
 )
-from aims.sandbox.containers import create_container
+from aims.sandbox.containers import create_container, remove_container
 from aims.sandbox.images import KEEP_DAYS, ensure_built, ensure_image, ensure_pulled, remove_old
 from aims.sandbox.imds import Identity
 from aims.sandbox.imds import start as start_imds_server
@@ -56,6 +56,8 @@ STDIN_POLL_S = 0.1
 STDIN_GRACE_S = 1.0
 END_S = 5.0
 END_POLL_S = 0.05
+VOLUME_S = 2.0
+VOLUME_POLL_S = 0.05
 MIB = 1024 * 1024
 # Kills the exec whose command line hashes to $1, with the busybox at $2. It sends SIGKILL to
 # the process group of each child of the exec, the group aims-exec ends at the deadline, then
@@ -449,8 +451,37 @@ class DockerBackend:
             with contextlib.suppress(aiodocker.DockerError):
                 await container.delete(force=True)
         for name in dict.fromkeys(volumes):
-            with contextlib.suppress(aiodocker.DockerError):
+            await self._drop_volume(name)
+
+    async def _drop_volume(self, name: str) -> None:
+        """Delete volume `name`. Docker refuses while a container mounts it: a container that
+        is being removed is waited for, up to `VOLUME_S`; any other keeps the volume."""
+        deadline = time.monotonic() + VOLUME_S
+        while True:
+            try:
                 await DockerVolume(self.docker, name).delete()
+                return
+            except aiodocker.DockerError as e:
+                if e.status == 404:
+                    return
+                if e.status != 409:
+                    log.warning("could not remove volume %s: %s", name, e)
+                    return
+            if await self._mounted(name):
+                return
+            if time.monotonic() >= deadline:
+                log.warning("volume %s was still in use after %s s", name, VOLUME_S)
+                return
+            await asyncio.sleep(VOLUME_POLL_S)
+
+    async def _mounted(self, name: str) -> bool:
+        """Whether a container that is not being removed mounts volume `name`."""
+        query = {"volume": [name]}
+        try:
+            found = await self.docker.containers.list(all=True, filters=json.dumps(query))
+        except aiodocker.DockerError:
+            return True
+        return any(container["State"] != "removing" for container in found)
 
     async def _scratch(self, run_id: str, name: str, options: str) -> None:
         """A fresh tmpfs volume, which the reader can see into, unlike a container's own tmpfs.
@@ -1161,8 +1192,7 @@ async def _helper(
             logs = await container.log(stdout=True, stderr=True)
             raise SandboxError(f"helper {cmd[0]} failed: {''.join(logs)[-2000:]}")
     finally:
-        with contextlib.suppress(aiodocker.DockerError):
-            await container.delete(force=True)
+        await remove_container(container)
 
 
 async def _sweep(docker: aiodocker.Docker, host: str, container: str | None) -> None:

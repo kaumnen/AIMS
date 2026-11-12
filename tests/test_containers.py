@@ -6,7 +6,7 @@ from typing import Any, cast
 import aiodocker
 import pytest
 
-from aims.sandbox.containers import create_container
+from aims.sandbox.containers import create_container, remove_container
 
 pytestmark = pytest.mark.anyio
 
@@ -83,3 +83,15 @@ async def test_a_cancelled_create_stays_cancelled_when_its_delete_fails() -> Non
     with pytest.raises(asyncio.CancelledError):
         await task
     assert daemon.made == ["helper"]
+
+
+async def test_a_cancelled_remove_waits_for_the_delete() -> None:
+    daemon = Daemon()
+    daemon.made.append("box")
+    container = Container(daemon, "box")
+    task = asyncio.create_task(remove_container(cast(Any, container)))
+    await cancelled_twice(task, daemon)
+    daemon.answer.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert daemon.made == []
