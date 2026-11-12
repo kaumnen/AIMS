@@ -509,6 +509,103 @@ async def test_a_flag_the_index_is_behind_on_is_labelled_from_the_log(
         assert await store.label_history(run_id) == [made]
 
 
+async def behind_at_open(
+    root: Path, monkeypatch: pytest.MonkeyPatch, *, sealed: bool
+) -> tuple[str, LocalEventStore]:
+    """A run whose index a new open of the store cannot take, with no writer, and the store,
+    with its own catch up stopped so only the test reads the log."""
+    async with await LocalEventStore.open(root) as store:
+        run_id = await store.create_run(STARTED)
+        end = [Draft(RunFinished(status="completed"))] if sealed else []
+        await store.append(run_id, [call(1), *end])
+    reset_index(root)
+    breaker = Breaker(monkeypatch, sqlite3.OperationalError("disk I/O error"))
+    breaker.left = 10**6
+    store = await LocalEventStore.open(root)
+    task = store._lags[run_id].task
+    assert task is not None
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    assert run_id in store._lags
+    assert run_id not in store._writers
+    return run_id, store
+
+
+async def test_a_log_head_read_while_a_writer_opens_counts_no_line_it_has_not_synced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id, store = await behind_at_open(tmp_path / "runs", monkeypatch, sealed=False)
+    try:
+        before = await store.log_head(run_id)
+        assert before is not None
+        assert before.seq == 1
+        armed, reading, go = threading.Event(), threading.Event(), threading.Event()
+        written, release = threading.Event(), threading.Event()
+        take, sync = store_module._take, store_module.LogFile.sync
+
+        def held_take(*args: Any) -> Any:
+            if armed.is_set():
+                armed.clear()
+                reading.set()
+                go.wait(10)
+            return take(*args)
+
+        def held_sync(self: Any) -> None:
+            written.set()
+            release.wait(10)
+            sync(self)
+
+        monkeypatch.setattr(store_module, "_take", held_take)
+        monkeypatch.setattr(store_module.LogFile, "sync", held_sync)
+        armed.set()
+        head = asyncio.create_task(store.log_head(run_id))
+        assert await asyncio.to_thread(reading.wait, 10)
+        append = asyncio.create_task(store.append(run_id, [call(2)]))
+        # a writer that opened now would write its line here, before its fsync
+        await asyncio.to_thread(written.wait, 0.5)
+        go.set()
+        found = await head
+        release.set()
+        await append
+        assert found == before
+        after = await store.log_head(run_id)
+        assert after is not None
+        assert after.seq == 2
+    finally:
+        go.set()
+        release.set()
+        await store.close()
+
+
+async def test_a_sealed_run_the_index_is_behind_on_reads_its_log_head_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id, store = await behind_at_open(tmp_path / "runs", monkeypatch, sealed=True)
+    try:
+        reads = 0
+        take = store_module._take
+
+        def counted(*args: Any) -> Any:
+            nonlocal reads
+            reads += 1
+            return take(*args)
+
+        monkeypatch.setattr(store_module, "_take", counted)
+        heads = [await store.log_head(run_id) for _ in range(3)]
+        assert reads == 1
+        assert {(h.seq, h.finished) for h in heads if h is not None} == {(2, True)}
+        assert None not in heads
+        await store.remove(run_id)
+        assert await store.log_head(run_id) is None
+        await store.create_run(STARTED, run_id=run_id)
+        await store.append(run_id, [call(1)])
+        head = await store.log_head(run_id)
+        assert head is not None
+        assert (head.seq, head.finished) == (1, False)
+    finally:
+        await store.close()
+
+
 async def test_an_event_the_index_cannot_take_holds_back_none_before_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

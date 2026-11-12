@@ -264,6 +264,7 @@ class LocalEventStore:
         self._taps: dict[str, list[Callable[[Sequence[Event]], None]]] = {}
         self._lags: dict[str, _Lag] = {}
         self._truths = asyncio.Lock()
+        self._sealed: dict[str, Head] = {}
         self._closed = False
 
     @classmethod
@@ -338,16 +339,14 @@ class LocalEventStore:
 
     async def log_head(self, run_id: str) -> Head | None:
         """Where the synced part of a run's log ends: the index head, or past it while the
-        index is behind the log."""
+        index is behind the log. With no writer or sink here the log is read under the lock
+        that opens one, so a writer opening meanwhile cannot add lines it has not synced yet; a
+        writer in another process still can. A sealed run's head is read once."""
         head = await self.head(run_id)
         if run_id not in self._lags:
             return head
-        handle = self._writers.get(run_id) or self._sinks.get(run_id)
-        if handle is not None:
-            # a write sets the handle's head before its fsync, and holds the lock past it
-            async with handle.lock:
-                if not handle.closed:
-                    return handle.head
+        if (sealed := self._sealed.get(run_id)) is not None:
+            return sealed
 
         def read() -> Head:
             after = head or Head()
@@ -358,7 +357,19 @@ class LocalEventStore:
                 if error is not None or len(chunk) < CHUNK:
                     return after
 
-        found = await asyncio.to_thread(read)
+        while True:
+            handle = self._writers.get(run_id) or self._sinks.get(run_id)
+            if handle is not None:
+                # a write sets the handle's head before its fsync, and holds the lock past it
+                async with handle.lock:
+                    if not handle.closed:
+                        return handle.head
+            async with self._opening:
+                if (self._writers.get(run_id) or self._sinks.get(run_id)) is None:
+                    found = await asyncio.to_thread(read)
+                    break
+        if found.finished:
+            self._sealed[run_id] = found
         return found if found.seq >= 0 else head
 
     async def wait_indexed(self, run_id: str, seq: int) -> None:
@@ -389,6 +400,7 @@ class LocalEventStore:
             if info is not None and info.status == "running":
                 raise RuntimeError(f"run {run_id} is not sealed")
         self._ingested.discard(run_id)
+        self._sealed.pop(run_id, None)
         await self._drop_lag(run_id)
         grave = await asyncio.to_thread(self._bury, run_id)
         await self._index.remove(run_id)
