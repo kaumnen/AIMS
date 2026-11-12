@@ -148,13 +148,42 @@ function hover(schema: Schema) {
   });
 }
 
-function toDiagnostics(state: EditorState, problems: readonly LineProblem[]): Diagnostic[] {
-  return problems
-    .filter((p) => p.line !== null && p.line >= 1 && p.line <= state.doc.lines)
-    .map((p) => {
-      const line = state.doc.line(p.line ?? 1);
-      return { from: line.from, to: line.to, severity: p.severity, message: p.msg };
-    });
+// Where line `n` (1-based) of a problem is in the editor, or null past the end. YAML also ends a
+// line at a lone CR, which the editor keeps within its line in a text that mixes line endings.
+// TOML ends lines at LF only.
+function lineAt(
+  state: EditorState,
+  lang: Language,
+  n: number,
+): { from: number; to: number } | null {
+  const { doc } = state;
+  if (n < 1) return null;
+  if (lang !== "yaml") return n <= doc.lines ? doc.line(n) : null;
+  let left = n;
+  for (let i = 1; i <= doc.lines; i++) {
+    const line = doc.line(i);
+    // a CR at the end of a line is the first half of a CRLF, but not at the end of the text
+    const crlf = i < doc.lines && line.text.endsWith("\r");
+    const parts = (crlf ? line.text.slice(0, -1) : line.text).split("\r");
+    if (left <= parts.length) {
+      let from = line.from;
+      for (const part of parts.slice(0, left - 1)) from += part.length + 1;
+      return { from, to: from + (parts[left - 1]?.length ?? 0) };
+    }
+    left -= parts.length;
+  }
+  return null;
+}
+
+function toDiagnostics(
+  state: EditorState,
+  lang: Language,
+  problems: readonly LineProblem[],
+): Diagnostic[] {
+  return problems.flatMap((p) => {
+    const at = p.line === null ? null : lineAt(state, lang, p.line);
+    return at ? [{ from: at.from, to: at.to, severity: p.severity, message: p.msg }] : [];
+  });
 }
 
 export type Language = "yaml" | "toml" | null;
@@ -306,16 +335,17 @@ export function CodeEditor({
   useEffect(() => {
     const v = view.current;
     if (!v) return;
-    v.dispatch(setDiagnostics(v.state, toDiagnostics(v.state, problems)));
-  }, [problems]);
+    v.dispatch(setDiagnostics(v.state, toDiagnostics(v.state, lang, problems)));
+  }, [problems, lang]);
 
   useEffect(() => {
     const v = view.current;
     if (!v || !goto) return;
-    const line = v.state.doc.line(Math.min(Math.max(goto.line, 1), v.state.doc.lines));
-    v.dispatch({ selection: { anchor: line.from }, scrollIntoView: true });
+    const { doc } = v.state;
+    const at = lineAt(v.state, lang, Math.max(goto.line, 1)) ?? doc.line(doc.lines);
+    v.dispatch({ selection: { anchor: at.from }, scrollIntoView: true });
     v.focus();
-  }, [goto]);
+  }, [goto, lang]);
 
   // Tab indents, so say how to leave; Escape lets the next Tab move focus on (CodeMirror's own).
   return (

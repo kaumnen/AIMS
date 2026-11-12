@@ -1,4 +1,5 @@
 import { insertNewline } from "@codemirror/commands";
+import { forEachDiagnostic } from "@codemirror/lint";
 import { EditorView } from "@codemirror/view";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -283,6 +284,24 @@ test("a file with mixed line endings saves back unchanged but for the edit", asy
   // LF ends the lines; a CR stays where it is
   expect(view.state.doc.lines).toBe(5);
   expect(await saveEdit(view, "demo", "demo2")).toBe(text.replace("demo", "demo2"));
+});
+
+test("a problem's line counts a lone CR as a line break, as YAML does", async () => {
+  // YAML line 3 is "oversight: nope"; the editor keeps the lone CR within its line 2
+  const text = "version: 1\r\nname: demo\roversight: nope\n";
+  onDisk = { text, etag: '"e1"' };
+  renderTab();
+  const view = await editor();
+  expect(view.state.doc.lines).toBe(3);
+  fireEvent.click(await screen.findByRole("button", { name: /line 3:/ }, { timeout: 3000 }));
+  const marked: string[] = [];
+  forEachDiagnostic(view.state, (_, from, to) => marked.push(view.state.sliceDoc(from, to)));
+  expect(marked).toEqual(["oversight: nope"]);
+  const head = view.state.selection.main.head;
+  expect(view.state.sliceDoc(head, head + "oversight".length)).toBe("oversight");
+  // nothing was edited, so nothing is to save
+  expect(screen.queryByText("unsaved changes")).toBeNull();
+  expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
 });
 
 test("a byte order mark stays on save", async () => {
