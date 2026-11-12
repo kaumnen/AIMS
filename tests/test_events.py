@@ -42,7 +42,7 @@ from aims.events import (
     split_lines,
     verify_run,
 )
-from aims.events.blobs import ZSTD_MAGIC
+from aims.events.blobs import ZSTD_MAGIC, BlobStore
 from aims.events.chain import GENESIS, Head, digest, follow, seal
 from aims.events.disk import make_dir
 from aims.events.schema import now, text_of
@@ -291,6 +291,35 @@ async def test_torn_tail_is_cut_and_recorded(tmp_path: Path) -> None:
         assert isinstance(truncated, LogTruncated)
         assert truncated.offset == len(good)
         assert truncated.reason == "incomplete line"
+        assert await store.get_blob(run_id, truncated.dropped.sha256) == torn
+    assert verify_run(root / run_id).ok
+
+
+async def test_a_torn_tail_stays_until_its_bytes_are_stored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "runs"
+    async with await LocalEventStore.open(root) as store:
+        run_id = await store.create_run(STARTED)
+    path = root / run_id / "events.jsonl"
+    good = path.read_bytes()
+    torn = b'{"agent_id":"a1","data":{"argu'
+    path.write_bytes(good + torn)
+
+    def full(self: BlobStore, datas: Any) -> Any:
+        raise OSError(28, "No space left on device")
+
+    async with await LocalEventStore.open(root) as store:
+        with monkeypatch.context() as patch:
+            patch.setattr(BlobStore, "put_many", full)
+            with pytest.raises(OSError, match="No space left"):
+                await store.append(run_id, [call(1)])
+        assert path.read_bytes() == good + torn
+        await store.append(run_id, [call(1)])
+        page = await store.events(run_id)
+        assert [e.type for e in page[-2:]] == ["log.truncated", "tool.call"]
+        truncated = page[-2].payload()
+        assert isinstance(truncated, LogTruncated)
         assert await store.get_blob(run_id, truncated.dropped.sha256) == torn
     assert verify_run(root / run_id).ok
 

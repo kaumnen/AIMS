@@ -89,9 +89,12 @@ class LogFile:
     def sync(self) -> None:
         os.fsync(self._fd)
 
+    def tail(self, offset: int) -> bytes:
+        """The bytes from `offset` to the end."""
+        return os.pread(self._fd, os.fstat(self._fd).st_size - offset, offset)
+
     def truncate(self, offset: int) -> bytes:
-        size = os.fstat(self._fd).st_size
-        dropped = os.pread(self._fd, size - offset, offset)
+        dropped = self.tail(offset)
         os.ftruncate(self._fd, offset)
         os.fsync(self._fd)
         return dropped

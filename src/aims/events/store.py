@@ -1064,8 +1064,11 @@ class LocalEventStore:
                 if error is not None:
                     if not await asyncio.to_thread(tail_only, path, error.offset):
                         raise error
-                    dropped = await asyncio.to_thread(file.truncate, error.offset)
+                    # stored before they are cut, so a full disk or a crash in between loses
+                    # nothing: the next open finds the same tail
+                    dropped = await asyncio.to_thread(file.tail, error.offset)
                     ref = await self.put_blob(run_id, dropped)
+                    await asyncio.to_thread(file.truncate, error.offset)
                     log.warning("run %s: cut %d bytes off the log: %s", run_id, len(dropped), error)
                     truncated = LogTruncated(offset=error.offset, dropped=ref, reason=error.reason)
             except BaseException:
