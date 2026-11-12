@@ -353,10 +353,10 @@ async def test_an_event_the_index_cannot_take_holds_back_none_before_it(
     reset_index(root)
     real = Index.add
 
-    async def add(index: Index, events: Sequence[Event], head: Head) -> None:
+    async def add(index: Index, events: Sequence[Event], head: Head, **kw: Any) -> None:
         if any(e.seq == 3 for e in events):
             raise ValueError("the index cannot take seq 3")
-        await real(index, events, head)
+        await real(index, events, head, **kw)
 
     monkeypatch.setattr(Index, "add", add)
     async with await LocalEventStore.open(root) as store:

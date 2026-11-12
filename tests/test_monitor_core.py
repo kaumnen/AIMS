@@ -1111,10 +1111,10 @@ def behind(h: H, monkeypatch: pytest.MonkeyPatch) -> list[bool]:
     broken = [True]
     real = h.store._index.add
 
-    async def add(events: Sequence[Event], head: Any) -> None:
+    async def add(events: Sequence[Event], head: Any, **kw: Any) -> None:
         if broken[0]:
             raise ValueError("the index cannot take it")
-        await real(events, head)
+        await real(events, head, **kw)
 
     monkeypatch.setattr(h.store._index, "add", add)
     monkeypatch.setattr(store_module, "RETRY_S", 0.01)

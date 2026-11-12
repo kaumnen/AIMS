@@ -2502,10 +2502,10 @@ def refuse_from(
     behind the log."""
     real = store._index.add
 
-    async def add(events: list[Any], head: Any) -> None:
+    async def add(events: list[Any], head: Any, **kw: Any) -> None:
         if events and events[0].run_id == run_id and events[-1].seq >= seq:
             raise ValueError("the index cannot take it")
-        await real(events, head)
+        await real(events, head, **kw)
 
     monkeypatch.setattr(store._index, "add", add)
 
