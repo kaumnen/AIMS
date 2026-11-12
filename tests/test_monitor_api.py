@@ -374,6 +374,25 @@ async def test_monitor_runs_queue_for_runners_that_take_them(
     await seal(local, running, task)
 
 
+async def test_a_review_budget_is_a_finite_number(
+    cp: CP, local: LocalEventStore, fake: FakeRunner
+) -> None:
+    origin = await pushed(cp, local, fake, flagged())
+    url = f"/api/runs/{origin}/monitor"
+    headers = {"content-type": "application/json"}
+    async with cp.client(cp.operator) as c:
+        for value in ("Infinity", "NaN", "1e400", '"inf"', '"1e3"', '"1_000"', "true", "-1"):
+            text = f'{{"signals_only": true, "budget_usd": {value}}}'
+            r = await c.post(url, content=text, headers=headers)
+            assert r.status_code == 422, value
+        for value in ("inf", "Infinity", "nan", "1e400", "-1"):
+            r = await c.get(f"{url}/estimate", params={"signals_only": True, "budget_usd": value})
+            assert r.status_code == 422, value
+        r = await c.get(f"{url}/estimate", params={"signals_only": True, "budget_usd": "2.5"})
+        assert r.status_code == 200, r.text
+    assert [j for j in await cp.state.db.jobs() if j.payload.get("kind") == "monitor"] == []
+
+
 async def test_a_review_has_an_estimate_a_cost_guard_and_counts_as_listed(
     cp: CP, local: LocalEventStore, fake: FakeRunner
 ) -> None:

@@ -1395,7 +1395,7 @@
       },
       "Caps-Input": {
         "additionalProperties": false,
-        "description": "Caps to change. A field set to None lifts that cap; a field left out keeps it. Only the\nfields given are dumped, so a copy read back changes the same caps.",
+        "description": "Caps to change. A field set to None lifts that cap; a field left out keeps it. Only the\nfields given are dumped, so a copy read back changes the same caps. Each cap is a finite\nnumber, never a string.",
         "properties": {
           "cost_usd": {
             "anyOf": [

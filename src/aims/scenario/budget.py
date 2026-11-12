@@ -44,9 +44,10 @@ class GivenCaps(TypedDict, total=False):
 
 class Caps(BaseModel):
     """Caps to change. A field set to None lifts that cap; a field left out keeps it. Only the
-    fields given are dumped, so a copy read back changes the same caps."""
+    fields given are dumped, so a copy read back changes the same caps. Each cap is a finite
+    number, never a string."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True, allow_inf_nan=False)
 
     steps: int | None = Field(default=None, ge=1)
     output_tokens: int | None = Field(default=None, ge=1)
@@ -229,8 +230,8 @@ def over(
     agents = {a: base.agent_caps(a) | top.agent_caps(a) for a in agent_ids}
     run = base.run_caps() | top.run_caps()
     return BudgetOverride(
-        agents={a: Caps(**c) for a, c in agents.items() if c},
-        run=Caps(**run) if run else None,
+        agents={a: Caps.model_validate(c) for a, c in agents.items() if c},
+        run=Caps.model_validate(run) if run else None,
     )
 
 

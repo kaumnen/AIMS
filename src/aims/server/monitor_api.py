@@ -95,7 +95,7 @@ class StartMonitor(BaseModel):
     judge_only: bool = False
     profile: Utf8 | None = None
     config: Annotated[dict[str, JsonValue] | None, NoLoneSurrogate] = None
-    budget_usd: float | None = Field(default=None, ge=0)
+    budget_usd: float | None = Field(default=None, ge=0, strict=True, allow_inf_nan=False)
     samples: int = Field(default=1, ge=1, le=100)
     parallel: int | None = Field(default=None, ge=1)
     runner: Utf8 | None = None
@@ -238,7 +238,7 @@ async def estimate_monitor(
     signals_only: bool = False,
     judge_only: bool = False,
     profile: str | None = None,
-    budget_usd: Annotated[float | None, Query(ge=0)] = None,
+    budget_usd: Annotated[float | None, Query(ge=0, allow_inf_nan=False)] = None,
     samples: Annotated[int, Query(ge=1, le=100)] = 1,
 ) -> ReviewEstimate:
     """What monitor runs over a sealed run cost, as `aims monitor` prints it before they start:

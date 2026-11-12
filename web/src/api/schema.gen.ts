@@ -2123,7 +2123,8 @@ export interface components {
         /**
          * Caps
          * @description Caps to change. A field set to None lifts that cap; a field left out keeps it. Only the
-         *     fields given are dumped, so a copy read back changes the same caps.
+         *     fields given are dumped, so a copy read back changes the same caps. Each cap is a finite
+         *     number, never a string.
          */
         "Caps-Input": {
             /** Cost Usd */

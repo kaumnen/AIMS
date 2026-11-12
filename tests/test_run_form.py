@@ -5,6 +5,7 @@ newest model check of each profile."""
 import asyncio
 import hashlib
 import io
+import json
 import shutil
 import sqlite3
 import tarfile
@@ -115,6 +116,25 @@ async def local(tmp_path: Path) -> AsyncIterator[LocalEventStore]:
 
 def body(name: str = "control", **fields: Any) -> dict[str, Any]:
     return {"scenario": {"source": "project", "name": name}, "monitor": "signals", **fields}
+
+
+async def test_a_cap_given_as_inf_nan_or_a_string_is_refused(cp: CP) -> None:
+    """A run's budget takes JSON numbers only, as the UI sends them; `--budget` reads text."""
+    estimate = "/api/scenarios/project/control/estimate"
+    headers = {"content-type": "application/json"}
+    async with cp.client(cp.operator) as c:
+        for key in ("cost_usd", "wall_s", "steps"):
+            for value in ("Infinity", "NaN", "1e400", '"inf"', '"1e3"', '"1_000"', "true"):
+                caps = f'{{"run": {{"{key}": {value}}}}}'
+                start = json.dumps(body(confirm=True))[:-1] + f', "budget": {caps}}}'
+                r = await c.post("/api/runs", content=start, headers=headers)
+                assert r.status_code == 422, (key, value, r.text)
+                r = await c.get(estimate, params={"budget": caps})
+                assert (r.status_code, r.json()["code"]) == (422, "budget"), (key, value)
+        caps = '{"run": {"cost_usd": 2.5, "wall_s": 600, "steps": 200}}'
+        r = await c.get(estimate, params={"budget": caps})
+        assert r.status_code == 200, r.text
+    assert await cp.state.db.jobs() == []
 
 
 async def test_the_scenario_list_says_oversight_agents_and_variants(cp: CP) -> None:

@@ -146,6 +146,25 @@ def test_the_json_the_estimate_endpoints_take_reads_like_the_flag() -> None:
         read_json('{"every": {"steps": 0}}')
 
 
+@pytest.mark.parametrize("key", ["steps", "output_tokens", "cost_usd", "wall_s"])
+@pytest.mark.parametrize(
+    "value", ["Infinity", "-Infinity", "NaN", "1e400", '"inf"', '"1e3"', '"1_000"', '"5"', "true"]
+)
+def test_a_cap_in_json_is_a_finite_number(key: str, value: str) -> None:
+    """The flag reads digits from its text; JSON gives a number, never a string or inf."""
+    with pytest.raises(BudgetError, match=rf"^run\.{key}: Input should be a "):
+        read_json(f'{{"run": {{"{key}": {value}}}}}')
+
+
+def test_a_cap_in_json_reads_a_json_number() -> None:
+    o = read_json('{"run": {"steps": 200, "cost_usd": 2.5, "wall_s": 1e3, "output_tokens": 5}}')
+    assert o is not None
+    assert o.run_caps() == {"steps": 200, "cost_usd": 2.5, "wall_s": 1000, "output_tokens": 5}
+    o = read_json('{"every": {"cost_usd": 4}}')
+    assert o is not None
+    assert o.agent_caps("x") == {"cost_usd": 4}
+
+
 def test_a_fork_s_caps_go_over_its_origin_s_per_agent() -> None:
     origin = parse("alice.steps=200, run.cost_usd=10")
     fork = parse("steps=50, cost_usd=2")

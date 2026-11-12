@@ -68,7 +68,9 @@ Timeout = Annotated[float, BeforeValidator(_stored_timeout), Field(gt=0, le=MAX_
 
 
 class _Strict(Known):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    """No number in a scenario is inf or nan: a run could not record it."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
 
 class Environment(_Strict):

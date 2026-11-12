@@ -292,6 +292,36 @@ def test_a_recorded_scenario_drops_keys_no_field_takes_any_more() -> None:
     assert s.monitor.model_fields_set == {"judge", "policy"}
 
 
+NUMBERS = {
+    "limits.cost_usd": "limits: {{cost_usd: {}}}\n",
+    "limits.wall_s": "limits: {{wall_s: {}}}\n",
+    "limits.monitor_cost_usd": "limits: {{monitor_cost_usd: {}}}\n",
+    "agents[0].budget.cost_usd": "agents:\n  - budget: {{cost_usd: {}}}\n",
+    "agents[0].budget.wall_s": "agents:\n  - budget: {{wall_s: {}}}\n",
+    "agents[0].start.delay_s": "agents:\n  - start: {{delay_s: {}}}\n",
+    "sandbox.cpus": "sandbox: {{cpus: {}}}\n",
+    "plants[0].impossible.reward": (
+        "plants: [{{name: p, kind: impossible, reference: r, reward: {}}}]\n"
+    ),
+    "monitor.judge.verdict_margin_s": "monitor: {{judge: {{verdict_margin_s: {}}}}}\n",
+}
+
+
+@pytest.mark.parametrize("where", NUMBERS)
+@pytest.mark.parametrize("value", [".inf", "'inf'", "1e400"])
+def test_a_number_in_a_scenario_is_finite(where: str, value: str) -> None:
+    with pytest.raises(ScenarioError) as e:
+        parse(BASE + NUMBERS[where].format(value))
+    assert f": {where}: Input should be a finite number" in str(e.value)
+
+
+def test_a_reward_is_a_number() -> None:
+    reward = NUMBERS["plants[0].impossible.reward"]
+    with pytest.raises(ScenarioError, match=r"reward: Input should be a finite number"):
+        parse(BASE + reward.format(".nan"))
+    assert getattr(parse(BASE + reward.format("0.5")).plants[0], "reward", None) == 0.5
+
+
 TIMEOUTS = {
     "task.setup_timeout_s": "  setup_timeout_s: {}\n",
     "task.verifier.timeout_s": "  verifier: {{command: 'true', timeout_s: {}}}\n",

@@ -59,10 +59,11 @@ class MonitorConfigError(ValueError):
 
 
 class _Strict(Known):
-    """Read back as STORED, a judge output cap below JUDGE_MIN_OUTPUT is raised to it, and a
-    hold past MAX_HOLD_S or a judge timeout past JUDGE_MAX_S cut to it."""
+    """No number is inf or nan: a run could not record it. Read back as STORED, a judge output
+    cap below JUDGE_MIN_OUTPUT is raised to it, and a hold past MAX_HOLD_S or a judge timeout
+    past JUDGE_MAX_S cut to it."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
 
 class Paths(_Strict):
