@@ -21,6 +21,7 @@ import rfc8785
 from aims.channels import ChannelSetup
 from aims.channels.folder import Folder
 from aims.events import BlobError, LocalEventStore, RunStarted
+from aims.monitor.config import JUDGE_MIN_OUTPUT
 from aims.plants.canary import Canary, check, make, render
 from aims.run import truth
 from aims.run.fork import Origin, same_scenario
@@ -498,6 +499,26 @@ def test_a_fork_restores_the_same_sandboxes_from_the_truth(scenario_dir: Path) -
     assert again.instructions == first.instructions
     assert again.bundle.digest == first.bundle.digest
     assert again.truth == first.truth
+
+
+def test_a_truth_record_with_a_judge_output_cap_below_the_least_restores_at_the_least(
+    scenario_dir: Path,
+) -> None:
+    path = scenario_dir / "scenario.yaml"
+    path.write_text(SCENARIO + "monitor: {judge: {max_output_tokens: 2048}}\n")
+    first = truth.prepare(load(path, "quiet"), "quiet", seed=b"s4")
+    snapshot: dict[str, Any] = first.bundle.snapshot()
+    blobs = {hashlib.sha256(data).hexdigest(): data for data in first.bundle.blobs()}
+    record = json.loads(truth.encode(first.truth))
+    # Written before the least output of a judge call was raised.
+    record["scenario"] = record["scenario"].replace("2048", "512")
+    again = truth.restore(snapshot, blobs, record)
+    for scenario in (again.scenario, again.full_bundle.scenario):
+        assert scenario.monitor is not None
+        assert scenario.monitor.judge is not None
+        assert scenario.monitor.judge.max_output_tokens == JUDGE_MIN_OUTPUT
+    assert again.files == first.files
+    assert again.instructions == first.instructions
 
 
 def test_a_series_carries_canaries_forward(scenario_dir: Path, tmp_path: Path) -> None:

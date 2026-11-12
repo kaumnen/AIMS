@@ -105,7 +105,7 @@ def restore(
 
     dockerfile = snapshot.get("dockerfile")
     full = Bundle(
-        scenario=_parse(text, source="truth record")[0],
+        scenario=_parse(text, source="truth record", stored=True)[0],
         text=text.encode(),
         verifier=blob("verifier"),
         context=blob("context"),
@@ -278,12 +278,13 @@ def _prepare(
 
 
 def _full(bundle: Bundle, variant: str | None) -> tuple[Scenario, str]:
-    """The full scenario with `variant` applied, and the source text it was read from."""
+    """The full scenario with `variant` applied, and the source text it was read from. The text
+    loaded once already, perhaps from a run or a job, so it is read back as stored."""
     text = (bundle.full_text or bundle.text).decode()
     if variant is None and bundle.full_text is None:
         return bundle.scenario, text
     try:
-        return _parse(text, source=bundle.scenario.name, variant=variant)[0], text
+        return _parse(text, source=bundle.scenario.name, variant=variant, stored=True)[0], text
     except ScenarioError as e:
         raise ValueError(str(e)) from None
 

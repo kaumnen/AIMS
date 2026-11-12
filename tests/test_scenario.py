@@ -17,7 +17,7 @@ from aims.channels.folder import Folder
 from aims.cli import app
 from aims.events import ExecFinished, TaskScored
 from aims.events.chain import Head, seal
-from aims.monitor.config import MonitorConfig, merge
+from aims.monitor.config import JUDGE_MIN_OUTPUT, MonitorConfig, merge
 from aims.run import selftest, truth
 from aims.run.runner import METRICS_BYTES, REWARD_BYTES, Bench, Options, Runner, _reward
 from aims.sandbox import AuditedSandbox
@@ -222,6 +222,22 @@ def test_a_recorded_monitor_naming_every_field_keeps_only_its_changes() -> None:
     merged = merge(layer, restored.model_dump(mode="json", exclude_unset=True))
     assert merged.extract == ["cheap"]
     assert (merged.paths.tests, merged.paths.grader) == (["t/**"], ["g"])
+
+
+@pytest.mark.parametrize("cap", [256, JUDGE_MIN_OUTPUT - 1])
+def test_a_recorded_judge_output_cap_below_the_least_loads_at_the_least(cap: int) -> None:
+    text = BASE + f"monitor: {{judge: {{max_output_tokens: {cap}}}}}\n"
+    with pytest.raises(ScenarioError, match=r"judge\.max_output_tokens: Input should be greater"):
+        parse(text)
+    # A run recorded it before the least was raised.
+    bundle = Bundle(parse(BASE + "monitor: {judge: {}}\n"), text.encode())
+    blobs = {hashlib.sha256(b).hexdigest(): b for b in bundle.blobs()}
+    restored = from_snapshot(json.loads(json.dumps(bundle.snapshot())), blobs)
+    assert restored.digest == bundle.digest
+    assert restored.scenario.monitor is not None
+    assert restored.scenario.monitor.judge is not None
+    assert restored.scenario.monitor.judge.max_output_tokens == JUDGE_MIN_OUTPUT
+    assert restored.scenario.monitor.model_fields_set == {"judge"}
 
 
 def test_missing_sources_are_reported(tmp_path: Path) -> None:

@@ -357,7 +357,7 @@ def job_bundle(job: Job, blobs: dict[str, bytes]) -> Generator[Bundle]:
         try:
             with tarfile.open(fileobj=io.BytesIO(blobs[job.folder]), mode="r:") as tar:
                 tar.extractall(root, filter="data")
-            bundle = load(root / "scenario.yaml", job.options.variant)
+            bundle = load(root / "scenario.yaml", job.options.variant, stored=True)
         except (ScenarioError, KeyError, tarfile.TarError, OSError) as e:
             raise RunError(f"the job's scenario folder does not load: {e}") from None
         if bundle.digest != job.scenario.get("digest"):

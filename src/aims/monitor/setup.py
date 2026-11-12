@@ -12,7 +12,9 @@ from aims.events import Oversight
 from aims.models import ModelsConfig, Profile, ProfileError
 from aims.models.profiles import check_weights
 from aims.monitor.config import (
+    JUDGE_MIN_OUTPUT,
     MAX_HOLD_S,
+    STORED,
     MonitorConfig,
     MonitorConfigError,
     Preset,
@@ -82,8 +84,9 @@ class ResolvedMonitor:
 
     @classmethod
     def restore(cls, value: Mapping[str, Any]) -> ResolvedMonitor:
-        """A monitor from its `snapshot`. A hold timeout past MAX_HOLD_S, as a snapshot stored
-        before that bound may hold, is cut to it. Raises MonitorConfigError."""
+        """A monitor from its `snapshot`. A hold timeout past MAX_HOLD_S is cut to it and a judge
+        output cap below JUDGE_MIN_OUTPUT is raised to it, as a snapshot stored before those
+        bounds may hold them. Raises MonitorConfigError."""
         try:
 
             def profile(v: Any) -> Profile | None:
@@ -91,13 +94,13 @@ class ResolvedMonitor:
 
             sweeps = {n: Profile.model_validate(p) for n, p in value["sweeps"].items()}
             return cls(
-                config=MonitorConfig.model_validate(_bounded(value["config"])),
+                config=MonitorConfig.model_validate(_bounded(value["config"]), context=STORED),
                 texts=MonitorTexts.restore(value["texts"]),
                 oversight=value["oversight"],
                 budget_usd=float(value["budget_usd"]),
                 sweeps=sweeps,
                 review=profile(value["review"]),
-                judge=profile(value["judge"]),
+                judge=_raised(profile(value["judge"])),
                 signals=dict(value["signals"]),
                 identity=str(value["identity"]),
                 extract=profile(value.get("extract")),
@@ -120,6 +123,14 @@ def _bounded(config: Any) -> Any:
         and v > MAX_HOLD_S
     }
     return {**config, "policy": {**policy, **cut}} if cut else config
+
+
+def _raised(judge: Profile | None) -> Profile | None:
+    """The judge's profile with an output cap below JUDGE_MIN_OUTPUT raised to it."""
+    cap = None if judge is None else judge.max_output_tokens
+    if judge is None or cap is None or cap >= JUDGE_MIN_OUTPUT:
+        return judge
+    return judge.model_copy(update={"max_output_tokens": JUDGE_MIN_OUTPUT})
 
 
 def identity(

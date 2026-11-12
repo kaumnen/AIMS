@@ -18,6 +18,8 @@ from pydantic import (
     Field,
     JsonValue,
     ValidationError,
+    ValidationInfo,
+    field_validator,
     model_validator,
 )
 
@@ -34,6 +36,9 @@ MAX_HOLD_S = 30 * 86_400
 # The least output the judge gives a call. A verdict holds all 15 categories, so less does not
 # fit one.
 JUDGE_MIN_OUTPUT = 1024
+# The validation context of a config read back from a run, a job or a truth record. A judge
+# output cap below JUDGE_MIN_OUTPUT, as one stored before that bound may hold, is raised to it.
+STORED = {"stored": True}
 # Tokens a sweep lane reads and writes per agent step. Below them, one judge rollout's. From the
 # twelve standard reviews of 80-step cache-keys runs on Nov 10 2026: medians of 22k in and 480 out
 # per step over two lanes; the judge read up to 1.28M (86% cached) and wrote up to 8.6k.
@@ -253,6 +258,14 @@ class JudgeConfig(_Strict):
     max_tool_calls: int = Field(default=30, ge=1)
     timeout_s: float = Field(default=600, gt=0)
     sample_unflagged: int = Field(default=5, ge=0)
+
+    @field_validator("max_output_tokens", mode="before")
+    @classmethod
+    def _stored_cap(cls, value: Any, info: ValidationInfo) -> Any:
+        number = isinstance(value, int | float) and not isinstance(value, bool)
+        if info.context == STORED and number and value < JUDGE_MIN_OUTPUT:
+            return JUDGE_MIN_OUTPUT
+        return value
 
     @model_validator(mode="after")
     def _blind(self) -> Self:

@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 from cp import CP, control_plane
+from scripted import profile
 from test_monitor_api import call, started
 from test_score_api import RECORD, ScoreRunner
 from test_server import FakeRunner, ship
@@ -31,12 +32,16 @@ from aims.events.blobs import decode
 from aims.events.store import LOG
 from aims.models import Profile, check
 from aims.models.check import Check, Verdict
+from aims.monitor.config import JUDGE_MIN_OUTPUT, merge
+from aims.monitor.setup import ResolvedMonitor
+from aims.monitor.texts import resolve
+from aims.prompts import Prompts
 from aims.run import truth
 from aims.run.job import Job, bundle_of, job_bundle
 from aims.run.runner import RunError
-from aims.scenario import Scenario, folder_tar
+from aims.scenario import Bundle, Scenario, folder_tar, parse
 from aims.server import api, score_api
-from aims.wire import OfferMessage
+from aims.wire import MonitorJob, OfferMessage
 
 pytestmark = pytest.mark.anyio
 
@@ -489,3 +494,61 @@ async def test_a_job_carries_its_scenario_folder_so_plants_and_the_variant_survi
     blobs[hashlib.sha256(changed).hexdigest()] = changed
     with pytest.raises(RunError, match="does not match"), job_bundle(stale, blobs):
         pass
+
+
+LOW_CAP = """\
+version: 1
+name: capped
+oversight: observe
+task:
+  instruction: Do it.
+  environment: {image: python:3.13-slim}
+monitor: {judge: {max_output_tokens: 512}}
+"""
+
+
+def test_a_job_queued_with_a_judge_output_cap_below_the_least_runs_at_the_least(
+    tmp_path: Path,
+) -> None:
+    """A job queued before the least output of a judge call was raised."""
+    (tmp_path / "scenario.yaml").write_text(LOW_CAP)
+    folder = folder_tar(tmp_path / "scenario.yaml")
+    sha = hashlib.sha256(folder).hexdigest()
+    recorded = Bundle(parse(LOW_CAP.replace("512", "2048")), LOW_CAP.encode())
+    resolved = ResolvedMonitor(
+        config=merge({"judge": {"max_output_tokens": 2048}}),
+        texts=resolve(Prompts()),
+        oversight="observe",
+        budget_usd=1.0,
+        judge=profile(name="judge", max_output_tokens=2048),
+        identity="id",
+    )
+    monitor = resolved.snapshot()
+    config, judge = monitor["config"], monitor["judge"]
+    assert isinstance(config, dict)
+    assert isinstance(config["judge"], dict)
+    assert isinstance(judge, dict)
+    config["judge"]["max_output_tokens"] = judge["max_output_tokens"] = 512
+    job = Job(run_id="r", scenario=recorded.snapshot(), monitor=monitor, folder=sha)
+    blobs = {sha: folder, hashlib.sha256(recorded.text).hexdigest(): recorded.text}
+
+    with job_bundle(job, blobs) as bundle:
+        assert bundle.digest == recorded.digest
+        assert bundle.scenario.monitor is not None
+        assert bundle.scenario.monitor.judge is not None
+        assert bundle.scenario.monitor.judge.max_output_tokens == JUDGE_MIN_OUTPUT
+    snapshot = bundle_of(job.model_copy(update={"folder": None}), blobs).scenario.monitor
+    assert snapshot is not None
+    assert snapshot.judge is not None
+    assert snapshot.judge.max_output_tokens == JUDGE_MIN_OUTPUT
+    review = MonitorJob(run_id="m", origin="r", origin_head="h", scenario="capped", monitor=monitor)
+    for watched in (job.watch(), review.resolved()):
+        assert watched is not None
+        assert watched.config.judge is not None
+        assert watched.config.judge.max_output_tokens == JUDGE_MIN_OUTPUT
+        assert watched.judge is not None
+        assert watched.judge.max_output_tokens == JUDGE_MIN_OUTPUT
+        assert watched.identity == "id"
+        assert watched.config.model_copy(update={"judge": None}) == resolved.config.model_copy(
+            update={"judge": None}
+        )
