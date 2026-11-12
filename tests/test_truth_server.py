@@ -254,6 +254,7 @@ async def test_the_history_reads_each_sealed_run_once(
     second = await history(local)
     assert reads == []
     assert [p.agents for p in second.runs] == [p.agents for p in first.runs]
+    assert [p.taken for p in second.runs] == [p.taken for p in first.runs] == [5, 5]
     assert second.spend == first.spend
     assert second.shares == first.shares
 

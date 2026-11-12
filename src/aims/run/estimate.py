@@ -4,9 +4,9 @@ Three figures each for the agents and the monitor, at list prices: what the caps
 typical cost (the median of matching past runs) and the high one (their 90th percentile, or
 twice the median under 10 runs). Past runs match on scenario, variant, models, effort and agent
 count; failing that on the models and effort alone, from any scenario, scaled by the step
-budget; failing that only the caps speak. Past token counts are priced at today's list prices;
-where a provider did not say how much input was cached, the model's own cached share from its
-other calls stands in, else 90%.
+budget (a past run without one by the steps its agents took); failing that only the caps
+speak. Past token counts are priced at today's list prices; where a provider did not say how
+much input was cached, the model's own cached share from its other calls stands in, else 90%.
 
 The variant of a past run comes from its truth file, which stays on the operator's machine; a
 run without one counts as the base scenario.
@@ -50,7 +50,7 @@ STATUSES = frozenset({"completed", "killed"})
 TYPES = ("run.started", "agent.finished", "model.request", "model.response", "monitor.degraded")
 PAGE = 1000
 # The shape of a run's cost row in the index; a row of another shape is read again.
-ROW = 1
+ROW = 2
 MILLION = 1_000_000
 
 
@@ -197,8 +197,9 @@ class Tokens:
 @dataclass(slots=True)
 class Past:
     """A sealed scenario run, as the estimate matches it. `models` holds each agent's model and
-    effort, `budget` the step budget of the agents that call a model, `agents` and `watch` the
-    agents' and the monitor's calls by model, `steps` the steps each agent took."""
+    effort, `budget` the step budget of the agents that call a model and `taken` the steps they
+    took together, `agents` and `watch` the agents' and the monitor's calls by model, `steps`
+    the steps each agent took."""
 
     run_id: str
     scenario: str
@@ -209,6 +210,7 @@ class Past:
     agents: dict[str, Tokens] = field(default_factory=dict)
     watch: dict[str, Tokens] = field(default_factory=dict)
     steps: dict[str, int] = field(default_factory=dict)
+    taken: int = 0
     agents_capped: bool = False
     monitor_capped: bool = False
 
@@ -274,6 +276,7 @@ class _Run:
                     agents={k: Tokens(**t) for k, t in p["agents"].items()},
                     watch={k: Tokens(**t) for k, t in p["watch"].items()},
                     steps=dict(p["steps"]),
+                    taken=p["taken"],
                     agents_capped=p["agents_capped"],
                     monitor_capped=p["monitor_capped"],
                 )
@@ -392,6 +395,7 @@ async def _read(store: LocalEventStore, info: RunInfo) -> _Run:
         agents=sides[0],
         watch=sides[1],
         steps=steps,
+        taken=sum(n for a, n in steps.items() if a not in scripted),
         agents_capped=capped,
         monitor_capped=watch_capped,
     )
@@ -739,7 +743,7 @@ def _side(
         by_provider: dict[str, float] = defaultdict(float)
         capped = 0
         for past in matched:
-            scale = 1.0 if tier == "scenario" else _scale(budget, past.budget)
+            scale = 1.0 if tier == "scenario" or budget is None else _scale(budget, past)
             calls = past.agents if side == "agents" else past.watch
             share = scale * _left(done or {}, past, tier, scale)
             each = {m: t.priced(prices.get(m), found.share(m)) * share for m, t in calls.items()}
@@ -785,8 +789,10 @@ def spread(costs: Sequence[float]) -> tuple[float, float, bool]:
     return median, math.exp(statistics.quantiles(logs, n=10, method="inclusive")[8]), False
 
 
-def _scale(budget: int | None, past: int | None) -> float:
-    return budget / past if budget is not None and past else 1.0
+def _scale(budget: int, past: Past) -> float:
+    """How a past run of another scenario scales to `budget` steps: by its own step budget,
+    else by the steps its agents took, at least one."""
+    return budget / (past.budget or max(past.taken, 1))
 
 
 def _left(done: Mapping[str, int], past: Past, tier: Tier, scale: float) -> float:

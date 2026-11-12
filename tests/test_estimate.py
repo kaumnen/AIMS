@@ -539,6 +539,27 @@ async def test_other_scenarios_with_the_same_models_scale_by_step_budget(
 
 
 @pytest.mark.anyio
+async def test_a_past_run_with_no_step_budget_scales_by_the_steps_it_took(
+    tmp_path: Path, store: LocalEventStore
+) -> None:
+    settings, path = write(tmp_path, name="old", budget="{steps: null, cost_usd: 50}")
+    old = load_scenario(path)
+    # $0.02 a step, whatever the number of steps
+    for cost, taken in ((0.4, 20), (0.4, 20), (0.8, 40)):
+        await record(store, settings, old, cost, taken=taken)
+    await record(store, settings, old, 0.01, taken=0)
+    found = await history(store)
+    assert sorted(p.taken for p in found.runs) == [0, 20, 20, 40]
+    assert {p.budget for p in found.runs} == {None}
+    settings, path = write(tmp_path, name="new", budget="{steps: 10, cost_usd: 50}")
+    agents = one(settings, found, load_scenario(path)).parts[0].agents
+    assert (agents.tier, agents.runs) == ("models", 4)
+    # a run that took no step counts as one step
+    costs = sorted([0.2, 0.2, 0.2, 0.1])
+    assert agents.typical_usd == pytest.approx(math.exp(statistics.median(map(math.log, costs))))
+
+
+@pytest.mark.anyio
 async def test_percentiles_are_taken_on_log_cost(tmp_path: Path, store: LocalEventStore) -> None:
     settings, path = write(tmp_path, budget="{steps: null, cost_usd: 50}")
     bundle = load_scenario(path)
