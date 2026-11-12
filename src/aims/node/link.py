@@ -12,7 +12,7 @@ import httpx2
 
 from aims import __version__
 from aims.aio import shielded
-from aims.events import LocalEventStore
+from aims.events import LocalEventStore, RunCorrupt
 from aims.models import Delta, DeltaBus
 from aims.node.client import FEED, ApiError, ControlClient
 from aims.node.shipper import Backoff, Shipper, Streak
@@ -191,13 +191,18 @@ class Link:
             self._spawn(self.on_deleted(run_id))
 
     async def ship_all(self) -> None:
-        """Ship every local run the server does not hold sealed, but none it deleted."""
+        """Ship every local run the server does not hold sealed, but none it deleted and none
+        marked corrupt here."""
         run_ids = self.store.run_ids()
         for i in range(0, len(run_ids), 1000):
             chunk = run_ids[i : i + 1000]
             heads = await self.client.heads(chunk)
             for run_id in chunk:
-                local = await self.store.head(run_id)
+                try:
+                    local = await self.store.head(run_id)
+                except RunCorrupt as e:
+                    log.error("%s; it is not shipped", e)
+                    continue
                 server = heads.get(run_id)
                 if local is None:
                     continue

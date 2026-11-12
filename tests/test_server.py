@@ -2469,6 +2469,32 @@ async def test_a_link_logs_a_shipper_that_dies_of_an_error(
     await link.close()
 
 
+async def test_a_corrupt_run_does_not_stop_the_others_shipping(
+    cp: CP, fake: FakeRunner, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    root = tmp_path / "corrupt"
+    bad, good = sorted(str(uuid.uuid7()) for _ in range(2))
+    async with await LocalEventStore.open(root) as store:
+        await store.create_run(STARTED, run_id=bad)
+        await store.append(bad, [call(1), call(2)])
+        await store.create_run(STARTED, run_id=good)
+        await store.append(good, [call(1), Draft(RunFinished(status="completed"))])
+    path = root / bad / "events.jsonl"
+    path.write_bytes(b"".join(split_lines(path.read_bytes())[:2]))
+    async with await LocalEventStore.open(root) as store:
+        link = Link(fake.client, store, DeltaBus())
+        with caplog.at_level(logging.ERROR, logger="aims.node"):
+            await link.ship_all()
+        assert list(link.shippers) == [good]
+        assert said(caplog) == [("ERROR", f"run {bad} is marked corrupt; it is not shipped")]
+        assert await link.drain(20)
+        await link.close()
+    head = await cp.state.store.head(good)
+    assert head is not None
+    assert (head.seq, head.finished) == (2, True)
+    assert await cp.state.store.run(bad) is None
+
+
 @pytest.mark.parametrize(
     ("fails", "refused_from", "lines"),
     [
