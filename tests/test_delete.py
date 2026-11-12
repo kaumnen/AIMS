@@ -22,6 +22,7 @@ from test_server import (
     FakeRunner,
     log_of,
     post_tar,
+    push_forged,
     raw_events,
     run_tar,
     ship,
@@ -34,6 +35,7 @@ from typer.testing import CliRunner
 from aims.cli import app
 from aims.events import Draft, LocalEventStore, RunFinished, RunStarted, ToolCall, split_lines
 from aims.events import store as event_store
+from aims.events.index import Index
 from aims.events.schema import format_ts
 from aims.models import DeltaBus
 from aims.node.link import Link
@@ -237,6 +239,42 @@ async def test_a_run_whose_runner_is_offline_goes_only_with_force(
     async with cp.client(cp.operator) as c:
         r = await c.delete(f"/api/runs/{queued}", params={"force": "true"})
         assert (r.status_code, r.json()["code"]) == (409, "in_use")
+
+
+async def test_a_run_whose_folder_went_before_its_rows_reads_as_unknown(
+    cp: CP, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = await push_forged(cp, local, "http://model.invalid/v1")
+    entered, opened = asyncio.Event(), asyncio.Event()
+    real = Index.remove
+
+    async def remove(index: Index, run: str) -> None:
+        entered.set()
+        await opened.wait()
+        await real(index, run)
+
+    monkeypatch.setattr(Index, "remove", remove)
+    async with cp.client(cp.operator) as c:
+        deleting = asyncio.create_task(c.delete(f"/api/runs/{run_id}"))
+        try:
+            await entered.wait()
+            assert not (cp.state.store.root / run_id).exists()
+            assert await cp.state.store.run(run_id) is not None
+            asks: list[tuple[str, str, dict[str, str] | None, dict[str, str] | None]] = [
+                ("GET", "score/estimate", None, None),
+                ("GET", "monitor/estimate", {"preset": "signals"}, None),
+                ("POST", "monitor", None, {"preset": "signals"}),
+                ("GET", "forks/estimate", None, None),
+                ("POST", "forks", None, {"monitor": "signals"}),
+            ]
+            for method, path, params, body in asks:
+                url = f"/api/runs/{run_id}/{path}"
+                r = await c.request(method, url, params=params, json=body)
+                assert (r.status_code, r.json()["detail"]) == (422, f"unknown run {run_id}"), path
+        finally:
+            opened.set()
+        assert (await deleting).status_code == 200
+    assert await gone(cp, run_id)
 
 
 # Keeping runs for a number of days

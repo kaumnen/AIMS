@@ -186,7 +186,11 @@ async def load_origin(store: EventStore, run_id: str, *, full: bool = True) -> O
         ref = snapshot.get(name)
         if isinstance(ref, dict):
             sha = str(ref["sha256"])
-            blobs[sha] = await store.get_blob(run_id, sha)
+            try:
+                blobs[sha] = await store.get_blob(run_id, sha)
+            except KeyError:
+                # a delete moves the run's folder away before it forgets the run's rows
+                raise RunError(f"unknown run {run_id}") from None
     try:
         bundle = from_snapshot(snapshot, blobs)
     except ScenarioError as e:
