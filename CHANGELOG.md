@@ -13,7 +13,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - The operator routes for pause, resume, sweep, inject, kill and cancel refuse text with a lone surrogate such as `\ud800` with a 422.
 - A run that no cap bounds always asks before it starts, whatever past runs cost. `--yes` still skips the question. With no step cap, past runs of other scenarios give no estimate.
 - The estimate counts a past monitor that stopped at its spend cap at the cap of today. Its typical and high figures rise to match.
-- For an agent with summary compaction every "Cannot exceed" figure counts two model calls a step.
+- For an agent with summary compaction the "Cannot exceed" figures count a summary call before each step that has more than `keep_recent` steps before it. A fork counts them from its first live step.
 - A judge `max_output_tokens` under 1024 is refused when the config loads. Such a judge never made a call.
 - Near its budget the judge explores a little less. It may answer a tool call with "No tool calls are left" in place of the result.
 - The judge keeps its own timeout. A rollout still exploring when 120 s are left, or half the timeout if that is less, gives its verdict early. The monitor waits 30 s past the timeout for the judge to wind down.
@@ -89,6 +89,17 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - During a delete of a run, its fork, score estimate and monitor routes answer 422 `unknown run`.
 - A stored monitor with a hold timeout over 30 days loads with 30 days.
 - A run's total cost stays at the most the index holds, about 9.2 billion USD.
+
+- An agent's cost counts every attempt of a model call that the provider billed, failed ones too. Agent and run cost caps and the monitor's spend cap count them, so a cap can trip a little sooner. Agent totals now match the run's cost in the index.
+- In an estimate from past runs of the same models, a past run with no step budget is scaled by the steps its agents took. The first estimate after the upgrade reads each sealed run again.
+- `aims run --replay` refuses `--variant`. A fork keeps its origin's variant.
+- A fork's monitor is resolved from the profiles the fork runs: the recorded ones for the steps it replays, then the one each agent goes live with. The estimate, `aims run --replay` and the server agree. A profile the origin used only after the cut no longer counts.
+- A fork counts replies without a tool call from its first live reply. It gets three before `no_submit`, as a new run does. An agent kept on the recording still ends where the origin did.
+- The judge keeps room in its budget for both forced verdict tries. A refused first answer gets its second try. Exploring ends about one verdict call earlier. The problems a refusal lists are cut to 2,000 characters.
+- One judge tool output holds at most 20,000 characters. A blob read of control bytes comes back shorter with a `cut` note and the offset to read on from. Search pages. An event or flag too long for one output shows as a `cut` row. Anything else too long is an error that asks for less.
+- New judge settings `verdict_margin_s` (120) and `verdict_margin_share` (0.5) under `monitor.judge` set when a rollout still exploring gives its verdict. Every monitor with a judge gets a new identity, so its runs group under a new monitor in `aims rates`.
+- A verdict's rollouts list every judge call, also one cancelled at the timeout or one that failed.
+- `aims run` and `aims monitor` name each judge rollout that failed beside a verdict, in the live view and the end table. The report shows each as a warning of the new kind `rollout_failed`. The UI lists them all with their labels.
 
 ### Fixed
 
@@ -188,6 +199,13 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - A shared folder with a large sparse file cost the runner twice the file's size in memory at the end of a run.
 - Score and monitor estimates of a run answered 500 while its delete ran.
 - `organism.pack` packed the folder of a deleted run a crash had left.
+- A run, job or truth record stored with a judge `max_output_tokens` from 256 to 1023 loads again, with the cap raised to 1024. Forks, `aims monitor`, scoring and queued jobs of such runs failed. A new config below 1024 is still refused.
+- A fork at a cut of several agents checks the profile each agent goes live with. It was refused when the profile another agent used after the earliest cut step was gone from the config. A fork job carries the profiles its agents run.
+- A fork of a run whose provider gave tool calls of different steps the same id replays. It failed with "replay of step N failed".
+- A fork after replies without a tool call no longer ends `no_submit` during the replay.
+- The fork refusal for an agent that ended in the middle of a step while the run goes on says the agent ended. It said "yet".
+- The judge plans its next call right after a reply with no token counts. It planned too little input before.
+- A judge forced to a verdict at its first call no longer stops for budget when its money covers the call.
 
 ## [0.2.2] - 2026-11-10
 
