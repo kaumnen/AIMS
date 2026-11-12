@@ -20,7 +20,7 @@ from aims.events import BlobRef, ChannelInfo, ChannelSnapshot, EventStore, RunSt
 from aims.sandbox import AGENT_UID, AuditedSandbox
 from aims.sandbox.base import Mount, SharedVolume, SharesVolumes
 from aims.sandbox.shared import SharedFolder
-from aims.scenario.load import DIR_MODE, EXEC_MODE, FILE_MODE, SKIP, inside
+from aims.scenario.load import DIR_MODE, EXEC_MODE, FILE_MODE, SKIP, inside, read_regular
 from aims.scenario.model import FolderChannel
 from aims.tools import Tool
 
@@ -220,9 +220,9 @@ class _Seed:
             self.tar.addfile(info)
         elif stat.S_ISDIR(st.st_mode):
             self.dir(name, st.st_mtime)
-        elif stat.S_ISREG(st.st_mode):
+        elif stat.S_ISREG(st.st_mode) and (data := read_regular(path)) is not None:
             default = EXEC_MODE if st.st_mode & 0o111 else FILE_MODE
-            self.file(name, path.read_bytes(), mode or default, st.st_mtime)
+            self.file(name, data, mode or default, st.st_mtime)
 
     def finish(self) -> bytes:
         self.tar.close()

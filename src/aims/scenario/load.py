@@ -81,6 +81,19 @@ def inside(base: Path, rel: str, field: str, *, follow: bool = False) -> Path:
     return path
 
 
+def read_regular(path: Path, *, follow: bool = False) -> bytes | None:
+    """The bytes of the regular file at `path`, None when it is something else. The open does
+    not wait on a named pipe and the kind is checked on the open file, so a file swapped for
+    a pipe after an `lstat` is not read. Without `follow`, a symlink there is an `OSError`."""
+    flags = os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | (0 if follow else os.O_NOFOLLOW)
+    fd = os.open(path, flags)
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        return None
+    with os.fdopen(fd, "rb") as f:
+        return f.read()
+
+
 @dataclass(frozen=True, slots=True)
 class Bundle:
     """A scenario and every input it reads, as bytes.
@@ -473,9 +486,9 @@ def _add(tar: _Tar, path: Path, name: str, mode: int | None) -> None:
         tar.link(name, os.readlink(path), st.st_mtime)
     elif stat.S_ISDIR(st.st_mode):
         tar.dir(name, st.st_mtime)
-    elif stat.S_ISREG(st.st_mode):
+    elif stat.S_ISREG(st.st_mode) and (data := read_regular(path)) is not None:
         default = EXEC_MODE if st.st_mode & 0o111 else FILE_MODE
-        tar.file(name, path.read_bytes(), mode or default, st.st_mtime)
+        tar.file(name, data, mode or default, st.st_mtime)
 
 
 def _walk(root: Path) -> Iterator[tuple[Path, str]]:
@@ -509,9 +522,9 @@ def _dir_tar(root: Path, prefix: str, *, deterministic: bool) -> bytes:
                 tar.link(name, os.readlink(path), 0)
             elif stat.S_ISDIR(st.st_mode):
                 tar.dir(name, 0)
-            elif stat.S_ISREG(st.st_mode):
+            elif stat.S_ISREG(st.st_mode) and (data := read_regular(path)) is not None:
                 mode = 0o755 if st.st_mode & 0o111 else 0o644
-                tar.file(name, path.read_bytes(), mode, 0)
+                tar.file(name, data, mode, 0)
         else:
             _add(tar, path, name, None)
     return tar.finish()

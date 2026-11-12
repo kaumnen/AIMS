@@ -31,7 +31,7 @@ from aims.events.store import TRUTH
 from aims.plants import PlacedFile, Placement, Plant, PlantSetup, build
 from aims.plants.canary import Canary, make, render
 from aims.scenario import Bundle, Scenario, ScenarioError
-from aims.scenario.load import EXEC_MODE, FILE_MODE, SKIP, _parse, _Tar, inside
+from aims.scenario.load import EXEC_MODE, FILE_MODE, SKIP, _parse, _Tar, inside, read_regular
 from aims.scenario.model import SCRATCH, FileEntry, FilePlant, FolderChannel, ImpossiblePlant
 from aims.tools import Tool
 
@@ -531,10 +531,10 @@ def _disk_entry(path: Path, name: str, st: os.stat_result) -> _Entry | None:
         return _Entry(name, "link", 0o777, mtime, target=os.readlink(path))
     if stat.S_ISDIR(st.st_mode):
         return _Entry(name, "dir", 0, mtime)
-    if not stat.S_ISREG(st.st_mode):
+    if not stat.S_ISREG(st.st_mode) or (data := read_regular(path)) is None:
         return None
     mode = EXEC_MODE if st.st_mode & 0o111 else FILE_MODE
-    return _Entry(name, "file", mode, mtime, data=path.read_bytes())
+    return _Entry(name, "file", mode, mtime, data=data)
 
 
 def _member(tar: tarfile.TarFile, member: tarfile.TarInfo, name: str) -> _Entry:

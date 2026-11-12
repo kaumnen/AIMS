@@ -19,7 +19,7 @@ from aims.run import truth
 from aims.run.runner import Bench, Options, Result, RunError, Runner
 from aims.run.score import Taken, check_run
 from aims.scenario import Bundle, Scenario, ScenarioError
-from aims.scenario.load import _Tar, inside
+from aims.scenario.load import _Tar, inside, read_regular
 from aims.scenario.model import ImpossiblePlant, ScriptStep, ToolPlant
 
 MAX_SCRIPT_BYTES = 100_000
@@ -246,11 +246,13 @@ def _script(bundle: Bundle, rel: str, kind: str) -> ScriptStep:
     if base is None:
         raise SelfTestError([f"selftest: {rel}: the scenario has no directory to read it from"])
     try:
-        data = inside(base, rel, f"selftest.{kind}", follow=True).read_bytes()
+        data = read_regular(inside(base, rel, f"selftest.{kind}", follow=True), follow=True)
     except ScenarioError as e:
         raise SelfTestError(e.problems) from None
     except OSError as e:
         raise SelfTestError([f"selftest: {rel}: {e.strerror or e}"]) from None
+    if data is None:
+        raise SelfTestError([f"selftest: {rel} is not a regular file"])
     if len(data) > MAX_SCRIPT_BYTES:
         raise SelfTestError([f"selftest: {rel} is over {MAX_SCRIPT_BYTES} bytes"])
     try:

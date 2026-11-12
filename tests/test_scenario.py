@@ -4,6 +4,8 @@ import json
 import os
 import re
 import tarfile
+import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
@@ -13,7 +15,7 @@ from scripted import models, profile
 from typer.testing import CliRunner
 
 from aims.channels import ChannelSetup
-from aims.channels.folder import Folder
+from aims.channels.folder import Folder, _Seed
 from aims.cli import app
 from aims.events import ExecFinished, TaskScored
 from aims.events.chain import Head, seal
@@ -33,6 +35,7 @@ from aims.scenario import (
     load,
     parse,
 )
+from aims.scenario.load import _add, _Tar, read_regular
 
 BASE = """\
 version: 1
@@ -610,3 +613,89 @@ def test_symlinks_that_stay_inside_still_load(tmp_path: Path) -> None:
     with tarfile.open(fileobj=io.BytesIO(bundle.context)) as tar:
         assert "Dockerfile" in tar.getnames()
     assert truth.prepare(bundle, seed=b"s").plants["k"].record()["content"] == "a"
+
+
+def unblocked[T](pipe: Path, call: Callable[[], T]) -> T:
+    """What `call` returns, run in a thread: the test fails when it waits on `pipe`."""
+    out: list[T] = []
+    failed: list[BaseException] = []
+
+    def go() -> None:
+        try:
+            out.append(call())
+        except BaseException as e:
+            failed.append(e)
+
+    thread = threading.Thread(target=go, daemon=True)
+    thread.start()
+    thread.join(5)
+    if thread.is_alive():
+        # A reader blocks in open() until a writer comes; open and close one so it ends.
+        os.close(os.open(pipe, os.O_WRONLY | os.O_NONBLOCK))
+        thread.join(5)
+        pytest.fail("the named pipe was opened and waited on")
+    if failed:
+        raise failed[0]
+    return out[0]
+
+
+def test_read_regular_reads_files_only_and_never_waits_on_a_pipe(tmp_path: Path) -> None:
+    file, pipe, link = tmp_path / "f", tmp_path / "p", tmp_path / "l"
+    file.write_bytes(b"data")
+    os.mkfifo(pipe)
+    link.symlink_to("f")
+    (tmp_path / "piped").symlink_to("p")
+    assert read_regular(file) == b"data"
+    assert read_regular(link, follow=True) == b"data"
+    with pytest.raises(OSError, match="symbolic links"):
+        read_regular(link)
+    assert unblocked(pipe, lambda: read_regular(pipe)) is None
+    assert unblocked(pipe, lambda: read_regular(tmp_path / "piped", follow=True)) is None
+    assert read_regular(tmp_path) is None
+    with pytest.raises(FileNotFoundError):
+        read_regular(tmp_path / "none")
+
+
+def test_a_source_swapped_for_a_pipe_after_its_lstat_is_skipped_not_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    file, pipe = tmp_path / "f", tmp_path / "p"
+    file.write_bytes(b"data")
+    os.mkfifo(pipe)
+    was = os.lstat(file)
+    lstat = os.lstat
+    # The file was regular when it was looked at and is a pipe when it is opened.
+    monkeypatch.setattr(os, "lstat", lambda path, **kw: was if path == pipe else lstat(path, **kw))
+
+    def loader() -> list[str]:
+        tar = _Tar()
+        _add(tar, pipe, "p", None)
+        _add(tar, file, "f", None)
+        with tarfile.open(fileobj=io.BytesIO(tar.finish())) as made:
+            return made.getnames()
+
+    def channel() -> list[str]:
+        seed = _Seed(0)
+        seed.path(pipe, "p", None)
+        seed.path(file, "f", None)
+        with tarfile.open(fileobj=io.BytesIO(seed.finish())) as made:
+            return made.getnames()
+
+    assert unblocked(pipe, loader) == ["f"]
+    assert unblocked(pipe, channel) == ["f"]
+    assert unblocked(pipe, lambda: truth._disk_entry(pipe, "p", was)) is None
+    entry = truth._disk_entry(file, "f", was)
+    assert entry is not None
+    assert entry.data == b"data"
+
+
+def test_a_selftest_script_that_is_a_named_pipe_is_refused_not_read(tmp_path: Path) -> None:
+    (tmp_path / "selftest").mkdir()
+    pipe = tmp_path / "selftest" / "ref.sh"
+    os.mkfifo(pipe)
+    path = tmp_path / "scenario.yaml"
+    path.write_text(BASE + "selftest: {reference: selftest/ref.sh}\n")
+    bundle = load(path)
+    with pytest.raises(selftest.SelfTestError) as e:
+        unblocked(pipe, lambda: selftest.cases(bundle))
+    assert e.value.problems == ["selftest: selftest/ref.sh is not a regular file"]
