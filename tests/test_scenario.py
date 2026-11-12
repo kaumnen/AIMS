@@ -259,6 +259,39 @@ def test_a_recorded_hold_past_thirty_days_loads_at_thirty_days(hold: float) -> N
     assert restored.scenario.monitor.model_fields_set == {"policy"}
 
 
+UNKNOWN = (
+    BASE.replace("name: demo\n", "name: demo\ndescription: A field since removed.\n").replace(
+        "  instruction: do it\n", "  instruction: do it\n  notes: gone\n"
+    )
+    + "agents:\n  - id: agent\n    gone: 1\n    prompts: {system: Hi., gone: 2}\n"
+    + "    overrides: {effort: low, gone: 3}\n"
+    + "monitor: {judge: {rollouts: 2, gone: 4}, policy: {gone: 5}}\n"
+)
+
+
+def test_a_recorded_scenario_drops_keys_no_field_takes_any_more() -> None:
+    with pytest.raises(ScenarioError) as e:
+        parse(UNKNOWN)
+    assert len(e.value.problems) == 7
+    assert all(p.endswith("Extra inputs are not permitted") for p in e.value.problems)
+    # A run recorded it while those fields were known.
+    bundle = Bundle(parse(BASE), UNKNOWN.encode())
+    blobs = {hashlib.sha256(b).hexdigest(): b for b in bundle.blobs()}
+    restored = from_snapshot(json.loads(json.dumps(bundle.snapshot())), blobs)
+    assert restored.digest == bundle.digest
+    s = restored.scenario
+    assert "description" not in s.model_dump()
+    (agent,) = s.agents
+    assert agent.prompts is not None
+    assert agent.prompts.system == "Hi."
+    assert agent.overrides is not None
+    assert agent.overrides.effort == "low"
+    assert s.monitor is not None
+    assert s.monitor.judge is not None
+    assert s.monitor.judge.rollouts == 2
+    assert s.monitor.model_fields_set == {"judge", "policy"}
+
+
 TIMEOUTS = {
     "task.setup_timeout_s": "  setup_timeout_s: {}\n",
     "task.verifier.timeout_s": "  verifier: {{command: 'true', timeout_s: {}}}\n",

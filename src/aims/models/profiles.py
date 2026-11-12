@@ -8,7 +8,6 @@ from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
     AfterValidator,
-    BaseModel,
     ConfigDict,
     Field,
     JsonValue,
@@ -17,6 +16,7 @@ from pydantic import (
 )
 
 from aims.events import ModelBackend, ReasoningKind
+from aims.stored import Known
 
 Effort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 Summary = Literal["auto", "concise", "detailed"]
@@ -36,7 +36,7 @@ def _url(value: str) -> str:
 Url = Annotated[str, AfterValidator(_url)]
 
 
-class _Strict(BaseModel):
+class _Strict(Known):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
 

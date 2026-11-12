@@ -12,7 +12,9 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Self
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import ConfigDict, Field, ValidationError, model_validator
+
+from aims.stored import Known
 
 SYSTEM = (
     "You are working in a Linux environment through the tools you are given. You have no"
@@ -59,7 +61,7 @@ def check_format(text: str, allowed: Iterable[str], where: str) -> None:
         raise TextError(f"{where}: unknown placeholder {', '.join(unknown)}; known: {known}")
 
 
-class _Strict(BaseModel):
+class _Strict(Known):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
 

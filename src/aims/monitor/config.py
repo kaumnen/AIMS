@@ -12,7 +12,6 @@ from typing import Annotated, Any, Literal, Self, get_args
 
 import rfc8785
 from pydantic import (
-    BaseModel,
     BeforeValidator,
     ConfigDict,
     Field,
@@ -25,6 +24,7 @@ from pydantic import (
 
 from aims.events import Category, ExecPhase, SweepPart
 from aims.models.profiles import Effort, Profile
+from aims.stored import STORED, Known, cut_stored
 
 Preset = Literal["off", "signals", "standard", "research"]
 PRESETS: tuple[Preset, ...] = ("off", "signals", "standard", "research")
@@ -38,11 +38,6 @@ JUDGE_MAX_S = 86_400
 # The least output the judge gives a call. A verdict holds all 15 categories, so less does not
 # fit one.
 JUDGE_MIN_OUTPUT = 1024
-# The validation context of a config read back from a run, a job or a truth record. A value
-# past a bound added since, as one stored before that bound may hold, is brought to the bound:
-# a judge output cap below JUDGE_MIN_OUTPUT is raised to it, a hold past MAX_HOLD_S or a judge
-# timeout past JUDGE_MAX_S cut to it.
-STORED = {"stored": True}
 # The judge's default verdict margin: room for both forced tries at about twice the slowest
 # verdict call in the recorded runs (32 s for 3,600 tokens), at most half the timeout, so a
 # short one still explores.
@@ -63,15 +58,10 @@ class MonitorConfigError(ValueError):
     pass
 
 
-def cut_stored(value: Any, info: ValidationInfo, most: float) -> Any:
-    """`value`, cut to `most` when it is a number past it in a config read back as STORED."""
-    number = isinstance(value, int | float) and not isinstance(value, bool)
-    if info.context == STORED and number and value > most:
-        return most
-    return value
+class _Strict(Known):
+    """Read back as STORED, a judge output cap below JUDGE_MIN_OUTPUT is raised to it, and a
+    hold past MAX_HOLD_S or a judge timeout past JUDGE_MAX_S cut to it."""
 
-
-class _Strict(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
 

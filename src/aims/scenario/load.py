@@ -17,9 +17,10 @@ from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from ruamel.yaml.error import YAMLError
 
 from aims.events import BlobRef
-from aims.monitor.config import STORED, MonitorConfig
+from aims.monitor.config import MonitorConfig
 from aims.scenario import variants
 from aims.scenario.model import SCRATCH, Scenario
+from aims.stored import STORED
 from aims.text import LONE, lone_at, scrub
 
 AGENT_UID = 1000
@@ -169,7 +170,7 @@ def parse(
     text: str, *, source: str = "scenario", variant: str | None = None, stored: bool = False
 ) -> Scenario:
     """Validate scenario YAML (1.2, so `no` and `010` stay a string and 10). `stored` reads a
-    scenario a run or a job recorded, under the STORED context of the monitor config."""
+    scenario a run or a job recorded, under the STORED context (see `aims.stored`)."""
     scenario, _ = _parse(text, source=source, variant=variant, stored=stored)
     return scenario
 

@@ -13,7 +13,6 @@ from aims.models import ModelsConfig, Profile, ProfileError
 from aims.models.profiles import check_weights
 from aims.monitor.config import (
     JUDGE_MIN_OUTPUT,
-    STORED,
     MonitorConfig,
     MonitorConfigError,
     Preset,
@@ -26,6 +25,7 @@ from aims.monitor.config import (
 from aims.monitor.texts import MonitorTexts, resolve
 from aims.prompts import Prompts
 from aims.scenario import Scenario
+from aims.stored import STORED
 
 log = logging.getLogger("aims.monitor")
 

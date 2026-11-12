@@ -40,7 +40,7 @@ from aims.run.fork import (
 from aims.run.runner import Bench, Fork, RunError, resolve_texts
 from aims.sandbox import AuditedSandbox
 from aims.sandbox.audit import ExecResult
-from aims.scenario import AgentConfig, Limits, SandboxConfig, parse
+from aims.scenario import AgentConfig, Limits, SandboxConfig, ScenarioError, parse
 from aims.scenario.load import Bundle
 from aims.tools import load_tools
 
@@ -115,6 +115,47 @@ def agent(
         run_budget=RunBudget(Limits()),
         gate=gate,
         replay=replay,
+    )
+
+
+async def test_a_run_recorded_before_its_texts_were_kept_loads_as_an_origin(
+    store: LocalEventStore,
+) -> None:
+    """The first runs kept a `description` the scenario has since dropped, and each agent's
+    system prompt in place of its texts."""
+    old = ONE.replace("name: t\n", "name: t\ndescription: An early run.\n")
+    with pytest.raises(ScenarioError, match="description: Extra inputs are not permitted"):
+        parse(old)
+    bundle = Bundle(scenario=parse(ONE), text=old.encode())
+    entry = {"profile": profile().snapshot(), "system": "Be brief."}
+    origin = await load_origin(store, await recorded(store, bundle, entry))
+    assert origin.bundle.digest == bundle.digest
+    scenario = origin.bundle.scenario
+    made = resolve_texts(Prompts(), scenario.agent("agent"), scenario)
+    texts = origin.texts["agent"]
+    assert texts.agent == made.agent.model_copy(update={"system": "Be brief."})
+    assert (texts.tools, texts.channels) == (made.tools, made.channels)
+
+
+async def test_texts_recorded_with_a_text_since_removed_load(store: LocalEventStore) -> None:
+    texts: dict[str, Any] = resolve_texts(Prompts(), AgentConfig()).snapshot()
+    texts["agent"] = {**texts["agent"], "gone": "A text no longer read."}
+    entry = {"profile": profile().snapshot(), "texts": texts}
+    bundle = Bundle(parse(ONE), ONE.encode())
+    origin = await load_origin(store, await recorded(store, bundle, entry))
+    assert origin.texts["agent"].agent == AgentTexts()
+
+
+async def recorded(store: LocalEventStore, bundle: Bundle, entry: dict[str, Any]) -> str:
+    """A run of one agent whose `run.started` holds `entry` for it."""
+    return await store.create_run(
+        RunStarted(
+            scenario="t",
+            oversight="observe",
+            agents=["agent"],
+            config={"scenario": bundle.snapshot(), "agents": {"agent": entry}},
+        ),
+        blobs=bundle.blobs(),
     )
 
 

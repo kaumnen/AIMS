@@ -72,6 +72,7 @@ from aims.scenario import AgentConfig, Bundle, Scenario
 from aims.scenario import budget as budgets
 from aims.scenario.budget import BudgetError, BudgetOverride
 from aims.scenario.model import SCRATCH, ScriptStep
+from aims.stored import STORED
 from aims.text import scrub
 from aims.tools import Tool, UnknownTool, load_tools
 
@@ -227,7 +228,8 @@ class Texts:
 
     @classmethod
     def restore(cls, value: Any) -> Texts:
-        agent = AgentTexts.model_validate(value["agent"])
+        """Texts a run or a job stored, read back under STORED."""
+        agent = AgentTexts.model_validate(value["agent"], context=STORED)
         return cls(agent, dict(value["tools"]), dict(value.get("channels") or {}))
 
 

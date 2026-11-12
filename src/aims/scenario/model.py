@@ -5,7 +5,6 @@ from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
     AfterValidator,
-    BaseModel,
     BeforeValidator,
     ConfigDict,
     Discriminator,
@@ -18,9 +17,10 @@ from pydantic import (
 
 from aims.events import Category, Oversight
 from aims.models import Overrides
-from aims.monitor.config import MonitorConfig, Rule, cut_stored
+from aims.monitor.config import MonitorConfig, Rule
 from aims.prompts import Prompts
 from aims.sandbox.base import RUNNER_DIR, TOOLBOX, AbsPath, Name
+from aims.stored import Known, cut_stored
 
 DEFAULT_TOOLS = ("bash", "edit", "submit", "report_to_operator")
 HOME = "/home/agent"
@@ -67,7 +67,7 @@ Timeout = Annotated[float, BeforeValidator(_stored_timeout), Field(gt=0, le=MAX_
 """Seconds, at most MAX_TIMEOUT_S. One stored past it is read back at it."""
 
 
-class _Strict(BaseModel):
+class _Strict(Known):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
 

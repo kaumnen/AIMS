@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import hashlib
 import json
 import logging
@@ -23,9 +24,10 @@ from aims.events import (
     ToolResult,
 )
 from aims.models import ModelClient, ModelsConfig, Profile, ProfileError, Recording
+from aims.prompts import Prompts
 from aims.run import truth
-from aims.run.runner import Bench, Fork, RunError, Texts
-from aims.scenario import Bundle, ScenarioError, from_snapshot
+from aims.run.runner import Bench, Fork, RunError, Texts, resolve_texts
+from aims.scenario import Bundle, Scenario, ScenarioError, from_snapshot
 from aims.scenario import budget as budgets
 from aims.scenario.budget import BudgetError, BudgetOverride
 
@@ -223,7 +225,7 @@ async def load_origin(store: EventStore, run_id: str, *, full: bool = True) -> O
         assert isinstance(entry, dict)
         schedules[agent_id] = _schedule(entry.get("schedule") or [[None, entry["profile"]]])
         try:
-            texts[agent_id] = Texts.restore(entry["texts"])
+            texts[agent_id] = _texts(entry, bundle.scenario, agent_id)
         except (KeyError, TypeError, ValueError) as e:
             raise RunError(
                 f"run {run_id}: agent {agent_id} recorded no usable texts: {e}"
@@ -426,6 +428,18 @@ def preview(origin: Origin, fork: Fork) -> list[str]:
         after = "keeps its recorded answers after" if kept else "goes live after"
         lines.append(f"  {agent_id}: replays {n} of {taken} steps, {after}")
     return lines
+
+
+def _texts(entry: Mapping[str, Any], scenario: Scenario, agent_id: str) -> Texts:
+    """The texts agent `agent_id` of the origin read. A run recorded before the texts were kept
+    has its system prompt only; the other texts are the defaults for that agent."""
+    if "texts" in entry:
+        return Texts.restore(entry["texts"])
+    made = resolve_texts(Prompts(), scenario.agent(agent_id), scenario)
+    system = entry.get("system")
+    if not isinstance(system, str):
+        return made
+    return dataclasses.replace(made, agent=made.agent.model_copy(update={"system": system}))
 
 
 def _schedule(value: object) -> list[tuple[int | None, Profile]]:
