@@ -127,7 +127,8 @@ export interface paths {
         /**
          * Search Events
          * @description Events of every run whose text holds `q`, newest first; a viewer's leave out the runs
-         *     that show a run's truth.
+         *     that show a run's truth. `q` is at least three characters, the shortest text the index can
+         *     look up; a search within one run takes fewer.
          */
         get: operations["search_events"];
         put?: never;

@@ -2043,6 +2043,14 @@ async def test_search_text_and_cursors_the_index_cannot_bind_are_refused(
             assert (await c.get(f"{run}/events", params={"q": q})).json()["items"] == []
         r = await c.get("/api/events?q=%ED%A0%80sh")
         assert r.status_code == 200, r.text
+        # a search of every run needs the three characters the trigram index does
+        for q in ("", "s", "sh", "\U0001f600" * 2):
+            r = await c.get("/api/events", params={"q": q})
+            assert (r.status_code, r.json()["code"]) == (422, "invalid"), (q, r.text)
+        found = (await c.get("/api/events", params={"q": "she"})).json()["items"]
+        assert 1 in [e["seq"] for e in found]
+        within = (await c.get(f"{run}/events", params={"q": "sh"})).json()["items"]
+        assert 1 in [e["seq"] for e in within]
         bound = str(2**63 - 1)
         for path, params in [
             ("/api/events", {"q": "shell", "before": bound}),

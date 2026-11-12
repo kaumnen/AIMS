@@ -127,6 +127,9 @@ def _no_nul(text: str) -> str:
 # Text to search for: FTS5 and LIKE end their text at a NUL, and UTF-8 cannot encode a lone
 # surrogate.
 SearchText = Annotated[Utf8, AfterValidator(_no_nul)]
+# The trigram index needs three characters. A shorter search over every run would read all
+# event text.
+SEARCH_MIN = 3
 
 
 def state_of(request: Request) -> ServerState:
@@ -1363,12 +1366,13 @@ async def get_event(run_id: str, seq: Seq, principal: Viewer, state: State) -> E
 async def search_events(
     principal: Viewer,
     state: State,
-    q: Annotated[SearchText, Query(min_length=1, max_length=500)],
+    q: Annotated[SearchText, Query(min_length=SEARCH_MIN, max_length=500)],
     before: Cursor | None = None,
     limit: Annotated[int, Query(ge=1, le=MAX_PAGE)] = 100,
 ) -> EventPage:
     """Events of every run whose text holds `q`, newest first; a viewer's leave out the runs
-    that show a run's truth."""
+    that show a run's truth. `q` is at least three characters, the shortest text the index can
+    look up; a search within one run takes fewer."""
     skip = hidden(principal)
     items, cursor = await state.store.search(q, limit=limit, before=before, skip_kinds=skip)
     return EventPage(items=items, next=None if cursor is None else str(cursor))
