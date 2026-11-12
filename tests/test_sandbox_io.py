@@ -226,7 +226,9 @@ async def test_a_shared_folder_archive_stops_at_a_file_too_big_to_keep(
     assert peak < 32 * 1024 * 1024
     assert archive is None
     lost = await store.events(run_id, types=["audit.lost"])
-    assert [e.data["reason"] for e in lost] == ["channel notes not archived"]
+    assert [e.data["reason"] for e in lost] == [
+        "channel notes not archived: its files are over 256 MiB"
+    ]
 
 
 async def test_built_image_is_reused(backend: DockerBackend, store: LocalEventStore) -> None:

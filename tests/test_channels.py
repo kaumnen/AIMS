@@ -481,7 +481,19 @@ async def test_a_folder_archive_past_the_cap_stops_reading(
     assert volume.ended
     assert volume.served < 64 * 1024
     lost = await of_type(store, run_id, "audit.lost")
-    assert [e.data["reason"] for e in lost] == ["channel notes not archived"]
+    assert [e.data["reason"] for e in lost] == [
+        "channel notes not archived: its files are over 0.0625 MiB"
+    ]
+
+
+async def test_a_folder_archive_that_cannot_be_read_says_why(store: LocalEventStore) -> None:
+    volume = FakeVolume(tree("d0"), tree("d1"), archive=b"not a tar" * 100)
+    run_id, folder = await start_folder(store, scenario(), volume)
+    assert await folder.close({}) is None
+
+    lost = await of_type(store, run_id, "audit.lost")
+    assert len(lost) == 1
+    assert str(lost[0].data["reason"]).startswith("channel notes not archived: ReadError: ")
 
 
 async def test_a_folder_needs_a_backend_that_shares_volumes(store: LocalEventStore) -> None:

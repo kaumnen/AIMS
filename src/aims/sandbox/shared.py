@@ -34,7 +34,8 @@ log = logging.getLogger("aims.sandbox")
 CHANGES = 200
 EVIDENCE = 64
 MEMORY = 4096
-ARCHIVE_CAP = 256 * 1024 * 1024
+MIB = 1024 * 1024
+ARCHIVE_CAP = 256 * MIB
 WRITES = frozenset({"write", "delete", "rename", "mkdir", "symlink", "link"})
 # Execs the runner makes in an agent's sandbox, whose writes are not the agent's.
 RUNNER_PHASES = frozenset({"setup", "verifier"})
@@ -159,9 +160,9 @@ class SharedFolder:
             lost: list[Payload] = [AuditLost(count=None, reason=f"{name} snapshot failed: {e}")]
         else:
             lost = []
-        data = await self._archive() if archive else None
-        if archive and data is None:
-            lost.append(AuditLost(count=None, reason=f"{name} not archived"))
+        data, why = await self._archive() if archive else (None, None)
+        if why is not None:
+            lost.append(AuditLost(count=None, reason=f"{name} not archived: {why}"))
         if tree is None:
             return lost, data
         base, self._digest = self._digest, tree.digest
@@ -240,13 +241,17 @@ class SharedFolder:
         self._moved = [(root, t) for root, t in self._moved if keep(t)]
         self._gen += 1
 
-    async def _archive(self) -> bytes | None:
+    async def _archive(self) -> tuple[bytes | None, str | None]:
+        """The folder's archive, or why there is none."""
         try:
             async with contextlib.aclosing(self._volume.get_archive()) as chunks:
-                return await read_in_thread(chunks, functools.partial(repack, cap=ARCHIVE_CAP))
+                data = await read_in_thread(chunks, functools.partial(repack, cap=ARCHIVE_CAP))
         except Exception as e:
             log.warning("channel %s not archived: %s", self.channel, e)
-            return None
+            return None, f"{type(e).__name__}: {e}"
+        if data is None:
+            return None, f"its files are over {ARCHIVE_CAP / MIB:g} MiB"
+        return data, None
 
 
 def repack(source: io.RawIOBase | io.BufferedIOBase, *, cap: int = ARCHIVE_CAP) -> bytes | None:
