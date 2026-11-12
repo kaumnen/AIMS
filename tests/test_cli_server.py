@@ -33,6 +33,7 @@ from aims.node.service import Node, NodeOptions, Refused
 from aims.node.shipper import WARN_AFTER, Backoff
 from aims.report.escape import visible
 from aims.sandbox import DockerBackend, SandboxSpec
+from aims.server import serve as serve_module
 from aims.server.db import ServerDB
 from aims.server.serve import (
     UI_RUNNER,
@@ -648,6 +649,52 @@ async def test_aims_ui_passes_each_ctrl_c_on_to_its_runner(
     err = capsys.readouterr().err
     assert "stopping the local runner" in err
     assert ("the local runner exited with code 130" in err) == (code != 0)
+
+
+@pytest.mark.parametrize("runner", [False, True])
+async def test_a_ctrl_c_while_aims_ui_closes_leaves_the_close_alone(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, runner: bool
+) -> None:
+    log = tmp_path / "signals"
+    log.touch()
+    cut: list[str] = []
+    real = serve_module.close_state
+
+    async def spawn(url: str, token: str, o: UiOptions, stdin: int) -> asyncio.subprocess.Process:
+        return await create_child(sys.executable, "-c", FAKE_RUNNER, str(log), "0.1", stdin=stdin)
+
+    async def closing(state: Any) -> None:
+        """The close with a Ctrl-C sent as it starts, which must leave it alone."""
+        try:
+            os.kill(os.getpid(), signal.SIGINT)
+            await asyncio.sleep(0.2)
+        except BaseException as e:
+            cut.append(type(e).__name__)
+        await real(state)
+
+    monkeypatch.setattr("aims.server.serve._spawn_runner", spawn)
+    monkeypatch.setattr("aims.server.serve.close_state", closing)
+    before = signal.getsignal(signal.SIGINT)
+    options = UiOptions(port=0, data=tmp_path / "server", runner=runner, open_browser=False)
+    task = asyncio.create_task(serve(options))
+    try:
+        await until(
+            lambda: (
+                signal.getsignal(signal.SIGINT) is not before
+                and (not runner or "ready" in log.read_text())
+            ),
+            30,
+        )
+        os.kill(os.getpid(), signal.SIGINT)
+        async with asyncio.timeout(10):
+            assert await task == 0
+    finally:
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+    assert cut == []
+    assert log.read_text().count("TERM") == (1 if runner else 0)
 
 
 async def test_aims_ui_stops_its_runner_once_when_its_terminal_hangs_up(

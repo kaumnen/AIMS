@@ -294,20 +294,24 @@ async def serve(o: UiOptions) -> int:
                 server.should_exit = True
                 await task
         finally:
-            for sig in handled:
-                loop.remove_signal_handler(sig)
-            if child is not None:
-                if child.returncode is None:
-                    child.kill()
-                    await child.wait()
-                if child.returncode:
-                    print(runner_ended(child.returncode), file=sys.stderr)
-            if lifeline >= 0:
-                os.close(lifeline)
-            info.unlink(missing_ok=True)
-            # the codes in them die with this server
-            _prune(o.data, None)
-            await close_state(state)
+            try:
+                if child is not None:
+                    if child.returncode is None:
+                        child.kill()
+                        await child.wait()
+                    if child.returncode:
+                        print(runner_ended(child.returncode), file=sys.stderr)
+                if lifeline >= 0:
+                    os.close(lifeline)
+                info.unlink(missing_ok=True)
+                # the codes in them die with this server
+                _prune(o.data, None)
+                await close_state(state)
+            finally:
+                # The handlers go last. Without them a Ctrl-C during the close is a
+                # KeyboardInterrupt, which cuts it short with a traceback.
+                for sig in handled:
+                    loop.remove_signal_handler(sig)
     return 0
 
 
