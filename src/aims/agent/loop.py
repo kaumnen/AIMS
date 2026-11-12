@@ -334,6 +334,8 @@ class Agent:
         self.pending: list[tuple[InputKind, str]] = []
         self.answer: str | None = None
         self._left_recording = False
+        self._replayed = False
+        """Whether the last reply came from the recording of a fork's origin."""
         self.killed: str | None = None
         self.clock = clock or PauseClock()
         self.done = False
@@ -481,6 +483,7 @@ class Agent:
         ]
         await self._input("instruction", self.instruction, add=False)
         nudges = 0
+        live = False
         while True:
             await self._take_inputs()
             if (hit := self._over_budget()) is not None:
@@ -489,12 +492,16 @@ class Agent:
             await self._gate("before_model")
             await self._take_inputs()
             reply = await self._call()
+            if not live and not self._replayed:
+                # A fork's agent counts its replies without a tool call from its first live one.
+                live, nudges = True, 0
             calls = reply.tool_calls if reply.status == "completed" else []
             self._open = self.marks[self.steps] if calls else None
             await self._gate("after_reply", reply.call_id, tuple(c.id for c in calls))
             if not calls:
                 nudges += 1
-                if nudges >= MAX_NUDGES:
+                # A replayed reply ends the agent only while it keeps the origin's answers.
+                if nudges >= MAX_NUDGES and (live or self._kept()):
                     raise _End("no_submit", f"{MAX_NUDGES} replies in a row without a tool call")
                 await self._input("continue", self.texts.nudge)
                 continue
@@ -570,6 +577,7 @@ class Agent:
         except ReplayError as e:
             raise _End("error", f"replay of step {self.steps + 1} failed: {e}") from None
         self._charge(reply, step=True)
+        self._replayed = client is not self.client
         u = reply.usage
         if u.input_tokens is not None:
             self.last_tokens = u.input_tokens + (u.output_tokens or 0)
@@ -581,7 +589,7 @@ class Agent:
                 n=self.steps,
                 call_id=reply.call_id,
                 status=reply.status,
-                source="replay" if client is not self.client else "live",
+                source="replay" if self._replayed else "live",
                 tool_calls=[c.id for c in reply.tool_calls] if reply.status == "completed" else [],
                 usage=reply.usage,
                 cost_usd=reply.cost_usd,

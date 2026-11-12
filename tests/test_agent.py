@@ -194,6 +194,40 @@ async def test_three_replies_without_a_tool_end_as_no_submit(store: LocalEventSt
     assert inputs[1].text == prompts.NUDGE
 
 
+async def test_a_fork_counts_replies_without_a_tool_call_from_its_first_live_one(
+    store: LocalEventStore,
+) -> None:
+    """The origin ended as no_submit on its third reply without a tool call. A fork after its
+    second or third reply has three live replies without a tool call, as a new run has; a fork
+    that keeps the recorded answers ends where the origin did."""
+    from aims.models import Recording
+
+    agent, origin = await make_agent(store, Script(say("a"), say("b"), say("c")))
+    assert (await agent.run()).reason == "no_submit"
+
+    async def fork(step: int, live: Script, keep: bool = False) -> tuple[AgentFinished, list[str]]:
+        agent, run_id = await make_agent(store, live)
+        recording = await Recording.load(store, origin)
+        agent.replay = ReplayPlan(
+            client=ModelClient(store, run_id, models(agent.profile), replay=recording, env={}),
+            fork_at=step,
+            schedule=[(None, agent.profile)],
+            outputs={},
+            keep=keep,
+        )
+        finished = await agent.run()
+        return finished, [i.kind for i in await payloads(store, run_id, AgentInput)]
+
+    for step in (2, 3):
+        live = Script(say("x"), say("y"), call("submit", answer="forked"))
+        finished, inputs = await fork(step, live)
+        assert (finished.reason, finished.answer, len(live.requests)) == ("submitted", "forked", 3)
+        assert inputs == ["instruction", *["continue"] * (step + 2)]
+    live = Script(call("submit", answer="live"))
+    finished, _ = await fork(1, live, keep=True)
+    assert (finished.reason, finished.steps, live.requests) == ("no_submit", 3, [])
+
+
 async def test_bad_arguments_and_unknown_tools_are_tool_errors(store: LocalEventStore) -> None:
     script = Script(
         raw_call("bash", "{not json"),
