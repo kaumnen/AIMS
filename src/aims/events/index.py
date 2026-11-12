@@ -1298,6 +1298,13 @@ class Index:
             )
             await self._db.execute("delete from run_costs where run_id = ?", (run_id,))
 
+    async def unnamed(self) -> list[str]:
+        """The sealed runs whose variant is not named."""
+        async with self._db.execute(
+            "select run_id from runs where status != 'running' and variant is null"
+        ) as cur:
+            return [r[0] for r in await cur.fetchall()]
+
     async def costs(self) -> dict[str, tuple[str, str]]:
         """Each run's cost row: the head hash it was read at and its data."""
         async with self._db.execute("select run_id, last_hash, data from run_costs") as cur:

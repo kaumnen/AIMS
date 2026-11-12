@@ -995,8 +995,9 @@ class LocalEventStore:
         await self.sync()
 
     async def sync(self) -> None:
-        """Index whatever the run logs hold beyond the index. A run the index cannot take is
-        logged and caught up later, and the other runs go on."""
+        """Index whatever the run logs hold beyond the index, and name each variant it lost. A
+        run the index cannot take is logged and caught up later, and the other runs go on."""
+        await self._lost_variants()
         for run_id in self._run_ids():
             try:
                 async with self._lock_of(run_id):
@@ -1014,6 +1015,28 @@ class LocalEventStore:
                 await self._index.put_labels(labels)
             except Exception as e:
                 log.error("run %s: its labels are not indexed: %s", run_id, e)
+
+    async def _lost_variants(self) -> None:
+        """Name the variant of each run the index holds sealed with none, from its truth file.
+        `put_truth` names it in an index write after the seal, which a power cut can lose, and
+        a catch-up does not index the seal again. A variant the index names came from that
+        file, which the truth hash in run.started fixes, so those files are not read."""
+        unnamed = await self._index.unnamed()
+
+        def read() -> dict[str, str]:
+            found: dict[str, str] = {}
+            for run_id in unnamed:
+                truth = _read_truth(self._dir(run_id)) if is_run_id(run_id) else None
+                variant = None if truth is None else _variant(truth)
+                if variant is not None:
+                    found[run_id] = variant
+            return found
+
+        for run_id, variant in (await asyncio.to_thread(read)).items():
+            try:
+                await self._index.set_variant(run_id, variant)
+            except Exception as e:
+                log.error("run %s: its variant is not indexed: %s", run_id, e)
 
     async def _writer(self, run_id: str) -> _Writer:
         async with self._opening:

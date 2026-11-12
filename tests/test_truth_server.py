@@ -3,6 +3,7 @@ run seals, read by operators only, the variant and series they put in the run li
 rows that keep the history from reading every log again, and the live projection."""
 
 import asyncio
+import sqlite3
 import stat
 import time
 from collections.abc import AsyncIterator
@@ -30,7 +31,7 @@ from aims.events import (
 from aims.events import store as store_module
 from aims.events.blobs import decode
 from aims.events.chain import Head as LogHead
-from aims.events.store import TruthRefused
+from aims.events.store import INDEX, TruthRefused
 from aims.node.client import ControlClient
 from aims.run import truth
 from aims.run.estimate import history, projection
@@ -249,6 +250,24 @@ async def test_a_truth_file_kept_before_names_a_variant_the_index_lost(
     info = await store.run(run_id)
     assert info is not None
     assert info.variant == "unobserved"
+
+
+async def test_a_store_that_opens_names_a_variant_its_index_lost(tmp_path: Path) -> None:
+    root = tmp_path / "copy"
+    async with await LocalEventStore.open(root) as store:
+        started = RunStarted(scenario="pushed", oversight="observe", truth=truth.digest(RECORD))
+        run_id = await store.create_run(started)
+        await store.append(run_id, [Draft(RunFinished(status="completed"))])
+        assert await store.put_truth(run_id, truth.encode(RECORD))
+    # what a power cut that lost the index write of put_truth leaves
+    db = sqlite3.connect(root / INDEX)
+    db.execute("update runs set variant = null where run_id = ?", (run_id,))
+    db.commit()
+    db.close()
+    async with await LocalEventStore.open(root) as store:
+        info = await store.run(run_id)
+        assert info is not None
+        assert info.variant == "unobserved"
 
 
 async def test_a_refused_truth_file_does_not_hold_the_shipper(
