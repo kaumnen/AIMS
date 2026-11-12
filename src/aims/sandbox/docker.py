@@ -867,15 +867,33 @@ class DockerSandbox:
 
     async def kill(self) -> None:
         """Kill the container, paused or not; return once its last resource readings are
-        queued."""
+        queued. It raises when the kill call failed and Docker does not say the container
+        stopped."""
         self._killed = True
-        with contextlib.suppress(aiodocker.DockerError):
+        error: aiodocker.DockerError | None = None
+        try:
             await self._container.kill(signal="SIGKILL")
+        except aiodocker.DockerError as e:
+            error = e
         if self._paused_at is not None:
             await self.resume()
         if self._watch is not None:
             # The cgroup goes after the kill returns; the sampler then prints its last batch.
             await self._watch.ended(SAMPLES_END_S)
+        if error is not None and await self._running_in_docker() is not False:
+            raise SandboxError(f"the container did not stop: {error.status} {error.message}")
+
+    async def _running_in_docker(self) -> bool | None:
+        """Whether Docker still runs the container, False once it is gone too; None when it
+        does not say in STATE_S."""
+        try:
+            async with asyncio.timeout(STATE_S):
+                info = await self._container.show()
+        except aiodocker.DockerError as e:
+            return False if e.status == 404 else None
+        except Exception:
+            return None
+        return bool((info.get("State") or {}).get("Running"))
 
     async def quiesce(self) -> None:
         tracer = self._backend.tracer

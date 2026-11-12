@@ -327,6 +327,7 @@ class Runner:
         self.cancelled = False
         self.killed = False
         self.kill_reason: str | None = None
+        self.kill_failed: list[str] = []
         self.finished = False
         self._decided = False
         self._monitor_cut = False
@@ -376,7 +377,8 @@ class Runner:
     async def kill(self, reason: str = "killed by the operator") -> None:
         """Freeze every sandbox, archive its files, kill it and stop the agents. The run is
         then sealed as killed and the verifier does not run. Once the run's outcome is set it
-        does nothing. The monitor's own kill still gets the final sweeps and the judge."""
+        does nothing. The monitor's own kill still gets the final sweeps and the judge.
+        `kill_failed` then holds a line for each sandbox that did not stop."""
         if self._decided:
             return
         if self._killing is None:
@@ -403,6 +405,7 @@ class Runner:
                 await sb.stop("killed", reason)
             except Exception as e:
                 log.warning("killing the sandbox of agent %s failed: %s", agent_id, e)
+                self.kill_failed.append(f"the sandbox of agent {agent_id} did not stop: {e}")
         for task in self._agent_tasks.values():
             task.cancel()
         if self._agents_task is not None:
@@ -431,7 +434,7 @@ class Runner:
         `operator.action`. Pause, resume and inject take one agent or, with none, all. A resume
         with deny refuses the tool call each agent waits before, and needs one that does. A
         sweep is left to the monitor, which reads the action from the log. Returns what did not
-        take effect, such as a sandbox that did not freeze, else None."""
+        take effect, such as a sandbox that did not freeze or stop, else None."""
         if self.run_id is None or self.finished:
             raise RunError("the run is not running")
         if (action == "inject" or then == "inject") and not text:
@@ -459,6 +462,7 @@ class Runner:
         elif action == "resume" and then == "kill":
             self._cut_monitor()
             await self.kill(reason or "killed by the operator")
+            failed = list(self.kill_failed)
         elif action == "resume":
             if then == "inject":
                 verdict = Verdict("inject", text=text)
@@ -470,6 +474,7 @@ class Runner:
         elif action == "kill":
             self._cut_monitor()
             await self.kill(reason or "killed by the operator")
+            failed = list(self.kill_failed)
         elif action == "cancel":
             self.cancel()
         return "; ".join(failed) or None

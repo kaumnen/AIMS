@@ -511,11 +511,16 @@ class AuditedSandbox:
     async def stop(
         self, reason: Literal["killed", "exec_failed"] = "killed", detail: str | None = None
     ) -> None:
-        """Kill the sandbox. Its volumes stay until `close`."""
+        """Kill the sandbox. Its volumes stay until `close`. When the kill fails it raises and
+        the sandbox does not count as stopped, so `close` kills it again."""
         if self._stopped:
             return
         self._stopped = True
-        await self.sandbox.kill()
+        try:
+            await self.sandbox.kill()
+        except Exception:
+            self._stopped = False
+            raise
         await self._quiesce()
         stopped = SandboxStopped(
             sandbox_id=self.sandbox.info.sandbox_id, reason=reason, detail=detail
@@ -525,7 +530,11 @@ class AuditedSandbox:
     async def close(self, *, keep_volumes: bool = False) -> None:
         try:
             if not self._stopped and not self.spec.keep:
-                await self.sandbox.kill()
+                try:
+                    await self.sandbox.kill()
+                except Exception as e:
+                    # Removing the container below ends it too.
+                    log.warning("killing sandbox %s failed: %s", self.sandbox.info.sandbox_id, e)
             await self._quiesce()
             last = [
                 *await self._files(None, always=False),

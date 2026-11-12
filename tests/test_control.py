@@ -365,6 +365,58 @@ async def test_a_freeze_or_unfreeze_cut_short_follows_the_container(call: str) -
     assert box.paused == container.paused == (call == "pause")
 
 
+class Killed(Container):
+    """A container whose kill call fails with `kill_error`, while Docker shows it `running`."""
+
+    def __init__(self, kill_error: aiodocker.DockerError | None, running: bool) -> None:
+        super().__init__()
+        self.kill_error = kill_error
+        self.running = running
+
+    async def kill(self, signal: str) -> None:
+        self.calls.append("kill")
+        if self.kill_error is not None:
+            raise self.kill_error
+
+    async def show(self) -> dict[str, Any]:
+        return {**await super().show(), "State": {"Paused": False, "Running": self.running}}
+
+
+async def test_a_kill_docker_refused_raises_while_the_container_runs() -> None:
+    container = Killed(aiodocker.DockerError(500, "cannot kill"), running=True)
+    box = docker_sandbox(container)
+    with pytest.raises(docker_module.SandboxError, match="did not stop: 500 cannot kill"):
+        await box.kill()
+    assert container.calls == ["kill", "show"]
+
+
+@pytest.mark.parametrize("gone", ["stopped", "removed"])
+async def test_a_kill_of_a_container_that_stopped_already_passes(gone: str) -> None:
+    container = Killed(aiodocker.DockerError(409, "container is not running"), running=False)
+    if gone == "removed":
+        container.state_error = aiodocker.DockerError(404, "no such container")
+    box = docker_sandbox(container)
+    await box.kill()
+    assert container.calls == ["kill", "show"]
+
+
+async def test_a_kill_docker_says_nothing_of_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(docker_module, "STATE_S", 0.05)
+    container = Killed(LOST, running=False)
+    container.hang = True
+    box = docker_sandbox(container)
+    async with asyncio.timeout(5):
+        with pytest.raises(docker_module.SandboxError, match="did not stop"):
+            await box.kill()
+
+
+async def test_a_kill_that_worked_asks_docker_nothing_more() -> None:
+    container = Killed(None, running=False)
+    box = docker_sandbox(container)
+    await box.kill()
+    assert container.calls == ["kill"]
+
+
 # Sealing runs a dead process left open
 
 

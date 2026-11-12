@@ -187,6 +187,13 @@ class DeadBox(Box):
         raise RuntimeError("409 container is not running")
 
 
+class UnkilledBox(Box):
+    """A box whose kill fails, as when Docker cannot stop its container."""
+
+    async def kill(self) -> None:
+        raise RuntimeError("500 cannot kill")
+
+
 class StuckBox(Box):
     """A box whose freeze waits until it is cancelled."""
 
@@ -1045,6 +1052,40 @@ async def test_an_operator_kill_cuts_the_monitor_and_skips_the_judge(
     result = await runner.run()
     assert (result.status, result.reason) == ("killed", "stop the spend")
     assert fake_monitor[0].calls == ["start", "cut", "judge skip=True", "close"]
+
+
+@pytest.mark.parametrize("then", [None, "kill"])
+async def test_an_operator_kill_names_a_sandbox_that_did_not_stop(
+    store: LocalEventStore, tmp_path: Path, fake_monitor: list[FakeMonitor], then: Any
+) -> None:
+    script = Script(call("submit", answer="a"), call("submit", answer="b"))
+    backend = FirstBoxes(UnkilledBox)
+    bundle = two_agents(tmp_path, "{agent: a, on: finished}")
+    runner = Runner(bench(store, script, backend), bundle, Options(), monitor=watched())
+    asked: list[asyncio.Task[str | None]] = []
+
+    async def kill() -> None:
+        # In a task of its own, as a command is: the kill cancels the one this runs in.
+        fake_monitor[0].on_barrier = None
+        if then is None:
+            asked.append(asyncio.ensure_future(runner.operate("kill")))
+        else:
+            asked.append(asyncio.ensure_future(runner.operate("resume", then=then)))
+        await asyncio.Event().wait()
+
+    runner.on_start = lambda run_id: setattr(fake_monitor[0], "on_barrier", kill)
+    async with asyncio.timeout(10):
+        result = await runner.run()
+        note = await asked[0]
+
+    assert result.status == "killed"
+    assert note == "the sandbox of agent a did not stop: 500 cannot kill"
+    assert result.run_id is not None
+    stopped = await store.events(result.run_id, limit=1000, types=["sandbox.stopped"])
+    assert sorted((e.agent_id, e.data["reason"]) for e in stopped) == [
+        ("a", "closed"),
+        ("b", "killed"),
+    ]
 
 
 async def test_a_run_cancelled_before_it_starts_cuts_its_monitor_at_once(
