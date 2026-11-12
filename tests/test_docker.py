@@ -1684,7 +1684,10 @@ async def test_file_setattr(backend: DockerBackend, store: LocalEventStore) -> N
     pseudo = {(p.path, p.partial, p.exec_id) for p in attrs if p.path.startswith(".../")}
     exec_id = result.finished.exec_id
     assert pseudo == {(".../", True, exec_id), (".../[eventfd]", True, exec_id)}
-    assert not await events(store, run_id, "audit.lost")
+    # The module's one tracer reports a probe run the kernel skipped in every sandbox, and an
+    # earlier test's flood can show up here. Any other loss would be this exec's.
+    lost = [str(e.data["reason"]) for e in await events(store, run_id, "audit.lost")]
+    assert not [r for r in lost if not r.startswith("kernel skipped tracer probe")]
     attrs = [p for p in attrs if p.path == "/work/f"]
     assert all(p.exec_id == result.finished.exec_id and not p.partial for p in attrs)
     assert any(
