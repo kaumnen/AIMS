@@ -100,6 +100,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - New judge settings `verdict_margin_s` (120) and `verdict_margin_share` (0.5) under `monitor.judge` set when a rollout still exploring gives its verdict. Every monitor with a judge gets a new identity, so its runs group under a new monitor in `aims rates`.
 - A verdict's rollouts list every judge call, also one cancelled at the timeout or one that failed.
 - `aims run` and `aims monitor` name each judge rollout that failed beside a verdict, in the live view and the end table. The report shows each as a warning of the new kind `rollout_failed`. The UI lists them all with their labels.
+- `aims runner` stops when the control plane answers 401 or 403 five times in a row, as for a wrong or revoked token. It stops its runs as for a first Ctrl-C and exits 1 with the reason. It asked again forever before.
 
 ### Fixed
 
@@ -219,6 +220,8 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - **Sign out** asks before it drops an unsaved file or config draft.
 - **Duplicate**, **Run**, **Self-test** and a new file on a scenario page ask about an unsaved draft before they act. They asked after the copy, run or file was made.
 - A problem in a scenario file with mixed line endings is marked on the right line after a lone carriage return.
+- A self-test script that is a named pipe is refused. A task file swapped for a named pipe while its scenario loads is skipped. Both made the load wait for a writer.
+- On a full Linux disk a truth file or a label line could be cut short with no error. The write now fails and leaves nothing half written. A truth file the control plane stored is synced with its folder.
 
 ## [0.2.2] - 2026-11-10
 
