@@ -543,8 +543,9 @@ class SharedVolume(Protocol):
         """Diff the volume against the previous call. None when it cannot read it."""
         ...
 
-    async def get_archive(self) -> bytes:
-        """The volume's files as a tar, named relative to its root."""
+    def get_archive(self) -> AsyncGenerator[bytes]:
+        """Docker's tar of the volume's root, in chunks as they arrive. Closing it ends the
+        transfer."""
         ...
 
     async def put_archive(self, data: bytes) -> None:

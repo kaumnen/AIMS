@@ -6,7 +6,7 @@ import io
 import json
 import os
 import tarfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from pathlib import Path
 from typing import Any, cast
 
@@ -40,6 +40,7 @@ from aims.prompts import Prompts, TextError
 from aims.run.job import monitor_for
 from aims.run.runner import Bench, Options, Runner, Texts, resolve_texts
 from aims.sandbox import DockerBackend, SandboxBackend
+from aims.sandbox import shared as shared_module
 from aims.sandbox.base import Change, Mount, Tree
 from aims.sandbox.shared import SharedFolder, repack
 from aims.scenario import Bundle, Scenario, load, parse
@@ -311,13 +312,22 @@ class FakeVolume:
         self.trees = list(trees)
         self.archive = archive
         self.put: list[bytes] = []
+        self.served = 0
+        self.ended = False
         self.closed = False
 
     async def tree(self) -> Tree | None:
         return self.trees.pop(0)
 
-    async def get_archive(self) -> bytes:
-        return self.archive
+    async def get_archive(self) -> AsyncGenerator[bytes]:
+        """`archive` in 4 KiB chunks."""
+        try:
+            for i in range(0, len(self.archive), 4096):
+                chunk = self.archive[i : i + 4096]
+                self.served += len(chunk)
+                yield chunk
+        finally:
+            self.ended = True
 
     async def put_archive(self, data: bytes) -> None:
         self.put.append(data)
@@ -383,9 +393,9 @@ def docker_tar(top: str, *entries: tuple[str, bytes | None]) -> bytes:
 def test_repack_is_deterministic_and_relative() -> None:
     raw = docker_tar("shared", ("z.txt", b"z"), ("sub", None), ("sub/a.txt", b"a"))
     same = docker_tar("shared", ("sub", None), ("sub/a.txt", b"a"), ("z.txt", b"z"))
-    packed = repack(raw)
+    packed = repack(io.BytesIO(raw))
     assert packed is not None
-    assert packed == repack(same)
+    assert packed == repack(io.BytesIO(same))
     with tarfile.open(fileobj=io.BytesIO(packed)) as tar:
         members = tar.getmembers()
         assert [m.name for m in members] == ["sub", "sub/a.txt", "z.txt"]
@@ -394,7 +404,10 @@ def test_repack_is_deterministic_and_relative() -> None:
         f = tar.extractfile("z.txt")
         assert f is not None
         assert f.read() == b"z"
-    assert repack(raw, cap=1) is None
+    assert repack(io.BytesIO(raw), cap=1) is None
+    empty = docker_tar("shared", *((f"f{i}", b"") for i in range(10)))
+    assert repack(io.BytesIO(empty), cap=10 * 512) is not None
+    assert repack(io.BytesIO(empty), cap=9 * 512) is None
 
 
 async def start_folder(
@@ -418,7 +431,7 @@ async def test_a_series_folder_carries_over(store: LocalEventStore) -> None:
 
     assert first.put == [folder.seed]
     assert first.closed
-    assert archive == repack(left)
+    assert archive == repack(io.BytesIO(left))
     snapshots = [
         ChannelSnapshot.model_validate(e.data)
         for e in await of_type(store, run_id, "channel.snapshot")
@@ -454,6 +467,21 @@ async def test_a_run_folder_logs_its_archive_but_hands_none_on(store: LocalEvent
     )
     assert last.archive is not None
     assert await archives(store, run_id) == {}
+
+
+async def test_a_folder_archive_past_the_cap_stops_reading(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(shared_module, "ARCHIVE_CAP", 64 * 1024)
+    raw = docker_tar("shared", ("a", b"a"), ("big", bytes(8 * 1024 * 1024)), ("b", b"b"))
+    volume = FakeVolume(tree("d0"), tree("d1"), archive=raw)
+    run_id, folder = await start_folder(store, scenario(), volume)
+    assert await folder.close({}) is None
+
+    assert volume.ended
+    assert volume.served < 64 * 1024
+    lost = await of_type(store, run_id, "audit.lost")
+    assert [e.data["reason"] for e in lost] == ["channel notes not archived"]
 
 
 async def test_a_folder_needs_a_backend_that_shares_volumes(store: LocalEventStore) -> None:

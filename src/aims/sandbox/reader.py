@@ -1,10 +1,9 @@
 import asyncio
 import contextlib
-import io
 import logging
 import posixpath
 import time
-from collections.abc import Sequence
+from collections.abc import AsyncGenerator, Sequence
 from typing import get_args
 
 import aiodocker
@@ -22,6 +21,7 @@ ENTRY_CAP = 100_000
 HASH_CAP = 64 * 1024 * 1024
 HASH_S = 10.0
 TREE_S = 60.0
+ARCHIVE_CHUNK = 1024 * 1024
 MOUNT = "/r"
 HELPER = "/reader/aims-snap"
 
@@ -142,12 +142,10 @@ class Reader:
         with contextlib.suppress(aiodocker.DockerError):
             await self._container.delete(force=True)
 
-    async def get_archive(self, path: str) -> bytes:
-        """The files under `path`, a root as the sandbox sees it, as Docker's tar of it."""
-        archive = await self._container.get_archive(f"{MOUNT}{path}")
-        if not isinstance(archive.fileobj, io.BytesIO):
-            raise ReaderError("archive came back without its bytes")
-        return archive.fileobj.getvalue()
+    def get_archive(self, path: str) -> AsyncGenerator[bytes]:
+        """The files under `path`, a root as the sandbox sees it, as Docker's tar of it, in
+        chunks as they arrive. Closing it ends the transfer."""
+        return stream_archive(self._container, f"{MOUNT}{path}")
 
     async def hash(
         self,
@@ -285,6 +283,19 @@ class Reader:
         data = bytes(self._buf[:size])
         del self._buf[:size]
         return data
+
+
+async def stream_archive(container: DockerContainer, path: str) -> AsyncGenerator[bytes]:
+    """Docker's tar of `path` in `container`, in chunks as they arrive. Closing it ends the
+    transfer."""
+    # aiodocker's own get_archive reads the whole reply into memory.
+    query = f"containers/{container.id}/archive"
+    async with container.docker._query(query, params={"path": path}) as response:
+        try:
+            async for chunk in response.content.iter_chunked(ARCHIVE_CHUNK):
+                yield chunk
+        finally:
+            response.close()
 
 
 def _int(value: int) -> int:

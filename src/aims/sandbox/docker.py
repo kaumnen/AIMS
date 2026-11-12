@@ -39,7 +39,7 @@ from aims.sandbox.base import (
 from aims.sandbox.images import KEEP_DAYS, ensure_built, ensure_image, ensure_pulled, remove_old
 from aims.sandbox.imds import Identity
 from aims.sandbox.imds import start as start_imds_server
-from aims.sandbox.reader import Reader
+from aims.sandbox.reader import Reader, stream_archive
 from aims.sandbox.resources import Sampler, SamplerError, Watch
 from aims.sandbox.trace import ARCHES, SYSCALLS, Mounts
 from aims.sandbox.tracer import Route, Tracer, TracerError
@@ -862,15 +862,8 @@ class DockerSandbox:
     async def put_archive(self, path: str, data: bytes) -> None:
         await self._container.put_archive(path, data)
 
-    async def get_archive(self, path: str) -> AsyncGenerator[bytes]:
-        # aiodocker's own get_archive reads the whole reply into memory.
-        query = f"containers/{self._container.id}/archive"
-        async with self._container.docker._query(query, params={"path": path}) as response:
-            try:
-                async for chunk in response.content.iter_chunked(MIB):
-                    yield chunk
-            finally:
-                response.close()
+    def get_archive(self, path: str) -> AsyncGenerator[bytes]:
+        return stream_archive(self._container, path)
 
     async def kill(self) -> None:
         """Kill the container, paused or not; return once its last resource readings are
@@ -938,8 +931,8 @@ class DockerVolumeView:
     async def tree(self) -> Tree:
         return await self._reader.tree()
 
-    async def get_archive(self) -> bytes:
-        return await self._reader.get_archive(self.target)
+    def get_archive(self) -> AsyncGenerator[bytes]:
+        return self._reader.get_archive(self.target)
 
     async def put_archive(self, data: bytes) -> None:
         docker = self._backend.docker

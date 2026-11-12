@@ -27,6 +27,7 @@ from aims.sandbox import (
 )
 from aims.sandbox.base import RUNNER_DIR
 from aims.sandbox.docker import INSTANCE
+from aims.sandbox.shared import SharedFolder
 
 pytestmark = [pytest.mark.anyio, pytest.mark.docker]
 
@@ -197,6 +198,35 @@ async def test_archive_streams_past_a_file_too_big_to_keep(
         small = tar.extractfile("work/small")
         assert small is not None
         assert small.read() == b"s\n"
+
+
+async def test_a_shared_folder_archive_stops_at_a_file_too_big_to_keep(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    mount = Mount(volume="shared", target="/shared")
+    run_id, sb = await sandbox(backend, store, mounts=[mount])
+    try:
+        await sb.exec("truncate -s 300M /shared/big; echo s > /shared/small", timeout_s=30)
+        view = await backend.volume(run_id, mount)
+        try:
+            folder = SharedFolder(
+                store, view, run_id=run_id, channel="notes", path="/shared", writers=[]
+            )
+            tracemalloc.start()
+            try:
+                archive = await folder.close()
+                peak = tracemalloc.get_traced_memory()[1]
+            finally:
+                tracemalloc.stop()
+        finally:
+            await view.close()
+    finally:
+        await sb.close()
+
+    assert peak < 32 * 1024 * 1024
+    assert archive is None
+    lost = await store.events(run_id, types=["audit.lost"])
+    assert [e.data["reason"] for e in lost] == ["channel notes not archived"]
 
 
 async def test_built_image_is_reused(backend: DockerBackend, store: LocalEventStore) -> None:

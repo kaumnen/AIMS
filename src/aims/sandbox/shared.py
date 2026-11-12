@@ -2,6 +2,8 @@
 folder's own file reader, each change put down to the member whose kernel records wrote it."""
 
 import asyncio
+import contextlib
+import functools
 import io
 import logging
 import posixpath
@@ -11,6 +13,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from aims.aio import read_in_thread
 from aims.events import (
     AuditLost,
     BlobRef,
@@ -239,34 +242,35 @@ class SharedFolder:
 
     async def _archive(self) -> bytes | None:
         try:
-            raw = await self._volume.get_archive()
-            return repack(raw, cap=ARCHIVE_CAP)
+            async with contextlib.aclosing(self._volume.get_archive()) as chunks:
+                return await read_in_thread(chunks, functools.partial(repack, cap=ARCHIVE_CAP))
         except Exception as e:
             log.warning("channel %s not archived: %s", self.channel, e)
             return None
 
 
-def repack(data: bytes, *, cap: int = ARCHIVE_CAP) -> bytes | None:
-    """Docker's tar of a directory as a deterministic tar of what is under it: names relative
-    to it, sorted, whole-second mtimes, no owner names or extended headers. None past `cap`
-    bytes of file content."""
+def repack(source: io.RawIOBase | io.BufferedIOBase, *, cap: int = ARCHIVE_CAP) -> bytes | None:
+    """Docker's tar of a directory, read from `source` as a stream, as a deterministic tar of
+    what is under it: names relative to it, sorted, whole-second mtimes, no owner names or
+    extended headers. None, with the rest unread, once its entries pass `cap` bytes: a header
+    block each plus their content."""
     members: list[tuple[tarfile.TarInfo, bytes | None]] = []
     total = 0
-    with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as source:
-        for m in source:
+    with tarfile.open(fileobj=source, mode="r|") as tar:
+        for m in tar:
             top, _, rest = m.name.partition("/")
             if not rest or not top:
                 continue
+            total += tarfile.BLOCKSIZE + (m.size if m.isfile() else 0)
+            if total > cap:
+                return None
             m.name = rest
             if m.islnk():
                 m.linkname = m.linkname.partition("/")[2]
             body = None
             if m.isfile():
-                f = source.extractfile(m)
+                f = tar.extractfile(m)
                 body = f.read() if f is not None else b""
-                total += len(body)
-                if total > cap:
-                    return None
             members.append((m, body))
     out = io.BytesIO()
     with tarfile.open(fileobj=out, mode="w", format=tarfile.PAX_FORMAT) as tar:
