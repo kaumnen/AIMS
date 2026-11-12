@@ -642,7 +642,17 @@ class DockerSandbox:
         return "kernel" if traced else "snapshot"
 
     def wrapper(self, timeout_ms: int) -> list[str]:
-        return [f"{TOOLBOX}/aims-exec", str(timeout_ms), str(GRACE_MS), *self._shell]
+        """The argv before an exec's command. Each call holds a new ID, which aims-exec takes
+        and drops, so no two execs share a command line and a cancel ends only its own."""
+        exec_id = uuid.uuid4().hex[:16]
+        return [
+            f"{TOOLBOX}/aims-exec",
+            "--id",
+            exec_id,
+            str(timeout_ms),
+            str(GRACE_MS),
+            *self._shell,
+        ]
 
     async def run(
         self,
@@ -740,7 +750,8 @@ class DockerSandbox:
         """End what a cancelled exec started. Like aims-exec at the deadline it kills the
         process group of the exec's child, but with SIGKILL at once. Docker has no call for
         this, so a kill runs in the sandbox as the exec's user and finds the exec by its command
-        line. An exec still starting is waited for, up to `END_S` in all.
+        line, which the ID in `wrapper` makes its own. An exec still starting is waited for, up
+        to `END_S` in all.
 
         A paused sandbox runs nothing, so there the exec stays frozen until the sandbox is
         resumed or killed."""

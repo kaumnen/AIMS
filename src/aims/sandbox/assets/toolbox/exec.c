@@ -1,10 +1,14 @@
 /*
- * aims-exec TIMEOUT_MS GRACE_MS PROG [ARG...]
+ * aims-exec [--id ID] TIMEOUT_MS GRACE_MS PROG [ARG...]
  *
  * Runs PROG in a new process group. At the deadline the whole group gets
  * SIGTERM, then SIGKILL after GRACE_MS. Exits with PROG's status (128 + signal
  * when PROG was killed), 124 when SIGTERM ended it after the deadline and 137
  * when SIGKILL was needed.
+ *
+ * ID is not used. It makes the command line of each exec unique, so a kill
+ * that finds an exec by its command line ends only that one. PROG never sees
+ * it.
  *
  * Time the sandbox spends frozen (docker pause) does not count: the wait runs
  * in short slices, and a slice that took far longer than asked is taken as a
@@ -50,12 +54,14 @@ static int code(int status) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 4) {
-        fprintf(stderr, "usage: aims-exec TIMEOUT_MS GRACE_MS PROG [ARG...]\n");
+    int first = argc > 2 && strcmp(argv[1], "--id") == 0 ? 3 : 1;
+    if (argc < first + 3) {
+        fprintf(stderr, "usage: aims-exec [--id ID] TIMEOUT_MS GRACE_MS PROG [ARG...]\n");
         return 125;
     }
-    long long timeout = atoll(argv[1]);
-    long long grace = atoll(argv[2]);
+    long long timeout = atoll(argv[first]);
+    long long grace = atoll(argv[first + 1]);
+    char **prog = argv + first + 2;
     sigset_t chld;
     sigemptyset(&chld);
     sigaddset(&chld, SIGCHLD);
@@ -69,9 +75,9 @@ int main(int argc, char **argv) {
     if (pid == 0) {
         sigprocmask(SIG_UNBLOCK, &chld, NULL);
         setpgid(0, 0);
-        execvp(argv[3], argv + 3);
+        execvp(prog[0], prog);
         int err = errno;
-        fprintf(stderr, "aims-exec: %s: %s\n", argv[3], strerror(err));
+        fprintf(stderr, "aims-exec: %s: %s\n", prog[0], strerror(err));
         _exit(err == ENOENT ? 127 : 126);
     }
     setpgid(pid, pid);

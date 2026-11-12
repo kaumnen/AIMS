@@ -872,3 +872,71 @@ async def test_an_exec_start_says_when_its_request_goes_out(
 
     assert out == b"hi\n"
     assert sent == [True]
+
+
+async def test_a_cancel_ends_only_its_own_exec_of_a_command_running_twice(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    _, sb = await sandbox(backend, store)
+    inner = sb.sandbox
+    assert isinstance(inner, DockerSandbox)
+
+    def running() -> asyncio.Task[Any]:
+        return asyncio.create_task(
+            inner.run(
+                [*inner.wrapper(60_000), "sleep 286"],
+                uid=AGENT_UID,
+                cwd="/",
+                timeout_ms=60_000,
+                capture=Capture(1024),
+            )
+        )
+
+    async def sleeps() -> int:
+        return sum(p.command == "sleep 286" for p in await inner.processes())
+
+    first, second = running(), running()
+    try:
+        async with asyncio.timeout(30):
+            while True:
+                if await sleeps() == 2:
+                    break
+                await asyncio.sleep(0.05)
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            async with asyncio.timeout(30):
+                await first
+        await asyncio.sleep(0.5)
+        left = await sleeps()
+        on = not second.done()
+    finally:
+        second.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await second
+        await sb.close()
+
+    assert (left, on) == (1, True)
+
+
+async def test_the_exec_id_shows_only_in_the_wrapper(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    """The command sees the same argv, environment and parent it did before the ID."""
+    run_id, sb = await sandbox(backend, store)
+    command = 'tr "\\0" " " < /proc/$$/cmdline; echo; tr "\\0" " " < /proc/$PPID/cmdline; echo; env'
+    try:
+        result = await sb.exec(command, timeout_s=10)
+    finally:
+        await sb.close()
+
+    (started,) = (await store.events(run_id, types=["exec.started"]))[-1:]
+    payload = started.payload()
+    assert isinstance(payload, ExecStarted)
+    wrapper = payload.wrapper
+    assert wrapper[:2] == ["/.aims/aims-exec", "--id"]
+    exec_id = wrapper[2]
+    own, parent, *env = result.stdout.decode().split("\n")
+    assert own == f"/bin/bash -c {command} "
+    assert parent == " ".join([*wrapper, command]) + " "
+    assert exec_id not in own
+    assert not any(exec_id in line for line in env)
