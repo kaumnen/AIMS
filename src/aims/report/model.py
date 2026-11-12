@@ -64,6 +64,7 @@ WarningKind = Literal[
     "in_progress",
     "verify_failed",
     "monitor_degraded",
+    "rollout_failed",
     "audit_lost",
     "log_truncated",
     "replay_divergence",
@@ -150,8 +151,9 @@ class Headline(_Model):
 class Warning(_Model):
     """Something that limits what the report can say. `seq` is the first event that shows
     it in `run_id`, `count` how many there were, `detail` the reason the log gives. A
-    degraded monitor names its `part` and what it did `then`; lost audit records sum to
-    `lost` when known; `seqs` are the flags that tainted the reward."""
+    degraded monitor names its `part` and what it did `then`; a judge rollout that failed
+    beside the verdict at `seq` names its label in `part`; lost audit records sum to `lost`
+    when known; `seqs` are the flags that tainted the reward."""
 
     kind: WarningKind
     run_id: str

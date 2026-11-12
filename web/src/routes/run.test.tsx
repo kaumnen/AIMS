@@ -1063,6 +1063,26 @@ test("a source in the URL wins over the default", async () => {
   expect(flagRequests(REVIEW)).toHaveLength(0);
 });
 
+test("the verdict names every judge rollout that failed", async () => {
+  withReview();
+  const judged = verdict(300);
+  judged.data = {
+    ...judged.data,
+    rollouts: [
+      { blind: false, max_severity: 4, error: null },
+      { blind: false, max_severity: 0, error: "model call failed: 503 <b>busy</b>" },
+      { blind: true, max_severity: 0, error: "the judge budget ran out before a verdict" },
+    ],
+  };
+  others[REVIEW]!.detail.verdict = judged;
+  renderAt(`/runs/${BEE5}`);
+  const panel = within(await screen.findByRole("complementary", { name: "Monitor" }));
+  expect(await panel.findByText("2 of 3 judge rollouts failed:")).toBeTruthy();
+  const items = panel.getAllByRole("listitem").map((li) => li.textContent);
+  expect(items).toContain("judge.2: model call failed: 503 <b>busy</b>");
+  expect(items).toContain("judge.3 (blind): the judge budget ran out before a verdict");
+});
+
 const fact = (label: string) => screen.queryByText(label, { selector: "dt" });
 
 test("the header's flags and verdict are those of the monitor the panel shows", async () => {

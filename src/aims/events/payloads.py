@@ -1061,6 +1061,15 @@ class MonitorVerdict(Payload):
     cost_usd: float = 0.0
     duration_ms: int = 0
 
+    def failed(self) -> list[tuple[str, str]]:
+        """Each rollout that gave no verdict, as its label and its error. Rollouts count from 1
+        in their order here, as the judge names them: `judge.2 (blind)`."""
+        return [
+            (f"judge.{i}" + (" (blind)" if r.blind else ""), r.error)
+            for i, r in enumerate(self.rollouts, 1)
+            if r.error is not None
+        ]
+
 
 class MonitorAction(Payload):
     """What the monitor's policy decided, written before it acts. `simulated` marks a decision

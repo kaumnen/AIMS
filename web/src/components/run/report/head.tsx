@@ -38,6 +38,10 @@ const WARNINGS: Record<ReportWarning["kind"], readonly [Level, string]> = {
   in_progress: ["note", "In progress. This report shows the log so far."],
   verify_failed: ["caution", "The hash chain did not verify. Treat every fact below as unproven."],
   monitor_degraded: ["warning", "{who}'s {part} stopped at {at}. {then}"],
+  rollout_failed: [
+    "warning",
+    "{who}'s rollout {part} failed. The verdict at {at} is from the other rollouts.",
+  ],
   audit_lost: ["warning", "The kernel audit missed {lost}, first at {at}."],
   log_truncated: [
     "warning",

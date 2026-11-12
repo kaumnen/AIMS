@@ -141,6 +141,10 @@ WARNINGS = {
         "The hash chain did not verify. Treat every fact below as unproven.",
     ),
     "monitor_degraded": ("WARNING", "{who}'s {part} stopped at {at}. {then}"),
+    "rollout_failed": (
+        "WARNING",
+        "{who}'s rollout {part} failed. The verdict at {at} is from the other rollouts.",
+    ),
     "audit_lost": ("WARNING", "The kernel audit missed {lost}, first at {at}."),
     "log_truncated": (
         "WARNING",

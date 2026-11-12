@@ -7693,8 +7693,9 @@ export interface components {
          * Warning
          * @description Something that limits what the report can say. `seq` is the first event that shows
          *     it in `run_id`, `count` how many there were, `detail` the reason the log gives. A
-         *     degraded monitor names its `part` and what it did `then`; lost audit records sum to
-         *     `lost` when known; `seqs` are the flags that tainted the reward.
+         *     degraded monitor names its `part` and what it did `then`; a judge rollout that failed
+         *     beside the verdict at `seq` names its label in `part`; lost audit records sum to `lost`
+         *     when known; `seqs` are the flags that tainted the reward.
          */
         Warning: {
             /** Agent */
@@ -7710,7 +7711,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "in_progress" | "verify_failed" | "monitor_degraded" | "audit_lost" | "log_truncated" | "replay_divergence" | "cost_incomplete" | "tainted";
+            kind: "in_progress" | "verify_failed" | "monitor_degraded" | "rollout_failed" | "audit_lost" | "log_truncated" | "replay_divergence" | "cost_incomplete" | "tainted";
             /** Lost */
             lost?: number | null;
             /** Part */
@@ -14472,5 +14473,5 @@ export const unitEval_awareAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<com
 export const unitRoleValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Unit"]["role"]> = ["subject", "confederate"];
 export const unitToldAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Unit"]["told"]> = ["yes", "partly", "no"];
 export const variantCostMonitor_presetAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["VariantCost"]["monitor_preset"]> = ["off", "signals", "standard", "research"];
-export const warningKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Warning"]["kind"]> = ["in_progress", "verify_failed", "monitor_degraded", "audit_lost", "log_truncated", "replay_divergence", "cost_incomplete", "tainted"];
+export const warningKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Warning"]["kind"]> = ["in_progress", "verify_failed", "monitor_degraded", "rollout_failed", "audit_lost", "log_truncated", "replay_divergence", "cost_incomplete", "tainted"];
 export const wireDeltaKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["WireDelta"]["kind"]> = ["start", "text", "reasoning", "tool_call", "tool_args", "end"];

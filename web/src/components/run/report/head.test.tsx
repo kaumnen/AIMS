@@ -240,6 +240,7 @@ test("each kind of warning says what the Markdown says", async () => {
       degraded(7, "sweep", "continue"),
       degraded(8, "judge", null),
       degraded(9, "lane", "pause"),
+      warning({ kind: "rollout_failed", seq: 20, part: "judge.2 (blind)", detail: "a <b>503</b>" }),
       warning({ kind: "audit_lost", seq: 2, count: 2, lost: 1234 }),
       warning({ kind: "audit_lost", seq: 3, lost: null }),
       warning({ kind: "log_truncated", seq: 20, detail: "torn line" }),
@@ -260,6 +261,10 @@ test("each kind of warning says what the Markdown says", async () => {
       ["Warning The monitor's sweeps stopped at step 2. It went on without that part."],
       ["Warning The monitor's judge stopped at step 2."],
       ["Warning The monitor's lane stopped at step 2. It paused the agents."],
+      [
+        "Warning The monitor's rollout judge.2 (blind) failed. The verdict at step 3 is from the other rollouts.",
+        "The log says: a <b>503</b>",
+      ],
       ["Warning The kernel audit missed 1,234 events, first at step 1."],
       ["Warning The kernel audit missed events, first at step 1."],
       [

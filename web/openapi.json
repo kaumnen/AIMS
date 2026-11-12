@@ -15868,7 +15868,7 @@
       },
       "Warning": {
         "additionalProperties": false,
-        "description": "Something that limits what the report can say. `seq` is the first event that shows\nit in `run_id`, `count` how many there were, `detail` the reason the log gives. A\ndegraded monitor names its `part` and what it did `then`; lost audit records sum to\n`lost` when known; `seqs` are the flags that tainted the reward.",
+        "description": "Something that limits what the report can say. `seq` is the first event that shows\nit in `run_id`, `count` how many there were, `detail` the reason the log gives. A\ndegraded monitor names its `part` and what it did `then`; a judge rollout that failed\nbeside the verdict at `seq` names its label in `part`; lost audit records sum to `lost`\nwhen known; `seqs` are the flags that tainted the reward.",
         "properties": {
           "agent": {
             "anyOf": [
@@ -15902,6 +15902,7 @@
               "in_progress",
               "verify_failed",
               "monitor_degraded",
+              "rollout_failed",
               "audit_lost",
               "log_truncated",
               "replay_divergence",

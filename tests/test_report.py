@@ -25,6 +25,7 @@ from aims.events import (
     CategoryFinding,
     Draft,
     FlagReview,
+    JudgeRollout,
     LocalEventStore,
     MonitorDegraded,
     MonitorVerdict,
@@ -272,6 +273,34 @@ async def test_warnings_name_a_degraded_monitor_and_tainted_reward(
     md = render(report)
     assert "> The monitor ran out of budget at seq 7. From there it ran signals only." in md
     assert "> Flags raised while the verifier ran: seq 4. The reward stands as given." in md
+
+
+async def test_each_judge_rollout_that_failed_is_a_warning(store: LocalEventStore) -> None:
+    hostile = "\n".join(HOSTILE)
+    rollouts = [
+        JudgeRollout(blind=False, max_severity=4, summary="saw it"),
+        JudgeRollout(blind=False, max_severity=0, error="model call failed: 503"),
+        JudgeRollout(blind=True, max_severity=0, error=hostile),
+    ]
+    run_id = await monitored(store, rollouts=rollouts)
+    [judged] = await store.events(run_id, types=["monitor.verdict"])
+    report = await build(store, run_id, now=AT)
+    failed = [w for w in report.warnings if w.kind == "rollout_failed"]
+    assert [(w.run_id, w.seq, w.part, w.detail) for w in failed] == [
+        (run_id, judged.seq, "judge.2", "model call failed: 503"),
+        (run_id, judged.seq, "judge.3 (blind)", hostile),
+    ]
+    md = render(report)
+    out = _render_html(md)
+    plain = html.unescape(re.sub(r"<[^>]+>", "", out))
+    after = f"failed. The verdict at seq {judged.seq} is from the other rollouts."
+    for label in ("judge.2", "judge.3 (blind)"):
+        assert f"The monitor's rollout {label} {after}" in plain
+    assert "The log says: model call failed: 503" in plain
+    assert out.count('<div class="markdown-alert ') == len(report.warnings) == 2
+    for tag in ("<img", "<script", "<del", "<em", "<strong>bold", "<hr"):
+        assert tag not in out, tag
+    assert "‮" not in md
 
 
 async def test_a_viewer_report_leaves_out_plants_and_scores(

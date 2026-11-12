@@ -175,7 +175,14 @@ async def build(
     scored = _last(marks, TaskScored)
     running = finished is None if not review else _status(reviews, picked) == "running"
     headline = _headline(scored, verdict, running, started, review, held_marks)
-    warnings = _warnings(run_id, holder, marks, held_marks if review else [], verdict)
+    warnings = _warnings(
+        run_id,
+        holder,
+        marks,
+        held_marks if review else [],
+        verdict,
+        None if verdict_event is None else verdict_event.seq,
+    )
     if verify_error is not None:
         warnings.insert(0, Warning(kind="verify_failed", run_id=run_id, detail=verify_error))
     if finished is None:
@@ -488,6 +495,7 @@ def _warnings(
     marks: Sequence[Event],
     held_marks: Sequence[Event],
     verdict: MonitorVerdict | None,
+    verdict_seq: int | None,
 ) -> list[Warning]:
     out: list[Warning] = []
     for where, events in ((run_id, marks), (holder, held_marks)):
@@ -503,6 +511,10 @@ def _warnings(
                     then=d.then,
                 )
             )
+    for label, error in [] if verdict is None else verdict.failed():
+        out.append(
+            Warning(kind="rollout_failed", run_id=holder, seq=verdict_seq, part=label, detail=error)
+        )
     lost = _of(marks, AuditLost)
     if lost:
         counts = [a.count for _, a in lost]

@@ -10,13 +10,14 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from pydantic import ValidationError
 from rich.console import Console, Group, RenderableType
 from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from aims.events import BlobRef, Event, EventStore, ResumeThen
+from aims.events import BlobRef, Event, EventStore, MonitorVerdict, ResumeThen
 from aims.models import Delta, DeltaBus
 from aims.monitor.core import HumanRequest
 from aims.report.escape import visible
@@ -80,6 +81,7 @@ class _Run:
     sweeping: set[str] = field(default_factory=set)
     notes: list[str] = field(default_factory=list)
     verdict: str = ""
+    failed: list[str] = field(default_factory=list)
     cost_cap: float | None = None
     monitor_cap: float | None = None
     monitor_calls: set[str] = field(default_factory=set)
@@ -112,6 +114,15 @@ def action_line(e: Event) -> str:
         cause = "monitor (simulated)" if data.get("simulated") else "monitor"
     reason = data.get("reason")
     return one_line(f"{action} {who} by {cause}") + (f": {_short(reason, ARGS)}" if reason else "")
+
+
+def failed_lines(data: dict[str, Any]) -> list[str]:
+    """Each judge rollout of the verdict `data` that gave none, with its label and its error."""
+    try:
+        verdict = MonitorVerdict.model_validate(data)
+    except ValidationError:
+        return []
+    return [f"{label} failed: {error}" for label, error in verdict.failed()]
 
 
 class LiveView:
@@ -186,6 +197,7 @@ class LiveView:
                 run.sweeps += 1
             case "monitor.verdict":
                 run.verdict = f"severity {data.get('max_severity')}: {_text(data.get('summary'))}"
+                run.failed = failed_lines(data)
             case "monitor.degraded":
                 note = f"monitor {data.get('part')}: {data.get('reason')}"
                 run.notes = [*run.notes, visible(note)][-SHOWN_NOTES:]
@@ -346,6 +358,7 @@ class LiveView:
         rows += [Text(f"  {note}", style="yellow") for note in run.notes]
         if run.verdict:
             rows.append(Text(f"  verdict {_short(run.verdict, TAIL)}", style="cyan"))
+        rows += [Text(f"  {_short(line, TAIL)}", style="yellow") for line in run.failed]
         return rows
 
 
@@ -532,6 +545,9 @@ def monitor_table(digests: Sequence[Digest]) -> Table | None:
             detail = f"severity {v.get('max_severity')}: {_text(v.get('summary'))}"
             _row(table, d.run_id, "verdict", "", detail)
             rows += 1
+            for line in failed_lines(v):
+                _row(table, d.run_id, "rollout", "", line)
+                rows += 1
     return table if rows else None
 
 

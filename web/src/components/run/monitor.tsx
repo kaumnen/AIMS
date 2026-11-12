@@ -179,7 +179,12 @@ function VerdictCard({
   const clear = list(d["categories"]).length - found.length;
   const anomalies = list(d["anomalies"]);
   const disagreements = Array.isArray(d["disagreements"]) ? d["disagreements"].map(String) : [];
-  const failed = list(d["rollouts"]).filter((r) => typeof r["error"] === "string");
+  const rollouts = list(d["rollouts"]);
+  const failed = rollouts.flatMap((r, i) =>
+    typeof r["error"] === "string"
+      ? [`judge.${i + 1}${r["blind"] === true ? " (blind)" : ""}: ${r["error"]}`]
+      : [],
+  );
   const cost = num(d["cost_usd"]);
   return (
     <section aria-label="Verdict" className="flex flex-col gap-1.5">
@@ -259,10 +264,14 @@ function VerdictCard({
         </details>
       )}
       {failed.length > 0 && (
-        <p className="text-muted-foreground">
-          {failed.length} of {list(d["rollouts"]).length} judge rollouts failed:{" "}
-          {String(failed[0]?.["error"])}
-        </p>
+        <div className="text-muted-foreground">
+          {failed.length} of {rollouts.length} judge rollouts failed:
+          <ul className="list-disc pl-5">
+            {failed.map((t) => (
+              <li key={t}>{t}</li>
+            ))}
+          </ul>
+        </div>
       )}
     </section>
   );

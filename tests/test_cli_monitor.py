@@ -30,6 +30,7 @@ from aims.cli import EXIT_CANCELLED, EXIT_DROPPED, EXIT_NO_ANSWER, EXIT_PART_DON
 from aims.events import (
     Draft,
     Event,
+    JudgeRollout,
     LocalEventStore,
     MonitorAction,
     MonitorDegraded,
@@ -792,6 +793,33 @@ async def test_the_view_shows_the_last_few_notes_and_the_end_lists_all(tmp_path:
         console = Console(record=True, width=200)
         console.print(table)
         assert console.export_text().count("judge: timeout") == 20
+
+
+async def test_the_view_and_the_end_name_each_judge_rollout_that_failed(tmp_path: Path) -> None:
+    rollouts = [
+        JudgeRollout(blind=False, max_severity=4, summary="saw it"),
+        JudgeRollout(blind=False, max_severity=0, error="model call failed: 503 [red]busy[/]"),
+        JudgeRollout(blind=True, max_severity=0, error="cut \x1b[2J short"),
+    ]
+    verdict = MonitorVerdict(max_severity=4, summary="It reached out.", rollouts=rollouts)
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        run_id = await store.create_run(RunStarted(scenario="s", oversight="observe"))
+        await store.append(run_id, [Draft(verdict), Draft(RunFinished(status="completed"))])
+        view = LiveView(store, DeltaBus())
+        view.add(run_id)
+        await until(lambda: view.runs[run_id].status == "completed")
+        await view.stop()
+        found = await digest(store, run_id)
+    shown = []
+    for renderable in (view, monitor_table([found])):
+        console = Console(record=True, width=200)
+        console.print(renderable)
+        shown.append(console.export_text())
+    for text in shown:
+        assert "judge.2 failed: model call failed: 503 [red]busy[/]" in text
+        assert "judge.3 (blind) failed: cut \\u001B[2J short" in text
+        assert "\x1b" not in text
+        assert "judge.1" not in text
 
 
 class Held:
