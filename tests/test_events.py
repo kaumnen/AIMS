@@ -466,6 +466,25 @@ async def test_second_writer_is_locked(tmp_path: Path) -> None:
                 await second.append(run_id, [call(1)])
 
 
+async def test_a_truth_file_is_checked_against_the_log_while_the_index_gives_no_first_event(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A drop of the run's rows between the two index reads leaves the second empty."""
+    data = json.dumps({"variant": "b"}).encode()
+    async with await LocalEventStore.open(tmp_path) as store:
+        started = STARTED.model_copy(update={"truth": hashlib.sha256(data).hexdigest()})
+        run_id = await store.create_run(started)
+        await store.append(run_id, [Draft(RunFinished(status="completed"))])
+
+        async def none(*args: Any, **kw: Any) -> list[Event]:
+            return []
+
+        monkeypatch.setattr(store._index, "events", none)
+        with pytest.raises(store_module.TruthRefused, match="hashes to"):
+            await store.put_truth(run_id, b"{}")
+        assert await store.put_truth(run_id, data) is True
+
+
 def dump(root: Path) -> tuple[list[tuple[object, ...]], ...]:
     db = sqlite3.connect(root / "index.sqlite")
     try:

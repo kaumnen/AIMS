@@ -1001,8 +1001,7 @@ class LocalEventStore:
             raise TruthRefused(f"no run {run_id}", status=404)
         if info.status == "running":
             raise TruthRefused(f"run {run_id} is not sealed yet", status=409)
-        [first] = await self._index.events(run_id, limit=1)
-        committed = first.data.get("truth")
+        committed = (await self._first(run_id)).get("truth")
         digest = hashlib.sha256(data).hexdigest()
         if committed is None:
             raise TruthRefused(f"run {run_id} committed to no truth file", status=409)
@@ -1027,6 +1026,20 @@ class LocalEventStore:
         await self._index.set_variant(run_id, variant)
         await asyncio.to_thread(_write_private, target, data)
         return True
+
+    async def _first(self, run_id: str) -> dict[str, Any]:
+        """The data of a run's first event: from the index, or from the log when the index
+        gives none, as while a drop takes the run's rows."""
+        events = await self._index.events(run_id, limit=1)
+        if events and events[0].seq == 0:
+            return events[0].data
+
+        def read() -> dict[str, Any]:
+            with self._log(run_id).open("rb") as f:
+                line = f.readline(MAX_LINE + 1)
+            return follow(Head(), line, run_id=run_id)[0]["data"]
+
+        return await asyncio.to_thread(read)
 
     async def add_label(
         self, run_id: str, flag: int, label: LabelKind, *, by: str, note: str = ""
