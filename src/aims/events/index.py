@@ -1,6 +1,7 @@
 import asyncio
 import bisect
 import contextlib
+import functools
 import json
 import logging
 import sqlite3
@@ -793,7 +794,7 @@ class Index:
                 json.dumps(e.data, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
                 e.prev_hash,
                 e.hash,
-                # SQLite ends text at a NUL in LIKE and, in older versions, in the text index
+                # SQLite ends text at a NUL in LIKE and GLOB and, in older versions, the text index
                 e.search_text()[:MAX_TEXT].replace("\x00", "\ufffd"),
                 exec_id if isinstance(exec_id := e.data.get("exec_id"), str) else None,
             )
@@ -1516,8 +1517,8 @@ class Index:
     ) -> tuple[list[Event], int | None]:
         """Events of every run whose text holds `query`, newest indexed first, and the cursor of
         the next page, leaving out runs of `skip_kinds`. Queries of three or more characters use
-        the trigram index, read newest first so a page stops at its last match. A query the
-        index cannot match finds nothing."""
+        the trigram index, read newest first so a page stops at its last match; shorter ones
+        fold case as it does. A query the index cannot match finds nothing."""
         if not _searchable(query):
             return [], None
         skip_kinds = _kept(skip_kinds)
@@ -1529,8 +1530,9 @@ class Index:
             args.append(_phrase(query))
         else:
             source, key = "events e", "e.id"
-            where.append("e.text like ? escape '\\'")
-            args.append(_like(query))
+            test, values = await _short(query)
+            where.append(test)
+            args.extend(values)
         if before is not None:
             where.append(f"{key} < ?")
             args.append(_int(before))
@@ -1566,8 +1568,8 @@ class Index:
     ) -> list[Event]:
         """One page in seq order. With only `before` set, the page is the last events before it.
         `execs` keeps the events that name one of those execs. A query reads the run's matches
-        once, from the trigram index over the span of the run's row ids. A query the index
-        cannot match finds nothing."""
+        once, from the trigram index over the span of the run's row ids; one too short for it
+        folds case as it does. A query the index cannot match finds nothing."""
         if query and not _searchable(query):
             return []
         kinds, ids = _within(types), _within(execs)
@@ -1598,8 +1600,9 @@ class Index:
             )
             args.extend((_phrase(query), run_id, run_id))
         elif query:
-            where.append("e.text like ? escape '\\'")
-            args.append(_like(query))
+            test, values = await _short(query)
+            where.append(test)
+            args.extend(values)
         backwards = before is not None and after is None
         args.append(_cap(limit))
         async with self._db.execute(
@@ -1999,14 +2002,69 @@ def _phrase(query: str) -> str:
     return '"' + query.replace('"', '""') + '"'
 
 
+async def _short(query: str) -> tuple[str, list[str]]:
+    """The test of `e.text`, with its arguments, that finds `query`, too short for the trigram
+    index, with case folded as that index folds it. LIKE folds ASCII letters only, so it
+    serves a query it folds the same: one with no `k`, `s` or character with case outside
+    ASCII. Else GLOB does, each character as the set of those the index takes for it, once
+    for each the first may be: a GLOB that starts with a set tries every place in the text,
+    one that starts with a character skips to where it is, about three times as fast."""
+    cases = await asyncio.to_thread(_cases)
+    if all(cases.get(c, c) == _liked(c) for c in query):
+        return "e.text like ? escape '\\'", [_like(query)]
+    rest = "".join(_glob_char(cases.get(c, c)) for c in query[1:])
+    globs = [f"*{_glob_char(c)}{rest}*" for c in cases.get(query[0], query[0])]
+    return f"({' or '.join(['e.text glob ?'] * len(globs))})", globs
+
+
+def _liked(c: str) -> str:
+    """The characters LIKE takes for `c`, as `_cases` lists them."""
+    return "".join(sorted({c.upper(), c.lower()})) if c.isascii() and c.isalpha() else c
+
+
+def _glob_char(same: str) -> str:
+    """GLOB for one of the characters `same`: a set of them, or the one character; `*`, `?`
+    and `[` in a set of their own, as GLOB has no escape."""
+    return f"[{same}]" if len(same) > 1 or same in "*?[" else same
+
+
 def _like(query: str) -> str:
     """A LIKE pattern, escaped with `\\`, that matches text holding `query`."""
     escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return f"%{escaped}%"
 
 
+@functools.cache
+def _cases() -> dict[str, str]:
+    """Each character the trigram index folds together with others, mapped to all of them.
+    The index folds by SQLite's own table, Unicode 6.1 case folding, and keeps diacritics
+    (`remove_diacritics` 0); only characters with case in Unicode 6.1 fold, and those keep
+    it in later versions, so the characters Python finds case in are the ones to ask about.
+    SQLite's trigram tokenizer folds them here, once, so a short query folds as it does."""
+    cased = [
+        s
+        for code in range(1, 0x10450)
+        if not 0xD800 <= code < 0xE000 and ((s := chr(code)).lower() != s or s.upper() != s)
+    ]
+    db = sqlite3.connect(":memory:")
+    try:
+        db.execute("create virtual table f using fts5 (x, tokenize = 'trigram')")
+        db.execute("insert into f values (?)", ("".join(cased),))
+        db.execute("create virtual table v using fts5vocab (f, instance)")
+        # one trigram starts at each character: its first is that character folded
+        terms = [t for (t,) in db.execute("select term from v order by offset")]
+    finally:
+        db.close()
+    folded = [t[0] for t in terms] + list(terms[-1][1:])
+    known = set(cased)
+    together: dict[str, set[str]] = {}
+    for c, f in zip(cased, folded, strict=True):
+        together.setdefault(f, set() if f in known else {f}).add(c)
+    return {c: "".join(sorted(same)) for same in together.values() if len(same) > 1 for c in same}
+
+
 def _searchable(text: str) -> bool:
-    """Whether the index can match `text`: FTS5 and LIKE end their text at a NUL, and UTF-8
+    """Whether the index can match `text`: FTS5, LIKE and GLOB end their text at a NUL, and UTF-8
     cannot encode a lone surrogate for the bind."""
     return "\x00" not in text and encodable(text)
 

@@ -714,6 +714,51 @@ async def test_text_search_reads_matches_in_page_order(
         con.close()
 
 
+# with escapes for the characters that look like others: the Kelvin sign, a long s, a
+# dotless i and a small sigma
+FOLDED = ("école", "ÉCOLE", "\u212aelvin", "kelvin", "\u017ftraße", "STRASSE", "ẞ", "Σοφία")
+FOLDED += ("σοφός", "τέλος ς", "x*y?z[w]", "100%_\\", "İstanbul", "\u0131i")
+SHORT = ("Éc", "éC", "é", "É", "k", "K", "\u212a", "ke", "s", "\u017f", "S", "ß", "ẞ", "\u03c3")
+SHORT += ("ς", "Σο", "*", "?", "[", "]", "y?", "[w", "%", "_", "\\", "%_", "İ", "i", "\u0131", "I")
+
+
+async def test_a_short_query_folds_case_as_the_text_index_does(store: LocalEventStore) -> None:
+    run_id = await store.create_run(STARTED)
+    await store.append(run_id, [call(n, text) for n, text in enumerate(FOLDED)])
+    async with store._index._db.execute(
+        "select seq, text from events where run_id = ?", (run_id,)
+    ) as cur:
+        texts = list(await cur.fetchall())
+
+    async def hits(query: str) -> set[int]:
+        return {e.seq for e in await store.events(run_id, query=query, limit=1000)}
+
+    async def held(query: str) -> set[int]:
+        """The events whose text holds `query` folded as the text index folds it: those it
+        finds for any three characters of their text with `query` put in their place."""
+        probes = {
+            text[i : i + j] + query + text[i + j + len(query) : i + 3]
+            for _, text in texts
+            for i, j in itertools.product(range(len(text) - 2), range(4 - len(query)))
+        }
+        async with store._index._db.execute(
+            "select e.seq from events_fts f join events e on e.id = f.rowid"
+            " where events_fts match ? and e.run_id = ?",
+            (" OR ".join(_phrase(p) for p in probes), run_id),
+        ) as cur:
+            return {r[0] for r in await cur.fetchall()}
+
+    for query in SHORT:
+        expected = await held(query)
+        assert await hits(query) == expected, repr(query)
+        found, _ = await store.search(query, limit=1000)
+        assert {e.seq for e in found} == expected, repr(query)
+    # what LIKE alone missed
+    assert await hits("Éc") == await hits("éco") == {1, 2}
+    assert await hits("k") >= {3, 4}
+    assert await hits("ς") == await hits("Σ") >= {8, 9, 10}
+
+
 async def test_text_and_cursors_the_index_cannot_bind_find_nothing(
     store: LocalEventStore,
 ) -> None:
