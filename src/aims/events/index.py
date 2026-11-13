@@ -730,9 +730,27 @@ class Index:
         for long. After each comes a pause half as long, so a writer in another process, whose
         busy handler only polls, gets the lock in between. A remove cut short leaves rows no run
         owns, which the next remove of the run deletes."""
+        await self._remove_row(run_id)
+        await self._remove_rows(run_id)
+
+    async def drop(self, run_id: str) -> None:
+        """Drop every row of a run whose rows hold events its log does not, so it is indexed
+        again from its log: its events and samples first, as `remove` deletes them, then its
+        row, with its labels, units, costs and flags. Until then the row holds the run's last
+        indexed event, which no line of the log follows or matches, so a batch another process
+        indexes meanwhile is refused, or puts back rows the next transaction deletes again.
+        Readers see the run, with fewer events, until its row goes."""
+        await self._remove_rows(run_id)
+        await self._remove_row(run_id)
+
+    async def _remove_row(self, run_id: str) -> None:
         async with self._write():
             for table in ("runs", "labels", "score_units", "run_costs", "flags"):
                 await self._db.execute(f"delete from {table} where run_id = ?", (run_id,))
+
+    async def _remove_rows(self, run_id: str) -> None:
+        """Delete the events and samples of a run, REMOVE_ROWS to a transaction, each followed
+        by a pause half as long."""
         loop = asyncio.get_running_loop()
         for table in ("events", "samples"):
             while True:

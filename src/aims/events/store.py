@@ -27,6 +27,7 @@ from aims.events.index import (
     ExecActivity,
     FlagInfo,
     Index,
+    IndexDiverged,
     Label,
     LabelKind,
     RunInfo,
@@ -240,12 +241,15 @@ class _Keyed:
 @dataclass(slots=True)
 class _Lag:
     """A run whose index stopped short of its log: its failed tries in a row, the wait before
-    the next one, the loop time it is due and the task that makes it."""
+    the next one, the loop time it is due and the task that makes it. `retake` says a writer
+    or sink here found the index holding events of the run its log does not: a catch-up drops
+    the run's rows and indexes it again from its log, even once that handle closed."""
 
     tries: int = 1
     wait: float = 0.0
     due: float = 0.0
     task: asyncio.Task[None] | None = None
+    retake: bool = False
 
 
 @dataclass(slots=True)
@@ -289,7 +293,6 @@ class LocalEventStore:
         self._lags: dict[str, _Lag] = {}
         self._truths = asyncio.Lock()
         self._sealed: dict[str, Head] = {}
-        self._corrupt: set[str] = set()
         self._closed = False
 
     @classmethod
@@ -454,7 +457,6 @@ class LocalEventStore:
         """Drop what this store remembers of a run another process deleted."""
         self._caught_up(run_id)
         self._sealed.pop(run_id, None)
-        self._corrupt.discard(run_id)
 
     async def _gone(self, run_id: str) -> None:
         """Forget a lagging run another process deleted, once no catch-up of it is under way,
@@ -531,7 +533,6 @@ class LocalEventStore:
                 raise RuntimeError(f"run {run_id} is not sealed")
         self._ingested.discard(run_id)
         self._sealed.pop(run_id, None)
-        self._corrupt.discard(run_id)
         await self._drop_lag(run_id)
         async with self._opening(run_id):
             if run_id in self._writers or run_id in self._sinks:
@@ -841,8 +842,9 @@ class LocalEventStore:
 
     async def _cut(self, run_id: str, writer: _Writer) -> None:
         """Cut the lines of a batch that failed off the open log of `writer`, before it writes
-        again. RunCorrupt when another process indexed them while they were there. The cut is
-        not run in a thread, where a store close could close the file under it."""
+        again. When another process indexed them while they were there, the run is indexed
+        again from its log. The cut is not run in a thread, where a store close could close the
+        file under it."""
         writer.file.truncate(writer.head.offset)
         await self._index_log(run_id)
         writer.cut = False
@@ -1246,7 +1248,6 @@ class LocalEventStore:
     async def rebuild(self) -> None:
         """Drop the index and rebuild it from every run log, accepting each log as it is."""
         await self._index.reset()
-        self._corrupt.clear()
         await self.sync()
 
     async def sync(self) -> None:
@@ -1332,8 +1333,10 @@ class LocalEventStore:
 
     async def _catch_up(self, run_id: str) -> tuple[Head, ChainError | None]:
         """Index verified events past the index head, up to the first one the index cannot take.
-        RunCorrupt if the log lost that head. FileNotFoundError when the run has no log, as
-        when another process deleted it, even after its log was read here."""
+        When the log lost that head, a run whose log a writer or sink here holds, or held when
+        it found that, is indexed again from its log; any other is RunCorrupt. FileNotFoundError
+        when the run has no log, as when another process deleted it, even after its log was
+        read here."""
         path = self._log(run_id)
         head = Head()
         indexed = await self._index.head(run_id)
@@ -1343,12 +1346,15 @@ class LocalEventStore:
                 if not self.holds(run_id):
                     await self._take_back(run_id)
                     raise FileNotFoundError(path)
-                if status != "corrupt":
-                    await self._index.mark_corrupt(run_id)
-                raise RunCorrupt(
-                    f"run {run_id}: the log no longer holds event {head.seq} recorded by the index;"
-                    " rebuild the index to accept the log as it is"
-                )
+                if not self._owns(run_id):
+                    if status != "corrupt":
+                        await self._index.mark_corrupt(run_id)
+                    raise RunCorrupt(
+                        f"run {run_id}: the log no longer holds event {head.seq} recorded by the"
+                        " index; rebuild the index to accept the log as it is"
+                    )
+                await self._retake(run_id)
+                head = Head()
         while True:
             chunk, error = await asyncio.to_thread(_take, path, run_id, head, CHUNK)
             if chunk:
@@ -1375,19 +1381,17 @@ class LocalEventStore:
     async def _keep_up(self, run_id: str, events: Sequence[Event], head: Head) -> None:
         """Index a batch that reached the log. A run whose index is behind is caught up from the
         log instead, when a try is due, so no batch is indexed past a gap. Never raises: a
-        failure leaves the run behind, and the log holds the batch either way."""
+        failure leaves the run behind, and the log holds the batch either way. A batch the
+        index holds other events for gets the run indexed again from its log, which this store
+        holds."""
         lag = self._lags.get(run_id)
-        if run_id in self._corrupt:
-            # told once; the index takes the run again after a rebuild, here or elsewhere
-            indexed = await self._index.head(run_id)
-            if indexed is not None and indexed[1] == "corrupt":
-                return
-            self._corrupt.discard(run_id)
         if lag is None:
             try:
                 await self._indexed(run_id, events, head)
             except Exception as e:
                 self._behind(run_id, e)
+                if isinstance(e, IndexDiverged) and (lag := self._lags.get(run_id)) is not None:
+                    lag.retake = True
         elif asyncio.get_running_loop().time() >= lag.due:
             try:
                 await self._index_log(run_id)
@@ -1402,7 +1406,6 @@ class LocalEventStore:
             caught = await self._catch_up(run_id)
         except RunCorrupt:
             self._caught_up(run_id)
-            self._corrupt.add(run_id)
             raise
         except Exception as e:
             if isinstance(e, FileNotFoundError) and not self.holds(run_id):
@@ -1433,8 +1436,7 @@ class LocalEventStore:
                 run_id,
                 exc_info=error,
             )
-            lag = self._lags[run_id] = _Lag()
-            lag.task = asyncio.create_task(self._heal(run_id, lag))
+            self._lag(run_id)
             return
         lag.tries += 1
         lag.wait = min(max(lag.wait * 2, RETRY_S), RETRY_MAX_S)
@@ -1446,6 +1448,42 @@ class LocalEventStore:
                 lag.tries,
                 error,
             )
+
+    def _lag(self, run_id: str) -> _Lag | None:
+        """The run's lag, made with the task that heals it when there is none; None once the
+        store closed."""
+        lag = self._lags.get(run_id)
+        if lag is None and not self._closed:
+            lag = self._lags[run_id] = _Lag()
+            lag.task = asyncio.create_task(self._heal(run_id, lag))
+        return lag
+
+    def _owns(self, run_id: str) -> bool:
+        """Whether a writer or sink here holds the run's log, or held it when it found the
+        index holding events the log does not. Then the log is the run's whole record: each
+        catch-up of a run with an open handle holds its lock, so the log stays still, the open
+        checked the index against the log, and each line the log lost since was of a batch
+        that handle cut."""
+        handle = self._writers.get(run_id) or self._sinks.get(run_id)
+        lag = self._lags.get(run_id)
+        return (handle is not None and not handle.closed) or (lag is not None and lag.retake)
+
+    async def _retake(self, run_id: str) -> None:
+        """Drop the index rows of a run that hold events its log does not: lines a failed write
+        cut off the log, which another process read and indexed before or after the cut. The
+        catch-up that calls then indexes the run from the start of its log, and its labels come
+        back from their file. Until it is done the run counts as behind, so verify says so, and
+        the run's heal does again a retake cut short."""
+        log.warning(
+            "run %s: the index holds events its log does not, which a failed write cut off it;"
+            " the run is indexed again from its log",
+            run_id,
+        )
+        if (lag := self._lag(run_id)) is not None:
+            lag.retake = True
+        await self._index.drop(run_id)
+        labels = await asyncio.to_thread(_read_labels, self._dir(run_id) / LABELS)
+        await self._index.put_labels(labels)
 
     async def _heal(self, run_id: str, lag: _Lag) -> None:
         """Catch a lagging run's index up from its log at each time `lag` is due, with the log

@@ -1604,7 +1604,7 @@ async def test_a_failed_append_keeps_the_run_to_its_writer(
         assert calls_of(await store.events(run_id)) == ["run.started", "c1", "c2"]
 
 
-async def test_cut_lines_another_process_indexed_stop_the_writer_until_a_rebuild(
+async def test_cut_lines_another_process_indexed_are_taken_out_and_the_writer_goes_on(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     loop = asyncio.get_running_loop()
@@ -1626,13 +1626,15 @@ async def test_cut_lines_another_process_indexed_stop_the_writer_until_a_rebuild
         info = await store.run(run_id)
         assert info is not None
         assert info.events == 2
-        # the index holds an event the log does not: never written over
-        for _ in range(2):
-            with pytest.raises(RunCorrupt):
-                await store.append(run_id, [call(2)])
-        await store.rebuild()
+        # the index holds an event the log does not: the writer's cut takes it out
         await store.append(run_id, [call(2)])
         assert calls_of(await store.events(run_id)) == ["run.started", "c2"]
+        info = await store.run(run_id)
+        assert info is not None
+        assert (info.status, info.events) == ("running", 2)
+        assert (await store.verify(run_id)).ok
+        await store.append(run_id, [call(3)])
+        assert calls_of(await store.events(run_id)) == ["run.started", "c2", "c3"]
     assert verify_run(tmp_path / run_id).ok
 
 
