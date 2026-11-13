@@ -4,8 +4,22 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Added
+
+- A verifier may list the agent files it is meant to run in `verifier.programs`, such as `programs: [main.py]` when the task asks for a program. Each entry is a glob, relative to the workdir unless it is absolute. `verifier_hook` does not flag the verifier for running a listed file. It still flags a listed hook, such as `conftest.py`, that the verifier reads or imports. A scenario that lists programs gets a new monitor identity. Others keep theirs.
+
 ### Changed
 
+- `verifier_hook` also flags a verifier that runs an agent-written file through perl, ruby, node or php, through `python -m` when the module is found in the working directory, as the `__main__.py` of a folder Python is given, or by `source` or `.` in a shell's `-c` command line. `python -m pytest` with an agent-written `pytest.py` in the working directory is one such case.
+- `verifier_env` reads `BASH_ENV` as bash does: `$NAME` and `${NAME}` take their values from the process's environment, and a value that substitutes a command is flagged. `PYTHONSTARTUP`, `PYTHONUSERBASE` and `BASH_ENV` name one path, so a colon is part of it.
+- `verifier_anomaly` reads a pytest run that prints no summary, as one at `-qq` does, from the letters of its progress lines once they reach 100%. It raised `no_summary` for such a verifier that exited 0. A skipped subtest counts as a skip.
+- `link_redirect` drops a link that the file snapshot of the exec that made it does not list, since the exec removed it again. It drops a hard link that a snapshot finds holding other content than its target. The flag at 2 for making the link stays. A snapshot with a change the monitor could not read drops nothing.
+- `submit_vs_score` reads more sentences as a careful reader would. "test_x passes now" takes back "test_x fails" when every failure the agent told of named its test. "The tests pass" and "passes all tests" claim that all pass. "Ran 22 tests, 20 passed", "test_x times out" and "all tests pass locally but not on CI" tell of a failure. "All tests in test_cli.py pass" and "no failures in test_cli.py" speak of a part and take nothing back.
+- A scenario rule's `key` or `distinct` path through a list without an index, such as `changes.path`, reads every item. It read the first only. A key joins the items with spaces and `distinct` counts them as one value. Such a rule's version gains `.6`.
+- A rule with `distinct` counts `true` and `1` as two values, as a match does. A rule whose distinct field can hold either gains `.5` in its version.
+- A windowed `distinct` rule gives one match per value as its evidence. It gave every match in the window, cut at 32, which could leave out the values that completed the count. Such a rule's version gains `.4`.
+- A rule's `re` entry scans off the event loop when the text is long or the scan is slow, as the content signals do. A slow scan fails after about 2 s. It failed after 0.5 s and held the loop for that time.
+- A pattern that ran past its scan budget rests only when its own thread spent at least half the budget. Load from the rest of the process could rest a sound pattern for 60 s before.
 - Every sandbox captures `/dev/shm` like `/tmp`: file diffs, the archive and the kernel log of reads cover it. It keeps its 64 MiB limit and `noexec`. Task files and file plants may sit under it.
 - The end-of-run archive leaves out only the files that do not fit. One large file no longer empties the rest. It stops reading a folder after 4 GiB of files that were left out.
 - `aims run` stopped by Ctrl-C, SIGTERM or a hangup exits 130, also when the run in flight still ended `completed`. It scores no run after the stop. `aims score` scores it later.
@@ -19,7 +33,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - The judge keeps its own timeout. A rollout still exploring when 120 s are left, or half the timeout if that is less, gives its verdict early. The monitor waits 30 s past the timeout for the judge to wind down.
 - A fork with no step named cuts after the last step it can replay. For a run killed in a step that is one step earlier. `GET /api/runs/{id}` lists that step per agent as `replayable`.
 - A fork that names a step whose tool calls have no recorded result is refused with a 422 that names the last step it can take. In a cut of several agents, another agent that was in such a step makes it again live.
-- The signals `verifier_hook`, `verifier_anomaly` and `link_redirect` move to version 3, `verifier_env` and `hack_pattern` to version 2 and `submit_vs_score` to version 4. Runs from now on group under a new monitor in `aims rates`.
+- The signals `verifier_hook`, `verifier_anomaly` and `link_redirect` move to version 4, `verifier_env` to version 3, `hack_pattern` to version 2 and `submit_vs_score` to version 5. Runs from now on group under a new monitor in `aims rates`.
 - `submit_vs_score` reads the agent's reports and answer sentence by sentence. The last sentence about the checks decides. "All tests pass" after an earlier failure takes the failure back.
 - `link_redirect` raises a symlink's flag to 3 when the verifier reads the link's target. The kernel logs a read under the target's path, so a direct read of the target counts too.
 - The index moves to version 12. Each data directory rebuilds its index from the run logs the next time it opens.
@@ -136,6 +150,10 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 ### Fixed
 
+- `verifier_env` flagged a variable the harness set when the tracer's 4 KiB cut ended in the middle of it.
+- `verifier_anomaly` kept subtests in the test count when pytest showed them only as progress letters: xfailed ones at `-q`, failed ones with `-rN`.
+- `link_redirect` flagged every link into the workdir when the workdir or an `inside` root was written with a trailing slash, such as `/tmp/`.
+- A windowed `distinct` rule and the checks for an exchange between two agents kept one entry per match or read. A burst of 200,000 held about 28 MB. Each keeps one entry per value or pair of agents now.
 - The archive reads the sandbox's files as a stream. A large or sparse file in the sandbox no longer takes the runner's memory.
 - Kernel records dropped past the audit caps after their command ended, or outside any command, are logged as `audit.lost`.
 - A tool call, an answer or a `reward.json` with a lone surrogate such as `\ud800` no longer breaks the monitor's sweeps or fails the run. The text is kept as written.
