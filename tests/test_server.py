@@ -639,6 +639,48 @@ async def test_a_job_is_offered_claimed_run_and_done(
         ]
 
 
+@pytest.mark.parametrize("moved", ["running", "done"])
+async def test_the_run_list_stream_sends_a_run_again_once_its_job_moves_on(
+    cp: CP, fake: FakeRunner, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch, moved: str
+) -> None:
+    (run_id,) = await start_run(cp)
+    await play_job(fake, local, await fake.next(OfferMessage))
+    if moved == "done":
+        await local.append(run_id, [Draft(RunFinished(status="completed"))])
+    status = "completed" if moved == "done" else "running"
+    read = asyncio.Event()
+    set_job = cp.state.db.set_job
+
+    async def late(run: str, state: Any, reason: str | None = None) -> bool:
+        # a stream that reads the run between the ingest and the job's move, as a busy
+        # database or a stream already awake can make it
+        if state == moved:
+            await read.wait()
+        return await set_job(run, state, reason)
+
+    monkeypatch.setattr(cp.state.db, "set_job", late)
+    seen: list[tuple[str, str]] = []
+    async with (
+        cp.client(cp.viewer) as c,
+        asyncio.timeout(10),
+        c.sse("/api/stream", params={"runs": "true"}) as source,
+    ):
+        task = asyncio.create_task(ship(local, fake.client, run_id))
+        async for e in source:
+            if e.event != "run" or (run := json.loads(e.data)["run"])["run_id"] != run_id:
+                continue
+            seen.append((run["status"], run["state"]))
+            if run["status"] == status:
+                read.set()
+            if run["state"] == moved:
+                break
+    assert seen[0] == (status, "running" if moved == "done" else "claimed")
+    assert seen[-1] == (status, moved)
+    if moved == "running":
+        await local.append(run_id, [Draft(RunFinished(status="completed"))])
+    await task
+
+
 async def test_a_shipper_ends_when_its_run_is_deleted_from_the_local_store(
     cp: CP, fake: FakeRunner, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:

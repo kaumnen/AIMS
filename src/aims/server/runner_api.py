@@ -559,8 +559,9 @@ async def ingest_events(
     except RunCorrupt as e:
         raise ProblemException(409, "Conflict", str(e), code="corrupt") from None
     job = await state.db.job(run_id)
+    moved = False
     if job is not None and job.state == "claimed":
-        await state.db.set_job(run_id, "running")
+        moved = await state.db.set_job(run_id, "running")
     after = -1 if before is None else before.seq
     for event in await store.events(run_id, after=after, types=["model.response"], limit=1000):
         call_id = event.data.get("call_id")
@@ -569,9 +570,14 @@ async def ingest_events(
     if head.finished:
         info = await store.run(run_id)
         if job is not None:
-            await state.db.set_job(run_id, "done", None if info is None else info.status)
-        await state.db.drop_commands(run_id)
+            status = None if info is None else info.status
+            moved = await state.db.set_job(run_id, "done", status) or moved
+        moved = await state.db.drop_commands(run_id) > 0 or moved
         state.poke()
+    if moved:
+        # The ingest told the streams of the new lines before the job and its commands moved
+        # on, so a stream may have sent the run as it was in between.
+        state.changes.touch(run_id)
     return {"head": _head(head)}
 
 
