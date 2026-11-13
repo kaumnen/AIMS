@@ -642,6 +642,22 @@ def test_aims_control_list_keeps_each_command_on_its_lines() -> None:
     ]
 
 
+def test_aims_control_list_shows_a_command_with_a_time_no_date_holds() -> None:
+    command = {
+        "created": 1e18,
+        "acked": None,
+        "action": "kill",
+        "agent": None,
+        "then": "continue",
+        "state": "pending",
+        "outcome": None,
+        "by": "op",
+        "text": None,
+        "reason": None,
+    }
+    assert _command_line(command).startswith("9999-12-31 23:59:59  op  kill")
+
+
 def test_a_server_error_body_comes_back_as_text(capsys: pytest.CaptureFixture[str]) -> None:
     answer = SimpleNamespace(status_code=409, json=lambda: {"detail": f"busy {ESCAPES}"}, text="")
     assert _problem(answer) == 1

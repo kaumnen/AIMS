@@ -2533,11 +2533,10 @@ async def _delete(url: str, token: str, run: str, yes: bool, force: bool) -> int
 
 
 def _command_line(c: dict[str, Any]) -> str:
-    from datetime import UTC, datetime
-
+    from aims.events.schema import when
     from aims.terminal import one_line
 
-    sent = datetime.fromtimestamp(c["created"], UTC).strftime("%Y-%m-%d %H:%M:%S")
+    sent = when(c["created"]).strftime("%Y-%m-%d %H:%M:%S")
     what = " ".join(
         one_line(x)
         for x in (c["action"], c["agent"], c["then"] if c["then"] != "continue" else None)
@@ -2827,8 +2826,8 @@ def token_list(data_dir: DataDirOption = None) -> None:
     """Show tokens by name and role, when each was made and last used, in UTC. Their values
     are never kept."""
     import asyncio
-    from datetime import UTC, datetime
 
+    from aims.events.schema import when
     from aims.terminal import one_line
 
     async def main() -> list[Any]:
@@ -2839,7 +2838,7 @@ def token_list(data_dir: DataDirOption = None) -> None:
             await db.close()
 
     def minute(at: float) -> str:
-        return datetime.fromtimestamp(at, UTC).strftime("%Y-%m-%d %H:%M")
+        return when(at).strftime("%Y-%m-%d %H:%M")
 
     for t in asyncio.run(main()):
         state = "revoked" if t.revoked else "live"
@@ -2902,8 +2901,9 @@ def audit_cmd(
     import asyncio
     from datetime import UTC, datetime
 
+    from aims.events.schema import when
     from aims.server.audit import every
-    from aims.server.audit_api import entry, when
+    from aims.server.audit_api import entry
     from aims.terminal import json_text, one_line
 
     if outcome is not None and outcome not in ("ok", "refused", "error"):

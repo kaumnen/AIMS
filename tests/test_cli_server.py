@@ -1134,6 +1134,23 @@ def test_a_token_name_stored_before_the_rule_still_lists_and_revokes(tmp_path: P
     assert "revoked" in runner.invoke(app, ["token", "list", "--data-dir", str(tmp_path)]).output
 
 
+def test_a_token_with_a_time_no_date_holds_still_lists(tmp_path: Path) -> None:
+    import sqlite3
+
+    async def make() -> None:
+        await (await ServerDB.open(tmp_path / "server.sqlite")).close()
+
+    asyncio.run(make())
+    with contextlib.closing(sqlite3.connect(tmp_path / "server.sqlite")) as raw, raw:
+        raw.execute(
+            "insert into tokens (name, sha256, role, created, last_used) values (?, ?, ?, ?, ?)",
+            ("far", "0" * 64, "viewer", 1e18, -1e18),
+        )
+    listed = CliRunner().invoke(app, ["token", "list", "--data-dir", str(tmp_path)])
+    assert listed.exit_code == 0, listed.output
+    assert listed.output == "far  viewer  9999-12-31 23:59  live  used 0001-01-01 00:00\n"
+
+
 @pytest.mark.parametrize(
     "args", [["token", "list"], ["token", "revoke", "ci"], ["audit"], ["audit", "--jsonl"]]
 )
