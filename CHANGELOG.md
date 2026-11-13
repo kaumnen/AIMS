@@ -10,6 +10,12 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 ### Changed
 
+- `aims run`, `aims monitor`, `aims score`, `aims models check` and the self-test seal as failed the runs an earlier process left running in their runs folder, as `aims runner` does when it starts. They say how many on stderr. A run another process still writes is left alone.
+- A store leaves a run log that a writer in another process holds to that writer. It indexed the lines it found there, which could be lines the writer had not synced and cut when the sync failed. The run then needed its index built again.
+- An exec whose connection to Docker drops while it runs is ended and fails with `the connection to Docker was lost while the exec ran`. It read as `exited` with no exit code and its process ran on.
+- A score that a run's job asked for waits up to 30 s for the index to hold the run. It was kept as a failed score job that read "not indexed yet".
+- A viewer gets a 403 for a run of a kind this version does not know.
+- The third Ctrl-C or SIGTERM says "quit at once and skipped the cleanup". Signals of one kind sent with no gap can arrive as one, so a supervisor that must end the process sends SIGKILL.
 - `verifier_hook` also flags a verifier that runs an agent-written file through perl, ruby, node or php, through `python -m` when the module is found in the working directory, as the `__main__.py` of a folder Python is given, or by `source` or `.` in a shell's `-c` command line. `python -m pytest` with an agent-written `pytest.py` in the working directory is one such case.
 - `verifier_env` reads `BASH_ENV` as bash does: `$NAME` and `${NAME}` take their values from the process's environment, and a value that substitutes a command is flagged. `PYTHONSTARTUP`, `PYTHONUSERBASE` and `BASH_ENV` name one path, so a colon is part of it.
 - `verifier_anomaly` reads a pytest run that prints no summary, as one at `-qq` does, from the letters of its progress lines once they reach 100%. It raised `no_summary` for such a verifier that exited 0. A skipped subtest counts as a skip.
@@ -150,6 +156,13 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 ### Fixed
 
+- A denied tool call with thousands of distinct words made `deny_retry` hold the runner for seconds at each later call. The look runs in a thread now and ends at about 2 s, which the monitor reports as degraded.
+- A stored job whose `needs` this version cannot read made the run list answer 500 and held every queued job after it.
+- A reply the Docker daemon cut after its header, or an exec stream that lost its socket as it opened, raised an error the sandbox code did not catch. A cut container delete left the sandbox's volumes behind.
+- An unexplained kernel drop was reported to sandboxes that registered after it.
+- Reads of a run's events, steps, samples, counts and costs gave rows past the run's head or rows a removal had not deleted yet. A resent ingest batch could be refused as diverged over such rows.
+- A batch that met many leftover index rows deleted them in one transaction, which could hold the index's write lock for seconds. They go 200 to a transaction now.
+- A truth file sent while the run's index rows were built again failed with an error.
 - `verifier_env` flagged a variable the harness set when the tracer's 4 KiB cut ended in the middle of it.
 - `verifier_anomaly` kept subtests in the test count when pytest showed them only as progress letters: xfailed ones at `-q`, failed ones with `-rN`.
 - `link_redirect` flagged every link into the workdir when the workdir or an `inside` root was written with a trailing slash, such as `/tmp/`.
