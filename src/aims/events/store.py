@@ -922,23 +922,35 @@ class LocalEventStore:
     async def stream(
         self, run_id: str, *, after: int = -1, poll: float = 0.5
     ) -> AsyncIterator[Event]:
-        """Events after `after`, then live ones as they land. Ends after `run.finished`."""
+        """Events after `after`, then live ones as they land. Ends after `run.finished`. Only
+        events up to the run's indexed head, each the one after the event before it: while the
+        index lacks that one, as while a retake or a rebuild in another process indexes the run
+        again, the stream waits, also while the index holds no run whose log is here. KeyError
+        for a run with neither."""
         cursor = after
         while True:
             signal = self._signals.setdefault(run_id, asyncio.Event())
-            batch = await self._index.events(run_id, after=cursor, limit=MAX_PAGE)
+            indexed = await self._index.head(run_id)
+            if indexed is None and not self.logged(run_id):
+                raise KeyError(f"unknown run {run_id}")
+            head = Head() if indexed is None else indexed[0]
+            if head.finished and cursor >= head.seq:
+                return
+            batch: list[Event] = []
+            if head.seq > cursor:
+                batch = await self._index.events(
+                    run_id, after=cursor, before=head.seq + 1, limit=MAX_PAGE
+                )
             for event in batch:
+                if event.seq != cursor + 1:
+                    break
                 yield event
                 cursor = event.seq
                 if event.type == "run.finished":
                     return
-            if batch:
-                continue
-            info = await self._index.run(run_id)
-            if info is None:
-                raise KeyError(f"unknown run {run_id}")
-            if info.status != "running" and cursor >= info.events - 1:
-                return
+            else:
+                if batch:
+                    continue
             with contextlib.suppress(TimeoutError):
                 async with asyncio.timeout(poll):
                     await signal.wait()

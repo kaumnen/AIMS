@@ -729,19 +729,17 @@ class Index:
         samples then go REMOVE_ROWS to a transaction, so no transaction holds the write lock
         for long. After each comes a pause half as long, so a writer in another process, whose
         busy handler only polls, gets the lock in between. A remove cut short leaves rows no run
-        owns, which the next remove of the run deletes."""
+        owns, which the next remove of the run deletes. Meanwhile a batch another process
+        indexes is refused unless it starts the run. One that does first takes the rows left,
+        as `add` does. The remove then stops: the rows from there on are that batch's."""
         await self._remove_row(run_id)
         await self._remove_rows(run_id)
 
     async def drop(self, run_id: str) -> None:
         """Drop every row of a run whose rows hold events its log does not, so it is indexed
-        again from its log: its events and samples first, as `remove` deletes them, then its
-        row, with its labels, units, costs and flags. Until then the row holds the run's last
-        indexed event, which no line of the log follows or matches, so a batch another process
-        indexes meanwhile is refused, or puts back rows the next transaction deletes again.
-        Readers see the run, with fewer events, until its row goes."""
-        await self._remove_rows(run_id)
-        await self._remove_row(run_id)
+        again from its log. They go as `remove` takes them, the run's row first: readers see
+        no run until it is indexed again, never one that lost some of its events."""
+        await self.remove(run_id)
 
     async def _remove_row(self, run_id: str) -> None:
         async with self._write():
@@ -761,11 +759,11 @@ class Index:
 
     async def _remove_some(self, table: Literal["events", "samples"], run_id: str) -> bool:
         """Delete the first REMOVE_ROWS rows of `run_id` in `table`, in seq order, in one
-        transaction. False when it had none."""
+        transaction. False when it had none, or when the run has a row again."""
         async with self._write():
             async with self._db.execute(
-                f"select max(seq) from (select seq from {table} where run_id = ?"
-                " order by seq limit ?)",
+                f"select max(seq) from (select seq from {table} where run_id = ?1"
+                " order by seq limit ?2) where not exists (select 1 from runs where run_id = ?1)",
                 (run_id, REMOVE_ROWS),
             ) as cur:
                 row = await cur.fetchone()

@@ -885,6 +885,171 @@ async def test_cut_lines_another_process_indexes_after_the_cut_are_taken_out(
         assert (await other.verify(run_id)).ok
 
 
+@pytest.mark.parametrize("resume", [1, 2, 4])
+async def test_another_store_sees_a_retake_as_a_run_still_to_be_indexed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, resume: int
+) -> None:
+    """While the writer's store drops a run's rows and indexes it again from its log, a store
+    on the same folder sees either no run, which its log says is to come, or the run with its
+    first events, all of them. Its stream, which reads on from the drop's `resume`th step,
+    waits meanwhile: it skips no event and raises no KeyError."""
+    monkeypatch.setattr(index_module, "REMOVE_ROWS", 2)
+    monkeypatch.setattr(store_module, "MAX_PAGE", 2)
+    monkeypatch.setattr(store_module, "CHUNK", 3)
+    root = tmp_path / "runs"
+    async with (
+        await LocalEventStore.open(root) as store,
+        await LocalEventStore.open(root) as reader,
+    ):
+        run_id = await store.create_run(STARTED)
+        await store.append(run_id, [call(n) for n in range(1, 8)])
+        seen: list[int] = []
+        paused, go = asyncio.Event(), asyncio.Event()
+
+        async def consume() -> None:
+            async for event in reader.stream(run_id, poll=0.005):
+                seen.append(event.seq)
+                if event.seq == 1:
+                    paused.set()
+                    await go.wait()
+
+        task = asyncio.create_task(consume())
+        async with asyncio.timeout(5):
+            await paused.wait()
+        assert seen == [0, 1]
+        steps = 0
+        views: list[int | None] = []
+
+        async def step() -> None:
+            nonlocal steps
+            steps += 1
+            if steps >= resume:
+                go.set()
+            await asyncio.sleep(0.03)
+            info = await reader.run(run_id)
+            views.append(None if info is None else info.events)
+            if info is None:
+                assert reader.logged(run_id)
+            else:
+                assert [e.seq for e in await reader.every(run_id)] == list(range(info.events))
+
+        remove_some, remove_row, add = Index._remove_some, Index._remove_row, Index.add
+
+        async def some(index: Index, table: Any, run: str) -> bool:
+            found = await remove_some(index, table, run)
+            await step()
+            return found
+
+        async def row(index: Index, run: str) -> None:
+            await remove_row(index, run)
+            await step()
+
+        async def added(index: Index, events: Sequence[Event], head: Head, **kw: Any) -> None:
+            await add(index, events, head, **kw)
+            await step()
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Index, "_remove_some", some)
+            patch.setattr(Index, "_remove_row", row)
+            patch.setattr(Index, "add", added)
+            async with store._still(run_id):
+                await store._retake(run_id)
+                await store._index_log(run_id)
+        assert views == [None] * 7 + [3, 6, 8]
+        go.set()
+        await store.append(run_id, [call(8), Draft(RunFinished(status="completed"))])
+        async with asyncio.timeout(5):
+            await task
+        assert seen == list(range(10))
+
+
+async def test_a_retake_a_cancel_cuts_short_leaves_a_run_the_next_open_indexes_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A retake took the run's row and some of its events when a cancel stopped it. The rows
+    it left are no run's, so the next open indexes the run again from its log."""
+    monkeypatch.setattr(index_module, "REMOVE_ROWS", 2)
+    root = tmp_path / "runs"
+    async with await LocalEventStore.open(root) as store:
+        run_id = await store.create_run(STARTED)
+        await store.append(run_id, [call(n) for n in range(1, 8)])
+        remove_some = Index._remove_some
+        held = asyncio.Event()
+
+        async def slow(index: Index, table: Any, run: str) -> bool:
+            found = await remove_some(index, table, run)
+            held.set()
+            await asyncio.sleep(10)
+            return found
+
+        async def retake() -> None:
+            async with store._still(run_id):
+                await store._retake(run_id)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Index, "_remove_some", slow)
+            task = asyncio.create_task(retake())
+            await held.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert await store.run(run_id) is None
+            await store.close()
+    async with await LocalEventStore.open(root) as store:
+        assert await indexed(store, run_id) == logged(store, run_id) == list(range(8))
+        assert (await store.verify(run_id)).ok
+        await store.append(run_id, [Draft(RunFinished(status="completed"))])
+        info = await store.run(run_id)
+        assert info is not None
+        assert (info.status, info.events) == ("completed", 9)
+
+
+async def test_a_stream_gives_no_row_past_the_head_of_its_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rows of cut lines past the run's head, as an old drop that raced a batch left them,
+    are no events of the run: a stream waits at the head until the log's own come."""
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        run_id = await store.create_run(STARTED)
+        await store.append(run_id, [call(1), call(2)])
+        found = await store.head(run_id)
+        assert found is not None
+        head = start = found
+        cut = []
+        for n in range(2):
+            payload = ToolCall(call_id=f"cut{n}", name="n", arguments="{}")
+            data = payload.model_dump(mode="json")
+            body, _, head = seal(
+                head, run_id=run_id, ts=now(), agent_id="a1", type=payload.type, data=data
+            )
+            cut.append(Event.model_validate(body))
+        await store._index.add(cut, head)
+        await store._index._db.execute(
+            "update runs set last_seq = ?, last_hash = ?, log_offset = ? where run_id = ?",
+            (start.seq, start.hash, start.offset, run_id),
+        )
+        seen: list[Event] = []
+        at_head = asyncio.Event()
+
+        async def consume() -> None:
+            async for event in store.stream(run_id, poll=0.005):
+                seen.append(event)
+                if event.seq == start.seq:
+                    at_head.set()
+
+        task = asyncio.create_task(consume())
+        async with asyncio.timeout(5):
+            await at_head.wait()
+        # polls enough for the stream to give a row past the head, if it would
+        await asyncio.sleep(0.05)
+        assert [e.seq for e in seen] == [0, 1, 2]
+        await store.append(run_id, [call(3), Draft(RunFinished(status="completed"))])
+        async with asyncio.timeout(5):
+            await task
+        lines = (store.root / run_id / LOG).read_bytes().splitlines()
+        assert [e.hash for e in seen] == [json.loads(line)["hash"] for line in lines]
+
+
 async def test_a_run_no_writer_here_holds_is_corrupt_once_and_takes_its_events_after_a_rebuild(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -1105,6 +1270,9 @@ async def test_the_index_drops_rows_no_run_owns_when_their_run_id_starts_again(
 async def test_a_drop_keeps_out_the_batches_another_process_indexes_meanwhile(
     index: Index, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The run's row goes first: readers see no run, while a batch that does not start the
+    run is refused. One that does takes the rows left, cut lines among them. The drop then
+    leaves the rows it put in."""
     monkeypatch.setattr(index_module, "REMOVE_ROWS", 2)
     events, heads = chain(6)
     cut, cut_heads = fork(heads, 2, 2)
@@ -1119,20 +1287,20 @@ async def test_a_drop_keeps_out_the_batches_another_process_indexes_meanwhile(
         calls += 1
         found = await remove_some(table, run_id)
         if calls == 1:
-            # a batch the rows left still match puts back those just deleted, for the
-            # next transaction to take again; one past them meets the cut lines
-            await other.add(events[:3], heads[2])
-            assert len(await index.hashes(RUN, 0, 9)) == 5
-            with pytest.raises(IndexDiverged):
-                await other.add(events[:5], heads[4])
+            assert await other.run(RUN) is None
+            assert len(await index.hashes(RUN, 0, 9)) == 3
+            with pytest.raises(IndexGap):
+                await other.add(events[3:5], heads[4])
+            await other.add(events[:4], heads[3])
         return found
 
     monkeypatch.setattr(index, "_remove_some", then_other)
     try:
         await index.drop(RUN)
-        assert await index.head(RUN) is None
-        assert await index.hashes(RUN, 0, 9) == {}
-        await other.add(events[:4], heads[3])
+        found = await index.head(RUN)
+        assert found is not None
+        assert found[0] == heads[3]
+        assert await index.hashes(RUN, 0, 9) == {e.seq: e.hash for e in events[:4]}
         await index.add(events, heads[5])
     finally:
         await other.close()
@@ -1145,10 +1313,10 @@ async def test_a_drop_keeps_out_the_batches_another_process_indexes_meanwhile(
 async def test_rows_a_drop_leaves_past_a_batch_that_raced_it_go_with_that_batch(
     index: Index, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A reader commits a cut line after a drop deleted the run's events and before it takes
-    the run's row. Another process checked for leftovers before that row went and indexes the
-    run from its start after. The cut row then sits past the run's last event, which the log
-    holds: it goes with that batch, so the next batch neither fails on it nor keeps it."""
+    """A reader commits one more cut line just before a drop takes the run's row. Another
+    process checked for leftovers while that row was there and indexes the run from its start
+    once it went. The rows the drop has yet to delete, cut lines among them, go with that
+    batch, so the next batch neither fails on them nor keeps them. The drop then stops."""
     events, heads = chain(6)
     cut, cut_heads = fork(heads, 2, 3)
     await index.add(events[:3], heads[2])
