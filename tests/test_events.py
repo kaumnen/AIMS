@@ -414,6 +414,30 @@ async def test_a_run_whose_start_fails_leaves_no_log(
     assert info.status == "running"
 
 
+async def test_only_a_log_that_starts_with_a_whole_event_counts_as_a_run_to_come(
+    store: LocalEventStore,
+) -> None:
+    """The server answers 503 with Retry-After for a run the index lacks while `logged` says
+    its log is here. A writer that died before its first line was whole leaves a log no
+    catch-up ever indexes, so that log does not count, nor one whose first line is no event of
+    the run."""
+    run_id, other = "01a18280-dc55-749f-9a4b-6aab5fe2986e", "01a18280-dc55-749f-9a4b-6aab5fe2986f"
+    data = STARTED.model_dump(mode="json")
+    first, stranger = (
+        seal(Head(), run_id=r, ts=now(), agent_id=None, type=STARTED.type, data=data)[1]
+        for r in (run_id, other)
+    )
+    store.prepare_run(run_id)
+    path = store.root / run_id / LOG
+    assert not store.logged(run_id)
+    for body in (b"", first[:-1], first[:40], b"{}\n", stranger):
+        path.write_bytes(body)
+        assert not store.logged(run_id), body
+    path.write_bytes(first + b'{"agent_id":"a1","data":{"argu')
+    assert store.logged(run_id)
+    assert not store.logged("not-a-run")
+
+
 async def test_bad_middle_line_blocks_writes(tmp_path: Path) -> None:
     root = tmp_path / "runs"
     async with await LocalEventStore.open(root) as store:

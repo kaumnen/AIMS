@@ -19,7 +19,7 @@ from typing import Any, Protocol, Self
 
 from aims.aio import settle
 from aims.events.blobs import TEMP, BlobStore, BlobWriter, read_blob, stored_size
-from aims.events.chain import ChainError, Head, follow, seal
+from aims.events.chain import MAX_LINE, ChainError, Head, follow, seal
 from aims.events.disk import make_dir, sweep, sync_dir, write_all
 from aims.events.index import (
     MAX_PAGE,
@@ -454,13 +454,17 @@ class LocalEventStore:
             return True
 
     def logged(self, run_id: str) -> bool:
-        """Whether a run's log here holds anything: a run the index may not hold for a while,
-        as when another process rebuilds it, or it is behind the log. False for a name that is
-        no run id."""
+        """Whether a run's log here starts with the run's first event: a run the index may not
+        hold for a while, as when another process rebuilds it, or it is behind the log. False
+        for a log with no whole first event, which no catch-up indexes, as a writer that died
+        while it wrote that line leaves. False too for a name that is no run id."""
         try:
-            return os.stat(self._log(run_id)).st_size > 0
-        except KeyError, OSError:
+            with self._log(run_id).open("rb") as f:
+                line = f.readline(MAX_LINE + 1)
+            follow(Head(), line, run_id=run_id)
+        except KeyError, OSError, ChainError:
             return False
+        return True
 
     def _forget(self, run_id: str) -> None:
         """Drop what this store remembers of a run another process deleted."""
