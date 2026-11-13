@@ -27,7 +27,7 @@ from aims.report.escape import visible
 from aims.server.app import create_app
 from aims.server.db import UI_TOKEN, Token, new_token
 from aims.server.state import CODE_TTL_S, close_state, open_state
-from aims.terminal import on_hangup
+from aims.terminal import on_hangup, on_stop
 
 log = logging.getLogger("aims.server")
 
@@ -185,6 +185,13 @@ async def serve(o: UiOptions) -> int:
             with contextlib.suppress(ProcessLookupError):
                 child.send_signal(signal.SIGTERM)
 
+    def kill_runner() -> None:
+        """Before a third stop quits this process at once: the runner must not outlive it.
+        What the runner leaves is removed when a runner next starts."""
+        if child is not None and child.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(child.pid, signal.SIGKILL)
+
     def on_signal() -> None:
         """No uvicorn force_exit on a second stop. It skips the app's shutdown, so the
         lifespan is cancelled at exit and logs a traceback. It also never cuts the wait for
@@ -239,9 +246,8 @@ async def serve(o: UiOptions) -> int:
         )
         # Handlers go in before the runner starts. A Ctrl-C with no handler cancels this task.
         # The runner would then get no SIGTERM, only the SIGKILL below.
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, on_signal)
-            handled.append(sig)
+        on_stop(loop, on_signal, last=kill_runner)
+        handled += [signal.SIGINT, signal.SIGTERM]
         # A hangup starts a stop and never adds to one: nobody is left to press Ctrl-C.
         if on_hangup(loop, lambda: None if stops else on_signal()):
             handled.append(signal.SIGHUP)

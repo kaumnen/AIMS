@@ -43,6 +43,7 @@ from aims.prompts import Prompts
 from aims.run import rates, scoring, truth
 from aims.run.score import CheckError, Taken, rule_plants
 from aims.run.scoring import Classifier, ScoreError, flags, score_run
+from aims.terminal import AGAIN
 
 pytestmark = pytest.mark.anyio
 
@@ -690,6 +691,7 @@ def test_a_second_signal_while_aims_score_seals_leaves_the_seal_whole(
         signal.signal(signal.SIGTERM, before)
     monkeypatch.undo()
     assert result.exit_code == EXIT_CANCELLED, result.output
+    assert AGAIN in result.output
 
     async def read() -> list[tuple[str, str, Any]]:
         async with await LocalEventStore.open(root) as store:

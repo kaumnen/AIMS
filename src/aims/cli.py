@@ -137,16 +137,16 @@ def _settings(config: Path | None) -> Any:
 @contextlib.contextmanager
 def _stoppable() -> Generator[None]:
     """Within it, the first Ctrl-C, SIGTERM or hangup cancels the task that entered it, which
-    seals its run as cancelled. Later ones do nothing, so they cannot cut that seal. Once it is
-    left they do nothing either, as the close after it is bounded. The handlers stay in until
-    asyncio.run closes the loop. Without them a second Ctrl-C raises KeyboardInterrupt wherever
-    the seal is, and a SIGTERM ends the process with no seal. Off the main thread, as in a
-    test, no signal comes, so none is handled."""
+    seals its run as cancelled. Later ones cancel nothing, so they cannot cut that seal. Once
+    it is left they cancel nothing either, as the close after it is bounded. A third Ctrl-C or
+    SIGTERM quits at once, as on_stop says. The handlers stay in until asyncio.run closes the
+    loop. Without them a second Ctrl-C raises KeyboardInterrupt wherever the seal is, and a
+    SIGTERM ends the process with no seal. Off the main thread, as in a test, no signal comes,
+    so none is handled."""
     import asyncio
-    import signal
     import threading
 
-    from aims.terminal import on_hangup
+    from aims.terminal import on_hangup, on_stop
 
     if threading.current_thread() is not threading.main_thread():
         yield
@@ -159,8 +159,7 @@ def _stoppable() -> Generator[None]:
         if live and main is not None and not main.cancelling():
             main.cancel()
 
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, stop)
+    on_stop(loop, stop)
     on_hangup(loop, stop)
     try:
         yield
@@ -994,7 +993,6 @@ async def _run(**o: Any) -> int:
     import asyncio
     import logging
     import os
-    import signal
     import sys
     import uuid
     from dataclasses import replace
@@ -1033,7 +1031,15 @@ async def _run(**o: Any) -> int:
     from aims.sandbox import DockerBackend, SandboxError
     from aims.scenario import ScenarioError, load
     from aims.scenario.budget import BudgetError
-    from aims.terminal import Stdout, VisibleLog, json_text, on_hangup, one_line, shown
+    from aims.terminal import (
+        Stdout,
+        VisibleLog,
+        json_text,
+        on_hangup,
+        on_stop,
+        one_line,
+        shown,
+    )
     from aims.wire import TracerHealth
 
     err = Console(stderr=True)
@@ -1290,8 +1296,7 @@ async def _run(**o: Any) -> int:
 
             # The handlers stay in until asyncio.run closes the loop. Without them a Ctrl-C
             # raises KeyboardInterrupt wherever the cleanup is.
-            for sig in (signal.SIGINT, signal.SIGTERM):
-                loop.add_signal_handler(sig, stop)
+            on_stop(loop, stop, say=lambda text: err.print(shown(text, "yellow")))
             # A hangup starts a stop and never adds to one: nobody is left to press Ctrl-C.
             on_hangup(loop, lambda: None if stops else stop())
 
@@ -1774,7 +1779,7 @@ def runner_cmd(
     from aims.node.service import Node, NodeOptions, Refused
     from aims.node.service import data_dir as default_dir
     from aims.sandbox import AuditMode
-    from aims.terminal import VisibleLog, on_hangup
+    from aims.terminal import VisibleLog, on_hangup, on_stop
 
     handler = logging.StreamHandler()
     handler.setFormatter(VisibleLog("%(levelname)s %(name)s: %(message)s"))
@@ -1840,8 +1845,13 @@ def runner_cmd(
                 current.cancel()
                 say("killing now")
 
-        for sig in (signal.SIGTERM,) if by_ui else (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, on_signal)
+        # `aims ui` says what a third Ctrl-C does for the runner it started
+        on_stop(
+            loop,
+            on_signal,
+            signals=(signal.SIGTERM,) if by_ui else (signal.SIGINT, signal.SIGTERM),
+            say=None if by_ui else say,
+        )
         # `aims ui` passes a hangup on as one SIGTERM, as it does Ctrl-C. On its own the runner
         # lets a hangup start a stop but never add to one: nobody is left to press Ctrl-C.
         on_hangup(loop, (lambda: None) if by_ui else (lambda: None if stops else on_signal()))
@@ -2058,7 +2068,6 @@ def monitor_cmd(
 async def _monitor_runs(**o: Any) -> int:
     import asyncio
     import logging
-    import signal
     import sys
     import tomllib
     import uuid
@@ -2086,7 +2095,15 @@ async def _monitor_runs(**o: Any) -> int:
     from aims.run.job import JobOptions, monitor_profiles
     from aims.run.runner import RunError
     from aims.run.view import JsonLines, digest, monitor_table
-    from aims.terminal import Stdout, VisibleLog, json_text, on_hangup, one_line, shown
+    from aims.terminal import (
+        Stdout,
+        VisibleLog,
+        json_text,
+        on_hangup,
+        on_stop,
+        one_line,
+        shown,
+    )
 
     err = Console(stderr=True)
     stdout = Stdout(typer.echo)
@@ -2205,8 +2222,7 @@ async def _monitor_runs(**o: Any) -> int:
 
         # The handlers stay in until asyncio.run closes the loop. Without them a Ctrl-C raises
         # KeyboardInterrupt wherever the cleanup is, which can leave the store open.
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, stop)
+        on_stop(loop, stop)
         on_hangup(loop, stop)
         try:
             # Each monitor run ends, its seal too, before this goes on. Without

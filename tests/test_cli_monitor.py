@@ -67,6 +67,7 @@ from aims.run.view import HumanPrompt, JsonLines, LiveView, _args, digest, monit
 from aims.sandbox import DockerBackend, SandboxError
 from aims.scenario import load
 from aims.server.db import OPEN_STATES
+from aims.terminal import AGAIN
 from aims.wire import Ack, CommandAction, CommandMessage, MonitorJob, OfferMessage
 
 pytestmark = pytest.mark.anyio
@@ -285,6 +286,8 @@ def test_a_late_ctrl_c_leaves_the_cleanup_of_aims_monitor_alone(
             m.setattr(LocalEventStore, "close", interrupted(cut, step, LocalEventStore.close))
         result = invoke(*args)
     assert cut == []
+    # the late Ctrl-C is the second one after a stop
+    assert (AGAIN in result.stderr) == stopped
     assert result.exit_code == (EXIT_CANCELLED if stopped else 0), result.output
     found = [x["status"] for x in lines(result.stdout) if x["type"] == "result"]
     assert found == ([] if stopped else ["completed"])
@@ -721,8 +724,10 @@ def test_a_score_run_that_never_began_is_not_left_shipping(
     ("step", "stopped"), [("lines", True), ("drain", True), ("store", True), ("store", False)]
 )
 def test_a_late_ctrl_c_leaves_the_cleanup_of_aims_run_alone(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, step: str, stopped: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, quits: list[bool], step: str, stopped: bool
 ) -> None:
+    """It cancels nothing. As the third Ctrl-C it quits the process at once, after the second
+    said so."""
     cut: list[str] = []
 
     async def run(self: Runner) -> Result:
@@ -752,6 +757,9 @@ def test_a_late_ctrl_c_leaves_the_cleanup_of_aims_run_alone(
             m.setattr(LocalEventStore, "close", interrupted(cut, step, LocalEventStore.close))
         result, _ = run_stubbed(tmp_path, m, run, "--json")
     assert cut == []
+    assert quits == [True] * stopped
+    quits.clear()
+    assert (AGAIN in " ".join(result.output.split())) == stopped
     assert result.exit_code == (EXIT_CANCELLED if stopped else 0), result.output
     killed = "killed the sandboxes; the runs are sealed as cancelled" in result.output
     assert killed == stopped

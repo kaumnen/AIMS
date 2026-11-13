@@ -118,6 +118,65 @@ class Stdout:
             print("note: stdout was closed; the rest of the output is dropped", file=sys.stderr)
 
 
+QUIT_AT = 3
+AGAIN = "another Ctrl-C quits at once and skips the cleanup"
+_SHOW_CURSOR = b"\x1b[?25h"
+
+
+def quit_now() -> None:
+    """End the process at once with exit code 130 and no cleanup. A live view hides the
+    cursor, so a terminal gets it back."""
+    with contextlib.suppress(OSError):
+        cursor = _SHOW_CURSOR if os.isatty(2) else b""
+        os.write(2, cursor + b"quit before the cleanup ended\n")
+    os._exit(130)
+
+
+def _say(text: str) -> None:
+    # a terminal that hung up fails the write
+    with contextlib.suppress(OSError):
+        print(text, file=sys.stderr)
+
+
+def on_stop(
+    loop: asyncio.AbstractEventLoop,
+    then: Callable[[], object],
+    *,
+    signals: Sequence[signal.Signals] = (signal.SIGINT, signal.SIGTERM),
+    say: Callable[[str], object] | None = _say,
+    last: Callable[[], object] | None = None,
+) -> None:
+    """Handle Ctrl-C and SIGTERM: each calls `then` on the loop. The second also gives AGAIN
+    to `say`. The third calls `last` and ends the process through quit_now, so a cleanup that
+    hangs needs no SIGKILL. That count is kept where Python runs signal handlers and not on
+    the loop, as a cleanup that blocks the loop would never run a callback. The handlers stay
+    in until the loop closes. Main thread only."""
+    count = 0
+    told = 0
+
+    def on_loop() -> None:
+        nonlocal told
+        told += 1
+        then()
+        if told == QUIT_AT - 1 and say is not None:
+            say(AGAIN)
+
+    def on_signal(signum: int, frame: object) -> None:
+        nonlocal count
+        count += 1
+        if count >= QUIT_AT:
+            if last is not None:
+                with contextlib.suppress(Exception):
+                    last()
+            quit_now()
+
+    for sig in signals:
+        # The loop hears of a signal through its wakeup fd and calls on_loop. The handler
+        # it gives Python does nothing, so on_signal can take its place.
+        loop.add_signal_handler(sig, on_loop)
+        signal.signal(sig, on_signal)
+
+
 def on_hangup(loop: asyncio.AbstractEventLoop, then: Callable[[], object]) -> bool:
     """Handle SIGHUP, which comes when the terminal closes: point stdout and stderr at
     /dev/null if they were on the terminal, then call `then`. Shells pass the hangup on to

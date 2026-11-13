@@ -60,3 +60,15 @@ def signal_handlers() -> Generator[None]:
         # None is a handler that Python did not set, which it cannot set back either
         if handler is not None and signal.getsignal(sig) is not handler:
             signal.signal(sig, handler)
+
+
+@pytest.fixture(autouse=True)
+def quits() -> Generator[list[bool]]:
+    """Each quit a third stop signal asked of a command run in process, in place of the quit:
+    it would end the test run. A test that means one to happen clears the list. Set with a
+    MonkeyPatch of its own, so a test's `monkeypatch.undo()` does not bring the real one back."""
+    asked: list[bool] = []
+    with pytest.MonkeyPatch.context() as own:
+        own.setattr("aims.terminal.quit_now", lambda: asked.append(True))
+        yield asked
+    assert not asked, "a third stop signal would have ended the process"

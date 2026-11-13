@@ -2,10 +2,13 @@ import asyncio
 import errno
 import os
 import signal
+import subprocess
+import sys
+import time
 
 import pytest
 
-from aims.terminal import hang_up, on_hangup
+from aims.terminal import AGAIN, hang_up, on_hangup, on_stop
 
 pytestmark = pytest.mark.anyio
 
@@ -57,3 +60,89 @@ async def test_a_hangup_ignored_from_the_start_stays_ignored() -> None:
         assert signal.getsignal(signal.SIGHUP) == signal.SIG_IGN
     finally:
         signal.signal(signal.SIGHUP, before)
+
+
+@pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGTERM])
+async def test_the_second_stop_warns_and_the_third_quits(
+    quits: list[bool], sig: signal.Signals
+) -> None:
+    seen: list[str] = []
+    loop = asyncio.get_running_loop()
+    on_stop(
+        loop,
+        lambda: seen.append("stop"),
+        say=seen.append,
+        last=lambda: seen.append(f"last, {len(quits)} quits"),
+    )
+    try:
+        for n in (1, 2):
+            os.kill(os.getpid(), sig)
+            async with asyncio.timeout(5):
+                while seen.count("stop") < n:  # noqa: ASYNC110
+                    await asyncio.sleep(0.01)
+        assert seen == ["stop", "stop", AGAIN]
+        assert quits == []
+        os.kill(os.getpid(), sig)
+        # Python runs the handler before the loop turns
+        assert seen[3:] == ["last, 0 quits"]
+        assert quits == [True]
+    finally:
+        quits.clear()
+        for handled in (signal.SIGINT, signal.SIGTERM):
+            loop.remove_signal_handler(handled)
+
+
+async def test_a_hangup_does_not_count_as_a_stop(quits: list[bool]) -> None:
+    stops: list[str] = []
+    loop = asyncio.get_running_loop()
+    guard = signal.signal(signal.SIGHUP, lambda *_: None)
+    on_stop(loop, lambda: stops.append("stop"), say=stops.append)
+    try:
+        assert on_hangup(loop, lambda: stops.append("hangup"))
+        for _ in range(4):
+            os.kill(os.getpid(), signal.SIGHUP)
+        async with asyncio.timeout(5):
+            while len(stops) < 4:  # noqa: ASYNC110
+                await asyncio.sleep(0.01)
+        assert stops == ["hangup"] * 4
+    finally:
+        for handled in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            loop.remove_signal_handler(handled)
+        signal.signal(signal.SIGHUP, guard)
+
+
+BLOCKED = """
+import asyncio, sys, time
+from aims.terminal import on_stop
+
+async def main():
+    on_stop(asyncio.get_running_loop(), lambda: None, last=lambda: print("last", flush=True))
+    print("ready", flush=True)
+    time.sleep(60)  # a cleanup that blocks the loop
+
+asyncio.run(main())
+"""
+
+
+@pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGTERM])
+def test_a_third_stop_ends_a_process_whose_loop_is_blocked(sig: signal.Signals) -> None:
+    proc = subprocess.Popen(
+        [sys.executable, "-c", BLOCKED], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    )
+    try:
+        assert proc.stdout is not None
+        assert proc.stdout.readline() == "ready\n"
+        began = time.monotonic()
+        for _ in range(2):
+            proc.send_signal(sig)
+            time.sleep(0.3)
+        assert proc.poll() is None
+        proc.send_signal(sig)
+        out, err = proc.communicate(timeout=20)
+    finally:
+        proc.kill()
+        proc.wait()
+    assert proc.returncode == 130
+    assert out == "last\n"
+    assert err == "quit before the cleanup ended\n"
+    assert time.monotonic() - began < 20

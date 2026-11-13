@@ -53,6 +53,7 @@ from aims.server.serve import (
     server_dir,
     snap_browser,
 )
+from aims.terminal import AGAIN
 
 pytestmark = pytest.mark.anyio
 ROOT = Path(__file__).parent.parent
@@ -431,10 +432,11 @@ def signalled_runner(
 
 @pytest.mark.parametrize("when", ["after a stop", "after a kill", "after a kill as it starts"])
 def test_a_stop_while_the_runner_closes_leaves_the_close_alone(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, when: str
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, quits: list[bool], when: str
 ) -> None:
-    """A stop once the runner closes its stores does nothing: after a first stop, after a
-    second that killed now, or after a second that killed it as it started."""
+    """A stop once the runner closes its stores cancels nothing: after a first stop, after a
+    second that killed now, or after a second that killed it as it started. As the third stop
+    or a later one it quits the process at once, after the second said so."""
     cut: list[str] = []
     start, close = Link.start, LocalEventStore.close
 
@@ -480,6 +482,9 @@ def test_a_stop_while_the_runner_closes_leaves_the_close_alone(
     monkeypatch.undo()
     killed = when != "after a stop"
     assert cut == []
+    assert quits
+    quits.clear()
+    assert AGAIN in result.output
     assert result.exit_code == (EXIT_CANCELLED if killed else 0), result.output
     assert ("killing now" in result.output) == killed
 
@@ -1812,6 +1817,60 @@ async def test_a_ctrl_c_in_the_terminal_stops_the_local_runner_once(tmp_path: Pa
     assert "killing now" not in err
     assert "the local runner exited" not in err
     assert "the local runner was killed" not in err
+
+
+@pytest.mark.docker
+async def test_a_third_ctrl_c_quits_aims_ui_at_once_with_its_runner(tmp_path: Path) -> None:
+    if not os.environ.get("AIMS_REQUIRE_DOCKER"):
+        try:
+            backend = await DockerBackend.open(audit="snapshot")
+            await backend.close()
+        except Exception as e:
+            pytest.skip(f"Docker is not available: {e}")
+    runner = 0
+    try:
+        async with ui_process(tmp_path, "--audit", "snapshot", session=True) as (proc, url):
+            base = url.partition("/#code=")[0]
+            token = json.loads((tmp_path / "server" / "server.json").read_text())["operator"]
+            async with httpx2.AsyncClient(
+                base_url=base, headers={"Authorization": f"Bearer {token}"}, trust_env=False
+            ) as c:
+                async with asyncio.timeout(120):
+                    while True:
+                        runners = (await c.get("/api/runners")).json()
+                        if runners and runners[0]["connected"]:
+                            break
+                        await asyncio.sleep(0.2)
+            children = await asyncio.create_subprocess_exec(
+                "pgrep", "-P", str(proc.pid), stdout=asyncio.subprocess.PIPE
+            )
+            runner = int((await children.communicate())[0].split()[0])
+            for _ in range(3):
+                os.killpg(proc.pid, signal.SIGINT)
+                # signals sent with no gap arrive as one
+                await asyncio.sleep(0.05)
+            assert proc.stderr is not None
+            async with asyncio.timeout(20):
+                err = (await proc.stderr.read()).decode()
+                assert await proc.wait() == 130
+        assert "quit before the cleanup ended" in err
+
+        def gone() -> bool:
+            try:
+                os.kill(runner, 0)
+            except ProcessLookupError:
+                return True
+            return False
+
+        await until(gone, 10)
+        runner = 0
+    finally:
+        if runner:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(runner, signal.SIGKILL)
+        # what the next start does: it removes what the killed runner left
+        backend = await DockerBackend.open(audit="snapshot")
+        await backend.close()
 
 
 async def helpers_of(pid: int) -> list[str]:
