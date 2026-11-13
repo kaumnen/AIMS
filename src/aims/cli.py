@@ -1331,6 +1331,11 @@ async def _run(**o: Any) -> int:
                     logging.getLogger("aims.run").exception("scoring run %s failed", run_id)
                     why = shown(f"{type(e).__name__}: {e}")
                     err.print(f"[yellow]run {run_id} was not scored:[/]", why)
+                finally:
+                    # A score run that never began has no line to ship. Its shipper would
+                    # wait for one until the link closes, and the drain for all of its time.
+                    if link is not None and not store.holds(score_id):
+                        link.unship(score_id)
 
             async def execute(batch: list[Runner]) -> list[Result]:
                 # Every run ends, its seal too, before this returns or raises: what follows

@@ -650,6 +650,44 @@ class QuietLink:
         await self.client.aclose()
 
 
+@pytest.mark.parametrize("began", [False, True])
+def test_a_score_run_that_never_began_is_not_left_shipping(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, began: bool
+) -> None:
+    from aims.run.scoring import ScoreError
+
+    shipped: list[str] = []
+    unshipped: list[str] = []
+
+    class Recording(QuietLink):
+        def ship(self, run_id: str, *, seen: bool = False) -> None:
+            shipped.append(run_id)
+
+        def unship(self, run_id: str) -> None:
+            unshipped.append(run_id)
+
+    async def run(self: Runner) -> Result:
+        return await sealed(self)
+
+    async def score(store: Any, settings: Any, run: str, *, run_id: str) -> None:
+        if began:
+            await store.create_run(RunStarted(scenario="s", oversight="observe"), run_id=run_id)
+            await store.append(run_id, [Draft(RunFinished(status="failed"))])
+        raise ScoreError("the truth file does not check")
+
+    with monkeypatch.context() as m:
+        m.setattr("aims.cli._link", lambda *args: ("http://cp.invalid", "token"))
+        m.setattr("aims.node.link.Link", Recording)
+        m.setattr(DockerBackend, "open", backend)
+        m.setattr(Runner, "run", run)
+        m.setattr("aims.run.scoring.score_sealed", score)
+        result = invoke(*run_args(tmp_path), "--yes")
+    assert result.exit_code == 0, result.output
+    assert "was not scored: the truth file does not check" in " ".join(result.output.split())
+    assert len(shipped) == 1
+    assert unshipped == ([] if began else shipped)
+
+
 @pytest.mark.parametrize(
     ("step", "stopped"), [("lines", True), ("drain", True), ("store", True), ("store", False)]
 )
