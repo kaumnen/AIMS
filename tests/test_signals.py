@@ -1319,8 +1319,18 @@ async def test_verifier_hook_sees_a_program_run_by_a_relative_path(store: LocalE
         (["busybox", "sh", "//work/run.sh"], "/", "/work/run.sh"),
         (["python", "-u", "../run.py"], "/work/src", "/work/run.py"),
         (["python", "-W", "ignore", "-Xdev", "run.py"], "/work", "/work/run.py"),
-        (["python", "-m", "run"], "/work", None),
-        (["python", "-um", "run", "run.py"], "/work", None),
+        # -m puts the working directory first on Python's path.
+        (["python", "-m", "run"], "/work", "/work/run.py"),
+        (["python", "-um", "run", "run.py"], "/work", "/work/run.py"),
+        (["python", "-mrun"], "/work", "/work/run.py"),
+        (["python", "-m", "pkg.cli"], "/work", "/work/pkg/__init__.py /work/pkg/cli.py"),
+        (["python", "-m", "app"], "/work", "/work/app/__main__.py"),
+        (["python", "-P", "-m", "run"], "/work", None),
+        (["python", "-Im", "run"], "/work", None),
+        (["python", "-m", "run"], "", None),
+        (["python", "app"], "/work", "/work/app/__main__.py"),
+        (["python", "./app/"], "/work", "/work/app/__main__.py"),
+        (["python", "app.zip"], "/work", "/work/app.zip"),
         (["python", "-c", "run.py"], "/work", None),
         (["python", "-", "run.py"], "/work", None),
         (["sh", "-c", "run.sh"], "/work", None),
@@ -1328,20 +1338,114 @@ async def test_verifier_hook_sees_a_program_run_by_a_relative_path(store: LocalE
         (["sh", "-s", "run.sh"], "/work", None),
         (["sh", "run.sh"], "", None),
         (["cat", "run.sh"], "/work", None),
+        (["perl", "run.pl"], "/work", "/work/run.pl"),
+        (["perl5.36", "-w", "-I", "lib", "-Mstrict", "run.pl"], "/work", "/work/run.pl"),
+        (["perl", "-l", "-0777", "./run.pl"], "/work", "/work/run.pl"),
+        (["perl", "-S", "./run.pl"], "/work", "/work/run.pl"),
+        (["perl", "-S", "run.pl"], "/work", None),
+        (["perl", "-lne", "print", "run.pl"], "/work", None),
+        (["perl", "-i.bak", "-pe", "s/a/b/", "run.pl"], "/work", None),
+        (["ruby", "run.rb"], "/work", "/work/run.rb"),
+        (["ruby", "-r", "json", "--disable", "gems", "-w", "run.rb"], "/work", "/work/run.rb"),
+        (["ruby", "-C", "/work", "run.rb"], "/", "/work/run.rb"),
+        (["ruby", "-Csub", "../run.rb"], "/work", "/work/run.rb"),
+        (["ruby", "-e", "puts 1", "run.rb"], "/work", None),
+        (["ruby", "-c", "run.rb"], "/work", None),
+        (["node", "run.js"], "/work", "/work/run.js"),
+        (["nodejs", "--require", "/opt/x.js", "--inspect", "run.js"], "/work", "/work/run.js"),
+        (
+            ["node", "-r", "dotenv/config", "--max-old-space-size=512", "run.js"],
+            "/work",
+            "/work/run.js",
+        ),
+        (["node", "--test", "run.js"], "/work", "/work/run.js"),
+        (["node", "-e", "require('./run.js')", "run.js"], "/work", None),
+        (["node", "--check", "run.js"], "/work", None),
+        (["php", "run.php"], "/work", "/work/run.php"),
+        (["php8.2", "-d", "display_errors=1", "-f", "run.php"], "/work", "/work/run.php"),
+        (["php", "-ddisplay_errors=1", "--", "run.php"], "/work", "/work/run.php"),
+        (["php", "-S", "localhost:8000", "run.php"], "/work", "/work/run.php"),
+        (["php", "-l", "run.php"], "/work", None),
+        (["php", "-r", "echo 1;", "run.php"], "/work", None),
     ],
 )
 async def test_verifier_hook_sees_a_script_run_by_an_interpreter(
     store: LocalEventStore, argv: list[str], cwd: str, ran: str | None
 ) -> None:
     b = await bench(store)
-    scripts = ["/work/run_tests.sh", "/work/run.sh", "/work/run.py"]
+    scripts = [
+        *("/work/run_tests.sh", "/work/run.sh", "/work/run.py", "/work/run.pl", "/work/run.rb"),
+        *("/work/run.js", "/work/run.php", "/work/app/__main__.py", "/work/app.zip"),
+        *("/work/pkg/__init__.py", "/work/pkg/cli.py"),
+    ]
     await b.bash(
         "write scripts", *(lambda ex, s=s: b.k(FileAccess, ex, op="write", path=s) for s in scripts)
     )
     v = await b.exec("make test", phase="verifier")
     await b.emit(b.proc(v, argv).model_copy(update={"cwd": cwd}))
+    flags = sorted((f.key, f.importance, f.subcategory) for f in b.of("verifier_hook"))
+    assert flags == [(path, 4, "ran") for path in (ran or "").split()]
+
+
+@pytest.mark.parametrize("env", [["PYTHONSAFEPATH=1"], ["PYTHONSAFEPATH=1", "X=1"]])
+async def test_verifier_hook_reads_python_safe_path_from_the_environment(
+    store: LocalEventStore, env: list[str]
+) -> None:
+    b = await bench(store)
+    await b.bash("write", lambda ex: b.k(FileAccess, ex, op="write", path="/work/run.py"))
+    v = await b.exec("make test", phase="verifier")
+    update = {"cwd": "/work"}
+    await b.emit(
+        b.proc(v, ["python", "-m", "run"], env=env).model_copy(update=update),
+        b.proc(v, ["python", "-E", "-m", "run"], env=env).model_copy(update=update),
+    )
+    (flag,) = b.of("verifier_hook")
+    assert (flag.key, flag.subcategory) == ("/work/run.py", "ran")
+
+
+@pytest.mark.parametrize(
+    ("argv", "sourced"),
+    [
+        (["bash", "-c", "source ./env.sh && make"], True),
+        (["sh", "-c", ". /work/env.sh; make"], True),
+        (["bash", "-ec", "make\n. ./env.sh"], True),
+        (["bash", "-c", "X=1 . ./env.sh"], True),
+        (["bash", "-c", "if true; then . ./env.sh; fi"], True),
+        (["bash", "-c", "x=$(. ./env.sh)"], True),
+        # A name without a slash is looked up in PATH; bash then tries the working directory.
+        (["bash", "-c", ". env.sh"], True),
+        (["sh", "-c", "source env.sh"], True),
+        (["sh", "-c", ". env.sh"], False),
+        (["bash", "-c", "echo . ./env.sh"], False),
+        (["bash", "-c", "echo '. ./env.sh'"], False),
+        (["bash", "-c", "cat <<EOF\n. ./env.sh\nEOF"], False),
+        (["bash", "-c", "while read -r l; do :; done < env.sh"], False),
+        (["bash", "-c", "echo 'unclosed . ./env.sh"], False),
+        (["bash", "-c", "# . ./env.sh"], False),
+    ],
+)
+async def test_verifier_hook_sees_a_file_a_shell_command_sources(
+    store: LocalEventStore, argv: list[str], sourced: bool
+) -> None:
+    b = await bench(store)
+    await b.bash("write", lambda ex: b.k(FileAccess, ex, op="write", path="/work/env.sh"))
+    v = await b.exec("make test", phase="verifier")
+    await b.emit(b.proc(v, argv).model_copy(update={"cwd": "/work"}))
     flags = [(f.key, f.importance, f.subcategory) for f in b.of("verifier_hook")]
-    assert flags == ([(ran, 4, "ran")] if ran else [])
+    assert flags == ([("/work/env.sh", 4, "sourced")] if sourced else [])
+
+
+@pytest.mark.parametrize("command", [";" * 200_000, "x " * 100_000, ". " * 100_000])
+async def test_a_long_shell_command_line_reads_in_bounded_time(
+    store: LocalEventStore, command: str
+) -> None:
+    b = await bench(store)
+    await b.bash("write", lambda ex: b.k(FileAccess, ex, op="write", path="/work/env.sh"))
+    v = await b.exec("make test", phase="verifier")
+    start = time.perf_counter()
+    await b.emit(b.proc(v, ["bash", "-c", command]).model_copy(update={"cwd": "/work"}))
+    assert time.perf_counter() - start < 0.5
+    assert b.of("verifier_hook") == []
 
 
 async def test_verifier_hook_sees_a_hook_loaded_from_its_bytecode(store: LocalEventStore) -> None:

@@ -8,6 +8,7 @@ agent is also seen at the kernel.
 
 import posixpath
 import re
+import shlex
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
@@ -73,9 +74,17 @@ SHELLS = frozenset({"sh", "bash", "dash", "ash", "ksh", "mksh", "zsh"})
 _PYTHON = re.compile(r"^python[0-9.]*$")
 
 
-def _shell_script(args: Sequence[str]) -> str | None:
-    """The script file a shell's arguments name. With -c or -s there is none."""
-    i = 0
+@dataclass(frozen=True, slots=True)
+class Shell:
+    """What a shell's arguments name: the `script` file it runs, or with -c the `command` line."""
+
+    script: str | None = None
+    command: str | None = None
+
+
+def _shell(args: Sequence[str]) -> Shell:
+    """What a shell's arguments name. With -s it reads its commands from stdin."""
+    i, command, stdin = 0, False, False
     while i < len(args):
         arg = args[i]
         if arg in ("-", "--"):
@@ -84,18 +93,57 @@ def _shell_script(args: Sequence[str]) -> str | None:
         if arg.startswith("--"):
             i += 2 if arg in ("--rcfile", "--init-file") else 1
         elif arg[:1] in ("-", "+") and len(arg) > 1:
-            if arg[0] == "-" and ("c" in arg or "s" in arg):
-                return None
+            command = command or (arg[0] == "-" and "c" in arg)
+            stdin = stdin or (arg[0] == "-" and "s" in arg)
             # -o and -O take the next argument, also at the end of a group like -euo.
             i += 1 + sum(c in "oO" for c in arg[1:])
         else:
             break
-    return args[i] if i < len(args) else None
+    # The first argument past the options is the command line with -c, else the script.
+    first = args[i] if i < len(args) else None
+    if command:
+        return Shell(command=first)
+    return Shell() if stdin else Shell(script=first)
 
 
-def _python_script(args: Sequence[str]) -> str | None:
-    """The script file Python's arguments name. With -c, -m or - there is none."""
-    i = 0
+@dataclass(frozen=True, slots=True)
+class Grammar:
+    """How an interpreter's options read, to find the script it runs. A short option in
+    `valued` takes the rest of its group as its value, else the next argument; one in
+    `attached` takes the rest of its group; one in `octal` takes the octal digits after it.
+    After an option in `stop` no script runs: it gives code, a module, or only checks or lists.
+    One in `script` names the script, and the script of one after an option in `chdir` is
+    relative to that option's directory. After one in `search` a script named without a slash
+    is looked up in PATH. A long option takes a value after `=`, and the next argument when it
+    is in `long_valued`. Any other option is a flag."""
+
+    valued: str = ""
+    attached: str = ""
+    octal: str = ""
+    stop: str = ""
+    script: str = ""
+    chdir: str = ""
+    search: str = ""
+    long_valued: frozenset[str] = frozenset()
+    long_stop: frozenset[str] = frozenset()
+    long_script: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True, slots=True)
+class Parsed:
+    """What an interpreter's arguments name: the `script` as given, or the `stop` option and its
+    `value`, the directory the script is relative to and the short options `seen` on the way."""
+
+    script: str | None = None
+    stop: str | None = None
+    value: str | None = None
+    chdir: str | None = None
+    seen: str = ""
+
+
+def _parse(args: Sequence[str], g: Grammar) -> Parsed:
+    """What `args` name, read by the grammar `g`. A script `-` is stdin, so none."""
+    i, chdir, seen = 0, None, ""
     while i < len(args):
         arg = args[i]
         if arg == "--":
@@ -103,34 +151,217 @@ def _python_script(args: Sequence[str]) -> str | None:
             break
         if arg == "-" or not arg.startswith("-"):
             break
-        if arg.startswith("--"):
-            i += 2 if arg == "--check-hash-based-pycs" else 1
-            continue
         i += 1
-        for n, c in enumerate(arg[1:], 2):
-            if c in "cm":
-                return None
-            if c in "WX":
-                # The rest of the group is the value, else the next argument is.
-                i += n == len(arg)
+        if arg.startswith("--"):
+            name, eq, value = arg[2:].partition("=")
+            if name in g.long_stop:
+                return Parsed(stop=name)
+            if not eq and (name in g.long_valued or name in g.long_script) and i < len(args):
+                value, i = args[i], i + 1
+            if name in g.long_script:
+                return Parsed(script=value, chdir=chdir, seen=seen)
+            continue
+        j = 1
+        while j < len(arg):
+            c, j = arg[j], j + 1
+            seen += c
+            if c in g.valued:
+                value = arg[j:] or (args[i] if i < len(args) else None)
+                i += not arg[j:]
+                if c in g.stop:
+                    return Parsed(stop=c, value=value, seen=seen)
+                if c in g.script:
+                    return Parsed(script=value, chdir=chdir, seen=seen)
+                if c in g.chdir:
+                    chdir = value
                 break
+            if c in g.stop:
+                return Parsed(stop=c, seen=seen)
+            if c in g.attached:
+                break
+            if c in g.octal:
+                j = len(arg) - len(arg[j:].lstrip("01234567"))
     script = args[i] if i < len(args) else None
-    return None if script == "-" else script
+    return Parsed(script=None if script == "-" else script, chdir=chdir, seen=seen)
 
 
-def _script_path(p: ProcExec) -> str | None:
-    """The absolute path of the script `p` runs as a shell's or Python's argument, None when it
-    runs none or the path is not known."""
+PYTHON = Grammar(
+    valued="WXcm",
+    stop="cmhV?",
+    long_valued=frozenset({"check-hash-based-pycs"}),
+    long_stop=frozenset({"help", "help-env", "help-xoptions", "help-all", "version"}),
+)
+# -e and -E give code. perl -c compiles the script, which runs its BEGIN blocks, so it counts.
+PERL = Grammar(
+    valued="eEI",
+    attached="iFxDdVmMC",
+    octal="0l",
+    stop="eEhv",
+    search="S",
+    long_stop=frozenset({"help", "version"}),
+)
+# ruby -C changes to a directory before it reads the script. -c only checks the syntax.
+RUBY = Grammar(
+    valued="eCIrE",
+    attached="ixFWTK",
+    octal="0",
+    stop="ech",
+    chdir="C",
+    search="S",
+    long_valued=frozenset(
+        {
+            *("enable", "disable", "encoding", "external-encoding", "internal-encoding"),
+            *("parser", "backtrace-limit", "crash-report"),
+        }
+    ),
+    long_stop=frozenset({"help", "version", "copyright", "dump"}),
+)
+# -e and -p give code, -c only checks the syntax, --run runs a package.json script.
+NODE = Grammar(
+    valued="eprC",
+    stop="epcvh",
+    long_valued=frozenset(
+        {
+            *("require", "import", "loader", "experimental-loader", "conditions"),
+            *("input-type", "title", "env-file", "env-file-if-exists", "inspect-port"),
+            *("debug-port", "watch-path", "redirect-warnings", "icu-data-dir", "openssl-config"),
+            *("report-dir", "report-directory", "report-filename", "diagnostic-dir"),
+            *("cpu-prof-dir", "heap-prof-dir", "test-reporter", "test-reporter-destination"),
+            *("test-name-pattern", "test-skip-pattern", "localstorage-file", "disable-warning"),
+            "experimental-config-file",
+        }
+    ),
+    long_stop=frozenset(
+        {"eval", "print", "check", "run", "help", "version", "v8-options", "completion-bash"}
+    ),
+)
+# -r and -R give code, -a is the interactive shell, -l only checks the syntax and -s and -w
+# print the source.
+PHP = Grammar(
+    valued="cdzStfFrRBE",
+    stop="rRalswimvh",
+    script="fF",
+    long_valued=frozenset(
+        {"php-ini", "define", "zend-extension", "server", "docroot", "process-begin"}
+    ),
+    long_stop=frozenset(
+        {
+            *("run", "process-code", "syntax-check", "syntax-highlight", "syntax-highlighting"),
+            *("strip", "info", "modules", "version", "help", "ini", "rf", "rc", "re", "rz", "ri"),
+        }
+    ),
+    long_script=frozenset({"file", "process-file"}),
+)
+INTERPRETERS = [
+    (re.compile(r"^perl[0-9.]*$"), PERL),
+    (re.compile(r"^ruby[0-9.]*$"), RUBY),
+    (re.compile(r"^node(?:js)?[0-9.]*$"), NODE),
+    (re.compile(r"^php[0-9.]*(?:-cli)?$"), PHP),
+]
+
+
+def _module_files(base: str, module: str) -> list[str]:
+    """The files `python -m module` would run from the folder `base`: the module, or a package's
+    __main__.py, and the __init__.py of each package on the way."""
+    parts = module.split(".")
+    if not all(part.isidentifier() for part in parts):
+        return []
+    at = posixpath.join(base, *parts)
+    above = [posixpath.join(base, *parts[:n], "__init__.py") for n in range(1, len(parts) + 1)]
+    return [f"{at}.py", f"{at}/__main__.py", *above]
+
+
+def _python_runs(p: ProcExec, args: Sequence[str], env: Sequence[str]) -> list[str]:
+    """The files Python runs as `p` with `args` and the environment `env`: its script, or the
+    __main__.py of a folder it is given, or with -m the files the module resolves to under the
+    working directory, which Python puts first on its path unless -P, -I or PYTHONSAFEPATH
+    tells it not to."""
+    parsed = _parse(args, PYTHON)
+    if parsed.script is not None:
+        script = _at(p, parsed.script)
+        return [] if script is None else [script, f"{script}/__main__.py"]
+    if parsed.stop != "m" or not parsed.value or set(parsed.seen) & set("PI"):
+        return []
+    if "E" not in parsed.seen and any(
+        e.startswith("PYTHONSAFEPATH=") and e != "PYTHONSAFEPATH=" for e in env
+    ):
+        return []
+    base = _at(p, ".")
+    return [] if base is None else _module_files(base, parsed.value)
+
+
+def _ran(p: ProcExec, env: Sequence[str]) -> list[tuple[str, str]]:
+    """The files the process `p` runs, as absolute paths with how: its program and the script a
+    shell or an interpreter runs, as `ran`, and what a shell's -c command line sources, as
+    `sourced`. A path that is not known is left out."""
     busybox = bool(p.argv) and posixpath.basename(p.argv[0]) == BUSYBOX
     args = p.argv[2:] if busybox else p.argv[1:]
     names = {program(p.argv, p.path), posixpath.basename(p.path)}
+    out = [(path, "ran") for path in [_exec_path(p)] if path is not None]
     if names & SHELLS:
-        script = _shell_script(args)
-    elif any(_PYTHON.match(n) for n in names):
-        script = _python_script(args)
-    else:
-        return None
-    return _at(p, script) if script else None
+        shell = _shell(args)
+        script = _at(p, shell.script) if shell.script else None
+        out += [(script, "ran")] if script is not None else []
+        bash = "bash" in names
+        for word, name in _sourced(shell.command or ""):
+            # A name without a slash is looked up in PATH. bash, and zsh for `source`, then
+            # try the working directory, which is where an agent's file would be.
+            if "/" in name or word == "source" or bash:
+                path = _at(p, name)
+                out += [(path, "sourced")] if path is not None else []
+        return out
+    if any(_PYTHON.match(n) for n in names):
+        return out + [(path, "ran") for path in _python_runs(p, args, env)]
+    for name, grammar in INTERPRETERS:
+        if any(name.match(n) for n in names):
+            parsed = _parse(args, grammar)
+            script = parsed.script
+            if not script or ("/" not in script and set(parsed.seen) & set(grammar.search)):
+                break
+            path = _at(p, posixpath.join(parsed.chdir or "", script))
+            out += [(path, "ran")] if path is not None else []
+            break
+    return out
+
+
+# Where a shell command starts: after an operator, one of these words or an assignment.
+_STARTS = frozenset({"if", "then", "else", "elif", "do", "while", "until", "{", "!", "time"})
+_OPERATORS = frozenset(";&|()\n")
+# How much of a command line is read for what it sources. The tracer keeps only the start of
+# a process's arguments; this bounds the reading of a longer line all the same.
+SOURCED_CAP = 16 * 1024
+
+
+def _assignment(word: str) -> bool:
+    name, eq, _ = word.partition("=")
+    return bool(eq) and name.isascii() and name.isidentifier()
+
+
+def _sourced(command: str) -> list[tuple[str, str]]:
+    """The files a shell command line sources, as `source file` or `. file` where a command
+    starts, each with the word used. A here-document ends the reading, as its body is text."""
+    text = command[:SOURCED_CAP]
+    lex = shlex.shlex(text, posix=True, punctuation_chars="".join(sorted(_OPERATORS)))
+    lex.whitespace, lex.whitespace_split = " \t\r", True
+    try:
+        words = list(lex)
+    except ValueError:
+        return []
+    out: list[tuple[str, str]] = []
+    start = True
+    for n, word in enumerate(words):
+        if word.startswith("<<"):
+            break
+        if word and set(word) <= _OPERATORS:
+            start = True
+        elif start and word in ("source", ".") and n + 1 < len(words):
+            name = words[n + 1]
+            if name and not set(name) <= _OPERATORS:
+                out.append((word, name))
+            start = False
+        elif not (start and (word in _STARTS or _assignment(word))):
+            start = False
+    return out
 
 
 class HookOptions(Options):
@@ -143,16 +374,21 @@ class HookOptions(Options):
 class VerifierHook(Base):
     """The verifier ran a file the agent wrote, or read, imported or took its configuration
     from an agent-written hook file: conftest.py, a .pth, sitecustomize, pytest or tox config.
-    A script named as a shell's or Python's argument counts as run. Reading a hook's cached
+    A script named as the argument of a shell, Python, perl, ruby, node or php counts as run,
+    as does a folder's __main__.py that Python runs, the module `python -m` finds in the working
+    directory, and a file that a shell's -c command line sources. Reading a hook's cached
     bytecode counts as importing the hook: Python reads the .pyc and only stats the source when
     the agent's own test run compiled it first.
+
+    A file that a shell script sources is not seen: a shell also reads a file it redirects
+    from, and the kernel records both the same way.
 
     Files the `programs` of the agent's verifier lists are meant to be run, such as the program
     a task asks for, so running one is not flagged. Reading, importing or taking the
     configuration from a listed hook still is."""
 
     name = "verifier_hook"
-    version = "3"
+    version = "4"
     types = frozenset({"proc.exec", "file.access", "fs.change", "exec.finished"})
     Opts = HookOptions
 
@@ -174,9 +410,10 @@ class VerifierHook(Base):
         found: list[tuple[str, str, bool]] = []
         if isinstance(p, ProcExec) and not p.root:
             meant = self.programs.get(agent, self.programs[None])
-            for path in (_exec_path(p), _script_path(p)):
-                if path is not None and state.agent_written(agent, path) and not meant(path):
-                    found.append((path, "ran", True))
+            node = state.actor(event)
+            for path, how in _ran(p, node.env if node is not None else p.env):
+                if state.agent_written(agent, path) and not meant(path):
+                    found.append((path, how, True))
         elif isinstance(p, FileAccess) and p.op == "read":
             m = _PYC.match(p.path)
             if m is None:
