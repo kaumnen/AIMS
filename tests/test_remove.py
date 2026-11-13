@@ -249,6 +249,32 @@ async def test_the_text_index_passes_its_check_while_runs_hold_resource_windows(
     text_index_ok(root)
 
 
+async def test_the_text_index_rows_are_named_by_one_condition(tmp_path: Path) -> None:
+    """The view, the insert trigger and a remove all say HAS_TEXT, and the schema is the one
+    index version 12 wrote, so no index is rebuilt for it."""
+    root = tmp_path / "runs"
+    said: list[str] = []
+    async with await LocalEventStore.open(root) as store:
+        async with store._index._db.execute(
+            "select name, sql from sqlite_master where name in ('events_text', 'events_fts_insert')"
+        ) as cur:
+            made = {row[0]: row[1] for row in await cur.fetchall()}
+        run_id = await long_run(store)
+        await store._index._db.set_trace_callback(said.append)
+        await store.remove(run_id)
+    assert index_module.VERSION == 12
+    assert made == {
+        "events_text": "CREATE VIEW events_text as select id, text from events where text != ''",
+        "events_fts_insert": "CREATE TRIGGER events_fts_insert after insert on events when"
+        " new.text != '' begin\n    insert into events_fts (rowid, text) values (new.id,"
+        " new.text);\nend",
+    }
+    deletes = [s for s in said if s.startswith("insert into events_fts (events_fts")]
+    assert deletes
+    assert all(s.endswith(f" and {index_module.HAS_TEXT}") for s in deletes)
+    assert index_module.HAS_TEXT == "text != ''"
+
+
 CUT = (
     "create temp trigger cut before delete on main.events when old.seq >= 5"
     " begin select raise(abort, 'cut short'); end"

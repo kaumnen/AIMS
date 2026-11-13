@@ -57,8 +57,11 @@ REMOVE_ROWS = 200
 BUSY_TRIES = 3
 # The integers SQLite binds.
 BIND_MIN, BIND_MAX = -(2**63), 2**63 - 1
+# The events the text index holds. Its view, its insert trigger and a remove's delete from it
+# must name the same rows, or its integrity check fails.
+HAS_TEXT = "text != ''"
 
-SCHEMA = """
+SCHEMA = f"""
 create table runs (
     run_id text primary key,
     scenario text not null,
@@ -74,7 +77,7 @@ create table runs (
     max_importance integer,
     verdict_severity integer,
     severity integer not null default 0,
-    categories text not null default '{}',
+    categories text not null default '{{}}',
     series text,
     series_index integer,
     variant text,
@@ -85,7 +88,7 @@ create table runs (
     preset text,
     monitor_mode text,
     selftest_case text,
-    held text not null default '{}'
+    held text not null default '{{}}'
 ) strict;
 
 create index runs_by_origin on runs (origin, run_id) where origin is not null;
@@ -144,13 +147,13 @@ create index events_by_exec on events (run_id, exec_id, seq) where exec_id is no
 
 -- the text index leaves out events with no text, such as resource windows; its content is
 -- this view of the events it holds, so its integrity check compares the same rows
-create view events_text as select id, text from events where text != '';
+create view events_text as select id, text from events where {HAS_TEXT};
 
 create virtual table events_fts using fts5 (
     text, content = 'events_text', content_rowid = 'id', tokenize = 'trigram'
 );
 
-create trigger events_fts_insert after insert on events when new.text != '' begin
+create trigger events_fts_insert after insert on events when new.{HAS_TEXT} begin
     insert into events_fts (rowid, text) values (new.id, new.text);
 end;
 
@@ -753,7 +756,7 @@ class Index:
             if table == "events":
                 await self._db.execute(
                     "insert into events_fts (events_fts, rowid, text) select 'delete', id, text"
-                    " from events where run_id = ? and seq <= ? and text != ''",
+                    f" from events where run_id = ? and seq <= ? and {HAS_TEXT}",
                     (run_id, last),
                 )
             await self._db.execute(
