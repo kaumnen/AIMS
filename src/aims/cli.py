@@ -2658,14 +2658,36 @@ def _missing(path: Path) -> list[Path]:
     return found
 
 
-def _unmake(made: list[Path]) -> None:
-    """Remove the database in the first of the folders `made`, then each folder, deepest
-    first. A folder that holds anything else stays."""
-    if not made:
-        return
-    for suffix in ("", "-wal", "-shm", "-journal"):
-        with contextlib.suppress(OSError):
-            (made[0] / f"server.sqlite{suffix}").unlink(missing_ok=True)
+def _new_db(path: Path) -> tuple[int, int] | None:
+    """Make the empty file of a new control plane database at `path`, readable by its owner
+    only, with the folders it needs. Returns the file's device and inode; None when a file was
+    there, which is not this command's to remove."""
+    import os
+
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return None
+    try:
+        found = os.fstat(fd)
+    finally:
+        os.close(fd)
+    return found.st_dev, found.st_ino
+
+
+def _unmake(made: list[Path], db: Path, ours: tuple[int, int] | None) -> None:
+    """Remove the database file `db` while it is still the one this command made, which `ours`
+    names, with its journal files; then each folder in `made`, deepest first. A database
+    someone else made stays, as does a folder that holds anything."""
+    try:
+        found = db.stat() if ours is not None else None
+    except OSError:
+        found = None
+    if found is not None and (found.st_dev, found.st_ino) == ours:
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            with contextlib.suppress(OSError):
+                db.with_name(f"{db.name}{suffix}").unlink(missing_ok=True)
     for path in made:
         with contextlib.suppress(OSError):
             path.rmdir()
@@ -2706,11 +2728,18 @@ def token_create(
         refuse(f"{file} is a directory")
     if file is not None and not file.parent.is_dir():
         refuse(f"no directory {file.parent}")
-    made = _missing(data_dir or server_dir())
+    folder = data_dir or server_dir()
+    made = _missing(folder)
     wrote = False
+    # the database file, when this command made it
+    ours: tuple[int, int] | None = None
 
     async def main() -> str | None:
-        nonlocal wrote
+        nonlocal wrote, ours
+        try:
+            ours = await asyncio.to_thread(_new_db, folder / "server.sqlite")
+        except OSError as e:
+            refuse(f"cannot open {folder / 'server.sqlite'}: {e}")
         db = await _db(data_dir, make=True)
         detail = f"role {role}"
         try:
@@ -2771,10 +2800,10 @@ def token_create(
             typer.echo(f"error: {e}", err=True)
             raise typer.Exit(EXIT_FAILED) from None
     except BaseException:
-        # A create that wrote no token leaves no folder it made, as one that was refused at
-        # once does. A token written stays with its database.
+        # A create that wrote no token leaves no folder or database it made, as one that was
+        # refused at once does. A token written stays with its database.
         if not wrote:
-            _unmake(made)
+            _unmake(made, folder / "server.sqlite", ours)
         raise
     if file is None:
         typer.echo(token)

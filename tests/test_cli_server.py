@@ -27,6 +27,7 @@ from proxy import Server, environ, serving
 from test_cli_monitor import NoDocker
 from typer.testing import CliRunner
 
+from aims import cli
 from aims.cli import EXIT_CANCELLED, app
 from aims.config import MAX_KEEP_DAYS
 from aims.events import Draft, LocalEventStore, RunFinished, RunStarted, ToolCall
@@ -1240,6 +1241,67 @@ def test_a_failed_token_create_leaves_no_data_folder_it_made(
     assert (r.exit_code, type(r.exception)) == (1, SystemExit), r.output
     assert r.output.startswith("error: cannot ")
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("fails", ["open", "file"])
+def test_a_failed_token_create_in_an_empty_data_folder_leaves_it_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fails: str
+) -> None:
+    chmod = Path.chmod
+
+    def no_chmod(self: Path, mode: int, **kwargs: Any) -> None:
+        if self.name == "server.sqlite":
+            raise PermissionError(1, "Operation not permitted")
+        chmod(self, mode, **kwargs)
+
+    def full(path: Path, data: str) -> Path:
+        raise OSError(28, "No space left on device")
+
+    data = tmp_path / "data"
+    data.mkdir()
+    args = ["token", "create", "r1", "--role", "runner", "--data-dir", str(data)]
+    if fails == "open":
+        monkeypatch.setattr(Path, "chmod", no_chmod)
+    else:
+        monkeypatch.setattr("aims.server.serve.private_temp", full)
+        args += ["--file", str(tmp_path / "r1.token")]
+    r = CliRunner().invoke(app, args)
+    monkeypatch.undo()
+    assert (r.exit_code, type(r.exception)) == (1, SystemExit), r.output
+    assert list(data.iterdir()) == []
+
+
+def test_a_failed_token_create_leaves_a_database_another_process_made(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The data folder is not there when the create starts. Another process, such as a first
+    `aims ui`, makes it and its database before the create opens it. The open fails, and the
+    database stays with what the other process put in it."""
+    chmod = Path.chmod
+    missing = cli._missing
+    data = tmp_path / "data"
+
+    def no_chmod(self: Path, mode: int, **kwargs: Any) -> None:
+        if self.name == "server.sqlite":
+            raise PermissionError(1, "Operation not permitted")
+        chmod(self, mode, **kwargs)
+
+    def raced(path: Path) -> list[Path]:
+        found = missing(path)
+        data.mkdir(mode=0o700)
+        with contextlib.closing(sqlite3.connect(data / "server.sqlite")) as db:
+            db.execute("create table theirs (x)")
+            db.commit()
+        return found
+
+    monkeypatch.setattr("aims.cli._missing", raced)
+    monkeypatch.setattr(Path, "chmod", no_chmod)
+    r = CliRunner().invoke(app, ["token", "create", "r1", "--data-dir", str(data)])
+    monkeypatch.undo()
+    assert (r.exit_code, type(r.exception)) == (1, SystemExit), r.output
+    with contextlib.closing(sqlite3.connect(data / "server.sqlite")) as db:
+        tables = {row[0] for row in db.execute("select name from sqlite_master")}
+    assert "theirs" in tables
 
 
 def test_a_token_file_that_cannot_be_written_keeps_the_old_value(tmp_path: Path) -> None:
