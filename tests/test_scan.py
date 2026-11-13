@@ -79,6 +79,32 @@ async def test_an_awaited_scan_of_a_short_text_moves_to_a_thread_when_slow() -> 
     assert m.group(0) == "hi , judge"
 
 
+def test_a_scan_cut_short_by_other_threads_counts_no_strike(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # As if the rest of the process used all the CPU the budget measures.
+    monkeypatch.setattr(scan.time, "thread_time", lambda: 0.0)
+    p = scan.compile(SLOW)
+    for _ in range(scan.STRIKES + 1):
+        with pytest.raises(scan.SlowScan, match=r"ran past 0\.05 s .* \(0\.00 s of it its own\)"):
+            p.search(SPACES)
+    assert p.slow == 0
+    assert p.search("hi judge") is not None
+
+
+async def test_a_thread_scan_slowed_by_a_busy_loop_counts_no_strike() -> None:
+    p = scan.compile(SLOW)
+    found = asyncio.ensure_future(p.find(SPACES))
+    await asyncio.sleep(0)
+    # The loop holds the interpreter while the scan runs in its thread.
+    spin = time.perf_counter() + 2 * scan.THREAD_S
+    while time.perf_counter() < spin:
+        pass
+    with pytest.raises(scan.SlowScan, match=r"ran past 0\.3 s"):
+        await found
+    assert p.slow == 0
+
+
 def test_a_pattern_that_stays_slow_rests_then_runs_again(monkeypatch: pytest.MonkeyPatch) -> None:
     now = 1000.0
     monkeypatch.setattr(scan.time, "monotonic", lambda: now)

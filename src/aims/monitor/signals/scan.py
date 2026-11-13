@@ -5,6 +5,13 @@ the interpreter for a whole match. The `regex` package takes a timeout and lets 
 run while it matches, so a scan here ends at its budget and a large text is scanned off the
 event loop. A scan past its budget raises SlowScan. A pattern that keeps doing so rests for a
 while, since each try would cost its budget again. A scan asked for in that time raises too.
+
+`regex` measures its timeout with C `clock()`: the CPU time of the whole process on Linux and
+macOS. A process the host stalls uses none, so a stall does not end a scan. CPU that other
+threads use does count, and a busy event loop also slows a thread scan, which takes the
+interpreter lock back every few hundred steps. So a scan past its budget counts toward a rest
+only when its own thread spent at least half the budget on it; one cut short by the rest of the
+process still raises SlowScan, and its message says how much of the time was its own.
 """
 
 import asyncio
@@ -21,9 +28,11 @@ INLINE_S = 0.05
 THREAD_S = 2.0
 # Text up to this many characters is first tried on the event loop.
 INLINE = 64 * 1024
-# A pattern that ran past its budget this many times rests for REST_S seconds.
+# A pattern that ran past its budget this many times rests for REST_S seconds. A scan counts
+# only when its own thread spent this share of the budget on it.
 STRIKES = 3
 REST_S = 60.0
+OWN = 0.5
 
 # A match object of `regex`, which works as one of `re`. The package names no type for it.
 type Match = Any
@@ -56,15 +65,18 @@ class Pattern:
             raise SlowScan(f"pattern {self.source[:80]!r} is resting: it was too slow")
 
     def _run(self, call: Any, text: str, budget: float, last: bool = True, **options: Any) -> Any:
+        start = time.thread_time()
         try:
             return call(text, timeout=budget, **options)
         except TimeoutError:
-            if last:
+            own = time.thread_time() - start
+            if last and own >= budget * OWN:
                 self.slow += 1
                 if self.slow >= STRIKES:
                     self.slow, self.rest_until = 0, time.monotonic() + REST_S
             raise SlowScan(
                 f"pattern {self.source[:80]!r} ran past {budget} s on {len(text)} characters"
+                f" ({own:.2f} s of it its own)"
             ) from None
 
     def search(self, text: str) -> Match | None:
