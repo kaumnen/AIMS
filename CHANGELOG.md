@@ -318,6 +318,12 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - A run whose writer finds lines in the index that a failed write cut off its log is indexed again from its log. It was marked corrupt until a rebuild.
 - A shipper whose run is deleted on the runner before it first read it ends. It retried without end.
 - A search shorter than three characters folds case as longer ones do: `Éc` finds `école`.
+- A second Ctrl-C while a sandbox closes or is killed waits for its last records and its `sandbox.stopped` line. They could be cut.
+- A cancel while an IMDS server closes still removes its container, and one while the runner's link closes still closes its connection.
+- A cancel that lands in the moment a cancelled background task ends is raised. It was dropped, so a stop could be lost.
+- A build or pull the Docker daemon cuts midway is a Docker error like any other: an asset image is built when its pull is cut, and a tracer whose image cannot be made leaves the sandboxes on snapshot audit.
+- Build lock files that no one holds are removed a day after they were made, at each backend start and hourly in a runner. AIMS 0.2.2 and older left one per image tag in the temp folder.
+- A build waits up to a second for a lock file that another user is just making. It failed when it opened the file before its mode was set.
 
 ## [0.2.2] - 2026-11-10
 
