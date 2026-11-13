@@ -2432,6 +2432,43 @@ async def test_link_redirect_keeps_both_links_a_failed_rename_names(
     ]
 
 
+async def test_link_redirect_drops_a_hard_link_a_snapshot_finds_apart_from_its_target(
+    store: LocalEventStore,
+) -> None:
+    config = MonitorConfig(preset="signals", paths={"tests": ["tests/**"]})
+    b = await bench(store, config=config)
+    targets = {f"/work/h{n}": f"/work/tests/h{n}.py" for n in range(1, 6)}
+    targets["/work/h6"] = "/srv/h6.txt"
+    ex = await b.bash(
+        "ln",
+        *(
+            lambda ex, p=p, t=t: b.k(FileAccess, ex, op="link", path=p, target=t)
+            for p, t in targets.items()
+        ),
+    )
+    await b.snapshot(ex, *(change(p) for p in targets))
+    x, y, z = "a" * 64, "b" * 64, "c" * 64
+    await b.snapshot(
+        await b.bash("edit"),
+        # Replaced by another file, its target unchanged or changed to other content.
+        change("/work/h1", "modified", sha256=x),
+        change("/work/h3", "modified", sha256=x),
+        change("/work/tests/h3.py", "modified", sha256=z),
+        # Written through: both names show the same new content.
+        change("/work/h2", "modified", sha256=y),
+        change("/work/tests/h2.py", "modified", sha256=y),
+        # Not hashed, or its target was not, or its target is outside the snapshot.
+        change("/work/h4", "modified"),
+        change("/work/h5", "modified", sha256=x),
+        change("/work/tests/h5.py", "modified"),
+        change("/work/h6", "modified", sha256=x),
+    )
+    v = await b.exec("score", phase="verifier")
+    await b.emit(*(b.k(FileAccess, v, op="read", path=p) for p in targets))
+    raised = sorted(f.key or "" for f in b.of("link_redirect") if f.importance == 3)
+    assert raised == ["/work/h2", "/work/h4", "/work/h5", "/work/h6"]
+
+
 async def test_link_redirect_drops_a_link_the_snapshot_of_its_exec_does_not_list(
     store: LocalEventStore,
 ) -> None:

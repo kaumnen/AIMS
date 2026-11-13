@@ -10,7 +10,7 @@ import posixpath
 import re
 import shlex
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 from pydantic import Field
 
@@ -815,11 +815,14 @@ class Link:
 @dataclass(slots=True)
 class Pending:
     """A whole file snapshot whose changes are still coming in, as `fs.change` events of its
-    seq, with the links its exec made that it has not listed yet."""
+    seq: the links its exec made that it has not listed yet, the hard links and targets it
+    walks, and the sha256 of each of those it lists as modified."""
 
     seq: int
     agent: str | None
     unlisted: dict[str, None]
+    watched: frozenset[str] = frozenset()
+    modified: dict[str, str | None] = field(default_factory=dict)
 
 
 # The kind of file a path that holds a link is.
@@ -842,9 +845,11 @@ class LinkRedirect(Base):
 
     A link made again at the same path drops its old target. A link a snapshot finds removed,
     or replaced by a file of another kind, is dropped. So is a link that the snapshot after
-    the exec that made it does not list, as the exec removed it again. A hard link replaced by
-    another regular file looks like an edit and is kept. The kernel's delete and rename records
-    are attempts that can fail, so they drop nothing: a rename adds the link at its new path and
+    the exec that made it does not list, as the exec removed it again. A hard link shares its
+    target's file, so a snapshot that walks both lists a change of one as a change of the
+    other. One it lists as modified while its target is not modified to the same content was
+    replaced by another file and is dropped. The kernel's delete and rename records are
+    attempts that can fail, so they drop nothing: a rename adds the link at its new path and
     keeps it at the old one until a snapshot finds it gone there."""
 
     name = "link_redirect"
@@ -895,6 +900,8 @@ class LinkRedirect(Base):
             pending = self.pending
             if pending is not None and pending.seq == event.seq and pending.agent == agent:
                 pending.unlisted.pop(p.path, None)
+                if p.path in pending.watched and p.change == "modified":
+                    pending.modified[p.path] = p.sha256
             known = self.links.get((agent, p.path))
             if known is not None and (
                 p.change == "removed" or (p.change == "kind" and p.kind != _LINK_KIND[known.op])
@@ -944,28 +951,47 @@ class LinkRedirect(Base):
 
     def _pend(self, event: Event, snapshot: FsSnapshot) -> Pending | None:
         """What to settle once the changes of a snapshot are in: the links made by its exec
-        under its roots, other than one the same as before. A first or truncated snapshot may
-        leave a change out and one between execs has no exec, so they settle nothing."""
-        if snapshot.base is None or snapshot.truncated or snapshot.exec_id is None:
+        under its roots, other than one the same as before, and the hard links whose targets
+        are under its roots too. A first or truncated snapshot may leave a change out, so it
+        settles nothing. One between execs has no exec to have made a link."""
+        if snapshot.base is None or snapshot.truncated:
             return None
         agent = event.agent_id
+        roots = [_resolve("/", r) for r in snapshot.roots]
+        walked = {
+            path: link
+            for (a, path), link in self.links.items()
+            if a == agent and any(_under(path, r) for r in roots)
+        }
         made = {
             path: None
-            for (a, path), link in self.links.items()
-            if a == agent
+            for path, link in walked.items()
+            if snapshot.exec_id is not None
             and link.exec_id == snapshot.exec_id
             and link.seq < event.seq
             and not link.kept
-            and any(_under(path, _resolve("/", r)) for r in snapshot.roots)
         }
-        return Pending(event.seq, agent, made)
+        hard = [
+            (path, link.resolved)
+            for path, link in walked.items()
+            if link.op == "link" and any(_under(link.resolved, r) for r in roots)
+        ]
+        return Pending(event.seq, agent, made, frozenset(p for pair in hard for p in pair))
 
     def _settle(self, pending: Pending) -> None:
-        """Drops each link of `pending` its snapshot did not list: the exec that made it left
-        the path as it found it."""
+        """Drops each link of `pending` its snapshot did not list, as the exec that made it left
+        the path as it found it, and each hard link it lists as modified to other content than
+        its target. A file the snapshot did not hash tells nothing."""
         for path in pending.unlisted:
             link = self.links.get((pending.agent, path))
             if link is not None and link.seq < pending.seq:
+                self._put(pending.agent, path, None)
+        modified = pending.modified
+        for path, sha in modified.items():
+            link = self.links.get((pending.agent, path))
+            if link is None or link.op != "link" or sha is None:
+                continue
+            if link.resolved not in modified or modified[link.resolved] not in (None, sha):
                 self._put(pending.agent, path, None)
 
     def _put(self, agent: str | None, path: str, link: Link | None) -> None:
