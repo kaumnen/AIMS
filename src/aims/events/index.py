@@ -793,7 +793,8 @@ class Index:
         one raises IndexGap: the index never skips an event. One that is not of the chain the
         index holds raises IndexDiverged, so lines that were cut from a log, which a reader in
         another process took from it first, never mix with the lines written in their place.
-        Rows no run owns, which a remove cut short left, go before their run id starts again.
+        Rows no run owns, which a remove cut short left, go before their run id starts again,
+        and rows past the run's last indexed event go before the batch does.
         The batch that seals the run names its `variant`, from its truth file, and drops its
         cost row, as `set_variant` does."""
         if not events:
@@ -874,6 +875,7 @@ class Index:
                     f"run {run_id}: event {first.seq} follows {first.prev_hash[:16]}, the index"
                     f" ends at event {last} with {last_hash[:16]}"
                 )
+            await self._trim(run_id, last)
             await self._monitor(run_id, [e for e in fresh if e.type in MONITOR_TYPES])
             await self._totals(run_id, fresh)
             units = [e for e in events if e.type == ScoreUnit.type]
@@ -890,9 +892,6 @@ class Index:
                     f" ({', '.join('?' * len(SAMPLE_FIELDS))}) on conflict do nothing",
                     [tuple(w[f] for f in SAMPLE_FIELDS) for w in windows],
                 )
-            if fresh:
-                # a row that was there before the run's row kept its place in the insert
-                await self._same(fresh[-1])
             await self._hold(run_id, [e for e in fresh if e.type in HOLD_TYPES])
             await self._db.execute(
                 "update runs set last_seq = ?, last_hash = ?, log_offset = ?,"
@@ -925,6 +924,29 @@ class Index:
             raise IndexDiverged(
                 f"run {e.run_id}: event {e.seq} has hash {e.hash[:16]}, the index holds"
                 f" {'none' if stored is None else stored[:16]} there"
+            )
+
+    async def _trim(self, run_id: str, last: int) -> None:
+        """Delete the events and samples of `run_id` past seq `last`, its last indexed event,
+        in the caller's transaction. No batch the run's row took holds them: a drop or remove
+        left them when a batch of another process raced it."""
+        async with self._db.execute(
+            "select exists (select 1 from events where run_id = ?1 and seq > ?2)"
+            " or exists (select 1 from samples where run_id = ?1 and seq > ?2)",
+            (run_id, last),
+        ) as cur:
+            row = await cur.fetchone()
+        if not (row and row[0]):
+            return
+        log.warning("run %s: the index held rows past its last event %d, which go", run_id, last)
+        await self._db.execute(
+            "insert into events_fts (events_fts, rowid, text) select 'delete', id, text"
+            f" from events where run_id = ? and seq > ? and {HAS_TEXT}",
+            (run_id, last),
+        )
+        for table in ("events", "samples"):
+            await self._db.execute(
+                f"delete from {table} where run_id = ? and seq > ?", (run_id, last)
             )
 
     async def _orphaned(self, run_id: str) -> bool:

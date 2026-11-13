@@ -16,6 +16,7 @@ from aims.events import (
     Event,
     LocalEventStore,
     MonitorFlag,
+    ResourceSample,
     RunCorrupt,
     RunFinished,
     RunStarted,
@@ -1141,10 +1142,105 @@ async def test_a_drop_keeps_out_the_batches_another_process_indexes_meanwhile(
     assert await index.hashes(RUN, 0, 9) == {e.seq: e.hash for e in events}
 
 
-async def test_the_index_refuses_a_batch_over_rows_another_run_left(
-    index: Index, monkeypatch: pytest.MonkeyPatch
+async def test_rows_a_drop_leaves_past_a_batch_that_raced_it_go_with_that_batch(
+    index: Index, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Rows that land after the check for leftovers, as a remove in another process leaves."""
+    """A reader commits a cut line after a drop deleted the run's events and before it takes
+    the run's row. Another process checked for leftovers before that row went and indexes the
+    run from its start after. The cut row then sits past the run's last event, which the log
+    holds: it goes with that batch, so the next batch neither fails on it nor keeps it."""
+    events, heads = chain(6)
+    cut, cut_heads = fork(heads, 2, 3)
+    await index.add(events[:3], heads[2])
+    await index.add(cut[:2], cut_heads[1])
+    other = await Index.open(tmp_path / "index.sqlite")
+    checked, dropped = asyncio.Event(), asyncio.Event()
+    orphaned, remove_row = other._orphaned, index._remove_row
+
+    async def check_then_wait(run_id: str) -> bool:
+        found = await orphaned(run_id)
+        checked.set()
+        await dropped.wait()
+        return found
+
+    async def raced(run_id: str) -> None:
+        await other.add(cut[2:], cut_heads[2])
+        start = asyncio.create_task(other.add(events[:3], heads[2]))
+        await checked.wait()
+        await remove_row(run_id)
+        dropped.set()
+        await start
+
+    monkeypatch.setattr(other, "_orphaned", check_then_wait)
+    monkeypatch.setattr(index, "_remove_row", raced)
+    try:
+        await index.drop(RUN)
+        found = await index.head(RUN)
+        assert found is not None
+        assert found[0] == heads[2]
+        assert await index.hashes(RUN, 0, 9) == {e.seq: e.hash for e in events[:3]}
+        await other.add(events[3:], heads[5])
+    finally:
+        await other.close()
+    assert await index.hashes(RUN, 0, 9) == {e.seq: e.hash for e in events}
+
+
+async def test_a_catch_up_over_rows_of_cut_lines_past_its_head_takes_the_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What that race leaves, met by the catch-up of a store that opens: the run's row ends at
+    an event the log holds, with rows of cut lines past it. The log goes in over them at
+    once, where the catch-up used to fail on them at every try."""
+    root = tmp_path / "runs"
+    breaker = Breaker(monkeypatch, sqlite3.OperationalError("disk I/O error"))
+    async with await LocalEventStore.open(root) as store:
+        run_id = await store.create_run(STARTED)
+        await store.append(run_id, [call(1), call(2)])
+        breaker.left = 10**6
+        await store.append(run_id, [call(3), call(4), Draft(RunFinished(status="completed"))])
+    breaker.left = 0
+    index = await Index.open(root / INDEX)
+    try:
+        found = await index.head(run_id)
+        assert found is not None
+        head = start = found[0]
+        cut = []
+        empty = dict.fromkeys(ResourceSample.COLUMNS)
+        window = ResourceSample(sandbox_id="s", hz=10, ts=[1_000_000, 900_000], **empty)
+        for n in range(3):
+            payload = window if n == 1 else ToolCall(call_id=f"cut{n}", name="n", arguments="{}")
+            data = payload.model_dump(mode="json")
+            body, _, head = seal(
+                head, run_id=run_id, ts=now(), agent_id="a1", type=payload.type, data=data
+            )
+            cut.append(Event.model_validate(body))
+        await index.add(cut, head)
+        await index._db.execute(
+            "update runs set last_seq = ?, last_hash = ?, log_offset = ? where run_id = ?",
+            (start.seq, start.hash, start.offset, run_id),
+        )
+    finally:
+        await index.close()
+    async with await LocalEventStore.open(root) as store:
+        assert run_id not in store._lags
+        events = await store.every(run_id)
+        lines = (root / run_id / LOG).read_bytes().splitlines()
+        assert [e.hash for e in events] == [json.loads(line)["hash"] for line in lines]
+        assert await store.samples(run_id) == []
+        info = await store.run(run_id)
+        assert info is not None
+        assert (info.status, info.events) == ("completed", 6)
+        assert (await store.verify(run_id)).ok
+        await store._index._db.execute(
+            "insert into events_fts (events_fts, rank) values ('integrity-check', 1)"
+        )
+
+
+async def test_the_index_drops_rows_another_run_left_under_a_batch(
+    index: Index, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Rows that land after the check for leftovers, as a remove in another process leaves,
+    go with the batch that meets them, so none of them is taken for an event of the run."""
     old, old_heads = chain(4)
     await index.add(old, old_heads[3])
     events, heads = chain(3)
@@ -1153,11 +1249,40 @@ async def test_the_index_refuses_a_batch_over_rows_another_run_left(
     async def none(run_id: str) -> bool:
         return False
 
-    with monkeypatch.context() as m:
-        m.setattr(index, "_orphaned", none)
-        with pytest.raises(IndexDiverged, match="event 2"):
-            await index.add(events, heads[2])
+    monkeypatch.setattr(index, "_orphaned", none)
+    with caplog.at_level(logging.WARNING, logger="aims.events"):
+        await index.add(events, heads[2])
+    assert caplog.messages == [f"run {RUN}: the index held rows past its last event -1, which go"]
+    assert await index.hashes(RUN, 0, 9) == {e.seq: e.hash for e in events}
+    await index._db.execute(
+        "insert into events_fts (events_fts, rank) values ('integrity-check', 1)"
+    )
+
+
+async def test_a_batch_cancelled_while_it_drops_rows_past_the_last_event_keeps_them_all(
+    index: Index, gate: Gate, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old, old_heads = chain(4)
+    await index.add(old, old_heads[3])
+    await index._db.execute("delete from runs")
+    events, heads = chain(3)
+
+    async def none(run_id: str) -> bool:
+        return False
+
+    monkeypatch.setattr(index, "_orphaned", none)
+    await index._db.execute(
+        "create temp trigger hold before delete on main.events begin select gate(); end"
+    )
+    task = asyncio.create_task(index.add(events, heads[2]))
+    await gate.held()
+    task.cancel()
+    gate.opened.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await index._db.execute("drop trigger hold")
     assert await index.head(RUN) is None
+    assert await index.hashes(RUN, 0, 9) == {e.seq: e.hash for e in old}
     await index.add(events, heads[2])
     assert await index.hashes(RUN, 0, 9) == {e.seq: e.hash for e in events}
 
