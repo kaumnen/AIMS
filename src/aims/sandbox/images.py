@@ -194,7 +194,8 @@ async def _build(
     `remote` can stand in for it, one build of a tag at a time on this host: on Docker's
     containerd image store a second build of a tag deletes the image the first one made. A
     cancel stops Docker's build before the lock goes. A build that fails or is cut leaves no
-    step container."""
+    step container. A build whose progress ends with no image, as when the daemon drops the
+    connection, raises."""
     if await _exists(docker, tag):
         return tag
     async with _host_lock(tag):
@@ -211,6 +212,8 @@ async def _build(
         }
         headers = {"Content-Type": "application/x-tar", "Content-Encoding": "gzip"}
         await _post(docker, "build", params, data=data, headers=headers)
+        if not await _exists(docker, tag):
+            raise aiodocker.DockerStreamError(f"the build of {tag} ended with no image")
     return tag
 
 

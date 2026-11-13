@@ -124,6 +124,21 @@ async def test_a_failed_build_raises() -> None:
         await ensure_built(docker, uuid.uuid4().bytes)
 
 
+@pytest.mark.parametrize("call", ["build", "pull"])
+async def test_a_build_or_pull_whose_progress_ends_with_no_image_raises(call: str) -> None:
+    """aiodocker reads a connection the daemon dropped as the end of the progress."""
+    docker: Any = Docker()
+
+    async def cut(*_: Any, **__: Any) -> list[Any]:
+        return []
+
+    docker.images.build = docker.images.pull = cut
+    context = uuid.uuid4().bytes
+    work = ensure_built(docker, context) if call == "build" else ensure_pulled(docker, "x:1")
+    with pytest.raises(aiodocker.DockerError):
+        await work
+
+
 def held(tag: str) -> bool:
     """Whether a build of `tag` holds the host lock now."""
     try:
