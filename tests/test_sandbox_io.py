@@ -19,7 +19,7 @@ from aiodocker.stream import Stream
 from aiodocker.volumes import DockerVolume
 
 from aims.aio import shielded
-from aims.events import ExecStarted, LocalEventStore, RunStarted, SandboxArchived
+from aims.events import ExecFinished, ExecStarted, LocalEventStore, RunStarted, SandboxArchived
 from aims.sandbox import (
     AGENT_UID,
     RUNNER_UID,
@@ -1310,6 +1310,29 @@ async def test_a_cancelled_exec_ends_in_a_sandbox_at_its_pids_limit(
     assert (finished["end"], finished["leftover"]) == ("cancelled", [])
 
 
+async def test_a_sandbox_with_many_agent_processes_lists_them_all(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    """`docker top` without `-e` lists no process of a user that is not root once the
+    sandbox holds about 250."""
+    many = 400
+    run_id, sb = await sandbox(backend, store, pids=4096)
+    inner = sb.sandbox
+    assert isinstance(inner, DockerSandbox)
+    fork = f"for i in $(seq {many}); do sleep 288 & done; sleep 0.5"
+    try:
+        await sb.exec(fork, timeout_s=30)
+        listed = [p for p in await inner.processes() if p.command == "sleep 288"]
+    finally:
+        await sb.close()
+
+    assert len(listed) == many
+    assert {p.uid for p in listed} == {AGENT_UID}
+    finished = (await store.events(run_id, types=["exec.finished"]))[0].payload()
+    assert isinstance(finished, ExecFinished)
+    assert len(finished.leftover) == many
+
+
 async def test_ending_an_exec_leaves_no_child_it_forked_meanwhile(
     backend: DockerBackend, store: LocalEventStore
 ) -> None:
@@ -1324,8 +1347,7 @@ async def test_ending_an_exec_leaves_no_child_it_forked_meanwhile(
     count = [f"{TOOLBOX}/busybox", "sh", "-c", f"{TOOLBOX}/busybox pgrep -x sleep | wc -l"]
 
     async def forked() -> int:
-        """The sleeps in the sandbox, counted there: `docker top` lists none past about 250
-        processes of a user that is not root."""
+        """The sleeps in the sandbox, counted there in one exec."""
         out = Capture(limit=1024)
         await inner.run(count, uid=AGENT_UID, cwd="/", timeout_ms=10_000, capture=out)
         return int(out.stdout)

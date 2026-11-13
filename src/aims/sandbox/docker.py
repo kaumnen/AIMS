@@ -895,7 +895,11 @@ class DockerSandbox:
             return f"{type(e).__name__}: {e}"
 
     async def processes(self) -> list[Proc]:
-        top = await self._container.top(ps_args="-o pid,ppid,uid,args")
+        # Docker runs `ps` with these arguments and keeps the container's rows. `-e` matters:
+        # Docker first adds its own `-q` pid list, and when `ps` refuses that (a long list
+        # does), it runs `ps` again without it. Without `-e` that second run lists root's
+        # processes only, so a sandbox with many agent processes would show none.
+        top = await self._container.top(ps_args="-eo pid,ppid,uid,args")
         titles = top.get("Titles") or []
         rows = top.get("Processes") or []
         if titles[:3] != ["PID", "PPID", "UID"]:
