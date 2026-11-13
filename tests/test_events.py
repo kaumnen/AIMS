@@ -361,6 +361,59 @@ async def test_the_record_of_a_cut_tail_goes_with_the_next_batch_that_is_written
     assert verify_run(root / run_id).ok
 
 
+async def test_a_cancel_while_a_run_is_made_leaves_it_whole_and_sealed(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cancel lands between the run's folder and its first event. The run starts anyway
+    and is sealed as cancelled, as its caller never learns of it."""
+    put = LocalEventStore.put_blobs
+    storing, go = asyncio.Event(), asyncio.Event()
+
+    async def held(self: LocalEventStore, run_id: str, datas: Any) -> Any:
+        storing.set()
+        await go.wait()
+        return await put(self, run_id, datas)
+
+    monkeypatch.setattr(LocalEventStore, "put_blobs", held)
+    run_id = "01a18280-dc55-749f-9a4b-6aab5fe2986e"
+    task = asyncio.create_task(store.create_run(STARTED, blobs=[b"bundle"], run_id=run_id))
+    await storing.wait()
+    task.cancel()
+    go.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    info = await store.run(run_id)
+    assert info is not None
+    assert info.status == "cancelled"
+    events = await store.every(run_id)
+    assert [e.type for e in events] == ["run.started", "run.finished"]
+    assert events[-1].data["reason"] == "cancelled as the run started"
+    assert verify_run(store.root / run_id).ok
+
+
+@pytest.mark.parametrize("before", [False, True], ids=["new folder", "folder made before"])
+async def test_a_run_whose_start_fails_leaves_no_log(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch, before: bool
+) -> None:
+    """A folder the start made goes with it. One made before, which holds the run's blobs,
+    stays without the log. The id can start the run again."""
+    run_id = "01a18280-dc55-749f-9a4b-6aab5fe2986e"
+    if before:
+        store.prepare_run(run_id)
+        await store.put_blob(run_id, b"early")
+    with monkeypatch.context() as patch:
+        patch.setattr(LogFile, "sync", broken)
+        with pytest.raises(OSError, match="Input/output error"):
+            await store.create_run(STARTED, run_id=run_id)
+    assert store.holds(run_id) == before
+    assert not (store.root / run_id / LOG).exists()
+    assert store.run_ids() == []
+    await store.create_run(STARTED, run_id=run_id)
+    info = await store.run(run_id)
+    assert info is not None
+    assert info.status == "running"
+
+
 async def test_bad_middle_line_blocks_writes(tmp_path: Path) -> None:
     root = tmp_path / "runs"
     async with await LocalEventStore.open(root) as store:

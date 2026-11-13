@@ -1015,7 +1015,49 @@ def test_a_second_signal_while_aims_models_check_seals_leaves_the_seal_whole(
     ((run_id, status, last),) = asyncio.run(read())
     assert status == "cancelled"
     assert last["reason"] == "cancelled before the checks finished"
-    assert f"stopped; run {run_id} is sealed" in result.output
+    assert f"stopped; run {run_id} is sealed as cancelled" in result.output
+
+
+def test_a_ctrl_c_while_aims_models_check_makes_its_run_is_told_as_it_lands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Ctrl-C lands between the run's folder and its first event. The run is made anyway
+    and sealed as cancelled, and the stop line says so: no folder without events is left."""
+    root = tmp_path / "runs"
+    writer = LocalEventStore._writer
+    sent: list[str] = []
+
+    async def opening(self: LocalEventStore, run_id: str) -> Any:
+        if not sent:
+            sent.append(run_id)
+            os.kill(os.getpid(), signal.SIGINT)
+            async with asyncio.timeout(5):
+                while not any(t.cancelling() for t in asyncio.all_tasks()):  # noqa: ASYNC110
+                    await asyncio.sleep(0.01)
+        return await writer(self, run_id)
+
+    async def never(client: object, p: Profile) -> list[Any]:
+        raise AssertionError("the check began after the Ctrl-C")
+
+    settings = SimpleNamespace(models=config(profile()))
+    monkeypatch.setattr("aims.cli._settings", lambda config: settings)
+    monkeypatch.setattr(check, "check_profile", never)
+    monkeypatch.setattr(LocalEventStore, "_writer", opening)
+    result = CliRunner().invoke(app, ["models", "check", "--runs-dir", str(root)])
+    monkeypatch.undo()
+    assert result.exit_code == EXIT_CANCELLED, result.output
+    (run_id,) = sent
+    assert [p.name for p in root.iterdir() if p.is_dir()] == [run_id]
+
+    async def read() -> tuple[str | None, list[str]]:
+        async with await LocalEventStore.open(root) as store:
+            info = await store.run(run_id)
+            return None if info is None else info.status, [
+                e.type for e in await store.every(run_id)
+            ]
+
+    assert asyncio.run(read()) == ("cancelled", ["run.started", "run.finished"])
+    assert f"stopped; run {run_id} is sealed as cancelled" in result.output
 
 
 async def test_replay_can_keep_the_recorded_pace(store: LocalEventStore) -> None:

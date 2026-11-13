@@ -17,6 +17,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Protocol, Self
 
+from aims.aio import settle
 from aims.events.blobs import TEMP, BlobStore, BlobWriter, read_blob, stored_size
 from aims.events.chain import ChainError, Head, follow, seal
 from aims.events.disk import make_dir, sweep, sync_dir, write_all
@@ -335,17 +336,54 @@ class LocalEventStore:
     async def create_run(
         self, started: RunStarted, *, blobs: Sequence[bytes] = (), run_id: str | None = None
     ) -> str:
-        """Start a run, under `run_id` when given. Its directory may already hold blobs."""
+        """Start a run, under `run_id` when given. Its directory may already hold blobs. A start
+        that fails leaves no log, and no directory unless one was there. A cancel meanwhile
+        waits for the start, then seals the run as cancelled, as the caller never learns of it
+        and so cannot seal it."""
         if self.ingest_only:
             raise RuntimeError("this store only ingests runs")
         run_id = run_id or str(uuid.uuid7())
-        run_dir = self._dir(run_id)
-        make_dir(run_dir)
-        if blobs:
-            await self.put_blobs(run_id, blobs)
-        self._log(run_id).touch(exist_ok=False)
-        await self.append(run_id, [Draft(started)])
+        try:
+            await settle(self._start(run_id, started, blobs))
+        except asyncio.CancelledError:
+            if self._begun(run_id):
+                cut = RunFinished(status="cancelled", reason="cancelled as the run started")
+                await settle(self.append(run_id, [Draft(cut)]))
+            raise
         return run_id
+
+    async def _start(self, run_id: str, started: RunStarted, blobs: Sequence[bytes]) -> None:
+        """Make the run's directory and log, and write `started` as its first event. One that
+        fails before that event is in the log takes back the log, and the directory when it made
+        it."""
+        run_dir = self._dir(run_id)
+        made = not run_dir.exists()
+        make_dir(run_dir)
+        path: Path | None = None
+        try:
+            if blobs:
+                await self.put_blobs(run_id, blobs)
+            self._log(run_id).touch(exist_ok=False)
+            path = self._log(run_id)
+            await self.append(run_id, [Draft(started)])
+        except BaseException:
+            if not self._begun(run_id):
+                writer = self._writers.pop(run_id, None)
+                if writer is not None:
+                    _close(writer)
+                try:
+                    if made:
+                        _clear(self._bury(run_id))
+                    elif path is not None:
+                        path.unlink(missing_ok=True)
+                except OSError as e:
+                    log.warning("run %s: what its failed start made stays: %s", run_id, e)
+            raise
+
+    def _begun(self, run_id: str) -> bool:
+        """Whether the run's first event is in its log, written by this store."""
+        writer = self._writers.get(run_id)
+        return writer is not None and writer.head.seq >= 0
 
     def prepare_run(self, run_id: str) -> None:
         """Make the directory of a run that is still to start, so its blobs can land first."""

@@ -361,7 +361,6 @@ def models_check(
     try:
         failed = asyncio.run(_check(models, chosen, runs_dir, run_id))
     except asyncio.CancelledError:
-        _stopped(runs_dir, run_id, "run")
         raise typer.Exit(EXIT_CANCELLED) from None
     if failed:
         raise typer.Exit(1)
@@ -386,16 +385,15 @@ async def _stop_lines(store: Any, kind: str, run_ids: list[str]) -> list[str]:
     return lines
 
 
-def _stopped(runs_dir: Path, run_id: str, kind: str) -> None:
-    """Say where a command that was stopped left its run `run_id`. A stop that came as the run
-    sealed leaves the status it had, so the line does not name one."""
-    if (runs_dir / run_id).is_dir():
-        typer.echo(f"stopped; {kind} {run_id} is sealed", err=True)
-    else:
-        typer.echo(f"stopped before the {kind} was made", err=True)
+async def _stopped(store: Any, run_id: str, kind: str) -> None:
+    """Say where a command that was stopped left its run `run_id`, as the store has it."""
+    for line in await _stop_lines(store, kind, [run_id]):
+        typer.echo(line, err=True)
 
 
 async def _check(models: Any, chosen: list[Any], runs_dir: Path, run_id: str) -> bool:
+    import asyncio
+
     from aims.events import LocalEventStore
     from aims.models.check import record_check
 
@@ -403,8 +401,12 @@ async def _check(models: Any, chosen: list[Any], runs_dir: Path, run_id: str) ->
         _echo(f"{c.verdict:4}  {c.profile}  {c.name}: {c.detail}")
 
     async with await LocalEventStore.open(runs_dir) as store:
-        with _stoppable():
-            _, checks = await record_check(store, models, chosen, run_id=run_id, on_check=show)
+        try:
+            with _stoppable():
+                _, checks = await record_check(store, models, chosen, run_id=run_id, on_check=show)
+        except asyncio.CancelledError:
+            await _stopped(store, run_id, "run")
+            raise
     typer.echo(f"run {run_id}")
     return any(c.verdict == "fail" for c in checks)
 
@@ -3002,28 +3004,31 @@ def score_cmd(
     async def main() -> ScoreResult:
         nonlocal cost
         async with await LocalEventStore.open(runs_dir) as store:
-            with _stoppable():
-                cost = await estimate_sealed(
-                    store, settings, run, awareness=awareness, answer=answer
-                )
-                if not json_out:
-                    for line in cost.lines:
-                        _echo(line, err=True)
-                return await score_sealed(
-                    store,
-                    settings,
-                    run,
-                    monitor=monitor,
-                    awareness=awareness,
-                    answer=answer,
-                    plants_from=plants_from,
-                    run_id=score_id,
-                )
+            try:
+                with _stoppable():
+                    cost = await estimate_sealed(
+                        store, settings, run, awareness=awareness, answer=answer
+                    )
+                    if not json_out:
+                        for line in cost.lines:
+                            _echo(line, err=True)
+                    return await score_sealed(
+                        store,
+                        settings,
+                        run,
+                        monitor=monitor,
+                        awareness=awareness,
+                        answer=answer,
+                        plants_from=plants_from,
+                        run_id=score_id,
+                    )
+            except asyncio.CancelledError:
+                await _stopped(store, score_id, "score run")
+                raise
 
     try:
         result = asyncio.run(main())
     except asyncio.CancelledError:
-        _stopped(runs_dir, score_id, "score run")
         raise typer.Exit(EXIT_CANCELLED) from None
     except (ScoreError, RunError, KeyError) as e:
         _echo(f"error: {e}", err=True)
