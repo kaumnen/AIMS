@@ -820,6 +820,7 @@ async def test_an_old_pulled_asset_image_goes_with_its_registry_reference(
         assert remote in (await docker.images.inspect(tag))["RepoDigests"]
 
         (probe / "marker").write_text(uuid.uuid4().hex)
+        only(monkeypatch, docker, tag, remote)
         await images.remove_old(docker)
         assert await present(docker, tag, remote) == {tag, remote}
         monkeypatch.setattr(images, "ASSET_KEEP_DAYS", 0)
@@ -895,6 +896,22 @@ async def present(docker: aiodocker.Docker, *refs: str) -> set[str]:
     return found
 
 
+def only(monkeypatch: pytest.MonkeyPatch, docker: aiodocker.Docker, *refs: str) -> None:
+    """Show `remove_old` only the images that carry one of `refs`, the test's own. The other
+    images on this daemon are other checkouts' and other tests', which the test's loosened ages
+    must not reach."""
+    listing = docker.images.list
+
+    async def mine(**kwargs: Any) -> list[dict[str, Any]]:
+        return [
+            image
+            for image in await listing(**kwargs)
+            if {*(image.get("RepoTags") or []), *(image.get("RepoDigests") or [])} & {*refs}
+        ]
+
+    monkeypatch.setattr(docker.images, "list", mine)
+
+
 @pytest.mark.docker
 async def test_a_scenario_image_goes_30_days_after_its_last_use_unless_a_container_uses_it(
     docker: aiodocker.Docker, env_repo: str, monkeypatch: pytest.MonkeyPatch
@@ -905,13 +922,12 @@ async def test_a_scenario_image_goes_30_days_after_its_last_use_unless_a_contain
     holder = await docker.containers.create(
         config={"Image": used, "Cmd": ["/marker"], "Labels": {"aims.test": "images"}}
     )
+    only(monkeypatch, docker, old, used)
     try:
         await images.remove_old(docker)
         assert await present(docker, old, used) == {old, used}
         days_later(monkeypatch, 31)
-        listed = await images.remove_old(docker, dry_run=True)
-        assert old in listed
-        assert used not in listed
+        assert await images.remove_old(docker, dry_run=True) == [old]
         await images.remove_old(docker)
         assert await present(docker, old, used) == {used}
     finally:

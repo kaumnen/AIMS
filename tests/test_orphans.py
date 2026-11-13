@@ -615,6 +615,29 @@ async def test_the_sweep_removes_the_volumes_a_stopped_container_made_unless_in_
                 await sandbox.DockerVolume(docker, name).delete()
 
 
+def only(
+    monkeypatch: pytest.MonkeyPatch, docker: aiodocker.Docker, refs: set[str], volumes: set[str]
+) -> None:
+    """Show `_remove_old` only the images that carry one of `refs` and the volumes named in
+    `volumes`, the test's own. The others on this daemon are other checkouts' and other
+    tests', which the test's loosened ages must not reach."""
+    images, listing = docker.images.list, docker.volumes.list
+
+    async def my_images(**kwargs: Any) -> list[dict[str, Any]]:
+        return [
+            image
+            for image in await images(**kwargs)
+            if {*(image.get("RepoTags") or []), *(image.get("RepoDigests") or [])} & refs
+        ]
+
+    async def my_volumes(**kwargs: Any) -> dict[str, Any]:
+        found = await listing(**kwargs)
+        return {**found, "Volumes": [v for v in found.get("Volumes") or [] if v["Name"] in volumes]}
+
+    monkeypatch.setattr(docker.images, "list", my_images)
+    monkeypatch.setattr(docker.volumes, "list", my_volumes)
+
+
 @pytest.mark.docker
 async def test_an_old_asset_image_and_its_toolbox_volume_go_once_unused(
     docker: aiodocker.Docker, monkeypatch: pytest.MonkeyPatch
@@ -652,6 +675,7 @@ async def test_an_old_asset_image_and_its_toolbox_volume_go_once_unused(
         return tags, {v["Name"] for v in listing.get("Volumes") or []} & volumes
 
     both = {f"aims-tracer:{old}", f"aims-toolbox:{other}"}
+    only(monkeypatch, docker, both, volumes)
     user: Any = None
     try:
         await sandbox._remove_old(docker, toolbox, 30)
