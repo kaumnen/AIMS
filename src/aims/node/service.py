@@ -411,12 +411,16 @@ class Node:
                 reason = f"{len(failed)} of {len(plan)} cases failed: {', '.join(failed)}"
             else:
                 status = "completed"
+        except asyncio.CancelledError:
+            status, reason = "cancelled", "cancelled before the cases finished"
+            raise
         except Exception as e:
             reason = f"{type(e).__name__}: {e}"
             raise
         finally:
             link.untrack(run_id)
-            await store.append(run_id, [Draft(RunFinished(status=status, reason=reason))])
+            # The seal lands even when a second cancel, such as the runner's kill, comes meanwhile.
+            await settle(store.append(run_id, [Draft(RunFinished(status=status, reason=reason))]))
 
     async def _monitor_or_score(self, job: MonitorJob | ScoreJob) -> None:
         """Run a monitor or score job. The first stop cancels it at once, so it calls no model

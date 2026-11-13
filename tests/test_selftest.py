@@ -1,19 +1,23 @@
+import asyncio
 import io
 import os
 import tarfile
+import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 from scripted import models, profile
 from typer.testing import CliRunner
 
 from aims.cli import app
-from aims.events import LocalEventStore, TaskScored
+from aims.events import Draft, LocalEventStore, RunFinished, TaskScored
+from aims.node.service import Node, NodeOptions
 from aims.prompts import Prompts
 from aims.run import selftest as st
-from aims.run.job import selftest_job
+from aims.run.job import Job, selftest_job
 from aims.run.runner import Bench, Options, Result, Runner
 from aims.run.score import Taken, check_run
 from aims.sandbox import DockerBackend
@@ -295,6 +299,74 @@ async def test_a_cancelled_case_ends_the_selftest_and_cases_nest_under_their_run
     ]
     assert seen == ["reference"]
     assert [(o.kind, o.origin, o.case) for o in ran] == [("selftest.case", "parent", "reference")]
+
+
+TWO_CASES = [
+    st.Case("reference", "reference", ("agent",), {"agent": []}),
+    st.Case("exploit", "exploit", ("agent",), {"agent": []}),
+]
+
+
+def selftest_node(store: LocalEventStore) -> Node:
+    """A runner with no control plane and no Docker, enough to run a self-test job into
+    `store`."""
+    made = Node(NodeOptions(url="http://cp", token="t", name="n", data=store.root.parent))
+    runners: dict[str, Any] = {}
+    link = SimpleNamespace(
+        runners=runners,
+        ship=lambda run_id: None,
+        track=lambda runner: None,
+        untrack=lambda run_id: runners.pop(run_id, None),
+    )
+    bench = SimpleNamespace(store=store)
+    made._open = cast(Any, SimpleNamespace(store=store, link=link, bench=bench))
+    return made
+
+
+# what a self-test job's run reads of its bundle once its cases are planned
+TESTED: Any = SimpleNamespace(scenario=SimpleNamespace(name="tested"), digest="d" * 64)
+
+
+@pytest.mark.parametrize("cancels", [1, 2])
+async def test_a_cancelled_selftest_job_is_sealed_as_cancelled_with_a_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancels: int
+) -> None:
+    """A second cancel while it seals, such as the runner's kill, does not stop the seal."""
+    running, sealing = asyncio.Event(), asyncio.Event()
+
+    async def hangs(*args: Any, **kwargs: Any) -> list[st.Outcome]:
+        # stands for a case run, which only a cancel ends
+        running.set()
+        await asyncio.sleep(300)
+        raise AssertionError("the cancel did not reach the cases")
+
+    monkeypatch.setattr(st, "cases", lambda bundle: TWO_CASES)
+    monkeypatch.setattr(st, "run", hangs)
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        append = store.append
+
+        async def slow(run: str, drafts: list[Draft]) -> Any:
+            if any(isinstance(d.payload, RunFinished) for d in drafts):
+                sealing.set()
+                await asyncio.sleep(0.2)
+            return await append(run, drafts)
+
+        monkeypatch.setattr(store, "append", slow)
+        job = Job(kind="selftest", run_id=str(uuid.uuid7()))
+        task = asyncio.create_task(selftest_node(store)._selftest(job, TESTED))
+        async with asyncio.timeout(5):
+            await running.wait()
+            task.cancel()
+            if cancels == 2:
+                await sealing.wait()
+                task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        (last,) = await store.events(job.run_id, types=["run.finished"])
+        assert (last.data["status"], last.data["reason"]) == (
+            "cancelled",
+            "cancelled before the cases finished",
+        )
 
 
 def test_check_without_the_selftest_needs_no_docker(tmp_path: Path) -> None:
