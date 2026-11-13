@@ -838,7 +838,7 @@ async def test_cancels_while_the_backend_opens_still_remove_both_helpers(
     async def started(*_: Any) -> Helper:
         return sampler
 
-    monkeypatch.setattr(sandbox.aiodocker, "Docker", Opened)
+    monkeypatch.setattr(sandbox, "DockerClient", Opened)
     monkeypatch.setattr(sandbox, "_own_container", nothing)
     monkeypatch.setattr(sandbox, "_sweep", nothing)
     monkeypatch.setattr(sandbox, "_toolbox", toolbox)

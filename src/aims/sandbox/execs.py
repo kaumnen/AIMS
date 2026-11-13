@@ -27,6 +27,20 @@ def streamed(what: str) -> Generator[None]:
         raise aiodocker.DockerStreamError(f"{what} was cut: {e}") from e
 
 
+class DockerClient(aiodocker.Docker):
+    """aiodocker's client, where a reply the daemon cuts after its header raises a
+    DockerStreamError as a cut stream does. aiodocker lets aiohttp's error through for a body
+    cut midway: a JSON reply's, or an error reply's, which it reads before it raises."""
+
+    async def _do_query(self, path: Any, method: str, **kw: Any) -> aiohttp.ClientResponse:
+        with streamed(f"the reply to {method} {path}"):
+            return await super()._do_query(path, method, **kw)
+
+    async def _query_json(self, path: Any, method: str = "GET", **kw: Any) -> Any:
+        with streamed(f"the reply to {method} {path}"):
+            return await super()._query_json(path, method, **kw)
+
+
 async def open_stream(stream: Stream, on_send: Callable[[], None] | None = None) -> Stream:
     """Open `stream`, an exec start or a container attach not yet sent. One that fails or is
     cancelled part way is closed before it raises, so its connection does not stay open. One

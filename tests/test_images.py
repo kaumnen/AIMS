@@ -443,7 +443,7 @@ def unbuilt(lock_dir: Path, monkeypatch: pytest.MonkeyPatch) -> Unbuilt:
     async def nothing(*_: Any) -> None:
         return None
 
-    monkeypatch.setattr(aiodocker, "Docker", lambda url=None: docker)
+    monkeypatch.setattr(docker_module, "DockerClient", lambda url=None: docker)
     monkeypatch.setattr(docker_module, "_own_container", nothing)
     monkeypatch.setattr(docker_module, "_sweep", nothing)
     return docker

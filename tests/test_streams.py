@@ -1,4 +1,5 @@
-"""Streams from the Docker daemon that it cuts midway, against a fake daemon on a local port."""
+"""Streams and replies from the Docker daemon that it cuts midway, against a fake daemon on a
+local port."""
 
 import asyncio
 import contextlib
@@ -29,6 +30,7 @@ from aims.sandbox import (
 )
 from aims.sandbox.base import TOOLBOX
 from aims.sandbox.docker import _helper
+from aims.sandbox.execs import DockerClient
 from aims.sandbox.reader import stream_archive
 
 pytestmark = pytest.mark.anyio
@@ -71,8 +73,10 @@ class Daemon:
         writer.close()
 
     async def answer(self, method: str, path: str, writer: asyncio.StreamWriter) -> bool:
-        """Answer one call; False once the connection is done."""
+        """Answer one call; False once the connection is done. A call in `cut` by its method
+        and path gets its reply cut after the header and half the body."""
         name = path.split("/")[1] if path.startswith("exec/") else ""
+        whole = f"{method} {path}" not in self.cut
         if path in ("containers/c1/wait", "containers/c1/logs", "containers/c1/archive"):
             kind = path.rsplit("/", 1)[1]
             writer.write(
@@ -115,21 +119,25 @@ class Daemon:
         elif path == "containers/create":
             self.reply(writer, "201 Created", {"Id": "c1"})
         elif path == "containers/c1/json":
-            self.reply(writer, "200 OK", {"Id": "c1", "Config": {"Tty": False}})
+            self.reply(writer, "200 OK", {"Id": "c1", "Config": {"Tty": False}}, whole)
         elif path == "containers/c1/top":
             self.reply(writer, "200 OK", {"Titles": ["PID", "PPID", "UID", "CMD"], "Processes": []})
+        elif not whole:
+            self.reply(writer, "409 Conflict", {"message": f"{path} is busy"}, whole)
         elif method in ("POST", "DELETE"):
             writer.write(b"HTTP/1.1 204 No Content\r\n\r\n")
         else:
             self.reply(writer, "404 Not Found", {"message": f"no {path}"})
-        return True
+        return whole
 
-    def reply(self, writer: asyncio.StreamWriter, status: str, body: dict[str, Any]) -> None:
+    def reply(
+        self, writer: asyncio.StreamWriter, status: str, body: dict[str, Any], whole: bool = True
+    ) -> None:
         data = json.dumps(body).encode()
         writer.write(
             f"HTTP/1.1 {status}\r\nContent-Type: application/json\r\n"
             f"Content-Length: {len(data)}\r\n\r\n".encode()
-            + data
+            + (data if whole else data[: len(data) // 2])
         )
 
 
@@ -138,7 +146,7 @@ async def serving(cut: set[str]) -> AsyncGenerator[tuple[Daemon, aiodocker.Docke
     daemon = Daemon(cut)
     server = await asyncio.start_server(daemon.serve, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
-    docker = aiodocker.Docker(url=f"tcp://127.0.0.1:{port}", api_version="v1.45")
+    docker = DockerClient(url=f"tcp://127.0.0.1:{port}", api_version="v1.45")
     try:
         yield daemon, docker
     finally:
@@ -173,6 +181,30 @@ async def test_a_helper_whose_wait_or_log_the_daemon_cuts_raises_a_docker_error(
             await _helper(docker, "img", ["chown"], [], labels={}, caps=[])
         assert isinstance(caught.value.__cause__, aiohttp.ClientPayloadError)
         assert daemon.calls[-1] == "DELETE containers/c1"
+
+
+async def test_a_reply_the_daemon_cuts_raises_a_docker_error() -> None:
+    """aiodocker raises aiohttp's own error for a reply whose body is cut after its header, which
+    callers do not catch. Docker sends a small reply in one write, so this takes a daemon that
+    dies just then."""
+    async with serving({"GET containers/c1/json"}) as (_, docker):
+        with pytest.raises(aiodocker.DockerError, match="GET containers/c1/json was cut") as caught:
+            await DockerContainer(docker, id="c1").show()
+    assert isinstance(caught.value.__cause__, aiohttp.ClientPayloadError)
+
+
+async def test_a_close_whose_container_delete_the_daemon_cuts_still_removes_the_volumes() -> None:
+    """aiodocker reads the body of an error reply before it raises, so that read is cut too."""
+    async with serving({"DELETE containers/c1"}) as (daemon, docker):
+        backend = SimpleNamespace(tracer=None, docker=docker)
+        info = SandboxInfo("c1", "docker", "img", "sha256:img", {})
+        container = DockerContainer(docker, id="c1")
+        spec = SandboxSpec(image="img")
+        sandbox = DockerSandbox(
+            cast(Any, backend), container, spec, info, "w", [], None, scratch=("s",)
+        )
+        await sandbox.close()
+    assert daemon.calls == ["DELETE containers/c1", "DELETE volumes/s", "DELETE volumes/w"]
 
 
 class Backend:
