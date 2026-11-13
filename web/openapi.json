@@ -18473,6 +18473,16 @@
               }
             },
             "description": "Invalid request"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unavailable"
           }
         },
         "summary": "Cancel Run",
@@ -19381,6 +19391,16 @@
               }
             },
             "description": "Invalid request"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unavailable"
           }
         },
         "summary": "Fork Run",
@@ -19688,6 +19708,16 @@
               }
             },
             "description": "Invalid request"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unavailable"
           }
         },
         "summary": "Inject Run",
@@ -19801,6 +19831,16 @@
               }
             },
             "description": "Invalid request"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unavailable"
           }
         },
         "summary": "Kill Run",
@@ -20102,6 +20142,16 @@
               }
             },
             "description": "Invalid request"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unavailable"
           }
         },
         "summary": "Monitor Run",
@@ -20271,6 +20321,16 @@
               }
             },
             "description": "Invalid request"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unavailable"
           }
         },
         "summary": "Estimate Monitor",
@@ -20384,6 +20444,16 @@
               }
             },
             "description": "Invalid request"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unavailable"
           }
         },
         "summary": "Pause Run",
@@ -20698,6 +20768,16 @@
               }
             },
             "description": "Invalid request"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unavailable"
           }
         },
         "summary": "Resume Run",
@@ -20976,6 +21056,16 @@
               }
             },
             "description": "Invalid request"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unavailable"
           }
         },
         "summary": "Score Run",
@@ -21321,6 +21411,16 @@
               }
             },
             "description": "Invalid request"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unavailable"
           }
         },
         "summary": "Sweep Run",

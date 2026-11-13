@@ -172,7 +172,7 @@ def monitor_jobs(
 
 
 @router.post(
-    "/runs/{run_id}/monitor", status_code=202, tags=["monitor"], responses=responses(404, 409)
+    "/runs/{run_id}/monitor", status_code=202, tags=["monitor"], responses=responses(404, 409, 503)
 )
 @audit.audited("run.monitor")
 async def monitor_run(
@@ -216,7 +216,7 @@ async def _sealed(state: ServerState, run_id: str, body: StartMonitor) -> Head:
     info = await state.store.run(run_id)
     head = await state.store.head(run_id) if info is not None else None
     if info is None or head is None:
-        raise ProblemException(404, "Not found", f"no run {run_id}")
+        raise _no_run(state, run_id)
     if info.status == "running":
         raise ProblemException(409, "Conflict", "the run is not sealed yet", code="not_sealed")
     if info.kind != "scenario":
@@ -229,7 +229,7 @@ async def _sealed(state: ServerState, run_id: str, body: StartMonitor) -> Head:
 @router.get(
     "/runs/{run_id}/monitor/estimate",
     tags=["monitor"],
-    responses=responses(404, 409),
+    responses=responses(404, 409, 503),
 )
 async def estimate_monitor(
     run_id: str,

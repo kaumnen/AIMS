@@ -1044,13 +1044,16 @@ def fork_estimate(settings: Settings, history: History, at: ForkPoint, body: Sta
     )
 
 
-@router.post("/runs/{run_id}/forks", status_code=202, tags=["runs"], responses=responses(404, 409))
+@router.post(
+    "/runs/{run_id}/forks", status_code=202, tags=["runs"], responses=responses(404, 409, 503)
+)
 @audit.audited("run.fork")
 async def fork_run(
     run_id: str, body: StartFork, principal: Operator, state: State, note: audit.Note
 ) -> Started:
     """Replay a recorded run up to a step and go on live from there."""
     run_id = _run_id(run_id)
+    await _shown(state, principal, run_id)
     settings = state.config.settings()
     at = await fork_point(state, run_id, body)
     origin, step = at.origin, at.step
@@ -1225,6 +1228,10 @@ async def command(
     meta = await state.db.run_meta(run_id)
     runner = (job.runner if job is not None else None) or (meta.runner if meta else None)
     if runner is None or (info is None and job is None):
+        # a run with a job is still controlled while the index is rebuilt: its job names
+        # the runner, so a kill gets through
+        if info is None and state.store.logged(run_id):
+            raise _no_run(state, run_id)
         raise ProblemException(404, "Not found", f"no run {run_id} to control")
     if info is not None and info.status != "running":
         raise ProblemException(409, "Conflict", "the run has ended", code="ended")
@@ -1243,7 +1250,7 @@ async def command(
 
 
 @router.post(
-    "/runs/{run_id}/pause", status_code=202, tags=["control"], responses=responses(404, 409)
+    "/runs/{run_id}/pause", status_code=202, tags=["control"], responses=responses(404, 409, 503)
 )
 @audit.audited("run.pause")
 async def pause_run(
@@ -1255,7 +1262,7 @@ async def pause_run(
 
 
 @router.post(
-    "/runs/{run_id}/resume", status_code=202, tags=["control"], responses=responses(404, 409)
+    "/runs/{run_id}/resume", status_code=202, tags=["control"], responses=responses(404, 409, 503)
 )
 @audit.audited("run.resume")
 async def resume_run(
@@ -1277,14 +1284,15 @@ async def resume_run(
 
 
 @router.post(
-    "/runs/{run_id}/sweep", status_code=202, tags=["control"], responses=responses(404, 409)
+    "/runs/{run_id}/sweep", status_code=202, tags=["control"], responses=responses(404, 409, 503)
 )
 @audit.audited("run.sweep")
 async def sweep_run(
     run_id: str, body: SweepBody, principal: Operator, state: State, note: audit.Note
 ) -> CommandSent:
     """Ask the run's monitor for a sweep now, of one agent or of all."""
-    first = await state.store.events(_run_id(run_id), limit=1)
+    await _shown(state, principal, _run_id(run_id))
+    first = await state.store.events(run_id, limit=1)
     if first and first[0].type == "run.started":
         kind = first[0].data.get("kind") or "scenario"
         if kind != "scenario":
@@ -1296,7 +1304,7 @@ async def sweep_run(
 
 
 @router.post(
-    "/runs/{run_id}/inject", status_code=202, tags=["control"], responses=responses(404, 409)
+    "/runs/{run_id}/inject", status_code=202, tags=["control"], responses=responses(404, 409, 503)
 )
 @audit.audited("run.inject")
 async def inject_run(
@@ -1308,7 +1316,7 @@ async def inject_run(
 
 
 @router.post(
-    "/runs/{run_id}/kill", status_code=202, tags=["control"], responses=responses(404, 409)
+    "/runs/{run_id}/kill", status_code=202, tags=["control"], responses=responses(404, 409, 503)
 )
 @audit.audited("run.kill")
 async def kill_run(
@@ -1321,7 +1329,7 @@ async def kill_run(
 
 
 @router.post(
-    "/runs/{run_id}/cancel", status_code=202, tags=["control"], responses=responses(404, 409)
+    "/runs/{run_id}/cancel", status_code=202, tags=["control"], responses=responses(404, 409, 503)
 )
 @audit.audited("run.cancel")
 async def cancel_run(

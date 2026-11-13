@@ -67,7 +67,9 @@ class StartScore(BaseModel):
     runner: Utf8 | None = None
 
 
-@router.post("/runs/{run_id}/score", status_code=202, tags=["score"], responses=responses(404, 409))
+@router.post(
+    "/runs/{run_id}/score", status_code=202, tags=["score"], responses=responses(404, 409, 503)
+)
 @audit.audited("run.score")
 async def score_run(
     run_id: str,
@@ -132,7 +134,7 @@ async def queue_score(
     info = await state.store.run(run_id)
     head = await state.store.head(run_id) if info is not None else None
     if info is None or head is None:
-        raise ProblemException(404, "Not found", f"no run {run_id}")
+        raise _no_run(state, run_id)
     if info.status == "running":
         raise ProblemException(409, "Conflict", "the run is not sealed yet", code="not_sealed")
     if info.kind != "scenario":

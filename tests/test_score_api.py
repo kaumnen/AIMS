@@ -213,6 +213,20 @@ async def test_a_flag_is_labelled_while_another_process_rebuilds_the_index(
 READS = ("", "/events", "/events/0", "/steps", "/activity?exec=x", "/costs", "/samples")
 READS += ("/flags", "/labels", "/verification", "/projection", "/commands", "/report")
 READS += (f"/blobs/{'0' * 64}", "/dependents", "/score/estimate", "/forks/estimate?step=1")
+READS += ("/monitor/estimate",)
+UNKNOWN = "019a6f00-0000-7000-8000-00000000000f"
+# every write to one run, each with a body refused once the run is found, so none queues
+WRITES: dict[str, dict[str, Any]] = {
+    "/score": {"monitor": UNKNOWN},
+    "/forks": {"step": 99},
+    "/monitor": {"profile": "nope"},
+    "/sweep": {},
+    "/pause": {},
+    "/resume": {},
+    "/inject": {"text": "go on"},
+    "/kill": {},
+    "/cancel": {},
+}
 
 
 async def test_a_read_while_another_process_rebuilds_the_index_says_to_ask_again(
@@ -246,6 +260,29 @@ async def test_a_read_while_another_process_rebuilds_the_index_says_to_ask_again
         r = await c.get(f"/api/runs/{origin}/events")
         assert r.status_code == 200
         assert r.json()["items"]
+
+
+async def test_a_write_while_another_process_rebuilds_the_index_says_to_ask_again(
+    cp: CP, local: LocalEventStore, fake: FakeRunner
+) -> None:
+    origin = await planted(cp, local, fake)
+    async with cp.client(cp.operator) as c:
+        other = await Index.open(cp.state.store.root / INDEX)
+        try:
+            await other.reset()
+            for path, body in WRITES.items():
+                r = await c.post(f"/api/runs/{origin}{path}", json=body)
+                assert r.status_code == 503, (path, r.status_code, r.text)
+                assert (r.headers["retry-after"], r.json()["code"]) == ("1", "indexing"), path
+                r = await c.post(f"/api/runs/{UNKNOWN}{path}", json=body)
+                assert r.status_code in (404, 422), (path, r.status_code, r.text)
+        finally:
+            await other.close()
+        await cp.state.store.sync()
+        for path, body in WRITES.items():
+            r = await c.post(f"/api/runs/{origin}{path}", json=body)
+            assert r.status_code in (409, 422), (path, r.status_code, r.text)
+    assert await cp.state.db.jobs() == []
 
 
 async def test_labels_from_the_api_and_from_runners_and_the_rates(
