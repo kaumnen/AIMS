@@ -2,13 +2,14 @@
 
 A rule names its event types, a `match` map whose entries must all hold, `filter` maps any of
 which excludes an event, a `scope` of phases and agents, and a `key` template. A field path is a
-dotted path into the event's payload (`fds.1.ino`; a list without an index matches when any item
-does) or a derived field from the monitor's state. A path may carry modifiers: one comparison
-(glob, contains, startswith, endswith, re, cidr, gt, gte, lt, lte, exists) and one quantifier
-over the rule's values (any, the default, or all). A list field matches when any of its items
-does. Strings compare case-sensitively. A glob without a `/` also matches a path's base name;
-`*` stays within one path part and `**` crosses them. A `distinct` field that holds a list or a
-map counts it whole as one value.
+dotted path into the event's payload (`fds.1.ino`) or a derived field from the monitor's state.
+A path through a list without an index (`fds.ino`) reads every item, so it works as a list field
+of their values. A path may carry modifiers: one comparison (glob, contains, startswith,
+endswith, re, cidr, gt, gte, lt, lte, exists) and one quantifier over the rule's values (any, the
+default, or all). A list field matches when any of its items does, and a key joins its items
+with spaces. Strings compare case-sensitively. A glob without a `/` also matches a path's base
+name; `*` stays within one path part and `**` crosses them. A `distinct` field that holds a list
+or a map counts it whole as one value.
 """
 
 import glob
@@ -341,6 +342,80 @@ def _get(obj: Any, segs: Sequence[str]) -> list[Any]:
     return []
 
 
+def _spreads(obj: Any, segs: Sequence[str]) -> bool:
+    """Whether `_get` reads a list in `obj` without an index on its way along `segs`."""
+    for seg in segs:
+        if obj is None or isinstance(obj, BlobRef):
+            return False
+        if isinstance(obj, BaseModel):
+            obj = getattr(obj, seg) if seg in type(obj).model_fields else None
+        elif isinstance(obj, Mapping):
+            obj = obj.get(seg)
+        elif isinstance(obj, (list, tuple)):
+            if not seg.isdigit():
+                return True
+            i = int(seg)
+            obj = obj[i] if i < len(obj) else None
+        else:
+            return False
+    return False
+
+
+def _pick(obj: Any, segs: Sequence[str]) -> tuple[Any, bool]:
+    """The value at `segs` in `obj` for a key or a distinct count, and whether the path read a
+    list without an index. Such a path gives the list of every item's value, as a list field
+    does, or None when no item has one."""
+    found = _get(obj, segs)
+    if _spreads(obj, segs):
+        return found or None, True
+    return found[0] if found else None, False
+
+
+def _can_spread(ann: Any, segs: Sequence[str]) -> bool:
+    """Whether walking `segs` into a value of the type `ann` can read a list without an index.
+    A part of unknown type can hold a list."""
+    if not segs:
+        return False
+    ann = _strip(ann)
+    if ann is Any or ann is object or isinstance(ann, TypeAliasType) or ann is JsonValue:
+        return not all(s.isdigit() for s in segs)
+    origin = get_origin(ann)
+    args = [a for a in get_args(ann) if a is not types.NoneType]
+    if origin in (Union, types.UnionType):
+        return not any(_leaf(a) for a in args) and any(_can_spread(a, segs) for a in args)
+    if isinstance(ann, type) and issubclass(ann, BaseModel):
+        f = ann.model_fields.get(segs[0])
+        return f is not None and _can_spread(f.annotation, segs[1:])
+    if origin in (list, set, frozenset, Sequence) or (
+        origin is tuple and len(args) == 2 and args[1] is Ellipsis
+    ):
+        return not segs[0].isdigit() or _can_spread(args[0], segs[1:])
+    if origin is tuple:
+        if not segs[0].isdigit():
+            return True
+        i = int(segs[0])
+        return i < len(args) and _can_spread(args[i], segs[1:])
+    if origin in (dict, Mapping):
+        return _can_spread(args[-1], segs[1:])
+    return False
+
+
+def _spreads_lists(rule: Rule) -> bool:
+    """Whether a key field or the distinct field of `rule` can read a list without an index."""
+    paths = [m.group(1).split(".") for m in _TEMPLATE.finditer(rule.key or "")]
+    if isinstance(rule.distinct, str):
+        paths.append(rule.distinct.split("."))
+    derived = derived_fields()
+    models = event_models()
+    return any(
+        _can_spread(models[e], segs)
+        for segs in paths
+        if segs[0] not in derived
+        for e in rule.event
+        if e in models
+    )
+
+
 def compile_glob(pattern: str) -> Callable[[str], bool]:
     """A matcher for `pattern`: `*` within a path part, `**` across parts; a pattern without a
     `/` also matches the base name."""
@@ -488,8 +563,7 @@ class Compiled:
             if self.distinct.derived is not None:
                 value = self.distinct.derived.get(event, payload, state)
             else:
-                found = _get(payload, self.distinct.path)
-                value = found[0] if found else None
+                value, _ = _pick(payload, self.distinct.path)
             return _hashable(value)
         if self.by_key:
             rendered = await self.render_key(event, payload, state)
@@ -502,17 +576,28 @@ class Compiled:
             if field is None:
                 parts.append(text)
                 continue
+            spread = False
             if field.derived is not None:
                 value = field.derived.get(event, payload, state)
             else:
-                found = _get(payload, field.path)
-                value = found[0] if found else None
-            if isinstance(value, BlobRef):
-                value = await state.text(value, 256)
-            if isinstance(value, (list, tuple)):
-                value = " ".join(str(v) for v in value)
-            parts.append("" if value is None else str(value))
+                value, spread = _pick(payload, field.path)
+            if spread:
+                # Each item renders as a lone value would; an item with no value is left out.
+                texts = [await _text(v, state) for v in value or () if v is not None]
+                parts.append(" ".join(texts))
+            else:
+                parts.append(await _text(value, state))
         return "".join(parts)
+
+
+async def _text(value: Any, state: State) -> str:
+    """A key field's value as text: a blob's first 256 characters, a list's items joined by
+    spaces, nothing for None."""
+    if isinstance(value, BlobRef):
+        value = await state.text(value, 256)
+    if isinstance(value, (list, tuple)):
+        value = " ".join(str(v) for v in value)
+    return "" if value is None else str(value)
 
 
 def _condition(
@@ -766,6 +851,10 @@ class RuleSignal(Base):
 def _revision(rule: Rule) -> int:
     """The last fix that changed what `rule` flags, 0 for none. Each fix takes the next number,
     so a rule it touches gets a version no older code gave it."""
+    if _spreads_lists(rule):
+        # A key or distinct path through a list without an index reads every item, not the
+        # first.
+        return 6
     if _counts_bools(rule):
         # A distinct value keeps true apart from 1.
         return 5

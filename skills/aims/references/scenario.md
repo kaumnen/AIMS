@@ -212,6 +212,7 @@ A rule matches events of the types in `event`:
 - `match` maps field paths to values. Every entry must hold. A list value holds when any item does.
 - A field path may end in one comparison: `glob`, `contains`, `startswith`, `endswith`, `re`, `cidr`, `gt`, `gte`, `lt`, `lte` or `exists`. It may add `any` (the default) or `all` over the rule's values, such as `path|endswith|all`.
 - `filter` maps exclude an event when any of them holds. An empty map is refused. `scope`, `key`, `count`, `window_s` and `distinct` are in the schema.
+- A path through a list without an index, such as `changes.path`, reads every item. A match holds when any item does. A `key` joins the items with spaces. `distinct` counts the items of one event as one value. Use an index, such as `changes.0.path`, for one item.
 - A glob without a `/` also matches a base name. `*` stays in one path part. `**` crosses them.
 
 Event types a rule can name, with their common fields:

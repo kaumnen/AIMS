@@ -23,10 +23,12 @@ from aims.events import (
 from aims.events.schema import format_ts
 from aims.monitor.config import MonitorConfig, Rule
 from aims.monitor.signals import scan
-from aims.monitor.signals.base import SignalError, SignalSetup
+from aims.monitor.signals.base import SignalError, SignalSetup, registry
 from aims.monitor.signals.engine import EVIDENCE, SignalEngine
 from aims.monitor.signals.rules import (
+    RuleSignal,
     _hashable,
+    _spreads_lists,
     compile_glob,
     compile_rule,
     rule_signal,
@@ -554,7 +556,6 @@ async def test_a_distinct_rule_keeps_true_apart_from_1(store: LocalEventStore) -
         ({"event": ["proc.exec"], "distinct": "argv.0"}, ".2"),
         ({"event": ["proc.exec"], "distinct": "fds"}, ".2"),
         ({"event": ["proc.exec"], "distinct": "program"}, ".2"),
-        ({"event": ["fs.snapshot"], "distinct": "changes.path"}, ".2"),
         ({"event": ["tool.call"], "distinct": "arguments"}, ".2"),
         ({"event": ["tool.call"], "distinct": True}, ".2"),
         ({"event": ["proc.exec"], "distinct": "argv", "window_s": 10}, ".4"),
@@ -562,6 +563,14 @@ async def test_a_distinct_rule_keeps_true_apart_from_1(store: LocalEventStore) -
         ({"event": ["tool.call"], "distinct": True, "window_s": 10}, ".4"),
         ({"event": ["proc.exec"], "window_s": 10}, ""),
         ({"event": ["proc.exec"]}, ""),
+        ({"event": ["fs.snapshot"], "distinct": "changes.path"}, ".6"),
+        ({"event": ["fs.snapshot"], "distinct": "changes.path", "window_s": 10}, ".6"),
+        ({"event": ["proc.exec"], "distinct": "fds.ino"}, ".6"),
+        ({"event": ["fs.snapshot"], "key": "{changes.path}"}, ".6"),
+        ({"event": ["fs.snapshot"], "key": "{changes.0.path}"}, ""),
+        ({"event": ["run.started"], "key": "{config.x.y}"}, ".6"),
+        ({"event": ["run.started"], "key": "{config.x}"}, ""),
+        ({"event": ["proc.exec"], "key": "{argv} {fds.1.ino}"}, ""),
     ],
 )
 def test_a_rule_that_counts_lists_or_maps_has_a_new_version(
@@ -598,6 +607,28 @@ async def test_rule_rate_counts_do_not_mix_agents(store: LocalEventStore) -> Non
         agent="a",
     )
     assert len(b.of("r")) == 1
+
+
+async def test_a_key_or_distinct_path_through_a_list_reads_every_item(
+    store: LocalEventStore,
+) -> None:
+    keyed = rule(id="keyed", event=["fs.snapshot"], key="{changes.path} {changes.sha256}")
+    counted = rule(id="counted", event=["fs.snapshot"], count=2, distinct="changes.path")
+    b = await bench(store, config=MonitorConfig(preset="signals", rules=[keyed, counted]))
+    ex = await b.bash("x")
+    await b.snapshot(ex, change("/work/a"), change("/work/b", sha256="0" * 64))
+    assert [f.key for f in b.of("keyed")] == [f"/work/a /work/b {'0' * 64}"]
+    assert b.of("counted") == []
+    # The same first item: only the later ones tell the two snapshots apart.
+    await b.snapshot(ex, change("/work/a"), change("/work/c"))
+    assert len(b.of("counted")) == 1
+
+
+def test_no_catalogue_rule_keys_on_a_list_without_an_index() -> None:
+    setup = SignalSetup(MonitorConfig(preset="signals"), scenario(), {})
+    for name, cls in registry().items():
+        if isinstance(cls, type) and issubclass(cls, RuleSignal):
+            assert not any(_spreads_lists(r) for r in cls.build(setup)), name
 
 
 def test_a_distinct_field_must_exist() -> None:
