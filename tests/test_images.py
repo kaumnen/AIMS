@@ -7,6 +7,7 @@ import io
 import json
 import logging
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -481,12 +482,6 @@ REGISTRY_IMAGE = (
 )
 
 
-def registry_env(port: int) -> list[str]:
-    """The registry listens on `port` only. Its debug server, on :5001 by default, is off, so
-    two tests can each run one at once."""
-    return [f"REGISTRY_HTTP_ADDR=127.0.0.1:{port}", "REGISTRY_HTTP_DEBUG_ADDR="]
-
-
 @pytest.fixture
 async def docker() -> AsyncIterator[aiodocker.Docker]:
     client = aiodocker.Docker()
@@ -503,9 +498,42 @@ async def docker() -> AsyncIterator[aiodocker.Docker]:
         await client.close()
 
 
+@pytest.fixture
+async def registry_port(docker: aiodocker.Docker) -> AsyncIterator[int]:
+    """The port of a registry of the test's own. It listens on a port the kernel picks, which
+    it logs, so no other listener can hold it. Its debug server, on :5001 by default, is off,
+    so two tests can each run one at once."""
+    await ensure_pulled(docker, REGISTRY_IMAGE)
+    registry = await docker.containers.run(
+        config={
+            "Image": REGISTRY_IMAGE,
+            "Env": ["REGISTRY_HTTP_ADDR=127.0.0.1:0", "REGISTRY_HTTP_DEBUG_ADDR="],
+            "Labels": {
+                "aims.managed": "1",
+                "aims.host": socket.gethostname(),
+                "aims.pid": str(os.getpid()),
+            },
+            "HostConfig": {"NetworkMode": "host", "AutoRemove": True},
+        },
+        name=f"aims-test-registry-{uuid.uuid4().hex[:12]}",
+    )
+    try:
+        async with asyncio.timeout(30):
+            while True:
+                said = "".join(await registry.log(stdout=True, stderr=True))
+                if found := re.search(r'msg="listening on 127\.0\.0\.1:(\d+)"', said):
+                    break
+                await asyncio.sleep(0.05)
+        yield int(found[1])
+    finally:
+        with contextlib.suppress(aiodocker.DockerError):
+            await registry.stop()
+
+
 @pytest.mark.docker
 async def test_an_asset_image_comes_from_a_registry_and_is_built_without_one(
     docker: aiodocker.Docker,
+    registry_port: int,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -517,8 +545,7 @@ async def test_an_asset_image_comes_from_a_registry_and_is_built_without_one(
     monkeypatch.setattr(images, "ASSETS", tmp_path / "assets")
     tag = context("probe")[0]
     repo, _, version = tag.rpartition(":")
-    port = 20000 + uuid.uuid4().int % 30000
-    source = f"127.0.0.1:{port}/{repo}"
+    source = f"127.0.0.1:{registry_port}/{repo}"
     refs = [f"{source}:{version}", tag]
     pins: dict[str, str] = {tag: "sha256:" + "0" * 64}
     monkeypatch.setattr(images, "published", lambda: pins)
@@ -532,20 +559,6 @@ async def test_an_asset_image_comes_from_a_registry_and_is_built_without_one(
 
     monkeypatch.setattr(images, "_post", counted)
 
-    await ensure_pulled(docker, REGISTRY_IMAGE)
-    registry = await docker.containers.run(
-        config={
-            "Image": REGISTRY_IMAGE,
-            "Env": registry_env(port),
-            "Labels": {
-                "aims.managed": "1",
-                "aims.host": socket.gethostname(),
-                "aims.pid": str(os.getpid()),
-            },
-            "HostConfig": {"NetworkMode": "host", "AutoRemove": True},
-        },
-        name=f"aims-test-registry-{port}",
-    )
     try:
         closed = {"AIMS_IMAGE_REGISTRY": "127.0.0.1:1"}
         with caplog.at_level(logging.INFO, logger="aims.sandbox"):
@@ -555,14 +568,7 @@ async def test_an_asset_image_comes_from_a_registry_and_is_built_without_one(
         assert builds == [tag]
 
         await docker.images.tag(tag, source, tag=version)
-        for attempt in range(50):
-            try:
-                await docker.images.push(source, tag=version)
-                break
-            except aiodocker.DockerError:
-                if attempt == 49:
-                    raise
-                await asyncio.sleep(0.2)
+        await docker.images.push(source, tag=version)
         pushed = (await docker.images.inspect(f"{source}:{version}"))["RepoDigests"]
         (digest,) = [d.partition("@")[2] for d in pushed if d.startswith(f"{source}@")]
         remote = f"{source}@{digest}"
@@ -571,7 +577,7 @@ async def test_an_asset_image_comes_from_a_registry_and_is_built_without_one(
             with contextlib.suppress(aiodocker.DockerError):
                 await docker.images.delete(ref)
 
-        local = {"AIMS_IMAGE_REGISTRY": f"127.0.0.1:{port}"}
+        local = {"AIMS_IMAGE_REGISTRY": f"127.0.0.1:{registry_port}"}
         pins[tag] = digest
         caplog.clear()
         with caplog.at_level(logging.INFO, logger="aims.sandbox"):
@@ -593,13 +599,14 @@ async def test_an_asset_image_comes_from_a_registry_and_is_built_without_one(
         for ref in refs:
             with contextlib.suppress(aiodocker.DockerError):
                 await docker.images.delete(ref, force=True)
-        with contextlib.suppress(aiodocker.DockerError):
-            await registry.stop()
 
 
 @pytest.mark.docker
 async def test_an_old_pulled_asset_image_goes_with_its_registry_reference(
-    docker: aiodocker.Docker, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    docker: aiodocker.Docker,
+    registry_port: int,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     probe = tmp_path / "assets" / "probe"
     probe.mkdir(parents=True)
@@ -609,29 +616,12 @@ async def test_an_old_pulled_asset_image_goes_with_its_registry_reference(
     monkeypatch.setattr(images, "MIN_AGE_S", 0)
     tag = await ensure_image(docker, "probe", env={"AIMS_IMAGE_REGISTRY": ""})
     repo, _, version = tag.rpartition(":")
-    port = 20000 + uuid.uuid4().int % 30000
-    source = f"127.0.0.1:{port}/{repo}"
+    source = f"127.0.0.1:{registry_port}/{repo}"
     refs = [tag, f"{source}:{version}"]
 
-    await ensure_pulled(docker, REGISTRY_IMAGE)
-    registry = await docker.containers.run(
-        config={
-            "Image": REGISTRY_IMAGE,
-            "Env": registry_env(port),
-            "HostConfig": {"NetworkMode": "host", "AutoRemove": True},
-        },
-        name=f"aims-test-registry-{port}",
-    )
     try:
         await docker.images.tag(tag, source, tag=version)
-        for attempt in range(50):
-            try:
-                await docker.images.push(source, tag=version)
-                break
-            except aiodocker.DockerError:
-                if attempt == 49:
-                    raise
-                await asyncio.sleep(0.2)
+        await docker.images.push(source, tag=version)
         pushed = (await docker.images.inspect(f"{source}:{version}"))["RepoDigests"]
         (digest,) = [d.partition("@")[2] for d in pushed if d.startswith(f"{source}@")]
         remote = f"{source}@{digest}"
@@ -652,8 +642,6 @@ async def test_an_old_pulled_asset_image_goes_with_its_registry_reference(
         for ref in refs:
             with contextlib.suppress(aiodocker.DockerError):
                 await docker.images.delete(ref, force=True)
-        with contextlib.suppress(aiodocker.DockerError):
-            await registry.stop()
 
 
 def scenario_context() -> bytes:
