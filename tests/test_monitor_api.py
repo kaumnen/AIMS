@@ -484,6 +484,51 @@ async def test_a_job_that_does_not_load_ends_instead_of_failing_the_claim(
     assert job.reason.startswith("the job does not load")
 
 
+async def test_the_run_list_stream_sends_a_job_that_does_not_load_again_once_it_ends(
+    cp: CP, fake: FakeRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with cp.client(cp.operator) as c:
+        r = await c.post("/api/models/check", json={})
+        (run_id,) = r.json()["run_ids"]
+    await fake.next(OfferMessage)
+    db = cp.state.db
+    job = await db.job(run_id)
+    assert job is not None
+    await db._write(
+        "update jobs set payload = ? where run_id = ?",
+        (json.dumps({**job.payload, "check": 5}), run_id),
+    )
+    read = asyncio.Event()
+    set_job = db.set_job
+
+    async def late(run: str, state: Any, reason: str | None = None) -> bool:
+        # a stream that reads the run between the claim and the job's end
+        if state == "done":
+            await read.wait()
+        return await set_job(run, state, reason)
+
+    monkeypatch.setattr(db, "set_job", late)
+    seen: list[str] = []
+    async with (
+        cp.client(cp.viewer) as c,
+        asyncio.timeout(10),
+        c.sse("/api/stream", params={"runs": "true"}) as source,
+    ):
+        task = asyncio.create_task(claim(cp, "fake", run_id))
+        async for e in source:
+            if e.event != "run" or (run := json.loads(e.data)["run"])["run_id"] != run_id:
+                continue
+            seen.append(run["state"])
+            if run["state"] == "claimed":
+                read.set()
+            if run["state"] == "done":
+                break
+    assert "claimed" in seen
+    assert seen[-1] == "done"
+    r = await task
+    assert (r.status_code, r.json()["code"]) == (409, "claim")
+
+
 RULE = {
     "id": "r1",
     "title": "t",

@@ -318,7 +318,10 @@ async def claim_job(
         # a lone surrogate, stored before the API refused it, would fail the reply each time
         return Claimed(job=JOBS.validate_python(scrub(job.payload)))
     except ValidationError as e:
-        await state.db.set_job(run_id, "done", f"the job does not load: {e}")
+        if await state.db.set_job(run_id, "done", f"the job does not load: {e}"):
+            # The claim told the streams of the run before the job ended, so a stream may have
+            # sent it as claimed.
+            state.changes.touch(run_id)
         state.poke()
         raise ProblemException(409, "Conflict", "the job does not load", code="claim") from None
 
