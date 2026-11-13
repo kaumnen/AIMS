@@ -13,7 +13,7 @@ from aiodocker.stream import Stream
 from aims.events import MAX_INT, FsChangeType, FsKind
 from aims.sandbox.base import Change, Tree
 from aims.sandbox.containers import create_container, remove_container
-from aims.sandbox.execs import open_stream
+from aims.sandbox.execs import open_stream, streamed
 
 log = logging.getLogger("aims.sandbox")
 
@@ -291,15 +291,16 @@ class Reader:
 
 async def stream_archive(container: DockerContainer, path: str) -> AsyncGenerator[bytes]:
     """Docker's tar of `path` in `container`, in chunks as they arrive. Closing it ends the
-    transfer."""
+    transfer. One the daemon cuts raises a DockerStreamError."""
     # aiodocker has no public call that streams an archive, so this uses its private one.
     query = f"containers/{container.id}/archive"
-    async with container.docker._query(query, params={"path": path}) as response:
-        try:
-            async for chunk in response.content.iter_chunked(ARCHIVE_CHUNK):
-                yield chunk
-        finally:
-            response.close()
+    with streamed(f"the archive of {path}"):
+        async with container.docker._query(query, params={"path": path}) as response:
+            try:
+                async for chunk in response.content.iter_chunked(ARCHIVE_CHUNK):
+                    yield chunk
+            finally:
+                response.close()
 
 
 def _int(value: int) -> int:

@@ -16,7 +16,7 @@ from aiodocker.containers import DockerContainer
 from aims.aio import settle
 from aims.sandbox.base import TOOLBOX
 from aims.sandbox.containers import create_container, remove_container
-from aims.sandbox.execs import open_stream
+from aims.sandbox.execs import open_stream, streamed
 
 log = logging.getLogger("aims.sandbox")
 STOP_S = 1
@@ -450,7 +450,8 @@ async def start(
             await stream.close()
         state = await exec_.inspect()
         if state.get("ExitCode") != 0:
-            logs = await container.log(stdout=True, stderr=True)
+            with streamed(f"the log of IMDS sidecar {name}"):
+                logs = await container.log(stdout=True, stderr=True)
             raise RuntimeError(f"the IMDS listener did not start: {''.join(logs)[-2000:]}")
         _check_follower(follower, name)
     except BaseException:

@@ -36,7 +36,7 @@ from aims.sandbox.base import (
     check_name,
 )
 from aims.sandbox.containers import create_container, remove_container
-from aims.sandbox.execs import open_stream
+from aims.sandbox.execs import open_stream, streamed
 from aims.sandbox.images import (
     KEEP_DAYS,
     LockError,
@@ -1339,9 +1339,12 @@ async def _helper(
     )
     try:
         await container.start()
-        result = await container.wait()
+        # Docker sends a wait's header at once and its body once the helper ends.
+        with streamed(f"the wait for helper {cmd[0]}"):
+            result = await container.wait()
         if result.get("StatusCode") != 0:
-            logs = await container.log(stdout=True, stderr=True)
+            with streamed(f"the log of helper {cmd[0]}"):
+                logs = await container.log(stdout=True, stderr=True)
             raise SandboxError(f"helper {cmd[0]} failed: {''.join(logs)[-2000:]}")
     finally:
         await remove_container(container)

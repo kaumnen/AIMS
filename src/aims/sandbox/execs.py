@@ -1,7 +1,10 @@
 import asyncio
-from collections.abc import Callable
+import contextlib
+from collections.abc import Callable, Generator
 from typing import Any
 
+import aiodocker
+import aiohttp
 from aiodocker.containers import DockerContainer
 from aiodocker.stream import Stream
 from aiohttp import BytesPayload
@@ -10,9 +13,24 @@ from aiohttp.abc import AbstractStreamWriter
 GRACE_S = 5
 
 
+@contextlib.contextmanager
+def streamed(what: str) -> Generator[None]:
+    """Raise a DockerStreamError when the Docker daemon cuts `what`, a stream it sends, as one
+    that dies or restarts does. aiodocker turns the errors of a call the daemon drops into its
+    own, but lets aiohttp's and the socket's through once the stream is under way."""
+    try:
+        yield
+    except TimeoutError:
+        # aiohttp's read timeouts are TimeoutErrors, which callers tell from a failure.
+        raise
+    except (aiohttp.ClientPayloadError, aiohttp.ClientConnectionError, OSError) as e:
+        raise aiodocker.DockerStreamError(f"{what} was cut: {e}") from e
+
+
 async def open_stream(stream: Stream, on_send: Callable[[], None] | None = None) -> Stream:
     """Open `stream`, an exec start or a container attach not yet sent. One that fails or is
-    cancelled part way is closed before it raises, so its connection does not stay open.
+    cancelled part way is closed before it raises, so its connection does not stay open. One
+    the daemon cuts as it opens raises a DockerStreamError.
 
     `on_send` is called just before aiohttp writes the request body. The daemon reads the
     whole body before it starts an exec, so until then the exec cannot have started."""
@@ -28,7 +46,8 @@ async def open_stream(stream: Stream, on_send: Callable[[], None] | None = None)
 
         stream._setup = marked
     try:
-        return await stream.__aenter__()
+        with streamed("a new exec or attach stream"):
+            return await stream.__aenter__()
     except BaseException:
         _drop(stream)
         raise

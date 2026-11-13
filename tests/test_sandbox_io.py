@@ -1085,7 +1085,7 @@ async def test_an_exec_stream_that_fails_to_open_is_closed(
     backend: DockerBackend, store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A start that fails after the daemon answered, such as in the socket set-up, closes the
-    connection it opened."""
+    connection it opened. The exec fails as for any other Docker error."""
     _, sb = await sandbox(backend, store)
     inner = sb.sandbox
     assert isinstance(inner, DockerSandbox)
@@ -1104,17 +1104,18 @@ async def test_an_exec_stream_that_fails_to_open_is_closed(
         with monkeypatch.context() as m:
             m.setattr(Exec, "start", kept)
             m.setattr(aiodocker.stream, "FlowControlDataQueue", broken)
-            with pytest.raises(OSError, match="socket set-up failed"):
-                await inner.run(
-                    [f"{TOOLBOX}/busybox", "true"],
-                    uid=AGENT_UID,
-                    cwd="/",
-                    timeout_ms=10_000,
-                    capture=Capture(1024),
-                )
+            outcome = await inner.run(
+                [f"{TOOLBOX}/busybox", "true"],
+                uid=AGENT_UID,
+                cwd="/",
+                timeout_ms=10_000,
+                capture=Capture(1024),
+            )
     finally:
         await sb.close()
 
+    assert outcome.end == "failed"
+    assert "socket set-up failed" in (outcome.error or "")
     (stream,) = streams
     assert stream._resp is not None
     assert stream._resp.closed
