@@ -585,6 +585,65 @@ def test_a_runner_on_its_own_does_not_stop_when_its_stdin_ends(
     assert "aims ui ended" not in said[0]
 
 
+def test_a_refused_runner_aims_ui_starts_says_only_the_refusal_when_aims_ui_ends(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The control plane refused the runner, which stops as for a first Ctrl-C. `aims ui` ends
+    while it closes. That is not why it stopped, so the runner does not say it is."""
+    read_end, write_end = os.pipe()
+    held = [write_end]
+    real = os.read
+    seen: list[bytes] = []
+
+    def read(fd: int, n: int) -> bytes:
+        data = real(fd, n)
+        if fd == 0:
+            seen.append(data)
+        return data
+
+    class Stub:
+        closing = False
+
+        def __init__(self, options: NodeOptions) -> None:
+            pass
+
+        async def run(self, stop: asyncio.Event) -> None:
+            # as `on_refused` in Node.run does
+            stop.set()
+            os.close(held.pop())
+            async with asyncio.timeout(5):
+                while b"" not in seen:  # noqa: ASYNC110
+                    await asyncio.sleep(0.01)
+            raise Refused("the control plane at http://cp refused this runner 5 times in a row")
+
+    monkeypatch.setattr("aims.node.service.Node", Stub)
+    monkeypatch.setattr(os, "read", read)
+    # a runner of `aims ui` ignores SIGTERM and SIGHUP as it ends; a child of a later test
+    # would inherit that
+    signals = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+    previous = [signal.getsignal(sig) for sig in signals]
+    stdin = os.dup(0)
+    os.dup2(read_end, 0)
+    os.close(read_end)
+    try:
+        result = CliRunner().invoke(
+            app,
+            ["runner", "--server", "http://127.0.0.1:9", "--data-dir", str(tmp_path)],
+            env={"AIMS_TOKEN": "x", UI_RUNNER: "1"},
+        )
+    finally:
+        for sig, handler in zip(signals, previous, strict=True):
+            signal.signal(sig, handler)
+        os.dup2(stdin, 0)
+        os.close(stdin)
+        for fd in held:
+            os.close(fd)
+    monkeypatch.undo()
+    assert result.exit_code == 1, result.output
+    assert "error: the control plane at http://cp refused this runner" in result.output
+    assert "aims ui ended" not in result.output
+
+
 async def test_aims_ui_tells_its_runner_to_leave_ctrl_c_to_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

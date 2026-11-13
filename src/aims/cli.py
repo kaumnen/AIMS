@@ -1839,7 +1839,9 @@ def runner_cmd(
             if data:
                 return
             loop.remove_reader(0)
-            if stops == 0:
+            # A stop under way, from a signal or from a control plane that refused the runner,
+            # was not for this, so the line would give the wrong reason
+            if not stop.is_set():
                 stops = 1
                 stop.set()
                 say("aims ui ended: stopping, runs are sealed as cancelled")
