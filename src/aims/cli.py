@@ -1003,7 +1003,7 @@ async def _run(**o: Any) -> int:
     from rich.live import Live
     from rich.logging import RichHandler
 
-    from aims.aio import every
+    from aims.aio import every, in_turn
     from aims.channels import archives
     from aims.events import LocalEventStore, Series
     from aims.models import ProfileError
@@ -1402,18 +1402,23 @@ async def _run(**o: Any) -> int:
                 closing = True
                 if prompt is not None:
                     prompt.live = None
-                    await prompt.close()
-                if view is not None:
-                    await view.stop()
-                if lines is not None:
-                    await lines.stop()
-                if link is not None:
-                    if not await link.drain(60):
+
+                async def drain() -> None:
+                    if link is not None and not await link.drain(60):
                         err.print(
                             "[yellow]some runs did not reach the control plane;"
                             " `aims push` them later[/]"
                         )
-                    await link.close()
+
+                # A step that fails or is cancelled does not skip the ones after it: the
+                # link's client would stay open.
+                await in_turn(
+                    None if prompt is None else prompt.close,
+                    None if view is None else view.stop,
+                    None if lines is None else lines.stop,
+                    drain,
+                    None if link is None else link.close,
+                )
         digests = {r.run_id: await digest(store, r.run_id) for r in results if r.run_id}
     # The runs are sealed and shipped before the print. The text is built in full first, so a
     # print that fails to build writes nothing.

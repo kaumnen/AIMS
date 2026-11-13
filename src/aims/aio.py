@@ -47,6 +47,27 @@ async def every[T](aws: Iterable[Awaitable[T]]) -> list[T]:
     return results
 
 
+async def in_turn(*steps: Callable[[], Awaitable[object]] | None) -> None:
+    """Run each step to its end, one after the other, whichever of them fail and however often
+    the caller is cancelled meanwhile. Then raise the cancel, if one came, else the first
+    error. For the parts of a cleanup: one that fails must not skip the ones after it."""
+    cancelled = False
+    error: Exception | None = None
+    for step in steps:
+        if step is None:
+            continue
+        try:
+            await settle(step())
+        except asyncio.CancelledError:
+            cancelled = True
+        except Exception as e:
+            error = error or e
+    if cancelled:
+        raise asyncio.CancelledError
+    if error is not None:
+        raise error
+
+
 async def stopped(*tasks: asyncio.Future[Any]) -> None:
     """Cancel `tasks`, wait until every one has ended, then raise the first error among them.
     A task's own cancel is no error. A cancel of the caller meanwhile is raised once all have

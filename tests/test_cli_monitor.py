@@ -650,6 +650,35 @@ class QuietLink:
         await self.client.aclose()
 
 
+def test_a_failed_step_of_the_cleanup_of_aims_run_does_not_skip_the_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    closed: list[str] = []
+
+    class Recording(QuietLink):
+        async def drain(self, within: float) -> bool:
+            closed.append("drained")
+            return True
+
+        async def close(self) -> None:
+            closed.append("closed")
+            await super().close()
+
+    async def run(self: Runner) -> Result:
+        return await sealed(self)
+
+    async def fails(self: JsonLines) -> None:
+        raise RuntimeError("the lines did not stop")
+
+    with monkeypatch.context() as m:
+        m.setattr("aims.cli._link", lambda *args: ("http://cp.invalid", "token"))
+        m.setattr("aims.node.link.Link", Recording)
+        m.setattr(JsonLines, "stop", fails)
+        result, _ = run_stubbed(tmp_path, m, run, "--json")
+    assert closed == ["drained", "closed"]
+    assert isinstance(result.exception, RuntimeError)
+
+
 @pytest.mark.parametrize("began", [False, True])
 def test_a_score_run_that_never_began_is_not_left_shipping(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, began: bool

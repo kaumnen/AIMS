@@ -7,7 +7,7 @@ from contextlib import contextmanager
 
 import pytest
 
-from aims.aio import every, settle, shielded, stopped
+from aims.aio import every, in_turn, settle, shielded, stopped
 
 
 @contextmanager
@@ -214,3 +214,45 @@ async def test_stopped_puts_the_caller_s_cancel_ahead_of_a_task_s_error() -> Non
         gc.collect()
         await asyncio.sleep(0)
     assert errors == []
+
+
+@pytest.mark.anyio
+async def test_in_turn_runs_the_steps_after_one_that_fails_then_raises_the_first_error() -> None:
+    ran: list[str] = []
+
+    async def step(name: str, error: Exception | None = None) -> None:
+        ran.append(name)
+        if error is not None:
+            raise error
+
+    with pytest.raises(ValueError, match="first"):
+        await in_turn(
+            lambda: step("a"),
+            None,
+            lambda: step("b", ValueError("first")),
+            lambda: step("c", KeyError("second")),
+            lambda: step("d"),
+        )
+    assert ran == ["a", "b", "c", "d"]
+
+
+@pytest.mark.anyio
+async def test_in_turn_ends_every_step_under_a_cancel_then_raises_it() -> None:
+    ran: list[str] = []
+    began = asyncio.Event()
+
+    async def slow() -> None:
+        began.set()
+        await asyncio.sleep(0.05)
+        ran.append("slow")
+
+    async def last() -> None:
+        ran.append("last")
+        raise ValueError("an error after the cancel")
+
+    task = asyncio.create_task(in_turn(slow, last))
+    await began.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert ran == ["slow", "last"]
