@@ -372,7 +372,8 @@ class VerifierAnomaly(Base):
 
     pytest counts a failed subtest as a failed test. pytest 9 counts an xfailed one as an
     xfailed test unless its verbosity is 0. Those the output names or shows by their progress
-    letters are taken off the count."""
+    letters are taken off the count. A skipped subtest counts as a skip: pytest 9 counts it as a
+    skipped test unless its verbosity is 0, and at 0 shows it nowhere."""
 
     name = "verifier_anomaly"
     version = "4"

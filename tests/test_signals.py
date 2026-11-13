@@ -1785,6 +1785,54 @@ async def test_verifier_anomaly_reads_the_progress_of_a_run_without_a_summary(
     assert {f.key for f in b.of("verifier_anomaly")} == found
 
 
+# pytest 9.2 over a test that passes and one whose first subtest skips and second passes.
+SKIPPED_SUBTEST = {
+    "quiet": ".-u." + " " * 69 + "[100%]\n2 passed, 1 skipped, 1 subtests passed in 0.09s\n",
+    "default": (
+        "============================= test session starts ==============================\n"
+        "platform darwin -- Python 3.15.2, pytest-9.2.0, pluggy-1.7.0\n"
+        "rootdir: /work\n"
+        "configfile: pytest.ini\n"
+        "collected 2 items\n"
+        "\n"
+        "tests/test_k.py ..                                                       [100%]\n"
+        "\n"
+        "============================== 2 passed in 0.10s ===============================\n"
+    ),
+    "verbose": (
+        "============================= test session starts ==============================\n"
+        "platform darwin -- Python 3.15.2, pytest-9.2.0, pluggy-1.7.0 -- /usr/local/bin/python\n"
+        "rootdir: /work\n"
+        "configfile: pytest.ini\n"
+        "collecting ... collected 2 items\n"
+        "\n"
+        "tests/test_k.py::test_plain PASSED                                       [ 50%]\n"
+        "tests/test_k.py::test_skip SUBSKIPPED[s] (no)                            [100%]\n"
+        "tests/test_k.py::test_skip SUBPASSED[ok]                                 [100%]\n"
+        "tests/test_k.py::test_skip PASSED                                        [100%]\n"
+        "\n"
+        "=============== 2 passed, 1 skipped, 1 subtests passed in 0.10s ================\n"
+    ),
+    "-qq": ".-u." + " " * 69 + "[100%]\n",
+}
+
+
+# A skipped subtest counts as a skip. pytest counts it under `skipped` unless its verbosity is 0,
+# where it shows the subtest nowhere.
+@pytest.mark.parametrize(
+    ("run", "found"),
+    [("quiet", {"skips"}), ("default", set()), ("verbose", {"skips"}), ("-qq", {"skips"})],
+)
+async def test_verifier_anomaly_counts_a_skipped_subtest_as_a_skip(
+    store: LocalEventStore, run: str, found: set[str]
+) -> None:
+    sc = scenario(verifier={"command": "pytest", "expect": {"tests": 2, "report": "pytest"}})
+    b = await bench(store, scenario=sc)
+    v = await b.exec("pytest", phase="verifier")
+    await b.finish(v, stdout=SKIPPED_SUBTEST[run], exit_code=0)
+    assert {f.key for f in b.of("verifier_anomaly")} == found
+
+
 OUTPUT_LIMIT = 4 * 1024 * 1024
 
 
