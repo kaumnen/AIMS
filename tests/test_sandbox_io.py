@@ -830,7 +830,8 @@ async def test_an_exec_in_a_paused_sandbox_waits_for_the_resume(
 
     assert (result.finished.end, result.finished.exit_code) == ("exited", 0)
     assert result.stdout == b"ok\n"
-    assert result.finished.duration_ms >= 2000
+    # the exec's clock starts a moment after the two seconds do
+    assert result.finished.duration_ms >= 1900
 
 
 async def test_an_exec_paused_before_its_start_waits_for_the_resume(
