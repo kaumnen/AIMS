@@ -552,21 +552,86 @@ def test_aims_audit_reads_the_local_trail(tmp_path: Path) -> None:
     assert out.exit_code == 2
 
 
-@pytest.mark.parametrize("jsonl", [False, True])
-def test_aims_audit_prints_no_rows_when_one_fails(tmp_path: Path, jsonl: bool) -> None:
-    data = tmp_path / "server"
+def far_rows(data: Path) -> None:
+    """Rows whose times no date holds, past year 9999 and before year 1, between two tokens."""
     runner = CliRunner()
     made = runner.invoke(cli, ["token", "create", "a", "--data-dir", str(data)])
     assert made.exit_code == 0, made.output
-    # a row whose time no date holds, older than the next one
     db = sqlite3.connect(data / "server.sqlite")
     try:
         with db:
-            db.execute("insert into audit (at_us, action, outcome) values (?, 'x', 'ok')", (2**62,))
+            for at, action in ((2**62, "late"), (-(2**62), "early")):
+                db.execute(
+                    "insert into audit (at_us, action, outcome) values (?, ?, 'ok')", (at, action)
+                )
     finally:
         db.close()
     made = runner.invoke(cli, ["token", "create", "b", "--data-dir", str(data)])
     assert made.exit_code == 0, made.output
-    out = runner.invoke(cli, ["audit", "--data-dir", str(data), *(["--jsonl"] if jsonl else [])])
+
+
+LAST, FIRST = "9999-12-31T23:59:59.999999+00:00", "0001-01-01T00:00:00+00:00"
+
+
+def test_aims_audit_shows_a_time_no_date_holds_as_the_last_or_first_one(tmp_path: Path) -> None:
+    data = tmp_path / "server"
+    far_rows(data)
+    runner = CliRunner()
+    out = runner.invoke(cli, ["audit", "--data-dir", str(data)])
+    assert out.exit_code == 0, out.output
+    lines = out.output.splitlines()
+    assert [line.split("  ")[2] for line in lines] == [
+        "token.create",
+        "early",
+        "late",
+        "token.create",
+    ]
+    assert lines[1].startswith("0001-01-01 00:00:00  -  early")
+    assert lines[2].startswith("9999-12-31 23:59:59  -  late")
+    out = runner.invoke(cli, ["audit", "--data-dir", str(data), "--jsonl"])
+    assert out.exit_code == 0, out.output
+    found = [json.loads(line) for line in out.output.splitlines()]
+    assert [(x["action"], x["at"]) for x in found[1:3]] == [("early", FIRST), ("late", LAST)]
+
+
+async def test_a_time_no_date_holds_leaves_the_audit_page_readable(cp: CP) -> None:
+    from aims.server.db import AuditRow
+
+    for at, action in ((2**62, "late"), (-(2**62), "early")):
+        await cp.state.db.add_audit(AuditRow(at=at / 1_000_000, action=action, outcome="ok"))
+    found = {r["action"]: r["at"] for r in await rows(cp)}
+    assert (found["late"], found["early"]) == (LAST, FIRST)
+    async with cp.client(cp.operator) as c:
+        r = await c.get("/api/audit", params={"format": "jsonl"})
+    assert r.status_code == 200
+    lines = {x["action"]: x["at"] for x in map(json.loads, r.text.splitlines())}
+    assert (lines["late"], lines["early"]) == (LAST, FIRST)
+
+
+@pytest.mark.parametrize("jsonl", [False, True])
+def test_aims_audit_prints_no_rows_when_one_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, jsonl: bool
+) -> None:
+    from aims import terminal
+
+    data = tmp_path / "server"
+    far_rows(data)
+    one_line, json_text = terminal.one_line, terminal.json_text
+
+    def line(text: object) -> str:
+        if text == "late":
+            raise ValueError("this row does not show")
+        return one_line(text)
+
+    def json_line(value: Any, **kwargs: Any) -> str:
+        if value["action"] == "late":
+            raise ValueError("this row does not show")
+        return json_text(value, **kwargs)
+
+    monkeypatch.setattr(terminal, "one_line", line)
+    monkeypatch.setattr(terminal, "json_text", json_line)
+    out = CliRunner().invoke(
+        cli, ["audit", "--data-dir", str(data), *(["--jsonl"] if jsonl else [])]
+    )
     assert out.exit_code == 1
     assert out.stdout == ""

@@ -2894,7 +2894,7 @@ def audit_cmd(
     from datetime import UTC, datetime
 
     from aims.server.audit import every
-    from aims.server.audit_api import entry
+    from aims.server.audit_api import entry, when
     from aims.terminal import json_text, one_line
 
     if outcome is not None and outcome not in ("ok", "refused", "error"):
@@ -2932,9 +2932,9 @@ def audit_cmd(
         if jsonl:
             out.append(json_text(entry(r).model_dump(mode="json")) + "\n")
             continue
-        when = datetime.fromtimestamp(r.at, UTC).strftime("%Y-%m-%d %H:%M:%S")
+        at = when(r.at).strftime("%Y-%m-%d %H:%M:%S")
         result = r.outcome if r.status is None else f"{r.outcome} {r.status}"
-        parts = [when, r.token or "-", r.action, r.target or "-", result, r.ip or "-"]
+        parts = [at, r.token or "-", r.action, r.target or "-", result, r.ip or "-"]
         out.append("  ".join(one_line(part) for part in [*parts, r.detail or ""]).rstrip() + "\n")
     typer.echo("".join(out), nl=False)
 

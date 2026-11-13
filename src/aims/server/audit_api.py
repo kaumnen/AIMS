@@ -45,10 +45,20 @@ class AuditPage(Out):
     next: int | None = None
 
 
+def when(at: float) -> datetime:
+    """The UTC time `at` seconds after the epoch. One no date holds, past year 9999 or before
+    year 1, from a row written outside AIMS, is cut to the last or first one there is, as
+    format_ts does, so the rest of the page still reads."""
+    try:
+        return datetime.fromtimestamp(at, UTC)
+    except OverflowError, OSError, ValueError:
+        return (datetime.max if at > 0 else datetime.min).replace(tzinfo=UTC)
+
+
 def entry(row: AuditRow) -> AuditEntry:
     return AuditEntry(
         id=row.id or 0,
-        at=datetime.fromtimestamp(row.at, UTC).isoformat(),
+        at=when(row.at).isoformat(),
         token=row.token,
         role=row.role,
         auth=row.auth,
