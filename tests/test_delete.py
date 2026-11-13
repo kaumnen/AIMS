@@ -51,7 +51,7 @@ from aims.run.runner import Options, Result
 from aims.server import dispatch, retention
 from aims.server.db import Job, JobState
 from aims.server.serve import UiOptions, _spawn_runner
-from aims.wire import MonitorJob, ScoreJob
+from aims.wire import MonitorJob, OfferMessage, ScoreJob
 
 pytestmark = pytest.mark.anyio
 
@@ -641,6 +641,31 @@ async def test_a_runner_cancels_a_job_with_no_runner_whose_run_was_deleted_then_
         assert cut.is_set()
         assert await store.run(run_id) is None
         assert not (store.root / run_id).exists()
+
+
+async def test_a_job_whose_run_is_deleted_before_its_task_starts_frees_its_slot(
+    tmp_path: Path,
+) -> None:
+    run_id = str(uuid.uuid7())
+    job = MonitorJob.model_construct(run_id=run_id)
+
+    async def claim(of: str) -> MonitorJob:
+        return job
+
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        made_node = Node(NodeOptions(url="http://cp", token="t", name="n", data=tmp_path))
+        link = SimpleNamespace(
+            runners={}, client=SimpleNamespace(claim=claim), untrack=lambda run_id: None
+        )
+        made_node._open = cast(Any, SimpleNamespace(store=store, link=link))
+        await made_node._offer(OfferMessage(run_id=run_id))
+        task = made_node._jobs[run_id]
+        # a delete that a shipper or the first ship of every run learns of before the job's
+        # task first runs, which needs the run to be here or shipping already
+        await made_node._drop(run_id)
+        assert task.cancelled()
+        assert made_node.claimed == {}
+        assert made_node._jobs == {}
 
 
 async def test_a_runner_stops_a_selftest_between_its_cases_when_its_run_is_deleted(

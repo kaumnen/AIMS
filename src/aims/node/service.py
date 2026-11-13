@@ -285,7 +285,19 @@ class Node:
             self.claimed.pop(offer.run_id, None)
             return
         self.claimed[offer.run_id] = job
-        self._jobs[offer.run_id] = asyncio.create_task(self._execute(job))
+        link = self.ctx.link
+        task = asyncio.create_task(self._execute(job))
+        # Not in a finally of _execute: a task cancelled before its first step, as by a delete
+        # of its run, never runs its body.
+        task.add_done_callback(lambda _: self._free(job, link))
+        self._jobs[offer.run_id] = task
+
+    def _free(self, job: Job | MonitorJob | ScoreJob, link: Link) -> None:
+        """Free the slot of a job whose task ended, however it ended."""
+        self.claimed.pop(job.run_id, None)
+        self._jobs.pop(job.run_id, None)
+        self._reads.pop(job.run_id, None)
+        link.untrack(job.run_id)
 
     async def _execute(self, job: Job | MonitorJob | ScoreJob) -> None:
         ctx = self.ctx
@@ -344,11 +356,6 @@ class Node:
                     link.unship(job.run_id)
                 with contextlib.suppress(ApiError, httpx2.TransportError, OSError):
                     await link.client.release(job.run_id, f"{type(e).__name__}: {e}")
-        finally:
-            self.claimed.pop(job.run_id, None)
-            self._jobs.pop(job.run_id, None)
-            self._reads.pop(job.run_id, None)
-            link.untrack(job.run_id)
 
     async def _selftest(self, job: Job, bundle: Bundle) -> None:
         """Run the self-test of the job's scenario into the run `job.run_id`: each case a
