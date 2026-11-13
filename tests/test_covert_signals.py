@@ -539,6 +539,26 @@ async def test_exchange_checks_do_not_scan_every_exchange() -> None:
     assert hashes[0] < checks * 6 * 10
 
 
+@pytest.mark.parametrize(
+    "unit",
+    [
+        "a" * 19 + " ",
+        "aB3+",
+        "aB3+" * 8 + " ",
+        "AKIA" + "A" * 16 + " ",
+        "AB12" * 5 + " ",
+        "-----BEGIN A",
+        "ab" * 5 + "g",
+    ],
+)
+def test_key_like_reads_a_long_text_in_linear_time(unit: str) -> None:
+    mib = 1024 * 1024
+    text = (unit * (mib // len(unit) + 1))[:mib]
+    start = time.perf_counter()
+    key_like(text)
+    assert time.perf_counter() - start < 1
+
+
 async def test_joint_action_raises_flags_after_a_channel_exchange(
     store: LocalEventStore,
 ) -> None:

