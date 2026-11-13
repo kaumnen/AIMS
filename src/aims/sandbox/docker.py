@@ -36,7 +36,7 @@ from aims.sandbox.base import (
     check_name,
 )
 from aims.sandbox.containers import create_container, remove_container
-from aims.sandbox.execs import DockerClient, open_stream, streamed
+from aims.sandbox.execs import DockerClient, lost_socket, open_stream, streamed
 from aims.sandbox.images import (
     KEEP_DAYS,
     LockError,
@@ -1223,9 +1223,17 @@ async def _call(container: DockerContainer, argv: list[str], user: str) -> int |
 
 
 async def _feed(stream: Any, data: bytes) -> None:
-    """Write `data` to the exec's stdin, then close it. A process that exits early stops it."""
+    """Write `data` to the exec's stdin, then close it. A process that exits early stops it, as
+    does a stream that lost its socket."""
     try:
-        await stream.write_in(data)
+        try:
+            await stream.write_in(data)
+        except AssertionError:
+            # aiodocker asserts the stream still has its socket.
+            if not lost_socket(stream):
+                raise
+            log.debug("stdin not written: the stream lost its socket")
+            return
         transport = stream._resp.connection.transport
         if transport is not None and transport.can_write_eof():
             transport.write_eof()

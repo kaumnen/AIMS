@@ -19,6 +19,8 @@ import aiodocker
 import aiohttp
 import pytest
 from aiodocker.containers import DockerContainer
+from aiodocker.execs import Exec
+from aiodocker.stream import Stream
 
 from aims.events import LocalEventStore, RunStarted
 from aims.sandbox import (
@@ -28,9 +30,9 @@ from aims.sandbox import (
     SandboxSpec,
     SandboxStoppedError,
 )
-from aims.sandbox.base import TOOLBOX
+from aims.sandbox.base import TOOLBOX, Capture
 from aims.sandbox.docker import _helper
-from aims.sandbox.execs import DockerClient
+from aims.sandbox.execs import DockerClient, open_stream
 from aims.sandbox.reader import stream_archive
 
 pytestmark = pytest.mark.anyio
@@ -96,6 +98,8 @@ class Daemon:
             return True
         if path == f"exec/{name}/start":
             writer.write(b"HTTP/1.1 101 UPGRADED\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
+            if "upgrade" in self.cut:
+                return False
             writer.write(frame(b"hi\n"))
             await writer.drain()
             # Docker ends the stream when the exec ends; a client set up by then reads all of it.
@@ -278,3 +282,58 @@ async def test_an_exec_whose_stream_the_daemon_cuts_fails_and_stops_the_sandbox(
         assert daemon.calls.index("POST exec/e2/start") < daemon.calls.index(
             "POST containers/c1/kill"
         )
+
+
+async def test_an_exec_stream_whose_socket_closes_as_it_opens_raises_a_docker_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """aiodocker asserts the stream still has its socket once it has read the daemon's answer.
+    A daemon that closes the socket just after it answers takes it away by then."""
+    real = aiohttp.ClientResponse.read
+
+    async def read(self: aiohttp.ClientResponse) -> bytes:
+        body = await real(self)
+        protocol = None if self.connection is None else self.connection.protocol
+        if self.status == 101 and protocol is not None and protocol.closed is not None:
+            await protocol.closed
+        return body
+
+    monkeypatch.setattr(aiohttp.ClientResponse, "read", read)
+    async with serving({"upgrade"}) as (_, docker), asyncio.timeout(5):
+        stream = Exec(docker, "e1", False).start(detach=False)
+        with pytest.raises(aiodocker.DockerError, match="was cut") as caught:
+            await open_stream(stream)
+    assert isinstance(caught.value.__cause__, AssertionError)
+    assert stream._closed
+
+
+async def test_an_exec_whose_socket_closes_before_its_stdin_goes_out_is_ended(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """aiodocker asserts the stream still has its socket when it writes stdin. A connection that
+    drops first takes it away and leaves the exec running."""
+    real = Stream.write_in
+
+    async def write_in(self: Stream, data: bytes) -> None:
+        assert self._resp is not None
+        assert self._resp.connection is not None
+        transport = self._resp.connection.transport
+        assert transport is not None
+        transport.close()
+        await asyncio.sleep(0)
+        await real(self, data)
+
+    monkeypatch.setattr(Stream, "write_in", write_in)
+    async with serving({"lost"}) as (daemon, docker):
+        backend = SimpleNamespace(tracer=None, docker=docker)
+        info = SandboxInfo("c1", "docker", "img", "sha256:img", {})
+        container = DockerContainer(docker, id="c1")
+        sandbox = DockerSandbox(
+            cast(Any, backend), container, SandboxSpec(image="img"), info, "w", [], None
+        )
+        outcome = await sandbox.run(
+            ["cat"], uid=1000, cwd="/", timeout_ms=10_000, capture=Capture(1024), stdin=b"in"
+        )
+    assert outcome.end == "failed"
+    assert outcome.error == "the connection to Docker was lost while the exec ran"
+    assert daemon.kills == [[f"{TOOLBOX}/aims-exec", "-k", "cat"]]

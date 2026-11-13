@@ -59,12 +59,27 @@ async def open_stream(stream: Stream, on_send: Callable[[], None] | None = None)
             return url, _Marked(body, on_send), tty
 
         stream._setup = marked
+    what = "a new exec or attach stream"
     try:
-        with streamed("a new exec or attach stream"):
-            return await stream.__aenter__()
+        with streamed(what):
+            try:
+                return await stream.__aenter__()
+            except AssertionError as e:
+                # aiodocker asserts the socket is still there once it has read the answer.
+                if not lost_socket(stream):
+                    raise
+                raise aiodocker.DockerStreamError(f"{what} was cut: its socket closed") from e
     except BaseException:
         _drop(stream)
         raise
+
+
+def lost_socket(stream: Stream) -> bool:
+    """Whether `stream` has the daemon's answer and has lost its socket since. aiodocker asserts
+    the socket is there when it sets the stream up and when it writes to it."""
+    response = stream._resp
+    connection = None if response is None else response.connection
+    return connection is not None and connection.transport is None
 
 
 class _Marked(BytesPayload):
