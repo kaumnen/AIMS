@@ -1455,6 +1455,100 @@ async def test_a_batch_cancelled_while_it_drops_rows_past_the_last_event_keeps_t
     assert await index.hashes(RUN, 0, 9) == {e.seq: e.hash for e in events}
 
 
+def step_of(head: Head, n: int, text: str) -> tuple[list[Event], Head]:
+    """One agent step after `head`: its model call, a tool call that runs exec `x1`, which
+    reads a file, its result and a resource window, with `text` in the exec, file and result."""
+    window = ResourceSample(
+        sandbox_id="s", hz=10, ts=[n * 1_000_000, 900_000], **dict.fromkeys(ResourceSample.COLUMNS)
+    )
+    items: list[tuple[str, dict[str, Any]]] = [
+        ("model.request", {"call_id": f"m{n}", "params": {"schema_name": "s"}}),
+        ("model.response", {"call_id": f"m{n}", "cost_usd": 0.5, "usage": {"input_tokens": 3}}),
+        ("agent.step", {"n": n, "call_id": f"m{n}", "status": "completed", "tool_calls": ["t"]}),
+        ("tool.call", {"call_id": "t", "name": "shell", "arguments": "{}", "model_call": f"m{n}"}),
+        ("exec.started", {"exec_id": "x1", "call_id": "t", "command": text}),
+        ("file.access", {"exec_id": "x1", "op": "read", "path": f"/{text}"}),
+        ("exec.finished", {"exec_id": "x1", "call_id": "t", "exit_code": 0, "duration_ms": 1}),
+        ("tool.result", {"call_id": "t", "output": text}),
+        (window.type, window.model_dump(mode="json")),
+    ]
+    events = []
+    for type_, data in items:
+        body, _, head = seal(head, run_id=RUN, ts=now(), agent_id="a1", type=type_, data=data)
+        events.append(Event.model_validate(body))
+    return events, head
+
+
+async def reads(index: Index) -> dict[str, Any]:
+    """What each read of the run's rows gives."""
+    return {
+        "events": await index.events(RUN, limit=1000),
+        "last": await index.events(RUN, before=10**6),
+        "types": await index.events(RUN, types=["tool.call", "agent.step"]),
+        "agent": await index.events(RUN, agent_id="a1"),
+        "execs": await index.events(RUN, execs=["x1"]),
+        "query": await index.events(RUN, query="found"),
+        "short": await index.events(RUN, query="fo"),
+        "steps": await index.steps(RUN),
+        "samples": await index.samples(RUN),
+        "counts": await index.type_counts(RUN),
+        "activity": await index.activity(RUN, ["x1"]),
+        "costs": await index.call_costs(RUN),
+        "search": (await index.search("found"))[0],
+    }
+
+
+async def a_run_of_steps(index: Index) -> Head:
+    """Index a run of two steps; returns its head."""
+    events, heads = chain(1)
+    head = heads[0]
+    for n in (1, 2):
+        batch, head = step_of(head, n, "found")
+        events.extend(batch)
+    await index.add(events, head)
+    return head
+
+
+async def plant_past(index: Index, head: Head) -> None:
+    """Rows of a cut step past the run's head `head`, as an old drop that raced a batch left."""
+    cut, end = step_of(head, 3, "found again")
+    await index.add(cut, end)
+    await index._db.execute(
+        "update runs set last_seq = ?, last_hash = ?, log_offset = ? where run_id = ?",
+        (head.seq, head.hash, head.offset, RUN),
+    )
+
+
+async def test_a_read_of_a_run_gives_no_row_past_its_head(index: Index) -> None:
+    head = await a_run_of_steps(index)
+    seen = await reads(index)
+    assert all(seen.values())
+    await plant_past(index, head)
+    assert await reads(index) == seen
+
+
+async def test_a_read_of_a_run_gives_no_row_while_a_drop_deletes_them(
+    index: Index, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The run's row goes first, its events and samples after, a few to a transaction: in
+    between, the rows left are no run's. No read gives them."""
+    monkeypatch.setattr(index_module, "REMOVE_ROWS", 2)
+    await a_run_of_steps(index)
+    remove_some = index._remove_some
+    during: list[dict[str, Any]] = []
+
+    async def then_read(table: Any, run_id: str) -> bool:
+        found = await remove_some(table, run_id)
+        if found:
+            during.append(await reads(index))
+        return found
+
+    monkeypatch.setattr(index, "_remove_some", then_read)
+    await index.drop(RUN)
+    assert len(during) > 5
+    assert [{k for k, v in view.items() if v} for view in during] == [set()] * len(during)
+
+
 async def test_verify_tells_of_a_gap_in_the_index(tmp_path: Path) -> None:
     root = tmp_path / "runs"
     async with await LocalEventStore.open(root) as store:

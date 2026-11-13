@@ -61,6 +61,11 @@ BIND_MIN, BIND_MAX = -(2**63), 2**63 - 1
 # The events the text index holds. Its view, its insert trigger and a remove's delete from it
 # must name the same rows, or its integrity check fails.
 HAS_TEXT = "text != ''"
+# The head of the run whose id it binds, null when the run has no row. A read of a run's rows
+# stops at it in the same statement: rows past it, or of a run with no row, are no run's, as a
+# drop or remove leaves them under way or cut short. The read compares `+seq` to it, so the
+# planner keeps the index it picks without the bound.
+HEAD = "(select last_seq from runs where run_id = ?)"
 
 SCHEMA = f"""
 create table runs (
@@ -1579,10 +1584,13 @@ class Index:
         if before is not None:
             where.append(f"{key} < ?")
             args.append(_int(before))
-        # events whose run's row went are left by a remove under way or cut short; `exists`
-        # keeps the scan in id order, where `in` would sort every match
+        # only events up to the head of a run the index holds, as HEAD says; `exists` keeps
+        # the scan in id order, where `in` would sort every match
         kinds = f" and r.kind not in ({','.join('?' * len(skip_kinds))})" if skip_kinds else ""
-        where.append(f"exists (select 1 from runs r where r.run_id = e.run_id{kinds})")
+        where.append(
+            "exists (select 1 from runs r where r.run_id = e.run_id"
+            f" and e.seq <= r.last_seq{kinds})"
+        )
         args.extend(skip_kinds)
         size = _cap(limit)
         args.append(size + 1)
@@ -1609,17 +1617,18 @@ class Index:
         query: str | None = None,
         execs: Sequence[str] = (),
     ) -> list[Event]:
-        """One page in seq order. With only `before` set, the page is the last events before it.
-        `execs` keeps the events that name one of those execs. A query reads the run's matches
-        once, from the trigram index over the span of the run's row ids; one too short for it
-        folds case as it does. A query the index cannot match finds nothing."""
+        """One page in seq order, of events up to the run's head. With only `before` set, the
+        page is the last events before it. `execs` keeps the events that name one of those
+        execs. A query reads the run's matches once, from the trigram index over the span of the
+        run's row ids; one too short for it folds case as it does. A query the index cannot
+        match finds nothing."""
         if query and not _searchable(query):
             return []
         kinds, ids = _within(types), _within(execs)
         if kinds is None or ids is None or not _held(run_id, agent_id):
             return []
-        where = ["e.run_id = ?"]
-        args: list[Any] = [run_id]
+        where = ["e.run_id = ?", f"+e.seq <= {HEAD}"]
+        args: list[Any] = [run_id, run_id]
         if ids:
             where.append(f"e.exec_id in ({', '.join('?' * len(ids))})")
             args.extend(ids)
@@ -1672,13 +1681,14 @@ class Index:
         after: int | None = None,
         limit: int = MAX_PAGE,
     ) -> list[SampleWindow]:
-        """Windows of a run that overlap [`ts_from`, `ts_to`] on the boot clock, oldest first:
-        by `ts_from`, then seq. `after` is the seq of the last window of the page before; the
-        page goes on from there, and holds nothing when the run has no window at that seq."""
+        """Windows of a run up to its head that overlap [`ts_from`, `ts_to`] on the boot clock,
+        oldest first: by `ts_from`, then seq. `after` is the seq of the last window of the page
+        before; the page goes on from there. It holds nothing when the run has no window at
+        that seq."""
         if not _held(run_id, agent_id):
             return []
-        where = ["run_id = ?"]
-        args: list[Any] = [run_id]
+        where = ["run_id = ?", f"+seq <= {HEAD}"]
+        args: list[Any] = [run_id, run_id]
         if agent_id is not None:
             where.append("agent_id = ?")
             args.append(agent_id)
@@ -1710,11 +1720,12 @@ class Index:
         limit: int = 100,
         agent_id: str | None = None,
     ) -> list[StepInfo]:
-        """A page of agent steps in seq order, after seq `after`, each with its tool calls."""
+        """A page of agent steps up to the run's head in seq order, after seq `after`, each with
+        its tool calls."""
         if not _held(run_id, agent_id):
             return []
-        where = ["run_id = ?", "type = ?"]
-        args: list[Any] = [run_id, AgentStep.type]
+        where = ["run_id = ?", f"+seq <= {HEAD}", "type = ?"]
+        args: list[Any] = [run_id, run_id, AgentStep.type]
         if after is not None:
             where.append("seq > ?")
             args.append(_int(after))
@@ -1731,8 +1742,13 @@ class Index:
         if not page:
             return []
         lo, hi = await self._span(run_id, page)
-        where = ["run_id = ?", f"type in ({', '.join('?' * len(STEP_TYPES))})", "seq > ?"]
-        args = [run_id, *STEP_TYPES, lo]
+        where = [
+            "run_id = ?",
+            f"+seq <= {HEAD}",
+            f"type in ({', '.join('?' * len(STEP_TYPES))})",
+            "seq > ?",
+        ]
+        args = [run_id, run_id, *STEP_TYPES, lo]
         if hi is not None:
             where.append("seq < ?")
             args.append(hi)
@@ -1782,19 +1798,20 @@ class Index:
         return min(lows), None if open_ended else hi
 
     async def type_counts(self, run_id: str) -> dict[str, int]:
-        """How many events of each type run `run_id` holds."""
+        """How many events of each type run `run_id` holds up to its head."""
         if not _held(run_id):
             return {}
         async with self._db.execute(
-            "select type, count(*) from events where run_id = ? group by type order by type",
-            (run_id,),
+            f"select type, count(*) from events where run_id = ? and +seq <= {HEAD}"
+            " group by type order by type",
+            (run_id, run_id),
         ) as cur:
             rows = await cur.fetchall()
         return {str(type_): int(n) for type_, n in rows}
 
     async def activity(self, run_id: str, execs: Sequence[str]) -> list[ExecActivity]:
-        """What each of `execs` left in the log, in the order asked; execs with no events are
-        left out."""
+        """What each of `execs` left in the log up to the run's head, in the order asked; execs
+        with no events are left out."""
         execs = _kept(execs)
         if not execs or not _held(run_id):
             return []
@@ -1803,9 +1820,9 @@ class Index:
             " case when type = 'file.access' then json_extract(data, '$.op') end as op,"
             " count(*),"
             f" sum(case when type = '{FsSnapshot.type}' then json_extract(data, '$.total') end)"
-            f" from events where run_id = ? and exec_id in ({', '.join('?' * len(execs))})"
-            " group by exec_id, type, op",
-            (run_id, *execs),
+            f" from events where run_id = ? and +seq <= {HEAD}"
+            f" and exec_id in ({', '.join('?' * len(execs))}) group by exec_id, type, op",
+            (run_id, run_id, *execs),
         ) as cur:
             rows = await cur.fetchall()
         found: dict[str, ExecActivity] = {}
@@ -1822,9 +1839,9 @@ class Index:
         return [found[x] for x in dict.fromkeys(execs) if x in found]
 
     async def call_costs(self, run_id: str) -> list[CallCost]:
-        """What the run's live model calls cost, per role and output schema, in the order each
-        kind first called. Costs add up in whole nano-dollars, like the run's total: none below
-        0, at most what the index holds."""
+        """What the run's live model calls up to its head cost, per role and output schema, in
+        the order each kind first called. Costs add up in whole nano-dollars, like the run's
+        total: none below 0, at most what the index holds."""
         if not _held(run_id):
             return []
         async with self._db.execute(
@@ -1832,8 +1849,8 @@ class Index:
             " json_extract(data, '$.params.schema_name'), json_extract(data, '$.cost_usd'),"
             " json_extract(data, '$.usage.input_tokens'),"
             " json_extract(data, '$.usage.output_tokens'), json_extract(data, '$.source')"
-            " from events where run_id = ? and type in (?, ?) order by seq",
-            (run_id, ModelRequest.type, ModelResponse.type),
+            f" from events where run_id = ? and +seq <= {HEAD} and type in (?, ?) order by seq",
+            (run_id, run_id, ModelRequest.type, ModelResponse.type),
         ) as cur:
             rows = await cur.fetchall()
         kinds: dict[str, tuple[str | None, str | None]] = {}
