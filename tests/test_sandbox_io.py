@@ -397,6 +397,40 @@ async def test_a_cancelled_create_removes_what_it_made(
         await scrub(backend, run_id)
 
 
+@pytest.mark.parametrize("volume", ["a1-work", "a1-tmp"])
+async def test_a_volume_create_cut_by_a_cancel_lands_before_the_cleanup(
+    backend: DockerBackend, monkeypatch: pytest.MonkeyPatch, volume: str
+) -> None:
+    run_id = f"test-{uuid.uuid4().hex[:12]}"
+    before, _ = await leftovers(backend, run_id)
+    hold = Hold()
+    create = backend.docker.volumes.create
+
+    async def held_create(config: dict[str, Any]) -> Any:
+        if config["Name"] == f"aims-{run_id}-{volume}":
+            return await hold.call(lambda: create(config))
+        return await create(config)
+
+    monkeypatch.setattr(backend.docker.volumes, "create", held_create)
+    task = asyncio.create_task(backend.create(SHARED, run_id=run_id, agent_id="a1"))
+    try:
+        async with asyncio.timeout(60):
+            await hold.reached.wait()
+        task.cancel()
+        await asyncio.wait({task}, timeout=1)
+        waited = not task.done()
+        hold.release.set()
+        with pytest.raises(asyncio.CancelledError):
+            async with asyncio.timeout(60):
+                await task
+        await hold.settled()
+        assert waited
+        assert await leftovers(backend, run_id) == (before, set())
+    finally:
+        await hold.settled()
+        await scrub(backend, run_id)
+
+
 async def test_a_create_that_fails_removes_what_it_made(
     backend: DockerBackend, monkeypatch: pytest.MonkeyPatch
 ) -> None:

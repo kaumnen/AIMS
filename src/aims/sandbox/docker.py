@@ -415,7 +415,7 @@ class DockerBackend:
                     raise
                 labels = {**self._labels, "aims.run": run_id}
                 made.append(name)
-                await self.docker.volumes.create({"Name": name, "Labels": labels})
+                await self._make_volume({"Name": name, "Labels": labels})
                 created.append(name)
         return created
 
@@ -476,7 +476,7 @@ class DockerBackend:
         """
         with contextlib.suppress(aiodocker.DockerError):
             await DockerVolume(self.docker, name).delete()
-        await self.docker.volumes.create(
+        await self._make_volume(
             {
                 "Name": name,
                 "Labels": {**self._labels, "aims.run": run_id},
@@ -484,6 +484,12 @@ class DockerBackend:
                 "DriverOpts": {"type": "tmpfs", "device": "tmpfs", "o": options},
             }
         )
+
+    async def _make_volume(self, config: dict[str, Any]) -> None:
+        """Create a volume. The daemon makes it even when the call is cut short, so a cancel
+        waits for the daemon's answer. The cleanup that follows then finds the volume, where
+        one made late would stay."""
+        await settle(self.docker.volumes.create(config))
 
     async def _prepare(
         self, image: str, volumes: list[tuple[str, str]], labels: dict[str, str]
