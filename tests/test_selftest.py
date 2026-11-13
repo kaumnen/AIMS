@@ -314,7 +314,7 @@ def selftest_node(store: LocalEventStore) -> Node:
     runners: dict[str, Any] = {}
     link = SimpleNamespace(
         runners=runners,
-        ship=lambda run_id: None,
+        ship=lambda run_id, seen=False: None,
         track=lambda runner: None,
         untrack=lambda run_id: runners.pop(run_id, None),
     )

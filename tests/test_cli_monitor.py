@@ -637,7 +637,10 @@ class QuietLink:
     def track(self, runner: Runner) -> None:
         return None
 
-    def ship(self, run_id: str) -> None:
+    def ship(self, run_id: str, *, seen: bool = False) -> None:
+        return None
+
+    def unship(self, run_id: str) -> None:
         return None
 
     async def drain(self, within: float) -> bool:

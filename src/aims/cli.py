@@ -1935,7 +1935,7 @@ async def _push(
                 if info is None or info.status == "running":
                     _echo(f"skip {run_id}: not sealed", err=True)
                     continue
-                shipper = Shipper(store, client, run_id)
+                shipper = Shipper(store, client, run_id, seen=True)
                 await shipper.run()
                 if shipper.diverged or shipper.refused:
                     failed += 1

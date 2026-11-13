@@ -1424,6 +1424,37 @@ async def test_push_ships_runs_recorded_offline(cp: CP, tmp_path: Path) -> None:
     assert meta.runner.startswith("push@")
 
 
+async def test_push_goes_on_past_a_run_deleted_under_it(
+    cp: CP, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from aims.node.client import ControlClient
+
+    started = RunStarted(scenario="offline", oversight="observe", agents=["a"])
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        first = await store.create_run(started)
+        await store.append(first, [Draft(RunFinished(status="completed"))])
+        second = await store.create_run(started)
+        await store.append(second, [Draft(RunFinished(status="completed"))])
+    heads = ControlClient.heads
+
+    async def deleting(self: ControlClient, run_ids: list[str]) -> Any:
+        if run_ids == [first] and (tmp_path / "runs" / first).exists():
+            # as another process would
+            async with await LocalEventStore.open(tmp_path / "runs") as other:
+                await other.remove(first)
+        return await heads(self, run_ids)
+
+    monkeypatch.setattr(ControlClient, "heads", deleting)
+    env = {"AIMS_TOKEN": cp.runner}
+    async with asyncio.timeout(20):
+        result = await asyncio.to_thread(
+            CliRunner().invoke, app, ["push", str(tmp_path / "runs"), "--server", cp.url], env=env
+        )
+    assert result.exit_code == 1, result.output
+    assert f"error: {first}: the run was deleted here" in result.output
+    assert f"{second} completed 2 events" in result.output
+
+
 class Refusing(BaseHTTPRequestHandler):
     """Answers every request with its class's status and a problem body."""
 

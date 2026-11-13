@@ -383,7 +383,7 @@ class Node:
             kind="selftest",
         )
         run_id = await store.create_run(started, run_id=job.run_id)
-        link.ship(run_id)
+        link.ship(run_id, seen=True)
 
         def make(options: Options) -> Runner:
             runner = selftest_runner(ctx.bench, job, bundle, options)
@@ -495,7 +495,7 @@ class Node:
             bus=ctx.bench.bus,
             limiters=ctx.bench.limiters,
             transport=self.options.model_transport,
-            on_start=ctx.link.ship,
+            on_start=lambda run_id: ctx.link.ship(run_id, seen=True),
         )
 
     async def _score(self, job: ScoreJob) -> None:
