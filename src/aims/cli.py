@@ -367,6 +367,25 @@ def models_check(
         raise typer.Exit(1)
 
 
+async def _stop_lines(store: Any, kind: str, run_ids: list[str]) -> list[str]:
+    """Where a command that was stopped left each of its runs `run_ids`, of kind `kind`:
+    sealed, with the status it has, or never made. A stop that came as a run sealed leaves the
+    status it had."""
+    lines: list[str] = []
+    for run_id in run_ids:
+        info = await store.run(run_id)
+        if info is not None:
+            state = "is not sealed" if info.status == "running" else f"is sealed as {info.status}"
+            lines.append(f"stopped; {kind} {run_id} {state}")
+    left = len(run_ids) - len(lines)
+    if left and len(run_ids) == 1:
+        lines.append(f"stopped before the {kind} was made")
+    elif left:
+        were = "was" if left == 1 else "were"
+        lines.append(f"stopped before {left} of {len(run_ids)} {kind}s {were} made")
+    return lines
+
+
 def _stopped(runs_dir: Path, run_id: str, kind: str) -> None:
     """Say where a command that was stopped left its run `run_id`. A stop that came as the run
     sealed leaves the status it had, so the line does not name one."""
@@ -2111,7 +2130,7 @@ async def _monitor_runs(**o: Any) -> int:
                     sample=i if group else None,
                     samples=o["samples"],
                 )
-                planned.append((origin, resolved, options))
+                planned.append((origin, resolved, options, str(uuid.uuid7())))
         for cost in costs:
             if o["json_out"]:
                 typer.echo(json_text({"type": "estimate", **cost.model_dump(mode="json")}))
@@ -2134,13 +2153,14 @@ async def _monitor_runs(**o: Any) -> int:
             elif not o["quiet"]:
                 err.print(f"monitoring into {run_id}")
 
-        async def one(origin: Any, resolved: Any, options: Any) -> OfflineResult:
+        async def one(origin: Any, resolved: Any, options: Any, run_id: str) -> OfflineResult:
             async with gate:
                 return await monitor_offline(
                     store,
                     origin,
                     resolved,
                     models=settings.models,
+                    run_id=run_id,
                     mode=mode,
                     options=options,
                     config_files=settings.layers.digests(),
@@ -2168,16 +2188,24 @@ async def _monitor_runs(**o: Any) -> int:
             loop.add_signal_handler(sig, stop)
         on_hangup(loop, stop)
         try:
-            results = list(await asyncio.gather(*(one(*p) for p in planned)))
+            # Each monitor run ends, its seal too, before this goes on. Without
+            # return_exceptions the first one to end cancelled or failed would raise here at
+            # once, and the store would close under the others.
+            ended = await asyncio.gather(*(one(*p) for p in planned), return_exceptions=True)
         except asyncio.CancelledError:
-            err.print("[red]stopped; the monitor runs are sealed as cancelled[/]")
+            for line in await _stop_lines(store, "monitor run", [p[3] for p in planned]):
+                err.print(shown(line, "red"))
             return EXIT_CANCELLED
-        except RunError as e:
-            return fail(str(e))
         finally:
             closing = True
             if lines is not None:
                 await lines.stop()
+        for found in ended:
+            if isinstance(found, RunError):
+                return fail(str(found))
+            if isinstance(found, BaseException):
+                raise found
+            results.append(found)
         digests = [await digest(store, r.run_id) for r in results]
     if o["link"] is not None and results:
         url, token = o["link"]

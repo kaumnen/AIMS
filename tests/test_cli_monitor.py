@@ -177,7 +177,8 @@ def test_aims_monitor_stops_once_when_its_terminal_hangs_up(
     assert result.exit_code == EXIT_CANCELLED, result.output
     assert sealed == [True]
     assert len(hung) == 2
-    assert "the monitor runs are sealed as cancelled" in result.output
+    # the stand-in made no monitor run
+    assert "stopped before the monitor run was made" in result.output
 
 
 def test_a_second_ctrl_c_while_aims_monitor_seals_leaves_the_seal_whole(
@@ -200,14 +201,47 @@ def test_a_second_ctrl_c_while_aims_monitor_seals_leaves_the_seal_whole(
     monkeypatch.setattr(offline, "_end", seal)
     result = invoke("monitor", origin, "--runs-dir", str(root), "--no-server", "--signals-only")
     assert result.exit_code == EXIT_CANCELLED, result.output
-    assert "the monitor runs are sealed as cancelled" in result.output
 
     async def read() -> list[tuple[str, str]]:
         async with await LocalEventStore.open(root) as store:
             found = [await store.run(r) for r in store.run_ids()]
-            return [(i.kind, i.status) for i in found if i is not None and i.kind == "monitor"]
+            return [(i.run_id, i.status) for i in found if i is not None and i.kind == "monitor"]
 
-    assert asyncio.run(read()) == [("monitor", "cancelled")]
+    ((run_id, status),) = asyncio.run(read())
+    assert status == "cancelled"
+    said = " ".join(result.output.split())
+    assert f"stopped; monitor run {run_id} is sealed as cancelled" in said
+
+
+def test_a_stop_as_a_finished_monitor_run_closes_says_how_each_run_was_sealed(
+    runs: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first monitor run did all its work, so the stop as it closes leaves it completed;
+    the second was never made."""
+    root, origin = runs
+    end = offline._end
+
+    async def seal(*args: Any) -> None:
+        os.kill(os.getpid(), signal.SIGINT)
+        await until(lambda: any(t.cancelling() for t in asyncio.all_tasks()))
+        await end(*args)
+
+    monkeypatch.setattr(offline, "_end", seal)
+    args = ["monitor", origin, "--runs-dir", str(root), "--no-server", "--signals-only"]
+    result = invoke(*args, "--samples", "2")
+    assert result.exit_code == EXIT_CANCELLED, result.output
+
+    async def read() -> list[tuple[str, str]]:
+        async with await LocalEventStore.open(root) as store:
+            found = [await store.run(r) for r in store.run_ids()]
+            return [(i.run_id, i.status) for i in found if i is not None and i.kind == "monitor"]
+
+    ((run_id, status),) = asyncio.run(read())
+    assert status == "completed"
+    said = " ".join(result.output.split())
+    assert f"stopped; monitor run {run_id} is sealed as completed" in said
+    assert "stopped before 1 of 2 monitor runs was made" in said
+    assert "cancelled" not in said
 
 
 def interrupted(cut: list[str], step: str, real: Any) -> Any:
