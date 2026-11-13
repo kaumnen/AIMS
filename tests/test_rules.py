@@ -17,6 +17,7 @@ from aims.events import (
     MonitorDegraded,
     NetConnect,
     ProcSignal,
+    TaskScored,
     ToolCall,
 )
 from aims.events.schema import format_ts
@@ -506,6 +507,8 @@ def test_distinct_values_of_every_shape_compare_by_content() -> None:
         (blob, BlobRef(sha256="0" * 64, size=1)),
         ("x", "x"),
         (3, 3),
+        (1, 1.0),
+        (True, True),
         (None, None),
     ]
     for x, y in same:
@@ -519,9 +522,23 @@ def test_distinct_values_of_every_shape_compare_by_content() -> None:
         (ChannelInfo.model_validate(folder), ChannelInfo.model_validate(folder | {"members": []})),
         ([change("/work/a")], [change("/work/b")]),
         ([], None),
+        (True, 1),
+        (False, 0),
+        ([True], [1]),
+        ({"a": False}, {"a": 0.0}),
     ]
     for x, y in differ:
         assert _hashable(x) != _hashable(y)
+
+
+async def test_a_distinct_rule_keeps_true_apart_from_1(store: LocalEventStore) -> None:
+    r = rule(event=["task.scored"], count=2, distinct="metrics.passed")
+    b = await run_rule(store, r)
+    await b.emit(TaskScored(reward=1.0, metrics={"passed": True}))
+    await b.emit(TaskScored(reward=1.0, metrics={"passed": True}))
+    assert b.of("r") == []
+    await b.emit(TaskScored(reward=1.0, metrics={"passed": 1}))
+    assert len(b.of("r")) == 1
 
 
 @pytest.mark.parametrize(
@@ -529,9 +546,11 @@ def test_distinct_values_of_every_shape_compare_by_content() -> None:
     [
         ({"event": ["proc.exec"], "distinct": "argv"}, ".3"),
         ({"event": ["exec.started"], "distinct": "env"}, ".3"),
-        ({"event": ["run.started"], "distinct": "config.x"}, ".3"),
         ({"event": ["run.started"], "distinct": "channels.0"}, ".3"),
-        ({"event": ["fs.snapshot"], "distinct": "changes"}, ".3"),
+        ({"event": ["run.started"], "distinct": "config.x"}, ".5"),
+        ({"event": ["fs.snapshot"], "distinct": "changes"}, ".5"),
+        ({"event": ["task.scored"], "distinct": "metrics.passed"}, ".5"),
+        ({"event": ["task.scored"], "distinct": "metrics", "window_s": 10}, ".5"),
         ({"event": ["proc.exec"], "distinct": "argv.0"}, ".2"),
         ({"event": ["proc.exec"], "distinct": "fds"}, ".2"),
         ({"event": ["proc.exec"], "distinct": "program"}, ".2"),

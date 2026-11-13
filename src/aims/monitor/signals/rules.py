@@ -268,21 +268,50 @@ def _plain(ann: Any, seen: frozenset[type] = frozenset()) -> bool:
     return True
 
 
-def _counts_lists(rule: Rule) -> bool:
-    """Whether the field `rule` counts as distinct can hold a list or a map."""
+def _bools(ann: Any, seen: frozenset[type] = frozenset()) -> bool:
+    """Whether a value of the type `ann` can hold true or false anywhere in it."""
+    ann = _strip(ann)
+    if ann is Any or ann is object or isinstance(ann, TypeAliasType) or ann is JsonValue:
+        return True
+    if ann is bool:
+        return True
+    if get_origin(ann) is not None:
+        return any(_bools(a, seen) for a in get_args(ann) if a is not Ellipsis)
+    if isinstance(ann, type) and issubclass(ann, BaseModel) and ann not in seen:
+        return any(_bools(f.annotation, seen | {ann}) for f in ann.model_fields.values())
+    return False
+
+
+def _distinct_types(rule: Rule) -> list[Any] | None:
+    """The types of the payload field `rule` counts as distinct, None when it counts no
+    payload field."""
     if not isinstance(rule.distinct, str):
-        return False
+        return None
     segs = rule.distinct.split(".")
     if segs[0] in derived_fields():
-        return False
+        return None
     models = event_models()
-    reached = [t for e in rule.event if e in models for t in _reach(models[e], segs)]
-    return not all(_plain(t) for t in reached)
+    return [t for e in rule.event if e in models for t in _reach(models[e], segs)]
+
+
+def _counts_lists(rule: Rule) -> bool:
+    """Whether the field `rule` counts as distinct can hold a list or a map."""
+    reached = _distinct_types(rule)
+    return reached is not None and not all(_plain(t) for t in reached)
+
+
+def _counts_bools(rule: Rule) -> bool:
+    """Whether the field `rule` counts as distinct can hold true or false."""
+    reached = _distinct_types(rule)
+    return reached is not None and any(_bools(t) for t in reached)
 
 
 def _hashable(value: Any) -> Any:
     """`value` as a key a distinct rule can count: a list as a tuple, a map as the set of its
-    items and a model as its type and field values, all the way down."""
+    items and a model as its type and field values, all the way down. A bool is kept apart
+    from the number it equals, as a match keeps true apart from 1."""
+    if isinstance(value, bool):
+        return (bool, value)
     if isinstance(value, (list, tuple)):
         return tuple(_hashable(v) for v in value)
     if isinstance(value, Mapping):
@@ -737,6 +766,9 @@ class RuleSignal(Base):
 def _revision(rule: Rule) -> int:
     """The last fix that changed what `rule` flags, 0 for none. Each fix takes the next number,
     so a rule it touches gets a version no older code gave it."""
+    if _counts_bools(rule):
+        # A distinct value keeps true apart from 1.
+        return 5
     if rule.distinct and rule.window_s is not None:
         # A windowed distinct rule keeps one match per value as its evidence.
         return 4
