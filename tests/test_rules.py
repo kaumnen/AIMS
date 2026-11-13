@@ -23,7 +23,7 @@ from aims.events.schema import format_ts
 from aims.monitor.config import MonitorConfig, Rule
 from aims.monitor.signals import scan
 from aims.monitor.signals.base import SignalError, SignalSetup
-from aims.monitor.signals.engine import SignalEngine
+from aims.monitor.signals.engine import EVIDENCE, SignalEngine
 from aims.monitor.signals.rules import (
     _hashable,
     compile_glob,
@@ -356,6 +356,20 @@ async def test_a_windowed_distinct_rule_forgets_a_value_once_its_last_match_expi
     assert [f.evidence for f in b.of("r")] == [calls[1:3], calls[4:6]]
 
 
+async def test_a_windowed_distinct_rule_keeps_one_match_per_value(store: LocalEventStore) -> None:
+    r = rule(event=["tool.call"], count=2, window_s=3600, distinct="name", key="{name}")
+    b = await run_rule(store, r)
+    for _ in range(EVIDENCE + 10):
+        await b.call("a", {"x": 1})
+    signal = next(a.signal for a in cast(Any, b.engine).signals if a.signal.name == "r")
+    assert [len(values) for values in signal.latest.values()] == [1]
+    await b.call("b", {"x": 1})
+    calls = [e.seq for e in b.events if e.type == "tool.call"]
+    (flag,) = b.of("r")
+    # The burst of one value leaves only its latest match, so the evidence holds both values.
+    assert flag.evidence == [calls[-2], calls[-1]]
+
+
 @dataclass(frozen=True)
 class Fed:
     """The parts of an event a rule signal reads."""
@@ -428,11 +442,13 @@ async def test_a_distinct_rule_without_a_window_keeps_every_value(
     assert flag.evidence == list(firsts.values())
 
 
-def test_a_distinct_rule_without_a_window_has_a_new_version() -> None:
+def test_a_distinct_rule_has_a_new_version() -> None:
     whole = rule(event=["tool.call"], count=3, distinct="name")
     assert rule_signal(whole).version == f"{rules_digest([whole])[:12]}.2"
     windowed = rule(event=["tool.call"], count=3, distinct="name", window_s=10)
-    assert rule_signal(windowed).version == rules_digest([windowed])[:12]
+    assert rule_signal(windowed).version == f"{rules_digest([windowed])[:12]}.4"
+    counted = rule(event=["tool.call"], count=3, window_s=10)
+    assert rule_signal(counted).version == rules_digest([counted])[:12]
 
 
 async def test_a_rule_rate_without_a_window_starts_over_once_it_flags(
@@ -464,7 +480,8 @@ async def test_a_rule_counts_distinct_lists(store: LocalEventStore, window_s: fl
     (flag,) = b.of("r")
     assert b.others == []
     seqs = [e.seq for e in [*same, other]]
-    assert flag.evidence == (seqs if window_s else [seqs[0], seqs[2]])
+    # Over the whole run a value keeps its first match; in a window, its latest.
+    assert flag.evidence == ([seqs[1], seqs[2]] if window_s else [seqs[0], seqs[2]])
 
 
 async def test_a_rule_counts_distinct_maps_whatever_their_order(store: LocalEventStore) -> None:
@@ -511,18 +528,21 @@ def test_distinct_values_of_every_shape_compare_by_content() -> None:
     ("fields", "suffix"),
     [
         ({"event": ["proc.exec"], "distinct": "argv"}, ".3"),
-        ({"event": ["proc.exec"], "distinct": "argv", "window_s": 10}, ".3"),
-        ({"event": ["exec.started"], "distinct": "env", "window_s": 10}, ".3"),
-        ({"event": ["run.started"], "distinct": "config.x", "window_s": 10}, ".3"),
-        ({"event": ["run.started"], "distinct": "channels.0", "window_s": 10}, ".3"),
-        ({"event": ["fs.snapshot"], "distinct": "changes", "window_s": 10}, ".3"),
+        ({"event": ["exec.started"], "distinct": "env"}, ".3"),
+        ({"event": ["run.started"], "distinct": "config.x"}, ".3"),
+        ({"event": ["run.started"], "distinct": "channels.0"}, ".3"),
+        ({"event": ["fs.snapshot"], "distinct": "changes"}, ".3"),
         ({"event": ["proc.exec"], "distinct": "argv.0"}, ".2"),
-        ({"event": ["proc.exec"], "distinct": "argv.0", "window_s": 10}, ""),
-        ({"event": ["proc.exec"], "distinct": "fds", "window_s": 10}, ""),
-        ({"event": ["proc.exec"], "distinct": "program", "window_s": 10}, ""),
-        ({"event": ["fs.snapshot"], "distinct": "changes.path", "window_s": 10}, ""),
-        ({"event": ["tool.call"], "distinct": "arguments", "window_s": 10}, ""),
-        ({"event": ["tool.call"], "distinct": True, "window_s": 10}, ""),
+        ({"event": ["proc.exec"], "distinct": "fds"}, ".2"),
+        ({"event": ["proc.exec"], "distinct": "program"}, ".2"),
+        ({"event": ["fs.snapshot"], "distinct": "changes.path"}, ".2"),
+        ({"event": ["tool.call"], "distinct": "arguments"}, ".2"),
+        ({"event": ["tool.call"], "distinct": True}, ".2"),
+        ({"event": ["proc.exec"], "distinct": "argv", "window_s": 10}, ".4"),
+        ({"event": ["proc.exec"], "distinct": "argv.0", "window_s": 10}, ".4"),
+        ({"event": ["tool.call"], "distinct": True, "window_s": 10}, ".4"),
+        ({"event": ["proc.exec"], "window_s": 10}, ""),
+        ({"event": ["proc.exec"]}, ""),
     ],
 )
 def test_a_rule_that_counts_lists_or_maps_has_a_new_version(

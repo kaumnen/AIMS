@@ -15,7 +15,7 @@ import glob
 import ipaddress
 import re
 import types
-from collections import Counter, deque
+from collections import OrderedDict, deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, ClassVar, TypeAliasType, Union, get_args, get_origin
@@ -622,15 +622,6 @@ def rules_digest(rules: Sequence[Rule]) -> str:
     return digest([r.model_dump(mode="json") for r in rules])
 
 
-def _forget(held: Counter[Any], value: Any) -> None:
-    """Take one match of `value` out of the counts of a window."""
-    if value is None:
-        return
-    held[value] -= 1
-    if held[value] <= 0:
-        del held[value]
-
-
 class RuleSignal(Base):
     """A signal made of rules. An event that matches several of them gives one hit, from the
     rule of the highest importance. Each hit's justification is the rule's title and key."""
@@ -646,8 +637,9 @@ class RuleSignal(Base):
             for t in c.types:
                 self.by_type.setdefault(t, []).append(c)
         self.event_types = frozenset(self.by_type)
-        self.windows: dict[tuple[str, str | None], deque[tuple[float, int, Any]]] = {}
-        self.held: dict[tuple[str, str | None], Counter[Any]] = {}
+        self.windows: dict[tuple[str, str | None], deque[tuple[float, int]]] = {}
+        # Each value in a distinct rule's window with its latest match, oldest first.
+        self.latest: dict[tuple[str, str | None], OrderedDict[Any, tuple[float, int]]] = {}
         self.values: dict[tuple[str, str | None], dict[Any, int]] = {}
 
     @classmethod
@@ -676,24 +668,35 @@ class RuleSignal(Base):
             del self.values[key]
             return list(values.values())
         now = event.ts.timestamp()
+        if rule.distinct and rule.window_s is not None:
+            # A value stays in the window while its latest match does, so that match is all a
+            # value keeps: a burst of one value holds one entry, and the evidence is one match
+            # per value.
+            value = await c.value(event, payload, state)
+            if value is None:
+                return None
+            latest = self.latest.setdefault(key, OrderedDict())
+            cutoff = now - rule.window_s
+            while latest and next(iter(latest.values()))[0] < cutoff:
+                latest.popitem(last=False)
+            latest.pop(value, None)
+            latest[value] = (now, event.seq)
+            if len(latest) < rule.count:
+                return None
+            del self.latest[key]
+            return [seq for _, seq in latest.values()]
         seen = self.windows.setdefault(key, deque())
-        # How many matches in the window hold each value, so a match needs no scan of it.
-        held = self.held.setdefault(key, Counter())
         if rule.window_s is not None:
             cutoff = now - rule.window_s
             while seen and seen[0][0] < cutoff:
-                _forget(held, seen.popleft()[2])
+                seen.popleft()
         elif len(seen) >= rule.count:
-            _forget(held, seen.popleft()[2])
-        value = await c.value(event, payload, state)
-        seen.append((now, event.seq, value))
-        if value is not None:
-            held[value] += 1
-        if (len(held) if rule.distinct else len(seen)) < rule.count:
+            seen.popleft()
+        seen.append((now, event.seq))
+        if len(seen) < rule.count:
             return None
-        evidence = [seq for _, seq, _ in seen]
+        evidence = [seq for _, seq in seen]
         seen.clear()
-        held.clear()
         return evidence
 
     async def feed(self, event: Event, state: State) -> list[Hit]:
@@ -731,16 +734,26 @@ class RuleSignal(Base):
         ]
 
 
-def rule_signal(rule: Rule) -> type[RuleSignal]:
-    """A signal class for one scenario rule, named by its id. Its version is the rule's hash.
-    A rule whose distinct field can hold a list or a map adds `.3`, since such a value used to
-    fail the signal. Any other rule that counts distinct values over the whole run adds `.2`,
-    since a fix changed what it flags."""
-    version = rules_digest([rule])[:12]
+def _revision(rule: Rule) -> int:
+    """The last fix that changed what `rule` flags, 0 for none. Each fix takes the next number,
+    so a rule it touches gets a version no older code gave it."""
+    if rule.distinct and rule.window_s is not None:
+        # A windowed distinct rule keeps one match per value as its evidence.
+        return 4
     if _counts_lists(rule):
-        version += ".3"
-    elif rule.distinct and rule.window_s is None:
-        version += ".2"
+        # A distinct value that holds a list or a map used to fail the signal.
+        return 3
+    if rule.distinct:
+        # A distinct rule over the whole run keeps every value it saw.
+        return 2
+    return 0
+
+
+def rule_signal(rule: Rule) -> type[RuleSignal]:
+    """A signal class for one scenario rule, named by its id. Its version is the rule's hash,
+    with `.<n>` added when fix n of `_revision` changed what it flags."""
+    revision = _revision(rule)
+    version = rules_digest([rule])[:12] + (f".{revision}" if revision else "")
     return type(
         f"Rule_{rule.id}", (RuleSignal,), {"name": rule.id, "version": version, "rules": (rule,)}
     )
