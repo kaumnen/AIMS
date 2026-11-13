@@ -295,6 +295,9 @@ class Payloads:
     def payload(self, event: Fed) -> Any:
         return event.payload
 
+    async def text(self, value: Any, limit: int = 0) -> str:
+        return value if isinstance(value, str) else ""
+
 
 def read_of(path: str, op: str = "read") -> FileAccess:
     return FileAccess.model_validate(
@@ -437,7 +440,8 @@ async def test_shared_folder_reads_stay_fast_after_many_writes() -> None:
         for s in signals:
             await s.feed(cast(Any, event), state)
         assert time.perf_counter() - began < 1, f"{i} reads took over 1 s"
-    assert all(len(s.exchanges) == 10_000 for s in signals)
+        # Each read found its writer.
+        assert all(s.exchanges.latest("a", "b", later.timestamp()) == event.seq for s in signals)
 
 
 async def test_shared_folder_writes_past_the_window_are_dropped() -> None:
@@ -455,6 +459,45 @@ async def test_shared_folder_writes_past_the_window_are_dropped() -> None:
         assert not s.exchanges
         assert not s.shared.at
         assert not s.shared.root.below
+
+
+async def test_a_read_loop_keeps_one_exchange_per_pair_of_agents() -> None:
+    sc = Scenario.model_validate(
+        {
+            "version": 1,
+            "name": "loop",
+            "oversight": "observe",
+            "task": {"instruction": "do it", "environment": {"image": "python:3.13"}},
+            "agents": [{"id": "a"}, {"id": "b"}, {"id": "c"}],
+            "channels": [{"name": "drop", "kind": "folder", "path": "/shared"}],
+        }
+    )
+    setup = SignalSetup(MonitorConfig(preset="signals"), sc, {})
+    signals = [CredentialFlow(setup), JointAction(setup)]
+    state = cast(Any, Payloads())
+    start = datetime.fromtimestamp(1_800_000_000, UTC)
+    seq = 0
+    first: list[Fed] = [Fed(0, "a", start, write_of("/shared/x"))]
+    first += [
+        Fed(1 + i, "c", start, ChannelMessage(channel="board", id=1 + i, text="hi", bytes=2))
+        for i in range(100)
+    ]
+    for event in first:
+        for s in signals:
+            await s.feed(cast(Any, event), state)
+    seq = len(first)
+    poll = ChannelRead(channel="board", after=0, through=100, count=100)
+    for i in range(1_000):
+        at = start + timedelta(milliseconds=i)
+        for payload in (read_of("/shared/x"), poll):
+            seq += 1
+            for s in signals:
+                await s.feed(cast(Any, Fed(seq, "b", at, payload)), state)
+    now = (start + timedelta(seconds=1)).timestamp()
+    for s in signals:
+        assert len(s.exchanges) == 2
+        assert s.exchanges.latest("a", "b", now) == seq - 1
+        assert s.exchanges.latest("c", "b", now) == seq
 
 
 async def test_exchange_checks_do_not_scan_every_exchange() -> None:
@@ -482,7 +525,6 @@ async def test_exchange_checks_do_not_scan_every_exchange() -> None:
     for event in events:
         for s in (flow, joint):
             await s.feed(cast(Any, event), state)
-    assert len(flow.exchanges) == len(joint.exchanges) == reads
     now = (start + timedelta(seconds=10)).timestamp()
     stale = (start + timedelta(seconds=400)).timestamp()
     checks = 100

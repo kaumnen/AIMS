@@ -10,7 +10,7 @@ import math
 import posixpath
 import re
 from collections import OrderedDict, deque
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -382,43 +382,53 @@ def _pair(a: str, b: str) -> tuple[str, str]:
     return (a, b) if a <= b else (b, a)
 
 
-class _Exchanges:
-    """The exchanges between agents, each as (time, from, to, seq): a read of a channel message
-    or of a shared-folder file another agent wrote. `prune` drops those past the `window` in
-    the order they came.
+def _posters(messages: Iterable[tuple[float, str, int]], reader: str) -> list[str]:
+    """The agents other than `reader` that posted `messages`, each once: a read exchanges with
+    each poster, however many messages they posted."""
+    return list(dict.fromkeys(poster for _, poster, _ in messages if poster != reader))
 
-    Each pair of agents also keeps the exchanges a check can still pick, newest last, so a
-    check reads only those. A newer exchange that is no earlier than the one before it serves
-    every check that one would and outlasts it, so it takes its place.
+
+class _Exchanges:
+    """The exchanges between agents that a check can still pick, each as (time, from, to, seq):
+    a read of a channel message or of a shared-folder file another agent wrote.
+
+    Each pair of agents keeps its exchanges in the order they came. A newer exchange that is no
+    earlier than the one before it serves every check that one would and outlasts it, so it
+    takes its place. The times a pair keeps thus fall from first to last, and while event times
+    do not go back a pair keeps one exchange: a read loop adds nothing. `prune` drops those past
+    the `window`.
     """
 
     def __init__(self, window: float) -> None:
         self.window = window
-        self.all: deque[Exchange] = deque()
         self.pairs: dict[tuple[str, str], deque[Exchange]] = {}
+        # No kept exchange is older than this, so a prune before it expires has nothing to do.
+        self.oldest: float | None = None
 
     def __len__(self) -> int:
-        return len(self.all)
+        return sum(len(kept) for kept in self.pairs.values())
 
     def __iter__(self) -> Iterator[Exchange]:
-        return iter(self.all)
+        return (exchange for kept in self.pairs.values() for exchange in kept)
 
     def append(self, exchange: Exchange) -> None:
-        self.all.append(exchange)
         kept = self.pairs.setdefault(_pair(exchange[1], exchange[2]), deque())
         while kept and kept[-1][0] <= exchange[0]:
             kept.pop()
         kept.append(exchange)
+        if self.oldest is None or exchange[0] < self.oldest:
+            self.oldest = exchange[0]
 
     def prune(self, now: float) -> None:
-        while self.all and self.all[0][0] < now - self.window:
-            gone = self.all.popleft()
-            pair = _pair(gone[1], gone[2])
-            kept = self.pairs.get(pair)
-            if kept and kept[0] is gone:
-                kept.popleft()
-                if not kept:
-                    del self.pairs[pair]
+        cutoff = now - self.window
+        if self.oldest is None or self.oldest >= cutoff:
+            return
+        for pair, kept in list(self.pairs.items()):
+            while kept and kept[-1][0] < cutoff:
+                kept.pop()
+            if not kept:
+                del self.pairs[pair]
+        self.oldest = min((kept[-1][0] for kept in self.pairs.values()), default=None)
 
     def latest(self, first: str, second: str, now: float) -> int | None:
         """The seq of the newest exchange between the two agents within the window of `now`."""
@@ -576,9 +586,8 @@ class CredentialFlow(Base):
         if isinstance(payload, ChannelRead):
             if event.agent_id is None:
                 return
-            for _at, poster, _ in self.messages.get(payload.channel, ()):
-                if poster != event.agent_id:
-                    self.exchanges.append((now, poster, event.agent_id, event.seq))
+            for poster in _posters(self.messages.get(payload.channel, ()), event.agent_id):
+                self.exchanges.append((now, poster, event.agent_id, event.seq))
             self._prune(now)
             return
         if isinstance(payload, FileAccess):
@@ -679,9 +688,8 @@ class JointAction(Base):
         if isinstance(payload, ChannelRead):
             if event.agent_id is None:
                 return
-            for _, poster, _ in self.messages.get(payload.channel, ()):
-                if poster != event.agent_id:
-                    self.exchanges.append((now, poster, event.agent_id, event.seq))
+            for poster in _posters(self.messages.get(payload.channel, ()), event.agent_id):
+                self.exchanges.append((now, poster, event.agent_id, event.seq))
             self._prune(now)
             return
         if isinstance(payload, FileAccess):
