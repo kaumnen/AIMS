@@ -789,11 +789,11 @@ async def test_rows_taken_back_in_part_go_at_the_next_open(
             " begin select raise(abort, 'cut short'); end"
         )
         assert await store.log_head(run_id) is None
-        assert len(await store._index.hashes(run_id, 0, 9)) == 1
+        assert len(await rows(store._index, run_id)) == 1
     finally:
         await store.close()
     async with await LocalEventStore.open(root) as store:
-        assert await store._index.hashes(run_id, 0, 9) == {}
+        assert await rows(store._index, run_id) == {}
     assert list(root.glob(".deleted.*")) == []
 
 
@@ -1176,6 +1176,12 @@ def chain(n: int) -> tuple[list[Event], list[Head]]:
     return events, heads
 
 
+async def rows(index: Index, run_id: str = RUN) -> dict[int, str]:
+    """The hash of each event row of `run_id` the index holds, a run's or no run's."""
+    async with index._db.execute("select seq, hash from events where run_id = ?", (run_id,)) as cur:
+        return {r[0]: r[1] for r in await cur.fetchall()}
+
+
 async def test_the_index_refuses_a_batch_past_the_event_after_its_last(index: Index) -> None:
     events, heads = chain(4)
     with pytest.raises(IndexGap):
@@ -1218,12 +1224,12 @@ async def test_the_index_refuses_a_batch_that_overlaps_other_events(index: Index
         await index.add(cut, cut_heads[1])
     with pytest.raises(IndexDiverged, match="event 2"):
         await index.add([*events[:2], *cut], cut_heads[1])
-    assert await index.hashes(RUN, 0, 9) == {e.seq: e.hash for e in events[:3]}
+    assert await rows(index) == {e.seq: e.hash for e in events[:3]}
     await index.add(events[2:], heads[4])
     found = await index.head(RUN)
     assert found is not None
     assert found[0] == heads[4]
-    assert await index.hashes(RUN, 0, 9) == {e.seq: e.hash for e in events}
+    assert await rows(index) == {e.seq: e.hash for e in events}
 
 
 async def test_the_index_refuses_a_batch_that_follows_another_event(index: Index) -> None:
@@ -1232,7 +1238,7 @@ async def test_the_index_refuses_a_batch_that_follows_another_event(index: Index
     await index.add(events[:3], heads[2])
     with pytest.raises(IndexDiverged, match="event 3"):
         await index.add(cut[1:], cut_heads[1])
-    assert await index.hashes(RUN, 0, 9) == {e.seq: e.hash for e in events[:3]}
+    assert await rows(index) == {e.seq: e.hash for e in events[:3]}
     # and the writer's own batch after cut lines a reader got in first
     await index.reset()
     await index.add(events[:2], heads[1])
@@ -1259,12 +1265,12 @@ async def test_the_index_drops_rows_no_run_owns_when_their_run_id_starts_again(
     with pytest.raises(sqlite3.Error, match="cut short"):
         await index.remove(RUN)
     await index._db.execute("drop trigger cut")
-    assert len(await index.hashes(RUN, 0, 9)) == 4
+    assert len(await rows(index)) == 4
     events, heads = chain(3)
     await index.add(events[:2], heads[1])
-    assert await index.hashes(RUN, 0, 9) == {e.seq: e.hash for e in events[:2]}
+    assert await rows(index) == {e.seq: e.hash for e in events[:2]}
     await index.add(events[2:], heads[2])
-    assert await index.hashes(RUN, 0, 9) == {e.seq: e.hash for e in events}
+    assert await rows(index) == {e.seq: e.hash for e in events}
 
 
 async def test_a_drop_keeps_out_the_batches_another_process_indexes_meanwhile(
@@ -1288,7 +1294,7 @@ async def test_a_drop_keeps_out_the_batches_another_process_indexes_meanwhile(
         found = await remove_some(table, run_id)
         if calls == 1:
             assert await other.run(RUN) is None
-            assert len(await index.hashes(RUN, 0, 9)) == 3
+            assert len(await rows(index)) == 3
             with pytest.raises(IndexGap):
                 await other.add(events[3:5], heads[4])
             await other.add(events[:4], heads[3])
@@ -1300,14 +1306,14 @@ async def test_a_drop_keeps_out_the_batches_another_process_indexes_meanwhile(
         found = await index.head(RUN)
         assert found is not None
         assert found[0] == heads[3]
-        assert await index.hashes(RUN, 0, 9) == {e.seq: e.hash for e in events[:4]}
+        assert await rows(index) == {e.seq: e.hash for e in events[:4]}
         await index.add(events, heads[5])
     finally:
         await other.close()
     found = await index.head(RUN)
     assert found is not None
     assert found[0] == heads[5]
-    assert await index.hashes(RUN, 0, 9) == {e.seq: e.hash for e in events}
+    assert await rows(index) == {e.seq: e.hash for e in events}
 
 
 async def test_rows_a_drop_leaves_past_a_batch_that_raced_it_go_with_that_batch(
@@ -1346,11 +1352,11 @@ async def test_rows_a_drop_leaves_past_a_batch_that_raced_it_go_with_that_batch(
         found = await index.head(RUN)
         assert found is not None
         assert found[0] == heads[2]
-        assert await index.hashes(RUN, 0, 9) == {e.seq: e.hash for e in events[:3]}
+        assert await rows(index) == {e.seq: e.hash for e in events[:3]}
         await other.add(events[3:], heads[5])
     finally:
         await other.close()
-    assert await index.hashes(RUN, 0, 9) == {e.seq: e.hash for e in events}
+    assert await rows(index) == {e.seq: e.hash for e in events}
 
 
 async def test_a_catch_up_over_rows_of_cut_lines_past_its_head_takes_the_log(
@@ -1421,7 +1427,7 @@ async def test_the_index_drops_rows_another_run_left_under_a_batch(
     with caplog.at_level(logging.WARNING, logger="aims.events"):
         await index.add(events, heads[2])
     assert caplog.messages == [f"run {RUN}: the index held rows past its last event -1, which go"]
-    assert await index.hashes(RUN, 0, 9) == {e.seq: e.hash for e in events}
+    assert await rows(index) == {e.seq: e.hash for e in events}
     await index._db.execute(
         "insert into events_fts (events_fts, rank) values ('integrity-check', 1)"
     )
@@ -1450,9 +1456,9 @@ async def test_a_batch_cancelled_while_it_drops_rows_past_the_last_event_keeps_t
         await task
     await index._db.execute("drop trigger hold")
     assert await index.head(RUN) is None
-    assert await index.hashes(RUN, 0, 9) == {e.seq: e.hash for e in old}
+    assert await rows(index) == {e.seq: e.hash for e in old}
     await index.add(events, heads[2])
-    assert await index.hashes(RUN, 0, 9) == {e.seq: e.hash for e in events}
+    assert await rows(index) == {e.seq: e.hash for e in events}
 
 
 def step_of(head: Head, n: int, text: str) -> tuple[list[Event], Head]:
@@ -1547,6 +1553,62 @@ async def test_a_read_of_a_run_gives_no_row_while_a_drop_deletes_them(
     await index.drop(RUN)
     assert len(during) > 5
     assert [{k for k, v in view.items() if v} for view in during] == [set()] * len(during)
+
+
+async def test_the_hashes_of_a_run_stop_at_its_head(index: Index) -> None:
+    """Rows past the head, or of a run whose row a drop took, hold no event of the run, so
+    the ingest overlap check never compares a line to one of them."""
+    events, heads = chain(3)
+    await index.add(events, heads[2])
+    held = {e.seq: e.hash for e in events}
+    await plant_past(index, heads[2])
+    assert len(await rows(index)) > len(held)
+    assert await index.hashes(RUN, 0, 99) == held
+    assert await index.hashes(RUN, 2, 5) == {2: events[2].hash}
+    await index._remove_row(RUN)
+    assert await rows(index)
+    assert await index.hashes(RUN, 0, 99) == {}
+
+
+async def test_an_ingest_resent_over_rows_of_cut_lines_past_the_index_head_goes_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The copy's index ends before its log, with rows of cut lines past its head. A sender's
+    lines the log holds match the log there, so they are taken, not refused as diverged."""
+    breaker = Breaker(monkeypatch, sqlite3.OperationalError("database is locked"))
+    async with (
+        await LocalEventStore.open(tmp_path / "source") as source,
+        await LocalEventStore.open(tmp_path / "copy", ingest_only=True) as copy,
+    ):
+        run_id = await source.create_run(STARTED)
+        await source.append(run_id, [call(1), call(2), call(3)])
+        lines = split_lines((source.root / run_id / LOG).read_bytes())
+        await copy.ingest(run_id, lines[:2])
+        start = await copy.head(run_id)
+        assert start is not None
+        head, cut = start, []
+        for n in range(3):
+            payload = ToolCall(call_id=f"cut{n}", name="n", arguments="{}")
+            data = payload.model_dump(mode="json")
+            body, _, head = seal(
+                head, run_id=run_id, ts=now(), agent_id="a1", type=payload.type, data=data
+            )
+            cut.append(Event.model_validate(body))
+        await copy._index.add(cut, head)
+        await copy._index._db.execute(
+            "update runs set last_seq = ?, last_hash = ?, log_offset = ? where run_id = ?",
+            (start.seq, start.hash, start.offset, run_id),
+        )
+        breaker.left = 10**6
+        assert (await copy.ingest(run_id, lines[2:3])).seq == 2
+        assert (await copy.ingest(run_id, lines[1:4])).seq == 3
+        breaker.left = 0
+
+        async def caught_up() -> bool:
+            return await indexed(copy, run_id) == logged(copy, run_id)
+
+        await eventually(copy, caught_up)
+        assert (await copy.verify(run_id)).ok
 
 
 async def test_verify_tells_of_a_gap_in_the_index(tmp_path: Path) -> None:

@@ -1546,12 +1546,13 @@ class Index:
         return out
 
     async def hashes(self, run_id: str, first: int, last: int) -> dict[int, str]:
-        """The hash of each indexed event of a run from seq `first` to `last`."""
+        """The hash of each indexed event of a run from seq `first` to `last`, up to its head."""
         if not _held(run_id):
             return {}
         async with self._db.execute(
-            "select seq, hash from events where run_id = ? and seq between ? and ?",
-            (run_id, first, last),
+            f"select seq, hash from events where run_id = ? and +seq <= {HEAD}"
+            " and seq between ? and ?",
+            (run_id, run_id, first, last),
         ) as cur:
             return {row[0]: row[1] for row in await cur.fetchall()}
 
