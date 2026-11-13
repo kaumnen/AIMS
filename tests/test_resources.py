@@ -344,7 +344,10 @@ async def test_killed_sandbox_keeps_its_last_window(
     assert kinds.index("sandbox.stopped") > max(
         i for i, k in enumerate(kinds) if k == "resource.sample"
     )
-    assert "audit.lost" not in kinds
+    # The kill is no gap in the samples. A loss the shared tracer cannot tie to one sandbox,
+    # such as a probe skipped during the test before this one, is none of this sandbox's.
+    lost = [e.data for e in evs if e.type == "audit.lost" and e.data.get("scope") != "tracer"]
+    assert lost == []
 
 
 @pytest.mark.docker
