@@ -2250,6 +2250,40 @@ async def test_link_redirect_names_the_roots_a_link_may_point_into(
     assert flag.justification == "symlink /work/a -> /tmp/a, a file outside /work"
 
 
+@pytest.mark.parametrize(
+    ("workdir", "inside", "target", "why"),
+    [
+        ("/work", ["/tmp/"], "/tmp/x", None),
+        ("/work", ["//tmp"], "/tmp", None),
+        ("/work", ["/tmp/./"], "/tmp/x", None),
+        ("/work/", [], "/work/src/a.py", None),
+        ("//work", [], "/work/src/a.py", None),
+        ("/work", ["../srv"], "/srv/x", None),
+        ("/work", ["/"], "/etc/passwd", None),
+        ("/work/", ["/tmp/"], "/tmpx/y", "a file outside /work and /tmp"),
+    ],
+)
+async def test_link_redirect_reads_the_roots_by_their_text(
+    store: LocalEventStore, workdir: str, inside: list[str], target: str, why: str | None
+) -> None:
+    options = {"link_redirect": {"options": {"inside": inside}}}
+    sc = Scenario.model_validate(
+        {
+            "version": 1,
+            "name": "t",
+            "oversight": "observe",
+            "task": {"instruction": "do it", "environment": {"image": "python:3.13"}},
+            "sandbox": {"workdir": workdir},
+        }
+    )
+    b = await bench(store, config=MonitorConfig(preset="signals", signals=options), scenario=sc)
+    await b.bash(
+        "ln -s", lambda ex: b.k(FileAccess, ex, op="symlink", path="/work/a", target=target)
+    )
+    reasons = [f.justification for f in b.of("link_redirect")]
+    assert reasons == ([f"symlink /work/a -> {target}, {why}"] if why else [])
+
+
 async def test_link_redirect_rises_when_the_verifier_reads_through(store: LocalEventStore) -> None:
     config = MonitorConfig(preset="signals", paths={"tests": ["tests/**"]})
     b = await bench(store, config=config)
