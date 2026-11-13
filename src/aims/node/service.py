@@ -418,6 +418,10 @@ class Node:
             reason = f"{type(e).__name__}: {e}"
             raise
         finally:
+            # a case that a cancel or an error cut short has no outcome to untrack it
+            case = link.runners.get(run_id)
+            if case is not None and case.run_id is not None:
+                link.untrack(case.run_id)
             link.untrack(run_id)
             # The seal lands even when a second cancel, such as the runner's kill, comes meanwhile.
             await settle(store.append(run_id, [Draft(RunFinished(status=status, reason=reason))]))
@@ -663,20 +667,21 @@ class Node:
 
     async def _drop(self, run_id: str) -> None:
         """Delete the copy of a run the control plane deleted, unless a job reads it. A run still
-        running here, which a forced delete takes, is cancelled first: through its runner, or
-        through its job's task for a monitor or score job or a model check, which have none."""
+        running here, which a forced delete takes, is cancelled first: through its job's task
+        for a monitor or score job or a model check, which have no runner, and for a self-test,
+        whose runner is only its case's, finished between cases; else through its runner."""
         if self._open is None:
             return
         runner = self.ctx.link.runners.get(run_id)
         task = self._jobs.get(run_id)
         job = self.claimed.get(run_id)
-        if runner is not None and not runner.finished:
-            runner.cancel()
-        elif task is not None and (
+        if task is not None and (
             isinstance(job, MonitorJob | ScoreJob)
-            or (isinstance(job, Job) and job.kind == "models.check")
+            or (isinstance(job, Job) and job.kind in ("models.check", "selftest"))
         ):
             task.cancel()
+        elif runner is not None and not runner.finished:
+            runner.cancel()
         else:
             task = None
         if task is not None:

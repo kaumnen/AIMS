@@ -19,6 +19,7 @@ import pytest
 from cp import CP, control_plane
 from test_cli_monitor import node, queue_monitor
 from test_monitor_api import call, pushed
+from test_selftest import TESTED, TWO_CASES, selftest_node
 from test_server import (
     FakeRunner,
     log_of,
@@ -41,9 +42,12 @@ from aims.events.index import Index
 from aims.events.schema import format_ts
 from aims.models import DeltaBus
 from aims.monitor import offline
+from aims.node import service
 from aims.node.link import Link
 from aims.node.service import Node, NodeOptions
+from aims.run import selftest as st
 from aims.run.job import Job as RunJob
+from aims.run.runner import Options, Result
 from aims.server import dispatch, retention
 from aims.server.db import Job, JobState
 from aims.server.serve import UiOptions, _spawn_runner
@@ -637,6 +641,60 @@ async def test_a_runner_cancels_a_job_with_no_runner_whose_run_was_deleted_then_
         assert cut.is_set()
         assert await store.run(run_id) is None
         assert not (store.root / run_id).exists()
+
+
+async def test_a_runner_stops_a_selftest_between_its_cases_when_its_run_is_deleted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checking = asyncio.Event()
+    made: list[str | None] = []
+
+    class Ran:
+        """The runner of a case that ran, which took commands under its own run too."""
+
+        finished = False
+        run_id: str | None = None
+
+        def __init__(self, runners: dict[str, Any]) -> None:
+            self.runners = runners
+
+        async def run(self) -> Result:
+            self.run_id = str(uuid.uuid7())
+            self.runners[self.run_id] = self
+            self.finished = True
+            return Result(self.run_id, "completed")
+
+    async def check(*args: Any) -> None:
+        # stands for the check of the case's run, which reads its events
+        checking.set()
+        await asyncio.sleep(300)
+        raise AssertionError("the self-test went on past the delete")
+
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        made_node = selftest_node(store)
+        runners = made_node.ctx.link.runners
+
+        def runner(bench: Any, job: Any, bundle: Any, options: Options) -> Ran:
+            made.append(options.case)
+            return Ran(runners)
+
+        monkeypatch.setattr(service, "selftest_runner", runner)
+        monkeypatch.setattr(st, "cases", lambda bundle: TWO_CASES)
+        monkeypatch.setattr(st, "_check", check)
+        job = RunJob(kind="selftest", run_id=str(uuid.uuid7()))
+        made_node.claimed[job.run_id] = job
+        task = asyncio.create_task(made_node._selftest(job, TESTED))
+        made_node._jobs[job.run_id] = task
+        async with asyncio.timeout(10):
+            await checking.wait()
+            # the first case's runner, which has finished, still stands for the self-test
+            assert runners[job.run_id].finished
+            await made_node._drop(job.run_id)
+        assert task.cancelled()
+        assert made == ["reference"]
+        assert runners == {}
+        assert await store.run(job.run_id) is None
+        assert not (store.root / job.run_id).exists()
 
 
 async def test_a_monitor_job_whose_run_a_forced_delete_took_is_cancelled_and_dropped(
