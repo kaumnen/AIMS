@@ -471,12 +471,6 @@ def _matcher(mod: str | None, value: Any) -> Callable[[Any], bool]:
         case "glob":
             test = compile_glob(value)
             return lambda c: isinstance(c, str) and test(c)
-        case "re":
-            try:
-                pattern = scan.compile(value)
-            except scan.error as e:
-                raise ValueError(f"bad regex {value!r}: {e}") from None
-            return lambda c: isinstance(c, str) and pattern.search(c) is not None
         case "cidr":
             if not isinstance(value, str):
                 raise ValueError(f"cidr takes a network, not {value!r}")
@@ -502,9 +496,21 @@ def _matcher(mod: str | None, value: Any) -> Callable[[Any], bool]:
             raise ValueError(f"unknown modifier {mod}")
 
 
+def _regex(value: Any) -> scan.Pattern:
+    """A rule's `re` value compiled for budgeted scans. Raises ValueError for a bad value."""
+    if not isinstance(value, str):
+        raise ValueError(f"re takes text, not {value!r}")
+    try:
+        return scan.compile(value)
+    except scan.error as e:
+        raise ValueError(f"bad regex {value!r}: {e}") from None
+
+
 @dataclass(frozen=True, slots=True)
 class Condition:
-    """One entry of a match or filter map, compiled."""
+    """One entry of a match or filter map, compiled. An `re` entry keeps its `patterns`, whose
+    scans are awaited, so a long or slow scan runs off the event loop as a content signal's
+    does; every other entry keeps its `tests`."""
 
     path: tuple[str, ...]
     derived: Derived | None
@@ -512,6 +518,7 @@ class Condition:
     every: bool
     tests: tuple[Callable[[Any], bool], ...]
     exists: bool | None = None
+    patterns: tuple[scan.Pattern, ...] = ()
 
     async def holds(self, event: Event, payload: Any, state: State) -> bool:
         if self.derived is not None:
@@ -528,9 +535,24 @@ class Condition:
                 values.append(v)
         if self.exists is not None:
             return any(v is not None for v in values) == self.exists
+        if self.patterns:
+            return await self._finds([v for v in values if isinstance(v, str)])
         if self.every:
             return all(any(t(v) for v in values) for t in self.tests)
         return any(t(v) for t in self.tests for v in values)
+
+    async def _finds(self, texts: list[str]) -> bool:
+        """Whether a pattern finds a match in one of `texts`; with `every`, whether each does.
+        Raises SlowScan."""
+        for pattern in self.patterns:
+            found = False
+            for text in texts:
+                if await pattern.find(text) is not None:
+                    found = True
+                    break
+            if found != self.every:
+                return found
+        return self.every
 
 
 @dataclass(frozen=True, slots=True)
@@ -624,6 +646,9 @@ def _condition(
     items = value if isinstance(value, list) else [value]
     if not items:
         raise ValueError(f"{spec!r}: an empty list matches nothing")
+    if mod == "re":
+        patterns = tuple(_regex(v) for v in items)
+        return Condition(segs, field, mod, quant == ["all"], (), patterns=patterns)
     tests = tuple(_matcher(mod, v) for v in items)
     return Condition(segs, field, mod, quant == ["all"], tests)
 

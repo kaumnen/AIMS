@@ -1,3 +1,4 @@
+import asyncio
 import json
 import time
 from collections.abc import AsyncIterator
@@ -638,7 +639,8 @@ def test_a_distinct_field_must_exist() -> None:
 async def test_a_slow_rule_regex_degrades_the_rule_at_its_budget(
     store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(scan, "SYNC_S", 0.05)
+    monkeypatch.setattr(scan, "INLINE_S", 0.02)
+    monkeypatch.setattr(scan, "THREAD_S", 0.05)
     slow = rule(id="slow", event=["tool.call"], match={"arguments|re": r"hi\s*,?\s+judge"})
     b = await bench(store, config=MonitorConfig(preset="signals", rules=[slow]))
     start = time.perf_counter()
@@ -651,3 +653,35 @@ async def test_a_slow_rule_regex_degrades_the_rule_at_its_budget(
     degraded = [p for p in (e.payload() for e in b.others) if isinstance(p, MonitorDegraded)]
     assert [d.reason.partition(" at ")[0] for d in degraded] == ["signal slow failed"]
     assert "SlowScan" in (degraded[0].detail or "")
+
+
+@pytest.mark.parametrize("size", [30_000, 100_000], ids=["short", "long"])
+async def test_a_slow_rule_regex_leaves_the_loop_free(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch, size: int
+) -> None:
+    monkeypatch.setattr(scan, "SYNC_S", 0.3)
+    monkeypatch.setattr(scan, "INLINE_S", 0.02)
+    monkeypatch.setattr(scan, "THREAD_S", 0.3)
+    slow = rule(id="slow", event=["tool.call"], match={"arguments|re": r"hi\s*,?\s+judge"})
+    b = await bench(store, config=MonitorConfig(preset="signals", rules=[slow]))
+    worst = 0.0
+    done = False
+
+    async def tick() -> None:
+        nonlocal worst
+        while not done:
+            start = time.perf_counter()
+            await asyncio.sleep(0.01)
+            worst = max(worst, time.perf_counter() - start)
+
+    ticker = asyncio.create_task(tick())
+    await asyncio.sleep(0.03)
+    start = time.perf_counter()
+    await b.call("bash", {"command": "hi" + " " * size})
+    took = time.perf_counter() - start
+    done = True
+    await ticker
+    degraded = [p for p in (e.payload() for e in b.others) if isinstance(p, MonitorDegraded)]
+    assert "ran past 0.3 s" in (degraded[0].detail or "")
+    # A short text has its first try on the loop, at INLINE_S.
+    assert worst < 0.15, f"the loop stalled {worst:.3f} s in a {took:.3f} s scan"
