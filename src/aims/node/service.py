@@ -22,6 +22,7 @@ from aims.channels import archives
 from aims.events import (
     Draft,
     LocalEventStore,
+    RunCorrupt,
     RunFinished,
     RunStarted,
     RunStatus,
@@ -349,13 +350,20 @@ class Node:
             raise
         except Exception as e:
             log.exception("job %s failed", job.run_id)
-            if await store.run(job.run_id) is None:
-                if await store.log_head(job.run_id) is None:
-                    # A score job and a model check ship their run from before it begins. With
-                    # no line written that shipper would wait for one without end.
-                    link.unship(job.run_id)
+            if not await self._began(job.run_id):
+                # A score job and a model check ship their run from before it begins. With
+                # no line written that shipper would wait for one without end.
+                link.unship(job.run_id)
                 with contextlib.suppress(ApiError, httpx2.TransportError, OSError):
                     await link.client.release(job.run_id, f"{type(e).__name__}: {e}")
+
+    async def _began(self, run_id: str) -> bool:
+        """Whether a job's run has a line here, read from its log: the index can lag behind it.
+        A run the index marks corrupt has lines."""
+        try:
+            return await self.ctx.store.log_head(run_id) is not None
+        except RunCorrupt:
+            return True
 
     async def _selftest(self, job: Job, bundle: Bundle) -> None:
         """Run the self-test of the job's scenario into the run `job.run_id`: each case a
@@ -448,7 +456,7 @@ class Node:
             else:
                 await self._score(job)
         except asyncio.CancelledError:
-            if self.stopping and await self.ctx.store.run(job.run_id) is None:
+            if self.stopping and not await self._began(job.run_id):
                 await self._hand_back(job)
             raise
         finally:

@@ -12,11 +12,14 @@ import os
 import re
 import shutil
 import signal
+import sqlite3
 import threading
 import time
 import tracemalloc
+import uuid
 from collections.abc import AsyncGenerator, AsyncIterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import httpx2
@@ -47,6 +50,7 @@ from aims.events import (
     Series,
     ToolCall,
 )
+from aims.events.index import Index
 from aims.models import DeltaBus
 from aims.monitor import offline
 from aims.monitor.core import HumanRequest
@@ -60,7 +64,7 @@ from aims.run.view import HumanPrompt, JsonLines, LiveView, _args, digest, monit
 from aims.sandbox import DockerBackend, SandboxError
 from aims.scenario import load
 from aims.server.db import OPEN_STATES
-from aims.wire import Ack, CommandAction, CommandMessage, OfferMessage
+from aims.wire import Ack, CommandAction, CommandMessage, MonitorJob, OfferMessage
 
 pytestmark = pytest.mark.anyio
 
@@ -1346,6 +1350,56 @@ async def test_a_monitor_job_the_first_stop_ends_before_its_run_begins_goes_back
     assert (job.state, job.releases) in (("queued", 1), ("offered", 1))
     assert await cp.state.store.run(run_id) is None
     assert not (tmp_path / "node" / "runs" / run_id).exists()
+
+
+@pytest.mark.parametrize("end", ["error", "stop"])
+async def test_a_job_whose_run_began_is_not_given_back_while_the_index_lags_behind_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, end: str
+) -> None:
+    run_id = str(uuid.uuid7())
+    add = Index.add
+
+    async def locked(index: Index, events: Any, head: Any, **kw: Any) -> None:
+        # the index takes no line of the job's run, so only its log says the run began
+        if events and events[0].run_id == run_id:
+            raise sqlite3.OperationalError("database is locked")
+        await add(index, events, head, **kw)
+
+    began = asyncio.Event()
+
+    async def monitor(self: Node, job: Any) -> None:
+        started = RunStarted(scenario="control", oversight="observe", agents=["a"])
+        await self.ctx.store.create_run(started, run_id=job.run_id)
+        if end == "error":
+            raise RunError("the monitor broke")
+        began.set()
+        # stands for the monitor's model calls, which only a cancel ends
+        await asyncio.sleep(300)
+
+    monkeypatch.setattr(Index, "add", locked)
+    monkeypatch.setattr(Node, "_monitor", monitor)
+    given_back: list[str] = []
+
+    async def release(of: str, reason: str) -> None:
+        given_back.append(f"released {of}")
+
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        made = Node(NodeOptions(url="http://cp", token="t", name="n", data=tmp_path))
+        link = SimpleNamespace(
+            unship=lambda of: given_back.append(f"unshipped {of}"),
+            client=SimpleNamespace(release=release),
+        )
+        made._open = cast(Any, SimpleNamespace(store=store, link=link))
+        task = asyncio.create_task(made._execute(MonitorJob.model_construct(run_id=run_id)))
+        async with asyncio.timeout(10):
+            if end == "stop":
+                await began.wait()
+                made.stopping = True
+                task.cancel()
+            await asyncio.wait([task])
+        assert await store.run(run_id) is None
+        assert await store.log_head(run_id) is not None
+    assert given_back == []
 
 
 # Copies of runs another runner made
