@@ -29,6 +29,7 @@ import pytest
 from typer.testing import CliRunner
 
 from aims.cli import app
+from aims.sandbox import docker as docker_module
 from aims.sandbox import images
 from aims.sandbox.docker import DockerBackend, SandboxError
 from aims.sandbox.images import context, ensure_built, ensure_image, ensure_pulled
@@ -413,10 +414,96 @@ async def test_a_build_lock_file_that_stays_unreadable_raises(
             pass
 
     started = time.monotonic()
-    with pytest.raises(PermissionError):
+    with pytest.raises(images.LockError, match=re.escape(str(path))) as caught:
         await lock()
     assert 0.2 <= time.monotonic() - started < 2
+    assert isinstance(caught.value.__cause__, PermissionError)
     assert path.exists()
+
+
+class Unbuilt:
+    """A Docker daemon with no image, so each asset image is built under its build lock."""
+
+    def __init__(self) -> None:
+        self.system = self
+        self.images = Images()
+
+    async def info(self) -> dict[str, Any]:
+        return {"Architecture": "x86_64"}
+
+    async def close(self) -> None:
+        pass
+
+
+@pytest.fixture
+def unbuilt(lock_dir: Path, monkeypatch: pytest.MonkeyPatch) -> Unbuilt:
+    """The daemon `DockerBackend.open` connects to, with its sweep of what others left stubbed."""
+    docker = Unbuilt()
+
+    async def nothing(*_: Any) -> None:
+        return None
+
+    monkeypatch.setattr(aiodocker, "Docker", lambda url=None: docker)
+    monkeypatch.setattr(docker_module, "_own_container", nothing)
+    monkeypatch.setattr(docker_module, "_sweep", nothing)
+    return docker
+
+
+def unreadable(name: str, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The build lock file of asset image `name` as another user's AIMS 0.2.2 or older left it
+    in a shared temp folder: mode 0600, so this user may not open it."""
+    monkeypatch.setattr(images, "UNREADABLE_S", 0.05)
+    path = images._lock_path(context(name)[0])
+    path.touch()
+    path.chmod(0)
+    return path
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a file whatever its mode")
+@pytest.mark.parametrize("audit", ["auto", "kernel"])
+async def test_a_tracer_whose_build_lock_file_cannot_be_opened_is_unavailable(
+    audit: str,
+    unbuilt: Unbuilt,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    path = unreadable("tracer", monkeypatch)
+
+    async def toolbox(*_: Any) -> tuple[str, str]:
+        return "aims-toolbox:x", "v"
+
+    async def nothing(*_: Any) -> None:
+        return None
+
+    monkeypatch.setattr(docker_module, "_toolbox", toolbox)
+    monkeypatch.setattr(docker_module, "_remove_old", nothing)
+    monkeypatch.setattr(docker_module, "_sampler", nothing)
+    why = f"kernel audit unavailable: cannot use the build lock file {re.escape(str(path))}"
+    if audit == "kernel":
+        with pytest.raises(SandboxError, match=why):
+            await DockerBackend.open(audit="kernel")
+        return
+    with caplog.at_level(logging.WARNING, "aims.sandbox"):
+        backend = await DockerBackend.open(audit="auto")
+    async with backend:
+        assert backend.tracer is None
+        with pytest.raises(SandboxError, match=why):
+            await backend.restart_tracer()
+    warned = [r.getMessage() for r in caplog.records]
+    assert any("using snapshot audit" in m and str(path) in m for m in warned), warned
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a file whatever its mode")
+def test_a_runner_whose_toolbox_build_lock_file_cannot_be_opened_says_why(
+    unbuilt: Unbuilt, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    path = unreadable("toolbox", monkeypatch)
+    args = ["runner", "--server", "http://127.0.0.1:9", "--data-dir", str(tmp_path / "data")]
+    result = CliRunner().invoke(app, args, env={"AIMS_TOKEN": "x"})
+    assert isinstance(result.exception, SystemExit), result.exception
+    assert result.exit_code == 1
+    why = f"error: cannot start the sandbox backend: cannot use the build lock file {path}"
+    assert why in result.output
 
 
 def aged(path: Path, days: float = 2) -> Path:
@@ -488,7 +575,7 @@ async def test_a_build_lock_never_follows_a_symlink(lock_dir: Path) -> None:
         async with images._host_lock("aims-env:link"):
             pass
 
-    with pytest.raises(OSError, match=os.strerror(errno.ELOOP)):
+    with pytest.raises(images.LockError, match=os.strerror(errno.ELOOP)):
         await lock()
     assert not target.exists()
     assert path.is_symlink()

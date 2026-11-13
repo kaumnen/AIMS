@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import errno
 import json
 import logging
 import os
@@ -32,6 +33,7 @@ from aims.cli import EXIT_CANCELLED, app
 from aims.config import MAX_KEEP_DAYS
 from aims.events import Draft, LocalEventStore, RunFinished, RunStarted, ToolCall
 from aims.net import Outbound
+from aims.node import service
 from aims.node.link import Link
 from aims.node.service import Node, NodeOptions, Refused
 from aims.node.shipper import WARN_AFTER, Backoff
@@ -1013,6 +1015,42 @@ async def test_a_snapshot_runner_never_starts_the_tracer(tmp_path: Path) -> None
     assert "--audit snapshot" in health.detail
     async with asyncio.timeout(1):
         await node._watch_tracer()
+
+
+async def test_the_tracer_watch_goes_on_after_a_restart_fails_in_any_way(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """As one whose build lock file this user may not open did."""
+
+    class Failing:
+        tracer = None
+        tracer_restarts = 0
+
+        def __init__(self) -> None:
+            self.tries = 0
+            self.third = asyncio.Event()
+
+        async def restart_tracer(self) -> None:
+            self.tries += 1
+            if self.tries == 3:
+                self.third.set()
+            raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), "/tmp/x.lock")
+
+    monkeypatch.setattr(service, "TRACER_POLL_S", 0.01)
+    monkeypatch.setattr(service, "TRACER_RETRY_S", 0.0)
+    node = Node(NodeOptions(url="http://x", token="t", name="n", data=tmp_path))
+    backend = Failing()
+    node.backend = cast(Any, backend)
+    task = asyncio.create_task(node._watch_tracer())
+    third = asyncio.create_task(backend.third.wait())
+    try:
+        await asyncio.wait({task, third}, timeout=10, return_when=asyncio.FIRST_COMPLETED)
+        assert not task.done(), task.exception()
+        assert third.done()
+    finally:
+        task.cancel()
+        third.cancel()
+        await asyncio.gather(task, third, return_exceptions=True)
 
 
 async def test_a_runner_tries_again_when_listing_what_to_ship_fails_another_way(

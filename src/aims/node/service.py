@@ -48,13 +48,14 @@ from aims.run.job import Job, job_bundle, runner_for, selftest_runner
 from aims.run.runner import Bench, Options, RunError, Runner, seal_unsealed
 from aims.run.score import Added
 from aims.run.scoring import ScoreError, score_with
-from aims.sandbox import AuditMode, DockerBackend, SandboxError
+from aims.sandbox import AuditMode, DockerBackend
 from aims.sandbox.images import KEEP_DAYS
 from aims.scenario import Bundle
 from aims.wire import MonitorJob, OfferMessage, ScoreJob, TracerHealth
 
 log = logging.getLogger("aims.node")
 
+TRACER_POLL_S = 5.0
 TRACER_RETRY_S = 60.0
 PRUNE_EVERY_S = 3600.0
 # how long a run the control plane deleted gets to seal once cancelled
@@ -97,6 +98,10 @@ class NodeOptions:
 
 class Refused(Exception):
     """The control plane kept refusing this runner's token or name, so it stopped."""
+
+
+class NoBackend(Exception):
+    """The sandbox backend did not start, so the runner did not."""
 
 
 @dataclass(slots=True)
@@ -161,9 +166,12 @@ class Node:
             if sealed:
                 log.warning("sealed %d run(s) left open by an earlier runner", len(sealed))
             given = o.backend is not None
-            backend = o.backend or await DockerBackend.open(
-                audit=o.audit, url=o.docker_url, image_keep_days=o.image_keep_days
-            )
+            try:
+                backend = o.backend or await DockerBackend.open(
+                    audit=o.audit, url=o.docker_url, image_keep_days=o.image_keep_days
+                )
+            except Exception as e:
+                raise NoBackend(f"cannot start the sandbox backend: {e}") from e
             self.backend = backend
             async with contextlib.AsyncExitStack() as stack:
                 if not given:
@@ -603,7 +611,7 @@ class Node:
         if self.options.audit == "snapshot":
             return
         while True:
-            await asyncio.sleep(5)
+            await asyncio.sleep(TRACER_POLL_S)
             backend = self.backend
             if backend is None or self.tracer().alive or self.claimed:
                 continue
@@ -613,7 +621,7 @@ class Node:
             try:
                 await backend.restart_tracer()
                 log.warning("kernel tracer restarted")
-            except SandboxError as e:
+            except Exception as e:
                 log.warning("kernel tracer did not restart: %s", e)
 
     async def _prune(self) -> None:

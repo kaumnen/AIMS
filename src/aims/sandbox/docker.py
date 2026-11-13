@@ -39,6 +39,7 @@ from aims.sandbox.containers import create_container, remove_container
 from aims.sandbox.execs import open_stream
 from aims.sandbox.images import (
     KEEP_DAYS,
+    LockError,
     ensure_built,
     ensure_image,
     ensure_pulled,
@@ -156,7 +157,7 @@ class DockerBackend:
                 tracer = Tracer(docker, labels, name, ring_pages=ring_pages, toolbox=toolbox[1])
                 try:
                     await tracer.start()
-                except (TracerError, aiodocker.DockerError, TimeoutError) as e:
+                except (TracerError, LockError, aiodocker.DockerError, TimeoutError) as e:
                     if audit == "kernel":
                         raise SandboxError(f"kernel audit unavailable: {e}") from e
                     log.warning("kernel audit unavailable, using snapshot audit: %s", e)
@@ -205,7 +206,7 @@ class DockerBackend:
         )
         try:
             await tracer.start()
-        except (TracerError, aiodocker.DockerError, TimeoutError) as e:
+        except (TracerError, LockError, aiodocker.DockerError, TimeoutError) as e:
             raise SandboxError(f"kernel audit unavailable: {e}") from e
         self.tracer = tracer
         self.tracer_restarts += 1

@@ -48,6 +48,10 @@ UNREADABLE_S = 1.0
 LOCK_KEEP_S = 86400.0
 
 
+class LockError(Exception):
+    """A build lock file this user cannot open or lock."""
+
+
 def registry(env: Mapping[str, str] = os.environ) -> str:
     """Where the published asset images live: `$AIMS_IMAGE_REGISTRY`, else GHCR. Empty means
     never pull, always build here."""
@@ -284,9 +288,16 @@ def _lock_path(tag: str) -> Path:
 @contextlib.asynccontextmanager
 async def _host_lock(tag: str, poll: float = 0.2) -> AsyncGenerator[None]:
     """Hold the build lock of `tag` on this host. Its file goes with the lock, unless another
-    user made it in a sticky folder such as /tmp."""
+    user made it in a sticky folder such as /tmp. A file that cannot be used, such as one
+    another user left that this user may not read, raises LockError."""
     path = _lock_path(tag)
-    fd = await _lock(path, poll)
+    try:
+        fd = await _lock(path, poll)
+    except OSError as e:
+        raise LockError(
+            f"cannot use the build lock file {path}: {e.strerror or e} (its owner or root can"
+            " remove it, or set TMPDIR to another folder)"
+        ) from e
     try:
         yield
     finally:
