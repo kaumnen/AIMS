@@ -16,6 +16,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import urllib.parse
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from datetime import datetime, timedelta, tzinfo
@@ -23,11 +24,13 @@ from pathlib import Path
 from typing import Any, Self
 
 import aiodocker
+import aiohttp
 import pytest
 from typer.testing import CliRunner
 
 from aims.cli import app
 from aims.sandbox import images
+from aims.sandbox.docker import DockerBackend, SandboxError
 from aims.sandbox.images import context, ensure_built, ensure_image, ensure_pulled
 
 pytestmark = pytest.mark.anyio
@@ -144,6 +147,112 @@ async def test_a_build_or_pull_whose_progress_ends_with_no_image_raises(call: st
     work = ensure_built(docker, context) if call == "build" else ensure_pulled(docker, "x:1")
     with pytest.raises(aiodocker.DockerError):
         await work
+
+
+class Daemon:
+    """A Docker daemon on a local port with the image calls `images` makes. It cuts the
+    progress of each call in `cut`, `build` or `images/create`, after its first line, as a
+    daemon that dies or restarts does."""
+
+    def __init__(self, cut: set[str]) -> None:
+        self.cut = cut
+        self.tags: set[str] = set()
+        self.calls: list[str] = []
+
+    async def serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        with contextlib.suppress(asyncio.IncompleteReadError, ConnectionError):
+            while True:
+                head = (await reader.readuntil(b"\r\n\r\n")).decode()
+                method, target, _ = head.split(" ", 2)
+                if size := re.search(r"(?im)^content-length: *(\d+)", head):
+                    await reader.readexactly(int(size[1]))
+                url = urllib.parse.urlsplit(target)
+                path = urllib.parse.unquote(url.path).removeprefix("/v1.45/")
+                query = dict(urllib.parse.parse_qsl(url.query))
+                if not await self.answer(method, path, query, writer):
+                    break
+        writer.close()
+
+    async def answer(
+        self, method: str, path: str, query: dict[str, str], writer: asyncio.StreamWriter
+    ) -> bool:
+        """Answer one call; False once the connection is cut."""
+        if path in ("build", "images/create"):
+            self.calls.append(path)
+            writer.write(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+            line = b'{"status":"working"}\n'
+            writer.write(b"%x\r\n%s\r\n" % (len(line), line))
+            await writer.drain()
+            if path in self.cut:
+                return False
+            self.tags.add(query["t"] if path == "build" else f"{query['fromImage']}@{query['tag']}")
+            writer.write(b"0\r\n\r\n")
+            return True
+        name = path.removeprefix("images/").removesuffix("/json").removesuffix("/tag")
+        if name not in self.tags:
+            body, status = {"message": f"No such image: {name}"}, "404 Not Found"
+        elif path.endswith("/tag"):
+            self.tags.add(f"{query['repo']}:{query['tag']}")
+            body, status = {}, "201 Created"
+        else:
+            body, status = {"Id": "sha256:local", "RepoDigests": []}, "200 OK"
+        data = json.dumps(body).encode()
+        writer.write(
+            f"HTTP/1.1 {status}\r\nContent-Type: application/json\r\n"
+            f"Content-Length: {len(data)}\r\n\r\n".encode()
+            + data
+        )
+        return True
+
+
+@contextlib.asynccontextmanager
+async def serving(cut: set[str]) -> AsyncGenerator[tuple[Daemon, aiodocker.Docker]]:
+    daemon = Daemon(cut)
+    server = await asyncio.start_server(daemon.serve, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    docker = aiodocker.Docker(url=f"tcp://127.0.0.1:{port}", api_version="v1.45")
+    try:
+        yield daemon, docker
+    finally:
+        await docker.close()
+        server.close()
+        server.close_clients()
+        await server.wait_closed()
+
+
+@pytest.mark.parametrize("call", ["build", "pull"])
+async def test_a_build_or_pull_stream_the_daemon_cuts_raises_a_docker_error(call: str) -> None:
+    """aiohttp raises its own error for a stream cut midway, which callers do not catch."""
+    async with serving({"build", "images/create"}) as (daemon, docker):
+        context = uuid.uuid4().bytes
+        work = ensure_built(docker, context) if call == "build" else ensure_pulled(docker, "x:1")
+        with pytest.raises(aiodocker.DockerError) as caught:
+            await work
+        assert isinstance(caught.value.__cause__, aiohttp.ClientPayloadError)
+        assert daemon.calls == ["build" if call == "build" else "images/create"]
+
+
+async def test_an_asset_image_whose_pull_is_cut_is_built(pin: Callable[..., str]) -> None:
+    tag = pin("tracer")
+    async with serving({"images/create"}) as (daemon, docker):
+        assert await ensure_image(docker, "tracer", env=DEFAULT) == tag
+        assert daemon.calls == ["images/create", "build"]
+        assert tag in daemon.tags
+
+
+async def test_a_tracer_whose_image_stream_is_cut_is_unavailable(
+    pin: Callable[..., str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`DockerBackend.open` falls back to snapshot audit on the same errors."""
+    pin("tracer")
+    monkeypatch.setenv("AIMS_IMAGE_REGISTRY", DEFAULT["AIMS_IMAGE_REGISTRY"])
+    async with serving({"build", "images/create"}) as (daemon, docker):
+        backend = DockerBackend(
+            docker, arch="amd64", labels={}, toolbox=("aims-toolbox:x", "v"), tracer=None
+        )
+        with pytest.raises(SandboxError, match="kernel audit unavailable"):
+            await backend.restart_tracer()
+        assert daemon.calls == ["images/create", "build"]
 
 
 def held(tag: str) -> bool:

@@ -16,6 +16,7 @@ from importlib.resources.abc import Traversable
 from pathlib import Path
 
 import aiodocker
+import aiohttp
 from aiodocker.jsonstream import json_stream_list
 
 log = logging.getLogger("aims.sandbox")
@@ -228,17 +229,22 @@ async def _post(
     headers: dict[str, str] | None = None,
 ) -> None:
     """Make the Docker call `path`, a build or a pull, and read its progress to the end; an
-    error in the progress raises. A cancel or an error closes the call's connection, which
-    makes Docker stop the work. aiodocker's own build and pull keep it open, so Docker goes
-    on to the end."""
-    # aiodocker has no public call that closes it, so this uses its private one.
-    async with docker._query(
-        path, "POST", params=params, data=data, headers=headers, timeout=None
-    ) as response:
-        try:
-            await json_stream_list(response)
-        finally:
-            response.close()
+    error in the progress raises, as a DockerError also when the daemon cuts the progress
+    midway. A cancel or an error closes the call's connection, which makes Docker stop the
+    work. aiodocker's own build and pull keep it open, so Docker goes on to the end."""
+    try:
+        # aiodocker has no public call that closes it, so this uses its private one.
+        async with docker._query(
+            path, "POST", params=params, data=data, headers=headers, timeout=None
+        ) as response:
+            try:
+                await json_stream_list(response)
+            finally:
+                response.close()
+    except aiohttp.ClientPayloadError as e:
+        # aiodocker turns the other errors of a dropped connection into its own or into the
+        # end of the progress, but lets this one through.
+        raise aiodocker.DockerStreamError(f"the {path} progress was cut: {e}") from e
 
 
 async def _pull(docker: aiodocker.Docker, remote: str, tag: str) -> bool:
