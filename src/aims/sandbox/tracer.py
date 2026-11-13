@@ -183,6 +183,8 @@ class Route:
     overflow: int = 0
     window: tuple[int, int] | None = None
     pre_exec: Callable[[PreExec], None] | None = None
+    # The latest kernel time the tracer had seen when the sandbox registered.
+    since: int = 0
 
     def put(self, record: Record) -> None:
         if self.overflow:
@@ -410,7 +412,8 @@ class Tracer:
             self._host.set_result(None)
 
     def _skipped(self, ts: int | None, counts: dict[int, int]) -> None:
-        """Report the runs each probe skipped since the last reading, in every sandbox."""
+        """Report the runs each probe skipped since the last reading, in each sandbox from when
+        it registered."""
         start = self._skips_ts
         if start is None and self.clock is not None:
             start = self.clock[0]
@@ -423,9 +426,7 @@ class Tracer:
             self.skipped += new
             name = self._probes.get(prog, f"program {prog}")
             reason = f"kernel skipped tracer probe {name}: a run of it was in progress on that cpu"
-            lost = Lost(new, reason, (), start, ts, "tracer")
-            for route in self._routes.values():
-                route.put(lost)
+            self._share(Lost(new, reason, (), start, ts, "tracer"))
         if ts is not None and (self._skips_ts is None or ts > self._skips_ts):
             self._skips_ts = ts
 
@@ -484,7 +485,8 @@ class Tracer:
             self._container = None
 
     def register(self, pidns: int, mounts: Mounts, syscalls: dict[int, str]) -> Route:
-        route = Route(pidns, mounts, syscalls)
+        since = max(self._sequence.latest, self._skips_ts or 0)
+        route = Route(pidns, mounts, syscalls, since=since)
         self._routes[pidns] = route
         return route
 
@@ -576,8 +578,19 @@ class Tracer:
             # one traceback is enough when every line fails the same way
             show = log.exception if self.unhandled == 1 else log.debug
             show("tracer line could not be handled: %r", raw[:500])
-            for route in self._routes.values():
-                route.put(Lost(1, UNHANDLED, scope="tracer"))
+            self._share(Lost(1, UNHANDLED, scope="tracer"))
+
+    def _share(self, lost: Lost) -> None:
+        """Report `lost`, which may hide any sandbox's records, to each sandbox from when it
+        registered: none to one that registered after its window ended, and a window that
+        began before one registered starts then."""
+        for route in self._routes.values():
+            if lost.ts_to is not None and lost.ts_to < route.since:
+                continue
+            if lost.ts_from is not None and lost.ts_from < route.since:
+                route.put(dataclasses.replace(lost, ts_from=route.since))
+            else:
+                route.put(lost)
 
     def _note(self, text: str) -> None:
         """Log what bpftrace says; known compile warnings and their source lines at debug."""
@@ -611,8 +624,7 @@ class Tracer:
             reason = (
                 f"the kernel dropped {excess - self.unlocated} records no sequence hole located"
             )
-            for route in self._routes.values():
-                route.put(Lost(None, reason, scope="tracer"))
+            self._share(Lost(None, reason, scope="tracer"))
         self.unlocated = max(excess, 0)
 
     def _handle(self, line: str) -> None:
@@ -902,9 +914,7 @@ class Tracer:
             self.located += gap.count
             window = (gap.cpu,), gap.ts_from, gap.ts_to
             if gap.cgroup == 0:
-                lost = Lost(gap.count, OWN_GAP, *window, "tracer")
-                for route in self._routes.values():
-                    route.put(lost)
+                self._share(Lost(gap.count, OWN_GAP, *window, "tracer"))
                 continue
             route = self._sandbox(gap.cgroup)
             if route is None:

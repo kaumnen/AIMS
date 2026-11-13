@@ -1413,6 +1413,48 @@ async def test_skipped_probe_runs_are_lost_in_every_sandbox() -> None:
 
 
 @pytest.mark.anyio
+async def test_skipped_probe_runs_are_lost_in_a_sandbox_only_from_when_it_registered() -> None:
+    """A sandbox that registered midway through the window gets it from then; one that
+    registered after it ended gets none of it."""
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    tracer._skips_ts = 1_000_000
+    early = tracer.register(97, Mounts([]), {})
+    tick(tracer, 1_500_000, 0, 1)
+    midway = tracer.register(98, Mounts([]), {})
+    tick(tracer, 2_500_000, 0, 2)
+    after = tracer.register(99, Mounts([]), {})
+    tracer._skipped(2_000_000, {3183: 5})
+
+    reason = SKIP_REASON.format("program 3183")
+    assert drain(early) == [Lost(5, reason, (), 1_000_000, 2_000_000, "tracer")]
+    assert drain(midway) == [Lost(5, reason, (), 1_500_000, 2_000_000, "tracer")]
+    assert drain(after) == []
+    await tracer.stop()
+
+
+@pytest.mark.anyio
+async def test_a_tracer_hole_is_lost_in_a_sandbox_only_from_when_it_registered() -> None:
+    """A hole in the tracer's own stream, which may hide any sandbox's OOM kill."""
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    early = tracer.register(97, Mounts([]), {})
+    tick(tracer, 1_000_000, 0, 1)
+    tick(tracer, 1_000_000, 1, 1)
+    tick(tracer, 1_050_000, 2, 1)
+    midway = tracer.register(98, Mounts([]), {})
+    tick(tracer, 1_100_000, 1, 5)
+    tick(tracer, 2_099_000, 0, 2)
+    after = tracer.register(99, Mounts([]), {})
+    for n in range(3, 7):
+        tick(tracer, 1_100_000 + (n - 1) * 999_000, 0, n)
+
+    assert drain(early) == [Lost(3, OWN_GAP, (1,), 1_000_000, 1_100_000, "tracer")]
+    assert drain(midway) == [Lost(3, OWN_GAP, (1,), 1_050_000, 1_100_000, "tracer")]
+    assert drain(after) == []
+    assert tracer.located == 3
+    await tracer.stop()
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("container", [StuckContainer(), StuckContainer(OSError("gone"))])
 async def test_a_failed_skip_reading_leaves_the_close_alone(
     monkeypatch: pytest.MonkeyPatch, container: StuckContainer
