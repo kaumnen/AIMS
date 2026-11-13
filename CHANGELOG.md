@@ -116,6 +116,10 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - `aims run --json` and `aims monitor --json` exit 1 when a JSON line could not be written, other than to a closed pipe. The line is skipped with one warning per run and the next lines still come.
 - A second stop of `aims runner` kills its runs. Stops after that, or once it closes, do nothing.
 - The server database moves to version 6. A command's state is kept in its own column. An older AIMS refuses the file.
+- A new event, `sandbox.outside_pause`, records a pause of a sandbox's container made outside AIMS, as with `docker pause`, and its end. AIMS notices such a pause when Docker refuses a command for it. The run view shows it as a Sandbox note.
+- `exec.finished` says in `error` why the command of a cancelled or timed out exec may still run: the sandbox was paused, the kill failed, or the command did not end in 5 s.
+- The asset images of another AIMS version, such as the toolbox and the tracer, go one day after their last use. They went after two minutes, so two versions or checkouts on one host built them again at every start.
+- The build lock file is readable by every user, so two users of one Docker host can build the same image. A lock file left by AIMS 0.2.2 or older that another user owns still fails: delete it.
 
 ### Fixed
 
@@ -288,6 +292,12 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - A stop while `aims runner` closes no longer cuts a store close.
 - A failed `aims token create` removes the data folder it made, when no token was written.
 - `aims audit` prints nothing when a row fails to show. It printed the rows before it.
+- A command that runs past its whole deadline is killed. One not wrapped by `aims-exec` ran on.
+- A cancel that lands while a command's start is logged logs its end too. The run held an `exec.started` with no `exec.finished`.
+- A cancelled command is stopped before its children are killed, so a child it forks at that moment no longer runs on.
+- A cancel that lands while a sandbox's volumes are made waits for Docker's answer. A volume made late stayed.
+- A cancel that lands while the tracer stops, or while a failed metadata sidecar is removed, is no longer dropped.
+- A build whose progress ends with no image fails. It returned a tag that did not exist.
 
 ## [0.2.2] - 2026-11-10
 
