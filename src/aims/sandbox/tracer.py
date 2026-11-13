@@ -14,7 +14,7 @@ from aiodocker.containers import DockerContainer
 from aiodocker.execs import Exec as DockerExec
 from pydantic import JsonValue
 
-from aims.aio import shielded
+from aims.aio import settle, shielded
 from aims.sandbox.base import (
     TOOLBOX,
     Cache,
@@ -464,6 +464,11 @@ class Tracer:
         self._sequence.counted(ts, counts)
 
     async def stop(self) -> None:
+        """Stop reading and remove the tracer's container. A cancel waits for both to end and
+        is raised then."""
+        await settle(self._stop())
+
+    async def _stop(self) -> None:
         self.alive = False
         for task in (self._reader, self._skip_reader):
             if task is not None:

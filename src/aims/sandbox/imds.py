@@ -13,6 +13,7 @@ from typing import Any
 import aiodocker
 from aiodocker.containers import DockerContainer
 
+from aims.aio import settle
 from aims.sandbox.base import TOOLBOX
 from aims.sandbox.containers import create_container, remove_container
 from aims.sandbox.execs import open_stream
@@ -448,14 +449,22 @@ async def start(
             raise RuntimeError(f"the IMDS listener did not start: {''.join(logs)[-2000:]}")
         _check_follower(follower, name)
     except BaseException:
-        if follower is not None:
-            follower.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await follower
-        if attached is not None:
-            with contextlib.suppress(Exception):
-                await attached.close()
-        await remove_container(container)
+        await settle(_undo(container, attached, follower))
         raise
     assert follower is not None
     return ImdsServer(docker, container, log_path, follower)
+
+
+async def _undo(
+    container: DockerContainer, attached: Any, follower: asyncio.Task[None] | None
+) -> None:
+    """Remove what a start that failed made. It runs under `settle`, so a cancel of the caller
+    never lands in here."""
+    if follower is not None:
+        follower.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await follower
+    if attached is not None:
+        with contextlib.suppress(Exception):
+            await attached.close()
+    await remove_container(container)

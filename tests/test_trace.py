@@ -1567,3 +1567,29 @@ async def test_a_line_the_handler_fails_on_costs_one_record(
     ]
     assert tracer.unhandled == 1
     await tracer.stop()
+
+
+@pytest.mark.anyio
+async def test_a_cancel_while_the_tracer_stops_is_raised_once_it_has_stopped() -> None:
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    ending, release = asyncio.Event(), asyncio.Event()
+
+    async def read() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            ending.set()
+            await release.wait()
+            raise
+
+    reader = tracer._reader = asyncio.create_task(read())
+    await asyncio.sleep(0)
+    stop = asyncio.create_task(tracer.stop())
+    await ending.wait()
+    stop.cancel()
+    await asyncio.sleep(0)
+    assert not stop.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await stop
+    assert reader.done()
