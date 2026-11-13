@@ -346,6 +346,14 @@ _SUMMARY = scan.compile(
 _SUBTEST = r"(?:\[[^\]\n]*+\] )?(?:\([^)\n]*+\) )?SUB(X?)FAIL(?:ED)?\b"
 _SUBTEST_SUMMARY = scan.compile(rf"(?m)^{_SUBTEST}")
 _SUBTEST_PROGRESS = scan.compile(rf"(?m)^[^\s:]++::\S*+ {_SUBTEST}")
+# A progress line of a run that is not verbose: a file name at verbosity 0, a letter for each
+# outcome and how much of the run is done, as `tests/test_a.py ..F  [ 50%]` or `..uF  [ 3/10]`.
+# With -s, or the classic output style, pytest leaves out how much is done.
+_PROGRESS = scan.compile(
+    r"(?m)^(?:[^\s\[]++ )?(?P<letters>[.FEsxXRuy,\-]++) *+\[ *+(?P<done>\d++)(?:%|/(?P<of>\d++))\]$"
+)
+# The letters of tests, as against those of subtests, which pytest prints as u, y, - and `,`.
+_TESTS = ".FExX"
 _DURATION = scan.compile(r"(?m)^([\d.]+)s call\s+\S+")
 # How much of the end of a long output is read for the summary, which pytest prints last.
 SUMMARY_TAIL = 256 * 1024
@@ -357,11 +365,15 @@ class VerifierAnomaly(Base):
     identical test durations, or an exit 0 without the test runner's summary. With
     `report: pytest` it reads the output of the verifier command's exec as it finishes, before
     the score is written; without it, `tests` is checked against the score's `total` metric.
+    A pytest run that prints no summary, as one at -qq does, is read from the outcome letters
+    of its progress lines once they reach 100%. With -s pytest prints no percentage, so a run
+    at -qq -s still counts as one without a summary.
+
     pytest counts a failed subtest as a failed test. pytest 9 counts an xfailed one as an
     xfailed test unless its verbosity is 0. Those the output names are taken off the count."""
 
     name = "verifier_anomaly"
-    version = "3"
+    version = "4"
     types = frozenset({"exec.finished", "task.scored"})
 
     def __init__(self, setup: SignalSetup) -> None:
@@ -417,6 +429,17 @@ class VerifierAnomaly(Base):
         if len(durations) >= 3 and len(set(durations)) == 1:
             found.append(("same_durations", f"{len(durations)} tests each took {durations[0]}s"))
         summary = list(_SUMMARY.finditer(text))
+        progress = _PROGRESS.finditer(text)
+        done = [m for m in progress if _finished(m)]
+        last = summary[-1] if summary else None
+        if done and (last is None or done[-1].start() > last.start()):
+            # The last run printed no summary, as one at -qq does, and its progress reached the
+            # end. Its letters stand in for the summary.
+            letters = _letters(progress, last.end() if last else 0, done[-1].end())
+            skipped = letters.count("s") + letters.count("-")
+            if skipped:
+                found.append(("skips", f"tests were skipped: {skipped} on the progress lines"))
+            return sum(letters.count(c) for c in _TESTS)
         if not summary:
             if exit_code == 0:
                 found.append(("no_summary", "the verifier exited 0 without a pytest summary"))
@@ -436,6 +459,19 @@ class VerifierAnomaly(Base):
             if f"subtests {outcome}" not in line:
                 counts[outcome] = max(0, counts.get(outcome, 0) - n)
         return sum(counts.get(k, 0) for k in ("passed", "failed", "error", "xfailed", "xpassed"))
+
+
+def _finished(m: scan.Match) -> bool:
+    """Whether a progress line says the run is done: `[100%]`, or `[n/n]` in the count style."""
+    return m["done"] == m["of"] if m["of"] is not None else m["done"] == "100"
+
+
+def _letters(progress: Sequence[scan.Match], start: int, end: int) -> str:
+    """The outcome letters of the last run whose progress lines lie between `start` and `end`:
+    those after the line that ended a run before it, if any."""
+    lines = [m for m in progress if start <= m.start() and m.end() <= end]
+    ends = [i for i, m in enumerate(lines[:-1]) if _finished(m)]
+    return "".join(m["letters"] for m in lines[ends[-1] + 1 if ends else 0 :])
 
 
 def _subtests(text: str) -> dict[str, int]:

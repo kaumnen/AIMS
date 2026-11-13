@@ -1698,6 +1698,53 @@ async def test_verifier_anomaly_reads_real_pytest_summaries(
     assert {f.key for f in b.of("verifier_anomaly")} == found
 
 
+# Real pytest 9.2 output at -qq, which prints no summary line. Three tests, one skipped:
+QQ_PASSED = "..s" + " " * 70 + "[100%]\n"
+# 156 tests: 150 that pass, one that fails, one xfailed, one whose three subtests pass, fail and
+# pass before an xfailed and a skipped one, then a pass, a skip and an error. 155 ran.
+QQ_SHORT = (
+    "=========================== short test summary info ============================\n"
+    "FAILED tests/test_many.py::test_fail - assert False\n"
+    "SUBFAILED(i=1) tests/test_many.py::test_sub - assert 1 != 1\n"
+    "FAILED tests/test_many.py::test_sub - contains 1 failed subtest\n"
+    "ERROR tests/test_two.py::test_err - RuntimeError: x\n"
+)
+QQ = "." * 72 + " [ 46%]\n" + "." * 72 + " [ 92%]\n" + "......Fxuuuy-F.sE" + " " * 56 + "[100%]\n"
+QQ_COUNT = (
+    "." * 69 + " [ 69/156]\n" + "." * 69 + " [138/156]\n"
+    "............Fxuuuy-F.sE" + " " * 47 + "[156/156]\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("stdout", "exit_code", "tests", "found"),
+    [
+        ("..." + " " * 70 + "[100%]\n", 0, 3, set()),
+        (QQ_PASSED, 0, 2, {"skips"}),
+        (QQ_PASSED, 0, 3, {"skips", "fewer_tests"}),
+        (QQ + QQ_SHORT, 1, 155, {"skips"}),
+        (QQ + QQ_SHORT, 1, 156, {"skips", "fewer_tests"}),
+        (QQ_COUNT + QQ_SHORT, 1, 155, {"skips"}),
+        (SUBTESTS_QUIET + QQ_PASSED, 0, 2, {"skips"}),
+        (QQ_PASSED + "3 passed in 0.01s\n", 0, 3, set()),
+        ("..s\n", 0, 2, {"no_summary"}),
+        ("." * 72 + " [ 46%]\n", 0, 2, {"no_summary"}),
+    ],
+    ids=[
+        *("passed", "skips", "skips-fewer", "mixed", "mixed-fewer", "count-style"),
+        *("after-a-summary", "before-a-summary", "with-s", "cut-short"),
+    ],
+)
+async def test_verifier_anomaly_reads_the_progress_of_a_run_without_a_summary(
+    store: LocalEventStore, stdout: str, exit_code: int, tests: int, found: set[str]
+) -> None:
+    sc = scenario(verifier={"command": "pytest", "expect": {"tests": tests, "report": "pytest"}})
+    b = await bench(store, scenario=sc)
+    v = await b.exec("pytest", phase="verifier")
+    await b.finish(v, stdout=stdout, exit_code=exit_code)
+    assert {f.key for f in b.of("verifier_anomaly")} == found
+
+
 OUTPUT_LIMIT = 4 * 1024 * 1024
 
 
@@ -2384,6 +2431,31 @@ async def test_lines_like_a_pytest_header_or_summary_scan_in_linear_time(
     ids=["brackets", "parens", "msg-parens", "progress", "nodeid", "colons", "lines"],
 )
 async def test_lines_like_a_subtest_scan_in_linear_time(store: LocalEventStore, body: str) -> None:
+    sc = scenario(verifier={"command": "pytest", "expect": {"tests": 1, "report": "pytest"}})
+    b = await bench(store, scenario=sc)
+    v = await b.exec("pytest", phase="verifier")
+    blob = await b.content(body + "\n1 passed in 0.01s\n")
+    start = time.perf_counter()
+    await b.finish(v, stdout=blob)
+    assert time.perf_counter() - start < 0.5
+    assert b.of("verifier_anomaly") == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "." * LONG,
+        "." * LONG + " [" + " " * LONG,
+        "t.py " + "." * LONG + " [ 1",
+        "x " * (LONG // 2),
+        "t.py" * LONG + " [",
+        ". [ 1%]\n" * (LONG // 8),
+    ],
+    ids=["letters", "open-share", "file-and-share", "tokens", "file-name", "lines"],
+)
+async def test_lines_like_a_progress_line_scan_in_linear_time(
+    store: LocalEventStore, body: str
+) -> None:
     sc = scenario(verifier={"command": "pytest", "expect": {"tests": 1, "report": "pytest"}})
     b = await bench(store, scenario=sc)
     v = await b.exec("pytest", phase="verifier")
