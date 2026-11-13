@@ -130,6 +130,9 @@ class Box:
     def on_pre_exec(self, callback: Any) -> None:
         pass
 
+    def on_outside_pause(self, callback: Any) -> None:
+        pass
+
     def samples(self) -> None:
         return None
 

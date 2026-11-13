@@ -1,6 +1,6 @@
 import asyncio
 import re
-from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Annotated, Literal, Protocol, runtime_checkable
 
@@ -482,6 +482,11 @@ class Sandbox(Protocol):
     async def processes(self) -> list[Proc]: ...
 
     def records(self) -> asyncio.Queue[Record] | None: ...
+
+    def on_outside_pause(self, callback: Callable[[bool], Awaitable[None]]) -> None:
+        """Have `callback` awaited when the sandbox notices that something else paused it
+        (True) and when it sees that pause end (False)."""
+        ...
 
     def on_pre_exec(self, callback: Callable[[PreExec], None]) -> None:
         """Tell the backend where to send a file about to run, before its `Exec`."""

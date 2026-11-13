@@ -689,9 +689,11 @@ async def sleeps(sb: AuditedSandbox) -> list[str]:
     return [p.command for p in await sb.sandbox.processes() if "sleep 27" in p.command]
 
 
-async def sleeping(sb: AuditedSandbox, command: str = SLEEPS) -> asyncio.Task[Any]:
+async def sleeping(
+    sb: AuditedSandbox, command: str = SLEEPS, timeout_s: float = 60
+) -> asyncio.Task[Any]:
     """`command`, which runs `SLEEPS`, as an exec, once both sleeps are up."""
-    task = asyncio.create_task(sb.exec(command, timeout_s=60))
+    task = asyncio.create_task(sb.exec(command, timeout_s=timeout_s))
     async with asyncio.timeout(30):
         while True:
             if {"sleep 271", "sleep 272"} <= set(await sleeps(sb)):
@@ -913,7 +915,7 @@ async def test_an_exec_waits_out_a_pause_made_outside_aims(
     """With no pause of this sandbox to wait for, the exec waits until Docker says the
     container runs again. The wait does not count against its timeout, and a resume of the
     sandbox leaves the pause alone."""
-    _, sb = await sandbox(backend, store)
+    run_id, sb = await sandbox(backend, store)
     inner = sb.sandbox
     assert isinstance(inner, DockerSandbox)
     container = inner._container
@@ -936,6 +938,48 @@ async def test_an_exec_waits_out_a_pause_made_outside_aims(
     assert (result.finished.end, result.finished.exit_code) == ("exited", 0)
     assert result.stdout == b"ok\n"
     assert result.finished.duration_ms >= 2500
+    kinds = ["exec.started", "sandbox.outside_pause", "exec.finished"]
+    logged = await store.events(run_id, types=kinds)
+    assert [(e.type, e.data.get("state")) for e in logged] == [
+        ("exec.started", None),
+        ("sandbox.outside_pause", "paused"),
+        ("sandbox.outside_pause", "running"),
+        ("exec.finished", None),
+    ]
+    noticed, ended = logged[1].ts, logged[2].ts
+    assert (ended - noticed).total_seconds() >= 1.5
+
+
+async def test_an_exec_that_times_out_in_a_pause_made_outside_aims_says_so(
+    backend: DockerBackend, store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing tells AIMS of a pause that lands on a running exec. The exec's deadline runs
+    on, and the kill at its end is what Docker refuses."""
+    run_id, sb = await sandbox(backend, store)
+    inner = sb.sandbox
+    assert isinstance(inner, DockerSandbox)
+    container = inner._container
+    monkeypatch.setattr(docker_module, "DRAIN_S", 0.2)
+    try:
+        task = await sleeping(sb, timeout_s=3)
+        await container.pause()
+        async with asyncio.timeout(30):
+            result = await task
+        paused = inner.paused
+        await container.unpause()
+    finally:
+        with contextlib.suppress(aiodocker.DockerError):
+            await container.unpause()
+        await sb.close()
+
+    assert paused
+    f = result.finished
+    assert (f.end, f.error) == (
+        "timeout",
+        "its command may still run: the sandbox was paused outside AIMS",
+    )
+    states = [e.data["state"] for e in await store.events(run_id, types=["sandbox.outside_pause"])]
+    assert states == ["paused"]
 
 
 async def test_an_exec_paused_outside_aims_before_its_start_waits_too(

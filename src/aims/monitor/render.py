@@ -81,6 +81,7 @@ SKIP = frozenset(
         "run.finished",
         "sandbox.started",
         "sandbox.freeze_failed",
+        "sandbox.outside_pause",
         "sandbox.stopped",
         "sandbox.archived",
         "log.truncated",

@@ -384,6 +384,20 @@ class SandboxFreezeFailed(Payload):
     error: str
 
 
+class SandboxOutsidePause(Payload):
+    """Something other than AIMS paused the sandbox's container, such as `docker pause` on the
+    host, or that pause ended. `state` is what the container is in from here on.
+
+    AIMS notices such a pause only when Docker refuses an exec for it, so the container may
+    have been frozen for longer than the events say. An exec waits for the pause to end, and
+    the wait from the notice on does not count against its timeout."""
+
+    type = "sandbox.outside_pause"
+
+    sandbox_id: str
+    state: Literal["paused", "running"]
+
+
 class ExecStarted(Payload):
     """Written before the command reaches the sandbox. The argv sent is `wrapper + [command]`.
 

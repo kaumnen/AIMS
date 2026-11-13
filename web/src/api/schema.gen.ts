@@ -2782,7 +2782,7 @@ export interface components {
             next: string | null;
         };
         /** @enum {string} */
-        EventType: "agent.compacted" | "agent.finished" | "agent.held" | "agent.input" | "agent.report" | "agent.started" | "agent.step" | "audit.lost" | "audit.spill" | "cache.probe" | "channel.message" | "channel.read" | "channel.snapshot" | "exec.finished" | "exec.started" | "file.access" | "file.setattr" | "file.sync" | "file.write" | "fs.snapshot" | "ipc.event" | "log.truncated" | "mem.exec" | "model.checked" | "model.request" | "model.response" | "monitor.action" | "monitor.cleared" | "monitor.degraded" | "monitor.flag" | "monitor.sweep" | "monitor.verdict" | "net.connect" | "ns.event" | "operator.action" | "plant.triggered" | "proc.exec" | "proc.exit" | "proc.fork" | "proc.output" | "proc.signal" | "ptrace.event" | "replay.divergence" | "resource.sample" | "run.finished" | "run.started" | "sandbox.archived" | "sandbox.freeze_failed" | "sandbox.started" | "sandbox.stopped" | "score.answer" | "score.awareness" | "score.unexplained" | "score.unit" | "selftest.case" | "sys.denied" | "task.scored" | "tool.call" | "tool.result";
+        EventType: "agent.compacted" | "agent.finished" | "agent.held" | "agent.input" | "agent.report" | "agent.started" | "agent.step" | "audit.lost" | "audit.spill" | "cache.probe" | "channel.message" | "channel.read" | "channel.snapshot" | "exec.finished" | "exec.started" | "file.access" | "file.setattr" | "file.sync" | "file.write" | "fs.snapshot" | "ipc.event" | "log.truncated" | "mem.exec" | "model.checked" | "model.request" | "model.response" | "monitor.action" | "monitor.cleared" | "monitor.degraded" | "monitor.flag" | "monitor.sweep" | "monitor.verdict" | "net.connect" | "ns.event" | "operator.action" | "plant.triggered" | "proc.exec" | "proc.exit" | "proc.fork" | "proc.output" | "proc.signal" | "ptrace.event" | "replay.divergence" | "resource.sample" | "run.finished" | "run.started" | "sandbox.archived" | "sandbox.freeze_failed" | "sandbox.outside_pause" | "sandbox.started" | "sandbox.stopped" | "score.answer" | "score.awareness" | "score.unexplained" | "score.unit" | "selftest.case" | "sys.denied" | "task.scored" | "tool.call" | "tool.result";
         /** @description Each event type and the schema of its `data`. */
         EventTypes: {
             "agent.compacted": components["schemas"]["AgentCompacted"];
@@ -2833,6 +2833,7 @@ export interface components {
             "run.started": components["schemas"]["RunStarted"];
             "sandbox.archived": components["schemas"]["SandboxArchived"];
             "sandbox.freeze_failed": components["schemas"]["SandboxFreezeFailed"];
+            "sandbox.outside_pause": components["schemas"]["SandboxOutsidePause"];
             "sandbox.started": components["schemas"]["SandboxStarted"];
             "sandbox.stopped": components["schemas"]["SandboxStopped"];
             "score.answer": components["schemas"]["ScoreAnswer"];
@@ -6472,6 +6473,24 @@ export interface components {
              * @enum {string}
              */
             wanted: "frozen" | "running";
+        };
+        /**
+         * SandboxOutsidePause
+         * @description Something other than AIMS paused the sandbox's container, such as `docker pause` on the
+         *     host, or that pause ended. `state` is what the container is in from here on.
+         *
+         *     AIMS notices such a pause only when Docker refuses an exec for it, so the container may
+         *     have been frozen for longer than the events say. An exec waits for the pause to end, and
+         *     the wait from the notice on does not count against its timeout.
+         */
+        SandboxOutsidePause: {
+            /** Sandbox Id */
+            sandbox_id: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "paused" | "running";
         };
         /** SandboxStarted */
         SandboxStarted: {
@@ -14368,7 +14387,7 @@ export const costFiguresTierValues: ReadonlyArray<FlattenedDeepRequired<componen
 export const deltaMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["DeltaMessage"]["kind"]> = ["delta"];
 export const deltasDroppedMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["DeltasDroppedMessage"]["kind"]> = ["deltas_dropped"];
 export const endMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EndMessage"]["kind"]> = ["end"];
-export const eventTypeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventType"]> = ["agent.compacted", "agent.finished", "agent.held", "agent.input", "agent.report", "agent.started", "agent.step", "audit.lost", "audit.spill", "cache.probe", "channel.message", "channel.read", "channel.snapshot", "exec.finished", "exec.started", "file.access", "file.setattr", "file.sync", "file.write", "fs.snapshot", "ipc.event", "log.truncated", "mem.exec", "model.checked", "model.request", "model.response", "monitor.action", "monitor.cleared", "monitor.degraded", "monitor.flag", "monitor.sweep", "monitor.verdict", "net.connect", "ns.event", "operator.action", "plant.triggered", "proc.exec", "proc.exit", "proc.fork", "proc.output", "proc.signal", "ptrace.event", "replay.divergence", "resource.sample", "run.finished", "run.started", "sandbox.archived", "sandbox.freeze_failed", "sandbox.started", "sandbox.stopped", "score.answer", "score.awareness", "score.unexplained", "score.unit", "selftest.case", "sys.denied", "task.scored", "tool.call", "tool.result"];
+export const eventTypeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventType"]> = ["agent.compacted", "agent.finished", "agent.held", "agent.input", "agent.report", "agent.started", "agent.step", "audit.lost", "audit.spill", "cache.probe", "channel.message", "channel.read", "channel.snapshot", "exec.finished", "exec.started", "file.access", "file.setattr", "file.sync", "file.write", "fs.snapshot", "ipc.event", "log.truncated", "mem.exec", "model.checked", "model.request", "model.response", "monitor.action", "monitor.cleared", "monitor.degraded", "monitor.flag", "monitor.sweep", "monitor.verdict", "net.connect", "ns.event", "operator.action", "plant.triggered", "proc.exec", "proc.exit", "proc.fork", "proc.output", "proc.signal", "ptrace.event", "replay.divergence", "resource.sample", "run.finished", "run.started", "sandbox.archived", "sandbox.freeze_failed", "sandbox.outside_pause", "sandbox.started", "sandbox.stopped", "score.answer", "score.awareness", "score.unexplained", "score.unit", "selftest.case", "sys.denied", "task.scored", "tool.call", "tool.result"];
 export const eventsMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventsMessage"]["kind"]> = ["events"];
 export const execFinishedEndValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ExecFinished"]["end"]> = ["exited", "timeout", "cancelled", "failed"];
 export const execStartedAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ExecStarted"]["audit"]> = ["kernel", "snapshot"];
@@ -14458,6 +14477,7 @@ export const runnerHealthMessageKindValues: ReadonlyArray<FlattenedDeepRequired<
 export const runnerHelloKindsValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunnerHello"]["kinds"]> = ["scenario", "models.check", "monitor", "score", "selftest"];
 export const runnerInfoKindsValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunnerInfo"]["kinds"]> = ["scenario", "models.check", "monitor", "score", "selftest"];
 export const sandboxFreezeFailedWantedValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["SandboxFreezeFailed"]["wanted"]> = ["frozen", "running"];
+export const sandboxOutsidePauseStateValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["SandboxOutsidePause"]["state"]> = ["paused", "running"];
 export const sandboxStartedAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["SandboxStarted"]["audit"]> = ["kernel", "snapshot"];
 export const sandboxStoppedReasonValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["SandboxStopped"]["reason"]> = ["closed", "killed", "exec_failed"];
 export const scenarioInfoOversightAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScenarioInfo"]["oversight"]> = ["observe", "autonomous", "human"];

@@ -3148,6 +3148,7 @@
           "run.started",
           "sandbox.archived",
           "sandbox.freeze_failed",
+          "sandbox.outside_pause",
           "sandbox.started",
           "sandbox.stopped",
           "score.answer",
@@ -3309,6 +3310,9 @@
           "sandbox.freeze_failed": {
             "$ref": "#/components/schemas/SandboxFreezeFailed"
           },
+          "sandbox.outside_pause": {
+            "$ref": "#/components/schemas/SandboxOutsidePause"
+          },
           "sandbox.started": {
             "$ref": "#/components/schemas/SandboxStarted"
           },
@@ -3392,6 +3396,7 @@
           "run.started",
           "sandbox.archived",
           "sandbox.freeze_failed",
+          "sandbox.outside_pause",
           "sandbox.started",
           "sandbox.stopped",
           "score.answer",
@@ -12745,6 +12750,30 @@
           "error"
         ],
         "title": "SandboxFreezeFailed",
+        "type": "object"
+      },
+      "SandboxOutsidePause": {
+        "additionalProperties": false,
+        "description": "Something other than AIMS paused the sandbox's container, such as `docker pause` on the\nhost, or that pause ended. `state` is what the container is in from here on.\n\nAIMS notices such a pause only when Docker refuses an exec for it, so the container may\nhave been frozen for longer than the events say. An exec waits for the pause to end, and\nthe wait from the notice on does not count against its timeout.",
+        "properties": {
+          "sandbox_id": {
+            "title": "Sandbox Id",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "paused",
+              "running"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sandbox_id",
+          "state"
+        ],
+        "title": "SandboxOutsidePause",
         "type": "object"
       },
       "SandboxStarted": {

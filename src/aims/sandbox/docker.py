@@ -542,6 +542,7 @@ class DockerSandbox:
         self._running = asyncio.Event()
         self._running.set()
         self._outside = False
+        self._on_outside: Callable[[bool], Awaitable[None]] | None = None
         self._deadlines: dict[asyncio.Timeout, float | None] = {}
 
     @classmethod
@@ -801,6 +802,7 @@ class DockerSandbox:
             )
             self._outside = True
             self._frozen()
+            await self._tell_outside(True)
             return True
 
     async def _thaw(self) -> None:
@@ -817,6 +819,17 @@ class DockerSandbox:
                 async with self._freeze:
                     if self._outside and await self._paused_in_docker() is False:
                         self._thawed()
+                        await self._tell_outside(False)
+
+    async def _tell_outside(self, paused: bool) -> None:
+        if self._on_outside is None:
+            return
+        try:
+            await self._on_outside(paused)
+        except Exception as e:
+            log.warning(
+                "could not record the outside pause of sandbox %s: %s", self._container.id[:12], e
+            )
 
     async def _end(
         self,
@@ -877,6 +890,8 @@ class DockerSandbox:
             log.warning(
                 "could not end %s in %s, so its command may still run: %s", what, sandbox, e
             )
+            if _conflict(e, "is paused") and await self._paused_outside():
+                return "the sandbox was paused outside AIMS"
             return f"{type(e).__name__}: {e}"
 
     async def processes(self) -> list[Proc]:
@@ -896,6 +911,9 @@ class DockerSandbox:
     def on_pre_exec(self, callback: Callable[[PreExec], None]) -> None:
         if self._route is not None:
             self._route.pre_exec = callback
+
+    def on_outside_pause(self, callback: Callable[[bool], Awaitable[None]]) -> None:
+        self._on_outside = callback
 
     def samples(self) -> asyncio.Queue[Sample | Lost] | None:
         return None if self._watch is None else self._watch.queue

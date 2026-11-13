@@ -169,6 +169,9 @@ class FakeSandbox:
     def on_pre_exec(self, callback: Callable[[PreExec], None]) -> None:
         pass
 
+    def on_outside_pause(self, callback: Any) -> None:
+        pass
+
     async def pause(self) -> None:
         pass
 

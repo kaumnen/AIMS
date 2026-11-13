@@ -66,6 +66,10 @@ export function summary(e: Event): string {
       return heldText(str(d["kind"]));
     case "sandbox.freeze_failed":
       return `did not ${str(d["wanted"]) === "frozen" ? "freeze" : "unfreeze"}: ${str(d["error"]) ?? ""}`;
+    case "sandbox.outside_pause":
+      return str(d["state"]) === "paused"
+        ? "paused from outside AIMS"
+        : "the pause from outside AIMS ended";
     case "monitor.action": {
       const agents = Array.isArray(d["agents"]) ? d["agents"].join(", ") : "";
       const simulated = d["simulated"] === true ? " (simulated)" : "";

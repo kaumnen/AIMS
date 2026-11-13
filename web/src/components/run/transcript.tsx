@@ -33,6 +33,7 @@ const noteLabels: Record<string, string> = {
   "agent.compacted": "Compacted",
   "agent.held": "Held",
   "sandbox.freeze_failed": "Sandbox",
+  "sandbox.outside_pause": "Sandbox",
 };
 
 // Importance 3 to 5 is likely to clear misbehaviour, so it reads red, like the runs list.

@@ -52,6 +52,7 @@ from aims.events import (
     PtraceEvent,
     SandboxArchived,
     SandboxFreezeFailed,
+    SandboxOutsidePause,
     SandboxStarted,
     SandboxStopped,
     SysDenied,
@@ -359,6 +360,7 @@ class AuditedSandbox:
             started = True
             audited._queue = sandbox.records()
             sandbox.on_pre_exec(audited._on_pre_exec)
+            sandbox.on_outside_pause(audited._outside_pause)
             if audited._queue is not None:
                 audited._consumer = asyncio.create_task(audited._consume(audited._queue))
             await audited._append(await audited._files(None, always=True))
@@ -549,6 +551,11 @@ class AuditedSandbox:
                 error = e
         assert error is not None
         return await self._not("running", error)
+
+    async def _outside_pause(self, paused: bool) -> None:
+        state: Literal["paused", "running"] = "paused" if paused else "running"
+        sandbox_id = self.sandbox.info.sandbox_id
+        await self._append([SandboxOutsidePause(sandbox_id=sandbox_id, state=state)])
 
     async def _not(self, wanted: Literal["frozen", "running"], error: Exception) -> str:
         text = scrub(str(error)) or type(error).__name__
