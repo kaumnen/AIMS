@@ -36,7 +36,7 @@ from aims.sandbox.base import (
     check_name,
 )
 from aims.sandbox.containers import create_container, remove_container
-from aims.sandbox.execs import DockerClient, lost_socket, open_stream, streamed
+from aims.sandbox.execs import DockerClient, lost_socket, open_stream, refused, streamed
 from aims.sandbox.images import (
     KEEP_DAYS,
     LockError,
@@ -706,11 +706,13 @@ class DockerSandbox:
 
         async def open_() -> Any:
             nonlocal sent
+            start = exe.start(detach=False)
             try:
-                return await open_stream(exe.start(detach=False), on_send=sending)
-            except aiodocker.DockerError:
-                # The daemon answered, and not with a started exec.
-                sent = False
+                return await open_stream(start, on_send=sending)
+            except aiodocker.DockerError as e:
+                if refused(start, e):
+                    # The daemon answered, and not with a started exec.
+                    sent = False
                 raise
 
         try:

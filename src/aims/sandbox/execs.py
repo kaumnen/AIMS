@@ -82,6 +82,13 @@ def lost_socket(stream: Stream) -> bool:
     return connection is not None and connection.transport is None
 
 
+def refused(stream: Stream, error: aiodocker.DockerError) -> bool:
+    """Whether `error`, raised by `open_stream(stream)`, is the daemon's refusal of the call: an
+    error status it answered with, before it started anything. A cut, or a daemon that could not
+    be reached, may come after the call took effect."""
+    return stream._resp is None and 400 <= error.status < 600
+
+
 class _Marked(BytesPayload):
     """A request body that calls `on_write` before any of it is written."""
 

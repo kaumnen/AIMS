@@ -32,7 +32,7 @@ from aims.sandbox import (
 )
 from aims.sandbox.base import TOOLBOX, Capture
 from aims.sandbox.docker import _helper
-from aims.sandbox.execs import DockerClient, open_stream
+from aims.sandbox.execs import DockerClient, open_stream, refused
 from aims.sandbox.reader import stream_archive
 
 pytestmark = pytest.mark.anyio
@@ -95,6 +95,9 @@ class Daemon:
             if kind in self.cut:
                 return False
             writer.write(b"0\r\n\r\n")
+            return True
+        if path == f"exec/{name}/start" and "refuse" in self.cut:
+            self.reply(writer, "409 Conflict", {"message": "Container c1 is paused"})
             return True
         if path == f"exec/{name}/start":
             writer.write(b"HTTP/1.1 101 UPGRADED\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
@@ -282,6 +285,29 @@ async def test_an_exec_whose_stream_the_daemon_cuts_fails_and_stops_the_sandbox(
         assert daemon.calls.index("POST exec/e2/start") < daemon.calls.index(
             "POST containers/c1/kill"
         )
+
+
+@pytest.mark.parametrize("cut", ["refuse", "open"])
+async def test_only_an_error_answer_counts_as_a_refused_exec_start(
+    cut: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A start the daemon refuses did nothing. One cut after its request went out, here as the
+    socket is set up, may have started the exec."""
+    real = trsock.TransportSocket.setsockopt
+
+    def setsockopt(self: Any, *args: Any) -> None:
+        if cut == "open" and args[1] == socket.SO_KEEPALIVE:
+            raise OSError(errno.EINVAL, "Invalid argument")
+        real(self, *args)
+
+    monkeypatch.setattr(trsock.TransportSocket, "setsockopt", setsockopt)
+    sent: list[bool] = []
+    async with serving({cut}) as (_, docker):
+        stream = Exec(docker, "e1", False).start(detach=False)
+        with pytest.raises(aiodocker.DockerError) as caught:
+            await open_stream(stream, on_send=lambda: sent.append(True))
+    assert sent == [True]
+    assert refused(stream, caught.value) == (cut == "refuse")
 
 
 async def test_an_exec_stream_whose_socket_closes_as_it_opens_raises_a_docker_error(
