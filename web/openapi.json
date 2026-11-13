@@ -17958,7 +17958,7 @@
     },
     "/api/runs/{run_id}": {
       "delete": {
-        "description": "Delete a run with the runs `run_dependents` lists: their logs, blobs, truth files,\nlabels and every row of them. Refused while one of them runs or a queued or active job runs\nor reads one. `force` deletes runs that look abandoned: marked running, or held by a job,\non a runner that is offline. A runner that still holds one never ships it back.",
+        "description": "Delete a run with the runs `run_dependents` lists: their logs, blobs, truth files,\nlabels and every row of them. Refused while one of them runs or a queued or active job runs\nor reads one. `force` deletes runs that look abandoned: marked running, or held by a job,\non a runner that is offline. A runner that still holds one never ships it back. While the\nindex does not hold one of them yet, as while another process rebuilds it, the answer is\n503 with a Retry-After, forced or not: the list may lack runs.",
         "operationId": "delete_run",
         "parameters": [
           {

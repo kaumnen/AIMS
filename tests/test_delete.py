@@ -250,6 +250,42 @@ async def test_a_run_whose_runner_is_offline_goes_only_with_force(
         assert (r.status_code, r.json()["code"]) == (409, "in_use")
 
 
+async def test_a_delete_waits_while_the_index_does_not_hold_the_runs_made_from_it(
+    cp: CP, local: LocalEventStore, runner: FakeRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with monkeypatch.context() as m:
+        m.setattr(event_store, "now", lambda: back(10))
+        run = await made(cp, local, runner)
+    review = await made(cp, local, runner, kind="monitor", origin=run)
+    score = await made(cp, local, runner, kind="score", origin=run, monitor=review)
+    other = await Index.open(cp.state.store.root / event_store.INDEX)
+    try:
+        await other.reset()
+    finally:
+        await other.close()
+    # another process rebuilds the index and has got as far as the first run
+    await cp.state.store._index_log(run)
+    async with cp.client(cp.operator) as c:
+        for force in ("false", "true"):
+            r = await c.delete(f"/api/runs/{run}", params={"force": force})
+            assert r.status_code == 503, r.text
+            assert (r.headers["retry-after"], r.json()["code"]) == ("1", "indexing")
+        r = await c.get(f"/api/runs/{run}/dependents")
+        assert r.status_code == 503, r.text
+        assert await retention.prune(cp.state, 5) == []
+        # rows of runs older than the cut that the index does not hold are no rows that never
+        # started
+        later = time.time() + 30 * 86400
+        monkeypatch.setattr(retention, "time", SimpleNamespace(time=lambda: later))
+        assert await retention.prune(cp.state, 5) == []
+        monkeypatch.undo()
+        await cp.state.store.sync()
+        r = await c.get(f"/api/runs/{run}/dependents")
+        assert {d["run_id"] for d in r.json()["runs"]} == {review, score}
+        r = await c.delete(f"/api/runs/{run}")
+        assert sorted(r.json()["run_ids"]) == sorted([run, review, score])
+
+
 async def test_a_run_whose_folder_went_before_its_rows_reads_as_unknown(
     cp: CP, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:

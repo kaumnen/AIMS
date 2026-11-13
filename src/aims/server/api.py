@@ -500,18 +500,22 @@ def hidden(principal: Principal) -> tuple[str, ...]:
 INDEXING_RETRY_S = 1
 
 
+def _indexing(why: str) -> ProblemException:
+    return ProblemException(
+        503,
+        "Unavailable",
+        f"{why}; ask again soon",
+        code="indexing",
+        headers={"Retry-After": str(INDEXING_RETRY_S)},
+    )
+
+
 def _no_run(state: ServerState, run_id: str) -> ProblemException:
     """What a read answers for a run the index does not hold: 503 with a Retry-After when the
     run's log is here, as while another process rebuilds the index, which empties it for a
     while, or while the index is behind the log; else 404."""
     if state.store.logged(run_id):
-        return ProblemException(
-            503,
-            "Unavailable",
-            f"run {run_id} is not indexed yet; ask again soon",
-            code="indexing",
-            headers={"Retry-After": str(INDEXING_RETRY_S)},
-        )
+        return _indexing(f"run {run_id} is not indexed yet")
     return ProblemException(404, "Not found", f"no run {run_id}")
 
 
@@ -659,9 +663,12 @@ class Deleted(Out):
 
 
 async def _family(state: ServerState, run_id: str) -> retention.Family:
+    """The runs a delete of `run_id` takes, 503 while the index may not list them all."""
     found = await retention.family(state, _run_id(run_id))
     if found is None:
         raise _no_run(state, run_id)
+    if found.indexing is not None:
+        raise _indexing(found.indexing)
     return found
 
 
@@ -684,7 +691,9 @@ async def delete_run(
     """Delete a run with the runs `run_dependents` lists: their logs, blobs, truth files,
     labels and every row of them. Refused while one of them runs or a queued or active job runs
     or reads one. `force` deletes runs that look abandoned: marked running, or held by a job,
-    on a runner that is offline. A runner that still holds one never ships it back."""
+    on a runner that is offline. A runner that still holds one never ships it back. While the
+    index does not hold one of them yet, as while another process rebuilds it, the answer is
+    503 with a Retry-After, forced or not: the list may lack runs."""
     async with state.delete_lock:
         found = await _family(state, run_id)
         if found.blocked is not None:

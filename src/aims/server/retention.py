@@ -6,6 +6,7 @@ abandoned: only a forced delete takes it. A deleted run stays deleted, so a runn
 holds it is refused and drops its copy."""
 
 import asyncio
+import json
 import logging
 import time
 from collections.abc import Mapping
@@ -13,6 +14,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from aims.events import RunCorrupt
+from aims.events.chain import ChainError, Head
 from aims.events.schema import format_ts
 from aims.server.state import ServerState
 
@@ -26,12 +29,15 @@ REMOVE_WAIT_S = 0.1
 class Family:
     """Run `run_id` and every run made from it, each with its kind, the run first. `blocked`
     says why a delete is refused now, even forced. `offline` says why it needs force: a run of
-    it is marked running, or a job of it held, by a runner that is not connected."""
+    it is marked running, or a job of it held, by a runner that is not connected. `indexing`
+    says why `runs` may lack some: a run of it, or one made from it, has a log here the index
+    does not hold yet, as while another process rebuilds the index."""
 
     run_id: str
     runs: dict[str, str]
     blocked: str | None
     offline: str | None = None
+    indexing: str | None = None
 
 
 def reads(payload: Mapping[str, Any]) -> set[str]:
@@ -48,8 +54,14 @@ def reads(payload: Mapping[str, Any]) -> set[str]:
     return out
 
 
-async def family(state: ServerState, run_id: str) -> Family | None:
-    """None when the control plane holds no run or job `run_id`."""
+async def family(
+    state: ServerState, run_id: str, unindexed: Mapping[str, set[str]] | None = None
+) -> Family | None:
+    """None when the control plane holds no run or job `run_id`. `unindexed` is what
+    `_unindexed` read before the call, or is read here first: read before the index is asked,
+    a run that a rebuild indexes meanwhile is in it or in what the index lists."""
+    if unindexed is None:
+        unindexed = await _unindexed(state)
     info = await state.store.run(run_id)
     if info is not None:
         kind: str = info.kind
@@ -66,7 +78,39 @@ async def family(state: ServerState, run_id: str) -> Family | None:
         for r, k in found:
             runs.setdefault(r, k)
     blocked, offline = await _check(state, runs)
-    return Family(run_id, runs, blocked, offline)
+    behind = [r for r, made in unindexed.items() if r in runs or made & runs.keys()]
+    behind += [r for r in runs if await _unheld(state, r)]
+    indexing = f"run {behind[0]} is not indexed yet" if behind else None
+    return Family(run_id, runs, blocked, offline, indexing)
+
+
+async def _unheld(state: ServerState, run_id: str) -> bool:
+    """Whether the run has a log here the index does not hold."""
+    try:
+        return await state.store.head(run_id) is None and state.store.logged(run_id)
+    except RunCorrupt:
+        return False
+
+
+async def _unindexed(state: ServerState) -> dict[str, set[str]]:
+    """Each run with a log here the index does not hold, with the runs it was made from."""
+    return {r: await _made_of(state, r) for r in state.store.run_ids() if await _unheld(state, r)}
+
+
+async def _made_of(state: ServerState, run_id: str) -> set[str]:
+    """The runs the first event in a run's log names it made from, as `made_from` reads them
+    from the index: its origin and the monitor run a score reads the flags of. Empty for a
+    first line that does not read, as the index cannot take that run either."""
+    try:
+        lines, _ = await state.store.lines(run_id, Head(), upto=0, max_events=1)
+        data = json.loads(lines[0])["data"] if lines else None
+    except OSError, KeyError, TypeError, ValueError, ChainError:
+        return set()
+    if not isinstance(data, dict):
+        return set()
+    config = data.get("config")
+    named = [data.get("origin"), config.get("monitor") if isinstance(config, dict) else None]
+    return {r for r in named if isinstance(r, str)}
 
 
 def holder(state: ServerState, run_id: str, runner: str | None) -> str | None:
@@ -135,6 +179,7 @@ async def _remove(state: ServerState, run_id: str) -> None:
 async def prune(state: ServerState, days: float) -> list[str]:
     """Delete the runs that ended more than `days` ago, each with its family. The rows of runs
     that never started go once they are as old. A family in use stays. Returns what went."""
+    unindexed = await _unindexed(state)
     cutoff = time.time() - days * 86400
     roots = await state.store.ended_before(format_ts(datetime.fromtimestamp(cutoff, UTC)))
     for run_id in await state.db.ended_before(cutoff):
@@ -145,8 +190,13 @@ async def prune(state: ServerState, days: float) -> list[str]:
         if root in out:
             continue
         async with state.delete_lock:
-            found = await family(state, root)
-            if found is not None and (why := found.blocked or found.offline):
+            found = await family(state, root, unindexed)
+            if found is None:
+                # a run with a log started, though the index does not hold it yet
+                why = f"run {root} is not indexed yet" if state.store.logged(root) else None
+            else:
+                why = found.blocked or found.offline or found.indexing
+            if why is not None:
                 log.info("kept run %s: %s", root, why)
                 continue
             gone = {root: ""} if found is None else found.runs

@@ -322,7 +322,9 @@ export interface paths {
          * @description Delete a run with the runs `run_dependents` lists: their logs, blobs, truth files,
          *     labels and every row of them. Refused while one of them runs or a queued or active job runs
          *     or reads one. `force` deletes runs that look abandoned: marked running, or held by a job,
-         *     on a runner that is offline. A runner that still holds one never ships it back.
+         *     on a runner that is offline. A runner that still holds one never ships it back. While the
+         *     index does not hold one of them yet, as while another process rebuilds it, the answer is
+         *     503 with a Retry-After, forced or not: the list may lack runs.
          */
         delete: operations["delete_run"];
         options?: never;
