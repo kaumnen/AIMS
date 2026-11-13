@@ -472,6 +472,77 @@ async def test_a_run_that_cannot_be_scored_says_why(cp: CP, local: LocalEventSto
         await fake.close()
 
 
+async def shipped_for_score(cp: CP, local: LocalEventStore, fake: FakeRunner) -> str:
+    """A run whose job asked for a score, sealed, shipped and still without its truth file."""
+    async with cp.client(cp.operator) as c:
+        (run_id,) = (await c.post("/api/runs", json=body(score=True))).json()["run_ids"]
+    offer = await fake.next(OfferMessage)
+    assert await fake.client.claim(offer.run_id) is not None
+    first, blobs = started(cp)
+    first = first.model_copy(update={"truth": truth.digest(RECORD)})
+    await local.create_run(first, blobs=blobs, run_id=run_id)
+    await local.append(run_id, [call(1), Draft(RunFinished(status="completed"))])
+    await ship(local, fake.client, run_id)
+    return run_id
+
+
+@pytest.mark.parametrize("lost", ["run", "head"])
+async def test_a_score_waits_while_the_index_does_not_hold_its_run(
+    cp: CP, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch, lost: str
+) -> None:
+    """Another process rebuilds the index as the truth file arrives: the run's log is here and
+    the index lacks it for a moment. The score waits for it, then queues."""
+    monkeypatch.setattr(score_api, "INDEXED_POLL_S", 0.01)
+    fake = ScoreRunner(cp, "scorer", envs=["MODEL_API_KEY"])
+    await fake.connect()
+    try:
+        run_id = await shipped_for_score(cp, local, fake)
+        store = cp.state.store
+        real = getattr(store, lost)
+        misses = [run_id] * 3
+
+        async def behind(asked: str) -> Any:
+            if asked in misses:
+                misses.remove(asked)
+                return None
+            return await real(asked)
+
+        monkeypatch.setattr(store, lost, behind)
+        await fake.client.put_truth(run_id, truth.encode(RECORD))
+        assert misses == []
+        scores = await cp.state.db.jobs_page(before=None, limit=10, kind="score")
+        assert [(j.payload["origin"], j.state, j.reason) for j in scores] == [
+            (run_id, "queued", None)
+        ]
+    finally:
+        await fake.close()
+
+
+async def test_a_score_that_waited_too_long_for_the_index_says_why(
+    cp: CP, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(score_api, "INDEXED_POLL_S", 0.01)
+    monkeypatch.setattr(score_api, "INDEXED_WAIT_S", 0.1)
+    fake = ScoreRunner(cp, "scorer", envs=["MODEL_API_KEY"])
+    await fake.connect()
+    try:
+        run_id = await shipped_for_score(cp, local, fake)
+        store = cp.state.store
+        head = store.head
+
+        async def never(asked: str) -> Any:
+            return None if asked == run_id else await head(asked)
+
+        monkeypatch.setattr(store, "head", never)
+        await fake.client.put_truth(run_id, truth.encode(RECORD))
+        scores = await cp.state.db.jobs_page(before=None, limit=10, kind="score")
+        assert [(j.payload["origin"], j.state, j.reason) for j in scores] == [
+            (run_id, "done", f"run {run_id} is not indexed yet; ask again soon")
+        ]
+    finally:
+        await fake.close()
+
+
 async def test_a_score_that_fails_to_queue_keeps_the_truth_file(
     cp: CP, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:

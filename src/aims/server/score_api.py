@@ -87,41 +87,77 @@ async def score_run(
     return started
 
 
+# How long a score that a run's job asked for waits for the index to hold the run, as while
+# another process rebuilds the index. INDEXED_POLL_S is how often it looks. The runner's upload
+# of the truth file waits as long; its client gives up after 60 s.
+INDEXED_WAIT_S = 30.0
+INDEXED_POLL_S = 0.5
+
+
 async def score_after(state: ServerState, run_id: str) -> None:
     """Queue a score of a run whose job asked for one, now that its truth file is here, as
-    `aims run --score` does; a cancelled run is not scored. A score that cannot queue is kept
-    as a score job that ended before it started, with the reason."""
+    `aims run --score` does; a cancelled run is not scored. While the run's log is here and the
+    index does not hold it, the score waits up to INDEXED_WAIT_S. A score that cannot queue is
+    kept as a score job that ended before it started, with the reason."""
     job = await state.db.job(run_id)
     if job is None or not job.payload.get("options", {}).get("score"):
         return
-    info = await state.store.run(run_id)
-    if info is None or info.status == "cancelled":
-        return
-    try:
-        await queue_score(state, job.token, run_id, StartScore())
-    except ProblemException as e:
-        log.warning("run %s was not scored: %s", run_id, e)
-        now = time.time()
-        row = sdb.Job(
-            run_id=str(uuid.uuid7()),
-            group=None,
-            parallel=None,
-            state="done",
-            payload={"kind": "score", "origin": run_id, "scenario": info.scenario},
-            needs={},
-            target=None,
-            runner=None,
-            offered_at=None,
-            tried=[],
-            token=job.token,
-            created=now,
-            updated=now,
-            reason=str(e),
-        )
-        await state.db.add_jobs([row])
-        state.touch_job(row)
-    except Exception:
-        log.exception("scoring run %s failed", run_id)
+    end = time.monotonic() + INDEXED_WAIT_S
+    while True:
+        info = await state.store.run(run_id)
+        if info is None and not state.store.logged(run_id):
+            return
+        if info is not None and info.status == "cancelled":
+            return
+        try:
+            if info is None:
+                raise _no_run(state, run_id)
+            await queue_score(state, job.token, run_id, StartScore())
+            return
+        except ProblemException as e:
+            late = time.monotonic() >= end or state.stopping.is_set()
+            if e.problem.code != "indexing" or late:
+                scenario = info.scenario if info is not None else _scenario_name(job)
+                await _unqueued(state, job, run_id, scenario, e)
+                return
+        except Exception:
+            log.exception("scoring run %s failed", run_id)
+            return
+        await asyncio.sleep(INDEXED_POLL_S)
+
+
+async def _unqueued(
+    state: ServerState, job: sdb.Job, run_id: str, scenario: str | None, e: ProblemException
+) -> None:
+    """Keep a score of run `run_id` that could not queue as a score job that ended before it
+    started, with the reason."""
+    log.warning("run %s was not scored: %s", run_id, e)
+    now = time.time()
+    row = sdb.Job(
+        run_id=str(uuid.uuid7()),
+        group=None,
+        parallel=None,
+        state="done",
+        payload={"kind": "score", "origin": run_id, "scenario": scenario},
+        needs={},
+        target=None,
+        runner=None,
+        offered_at=None,
+        tried=[],
+        token=job.token,
+        created=now,
+        updated=now,
+        reason=str(e),
+    )
+    await state.db.add_jobs([row])
+    state.touch_job(row)
+
+
+def _scenario_name(job: sdb.Job) -> str | None:
+    """The name of the scenario a job runs, from its payload."""
+    snap = job.payload.get("scenario")
+    name = snap.get("name") if isinstance(snap, dict) else snap
+    return name if isinstance(name, str) else None
 
 
 async def queue_score(
