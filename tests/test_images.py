@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import errno
 import fcntl
 import gzip
 import importlib.util
@@ -9,6 +10,7 @@ import logging
 import os
 import re
 import socket
+import stat
 import subprocess
 import sys
 import tarfile
@@ -142,7 +144,7 @@ async def test_a_build_or_pull_whose_progress_ends_with_no_image_raises(call: st
 def held(tag: str) -> bool:
     """Whether a build of `tag` holds the host lock now."""
     try:
-        fd = os.open(images._lock_path(tag), os.O_RDWR)
+        fd = os.open(images._lock_path(tag), os.O_RDONLY)
     except FileNotFoundError:
         return False
     try:
@@ -228,6 +230,53 @@ async def test_a_waiter_whose_lock_file_went_waits_for_the_next_holder(lock_dir:
     await asyncio.gather(waiter, newcomer)
     assert most == 1
     assert os.listdir(lock_dir) == []
+
+
+async def test_a_build_lock_file_is_one_every_user_can_lock(lock_dir: Path) -> None:
+    """A lock needs only a read-only fd, so the file is readable by all, whatever the umask."""
+    mask = os.umask(0o077)
+    try:
+        async with images._host_lock("aims-env:users"):
+            found = os.lstat(images._lock_path("aims-env:users"))
+    finally:
+        os.umask(mask)
+    assert stat.S_ISREG(found.st_mode)
+    assert stat.S_IMODE(found.st_mode) == 0o644
+
+
+async def test_a_build_lock_file_another_user_left_is_locked(
+    lock_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """This user cannot write another user's file, and Linux's fs.protected_regular refuses an
+    open with O_CREAT of it in a sticky folder such as /tmp."""
+    path = images._lock_path("aims-env:users")
+    path.touch()
+    path.chmod(0o444)
+    real = os.open
+
+    def protected(file: Any, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
+        if flags & os.O_CREAT and not flags & os.O_EXCL and os.path.lexists(file):
+            raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(file))
+        return real(file, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", protected)
+    async with images._host_lock("aims-env:users"):
+        assert held("aims-env:users")
+
+
+async def test_a_build_lock_never_follows_a_symlink(lock_dir: Path) -> None:
+    path = images._lock_path("aims-env:link")
+    target = lock_dir / "target"
+    path.symlink_to(target)
+
+    async def lock() -> None:
+        async with images._host_lock("aims-env:link"):
+            pass
+
+    with pytest.raises(OSError, match=os.strerror(errno.ELOOP)):
+        await lock()
+    assert not target.exists()
+    assert path.is_symlink()
 
 
 RACE = """

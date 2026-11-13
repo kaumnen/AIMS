@@ -266,7 +266,8 @@ def _lock_path(tag: str) -> Path:
 
 @contextlib.asynccontextmanager
 async def _host_lock(tag: str, poll: float = 0.2) -> AsyncGenerator[None]:
-    """Hold the build lock of `tag` on this host. Its file goes with the lock."""
+    """Hold the build lock of `tag` on this host. Its file goes with the lock, unless another
+    user made it in a sticky folder such as /tmp."""
     path = _lock_path(tag)
     fd = await _lock(path, poll)
     try:
@@ -283,7 +284,7 @@ async def _lock(path: Path, poll: float) -> int:
     file the holder removed meanwhile locks the file at `path` now instead, so no two hold
     the lock at once."""
     while True:
-        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        fd = _open(path)
         try:
             while True:
                 try:
@@ -298,6 +299,26 @@ async def _lock(path: Path, poll: float) -> int:
             os.close(fd)
             raise
         os.close(fd)
+
+
+def _open(path: Path) -> int:
+    """A read-only fd of the lock file `path`, which a lock needs no more than, made readable
+    by every user if it is not there. A file that is there opens without O_CREAT: Linux's
+    fs.protected_regular refuses that of another user's file in a sticky folder such as /tmp.
+    It never follows a symlink, nor waits for a writer of a FIFO."""
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    while True:
+        try:
+            return os.open(path, flags)
+        except FileNotFoundError:
+            pass
+        try:
+            fd = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError:
+            continue
+        # The umask can take the read bits of others away.
+        os.fchmod(fd, 0o644)
+        return fd
 
 
 async def ensure_pulled(docker: aiodocker.Docker, image: str) -> dict:
