@@ -108,7 +108,13 @@ async def start_control(cp: CP) -> list[str]:
 
 async def run_status(cp: CP, run_id: str) -> dict[str, Any]:
     async with cp.client(cp.viewer) as c:
-        return (await c.get(f"/api/runs/{run_id}")).json()["run"]
+        while True:
+            r = await c.get(f"/api/runs/{run_id}")
+            # 503 for the moment a run's first lines are in its log and not yet in the index
+            if r.status_code != 503:
+                assert r.status_code == 200, r.text
+                return r.json()["run"]
+            await asyncio.sleep(0.05)
 
 
 async def until_status(cp: CP, run_id: str, *wanted: str, within: float = 180) -> dict[str, Any]:
