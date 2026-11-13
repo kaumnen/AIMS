@@ -27,6 +27,7 @@ from aims.sandbox import (
     SandboxSpec,
     SandboxStoppedError,
 )
+from aims.sandbox.base import TOOLBOX
 from aims.sandbox.docker import _helper
 from aims.sandbox.reader import stream_archive
 
@@ -42,24 +43,29 @@ class Daemon:
     """A Docker daemon with the container, exec and archive calls a sandbox makes. It cuts each
     call in `cut` midway, as a daemon that dies or restarts does: `wait` after its header, `logs`
     and `archive` after their first chunk, the first exec's stream after its first output. A
-    restarted daemon has no record of an exec it cut."""
+    restarted daemon has no record of an exec it cut. With `lost` in `cut`, only the connection
+    of the first exec's stream drops: that exec runs on until an `aims-exec -k` ends it."""
 
     def __init__(self, cut: set[str]) -> None:
         self.cut = cut
         self.calls: list[str] = []
         self.execs = 0
         self.forgot: set[str] = set()
+        self.kills: list[list[str]] = []
 
     async def serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         with contextlib.suppress(asyncio.IncompleteReadError, ConnectionError):
             while True:
                 head = (await reader.readuntil(b"\r\n\r\n")).decode()
                 method, target, _ = head.split(" ", 2)
+                body = b""
                 if size := re.search(r"(?im)^content-length: *(\d+)", head):
-                    await reader.readexactly(int(size[1]))
+                    body = await reader.readexactly(int(size[1]))
                 url = urllib.parse.urlsplit(target)
                 path = urllib.parse.unquote(url.path).removeprefix("/v1.45/")
                 self.calls.append(f"{method} {path}")
+                if path == "containers/c1/exec" and "-k" in (cmd := json.loads(body)["Cmd"]):
+                    self.kills.append(cmd)
                 if not await self.answer(method, path, writer):
                     break
         writer.close()
@@ -99,6 +105,10 @@ class Daemon:
         elif path == f"exec/{name}/json":
             if name in self.forgot:
                 self.reply(writer, "404 Not Found", {"message": f"No such exec instance: {name}"})
+            elif "lost" in self.cut and name == "e1":
+                running = not self.kills
+                state = {"Running": running, "ExitCode": None if running else 137, "Pid": 42}
+                self.reply(writer, "200 OK", {**state, "ProcessConfig": {"tty": False}})
             else:
                 state = {"Running": False, "ExitCode": 0, "Pid": 0, "ProcessConfig": {"tty": False}}
                 self.reply(writer, "200 OK", state)
@@ -180,13 +190,14 @@ class Backend:
         pass
 
 
-@pytest.mark.parametrize("cut", ["open", "midway"])
+@pytest.mark.parametrize("cut", ["open", "midway", "lost"])
 async def test_an_exec_whose_stream_the_daemon_cuts_fails_and_stops_the_sandbox(
     cut: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Cut as it opens, the socket set-up fails: macOS refuses a socket option on a socket the
     daemon closed. Cut midway, the stream ends early and a daemon that restarted has no record of
-    the exec. Either way the exec ends as failed, which stops the sandbox."""
+    the exec. Lost midway, the stream ends early and the exec runs on, so it is ended. Each way
+    the exec ends as failed, which stops the sandbox."""
     real = trsock.TransportSocket.setsockopt
     refused: list[int] = []
 
@@ -199,7 +210,7 @@ async def test_an_exec_whose_stream_the_daemon_cuts_fails_and_stops_the_sandbox(
     monkeypatch.setattr(trsock.TransportSocket, "setsockopt", setsockopt)
     spec = SandboxSpec(image="img")
     async with (
-        serving(set() if cut == "open" else {"exec"}) as (daemon, docker),
+        serving({"midway": {"exec"}, "lost": {"lost"}}.get(cut, set())) as (daemon, docker),
         await LocalEventStore.open(tmp_path / "runs") as store,
     ):
         backend = SimpleNamespace(tracer=None, docker=docker)
@@ -220,7 +231,7 @@ async def test_an_exec_whose_stream_the_daemon_cuts_fails_and_stops_the_sandbox(
             await sb.close()
         ends = await store.events(run_id, limit=100, types=("exec.finished", "sandbox.stopped"))
 
-    why = "was cut" if cut == "open" else "No such exec instance"
+    why = {"open": "was cut", "midway": "No such exec instance"}.get(cut, "connection to Docker")
     assert result.finished.end == "failed"
     assert why in (result.finished.error or "")
     assert [(e.type, e.data.get("end"), e.data.get("reason")) for e in ends] == [
@@ -228,3 +239,10 @@ async def test_an_exec_whose_stream_the_daemon_cuts_fails_and_stops_the_sandbox(
         ("sandbox.stopped", None, "exec_failed"),
     ]
     assert "POST containers/c1/kill" in daemon.calls
+    if cut == "lost":
+        # The exec is ended before the sandbox is stopped.
+        assert result.finished.error == "the connection to Docker was lost while the exec ran"
+        assert [k[:2] for k in daemon.kills] == [[f"{TOOLBOX}/aims-exec", "-k"]]
+        assert daemon.calls.index("POST exec/e2/start") < daemon.calls.index(
+            "POST containers/c1/kill"
+        )

@@ -695,6 +695,7 @@ class DockerSandbox:
             return Outcome("failed", None, None, elapsed(), error=e.message)
         end = "exited"
         pid: int | None = None
+        state: dict[str, Any] = {}
         feeder: asyncio.Task[None] | None = None
         deadline = asyncio.timeout(timeout_ms / 1000 + GRACE_MS / 1000 + DRAIN_S)
         sent = False
@@ -735,6 +736,9 @@ class DockerSandbox:
                             await stopped(feeder)
                     finally:
                         await stream.close()
+                # A stream that lost its connection leaves the exec running, so a cancel or the
+                # deadline here still ends it.
+                state = await exe.inspect()
         except TimeoutError:
             end = "timeout"
         except aiodocker.DockerError as e:
@@ -754,14 +758,21 @@ class DockerSandbox:
             # aims-exec ends its command well before this deadline. An exec still there is
             # one it does not wrap, or one whose aims-exec could not.
             left = await settle(self._end(exe, argv, user, "an exec past its deadline"))
-        try:
-            state = await exe.inspect()
-        except aiodocker.DockerError as e:
-            return Outcome("failed", None, pid, duration, error=e.message)
+            try:
+                state = await exe.inspect()
+            except aiodocker.DockerError as e:
+                return Outcome("failed", None, pid, duration, error=e.message)
         if pid is None and state.get("Pid"):
             pid = state["Pid"]
             if on_pid is not None:
                 on_pid(pid)
+        if end == "exited" and state.get("Running"):
+            # Docker ends an exec's stream only once it has recorded the exec's end, so this
+            # stream ended with the connection to the daemon.
+            what = "an exec whose Docker connection was lost"
+            left = await settle(self._end(exe, argv, user, what, on_left))
+            lost = "the connection to Docker was lost while the exec ran"
+            return Outcome("failed", None, pid, duration, error=f"{lost}; {left}" if left else lost)
         exit_code = None if state.get("Running") else state.get("ExitCode")
         if active >= timeout_ms:
             end = "timeout"
@@ -848,13 +859,13 @@ class DockerSandbox:
         what: str,
         on_left: Callable[[str], None] | None = None,
     ) -> str | None:
-        """End what `what` started, an exec that was cancelled or ran past its deadline. Like
-        aims-exec at the deadline it kills the process group of the exec's child, but with
-        SIGKILL at once. Docker has no call for this, so `aims-exec -k` runs in the sandbox as
-        the exec's user and finds the exec by its whole command line, which the ID in `wrapper`
-        makes its own. It forks nothing, so it also runs in a sandbox at its pids limit: Docker
-        adds an exec's first process to the cgroup by moving it there, which the limit does not
-        stop. An exec still starting is waited for, up to `END_S` in all.
+        """End what `what` started, an exec that was cancelled, ran past its deadline or lost
+        its stream. Like aims-exec at the deadline it kills the process group of the exec's
+        child, but with SIGKILL at once. Docker has no call for this, so `aims-exec -k` runs in
+        the sandbox as the exec's user and finds the exec by its whole command line, which the ID
+        in `wrapper` makes its own. It forks nothing, so it also runs in a sandbox at its pids
+        limit: Docker adds an exec's first process to the cgroup by moving it there, which the
+        limit does not stop. An exec still starting is waited for, up to `END_S` in all.
 
         A paused sandbox runs nothing, so there the exec stays frozen until the sandbox is
         resumed or killed. An exec that did not end is logged. Why its command may still run is
