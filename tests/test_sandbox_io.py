@@ -1310,6 +1310,46 @@ async def test_a_cancelled_exec_ends_in_a_sandbox_at_its_pids_limit(
     assert (finished["end"], finished["leftover"]) == ("cancelled", [])
 
 
+async def test_ending_an_exec_leaves_no_child_it_forked_meanwhile(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    """The kill stops the exec before it lists the exec's children, so none starts after
+    the listing."""
+    _, sb = await sandbox(backend, store, pids=4096)
+    inner = sb.sandbox
+    assert isinstance(inner, DockerSandbox)
+    argv = ["/bin/sh", "-c", "while :; do sleep 7.37 & sleep 0.002; done"]
+    user = f"{AGENT_UID}:{AGENT_UID}"
+    kill = [f"{TOOLBOX}/aims-exec", "-k", *argv]
+    count = [f"{TOOLBOX}/busybox", "sh", "-c", f"{TOOLBOX}/busybox pgrep -x sleep | wc -l"]
+
+    async def forked() -> int:
+        """The sleeps in the sandbox, counted there: `docker top` lists none past about 250
+        processes of a user that is not root."""
+        out = Capture(limit=1024)
+        await inner.run(count, uid=AGENT_UID, cwd="/", timeout_ms=10_000, capture=out)
+        return int(out.stdout)
+
+    task = asyncio.create_task(
+        inner.run(argv, uid=AGENT_UID, cwd="/", timeout_ms=60_000, capture=Capture(limit=1024))
+    )
+    try:
+        async with asyncio.timeout(30):
+            while True:
+                if await forked() > 600:
+                    break
+                await asyncio.sleep(0.1)
+        code = await docker_module._call(inner._container, kill, user)
+        left = await forked()
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        await sb.close()
+
+    assert (code, left) == (0, 0)
+
+
 async def test_a_cancelled_exec_that_does_not_end_says_why(
     backend: DockerBackend,
     store: LocalEventStore,

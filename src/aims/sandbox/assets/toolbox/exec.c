@@ -16,8 +16,10 @@
  *
  * -k ends what a cancelled exec started: each process whose command line is
  * ARG... exactly gets SIGKILL to the process group of each of its children,
- * the group the deadline ends, then SIGKILL itself. It reads /proc and forks
- * nothing, so it works in a sandbox at its pids limit. Exits 0.
+ * the group the deadline ends, then SIGKILL itself. The process is stopped
+ * first, so it forks no child between the listing of its children and its
+ * own end. It reads /proc and forks nothing, so it works in a sandbox at its
+ * pids limit. Exits 0.
  */
 #define _GNU_SOURCE
 #include <dirent.h>
@@ -110,6 +112,36 @@ static pid_t parent_of(pid_t pid) {
     return line == NULL ? 0 : (pid_t)strtol(line + 6, NULL, 10);
 }
 
+/* Whether PID runs no more code: stopped, a zombie or gone. */
+static int halted(pid_t pid) {
+    char buf[512];
+    ssize_t n = proc_read(pid, "stat", buf, sizeof buf - 1);
+    if (n <= 0) return 1;
+    buf[n] = '\0';
+    /* The state follows the name, which may itself hold ")". */
+    char *end = strrchr(buf, ')');
+    return end == NULL || end[1] != ' ' || strchr("TtZX", end[2]) != NULL;
+}
+
+#define STOP_MS 200
+
+/* SIGKILL to the process group of each child of PID, then to PID. */
+static void end_tree(pid_t p) {
+    kill(p, SIGSTOP);
+    struct timespec ms = {0, 1000000};
+    for (int i = 0; i < STOP_MS && !halted(p); i++) nanosleep(&ms, NULL);
+    size_t count;
+    pid_t *all = pids(&count);
+    for (size_t j = 0; all != NULL && j < count; j++) {
+        pid_t c = all[j];
+        if (parent_of(c) != p) continue;
+        kill(-c, SIGKILL);
+        kill(c, SIGKILL);
+    }
+    free(all);
+    kill(p, SIGKILL);
+}
+
 static int end_exec(int argc, char **argv) {
     size_t len = 0;
     for (int i = 0; i < argc; i++) len += strlen(argv[i]) + 1;
@@ -128,13 +160,7 @@ static int end_exec(int argc, char **argv) {
         pid_t p = all[i];
         if (proc_read(p, "cmdline", got, len + 1) != (ssize_t)len) continue;
         if (memcmp(got, want, len) != 0) continue;
-        for (size_t j = 0; j < count; j++) {
-            pid_t c = all[j];
-            if (parent_of(c) != p) continue;
-            kill(-c, SIGKILL);
-            kill(c, SIGKILL);
-        }
-        kill(p, SIGKILL);
+        end_tree(p);
     }
     return 0;
 }
