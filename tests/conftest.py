@@ -1,4 +1,7 @@
 import os
+import signal
+import threading
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
@@ -38,3 +41,22 @@ def user_config(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.Mo
     monkeypatch.setenv("AIMS_CONFIG_DIR", str(path))
     monkeypatch.setenv("AIMS_SERVER_DIR", str(tmp_path_factory.mktemp("server")))
     return path
+
+
+SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+
+
+@pytest.fixture(autouse=True)
+def signal_handlers() -> Generator[None]:
+    """Put back the handlers a test leaves changed. A command run in process can leave a signal
+    ignored, as `aims runner` under `aims ui` does with SIGTERM and SIGHUP, and the child of a
+    later test would inherit that."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    before = {sig: signal.getsignal(sig) for sig in SIGNALS}
+    yield
+    for sig, handler in before.items():
+        # None is a handler that Python did not set, which it cannot set back either
+        if handler is not None and signal.getsignal(sig) is not handler:
+            signal.signal(sig, handler)
