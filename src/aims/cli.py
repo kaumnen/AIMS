@@ -2616,6 +2616,28 @@ async def _db(data_dir: Path | None, *, make: bool = False) -> Any:
         raise typer.Exit(EXIT_FAILED) from None
 
 
+def _missing(path: Path) -> list[Path]:
+    """`path` and those of its parents that do not exist yet, deepest first."""
+    found: list[Path] = []
+    while not path.exists() and path != path.parent:
+        found.append(path)
+        path = path.parent
+    return found
+
+
+def _unmake(made: list[Path]) -> None:
+    """Remove the database in the first of the folders `made`, then each folder, deepest
+    first. A folder that holds anything else stays."""
+    if not made:
+        return
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        with contextlib.suppress(OSError):
+            (made[0] / f"server.sqlite{suffix}").unlink(missing_ok=True)
+    for path in made:
+        with contextlib.suppress(OSError):
+            path.rmdir()
+
+
 @token_app.command("create")
 def token_create(
     name: Annotated[str, typer.Argument(help="A name for the token.")],
@@ -2636,7 +2658,7 @@ def token_create(
 
     from aims.server.audit import record
     from aims.server.db import TOKEN_NAME_RULE, new_token, token_name_ok
-    from aims.server.serve import private_temp
+    from aims.server.serve import private_temp, server_dir
 
     if not token_name_ok(name):
         raise typer.BadParameter(TOKEN_NAME_RULE, param_hint="NAME")
@@ -2651,8 +2673,11 @@ def token_create(
         refuse(f"{file} is a directory")
     if file is not None and not file.parent.is_dir():
         refuse(f"no directory {file.parent}")
+    made = _missing(data_dir or server_dir())
+    wrote = False
 
     async def main() -> str | None:
+        nonlocal wrote
         db = await _db(data_dir, make=True)
         detail = f"role {role}"
         try:
@@ -2669,6 +2694,7 @@ def token_create(
                         detail="exists",
                     )
                     raise
+                wrote = True
                 await record(db, "token.create", auth="cli", target=name, detail=detail)
                 return token
             try:
@@ -2689,6 +2715,7 @@ def token_create(
             except Exception:
                 tmp.unlink(missing_ok=True)
                 raise
+            wrote = True
             moved: OSError | None = None
             try:
                 tmp.replace(file)
@@ -2705,10 +2732,17 @@ def token_create(
             await db.close()
 
     try:
-        token = asyncio.run(main())
-    except ValueError as e:
-        typer.echo(f"error: {e}", err=True)
-        raise typer.Exit(EXIT_FAILED) from None
+        try:
+            token = asyncio.run(main())
+        except ValueError as e:
+            typer.echo(f"error: {e}", err=True)
+            raise typer.Exit(EXIT_FAILED) from None
+    except BaseException:
+        # A create that wrote no token leaves no folder it made, as one that was refused at
+        # once does. A token written stays with its database.
+        if not wrote:
+            _unmake(made)
+        raise
     if file is None:
         typer.echo(token)
     elif token is None:

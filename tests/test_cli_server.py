@@ -1154,6 +1154,35 @@ def live_token(data: Path, value: str) -> bool:
     return asyncio.run(look())
 
 
+@pytest.mark.parametrize("fails", ["open", "file"])
+def test_a_failed_token_create_leaves_no_data_folder_it_made(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fails: str
+) -> None:
+    chmod = Path.chmod
+
+    def no_chmod(self: Path, mode: int, **kwargs: Any) -> None:
+        if self.name == "server.sqlite":
+            raise PermissionError(1, "Operation not permitted")
+        chmod(self, mode, **kwargs)
+
+    def full(path: Path, data: str) -> Path:
+        raise OSError(28, "No space left on device")
+
+    data = tmp_path / "new" / "data"
+    args = ["token", "create", "r1", "--role", "runner", "--data-dir", str(data)]
+    if fails == "open":
+        # the database file is made and filled, then the open fails
+        monkeypatch.setattr(Path, "chmod", no_chmod)
+    else:
+        monkeypatch.setattr("aims.server.serve.private_temp", full)
+        args += ["--file", str(tmp_path / "r1.token")]
+    r = CliRunner().invoke(app, args)
+    monkeypatch.undo()
+    assert (r.exit_code, type(r.exception)) == (1, SystemExit), r.output
+    assert r.output.startswith("error: cannot ")
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_a_token_file_that_cannot_be_written_keeps_the_old_value(tmp_path: Path) -> None:
     runner = CliRunner()
     data = tmp_path / "data"
@@ -1209,8 +1238,8 @@ def test_a_link_at_the_token_files_temp_path_is_not_followed(
     assert victim.read_text() == "kept\n"
     assert stat.S_IMODE(victim.stat().st_mode) == 0o644
     assert not (tmp_path / "r1.token").exists()
-    listed = CliRunner().invoke(app, ["token", "list", "--data-dir", str(data)])
-    assert listed.output == ""
+    # no token was made, so neither was the data folder
+    assert not data.exists()
 
 
 def test_the_openapi_export_is_stable_and_committed(tmp_path: Path) -> None:
