@@ -411,15 +411,21 @@ class Used:
         return [{"ImageID": image} for image in self.images]
 
 
-async def test_old_asset_images_go_unless_used_or_just_tagged() -> None:
+async def test_old_asset_images_go_once_unused_for_a_day() -> None:
+    """Another checkout or install of AIMS on this host may still use them. One never tagged
+    here, as `docker load` leaves it, stays, as a scenario image does."""
     current = context("tracer")[0]
     old = "2026-01-01T00:00:00Z"
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(UTC)
     found = [
-        {"Id": "current", "RepoTags": [current], "RepoDigests": ["aims-tracer@sha256:c"]},
+        {
+            "Id": "current",
+            "RepoTags": [current, f"{current}-used"],
+            "RepoDigests": ["aims-tracer@sha256:c"],
+        },
         {
             "Id": "old",
-            "RepoTags": ["aims-tracer:000000000000"],
+            "RepoTags": ["aims-tracer:000000000000", "aims-tracer:000000000000-used"],
             "RepoDigests": ["ghcr.io/kaumnen/aims-tracer@sha256:o", "aims-tracer@sha256:o"],
         },
         {"Id": "shared", "RepoTags": ["aims-toolbox:111111111111", "mine/other:1"]},
@@ -427,13 +433,17 @@ async def test_old_asset_images_go_unless_used_or_just_tagged() -> None:
         {"Id": "never-tagged", "RepoTags": ["aims-tracer:666666666666"]},
         {"Id": "used", "RepoTags": ["aims-tracer:222222222222"]},
         {"Id": "fresh", "RepoTags": ["aims-tracer:333333333333"]},
+        {"Id": "today", "RepoTags": ["aims-toolbox:777777777777"]},
+        {"Id": "yesterday", "RepoTags": ["aims-toolbox:888888888888"]},
         {"Id": "unknown", "RepoTags": ["aims-tracer:444444444444"]},
         {"Id": "renamed", "RepoTags": [f"localhost:5000/keep/{current}"]},
         {"Id": "renamed-old", "RepoTags": ["keep/aims-tracer:555555555555"]},
     ]
     tagged = {str(i["Id"]): old for i in found} | {
         "never-tagged": "0001-01-01T00:00:00Z",
-        "fresh": now,
+        "fresh": now.isoformat(),
+        "today": (now - timedelta(hours=23)).isoformat(),
+        "yesterday": (now - timedelta(hours=25)).isoformat(),
         "unknown": "error",
     }
     images = Images(found, tagged)
@@ -446,11 +456,12 @@ async def test_old_asset_images_go_unless_used_or_just_tagged() -> None:
     await remove_old(docker)
     assert images.deleted == [
         "aims-tracer:000000000000",
+        "aims-tracer:000000000000-used",
         "ghcr.io/kaumnen/aims-tracer@sha256:o",
         "aims-tracer@sha256:o",
         "aims-toolbox:111111111111",
         "127.0.0.1:5000/aims-toolbox@sha",
-        "aims-tracer:666666666666",
+        "aims-toolbox:888888888888",
         "keep/aims-tracer:555555555555",
     ]
 
@@ -647,6 +658,10 @@ async def test_an_old_asset_image_and_its_toolbox_volume_go_once_unused(
         assert await present() == (both, {f"aims-toolbox-{other}"})
 
         monkeypatch.setattr(assets, "MIN_AGE_S", 0)
+        await sandbox._remove_old(docker, toolbox, 30)
+        assert await present() == (both, {f"aims-toolbox-{other}"})
+
+        monkeypatch.setattr(assets, "ASSET_KEEP_DAYS", 0)
         user = await docker.containers.create(
             config={"Image": f"aims-tracer:{old}", "Cmd": ["/marker"]}
         )

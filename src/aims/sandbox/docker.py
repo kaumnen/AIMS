@@ -1252,8 +1252,9 @@ async def _toolbox(docker: aiodocker.Docker, labels: dict[str, str]) -> tuple[st
 
 
 async def _remove_old(docker: aiodocker.Docker, toolbox: str, keep_days: float) -> None:
-    """Remove the asset images of other AIMS versions and the scenario images unused for
-    `keep_days` days that no container uses, and the toolbox volumes whose image is gone."""
+    """Remove what `remove_old` removes, such as the asset images of other AIMS versions unused
+    for a day and the scenario images unused for `keep_days` days, then the toolbox volumes
+    whose image is gone."""
     await remove_old(docker, keep_days)
     listing = await docker.volumes.list(filters={"label": ["aims.managed=1"]})
     for volume in listing.get("Volumes") or []:

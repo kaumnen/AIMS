@@ -75,6 +75,11 @@ class Images:
         self.tags.add(f"{repo}:{tag}")
         return True
 
+    async def delete(self, name: str) -> None:
+        if name not in self.tags:
+            raise aiodocker.DockerError(404, f"No such image: {name}")
+        self.tags.remove(name)
+
 
 class Ended:
     """The progress of a build or pull that has ended."""
@@ -502,6 +507,15 @@ async def test_an_asset_image_already_here_is_left_alone(pin: Callable[..., str]
     assert docker.images.builds == 0
 
 
+async def test_an_asset_image_already_here_counts_as_used_now(pin: Callable[..., str]) -> None:
+    """So another AIMS version on this host keeps it: see `remove_old`."""
+    docker: Any = Docker()
+    tag = pin("tracer")
+    docker.images.tags.add(tag)
+    assert await ensure_image(docker, "tracer", env=DEFAULT) == tag
+    assert docker.images.tags == {tag, f"{tag}-used"}
+
+
 async def test_starts_at_once_pull_once(pin: Callable[..., str]) -> None:
     docker: Any = Docker()
     tag = pin("tracer")
@@ -697,6 +711,9 @@ async def test_an_old_pulled_asset_image_goes_with_its_registry_reference(
         assert remote in (await docker.images.inspect(tag))["RepoDigests"]
 
         (probe / "marker").write_text(uuid.uuid4().hex)
+        await images.remove_old(docker)
+        assert await present(docker, tag, remote) == {tag, remote}
+        monkeypatch.setattr(images, "ASSET_KEEP_DAYS", 0)
         await images.remove_old(docker)
         for ref in (tag, remote):
             with pytest.raises(aiodocker.DockerError) as e:
