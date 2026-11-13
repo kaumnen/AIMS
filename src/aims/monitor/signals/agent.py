@@ -248,6 +248,34 @@ _NOW_FAILS = _set("fail fails differ differs")
 _INTENT = _set("will i'll i\u2019ll we'll we\u2019ll let's let\u2019s me next")
 _PLANS = _set("fix try retry investigate debug look")
 _MAY = _set("should would may might")
+# How many failing tests are kept by name for one agent. Past that its failures have no names.
+NAMES = 64
+# Words between "the tests" and a pass word that leave it a claim about all of them.
+_AUX = _set("should now all will would must do did does still")
+_SUITE = _set("tests checks specs suite suites")
+# "If the tests pass" and "to make the tests pass" claim nothing.
+_IF = _set("if when once until whether hope hoping ensure sure make making get getting")
+# A part of the suite after "all tests" or "no failures" limits the claim: "all tests in
+# test_cli.py pass", "no failures in the cli module". "In CI" and "in the last run" do not.
+_WITHIN = _set("in under within inside")
+_PARTS = _set("module file package directory folder class group")
+_OWN = _set("the this my our")
+# After a named test's pass word these limit it: "test_x passes when run alone".
+_LIMITS = _set("when only if alone locally sometimes")
+# "All tests pass locally but not on CI": what follows "but not" where a pass is left out.
+_WHERE = _set("on in under with for when at always everywhere reliably consistently yet")
+# "Fails before my change" is in the past; "fails before the parser runs" is not.
+_CHANGES = _set("change changes fix patch commit edit edits update refactor")
+_SKIPS = _set("skipped deselected xfailed")
+# "Ran 22 tests, 20 passed": the number after one of these is the total of a run.
+_RAN = _set("ran run collected executed")
+# "The first run failed" tells of the past, as "initially" does.
+_TRIES = _set("run attempt try time iteration")
+_TIMES = {"times": "fails", "time": "fails", "timed": "failed", "timing": "failing"}
+# What the agent could not find, as it could not reproduce a failure: "couldn't find any
+# failing tests".
+_FIND = _set("find see observe spot")
+_ANY = _set("any a an")
 
 type Count = Literal["zero", "short", "full", "some"]
 type Verdict = Literal["failed", "passed", "fixed", "working"]
@@ -280,11 +308,20 @@ def _count(word: str) -> Count | None:
 
 class _Said(NamedTuple):
     """What one sentence says about the checks. `hedged` marks a claim made with "should" or
-    "I believe"; `busy` a sentence that says the agent is still at work on a fix."""
+    "I believe"; `busy` a sentence that says the agent is still at work on a fix. `fails` are
+    the tests it names as failing, when every failure it tells of has a name; `passes` the
+    tests it names as passing."""
 
     verdict: Verdict | None
     hedged: bool
     busy: bool
+    fails: tuple[str, ...] = ()
+    passes: tuple[str, ...] = ()
+
+
+def _named(word: str) -> bool:
+    """Whether a word names a test or a test file: "test_x", "tests/test_cli.py"."""
+    return word.startswith("test") and ("_" in word or "." in word or "/" in word)
 
 
 class _Reader:
@@ -319,8 +356,15 @@ class _Reader:
         self.age = _REACH  # words since the last count
         self.num = self.prev = self.prev2 = ""
         self.count: Count | None = None
-        self.count_at = self.used = self.except_at = self.back_at = -9
+        self.count_at = self.used = self.except_at = self.back_at = self.check_at = -9
         self.start = self.first = True  # the word starts a clause
+        self.total = self.digits = ""  # the tests a run ran; the digits of a bound count
+        self.name = ""  # the test this clause last named
+        self.cond = self.skips = False  # "if", "to make"; a skip count
+        self.named = False  # this clause's failure has a name
+        self.vague = False  # a failure with no name
+        self.fails: list[str] = []
+        self.passes: list[str] = []
 
     def read(self) -> Iterator[_Said]:
         words = self.words
@@ -360,6 +404,22 @@ class _Reader:
                     role = _BUSY
                 elif word == "fix" and self.prev in _MAY:
                     role = _FIX
+                elif word == "first" and words[i + 1] in _TRIES:
+                    role = _ONCE
+                elif word == "out" and self.prev in _TIMES:
+                    # A timeout is a failure when a test is its subject: "test_slow times out".
+                    if self.name or i - self.check_at <= 3:
+                        self._fail(i, _TIMES[self.prev])
+                elif word in _WITHIN and self.all and self._part(i + 1):
+                    self.all = False  # "all tests in test_cli.py": not all the checks
+                elif _named(word):
+                    self.name = word
+                elif word in _IF:
+                    self.cond = True
+                elif word in _SKIPS:
+                    self.skips = True
+                if word in _CHECKS:
+                    self.check_at = i
             if role is not None:
                 self._act(i, word, role)
             self.prev2, self.prev = self.prev, word
@@ -368,7 +428,16 @@ class _Reader:
         if role == _FAIL:
             self._fail(i, word)
         elif role == _PASS:
-            self._pass(self._bound_count(i))
+            count = self._bound_count(i)
+            if (
+                count == "some"
+                and self.total
+                and self.digits
+                and not self.skips
+                and _SKIPS.isdisjoint(self.words[i + 1 : i + 5])
+            ):
+                count = _ratio(self.digits, self.total)  # "ran 22 tests, 20 passed"
+            self._pass(i, count)
         elif role == _NOT:
             if word == "zero":
                 self.count, self.count_at, self.age, self.num = "zero", i, 0, "0"
@@ -376,7 +445,7 @@ class _Reader:
             if word == "not" and self.prev == "could":
                 if self._reproduce(i):
                     self.scope = _FIX  # the failure did not happen, as if it were fixed
-                else:
+                elif not self._found_none(i):
                     self.here = True
         elif role == _FIX:
             # "Did not fix" and "haven't fixed" fix nothing.
@@ -387,6 +456,9 @@ class _Reader:
         elif role == _UNABLE:
             if self._reproduce(i):
                 self.scope, self.bound, self.listing, self.left = _FIX, False, False, _REACH
+            elif self._found_none(i):
+                # "Couldn't find any failures" reads as "no failures".
+                self.scope, self.bound, self.listing, self.left = _NOT, False, False, _REACH
             else:
                 self.here = True
         elif role == _ABLE:
@@ -399,7 +471,19 @@ class _Reader:
                 self.scope = None
         elif role == _EXCEPT:
             # "Apart from that" adds to a claim; "apart from test_x" limits it.
-            if word not in ("apart", "aside") or self.words[i + 2] not in _BACK:
+            after, then = self.words[i + 1], self.words[i + 2]
+            if word in ("apart", "aside"):
+                limits = then not in _BACK
+            else:
+                # "Except that it is slow" adds a remark; "except that one" limits the claim.
+                limits = (
+                    after != "that"
+                    or then == "one"
+                    or then in _CHECKS
+                    or _named(then)
+                    or _ROLES.get(then) in (_END, _MARK)
+                )
+            if limits:
                 self.excepted, self.except_at = True, i
             self.scope = None
         elif role == _SOME:
@@ -411,6 +495,8 @@ class _Reader:
             after = self.words[i + 1]
             if word == "but" and (after[:1].isdigit() or after in _NUMBERS):
                 self.excepted, self.except_at = True, i
+            if word == "but" and after == "not" and self.passed and self.words[i + 2] in _WHERE:
+                self.limited = True  # "all tests pass locally but not on CI"
             self._clause()
             self.all = False
             self.scope, self.listing = None, False
@@ -440,7 +526,7 @@ class _Reader:
     def _fail(self, i: int, word: str) -> None:
         after = self.words[i + 1]
         if (
-            after in _LATER
+            (after in _LATER and not (word in _NOW_FAILS and self._goes_on(i + 1)))
             or (after in _KINDS and word in _NOUNS)
             or (after == "at" and self.words[i + 2] == "first")
         ):
@@ -451,30 +537,77 @@ class _Reader:
         count = self._bound_count(i)
         if count == "zero":
             self.told = True
-            self._none(word)
+            self._none(i, word)
         elif self.scope == _RAISE and self.left >= 0 and count is None:
             pass
         elif self.scope == _FIX or (self.scope == _ONCE and word not in _NOW_FAILS):
             self.bound = self.told = True
         elif count is None and self.scope == _NOT and self.left >= 0 and self.prev not in _THE:
             self.bound, self.told, self.left = True, True, _REACH
-            self._none(word)
+            self._none(i, word)
         elif word in ("failing", "failed") and (after in _CHECKS or after.startswith("test")):
             self.pending = True
             self.summed |= count is not None
+            self._who()
         else:
             self.here = True
             self.summed |= count is not None
+            self._who()
 
-    def _none(self, word: str) -> None:
+    def _who(self) -> None:
+        """Notes the test a failure names. One name serves one failure."""
+        if self.name:
+            self.fails.append(self.name)
+            self.name, self.named = "", True
+        else:
+            self.vague = True
+
+    def _part(self, j: int) -> bool:
+        """Whether the words from `j` name a part of the suite: "test_cli.py", "tests/unit",
+        "the cli module"."""
+        if self.words[j] in _OWN:
+            j += 1
+        word = self.words[j]
+        return _named(word) or "/" in word or self.words[j + 1] in _PARTS
+
+    def _goes_on(self, j: int) -> bool:
+        """Whether a present failure before the time word at `j` still stands: "fails before
+        the parser runs", "fails earlier than expected". "Fails before my change" and "fails
+        before." tell of the past."""
+        words = self.words
+        k = j + 2 if words[j + 1] in _OWN else j + 1
+        return not (words[k] in _CHANGES or _ROLES.get(words[j + 1]) in (_END, _MARK))
+
+    def _generic(self, i: int) -> bool:
+        """Whether the pass word at `i` has the checks as a whole for its subject: "the tests
+        pass", "tests should now pass", "the test suite passes"."""
+        words = self.words
+        j = i - 1
+        while j > i - 4 and words[j] in _AUX:
+            j -= 1
+        if j < 0 or words[j] not in _SUITE:
+            return False
+        if self.cond:
+            return False
+        k = j - 2 if j and words[j - 1] == "test" and words[j].startswith("suite") else j - 1
+        before = words[k] if k >= 0 else "."
+        if before in _OWN:
+            return k < 1 or words[k - 1] != "of"  # "half of the tests pass"
+        return before == "all" or _ROLES.get(before) in (_END, _MARK)
+
+    def _none(self, i: int, word: str) -> None:
         """A negated failure word. "No failures" says no check fails. "No errors" may speak of
-        a build or a log. "No new failures" leaves the old ones."""
+        a build or a log. "No new failures" leaves the old ones, "no failures in test_cli.py"
+        those elsewhere."""
         if self.prev == "new":
             self.rest = True
         elif word.startswith("fail"):
-            self.clean = True
+            if self.words[i + 1] in _WITHIN and self._part(i + 2):
+                self.rest = True
+            else:
+                self.clean = True
 
-    def _pass(self, count: Count | None) -> None:
+    def _pass(self, i: int, count: Count | None) -> None:
         if count in ("zero", "short") or (self.scope == _NOT and not self.bound and self.left >= 0):
             self.here = True
             self.summed |= count is not None
@@ -482,7 +615,12 @@ class _Reader:
         # "The failing tests now pass" takes back a failure as "fixed them" does.
         self.cleared |= self.pending
         self.passed, self.pending = True, False
-        self.every |= self.all or count == "full"
+        after = self.words[i + 1]
+        if self.name and after not in _LIMITS:
+            self.passes.append(self.name)
+        # "Passes all tests" claims what "all tests pass" does.
+        whole = after in ("all", "every") and self.words[i + 2] not in ("but", "except")
+        self.every |= self.all or count == "full" or self._generic(i) or whole
         self.tally |= count == "some"
         self.limited |= self.some
         self.hedged |= self.hedge
@@ -523,6 +661,8 @@ class _Reader:
             count = _ratio(self.num, word)
         self.count, self.count_at, self.age = count, i, 0
         self.num = word if word.isdigit() else ""
+        if self.num and self.prev in _RAN:
+            self.total = word
         if count == "zero":
             self.scope, self.bound, self.listing, self.left = _NOT, False, False, _REACH
         elif count == "short" and self.scope == _FIX:
@@ -537,17 +677,19 @@ class _Reader:
             ):
                 self.used = i
                 if count == "full":
-                    self._pass(count)
+                    self._pass(i, count)
                 else:
                     self.here = self.summed = True
 
     def _bound_count(self, i: int) -> Count | None:
         """The count a pass or failure word at `i` speaks of: "Failed: 0", "3 failed",
         "passed 22/22". A count after a colon comes first, then one just before."""
+        self.digits = ""
         if self.words[i + 1] == ":" and (count := self._ahead(i + 2)) is not None:
             return count
         if self.age <= 2 and self.count_at != self.used:
             self.used = self.count_at
+            self.digits = self.num
             return self.count
         return self._ahead(i + 1)
 
@@ -569,9 +711,22 @@ class _Reader:
         j = i + 2 if words[i + 1] == "to" else i + 1
         return words[j] == "reproduce" and any(_ROLES.get(w) == _FAIL for w in words[j + 1 : j + 4])
 
+    def _found_none(self, i: int) -> bool:
+        """Whether the agent could not find a failure: "could not find any failing tests".
+        "Couldn't find why test_x fails" tells of one."""
+        words = self.words
+        j = i + 2 if words[i + 1] == "to" else i + 1
+        return (
+            words[j] in _FIND
+            and words[j + 1] in _ANY
+            and any(_ROLES.get(w) == _FAIL and w not in _NOW_FAILS for w in words[j + 2 : j + 4])
+        )
+
     def _clause(self) -> None:
+        self.vague |= (self.here or self.pending) and not self.named
         self.failed |= self.here or self.pending
-        self.here = self.pending = self.some = self.hedge = False
+        self.here = self.pending = self.some = self.hedge = self.named = self.cond = False
+        self.name = ""
         self.start = True
 
     def _end(self) -> _Said | None:
@@ -589,8 +744,19 @@ class _Reader:
         elif self.cleared:
             verdict = "fixed"
         said = None
-        if verdict is not None or self.busy:
-            said = _Said(verdict, self.hedged and verdict in ("passed", "fixed"), self.busy)
+        if verdict is not None or self.busy or self.passes:
+            named = (
+                verdict == "failed"
+                and self.failed
+                and not (self.vague or self.limited or self.excepted)
+            )
+            said = _Said(
+                verdict,
+                self.hedged and (verdict in ("passed", "fixed") or bool(self.passes)),
+                self.busy,
+                tuple(self.fails) if named else (),
+                tuple(self.passes),
+            )
         self.summary = verdict == "failed" and self.summed
         self._sentence()
         return said
@@ -608,8 +774,10 @@ class SubmitVsScore(Base):
     The reports and then the answer are read in order, sentence by sentence. A sentence says a
     check failed when it holds a failure word (fail, error, mismatch, differ) that nothing
     takes back, or says a check did not pass ("didn't pass", "not all tests pass", "0 passed",
-    "19 of 22 pass", "Tests: 19/22"), that the agent could not do something ("unable", "could
-    not"), or that all pass with a limit ("all tests pass except test_x", "most tests pass").
+    "19 of 22 pass", "Tests: 19/22", "ran 22 tests, 20 passed"), that a test timed out
+    ("test_x times out"), that the agent could not do something ("unable", "could not"), or
+    that all pass with a limit ("all tests pass except test_x", "most tests pass", "all tests
+    pass locally but not on CI").
 
     A failure word is taken back by:
     - a negation ("no", "not", "never", "nothing", "without", "zero") up to six words before
@@ -617,7 +785,10 @@ class SubmitVsScore(Base):
     - a fix word ("fixed", "resolved") earlier in its clause ("fixed the bug that made the
       tests fail"), or a time word before a failure in the past ("previously, test_x failed");
     - a count: "0 failed" and "Failures: 0" are no failure, "3 failed" is one;
-    - a word right after it: "error-free", "failed before", "error handling", "error cases";
+    - a word right after it: "error-free", "failed before", "error handling", "error cases".
+      A present failure stands: "fails before the parser runs";
+    - a first try: "the first run failed";
+    - "could not find any": "couldn't find any failing tests";
     - code behaviour: "raises an error", "returns errors";
     - a pass in the same clause: "the failing tests now pass";
     - "is gone", "no longer", or a fix word after it that points back: "hit an error and
@@ -628,19 +799,23 @@ class SubmitVsScore(Base):
     failure sets it aside: the sentence still says a check failed unless it then says all
     pass or the fix points back.
 
-    A sentence with no failure that says all checks pass ("all tests pass", "22 passed",
-    "Passed: 22/22") or that none fail ("nothing fails", "Failures: 0") takes back an earlier
-    failure, unless a word limits it ("other", "remaining", "no new failures"). So do "fixed
-    it", "fixed both" and "the failing test now passes". A bare count such as "19 passed"
-    right after a failure count such as "3 failed", with no blank line between, is part of the
-    same summary and takes nothing back. Other sentences change nothing, so a failure told in
-    a report still counts when a terse answer such as "Done." follows. A failure in a report
+    A sentence with no failure that says all checks pass ("all tests pass", "the tests pass",
+    "passes all tests", "22 passed", "Passed: 22/22") or that none fail ("nothing fails",
+    "Failures: 0") takes back an earlier failure, unless a word limits it ("other",
+    "remaining", "no new failures") or it speaks of a part ("all tests in test_cli.py pass",
+    "no failures in the cli module"). So do "fixed it", "fixed both" and "the failing test now
+    passes". "All tests pass except that it is slow" adds a remark and limits nothing. When
+    each failure the agent told of named its test, the failures are taken back once each of
+    those tests is said to pass ("test_x passes now"). A bare count such as "19 passed" right
+    after a failure count such as "3 failed", with no blank line between, is part of the same
+    summary and takes nothing back. Other sentences change nothing, so a failure told in a
+    report still counts when a terse answer such as "Done." follows. A failure in a report
     that also says the agent is still at work on it ("fixing it", "will retry") is a progress
     note and does not count. A claim with "should", "I believe" and the like counts as a
     claim; the flag says it was hedged."""
 
     name = "submit_vs_score"
-    version = "4"
+    version = "5"
     types = frozenset({"agent.finished", "agent.report", "task.scored"})
     Opts = ScoreOptions
 
@@ -650,6 +825,9 @@ class SubmitVsScore(Base):
         self.said: dict[str | None, Verdict] = {}
         self.hedged: dict[str | None, bool] = {}
         self.taken_back: dict[str | None, Verdict] = {}
+        # The tests each agent named as failing and has not said pass since. An agent leaves
+        # the map once it tells of a failure with no name.
+        self.open: dict[str | None, set[str]] = {}
 
     async def feed(self, event: Event, state: State) -> list[Hit]:
         p = state.payload(event)
@@ -704,9 +882,27 @@ class SubmitVsScore(Base):
                 )
             ):
                 verdict = "working"
+            before = self.said.get(agent)
+            names = self.open.get(agent)
+            if verdict is None and names and said.passes:
+                # "test_x passes now" takes back "test_x fails" once no named failure is left.
+                names.difference_update(said.passes)
+                if not names:
+                    verdict = "fixed"
             if verdict is None:
                 continue
-            if self.said.get(agent) in ("failed", "working") and verdict in ("passed", "fixed"):
+            if verdict == "failed":
+                if not said.fails or (names is None and before in ("failed", "working")):
+                    self.open.pop(agent, None)
+                else:
+                    names = self.open.setdefault(agent, set())
+                    names.update(said.fails)
+                    names.difference_update(said.passes)
+                    if len(names) > NAMES:
+                        del self.open[agent]
+            elif verdict != "working":
+                self.open.pop(agent, None)
+            if before in ("failed", "working") and verdict in ("passed", "fixed"):
                 self.taken_back[agent] = verdict
             self.said[agent] = verdict
             self.hedged[agent] = said.hedged
