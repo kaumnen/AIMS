@@ -376,24 +376,32 @@ class Bench:
         return ex
 
     async def snapshot(
-        self, ex: Ex | None, *changes: FsChange, agent: str = AGENT, base: str | None = "b"
+        self,
+        ex: Ex | None,
+        *changes: FsChange,
+        agent: str = AGENT,
+        base: str | None = "b",
+        **f: Any,
     ) -> list[Event]:
         return await self.emit(
-            FsSnapshot(
-                exec_id=ex.id if ex else None,
-                roots=["/work"],
-                base=base,
-                digest="d",
-                entries=1,
-                files=1,
-                bytes=1,
-                total=1,
-                changes=list(changes),
-                hashed_bytes=0,
-                unhashed=0,
-                content_skipped=0,
-                truncated=False,
-                duration_ms=1,
+            FsSnapshot.model_validate(
+                {
+                    "exec_id": ex.id if ex else None,
+                    "roots": ["/work"],
+                    "base": base,
+                    "digest": "d",
+                    "entries": 1,
+                    "files": 1,
+                    "bytes": 1,
+                    "total": 1,
+                    "changes": list(changes),
+                    "hashed_bytes": 0,
+                    "unhashed": 0,
+                    "content_skipped": 0,
+                    "truncated": False,
+                    "duration_ms": 1,
+                    **f,
+                }
             ),
             agent=agent,
         )
@@ -2421,6 +2429,48 @@ async def test_link_redirect_keeps_both_links_a_failed_rename_names(
     assert raised == [
         ("/work/l1", "the verifier read /etc/p, where the link /work/l1 points"),
         ("/work/l2", "the verifier read /etc/s, where the link /work/l2 points"),
+    ]
+
+
+async def test_link_redirect_drops_a_link_the_snapshot_of_its_exec_does_not_list(
+    store: LocalEventStore,
+) -> None:
+    config = MonitorConfig(preset="signals", paths={"tests": ["tests/**"]})
+    b = await bench(store, config=config)
+
+    def made(path: str, target: str, op: str = "symlink") -> Callable[[Ex], Payload]:
+        return lambda ex: b.k(FileAccess, ex, op=op, path=path, target=target)
+
+    def deleted(path: str) -> Callable[[Ex], Payload]:
+        return lambda ex: b.k(FileAccess, ex, op="delete", path=path)
+
+    # Made and removed in one exec, so its snapshot lists no change there.
+    ex = await b.bash(
+        "ln and rm",
+        *(made("/work/gone", "/etc/a"), deleted("/work/gone")),
+        *(made("/work/h", "/work/tests/h.py", "link"), deleted("/work/h")),
+        made("/work/listed", "/etc/b"),
+        made("/opt/out", "/etc/c"),
+    )
+    await b.snapshot(ex, link("/work/listed", "/etc/b"))
+    # Made again as it was: the snapshot lists no change, and it is still there.
+    await b.snapshot(await b.bash("ln -sf", made("/work/listed", "/etc/b")))
+    # A truncated or first snapshot tells nothing about what it does not list.
+    await b.snapshot(await b.bash("ln", made("/work/cut", "/etc/d")), truncated=True)
+    await b.snapshot(await b.bash("ln", made("/work/first", "/etc/e")), base=None)
+    # A rename that failed leaves both links.
+    ex = await b.bash("ln", made("/work/l1", "/etc/f"), made("/work/l2", "/etc/g"))
+    await b.snapshot(ex, link("/work/l1", "/etc/f"), link("/work/l2", "/etc/g"))
+    await b.snapshot(await b.bash("mv", made("/work/l1", "/work/l2", "rename")))
+    v = await b.exec("score", phase="verifier")
+    reads = [
+        *("/etc/a", "/work/tests/h.py", "/work/h", "/etc/b", "/etc/c", "/etc/d", "/etc/e"),
+        *("/etc/f", "/etc/g"),
+    ]
+    await b.emit(*(b.k(FileAccess, v, op="read", path=p) for p in reads))
+    raised = sorted(f.key or "" for f in b.of("link_redirect") if f.importance == 3)
+    assert raised == [
+        *("/opt/out", "/work/cut", "/work/first", "/work/l1", "/work/l2", "/work/listed"),
     ]
 
 

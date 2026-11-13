@@ -10,11 +10,19 @@ import posixpath
 import re
 import shlex
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from pydantic import Field
 
-from aims.events import Event, ExecFinished, ExecPhase, FileAccess, ProcExec, TaskScored
+from aims.events import (
+    Event,
+    ExecFinished,
+    ExecPhase,
+    FileAccess,
+    FsSnapshot,
+    ProcExec,
+    TaskScored,
+)
 from aims.monitor.signals import scan
 from aims.monitor.signals.base import Base, Hit, Options, SignalSetup
 from aims.monitor.signals.rules import compile_glob
@@ -791,7 +799,8 @@ class LinkOptions(Options):
 @dataclass(frozen=True, slots=True)
 class Link:
     """A flagged link: the event that made it, `symlink` or `link`, its target as given and
-    resolved, why it is flagged and the path a read through it is logged under."""
+    resolved, why it is flagged and the path a read through it is logged under. `exec_id` is
+    the exec that made it there and `kept` says the same link was there before."""
 
     seq: int
     op: str
@@ -799,6 +808,18 @@ class Link:
     resolved: str
     why: str
     read: str
+    exec_id: str | None = None
+    kept: bool = False
+
+
+@dataclass(slots=True)
+class Pending:
+    """A whole file snapshot whose changes are still coming in, as `fs.change` events of its
+    seq, with the links its exec made that it has not listed yet."""
+
+    seq: int
+    agent: str | None
+    unlisted: dict[str, None]
 
 
 # The kind of file a path that holds a link is.
@@ -820,14 +841,15 @@ class LinkRedirect(Base):
     A verifier read of a symlink's target counts, since a direct read looks the same.
 
     A link made again at the same path drops its old target. A link a snapshot finds removed,
-    or replaced by a file of another kind, is dropped. A hard link replaced by another regular
-    file looks like an edit and is kept. The kernel's delete and rename records are attempts
-    that can fail, so they drop nothing: a rename adds the link at its new path and keeps it at
-    the old one until a snapshot finds it gone there."""
+    or replaced by a file of another kind, is dropped. So is a link that the snapshot after
+    the exec that made it does not list, as the exec removed it again. A hard link replaced by
+    another regular file looks like an edit and is kept. The kernel's delete and rename records
+    are attempts that can fail, so they drop nothing: a rename adds the link at its new path and
+    keeps it at the old one until a snapshot finds it gone there."""
 
     name = "link_redirect"
     version = "4"
-    types = frozenset({"file.access", "fs.change"})
+    types = frozenset({"file.access", "fs.change", "fs.snapshot"})
     Opts = LinkOptions
 
     def __init__(self, setup: SignalSetup) -> None:
@@ -849,20 +871,30 @@ class LinkRedirect(Base):
         # is logged under.
         self.links: dict[tuple[str | None, str], Link] = {}
         self.reads: dict[tuple[str | None, str], dict[str, None]] = {}
+        self.pending: Pending | None = None
 
     async def feed(self, event: Event, state: State) -> list[Hit]:
         p = state.payload(event)
+        if self.pending is not None and event.seq != self.pending.seq:
+            self._settle(self.pending)
+            self.pending = None
         phase = state.phase_of(event)
         agent = event.agent_id
+        if isinstance(p, FsSnapshot):
+            self.pending = self._pend(event, p)
+            return []
         if isinstance(p, FileAccess) and p.op in ("symlink", "link") and p.target is not None:
             node = state.actor(event)
             if phase not in AGENT_PHASES or (node is not None and node.installs):
                 return []
-            return self._made(event, p.path, p.target, p.op, phase)
+            return self._made(event, p.path, p.target, p.op, phase, p.exec_id)
         if isinstance(p, FileAccess) and p.op == "rename" and p.target and not p.partial:
-            self._moved(agent, p.path, p.target)
+            self._moved(agent, p.path, p.target, p.exec_id)
             return []
         if isinstance(p, FsChangeRecord):
+            pending = self.pending
+            if pending is not None and pending.seq == event.seq and pending.agent == agent:
+                pending.unlisted.pop(p.path, None)
             known = self.links.get((agent, p.path))
             if known is not None and (
                 p.change == "removed" or (p.change == "kind" and p.kind != _LINK_KIND[known.op])
@@ -876,7 +908,7 @@ class LinkRedirect(Base):
                 or (info is not None and (info.phase not in AGENT_PHASES or info.installs))
             ):
                 return []
-            return self._made(event, p.path, p.target, "symlink", phase)
+            return self._made(event, p.path, p.target, "symlink", phase, p.exec_id)
         if isinstance(p, FileAccess) and phase == "verifier" and p.op == "read":
             out: list[Hit] = []
             for path in self.reads.get((agent, p.path), {}):
@@ -910,6 +942,32 @@ class LinkRedirect(Base):
             return None
         return Link(seq, op, target, resolved, why, resolved if op == "symlink" else path)
 
+    def _pend(self, event: Event, snapshot: FsSnapshot) -> Pending | None:
+        """What to settle once the changes of a snapshot are in: the links made by its exec
+        under its roots, other than one the same as before. A first or truncated snapshot may
+        leave a change out and one between execs has no exec, so they settle nothing."""
+        if snapshot.base is None or snapshot.truncated or snapshot.exec_id is None:
+            return None
+        agent = event.agent_id
+        made = {
+            path: None
+            for (a, path), link in self.links.items()
+            if a == agent
+            and link.exec_id == snapshot.exec_id
+            and link.seq < event.seq
+            and not link.kept
+            and any(_under(path, _resolve("/", r)) for r in snapshot.roots)
+        }
+        return Pending(event.seq, agent, made)
+
+    def _settle(self, pending: Pending) -> None:
+        """Drops each link of `pending` its snapshot did not list: the exec that made it left
+        the path as it found it."""
+        for path in pending.unlisted:
+            link = self.links.get((pending.agent, path))
+            if link is not None and link.seq < pending.seq:
+                self._put(pending.agent, path, None)
+
     def _put(self, agent: str | None, path: str, link: Link | None) -> None:
         """Puts `link` at `path` in place of what was there; None only drops that."""
         old = self.links.pop((agent, path), None)
@@ -919,21 +977,32 @@ class LinkRedirect(Base):
             self.links[(agent, path)] = link
             self.reads.setdefault((agent, link.read), {})[path] = None
 
-    def _moved(self, agent: str | None, old: str, new: str) -> None:
+    def _moved(self, agent: str | None, old: str, new: str, exec_id: str | None) -> None:
         """Adds each link at or under `old` at its place under `new` too, where a symlink's
-        target is resolved again. A link already at the new place is kept, since the rename may
-        have failed."""
+        target is resolved again, as made there by the exec `exec_id`. A link already at the new
+        place is kept, since the rename may have failed."""
         for (a, path), link in list(self.links.items()):
             if a != agent or not (path == old or path.startswith(f"{old}/")):
                 continue
             moved = new + path[len(old) :]
             if (agent, moved) not in self.links:
-                self._put(agent, moved, self._link(link.seq, moved, link.op, link.target))
+                made = self._link(link.seq, moved, link.op, link.target)
+                self._put(agent, moved, made and replace(made, exec_id=exec_id))
 
     def _made(
-        self, event: Event, path: str, target: str, op: str, phase: ExecPhase | None
+        self,
+        event: Event,
+        path: str,
+        target: str,
+        op: str,
+        phase: ExecPhase | None,
+        exec_id: str | None,
     ) -> list[Hit]:
         link = self._link(event.seq, path, op, target)
+        if link is not None:
+            old = self.links.get((event.agent_id, path))
+            kept = old is not None and (old.op, old.resolved) == (op, link.resolved)
+            link = replace(link, exec_id=exec_id, kept=kept)
         self._put(event.agent_id, path, link)
         if link is None:
             return []
