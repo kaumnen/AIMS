@@ -35,7 +35,15 @@ from aims.events.index import (
     StepInfo,
     UnitRow,
 )
-from aims.events.log import LogFile, checkpoint_ok, read_events, read_lines, tail_only
+from aims.events.log import (
+    LogFile,
+    checkpoint_ok,
+    held,
+    read_events,
+    read_lines,
+    settled,
+    tail_only,
+)
 from aims.events.payloads import LogTruncated, RunFinished, RunStarted
 from aims.events.schema import BlobRef, Content, Draft, Event, blob_refs, now
 from aims.text import scrub
@@ -406,8 +414,9 @@ class LocalEventStore:
         """Where the synced part of a run's log ends: the index head, or past it while the
         index is behind the log. With no writer or sink here the log is read under the lock
         that opens one for the run, so a writer opening meanwhile cannot add lines it has not
-        synced yet; a writer in another process still can. A sealed run's head is read once.
-        None too for a run another process deleted while its index was behind here."""
+        synced yet. Lines of a log a writer in another process holds do not count: it may
+        not have synced them. A sealed run's head is read once. None too for a run another
+        process deleted while its index was behind here."""
         head = await self.head(run_id)
         if run_id not in self._lags:
             return head
@@ -418,10 +427,13 @@ class LocalEventStore:
             return sealed
 
         def read() -> Head:
+            path = self._log(run_id)
             after = head or Head()
             while True:
-                chunk, error = _take(self._log(run_id), run_id, after, CHUNK)
+                chunk, error = _take(path, run_id, after, CHUNK)
                 if chunk:
+                    if not settled(path, chunk[-1][1]):
+                        return after
                     after = chunk[-1][1]
                 if error is not None or len(chunk) < CHUNK:
                     return after
@@ -766,7 +778,7 @@ class LocalEventStore:
             file = LogFile(path)
             try:
                 head, refs, error = await asyncio.to_thread(scan, path, run_id)
-                await self._index_log(run_id)
+                await self._index_log(run_id, mine=True)
                 if error is not None:
                     if not await asyncio.to_thread(tail_only, path, error.offset):
                         raise RunCorrupt(f"run {run_id}: {error}")
@@ -1337,7 +1349,7 @@ class LocalEventStore:
             truncated: LogTruncated | None = None
             try:
                 head, _, error = await asyncio.to_thread(scan, path, run_id)
-                await self._index_log(run_id)
+                await self._index_log(run_id, mine=True)
                 if error is not None:
                     if not await asyncio.to_thread(tail_only, path, error.offset):
                         raise error
@@ -1360,15 +1372,25 @@ class LocalEventStore:
             self._writers[run_id] = writer
         return writer
 
-    async def _catch_up(self, run_id: str) -> tuple[Head, ChainError | None]:
+    async def _catch_up(self, run_id: str, *, mine: bool = False) -> tuple[Head, ChainError | None]:
         """Index verified events past the index head, up to the first one the index cannot take.
         When the log lost that head, a run whose log a writer or sink here holds, or held when
         it found that, is indexed again from its log; any other is RunCorrupt. FileNotFoundError
         when the run has no log, as when another process deleted it, even after its log was
-        read here."""
+        read here.
+
+        A log that a writer elsewhere holds is left to that writer, which indexes each batch
+        once it synced it: lines read here could be ones it has not synced and cuts when the
+        sync fails, and the index would hold events the log does not. So nothing is indexed
+        while one holds the log, and what was read with none is indexed only once the log is
+        `settled`. `mine` says the caller opens the log's writer or sink and holds its lock."""
         path = self._log(run_id)
         head = Head()
         indexed = await self._index.head(run_id)
+        mine = mine or self._open(run_id)
+        if not mine and await asyncio.to_thread(held, path):
+            return (head if indexed is None else indexed[0]), None
+        again = True
         if indexed is not None:
             head, status = indexed
             if status == "corrupt" or not await asyncio.to_thread(checkpoint_ok, path, head):
@@ -1386,6 +1408,15 @@ class LocalEventStore:
                 head = Head()
         while True:
             chunk, error = await asyncio.to_thread(_take, path, run_id, head, CHUNK)
+            if chunk and not mine and not await asyncio.to_thread(settled, path, chunk[-1][1]):
+                if not self.holds(run_id):
+                    await self._take_back(run_id)
+                    raise FileNotFoundError(path)
+                if again and not await asyncio.to_thread(held, path):
+                    # a writer cut what was read and went: the log is read once more
+                    again = False
+                    continue
+                return head, None
             if chunk:
                 try:
                     events = [Event.model_validate(e) for e, _ in chunk]
@@ -1427,12 +1458,14 @@ class LocalEventStore:
             except RunCorrupt as e:
                 log.error("%s", e)
 
-    async def _index_log(self, run_id: str) -> tuple[Head, ChainError | None] | None:
+    async def _index_log(
+        self, run_id: str, *, mine: bool = False
+    ) -> tuple[Head, ChainError | None] | None:
         """`_catch_up`, where a failure leaves the run behind instead of raising and gives None.
         RunCorrupt still raises: the log lost what the index holds. A run another process
         deleted is not behind: it is forgotten, and gives None."""
         try:
-            caught = await self._catch_up(run_id)
+            caught = await self._catch_up(run_id, mine=mine)
         except RunCorrupt:
             self._caught_up(run_id)
             raise
@@ -1487,15 +1520,19 @@ class LocalEventStore:
             lag.task = asyncio.create_task(self._heal(run_id, lag))
         return lag
 
+    def _open(self, run_id: str) -> bool:
+        """Whether a writer or sink here holds the run's log."""
+        handle = self._writers.get(run_id) or self._sinks.get(run_id)
+        return handle is not None and not handle.closed
+
     def _owns(self, run_id: str) -> bool:
         """Whether a writer or sink here holds the run's log, or held it when it found the
         index holding events the log does not. Then the log is the run's whole record: each
         catch-up of a run with an open handle holds its lock, so the log stays still, the open
         checked the index against the log, and each line the log lost since was of a batch
         that handle cut."""
-        handle = self._writers.get(run_id) or self._sinks.get(run_id)
         lag = self._lags.get(run_id)
-        return (handle is not None and not handle.closed) or (lag is not None and lag.retake)
+        return self._open(run_id) or (lag is not None and lag.retake)
 
     async def _retake(self, run_id: str) -> None:
         """Drop the index rows of a run that hold events its log does not: lines a failed write

@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import fcntl
 import gc
 import hashlib
 import itertools
@@ -44,6 +45,7 @@ from aims.events import (
     split_lines,
     verify_run,
 )
+from aims.events import log as log_module
 from aims.events import store as store_module
 from aims.events.blobs import ZSTD_MAGIC, BlobStore
 from aims.events.chain import GENESIS, Head, digest, follow, seal
@@ -1628,9 +1630,17 @@ async def test_a_failed_append_keeps_the_run_to_its_writer(
         assert calls_of(await store.events(run_id)) == ["run.started", "c1", "c2"]
 
 
+def reads_held_logs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make stores read as an older version did, which indexed the lines of a log
+    whatever writer held it. The index may hold what such a reader left."""
+    monkeypatch.setattr(log_module, "held", lambda path: False)
+    monkeypatch.setattr(store_module, "held", lambda path: False)
+
+
 async def test_cut_lines_another_process_indexed_are_taken_out_and_the_writer_goes_on(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    reads_held_logs(monkeypatch)
     loop = asyncio.get_running_loop()
     async with (
         await LocalEventStore.open(tmp_path) as store,
@@ -1688,6 +1698,7 @@ async def test_an_index_that_does_not_open_on_a_full_disk_says_why(
 async def test_cut_lines_another_process_indexes_late_never_mix_with_the_new_ones(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    reads_held_logs(monkeypatch)
     loop = asyncio.get_running_loop()
     async with (
         await LocalEventStore.open(tmp_path) as store,
@@ -1731,3 +1742,30 @@ async def test_cut_lines_another_process_indexes_late_never_mix_with_the_new_one
         assert calls_of(await other.every(run_id)) == kept
         assert (await other.verify(run_id)).ok
     assert verify_run(tmp_path / run_id).ok
+
+
+async def test_a_writer_opens_past_a_reader_that_checks_the_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reader holds a log's lock for a moment to learn whether a writer does. A writer that
+    opens right then tries again; one that finds the lock held each time is refused."""
+    path = tmp_path / "events.jsonl"
+    path.touch()
+    real = fcntl.flock
+    calls: list[int] = []
+
+    def busy_once(fd: int, how: int) -> None:
+        calls.append(how)
+        if len(calls) == 1:
+            raise BlockingIOError
+        real(fd, how)
+
+    monkeypatch.setattr(log_module.fcntl, "flock", busy_once)
+    file = LogFile(path)
+    assert len(calls) == 2
+    assert log_module.held(path)
+    with pytest.raises(RunLocked):
+        LogFile(path)
+    file.close()
+    assert not log_module.held(path)
+    assert not log_module.held(tmp_path / "none.jsonl")

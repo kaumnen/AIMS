@@ -1,12 +1,16 @@
 import fcntl
 import json
 import os
+import time
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 
 from aims.events.chain import MAX_LINE, Head, follow
 from aims.events.disk import sync_dir, write_all
+
+LOCK_TRIES = 3
+LOCK_WAIT_S = 0.001
 
 
 class RunLocked(Exception):
@@ -65,18 +69,48 @@ def tail_only(path: Path, offset: int) -> bool:
     return b"\n" not in rest[:-1]
 
 
+def held(path: Path) -> bool:
+    """Whether a `LogFile` holds the log at `path`, in any process: its writer is alive, so
+    the last lines of the log may be ones it has not synced and may still cut. Takes the
+    log's lock for a moment to learn it. False for a log that is not there."""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except FileNotFoundError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    finally:
+        os.close(fd)
+    return False
+
+
+def settled(path: Path, head: Head) -> bool:
+    """Whether lines read from the log at `path` up to `head` are the log's for good: no
+    writer holds the log now, and it still ends those lines where `head` says. Lines a writer
+    had not synced when they were read are then either gone, which the second check finds, or
+    left in the log by a writer that is gone, which the next one takes as they are."""
+    return not held(path) and checkpoint_ok(path, head)
+
+
 class LogFile:
     """Append handle on a run log. Holds an exclusive flock for its whole life. Opening syncs
-    the log's directory, so its entry is durable before any line is."""
+    the log's directory, so its entry is durable before any line is. A lock found held is
+    tried again for a few milliseconds, since `held` takes it for a moment."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
         self._fd = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o644)
-        try:
-            fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            os.close(self._fd)
-            raise RunLocked(f"{path} is open for writing elsewhere") from None
+        for left in reversed(range(LOCK_TRIES)):
+            try:
+                fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if not left:
+                    os.close(self._fd)
+                    raise RunLocked(f"{path} is open for writing elsewhere") from None
+                time.sleep(LOCK_WAIT_S)
         try:
             sync_dir(path.parent)
         except OSError:

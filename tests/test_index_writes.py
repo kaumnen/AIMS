@@ -1569,3 +1569,132 @@ async def test_verify_fails_a_log_past_its_index_that_holds_another_event_at_its
         verified = await store.verify(run_id)
         assert verified.events == 4
         assert verified.error == "the last event the index holds is not the log's"
+
+
+@pytest.mark.parametrize("stays", [False, True])
+async def test_a_reader_indexes_no_line_of_a_log_a_live_writer_holds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, stays: bool
+) -> None:
+    """A store that opens while another holds a run's log leaves the run to its writer: it
+    indexes no line of a batch that writer has not synced, nor one a failed cut left in the
+    log when `stays`. So no cut line reaches the index, and nothing is indexed again."""
+    loop = asyncio.get_running_loop()
+    root = tmp_path / "runs"
+    async with await LocalEventStore.open(root) as store:
+        run_id = await store.create_run(STARTED)
+        await store.append(run_id, [call(1)])
+
+        async def peek() -> list[int]:
+            async with await LocalEventStore.open(root) as reader:
+                assert run_id not in reader._lags
+                return await indexed(reader, run_id)
+
+        seen: list[list[int]] = []
+
+        def failed(self: Any) -> None:
+            seen.append(asyncio.run_coroutine_threadsafe(peek(), loop).result(10))
+            raise OSError(5, "Input/output error")
+
+        def stuck(self: Any, offset: int) -> bytes:
+            raise OSError(5, "Input/output error")
+
+        with caplog.at_level(logging.WARNING, logger="aims.events"):
+            with monkeypatch.context() as patch:
+                patch.setattr(store_module.LogFile, "sync", failed)
+                if stays:
+                    patch.setattr(store_module.LogFile, "truncate", stuck)
+                with pytest.raises(OSError, match="Input/output error"):
+                    await store.append(run_id, [call(2), call(3)])
+                assert logged(store, run_id) == ([0, 1, 2, 3] if stays else [0, 1])
+                seen.append(await peek())
+            assert seen == [[0, 1], [0, 1]]
+            await store.append(run_id, [call(4)])
+            assert await indexed(store, run_id) == logged(store, run_id) == [0, 1, 2]
+            assert [e.data.get("call_id") for e in await store.every(run_id)][2] == "c4"
+            assert (await store.verify(run_id)).ok
+        assert not any("indexed again" in m for m in caplog.messages)
+    async with await LocalEventStore.open(root) as store:
+        assert (await store.verify(run_id)).ok
+
+
+async def unindexed_run(root: Path) -> str:
+    """A closed run of three events that the next open of the store indexes from its log."""
+    async with await LocalEventStore.open(root) as store:
+        run_id = await store.create_run(STARTED)
+        await store.append(run_id, [call(1), call(2)])
+    reset_index(root)
+    return run_id
+
+
+async def test_a_reader_indexes_no_line_a_writer_cut_since_it_read_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A writer opened, cut its failed batch and went, all between a reader's read of the log
+    and its check: the reader reads the log again and indexes what it holds now."""
+    root = tmp_path / "runs"
+    run_id = await unindexed_run(root)
+    path = root / run_id / LOG
+    take = store_module._take
+    cuts = 0
+
+    def cut_after(*args: Any) -> Any:
+        nonlocal cuts
+        found = take(*args)
+        if args[0] == path and not cuts:
+            cuts += 1
+            path.write_bytes(b"".join(path.read_bytes().splitlines(keepends=True)[:2]))
+        return found
+
+    monkeypatch.setattr(store_module, "_take", cut_after)
+    async with await LocalEventStore.open(root) as store:
+        assert cuts == 1
+        assert await indexed(store, run_id) == logged(store, run_id) == [0, 1]
+        assert (await store.verify(run_id)).ok
+        await store.append(run_id, [call(9)])
+        assert (await store.verify(run_id)).ok
+
+
+async def test_a_reader_indexes_no_line_of_a_log_a_writer_took_since_it_read_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A writer opened between a reader's read of the log and its check: the reader indexes
+    none of what it read, as the writer may not have synced it."""
+    root = tmp_path / "runs"
+    run_id = await unindexed_run(root)
+    path = root / run_id / LOG
+    take = store_module._take
+    writers: list[Any] = []
+
+    def taken_after(*args: Any) -> Any:
+        found = take(*args)
+        if args[0] == path and not writers:
+            writers.append(store_module.LogFile(path))
+        return found
+
+    monkeypatch.setattr(store_module, "_take", taken_after)
+    async with await LocalEventStore.open(root) as store:
+        try:
+            assert len(writers) == 1
+            assert await store.run(run_id) is None
+            assert run_id not in store._lags
+        finally:
+            writers[0].close()
+        await store.sync()
+        assert await indexed(store, run_id) == [0, 1, 2]
+
+
+async def test_a_log_head_read_counts_no_line_of_a_log_another_writer_holds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id, store = await behind_at_open(tmp_path / "runs", monkeypatch, sealed=False)
+    try:
+        writer = store_module.LogFile(store.root / run_id / LOG)
+        try:
+            assert await store.log_head(run_id) is None
+        finally:
+            writer.close()
+        found = await store.log_head(run_id)
+        assert found is not None
+        assert found.seq == 1
+    finally:
+        await store.close()
