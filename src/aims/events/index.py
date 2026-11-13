@@ -1438,6 +1438,11 @@ class Index:
         ) as cur:
             return [(r[0], r[1]) for r in await cur.fetchall()]
 
+    async def run_ids(self) -> set[str]:
+        """Every run the index holds, as one read sees them."""
+        async with self._db.execute("select run_id from runs") as cur:
+            return {r[0] for r in await cur.fetchall()}
+
     async def ended_before(self, at: str) -> list[str]:
         """The runs that ended before the timestamp `at`, oldest first."""
         async with self._db.execute(

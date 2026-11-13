@@ -93,8 +93,12 @@ async def _unheld(state: ServerState, run_id: str) -> bool:
 
 
 async def _unindexed(state: ServerState) -> dict[str, set[str]]:
-    """Each run with a log here the index does not hold, with the runs it was made from."""
-    return {r: await _made_of(state, r) for r in state.store.run_ids() if await _unheld(state, r)}
+    """Each run with a log here the index does not hold, with the runs it was made from. The
+    index is read once, before the logs are listed: a run made in between has a log and is
+    looked at on its own."""
+    held = await state.store.indexed()
+    behind = [r for r in state.store.run_ids() if r not in held]
+    return {r: await _made_of(state, r) for r in behind if await _unheld(state, r)}
 
 
 async def _made_of(state: ServerState, run_id: str) -> set[str]:

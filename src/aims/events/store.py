@@ -1098,6 +1098,10 @@ class LocalEventStore:
         the scores of the flags of a monitor run among them."""
         return await self._index.made_from(run_ids)
 
+    async def indexed(self) -> set[str]:
+        """Every run the index holds, as one read sees them."""
+        return await self._index.run_ids()
+
     async def ended_before(self, at: str) -> list[str]:
         """The runs that ended before the timestamp `at`."""
         return await self._index.ended_before(at)
