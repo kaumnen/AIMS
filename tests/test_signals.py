@@ -1601,6 +1601,55 @@ async def test_verifier_env_skips_a_path_in_an_unknown_directory(store: LocalEve
     assert b.of("verifier_env") == []
 
 
+# bash expands $NAME and ${NAME} in BASH_ENV and runs a command it substitutes. BASH_ENV,
+# PYTHONSTARTUP and PYTHONUSERBASE name one path each, colons and all.
+@pytest.mark.parametrize(
+    ("env", "flagged"),
+    [
+        (["HOME=/home/agent", "BASH_ENV=$HOME/rc.sh"], True),
+        (["BASH_ENV=${HOME}/rc.sh", "HOME=/home/agent", "HOME=/srv"], True),
+        (["HOME=/srv", "BASH_ENV=$HOME/rc.sh"], False),
+        (["BASH_ENV=$HOME/rc.sh"], False),
+        (["BASH_ENV=$(sh /opt/setup)"], True),
+        (["BASH_ENV=`id`"], True),
+        (["BASH_ENV=/work/a:b.sh"], True),
+        (["PYTHONSTARTUP=/work/a:b.sh"], True),
+        (["PYTHONSTARTUP=/srv/x:/work/hack"], False),
+        (["PYTHONUSERBASE=/srv/x:/work/hack"], False),
+        (["PYTHONPATH=/srv/x:/work/hack"], True),
+    ],
+)
+async def test_verifier_env_reads_bash_env_and_single_paths_as_their_readers_do(
+    store: LocalEventStore, env: list[str], flagged: bool
+) -> None:
+    b = await bench(store)
+    written = ["/home/agent/rc.sh", "/work/a:b.sh", "/work/hack/x.py"]
+    await b.bash("mk", *(lambda ex, w=w: b.k(FileAccess, ex, op="write", path=w) for w in written))
+    v = await b.exec("score", phase="verifier")
+    await b.emit(b.proc(v, ["python"], env=env).model_copy(update={"cwd": "/work"}))
+    names = [e.partition("=")[0] for e in env if not e.startswith("HOME=")]
+    assert [f.key for f in b.of("verifier_env")] == (names if flagged else [])
+
+
+# The tracer records the first 4 KiB of an environment, so its last entry may be cut short.
+@pytest.mark.parametrize(
+    ("last", "env_bytes", "flagged"),
+    [
+        ("PYTEST_ADDOPTS=-p no:ca", 6000, False),
+        ("PYTEST_ADDOPTS=-p no:ca", 4000, True),
+        ("PYTEST_ADDOPTS=-p evil", 6000, True),
+    ],
+)
+async def test_verifier_env_reads_an_entry_the_tracer_cut_as_the_start_of_one(
+    store: LocalEventStore, last: str, env_bytes: int, flagged: bool
+) -> None:
+    b = await bench(store)
+    v = await b.exec("score", phase="verifier", env={"PYTEST_ADDOPTS": "-p no:cacheprovider"})
+    env = ["PATH=/usr/bin", f"FILLER={'x' * 3900}", last]
+    await b.emit(b.proc(v, ["python"], env=env).model_copy(update={"env_bytes": env_bytes}))
+    assert [f.key for f in b.of("verifier_env")] == (["PYTEST_ADDOPTS"] if flagged else [])
+
+
 @pytest.mark.parametrize(
     ("stdout", "exit_code", "found"),
     [
