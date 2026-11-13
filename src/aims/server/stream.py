@@ -16,7 +16,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from aims.events import RunCorrupt
 from aims.events.index import BIND_MAX
 from aims.models import Delta
-from aims.server.api import Cursor, State, Viewer, _shown, hidden, summaries
+from aims.server.api import Cursor, State, Viewer, _visible, hidden, summaries
 from aims.server.problems import ProblemException, responses
 from aims.wire import (
     DeltaMessage,
@@ -107,11 +107,12 @@ async def _asked(
     deltas: Runs = None,
 ) -> None:
     """Refuse a subscription before the stream opens: a stream's errors after that come too
-    late for a status."""
+    late for a status. A run the index does not hold yet is waited for, not refused: a
+    browser's event source gives up on any status but 200."""
     if len(after or []) > len(run or []):
         raise ProblemException(422, "Invalid request", "one `after` per `run`")
     for run_id in {*(run or []), *(deltas or [])}:
-        await _shown(state, principal, run_id)
+        await _visible(state, principal, run_id)
 
 
 @router.get(

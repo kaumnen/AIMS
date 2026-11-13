@@ -27,6 +27,7 @@ from aims.server.api import (
     Started,
     State,
     Viewer,
+    _no_run,
     _queue,
     _run_id,
     _shown,
@@ -47,7 +48,7 @@ class FlagPage(Out):
     origin: str | None = None
 
 
-@router.get("/runs/{run_id}/flags", tags=["monitor"], responses=responses(404))
+@router.get("/runs/{run_id}/flags", tags=["monitor"], responses=responses(404, 503))
 async def list_flags(
     run_id: str,
     principal: Viewer,
@@ -66,7 +67,7 @@ async def list_flags(
     await _shown(state, principal, _run_id(run_id))
     info = await state.store.run(run_id)
     if info is None:
-        raise ProblemException(404, "Not found", f"no run {run_id}")
+        raise _no_run(state, run_id)
     items = await state.store.flags(
         run_id,
         after=after,

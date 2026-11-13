@@ -490,7 +490,35 @@ def hidden(principal: Principal) -> tuple[str, ...]:
     return TRUTH_KINDS if principal.role == "viewer" else ()
 
 
+# Seconds a client waits before it asks again for a run the index does not hold yet.
+INDEXING_RETRY_S = 1
+
+
+def _no_run(state: ServerState, run_id: str) -> ProblemException:
+    """What a read answers for a run the index does not hold: 503 with a Retry-After when the
+    run's log is here, as while another process rebuilds the index, which empties it for a
+    while, or while the index is behind the log; else 404."""
+    if state.store.logged(run_id):
+        return ProblemException(
+            503,
+            "Unavailable",
+            f"run {run_id} is not indexed yet; ask again soon",
+            code="indexing",
+            headers={"Retry-After": str(INDEXING_RETRY_S)},
+        )
+    return ProblemException(404, "Not found", f"no run {run_id}")
+
+
 async def _shown(state: ServerState, principal: Principal, run_id: str) -> None:
+    """Gate a read of one run: 503 while the index does not hold it and its log is here, as
+    `_no_run` answers, so no read gives 404 or an empty page for a run that is here; then
+    `_visible`."""
+    if await state.store.run(run_id) is None and state.store.logged(run_id):
+        raise _no_run(state, run_id)
+    await _visible(state, principal, run_id)
+
+
+async def _visible(state: ServerState, principal: Principal, run_id: str) -> None:
     """Raises 403 when a viewer asks for a run of `TRUTH_KINDS`, started or still a job."""
     if principal.role != "viewer":
         return
@@ -556,12 +584,12 @@ def budget_changes(started: dict[str, JsonValue]) -> list[budgets.BudgetChange]:
     return budgets.changes(resolved, budgets.load(config.get("budget")))
 
 
-@router.get("/runs/{run_id}", tags=["runs"], responses=responses(404))
+@router.get("/runs/{run_id}", tags=["runs"], responses=responses(404, 503))
 async def get_run(run_id: str, principal: Viewer, state: State) -> RunDetail:
     await _shown(state, principal, _run_id(run_id))
     (found,) = await summaries(state, [_run_id(run_id)]) or [None]
     if found is None:
-        raise ProblemException(404, "Not found", f"no run {run_id}")
+        raise _no_run(state, run_id)
     first = await state.store.events(run_id, limit=1)
     last = await state.store.events(run_id, types=["run.finished"], limit=1)
     verdict = await state.store.events(
@@ -627,11 +655,11 @@ class Deleted(Out):
 async def _family(state: ServerState, run_id: str) -> retention.Family:
     found = await retention.family(state, _run_id(run_id))
     if found is None:
-        raise ProblemException(404, "Not found", f"no run {run_id}")
+        raise _no_run(state, run_id)
     return found
 
 
-@router.get("/runs/{run_id}/dependents", tags=["runs"], responses=responses(404))
+@router.get("/runs/{run_id}/dependents", tags=["runs"], responses=responses(404, 503))
 async def run_dependents(run_id: str, principal: Operator, state: State) -> Dependents:
     found = await _family(state, run_id)
     return Dependents(
@@ -642,7 +670,7 @@ async def run_dependents(run_id: str, principal: Operator, state: State) -> Depe
     )
 
 
-@router.delete("/runs/{run_id}", tags=["runs"], responses=responses(404, 409))
+@router.delete("/runs/{run_id}", tags=["runs"], responses=responses(404, 409, 503))
 @audit.audited("run.delete")
 async def delete_run(
     run_id: str, principal: Operator, state: State, note: audit.Note, force: bool = False
@@ -1299,7 +1327,7 @@ async def cancel_run(
     return await command(state, run_id, act, principal, note)
 
 
-@router.get("/runs/{run_id}/commands", tags=["control"], responses=responses(404))
+@router.get("/runs/{run_id}/commands", tags=["control"], responses=responses(404, 503))
 async def list_commands(run_id: str, principal: Viewer, state: State) -> list[CommandInfo]:
     """The commands sent to a run through the control plane, oldest first, with the runner's
     answers. Answers given at a terminal reach the run's log only, as `operator.action`."""
@@ -1310,7 +1338,7 @@ async def list_commands(run_id: str, principal: Viewer, state: State) -> list[Co
 # Events, samples, blobs, verification
 
 
-@router.get("/runs/{run_id}/events", tags=["events"], responses=responses(404))
+@router.get("/runs/{run_id}/events", tags=["events"], responses=responses(404, 503))
 async def list_events(
     run_id: str,
     principal: Viewer,
@@ -1344,7 +1372,7 @@ async def list_events(
     return EventPage(items=items, next=nxt)
 
 
-@router.get("/runs/{run_id}/events/{seq}", tags=["events"], responses=responses(404))
+@router.get("/runs/{run_id}/events/{seq}", tags=["events"], responses=responses(404, 503))
 async def get_event(run_id: str, seq: Seq, principal: Viewer, state: State) -> Event:
     await _shown(state, principal, _run_id(run_id))
     items = await state.store.events(_run_id(run_id), after=seq - 1, limit=1)
@@ -1380,7 +1408,7 @@ class StepPage(Out):
     next: int | None = None
 
 
-@router.get("/runs/{run_id}/steps", tags=["events"], responses=responses(404))
+@router.get("/runs/{run_id}/steps", tags=["events"], responses=responses(404, 503))
 async def list_steps(
     run_id: str,
     principal: Viewer,
@@ -1396,7 +1424,7 @@ async def list_steps(
     return StepPage(items=items, next=items[-1].seq if len(items) == limit else None)
 
 
-@router.get("/runs/{run_id}/activity", tags=["events"], responses=responses(404))
+@router.get("/runs/{run_id}/activity", tags=["events"], responses=responses(404, 503))
 async def list_activity(
     run_id: str,
     principal: Viewer,
@@ -1409,7 +1437,7 @@ async def list_activity(
     return await state.store.activity(run_id, _execs(execs))
 
 
-@router.get("/runs/{run_id}/costs", tags=["events"], responses=responses(404))
+@router.get("/runs/{run_id}/costs", tags=["events"], responses=responses(404, 503))
 async def list_costs(run_id: str, principal: Viewer, state: State) -> list[CallCost]:
     """What the run's live model calls cost, per monitor role (None for an agent's calls) and
     output schema, in the order each kind first called."""
@@ -1422,7 +1450,7 @@ class SamplePage(Out):
     next: int | None = None
 
 
-@router.get("/runs/{run_id}/samples", tags=["events"], responses=responses(404))
+@router.get("/runs/{run_id}/samples", tags=["events"], responses=responses(404, 503))
 async def list_samples(
     run_id: str,
     principal: Viewer,
@@ -1463,7 +1491,7 @@ async def _job_input(state: ServerState, run_id: str, sha256: str) -> bool:
     "/runs/{run_id}/blobs/{sha256}",
     tags=["events"],
     response_class=Response,
-    responses={200: {"content": {"application/octet-stream": {}}}, **responses(404)},
+    responses={200: {"content": {"application/octet-stream": {}}}, **responses(404, 503)},
 )
 async def get_blob(
     run_id: str,
@@ -1541,12 +1569,12 @@ class VerificationOut(Out):
     bad_blobs: list[str]
 
 
-@router.get("/runs/{run_id}/verification", tags=["events"], responses=responses(404))
+@router.get("/runs/{run_id}/verification", tags=["events"], responses=responses(404, 503))
 async def verify_run(run_id: str, principal: Viewer, state: State) -> VerificationOut:
     """Check the hash chain of the control plane's copy and every blob it references."""
     await _shown(state, principal, _run_id(run_id))
     if await state.store.run(run_id) is None:
-        raise ProblemException(404, "Not found", f"no run {run_id}")
+        raise _no_run(state, run_id)
     v = await state.store.verify(run_id)
     return VerificationOut(
         run_id=v.run_id,

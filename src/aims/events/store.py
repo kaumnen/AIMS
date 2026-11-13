@@ -453,6 +453,15 @@ class LocalEventStore:
         except OSError:
             return True
 
+    def logged(self, run_id: str) -> bool:
+        """Whether a run's log here holds anything: a run the index may not hold for a while,
+        as when another process rebuilds it, or it is behind the log. False for a name that is
+        no run id."""
+        try:
+            return os.stat(self._log(run_id)).st_size > 0
+        except KeyError, OSError:
+            return False
+
     def _forget(self, run_id: str) -> None:
         """Drop what this store remembers of a run another process deleted."""
         self._caught_up(run_id)

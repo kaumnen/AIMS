@@ -28,6 +28,7 @@ from aims.server.api import (
     StartFork,
     State,
     Viewer,
+    _no_run,
     _run_id,
     _shown,
     fork_estimate,
@@ -101,7 +102,7 @@ async def estimate_scenario(
         raise ProblemException(422, "Cannot estimate", str(e), code="estimate") from None
 
 
-@router.get("/runs/{run_id}/forks/estimate", tags=["runs"], responses=responses(404))
+@router.get("/runs/{run_id}/forks/estimate", tags=["runs"], responses=responses(404, 503))
 async def estimate_forks(
     run_id: str,
     principal: Operator,
@@ -126,7 +127,8 @@ async def estimate_forks(
         monitor=monitor,
         budget=_budget(budget),
     )
-    point = await fork_point(state, _run_id(run_id), body)
+    await _shown(state, principal, _run_id(run_id))
+    point = await fork_point(state, run_id, body)
     try:
         return fork_estimate(state.config.settings(), await state.history(), point, body)
     except (RunError, ProfileError, KeyError, MonitorConfigError, TextError) as e:
@@ -147,11 +149,11 @@ async def get_spend(principal: Viewer, state: State) -> Spend:
     return Spend(providers=credits, lines=describe_spend(credits))
 
 
-@router.get("/runs/{run_id}/projection", tags=["runs"], responses=responses(404))
+@router.get("/runs/{run_id}/projection", tags=["runs"], responses=responses(404, 503))
 async def get_projection(run_id: str, principal: Viewer, state: State) -> Projection:
     """What the run has cost so far and is on track to cost, as `aims run` shows it live."""
     await _shown(state, principal, _run_id(run_id))
     found = await projection(state.store, run_id, await state.history())
     if found is None:
-        raise ProblemException(404, "Not found", f"no run {run_id}")
+        raise _no_run(state, run_id)
     return found

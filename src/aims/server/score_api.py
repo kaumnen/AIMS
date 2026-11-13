@@ -38,6 +38,7 @@ from aims.server.api import (
     Started,
     State,
     Viewer,
+    _no_run,
     _queue,
     _run_id,
     _shown,
@@ -191,7 +192,7 @@ async def queue_score(
     return await _queue(state, token, [job], runner=body.runner, parallel=None)
 
 
-@router.get("/runs/{run_id}/score/estimate", tags=["score"], responses=responses(404))
+@router.get("/runs/{run_id}/score/estimate", tags=["score"], responses=responses(404, 503))
 async def estimate_score(
     run_id: str,
     principal: Operator,
@@ -204,7 +205,7 @@ async def estimate_score(
     output cap allows."""
     run_id = _run_id(run_id)
     if await state.store.run(run_id) is None:
-        raise ProblemException(404, "Not found", f"no run {run_id}")
+        raise _no_run(state, run_id)
     try:
         return await estimate_sealed(
             state.store, state.config.settings(), run_id, awareness=awareness, answer=answer
@@ -243,12 +244,12 @@ class LabelBody(BaseModel):
     note: Utf8 = Field(default="", max_length=4000)
 
 
-@router.get("/runs/{run_id}/labels", tags=["score"], responses=responses(404))
+@router.get("/runs/{run_id}/labels", tags=["score"], responses=responses(404, 503))
 async def get_labels(run_id: str, principal: Viewer, state: State) -> list[Label]:
     """The latest label of each labelled flag of the run, by flag seq."""
     await _shown(state, principal, _run_id(run_id))
     if await state.store.run(run_id) is None:
-        raise ProblemException(404, "Not found", f"no run {run_id}")
+        raise _no_run(state, run_id)
     return list((await state.store.labels(run_id)).values())
 
 

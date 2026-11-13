@@ -209,6 +209,45 @@ async def test_a_flag_is_labelled_while_another_process_rebuilds_the_index(
     assert [x.flag for x in await cp.state.store.label_history(origin)] == [2]
 
 
+# every read of one run
+READS = ("", "/events", "/events/0", "/steps", "/activity?exec=x", "/costs", "/samples")
+READS += ("/flags", "/labels", "/verification", "/projection", "/commands", "/report")
+READS += (f"/blobs/{'0' * 64}", "/dependents", "/score/estimate", "/forks/estimate?step=1")
+
+
+async def test_a_read_while_another_process_rebuilds_the_index_says_to_ask_again(
+    cp: CP, local: LocalEventStore, fake: FakeRunner
+) -> None:
+    origin = await planted(cp, local, fake)
+    unknown = "019a6f00-0000-7000-8000-00000000000f"
+    async with cp.client(cp.operator) as c, cp.client(cp.viewer) as viewer:
+        for path in READS:
+            r = await c.get(f"/api/runs/{origin}{path}")
+            # the run is found; a blob it lacks, or a fork it cannot make, is another matter
+            assert r.status_code not in (404, 503) or "no blob" in r.text, (path, r.text)
+        other = await Index.open(cp.state.store.root / INDEX)
+        try:
+            await other.reset()
+            for path in READS:
+                r = await c.get(f"/api/runs/{origin}{path}")
+                assert r.status_code == 503, (path, r.status_code, r.text)
+                assert (r.headers["retry-after"], r.json()["code"]) == ("1", "indexing"), path
+            # a viewer is told the same, not a run's kind it cannot know yet
+            r = await viewer.get(f"/api/runs/{origin}/events")
+            assert r.status_code == 503
+            r = await c.get(f"/api/runs/{unknown}/labels")
+            assert (r.status_code, r.json()["detail"]) == (404, f"no run {unknown}")
+            assert (await c.get(f"/api/runs/{unknown}")).status_code == 404
+        finally:
+            await other.close()
+        await cp.state.store.sync()
+        r = await c.get(f"/api/runs/{origin}/labels")
+        assert r.status_code == 200, r.text
+        r = await c.get(f"/api/runs/{origin}/events")
+        assert r.status_code == 200
+        assert r.json()["items"]
+
+
 async def test_labels_from_the_api_and_from_runners_and_the_rates(
     cp: CP, local: LocalEventStore, fake: FakeRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:

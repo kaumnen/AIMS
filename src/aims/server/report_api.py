@@ -21,7 +21,7 @@ MARKDOWN = "text/markdown; charset=utf-8"
     response_model=RunReport,
     responses={
         200: {"content": {"text/markdown": {"schema": {"type": "string"}}}},
-        **responses(404),
+        **responses(404, 503),
     },
 )
 async def get_report(
