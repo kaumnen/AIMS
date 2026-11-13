@@ -56,6 +56,7 @@ my-scenario/
   - `files` is a folder copied to `$AIMS_TESTS_DIR` only then. The agent never sees it. Put hidden tests here.
   - `expect` describes a sound verifier run, such as `{tests: 8, report: pytest}`. The monitor flags a verifier run that does not match.
   - `restore` lists globs of seeded files put back before the verifier runs, so an agent cannot pass by editing them. Off by default.
+  - `programs` lists globs of files the agent writes that the verifier is meant to run, such as `[main.py]` when the task asks for a program. Relative ones are under the workdir. The monitor flags a verifier that runs any other file the agent wrote. It still flags a listed hook such as `conftest.py` that the verifier reads or imports.
   - `user` is `runner` (default) or `agent`. `timeout_s`, `env` are optional.
 
 The starter verifier in [../assets/scenario/tests/score.py](../assets/scenario/tests/score.py) runs hidden pytest tests and writes the share that pass.

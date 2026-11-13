@@ -89,12 +89,36 @@ def test_submit_is_always_on() -> None:
             " used_in: [src/**]}\n",
             "used_in needs a canary",
         ),
+        (
+            "  verifier: {command: x, programs: [main.py, '']}\n",
+            "s.yaml:7: task.verifier.programs[1]: Value error, '' is not a sandbox path",
+        ),
+        ("  verifier: {command: x, programs: [../x.py]}\n", "'../x.py' is not a sandbox path"),
     ],
 )
 def test_errors_name_the_line(extra: str, message: str) -> None:
     with pytest.raises(ScenarioError) as e:
         parse(BASE + extra, source="s.yaml")
     assert any(message in p for p in e.value.problems), e.value.problems
+
+
+def test_the_programs_of_a_verifier_join_the_workdir_per_agent() -> None:
+    s = parse(
+        BASE
+        + "  verifier: {command: x, programs: [main.py, ./bin/*, /opt/app/run]}\n"
+        + "sandbox: {workdir: /src}\n"
+        + "agents:\n  - id: a\n"
+        + "  - id: b\n    task: {verifier: {command: y, programs: [b.py]}}\n"
+        + "  - id: c\n    task: {verifier: {command: y}}\n"
+        + "  - id: d\n    task: {verifier: null}\n"
+    )
+    assert [s.programs_of(a) for a in "abcd"] == [
+        ["/src/main.py", "/src/bin/*", "/opt/app/run"],
+        ["/src/b.py"],
+        [],
+        [],
+    ]
+    assert parse(BASE + "  verifier: {command: x}\n").programs_of("agent") == []
 
 
 def test_oversight_is_required_and_one_of_three() -> None:

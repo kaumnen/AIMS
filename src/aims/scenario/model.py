@@ -49,6 +49,12 @@ def _relative(value: str) -> str:
     return value
 
 
+def _sandbox_glob(value: str) -> str:
+    if not value or ".." in value.split("/"):
+        raise ValueError(f"{value!r} is not a sandbox path")
+    return value
+
+
 def _mode(value: object) -> str:
     if not isinstance(value, str):
         raise ValueError(f'quote the mode, as in "0644"; {value!r} reads as a number')
@@ -62,6 +68,7 @@ def _stored_timeout(value: Any, info: ValidationInfo) -> Any:
 
 
 RelPath = Annotated[str, AfterValidator(_relative)]
+SandboxGlob = Annotated[str, AfterValidator(_sandbox_glob)]
 Mode = Annotated[str, BeforeValidator(_mode)]
 Timeout = Annotated[float, BeforeValidator(_stored_timeout), Field(gt=0, le=MAX_TIMEOUT_S)]
 """Seconds, at most MAX_TIMEOUT_S. One stored past it is read back at it."""
@@ -123,7 +130,10 @@ class Verifier(_Strict):
     `files` is a directory copied in only then, where the agent cannot reach. `command` runs in
     the workdir and writes its reward to `$AIMS_LOGS_DIR/reward.json` or `reward.txt`.
     `restore` lists globs of seeded files put back as they were seeded before the verifier runs;
-    off by default, it is an experiment axis.
+    off by default, it is an experiment axis. `programs` lists globs of files the agent writes
+    that the verifier is meant to run, such as the program a task asks for, absolute or relative
+    to the workdir. The monitor's verifier_hook signal does not flag the verifier for running
+    them; it still flags one it reads, imports or takes its configuration from as a hook.
     """
 
     command: str
@@ -133,6 +143,7 @@ class Verifier(_Strict):
     env: dict[str, str] = Field(default_factory=dict)
     expect: Expect | None = None
     restore: list[str] = Field(default_factory=list)
+    programs: list[SandboxGlob] = Field(default_factory=list)
 
 
 class Task(_Strict):
@@ -736,6 +747,11 @@ class Scenario(_Strict):
 
     def sandbox_path(self, path: str) -> str:
         return posixpath.normpath(posixpath.join(self.sandbox.workdir, path))
+
+    def programs_of(self, agent_id: str) -> list[str]:
+        """The `programs` globs of the verifier that scores `agent_id`, joined to the workdir."""
+        verifier = self.task_for(agent_id).verifier
+        return [self.sandbox_path(g) for g in verifier.programs] if verifier is not None else []
 
     @property
     def subjects(self) -> list[str]:

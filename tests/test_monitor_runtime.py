@@ -40,6 +40,7 @@ from aims.models import ModelsConfig, Profile, Roles
 from aims.monitor.config import merge
 from aims.monitor.core import HumanRequest, Monitor
 from aims.monitor.gate import MonitorGate
+from aims.monitor.offline import stamped
 from aims.monitor.setup import ResolvedMonitor, identity
 from aims.monitor.texts import MonitorTexts
 from aims.prompts import AgentTexts, Prompts
@@ -1817,6 +1818,31 @@ async def test_monitor_for_resolves_a_signals_only_monitor(tmp_path: Path) -> No
     assert (signals.config.preset, signals.sweeps, signals.judge) == ("signals", {}, None)
     off = monitor_for(models(), Prompts(), bundle.scenario, agents, layers=[{"preset": "off"}])
     assert off is None
+
+
+def test_the_programs_a_verifier_runs_are_part_of_the_monitor_identity(tmp_path: Path) -> None:
+    def watch(programs: str = "", signals: dict[str, Any] | None = None) -> ResolvedMonitor:
+        sc = scenario(tmp_path, verifier=f"    programs: {programs}" if programs else "").scenario
+        layer = {"preset": "signals", "signals": signals or {}}
+        found = monitor_for(models(), Prompts(), sc, [profile()], layers=[layer])
+        assert found is not None
+        return found
+
+    plain, listed = watch(), watch("[main.py]")
+    assert (plain.programs, listed.programs) == ({}, {"a": ["/work/main.py"]})
+    # A verifier that lists none keeps the hash it had before verifiers could list any.
+    profiles: dict[str, Profile | None] = {"review": None, "judge": None}
+    assert plain.identity == identity(plain.config, plain.texts, profiles, plain.signals)
+    assert listed.identity != plain.identity
+    assert watch("[main.py, bin/*]").identity != listed.identity
+    assert watch("[/work/main.py]").identity == listed.identity
+    off = {"verifier_hook": {"enabled": False}}
+    assert watch("[main.py]", off).identity == watch(signals=off).identity
+    # A runner restores a job's monitor and stamps it with the signals it has.
+    again = stamped(ResolvedMonitor.restore(listed.snapshot()))
+    assert (again.programs, again.identity) == (listed.programs, listed.identity)
+    old = {k: v for k, v in plain.snapshot().items() if k != "programs"}
+    assert ResolvedMonitor.restore(old).programs == {}
 
 
 def test_the_cli_refuses_a_monitor_whose_key_is_unset(

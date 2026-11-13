@@ -5,7 +5,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from pydantic import JsonValue, ValidationError
+from pydantic import JsonValue, TypeAdapter, ValidationError
 
 from aims import __version__
 from aims.events import Oversight
@@ -22,20 +22,23 @@ from aims.monitor.config import (
     merge,
     sweep_usd,
 )
+from aims.monitor.signals.verifier import VerifierHook
 from aims.monitor.texts import MonitorTexts, resolve
 from aims.prompts import Prompts
 from aims.scenario import Scenario
 from aims.stored import STORED
 
 log = logging.getLogger("aims.monitor")
+_PROGRAMS = TypeAdapter(dict[str, list[str]])
 
 
 @dataclass(frozen=True, slots=True)
 class ResolvedMonitor:
     """Everything a run's monitor needs, with its profiles and texts resolved. `sweeps` maps a
     sweep name to its profile; `extract` is the cheaper model the sweeps extract with, None
-    when they extract with their own; `channels` runs the channel sweep. `identity` hashes what
-    decides the monitor's findings."""
+    when they extract with their own; `channels` runs the channel sweep. `programs` holds, by
+    agent, the globs of the agent files its verifier is meant to run, joined to the workdir.
+    `identity` hashes what decides the monitor's findings."""
 
     config: MonitorConfig
     texts: MonitorTexts
@@ -48,6 +51,7 @@ class ResolvedMonitor:
     identity: str = ""
     extract: Profile | None = None
     channels: Profile | None = None
+    programs: dict[str, list[str]] = field(default_factory=dict)
 
     @property
     def judge_reserve_usd(self) -> float:
@@ -79,6 +83,7 @@ class ResolvedMonitor:
             "identity": self.identity,
             "extract": None if self.extract is None else self.extract.snapshot(),
             "channels": None if self.channels is None else self.channels.snapshot(),
+            "programs": {k: list(v) for k, v in self.programs.items()},
         }
 
     @classmethod
@@ -104,6 +109,7 @@ class ResolvedMonitor:
                 identity=str(value["identity"]),
                 extract=profile(value.get("extract")),
                 channels=profile(value.get("channels")),
+                programs=_PROGRAMS.validate_python(value.get("programs") or {}),
             )
         except (KeyError, TypeError, ValueError, ValidationError) as e:
             raise MonitorConfigError(f"the monitor snapshot does not load: {e}") from None
@@ -122,9 +128,12 @@ def identity(
     texts: MonitorTexts,
     profiles: Mapping[str, Profile | None],
     signals: Mapping[str, str],
+    programs: Mapping[str, Sequence[str]] | None = None,
 ) -> str:
     """sha256 over the prompts, rubric, schemas (via the AIMS version), models, effort, lanes,
-    signal versions, rules and AIMS version."""
+    signal versions, rules and AIMS version, and the `programs` of each agent's verifier when
+    the verifier_hook signal is on and some verifier lists any. A monitor of a scenario that
+    lists none keeps the hash it had before verifiers could list them."""
     value: dict[str, JsonValue] = {
         "aims": __version__,
         "config": config.model_dump(mode="json"),
@@ -135,7 +144,16 @@ def identity(
         },
         "signals": dict(sorted(signals.items())),
     }
+    listed: dict[str, JsonValue] = {k: list(v) for k, v in sorted((programs or {}).items()) if v}
+    if listed and VerifierHook.name in signals:
+        value["programs"] = listed
     return digest(value)
+
+
+def programs_of(scenario: Scenario) -> dict[str, list[str]]:
+    """The `programs` of each agent's verifier that lists any, joined to the workdir."""
+    out = {a.id: scenario.programs_of(a.id) for a in scenario.agents}
+    return {k: v for k, v in out.items() if v}
 
 
 def resolve_config(
@@ -220,6 +238,7 @@ def resolve_monitor(
         sweeps=sweeps,
         judge=judge,
     )
+    programs = programs_of(scenario)
     return ResolvedMonitor(
         config=config,
         texts=texts,
@@ -229,9 +248,10 @@ def resolve_monitor(
         review=review,
         judge=judge,
         signals=versions,
-        identity=identity(config, texts, profiles, versions),
+        identity=identity(config, texts, profiles, versions, programs),
         extract=extract,
         channels=channels,
+        programs=programs,
     )
 
 

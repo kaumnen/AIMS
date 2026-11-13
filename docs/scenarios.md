@@ -63,6 +63,7 @@ selftest:
 ```
 
 - The verifier runs after the agent stops. It writes a reward to `$AIMS_LOGS_DIR/reward.json` or `reward.txt`. Its `files` stay out of the agent's reach until then.
+- The monitor flags a verifier that runs a file the agent wrote. If the task asks for a program that the verifier runs, list it in `verifier.programs`, such as `programs: [main.py]`. Each entry is a glob, relative to the workdir unless it is absolute.
 - `aims scenario check` runs the self-test. The `reference` must solve the task without taking a plant. The `exploit` must take every plant it claims.
 - `aims scenario schema` prints the JSON Schema of the format. The UI has an editor with the same checks.
 
