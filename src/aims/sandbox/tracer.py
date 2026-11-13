@@ -265,8 +265,8 @@ class Tracer:
         self._uncounted = False
         # The id of bpftrace's map of record counts.
         self._seq_map = ""
-        # Stream time of each loss bpftrace reported, and the kernel's total by then.
-        self._drops: deque[tuple[int, int]] = deque()
+        # Stream time of each loss bpftrace reported, the kernel's total by then and `_clock`.
+        self._drops: deque[tuple[int, int, int]] = deque()
         self.alive = False
         self.garbled = 0
         self.unhandled = 0
@@ -485,10 +485,13 @@ class Tracer:
             self._container = None
 
     def register(self, pidns: int, mounts: Mounts, syscalls: dict[int, str]) -> Route:
-        since = max(self._sequence.latest, self._skips_ts or 0)
-        route = Route(pidns, mounts, syscalls, since=since)
+        route = Route(pidns, mounts, syscalls, since=self._clock())
         self._routes[pidns] = route
         return route
+
+    def _clock(self) -> int:
+        """The latest kernel time the tracer has seen, in its stream or its skip readings."""
+        return max(self._sequence.latest, self._skips_ts or 0)
 
     def adopt(self, route: Route, pids: list[int]) -> None:
         """Route processes that were already running in the sandbox when it registered."""
@@ -580,12 +583,14 @@ class Tracer:
             show("tracer line could not be handled: %r", raw[:500])
             self._share(Lost(1, UNHANDLED, scope="tracer"))
 
-    def _share(self, lost: Lost) -> None:
+    def _share(self, lost: Lost, found: int | None = None) -> None:
         """Report `lost`, which may hide any sandbox's records, to each sandbox from when it
-        registered: none to one that registered after its window ended, and a window that
+        registered: none to one that registered after its window ended or, for a loss with no
+        window, after `found`, the `_clock` when the loss showed in the stream. A window that
         began before one registered starts then."""
+        end = found if lost.ts_to is None else lost.ts_to
         for route in self._routes.values():
-            if lost.ts_to is not None and lost.ts_to < route.since:
+            if end is not None and end < route.since:
                 continue
             if lost.ts_from is not None and lost.ts_from < route.since:
                 route.put(dataclasses.replace(lost, ts_from=route.since))
@@ -611,12 +616,14 @@ class Tracer:
         Loss is judged on the stream's clock once its holes must have been found, so a reader that
         falls behind does not report loss it has not read up to yet. Unexplained loss is reported
         with an unknown count, so a hole found later is not counted twice. The mark is what the
-        last check left unexplained, so a hole found late lowers it for the checks after.
+        last check left unexplained, so a hole found late lowers it for the checks after. The
+        loss goes only to the sandboxes registered by the time bpftrace reported the last drop it
+        counts: the records went missing where that report stands in the stream.
         """
         self._expire()
-        counted = None
+        counted = found = None
         while self._drops and self._drops[0][0] <= self._sequence.latest - RIPE_US:
-            counted = self._drops.popleft()[1]
+            _, counted, found = self._drops.popleft()
         if counted is None:
             return
         excess = counted - self.located
@@ -624,7 +631,7 @@ class Tracer:
             reason = (
                 f"the kernel dropped {excess - self.unlocated} records no sequence hole located"
             )
-            self._share(Lost(None, reason, scope="tracer"))
+            self._share(Lost(None, reason, scope="tracer"), found)
         self.unlocated = max(excess, 0)
 
     def _handle(self, line: str) -> None:
@@ -648,7 +655,7 @@ class Tracer:
                 self._note(text)
             case Dropped(count):
                 self.kernel_lost += count
-                self._drops.append((self._sequence.latest, self.kernel_lost))
+                self._drops.append((self._sequence.latest, self.kernel_lost, self._clock()))
             case Garbled(pid, text):
                 self.garbled += 1
                 route = self._lookup(pid) if pid is not None else None

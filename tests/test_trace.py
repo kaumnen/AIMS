@@ -1455,6 +1455,43 @@ async def test_a_tracer_hole_is_lost_in_a_sandbox_only_from_when_it_registered()
 
 
 @pytest.mark.anyio
+async def test_an_unexplained_drop_is_lost_only_in_sandboxes_registered_by_its_report() -> None:
+    """bpftrace reports a drop where it reads the records' place in the stream, which a sandbox
+    that registered later would not have got. The drop is judged seconds after that."""
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    early = tracer.register(97, Mounts([]), {})
+    tick(tracer, 1_000_000, 0, 1)
+    tracer._handle(json.dumps({"type": "lost_events", "data": {"events": 2}}))
+    same = tracer.register(98, Mounts([]), {})
+    tick(tracer, 1_500_000, 0, 2)
+    after = tracer.register(99, Mounts([]), {})
+    tick(tracer, 6_000_000, 0, 3)
+
+    lost = Lost(None, "the kernel dropped 2 records no sequence hole located", scope="tracer")
+    assert drain(early) == [lost]
+    assert drain(same) == [lost]
+    assert drain(after) == []
+    assert tracer.unlocated == 2
+    await tracer.stop()
+
+
+@pytest.mark.anyio
+async def test_an_unexplained_drop_reaches_a_sandbox_registered_as_skips_ran_ahead() -> None:
+    """A sandbox's start counts from a skip reading that is ahead of the stream, and so does the
+    time of a drop reported after it registered."""
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    tick(tracer, 1_000_000, 0, 1)
+    tracer._skips_ts = 2_000_000
+    early = tracer.register(97, Mounts([]), {})
+    tracer._handle(json.dumps({"type": "lost_events", "data": {"events": 2}}))
+    tick(tracer, 6_000_000, 0, 2)
+
+    reason = "the kernel dropped 2 records no sequence hole located"
+    assert drain(early) == [Lost(None, reason, scope="tracer")]
+    await tracer.stop()
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("container", [StuckContainer(), StuckContainer(OSError("gone"))])
 async def test_a_failed_skip_reading_leaves_the_close_alone(
     monkeypatch: pytest.MonkeyPatch, container: StuckContainer
