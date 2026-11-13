@@ -110,6 +110,12 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - Deleting a run hides it from lists and search at once, then frees its index rows in short steps. A large run takes about twice as long to delete and no longer blocks other index writes.
 - An index write waits out the lock of another process up to three times, with a warning, before it fails. A write for new events still fails at once and catches up from the log.
 - Opening a data directory deletes temp files of blob and truth writes that are over an hour old.
+- A new event, `sandbox.freeze_failed`, records a sandbox that did not freeze or unfreeze when asked, with the state wanted and the error. The operator, the monitor and an agent's own gate all write it. The run view shows it as a Sandbox note.
+- A command in a container paused outside AIMS, as with `docker pause`, waits until the container runs again. The wait does not count against its timeout. It failed before and its sandbox was stopped. A resume of the agent leaves such a pause alone.
+- `aims score` and `aims models check` stopped by Ctrl-C, SIGTERM or a hangup seal their run as cancelled and exit 130. A second Ctrl-C does nothing more.
+- `aims run --json` and `aims monitor --json` exit 1 when a JSON line could not be written, other than to a closed pipe. The line is skipped with one warning per run and the next lines still come.
+- A second stop of `aims runner` kills its runs. Stops after that, or once it closes, do nothing.
+- The server database moves to version 6. A command's state is kept in its own column. An older AIMS refuses the file.
 
 ### Fixed
 
@@ -269,6 +275,19 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - A run whose index was marked corrupt logs that once. Each later event logged two errors before. Its index takes events again after a rebuild.
 - SQLite's integrity check of the text index passes for runs with resource windows. It reported the index as malformed, though nothing was damaged.
 - A log read for one run no longer holds up opening the log of another, and the index catch-up reads no line a writer that opens meanwhile has not synced.
+- An agent held at a gate goes on when its sandbox does not unfreeze. The unfreeze is tried three times first. The agent ended with an error before.
+- The verifier unfreezes a sandbox left frozen before it runs. One that stays frozen is scored with an error. The verifier waited without end before.
+- A pause that lands as an agent finishes no longer leaves its sandbox frozen for the verifier.
+- A model check ended by an error is sealed with that error as its reason.
+- A score job or model check that fails before its run begins stops shipping it. The runner kept asking for the run, and its stop waited 30 seconds.
+- A forced delete of a run cancels the monitor job, score job or model check that works on it. The job ran on and the run stayed on the runner.
+- A command a runner carried out reads as done whatever its answer text starts with. Text that began with `failed` or `dropped` was read as that state.
+- The run list stream sends a run again once its job moves on after new events. It could keep showing a finished run as running.
+- A cancel that comes as a finished monitor run closes no longer cuts its seal.
+- A Ctrl-C while `aims ui` closes no longer ends in a traceback.
+- A stop while `aims runner` closes no longer cuts a store close.
+- A failed `aims token create` removes the data folder it made, when no token was written.
+- `aims audit` prints nothing when a row fails to show. It printed the rows before it.
 
 ## [0.2.2] - 2026-11-10
 
