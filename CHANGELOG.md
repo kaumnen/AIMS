@@ -120,6 +120,12 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - `exec.finished` says in `error` why the command of a cancelled or timed out exec may still run: the sandbox was paused, the kill failed, or the command did not end in 5 s.
 - The asset images of another AIMS version, such as the toolbox and the tracer, go one day after their last use. They went after two minutes, so two versions or checkouts on one host built them again at every start.
 - The build lock file is readable by every user, so two users of one Docker host can build the same image. A lock file left by AIMS 0.2.2 or older that another user owns still fails: delete it.
+- The server database moves to version 7. A command keeps whether it took effect only in part in its own column, `in_part`, which `GET /api/runs/{id}/commands` returns. `aims control` and the run view read it. An older AIMS refuses the file.
+- A read of a run whose log is there but whose index is not yet answers 503 with `Retry-After`, as while another process rebuilds the index. It answered 404.
+- A cancel that lands while a run starts leaves the run sealed `cancelled`, with the reason `cancelled as the run started`. A start that fails leaves no run folder.
+- A stopped `aims monitor`, `aims score` or `aims models check` says how each run was sealed, read from the store.
+- `aims monitor` waits for every monitor run to end before it reports one that failed.
+- A search of one run reads the run's span once. On a 55,000 event run a query takes about 8 ms, down from 14 ms.
 
 ### Fixed
 
@@ -298,6 +304,20 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - A cancel that lands while a sandbox's volumes are made waits for Docker's answer. A volume made late stayed.
 - A cancel that lands while the tracer stops, or while a failed metadata sidecar is removed, is no longer dropped.
 - A build whose progress ends with no image fails. It returned a tag that did not exist.
+- A sandbox that holds more than about 250 agent processes lists them all. It listed none, so leftover processes were not recorded, not killed and not traced.
+- A second Ctrl-C of `aims run` with several samples, or one run's error, waits for every run to seal before the store closes. Other runs could be left unsealed.
+- A stopped `aims monitor` waits for every monitor run to seal. One could be left `running`.
+- A deleted self-test stops at once, also between two cases. A cancelled self-test is sealed `cancelled` with a reason, and a second cancel no longer cuts the seal.
+- A job cancelled before its task first ran frees its slot.
+- A job whose run has lines is no longer given back while the runner's index is behind its log.
+- The run list stream sends a job again once it ends at a claim that does not load.
+- A refused `aims runner` started by `aims ui` no longer says it stops because `aims ui` ended.
+- A failed `aims token create` removes only the database file it made. It left an empty one in an existing folder, and could delete one another process made.
+- One audit row with a time no date holds no longer breaks `aims audit` or `GET /api/audit`. The time shows as the first or last one there is.
+- `aims run` and `aims monitor` end quietly, with the runs' exit code, when the reader of their output closes the pipe, as `| head` does. They logged a traceback and exited 120.
+- A run whose writer finds lines in the index that a failed write cut off its log is indexed again from its log. It was marked corrupt until a rebuild.
+- A shipper whose run is deleted on the runner before it first read it ends. It retried without end.
+- A search shorter than three characters folds case as longer ones do: `Éc` finds `école`.
 
 ## [0.2.2] - 2026-11-10
 
