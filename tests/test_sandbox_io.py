@@ -745,6 +745,32 @@ async def test_a_cancelled_exec_in_a_paused_sandbox_ends_at_once(
 
     finished = (await store.events(run_id, types=["exec.finished"]))[0].data
     assert finished["end"] == "cancelled"
+    assert finished["error"] == "its command may still run: the sandbox is paused"
+
+
+async def test_an_exec_past_its_overall_deadline_is_ended(
+    backend: DockerBackend, store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A command with no aims-exec around it has nothing in the sandbox that ends it."""
+    _, sb = await sandbox(backend, store)
+    inner = sb.sandbox
+    assert isinstance(inner, DockerSandbox)
+    monkeypatch.setattr(docker_module, "DRAIN_S", 0.2)
+    try:
+        async with asyncio.timeout(30):
+            outcome = await inner.run(
+                [f"{TOOLBOX}/busybox", "sleep", "273"],
+                uid=AGENT_UID,
+                cwd="/",
+                timeout_ms=200,
+                capture=Capture(limit=1024),
+            )
+        left = [p.command for p in await inner.processes() if "sleep 273" in p.command]
+    finally:
+        await sb.close()
+
+    assert left == []
+    assert (outcome.end, outcome.exit_code, outcome.error) == ("timeout", 137, None)
 
 
 async def test_an_exec_in_a_paused_sandbox_waits_for_the_resume(
@@ -1212,7 +1238,7 @@ async def test_a_cancelled_exec_that_does_not_end_says_why(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    _, sb = await sandbox(backend, store)
+    run_id, sb = await sandbox(backend, store)
 
     async def failed_kill(*args: Any) -> int:
         return 2
@@ -1230,3 +1256,5 @@ async def test_a_cancelled_exec_that_does_not_end_says_why(
         await sb.close()
 
     assert "its command may still run: the kill exited 2" in caplog.text
+    finished = (await store.events(run_id, types=["exec.finished"]))[0].data
+    assert finished["error"] == "its command may still run: the kill exited 2"

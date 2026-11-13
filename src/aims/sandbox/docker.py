@@ -654,6 +654,7 @@ class DockerSandbox:
         stdin: bytes | None = None,
         gid: int | None = None,
         env: Mapping[str, str] | None = None,
+        on_left: Callable[[str], None] | None = None,
     ) -> Outcome:
         start = time.monotonic()
 
@@ -726,12 +727,17 @@ class DockerSandbox:
             # Docker leaves an exec running when its stream closes. One whose start request
             # body never went out was never started, and never will be.
             if sent:
-                await settle(self._end(exe, argv, user))
+                await settle(self._end(exe, argv, user, "a cancelled exec", on_left))
             raise
         finally:
             self._deadlines.pop(deadline, None)
         duration = elapsed()
         active = duration - int((self.frozen_s() - frozen) * 1000)
+        left: str | None = None
+        if end == "timeout":
+            # aims-exec ends its command well before this deadline. An exec still there is
+            # one it does not wrap, or one whose aims-exec could not.
+            left = await settle(self._end(exe, argv, user, "an exec past its deadline"))
         try:
             state = await exe.inspect()
         except aiodocker.DockerError as e:
@@ -743,7 +749,7 @@ class DockerSandbox:
         exit_code = None if state.get("Running") else state.get("ExitCode")
         if active >= timeout_ms:
             end = "timeout"
-        return Outcome(end, exit_code, pid, duration)
+        return Outcome(end, exit_code, pid, duration, error=left)
 
     async def _unpaused[T](self, call: Callable[[], Awaitable[T]]) -> T:
         """Run `call`, an exec create or start. Docker refuses both while the container is
@@ -806,19 +812,37 @@ class DockerSandbox:
                     if self._outside and await self._paused_in_docker() is False:
                         self._thawed()
 
-    async def _end(self, exe: Any, argv: Sequence[str], user: str) -> None:
-        """End what a cancelled exec started. Like aims-exec at the deadline it kills the
-        process group of the exec's child, but with SIGKILL at once. Docker has no call for
-        this, so `aims-exec -k` runs in the sandbox as the exec's user and finds the exec by its
-        whole command line, which the ID in `wrapper` makes its own. It forks nothing, so it
-        also runs in a sandbox at its pids limit: Docker adds an exec's first process to the
-        cgroup by moving it there, which the limit does not stop. An exec still starting is
-        waited for, up to `END_S` in all.
+    async def _end(
+        self,
+        exe: Any,
+        argv: Sequence[str],
+        user: str,
+        what: str,
+        on_left: Callable[[str], None] | None = None,
+    ) -> str | None:
+        """End what `what` started, an exec that was cancelled or ran past its deadline. Like
+        aims-exec at the deadline it kills the process group of the exec's child, but with
+        SIGKILL at once. Docker has no call for this, so `aims-exec -k` runs in the sandbox as
+        the exec's user and finds the exec by its whole command line, which the ID in `wrapper`
+        makes its own. It forks nothing, so it also runs in a sandbox at its pids limit: Docker
+        adds an exec's first process to the cgroup by moving it there, which the limit does not
+        stop. An exec still starting is waited for, up to `END_S` in all.
 
         A paused sandbox runs nothing, so there the exec stays frozen until the sandbox is
-        resumed or killed. An exec that did not end is logged: its command may still run."""
-        if self._killed or self._paused_at is not None:
-            return
+        resumed or killed. An exec that did not end is logged. Why its command may still run is
+        returned, and given to `on_left` before a cancel of the caller is raised."""
+        left = await self._kill_exec(exe, argv, user, what)
+        if left is not None:
+            left = f"its command may still run: {left}"
+            if on_left is not None:
+                on_left(left)
+        return left
+
+    async def _kill_exec(self, exe: Any, argv: Sequence[str], user: str, what: str) -> str | None:
+        if self._killed:
+            return None
+        if self._paused_at is not None:
+            return "the sandbox is paused"
         kill = [f"{TOOLBOX}/aims-exec", "-k", *argv]
         sandbox = self._container.id[:12]
         why = "Docker never said it started"
@@ -832,21 +856,22 @@ class DockerSandbox:
                             code = await _call(self._container, kill, user)
                             why = f"the kill exited {code}" if code else "it ran on after the kill"
                     elif state.get("ExitCode") is not None or state.get("Pid"):
-                        return
+                        return None
                     await asyncio.sleep(END_POLL_S)
         except TimeoutError:
             log.warning(
-                "a cancelled exec in %s did not end in %s s and its command may still run: %s",
+                "%s in %s did not end in %s s and its command may still run: %s",
+                what,
                 sandbox,
                 END_S,
                 why,
             )
+            return why
         except Exception as e:
             log.warning(
-                "could not end a cancelled exec in %s, so its command may still run: %s",
-                sandbox,
-                e,
+                "could not end %s in %s, so its command may still run: %s", what, sandbox, e
             )
+            return f"{type(e).__name__}: {e}"
 
     async def processes(self) -> list[Proc]:
         top = await self._container.top(ps_args="-o pid,ppid,uid,args")

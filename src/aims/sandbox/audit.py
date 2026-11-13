@@ -396,29 +396,33 @@ class AuditedSandbox:
             workdir = cwd or self.spec.workdir
             before = await self._snapshot()
             await self._diff_window()
-            await self._append(
-                [
-                    ExecStarted(
-                        exec_id=exec_id,
-                        call_id=call_id,
-                        command=await self._store.content(self._run_id, command),
-                        wrapper=wrapper,
-                        user=str(uid) if gid is None or gid == uid else f"{uid}:{gid}",
-                        cwd=workdir,
-                        timeout_ms=timeout_ms,
-                        audit=audit,
-                        phase=phase,
-                        stdin=None if stdin is None else await self._content(stdin),
-                        stdin_bytes=None if stdin is None else len(stdin),
-                        env=dict(env or {}),
-                    ),
-                ]
+            started = ExecStarted(
+                exec_id=exec_id,
+                call_id=call_id,
+                command=await self._store.content(self._run_id, command),
+                wrapper=wrapper,
+                user=str(uid) if gid is None or gid == uid else f"{uid}:{gid}",
+                cwd=workdir,
+                timeout_ms=timeout_ms,
+                audit=audit,
+                phase=phase,
+                stdin=None if stdin is None else await self._content(stdin),
+                stdin_bytes=None if stdin is None else len(stdin),
+                env=dict(env or {}),
             )
             active = _Active(exec_id, audit, uid=uid)
+            capture = Capture(self.spec.output_limit if limit is None else limit, TAIL)
+            try:
+                await settle(self._append([started]))
+            except asyncio.CancelledError:
+                # The start is in the log by now, so its end goes there too.
+                unrun = Outcome("cancelled", None, None, 0)
+                await settle(self._finish(call_id, active, unrun, capture, before))
+                raise
             self._active = active
             self._open = exec_id
-            capture = Capture(self.spec.output_limit if limit is None else limit, TAIL)
             start = time.monotonic()
+            left: list[str] = []
             try:
                 outcome = await self.sandbox.run(
                     [*wrapper, command],
@@ -430,10 +434,13 @@ class AuditedSandbox:
                     stdin=stdin,
                     gid=gid,
                     env=env,
+                    on_left=left.append,
                 )
             except asyncio.CancelledError:
                 elapsed = int((time.monotonic() - start) * 1000)
-                cancelled = Outcome("cancelled", None, active.root, elapsed)
+                cancelled = Outcome(
+                    "cancelled", None, active.root, elapsed, error=left[-1] if left else None
+                )
                 await settle(self._finish(call_id, active, cancelled, capture, before))
                 raise
             except Exception as e:

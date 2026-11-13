@@ -472,9 +472,11 @@ class Sandbox(Protocol):
         stdin: bytes | None = None,
         gid: int | None = None,
         env: Mapping[str, str] | None = None,
+        on_left: Callable[[str], None] | None = None,
     ) -> Outcome:
         """Run `argv`. `stdin` is written to the process and then closed; `gid` defaults to
-        `uid`; `env` adds to the container's environment."""
+        `uid`; `env` adds to the container's environment. A run that is cancelled and could
+        not end its command tells `on_left` why before it raises the cancel."""
         ...
 
     async def processes(self) -> list[Proc]: ...

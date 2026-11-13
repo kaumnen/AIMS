@@ -95,6 +95,7 @@ class FakeSandbox:
         self.archive_entered = asyncio.Event()
         self.killed = False
         self.closed = False
+        self.left: str | None = None
 
     @property
     def info(self) -> SandboxInfo:
@@ -119,10 +120,16 @@ class FakeSandbox:
         stdin: bytes | None = None,
         gid: int | None = None,
         env: Any = None,
+        on_left: Callable[[str], None] | None = None,
     ) -> Outcome:
         self.runs.append(list(argv))
         step = self.steps.pop(0)
-        outcome = await step(self, capture, on_pid)
+        try:
+            outcome = await step(self, capture, on_pid)
+        except asyncio.CancelledError:
+            if self.left is not None and on_left is not None:
+                on_left(self.left)
+            raise
         if self.after is not None:
             self.procs, self.after = self.after, None
         return outcome
@@ -1041,6 +1048,59 @@ async def test_cancelled_exec_is_recorded(store: LocalEventStore) -> None:
     finished = next(e.data for e in await events(store, run_id) if e.type == "exec.finished")
     assert finished["end"] == "cancelled"
     assert finished["stdout"] == "partial"
+    assert finished["error"] is None
+
+
+async def test_a_cancelled_exec_records_why_its_command_may_still_run(
+    store: LocalEventStore,
+) -> None:
+    sb = FakeSandbox(kernel=False)
+    sb.left = "its command may still run: the kill exited 2"
+    running = asyncio.Event()
+
+    async def hang(sb: FakeSandbox, capture: Capture, on_pid: Callable[[int], None] | None):
+        running.set()
+        await asyncio.Event().wait()
+        raise AssertionError("not reached")
+
+    sb.steps.append(hang)
+    run_id, audited = await start(store, sb)
+    task = asyncio.create_task(audited.exec("sleep 99", timeout_s=60))
+    await running.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await audited.close()
+
+    (finished,) = await events(store, run_id, "exec.finished")
+    assert (finished.data["end"], finished.data["error"]) == ("cancelled", sb.left)
+
+
+async def test_an_exec_cancelled_as_its_start_is_logged_logs_its_end(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The log takes the start whole even when cancelled, so the exec needs its end there."""
+    sb = FakeSandbox(kernel=False)
+    run_id, audited = await start(store, sb)
+    append = store.append
+    task: asyncio.Task[Any] | None = None
+
+    async def cut(run: str, drafts: Any) -> Any:
+        if task is not None and any(d.payload.type == "exec.started" for d in drafts):
+            asyncio.get_running_loop().call_soon(task.cancel)
+        return await append(run, drafts)
+
+    monkeypatch.setattr(store, "append", cut)
+    task = asyncio.create_task(audited.exec("echo hi", timeout_s=60))
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await audited.close()
+
+    (started,) = await events(store, run_id, "exec.started")
+    (finished,) = await events(store, run_id, "exec.finished")
+    assert finished.data["exec_id"] == started.data["exec_id"]
+    assert (finished.data["end"], finished.data["pid"]) == ("cancelled", None)
+    assert sb.runs == []
 
 
 async def test_failed_exec_stops_the_sandbox(store: LocalEventStore) -> None:

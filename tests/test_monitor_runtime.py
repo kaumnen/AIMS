@@ -113,6 +113,7 @@ class Box:
         stdin: bytes | None = None,
         gid: int | None = None,
         env: Any = None,
+        on_left: Callable[[str], None] | None = None,
     ) -> Outcome:
         self.commands.append(argv[-1])
         self.stdins.append(stdin)
