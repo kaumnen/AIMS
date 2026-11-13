@@ -1003,6 +1003,7 @@ async def _run(**o: Any) -> int:
     from rich.live import Live
     from rich.logging import RichHandler
 
+    from aims.aio import every
     from aims.channels import archives
     from aims.events import LocalEventStore, Series
     from aims.models import ProfileError
@@ -1332,13 +1333,15 @@ async def _run(**o: Any) -> int:
                     err.print(f"[yellow]run {run_id} was not scored:[/]", why)
 
             async def execute(batch: list[Runner]) -> list[Result]:
+                # Every run ends, its seal too, before this returns or raises: what follows
+                # closes the link, the sandboxes' backend and the store.
                 if view is None:
-                    return list(await asyncio.gather(*(one(r) for r in batch)))
+                    return await every(one(r) for r in batch)
                 with Live(view, console=err, refresh_per_second=4) as live:
                     if prompt is not None:
                         prompt.live = live
                     try:
-                        found = list(await asyncio.gather(*(one(r) for r in batch)))
+                        found = await every(one(r) for r in batch)
                         await asyncio.sleep(0.3)
                         return found
                     finally:

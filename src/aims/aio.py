@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import io
 import queue
-from collections.abc import AsyncIterator, Awaitable, Buffer, Callable
+from collections.abc import AsyncIterator, Awaitable, Buffer, Callable, Iterable
 
 
 async def shielded[T](fut: asyncio.Future[T]) -> T:
@@ -31,6 +31,19 @@ async def settle[T](aw: Awaitable[T]) -> T:
         if cancelled:
             raise asyncio.CancelledError
         return value
+
+
+async def every[T](aws: Iterable[Awaitable[T]]) -> list[T]:
+    """Await all of `aws` to their end, then return their results in order, or raise the first
+    error among them. A bare asyncio.gather raises as soon as one fails or ends cancelled,
+    while the others still run: a caller that then closes what they use cuts their ends."""
+    found = await asyncio.gather(*aws, return_exceptions=True)
+    results: list[T] = []
+    for one in found:
+        if isinstance(one, BaseException):
+            raise one
+        results.append(one)
+    return results
 
 
 class Pipe(io.RawIOBase):

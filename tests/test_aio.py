@@ -6,7 +6,7 @@ from contextlib import contextmanager
 
 import pytest
 
-from aims.aio import settle, shielded
+from aims.aio import every, settle, shielded
 
 
 @contextmanager
@@ -83,3 +83,50 @@ async def test_settle_outlasts_two_cancels_and_logs_nothing() -> None:
             await task
         await asyncio.sleep(0)
     assert errors == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("first", ["cancelled", "failed"])
+async def test_every_waits_for_the_rest_when_one_ends_cancelled_or_fails(first: str) -> None:
+    """asyncio.gather would raise at the first end, while the slow one still seals."""
+    gate = asyncio.Event()
+    began = asyncio.Event()
+    sealed: list[str] = []
+
+    async def quick() -> str:
+        await began.wait()
+        if first == "failed":
+            raise RuntimeError("quick failed")
+        await asyncio.Event().wait()
+        return "quick"
+
+    async def slow() -> str:
+        try:
+            began.set()
+            await asyncio.Event().wait() if first == "cancelled" else await gate.wait()
+        finally:
+            await settle(gate.wait())
+            sealed.append("slow")
+        return "slow"
+
+    task = asyncio.create_task(every([quick(), slow()]))
+    await began.wait()
+    await asyncio.sleep(0)
+    if first == "cancelled":
+        task.cancel()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not task.done()
+    gate.set()
+    with pytest.raises(asyncio.CancelledError if first == "cancelled" else RuntimeError):
+        await task
+    assert sealed == ["slow"]
+
+
+@pytest.mark.anyio
+async def test_every_returns_the_results_in_order() -> None:
+    async def one(n: int) -> int:
+        await asyncio.sleep(0.01 * (3 - n))
+        return n
+
+    assert await every(one(n) for n in range(3)) == [0, 1, 2]
