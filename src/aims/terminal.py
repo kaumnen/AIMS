@@ -1,11 +1,13 @@
 """What a command writes to its terminal. What it does when the terminal hangs up."""
 
 import asyncio
+import contextlib
 import json
 import logging
 import math
 import os
 import signal
+import sys
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING
 
@@ -86,6 +88,34 @@ def hang_up(fds: Sequence[int]) -> None:
             os.dup2(null, fd)
     finally:
         os.close(null)
+
+
+class Stdout:
+    """Writes a command's output with `echo`, such as typer.echo. Once the reader of its pipe
+    has closed it, as `| head` does, the rest goes to /dev/null, so the command goes on and
+    ends as it would, with one short note on stderr. `closed` says it was."""
+
+    def __init__(self, echo: Callable[..., object]) -> None:
+        self.echo = echo
+        self.closed = False
+
+    def __call__(self, text: str, *, nl: bool = True) -> None:
+        if self.closed:
+            return
+        try:
+            self.echo(text, nl=nl)
+        except BrokenPipeError:
+            self.close()
+
+    def close(self) -> None:
+        """After a write to the closed pipe failed: point stdout at /dev/null, so no later
+        write and not the flush at exit fails. Python would end that with exit code 120."""
+        if self.closed:
+            return
+        self.closed = True
+        hang_up((1,))
+        with contextlib.suppress(OSError):
+            print("note: stdout was closed; the rest of the output is dropped", file=sys.stderr)
 
 
 def on_hangup(loop: asyncio.AbstractEventLoop, then: Callable[[], object]) -> bool:

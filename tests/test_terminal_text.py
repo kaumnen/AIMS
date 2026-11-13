@@ -241,7 +241,8 @@ def test_a_closed_pipe_keeps_the_exit_code_of_the_runs(
     monkeypatch.setattr(typer, "echo", echo)
     result, _ = run_stubbed(tmp_path, monkeypatch, run, "--json")
     assert result.exit_code == 0, result.output
-    assert "the results could not be printed" in result.stderr
+    assert "note: stdout was closed; the rest of the output is dropped" in result.stderr
+    assert "the results could not be printed" not in result.stderr
 
 
 # 73: escape bytes in the live view and the pause prompt

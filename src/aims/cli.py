@@ -1032,10 +1032,11 @@ async def _run(**o: Any) -> int:
     from aims.sandbox import DockerBackend, SandboxError
     from aims.scenario import ScenarioError, load
     from aims.scenario.budget import BudgetError
-    from aims.terminal import VisibleLog, json_text, on_hangup, one_line, shown
+    from aims.terminal import Stdout, VisibleLog, json_text, on_hangup, one_line, shown
     from aims.wire import TracerHealth
 
     err = Console(stderr=True)
+    stdout = Stdout(typer.echo)
     handler = RichHandler(console=err, show_path=False)
     handler.setFormatter(VisibleLog())
     logging.basicConfig(level=logging.WARNING, handlers=[handler], force=True)
@@ -1160,7 +1161,7 @@ async def _run(**o: Any) -> int:
             err.print("[yellow]no cost estimate:[/]", shown(e))
         if cost is not None:
             if o["json_out"]:
-                typer.echo(json_text({"type": "estimate", **cost.model_dump(mode="json")}))
+                stdout(json_text({"type": "estimate", **cost.model_dump(mode="json")}))
             else:
                 for text in cost.lines:
                     err.print(shown(text))
@@ -1199,7 +1200,7 @@ async def _run(**o: Any) -> int:
             )
             steps = cost.parts[0].steps if cost is not None else None
             view = None if o["quiet"] or o["json_out"] else LiveView(store, bench.bus, steps)
-            lines = JsonLines(store, typer.echo) if o["json_out"] else None
+            lines = JsonLines(store, stdout) if o["json_out"] else None
             prompt = HumanPrompt(err) if human and interactive else None
 
             def started(run_id: str) -> None:
@@ -1423,13 +1424,15 @@ async def _run(**o: Any) -> int:
                     flags = f" flags {count}" if count else ""
                     text = f"{r.run_id} {r.status} ${r.cost_usd:.4f}{flags} {r.reason or ''}"
                     out.append(one_line(text) + "\n")
-            typer.echo("".join(out), nl=False)
+            stdout("".join(out), nl=False)
         else:
             Console().print(summary(results, list(digests.values())))
-    except Exception as e:
-        logging.getLogger("aims").exception("the results could not be printed")
+    except BrokenPipeError:
         # A closed pipe, as from `| head`, keeps the runs' own exit code
-        printed = isinstance(e, BrokenPipeError)
+        stdout.close()
+    except Exception:
+        logging.getLogger("aims").exception("the results could not be printed")
+        printed = False
     statuses = {r.status for r in results}
     if stops or "cancelled" in statuses:
         return EXIT_CANCELLED
@@ -2070,9 +2073,10 @@ async def _monitor_runs(**o: Any) -> int:
     from aims.run.job import JobOptions, monitor_profiles
     from aims.run.runner import RunError
     from aims.run.view import JsonLines, digest, monitor_table
-    from aims.terminal import VisibleLog, json_text, on_hangup, one_line, shown
+    from aims.terminal import Stdout, VisibleLog, json_text, on_hangup, one_line, shown
 
     err = Console(stderr=True)
+    stdout = Stdout(typer.echo)
     handler = RichHandler(console=err, show_path=False)
     handler.setFormatter(VisibleLog())
     logging.basicConfig(level=logging.WARNING, handlers=[handler], force=True)
@@ -2137,7 +2141,7 @@ async def _monitor_runs(**o: Any) -> int:
                 planned.append((origin, resolved, options, str(uuid.uuid7())))
         for cost in costs:
             if o["json_out"]:
-                typer.echo(json_text({"type": "estimate", **cost.model_dump(mode="json")}))
+                stdout(json_text({"type": "estimate", **cost.model_dump(mode="json")}))
             elif not o["quiet"]:
                 for text in cost.lines:
                     err.print(shown(text))
@@ -2148,7 +2152,7 @@ async def _monitor_runs(**o: Any) -> int:
         )
         if refused is not None:
             return fail(refused)
-        lines = JsonLines(store, typer.echo) if o["json_out"] else None
+        lines = JsonLines(store, stdout) if o["json_out"] else None
         gate = asyncio.Semaphore(o["parallel"])
 
         def started(run_id: str) -> None:
@@ -2246,7 +2250,7 @@ async def _monitor_runs(**o: Any) -> int:
                 else:
                     text = f"{r.run_id} {r.origin} {r.status} flags {len(d.flags)}"
                     out.append(one_line(f"{text} ${r.cost_usd:.4f} {r.reason or ''}") + "\n")
-            typer.echo("".join(out), nl=False)
+            stdout("".join(out), nl=False)
         else:
             table = Table(title="monitor runs")
             for column in ("run", "origin", "status", "flags", "sweeps", "verdict", "cost"):
@@ -2270,10 +2274,12 @@ async def _monitor_runs(**o: Any) -> int:
             found = monitor_table(digests)
             if found is not None:
                 console.print(found)
-    except Exception as e:
-        logging.getLogger("aims").exception("the results could not be printed")
+    except BrokenPipeError:
         # A closed pipe, as from `| head`, keeps the runs' own exit code
-        printed = isinstance(e, BrokenPipeError)
+        stdout.close()
+    except Exception:
+        logging.getLogger("aims").exception("the results could not be printed")
+        printed = False
     stopped = push is not None and push.cancelled()
     if stopped or any(r.status == "cancelled" for r in results):
         return EXIT_CANCELLED

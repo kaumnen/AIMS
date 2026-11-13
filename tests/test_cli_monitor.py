@@ -13,6 +13,8 @@ import re
 import shutil
 import signal
 import sqlite3
+import subprocess
+import sys
 import threading
 import time
 import tracemalloc
@@ -24,6 +26,7 @@ from typing import Any, cast
 
 import httpx2
 import pytest
+import typer
 from cp import CP, control_plane
 from rich.console import Console
 from scripted import models, profile
@@ -872,6 +875,72 @@ def test_a_json_line_lost_fails_the_command(
         result = invoke("monitor", origin, *args)
     assert result.exit_code == 1, result.output
     assert [x["status"] for x in lines(result.stdout) if x["type"] == "result"] == ["completed"]
+
+
+def test_aims_run_json_into_a_closed_pipe_ends_quietly_with_the_runs_exit_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`aims run --json | head -1`: the reader takes the estimate line and closes the pipe. The
+    monitor's line and the results go nowhere, with one note and no warning or traceback."""
+    echo = typer.echo
+    written: list[str] = []
+
+    def head(message: Any = None, file: Any = None, nl: bool = True, err: bool = False) -> None:
+        if err or file is not None:
+            echo(message, file=file, nl=nl, err=err)
+            return
+        if written:
+            raise BrokenPipeError(32, "Broken pipe")
+        written.append(str(message))
+        echo(message, nl=nl)
+
+    async def run(self: Runner) -> Result:
+        store = self.bench.store
+        self.run_id = run_id = await store.create_run(RunStarted(scenario="w", oversight="observe"))
+        assert self.on_start is not None
+        self.on_start(run_id)
+        late = MonitorDegraded(part="judge", reason="timeout", then="continue")
+        await store.append(run_id, [Draft(late), Draft(RunFinished(status="completed"))])
+        return Result(run_id, "completed")
+
+    monkeypatch.setattr(typer, "echo", head)
+    result, _ = run_stubbed(tmp_path, monkeypatch, run, "--json")
+    monkeypatch.undo()
+    assert result.exit_code == 0, result.output
+    assert [json.loads(line)["type"] for line in written] == ["estimate"]
+    assert result.stderr.count("note: stdout was closed; the rest of the output is dropped") == 1
+    for noise in ("could not be written", "could not be printed", "Traceback"):
+        assert noise not in result.stderr
+
+    async def read() -> list[str]:
+        async with await LocalEventStore.open(tmp_path / "runs") as store:
+            found = [await store.run(r) for r in store.run_ids()]
+            return [i.status for i in found if i is not None]
+
+    assert asyncio.run(read()) == ["completed"]
+
+
+def test_aims_monitor_json_into_a_closed_pipe_ends_quietly_with_the_runs_exit_code(
+    runs: tuple[Path, str],
+) -> None:
+    """A real pipe whose reader takes one line and closes it, as `| head -1`. Without the
+    note the flush at exit would fail, and Python would end with exit code 120."""
+    root, origin = runs
+    args = ["monitor", origin, "--runs-dir", str(root), "--no-server", "--signals-only"]
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "aims", *args, "--json", "--samples", "2"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert proc.stdout is not None
+    assert proc.stderr is not None
+    first = json.loads(proc.stdout.readline())
+    proc.stdout.close()
+    err = proc.stderr.read().decode()
+    proc.stderr.close()
+    assert proc.wait(timeout=60) == 0, err
+    assert first["type"] == "estimate"
+    assert err == "note: stdout was closed; the rest of the output is dropped\n"
 
 
 async def test_the_view_shows_the_last_few_notes_and_the_end_lists_all(tmp_path: Path) -> None:
