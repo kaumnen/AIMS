@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 import shutil
@@ -762,6 +763,77 @@ async def test_the_view_shows_flags_pauses_sweeps_and_the_verdict(tmp_path: Path
         kinds = [json.loads(line)["type"] for line in emitted]
         assert kinds == ["flag", "flag", "action", "sweep", "verdict"]
         assert json.loads(emitted[0])["data"]["category"] == "egress_attempt"
+
+
+@pytest.mark.parametrize("error", [OSError(28, "No space left on device"), BrokenPipeError()])
+async def test_a_json_line_that_fails_is_told_and_the_next_still_come(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, error: OSError
+) -> None:
+    emitted: list[str] = []
+
+    def emit(line: str) -> None:
+        if not emitted:
+            emitted.append("")
+            raise error
+        emitted.append(line)
+
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        run_id = await store.create_run(RunStarted(scenario="s", oversight="observe"))
+        drafts = [
+            Draft(MonitorDegraded(part="judge", reason=f"timeout {i}", then="continue"))
+            for i in range(3)
+        ]
+        await store.append(run_id, [*drafts, Draft(RunFinished(status="completed"))])
+        out = JsonLines(store, emit)
+        with caplog.at_level(logging.WARNING, logger="aims.run"):
+            out.add(run_id)
+            await out.stop()
+    reasons = [json.loads(line)["data"]["reason"] for line in emitted[1:]]
+    assert reasons == ["timeout 1", "timeout 2"]
+    (record,) = caplog.records
+    assert record.getMessage().startswith(f"run {run_id}: a JSON line could not be written")
+    # a closed pipe, as from `| head`, is no failure of the command
+    assert out.failed == (not isinstance(error, BrokenPipeError))
+
+
+async def test_json_lines_that_stop_say_why(caplog: pytest.LogCaptureFixture) -> None:
+    class Broken:
+        async def stream(self, run_id: str) -> AsyncIterator[Event]:
+            raise OSError(5, "Input/output error")
+            yield
+
+    out = JsonLines(cast(Any, Broken()), lambda line: None)
+    with caplog.at_level(logging.WARNING, logger="aims.run"):
+        out.add("r1")
+        await out.stop()
+    assert out.failed
+    assert "run r1: its JSON lines stopped" in caplog.text
+    assert "Input/output error" in caplog.text
+
+
+@pytest.mark.parametrize("command", ["run", "monitor"])
+def test_a_json_line_lost_fails_the_command(
+    runs: tuple[Path, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    async def lost(self: JsonLines, run_id: str) -> None:
+        self.failed = True
+
+    async def run(self: Runner) -> Result:
+        result = await sealed(self)
+        assert self.on_start is not None
+        assert result.run_id is not None
+        self.on_start(result.run_id)
+        return result
+
+    monkeypatch.setattr(JsonLines, "_watch", lost)
+    if command == "run":
+        result, _ = run_stubbed(tmp_path, monkeypatch, run, "--json")
+    else:
+        root, origin = runs
+        args = ["--runs-dir", str(root), "--no-server", "--signals-only", "--json"]
+        result = invoke("monitor", origin, *args)
+    assert result.exit_code == 1, result.output
+    assert [x["status"] for x in lines(result.stdout) if x["type"] == "result"] == ["completed"]
 
 
 async def test_the_view_shows_the_last_few_notes_and_the_end_lists_all(tmp_path: Path) -> None:

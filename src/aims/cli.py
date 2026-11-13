@@ -1414,7 +1414,7 @@ async def _run(**o: Any) -> int:
         return EXIT_CANCELLED
     if "killed" in statuses:
         return EXIT_KILLED
-    if "failed" in statuses or not printed:
+    if "failed" in statuses or not printed or (lines is not None and lines.failed):
         return EXIT_FAILED
     return 0
 
@@ -2245,7 +2245,8 @@ async def _monitor_runs(**o: Any) -> int:
     stopped = push is not None and push.cancelled()
     if stopped or any(r.status == "cancelled" for r in results):
         return EXIT_CANCELLED
-    if any(r.status != "completed" for r in results) or not printed:
+    lost = lines is not None and lines.failed
+    if any(r.status != "completed" for r in results) or not printed or lost:
         return EXIT_FAILED
     return 0
 

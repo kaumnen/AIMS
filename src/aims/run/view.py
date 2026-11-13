@@ -4,6 +4,7 @@ prompt a person answers when the monitor pauses an agent under human oversight."
 import asyncio
 import contextlib
 import json
+import logging
 import sys
 import threading
 from collections.abc import Callable, Mapping, Sequence
@@ -25,6 +26,8 @@ from aims.run.estimate import Progress, project_run, usd
 from aims.run.runner import Result, RunError, Runner
 from aims.terminal import json_text, one_line, shown
 from aims.text import encodable, scrub
+
+log = logging.getLogger("aims.run")
 
 TAIL = 240
 ARGS = 120
@@ -559,21 +562,43 @@ def summary(results: list[Result], digests: Sequence[Digest] = ()) -> Renderable
 
 class JsonLines:
     """The monitor's events of each run added, one JSON line each as they land: flags,
-    actions, sweeps, verdicts, degradations and clears."""
+    actions, sweeps, verdicts, degradations and clears. `failed` says a line was lost, other
+    than to a closed pipe, as from `| head`."""
 
     def __init__(self, store: EventStore, emit: Callable[[str], None]) -> None:
         self.store = store
         self.emit = emit
+        self.failed = False
         self._tasks: list[asyncio.Task[None]] = []
 
     def add(self, run_id: str) -> None:
         self._tasks.append(asyncio.create_task(self._watch(run_id)))
 
     async def _watch(self, run_id: str) -> None:
-        async for e in self.store.stream(run_id):
-            kind = LINE_TYPES.get(e.type)
-            if kind is not None:
-                self.emit(json_text(event_line(kind, run_id, e)))
+        told = False
+        try:
+            async for e in self.store.stream(run_id):
+                kind = LINE_TYPES.get(e.type)
+                if kind is None:
+                    continue
+                try:
+                    self.emit(json_text(event_line(kind, run_id, e)))
+                except Exception as error:
+                    # The next lines are still tried, as a full disk can free up. Each line
+                    # names its run and seq, so a reader can see the gap.
+                    if not isinstance(error, BrokenPipeError):
+                        self.failed = True
+                    if not told:
+                        told = True
+                        log.warning(
+                            "run %s: a JSON line could not be written; the next are still"
+                            " tried: %s",
+                            run_id,
+                            error,
+                        )
+        except Exception:
+            self.failed = True
+            log.exception("run %s: its JSON lines stopped", run_id)
 
     async def stop(self, within: float = 5.0) -> None:
         """Let each watch reach its run's seal, for `within` seconds, then stop it."""
