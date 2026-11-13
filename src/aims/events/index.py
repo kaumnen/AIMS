@@ -1593,12 +1593,15 @@ class Index:
             where.append("e.agent_id = ?")
             args.append(agent_id)
         if query and len(query) >= 3:
+            # the span in one read of the run's rows, before the text index: a cross join keeps
+            # that order. Two scalar subqueries read the rows twice each, about 9 ms of a
+            # 55,000 event run
             where.append(
-                "e.id in (select rowid from events_fts where events_fts match ? and rowid between"
-                " (select min(id) from events where run_id = ?)"
-                " and (select max(id) from events where run_id = ?))"
+                "e.id in (select f.rowid from (select min(id) as lo, max(id) as hi from events"
+                " where run_id = ?) s cross join events_fts f where events_fts match ?"
+                " and f.rowid between s.lo and s.hi)"
             )
-            args.extend((_phrase(query), run_id, run_id))
+            args.extend((run_id, _phrase(query)))
         elif query:
             test, values = await _short(query)
             where.append(test)

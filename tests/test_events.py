@@ -710,6 +710,11 @@ async def test_text_search_reads_matches_in_page_order(
                     n = plan[n][0]
                     parents.append(plan.get(n, (0, ""))[1])
                 assert any(p.startswith("LIST SUBQUERY") for p in parents), text
+                # and one read of the run's rows for the span of its row ids, bounding the
+                # text index
+                spans = [d for _, d in plan.values() if d.startswith("SEARCH events ")]
+                assert len(spans) == 1, text
+                assert "VIRTUAL TABLE INDEX 0:M1><" in text, text
     finally:
         con.close()
 
