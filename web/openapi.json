@@ -23653,7 +23653,7 @@
     },
     "/api/stream": {
       "get": {
-        "description": "Subscribe with `runs` (the run list, runner changes and deleted runs), `run` with\n`after` (that run's events past a seq, `types` to filter) and `deltas` (live model output\nof runs). Each message's `event` is its `kind`. `last_event_id` resumes like the\nLast-Event-ID header,\nfor a client that opens a new stream with other subscriptions; the header wins, since a\nbrowser that reconnects sends a newer one than its URL holds.",
+        "description": "Subscribe with `runs` (the run list, runner changes and deleted runs), `run` with\n`after` (that run's events past a seq, `types` to filter) and `deltas` (live model output\nof runs). Each message's `event` is its `kind`. `last_event_id` resumes like the\nLast-Event-ID header,\nfor a client that opens a new stream with other subscriptions; the header wins, since a\nbrowser that reconnects sends a newer one than its URL holds. A run whose kind is not known\nyet, as while the index is rebuilt, sends a viewer nothing until it is; when it turns out\nto be one the viewer may not read, the stream ends and a new one is refused with 403.",
         "operationId": "stream",
         "parameters": [
           {

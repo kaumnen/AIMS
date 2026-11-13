@@ -27,7 +27,7 @@ from aims.run import scoring, truth
 from aims.run.score import Added, CheckError, Taken
 from aims.run.scoring import score_with
 from aims.server.db import OPEN_STATES
-from aims.wire import OfferMessage, RunnerHello, ScoreJob
+from aims.wire import OfferMessage, RunnerHello, ScoreJob, WireDelta
 
 pytestmark = pytest.mark.anyio
 
@@ -637,6 +637,38 @@ async def test_a_viewers_stream_leaves_out_score_runs(
         got = await seen(viewer)
         assert origin in got
         assert score not in got
+
+
+async def test_a_viewer_gets_nothing_of_a_score_whose_kind_is_known_only_after_it_subscribed(
+    cp: CP, local: LocalEventStore, fake: FakeRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    origin, score = await scored(cp, local, fake, monkeypatch)
+    for run_id, want in ((origin, ["events"]), (score, [])):
+        other = await Index.open(cp.state.store.root / INDEX)
+        try:
+            await other.reset()
+        finally:
+            await other.close()
+        got: list[str] = []
+        params = {"run": [run_id], "after": [-1], "deltas": [run_id]}
+        async with (
+            cp.client(cp.viewer) as viewer,
+            asyncio.timeout(10),
+            viewer.sse("/api/stream", params=params) as source,
+        ):
+            # the index does not hold the run yet, so the subscribe went through
+            if run_id == score:
+                delta = WireDelta(run_id=score, agent_id="a", call_id="m1", attempt=1, kind="start")
+                cp.state.publish([delta])
+            rebuilt = asyncio.create_task(cp.state.store.sync())
+            async for e in source:
+                if e.event not in ("message", ""):
+                    got.append(e.event)
+                    break
+            await rebuilt
+        assert got == want, run_id
+    async with cp.client(cp.viewer) as viewer:
+        assert (await viewer.get("/api/stream", params={"run": [score]})).status_code == 403
 
 
 async def test_a_runs_detail_lists_its_scores_and_an_operator_gets_an_estimate(

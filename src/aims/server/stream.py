@@ -7,7 +7,7 @@ import asyncio
 import contextlib
 import re
 import time
-from collections.abc import AsyncIterator, Coroutine
+from collections.abc import AsyncIterator, Coroutine, Sequence
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, Query, Request
@@ -17,8 +17,9 @@ from aims.aio import stopped
 from aims.events import RunCorrupt
 from aims.events.index import BIND_MAX
 from aims.models import Delta
-from aims.server.api import Cursor, State, Viewer, _visible, hidden, summaries
+from aims.server.api import Cursor, State, Viewer, _kind, _visible, hidden, summaries
 from aims.server.problems import ProblemException, responses
+from aims.server.state import ServerState
 from aims.wire import (
     DeltaMessage,
     DeltasDroppedMessage,
@@ -113,6 +114,18 @@ async def _asked(
         await _visible(state, principal, run_id)
 
 
+async def _hides(state: ServerState, unsure: set[str], skip: Sequence[str]) -> bool:
+    """Whether a run of `unsure` turned out to be of a kind in `skip`. Each run whose kind is
+    known now leaves `unsure`."""
+    for run_id in list(unsure):
+        kind = await _kind(state, run_id)
+        if kind in skip:
+            return True
+        if kind is not None:
+            unsure.discard(run_id)
+    return False
+
+
 @router.get(
     "/stream",
     response_class=EventSourceResponse,
@@ -156,7 +169,9 @@ async def stream(
     of runs). Each message's `event` is its `kind`. `last_event_id` resumes like the
     Last-Event-ID header,
     for a client that opens a new stream with other subscriptions; the header wins, since a
-    browser that reconnects sends a newer one than its URL holds."""
+    browser that reconnects sends a newer one than its URL holds. A run whose kind is not known
+    yet, as while the index is rebuilt, sends a viewer nothing until it is; when it turns out
+    to be one the viewer may not read, the stream ends and a new one is refused with 403."""
     run = run or []
     after = after or []
     cursors = {r: (after[i] if i < len(after) else -1) for i, r in enumerate(run)}
@@ -169,6 +184,9 @@ async def stream(
             version = resumed_version
     wanted = set(deltas or [])
     skip = hidden(principal)
+    # runs subscribed to before their kind was known, as while the index is rebuilt: nothing
+    # of theirs goes out until it is
+    unsure = {*cursors, *wanted} if skip else set()
     sub = state.bus.subscribe() if wanted else None
     ended: set[str] = set()
     runners_seen: dict[str, dict[str, object]] = {}
@@ -185,8 +203,10 @@ async def stream(
     state.streams += 1
     try:
         yield ServerSentEvent(comment="connected", retry=2000)
+        if await _hides(state, unsure, skip):
+            return
         if wanted:
-            early = state.inflight.of(wanted)
+            early = state.inflight.of(wanted - unsure)
             for i in range(0, len(early), DELTA_BATCH):
                 yield message(DeltaMessage(deltas=early[i : i + DELTA_BATCH]))
         if runs:
@@ -198,12 +218,16 @@ async def stream(
                 revoked, checked = state.auth.revoked, time.monotonic()
                 if not await state.auth.still(request, principal):
                     return
+            if await _hides(state, unsure, skip):
+                # `_asked` refuses this subscribe now: the reconnect gets its 403
+                return
+            live = wanted - unsure
             store_changed = state.store.changed()
             runs_changed = state.changes.event()
             runners_changed = state.runners_changed
             more = False
             for run_id in list(cursors):
-                if run_id in ended:
+                if run_id in ended or run_id in unsure:
                     continue
                 try:
                     head = await state.store.head(run_id)
@@ -254,9 +278,9 @@ async def stream(
                         d = sub.queue.get_nowait()
                     except asyncio.QueueEmpty:
                         break
-                    if d.run_id in wanted:
+                    if d.run_id in live:
                         pending.append(d)
-                batch = [_delta(d) for d in pending if d.run_id in wanted]
+                batch = [_delta(d) for d in pending if d.run_id in live]
                 pending.clear()
                 if batch:
                     yield message(DeltaMessage(deltas=batch))

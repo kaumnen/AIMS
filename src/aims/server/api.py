@@ -528,16 +528,21 @@ async def _shown(state: ServerState, principal: Principal, run_id: str) -> None:
     await _visible(state, principal, run_id)
 
 
+async def _kind(state: ServerState, run_id: str) -> str | None:
+    """A run's kind, from the index or its job; None while neither holds it, as while another
+    process rebuilds the index."""
+    info = await state.store.run(run_id)
+    if info is not None:
+        return info.kind
+    job = await state.db.job(run_id)
+    return None if job is None else str(job.payload.get("kind") or "scenario")
+
+
 async def _visible(state: ServerState, principal: Principal, run_id: str) -> None:
     """Raises 403 when a viewer asks for a run of `TRUTH_KINDS`, started or still a job."""
     if principal.role != "viewer":
         return
-    info = await state.store.run(run_id)
-    if info is not None:
-        kind = info.kind
-    else:
-        job = await state.db.job(run_id)
-        kind = None if job is None else job.payload.get("kind")
+    kind = await _kind(state, run_id)
     if kind in TRUTH_KINDS:
         raise ProblemException(
             403,

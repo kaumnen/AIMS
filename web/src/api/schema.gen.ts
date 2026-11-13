@@ -1219,7 +1219,9 @@ export interface paths {
          *     of runs). Each message's `event` is its `kind`. `last_event_id` resumes like the
          *     Last-Event-ID header,
          *     for a client that opens a new stream with other subscriptions; the header wins, since a
-         *     browser that reconnects sends a newer one than its URL holds.
+         *     browser that reconnects sends a newer one than its URL holds. A run whose kind is not known
+         *     yet, as while the index is rebuilt, sends a viewer nothing until it is; when it turns out
+         *     to be one the viewer may not read, the stream ends and a new one is refused with 403.
          */
         get: operations["stream"];
         put?: never;

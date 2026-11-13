@@ -2107,7 +2107,8 @@ async def test_a_stream_ends_when_its_token_is_revoked(
 async def test_deltas_reach_the_stream_and_a_slow_one_is_told_it_lost_some(
     cp: CP, fake: FakeRunner
 ) -> None:
-    run_id = str(uuid.uuid7())
+    # a viewer gets the deltas of a run whose kind is known, here by its job
+    (run_id,) = await start_run(cp)
     cp.state.bus.maxsize = 4
 
     def delta(i: int) -> WireDelta:
