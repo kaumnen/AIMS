@@ -21,7 +21,7 @@ from pydantic import Field, TypeAdapter, ValidationError
 
 log = logging.getLogger("aims.server")
 
-VERSION = 6
+VERSION = 7
 SESSION_DAYS = 30
 # a token's last use is noted at most this often
 USE_S = 60.0
@@ -125,6 +125,7 @@ create table commands (
     run_ended integer not null default 0,
     state text not null default 'waiting'
         check (state in ('waiting', 'done', 'failed', 'dropped')),
+    in_part integer not null default 0 check (in_part in (0, 1)),
     unique (runner, seq)
 ) strict;
 
@@ -181,11 +182,18 @@ update commands set state = case
     else 'done' end
     where acked is not null;
 """
+# v6 told a command done in part by an outcome text other than `done`. A runner answered
+# `done` for a whole one, and that text is all rows from before have to go by.
+MIGRATE_6 = """
+alter table commands add column in_part integer not null default 0 check (in_part in (0, 1));
+update commands set in_part = 1 where state = 'done' and outcome is not 'done';
+"""
 MIGRATIONS = {
-    2: MIGRATE_2 + MIGRATE_3 + MIGRATE_4 + MIGRATE_5,
-    3: MIGRATE_3 + MIGRATE_4 + MIGRATE_5,
-    4: MIGRATE_4 + MIGRATE_5,
-    5: MIGRATE_5,
+    2: MIGRATE_2 + MIGRATE_3 + MIGRATE_4 + MIGRATE_5 + MIGRATE_6,
+    3: MIGRATE_3 + MIGRATE_4 + MIGRATE_5 + MIGRATE_6,
+    4: MIGRATE_4 + MIGRATE_5 + MIGRATE_6,
+    5: MIGRATE_5 + MIGRATE_6,
+    6: MIGRATE_6,
 }
 
 
@@ -278,7 +286,8 @@ class Job:
 class Command:
     """`run_ended` while the outcome is the drop the run's end wrote and the runner's answer
     may still come; see `ServerDB.ack`. `state` says how it ended; `outcome` is only text to
-    show, which a runner's answer fills."""
+    show, which a runner's answer fills. `in_part` says a done command took effect only in
+    part; its outcome says what did not."""
 
     id: str
     runner: str
@@ -290,6 +299,7 @@ class Command:
     outcome: str | None
     run_ended: bool = False
     state: CommandState = "waiting"
+    in_part: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -881,13 +891,16 @@ class ServerDB:
         return Command(command_id, runner, seq, run_id, payload, at, None, None)
 
     _COMMAND = (
-        "select id, runner, seq, run_id, payload, created, acked, outcome, run_ended, state"
-        " from commands"
+        "select id, runner, seq, run_id, payload, created, acked, outcome, run_ended, state,"
+        " in_part from commands"
     )
 
     @staticmethod
     def _command(r: tuple[Any, ...]) -> Command:
-        return Command(r[0], r[1], r[2], r[3], json.loads(r[4]), r[5], r[6], r[7], bool(r[8]), r[9])
+        payload = json.loads(r[4])
+        return Command(
+            r[0], r[1], r[2], r[3], payload, r[5], r[6], r[7], bool(r[8]), r[9], bool(r[10])
+        )
 
     async def pending_commands(self, runner: str, after: int = 0) -> list[Command]:
         rows = await self._all(
@@ -900,14 +913,25 @@ class ServerDB:
         row = await self._one(f"{self._COMMAND} where id = ?", (command_id,))
         return None if row is None else self._command(row)
 
-    async def ack(self, command_id: str, runner: str, outcome: str, *, done: bool = True) -> bool:
-        """Record the runner's answer; `done` when it carried the command out. The first
-        answer stays, with one exception: the run's end dropped the command before the answer
-        came. A done answer then replaces the drop, as the command did take effect. A refusal
-        keeps the drop, which says as much, and makes it final. False if nothing changed."""
-        sets = "acked = ?, outcome = ?, state = 'done'"
+    async def ack(
+        self,
+        command_id: str,
+        runner: str,
+        outcome: str,
+        *,
+        done: bool = True,
+        in_part: bool = False,
+    ) -> bool:
+        """Record the runner's answer; `done` when it carried the command out, `in_part` when
+        only in part. The first answer stays, with one exception: the run's end dropped the
+        command before the answer came. A done answer then replaces the drop, as the command
+        did take effect. A refusal keeps the drop, which says as much, and makes it final.
+        False if nothing changed."""
+        args: tuple[Any, ...] = (time.time(), outcome, int(in_part))
+        sets = "acked = ?, outcome = ?, state = 'done', in_part = ?"
         if not done:
             # an unanswered command has neither; a drop keeps both and its state
+            args = (time.time(), outcome)
             sets = (
                 "acked = coalesce(acked, ?), outcome = coalesce(outcome, ?),"
                 " state = iif(acked is null, 'failed', state)"
@@ -916,7 +940,7 @@ class ServerDB:
             await self._write(
                 f"update commands set {sets}, run_ended = 0"
                 " where id = ? and runner = ? and (acked is null or run_ended = 1)",
-                (time.time(), outcome, command_id, runner),
+                (*args, command_id, runner),
             )
             > 0
         )

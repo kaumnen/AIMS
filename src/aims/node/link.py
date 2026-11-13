@@ -365,7 +365,7 @@ class Link:
         except Exception as e:
             log.exception("command %s on run %s failed", message.id, message.run_id)
             return Ack(ok=False, outcome=f"{type(e).__name__}: {e}")
-        return Ack(ok=True, outcome=note or "done")
+        return Ack(ok=True, outcome=note or "done", in_part=note is not None)
 
     async def _deltas(self) -> None:
         """Forward model deltas as they stream, in batches; lossy, never retried."""

@@ -2432,7 +2432,7 @@ def _answered(action: str, run: str, command: dict[str, Any]) -> int:
     answers done, or says what did not take effect."""
     outcome = str(command["outcome"])
     match command["state"]:
-        case "done" if outcome == "done":
+        case "done" if not command["in_part"]:
             _echo(f"{action} {run}: done")
             return 0
         case "done":

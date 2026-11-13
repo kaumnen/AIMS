@@ -1121,7 +1121,8 @@ class CommandSent(Out):
 class CommandInfo(Out):
     """A command sent to a run and the runner's answer. `state` reads the answer: waiting
     until the runner acks, failed when it refused, saying why in `outcome`, dropped when the
-    run ended or its runner was replaced first. `final` says the outcome can no longer
+    run ended or its runner was replaced first. `in_part` says a done command took effect
+    only in part, and `outcome` says what did not. `final` says the outcome can no longer
     change. A drop by the run's end is not final until the runner answers: it may have
     carried the command out, and its done answer then turns dropped into done. `by` names the
     token it came with."""
@@ -1139,6 +1140,7 @@ class CommandInfo(Out):
     acked: float | None
     outcome: str | None
     state: sdb.CommandState
+    in_part: bool
     final: bool
 
 
@@ -1158,6 +1160,7 @@ def command_info(c: sdb.Command) -> CommandInfo:
         acked=c.acked,
         outcome=c.outcome,
         state=c.state,
+        in_part=c.in_part,
         final=c.acked is not None and not c.run_ended,
     )
 

@@ -1553,8 +1553,17 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        /** Ack */
+        /**
+         * Ack
+         * @description A runner's answer to a command: `ok` when it carried it out, and `in_part` when only in
+         *     part, with `outcome` saying what did not take effect. A refusal says why in `outcome`.
+         */
         Ack: {
+            /**
+             * In Part
+             * @default false
+             */
+            in_part?: boolean;
             /** Ok */
             ok: boolean;
             /** Outcome */
@@ -2427,7 +2436,8 @@ export interface components {
          * CommandInfo
          * @description A command sent to a run and the runner's answer. `state` reads the answer: waiting
          *     until the runner acks, failed when it refused, saying why in `outcome`, dropped when the
-         *     run ended or its runner was replaced first. `final` says the outcome can no longer
+         *     run ended or its runner was replaced first. `in_part` says a done command took effect
+         *     only in part, and `outcome` says what did not. `final` says the outcome can no longer
          *     change. A drop by the run's end is not final until the runner answers: it may have
          *     carried the command out, and its done answer then turns dropped into done. `by` names the
          *     token it came with.
@@ -2447,6 +2457,8 @@ export interface components {
             final: boolean;
             /** Id */
             id: string;
+            /** In Part */
+            in_part: boolean;
             /** Outcome */
             outcome: string | null;
             /** Reason */

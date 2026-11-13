@@ -721,7 +721,7 @@ async def test_a_command_answers_with_what_did_not_take_effect(tmp_path: Path) -
         for n, action in enumerate(["pause", "resume"]):
             command = CommandAction(action=cast(Any, action))
             await link._command(CommandMessage(id=f"c{n}", seq=n, run_id="run", command=command))
-    assert [(a.ok, a.outcome) for a in acks] == [
-        (True, "the sandbox of agent a did not freeze: gone"),
-        (True, "done"),
+    assert [(a.ok, a.outcome, a.in_part) for a in acks] == [
+        (True, "the sandbox of agent a did not freeze: gone", True),
+        (True, "done", False),
     ]

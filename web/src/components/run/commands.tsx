@@ -35,12 +35,13 @@ const THEN: Record<string, string> = {
 const commandLabel = (c: CommandInfo): string =>
   c.action === "resume" ? (THEN[c.then ?? "continue"] ?? "Resume") : (ACTION[c.action] ?? c.action);
 
-function answerOf(c: CommandInfo): string {
+// A command done in part shows what did not take effect, which its outcome says.
+export function answerOf(c: CommandInfo): string {
   if (c.state === "waiting") return "Waiting";
   const outcome = c.outcome ?? "done";
   if (c.state === "failed") return outcome.replace(/^failed: /, "");
   if (c.state === "dropped") return outcome.replace(/^dropped: /, "Dropped: ");
-  return outcome === "done" ? "Done" : outcome;
+  return c.in_part ? outcome : "Done";
 }
 
 const clock = new Intl.DateTimeFormat(undefined, {

@@ -3,7 +3,13 @@
     "schemas": {
       "Ack": {
         "additionalProperties": false,
+        "description": "A runner's answer to a command: `ok` when it carried it out, and `in_part` when only in\npart, with `outcome` saying what did not take effect. A refusal says why in `outcome`.",
         "properties": {
+          "in_part": {
+            "default": false,
+            "title": "In Part",
+            "type": "boolean"
+          },
           "ok": {
             "title": "Ok",
             "type": "boolean"
@@ -2220,7 +2226,7 @@
         "type": "object"
       },
       "CommandInfo": {
-        "description": "A command sent to a run and the runner's answer. `state` reads the answer: waiting\nuntil the runner acks, failed when it refused, saying why in `outcome`, dropped when the\nrun ended or its runner was replaced first. `final` says the outcome can no longer\nchange. A drop by the run's end is not final until the runner answers: it may have\ncarried the command out, and its done answer then turns dropped into done. `by` names the\ntoken it came with.",
+        "description": "A command sent to a run and the runner's answer. `state` reads the answer: waiting\nuntil the runner acks, failed when it refused, saying why in `outcome`, dropped when the\nrun ended or its runner was replaced first. `in_part` says a done command took effect\nonly in part, and `outcome` says what did not. `final` says the outcome can no longer\nchange. A drop by the run's end is not final until the runner answers: it may have\ncarried the command out, and its done answer then turns dropped into done. `by` names the\ntoken it came with.",
         "properties": {
           "acked": {
             "anyOf": [
@@ -2270,6 +2276,10 @@
           "id": {
             "title": "Id",
             "type": "string"
+          },
+          "in_part": {
+            "title": "In Part",
+            "type": "boolean"
           },
           "outcome": {
             "anyOf": [
@@ -2354,6 +2364,7 @@
           "acked",
           "outcome",
           "state",
+          "in_part",
           "final"
         ],
         "title": "CommandInfo",

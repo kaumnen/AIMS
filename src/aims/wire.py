@@ -104,8 +104,12 @@ RunnerFeed = Annotated[CommandMessage | OfferMessage, Field(discriminator="kind"
 
 
 class Ack(_Wire):
+    """A runner's answer to a command: `ok` when it carried it out, and `in_part` when only in
+    part, with `outcome` saying what did not take effect. A refusal says why in `outcome`."""
+
     ok: bool
     outcome: str
+    in_part: bool = False
 
 
 class MonitorJob(_Wire):

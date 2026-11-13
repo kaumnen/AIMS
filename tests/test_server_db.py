@@ -161,17 +161,17 @@ async def test_a_done_answer_after_the_run_ended_replaces_the_drop(db: ServerDB)
     assert await db.drop_commands(run) == 3
     # the run's last events came before the runner's answers
     assert not await db.ack(done.id, "r2", "done")
-    assert await db.ack(done.id, "r1", "the sandbox of agent a did not freeze: boom")
+    assert await db.ack(done.id, "r1", "the sandbox of agent a did not freeze: boom", in_part=True)
     assert await db.ack(refused.id, "r1", "failed: the run is not running here", done=False)
     assert not await db.ack(refused.id, "r1", "done")
     assert not await db.ack(answered.id, "r1", "again")
     assert not await db.ack(done.id, "r1", "again")
-    got = {c.id: (c.state, c.outcome, c.run_ended) for c in await db.commands_of(run)}
+    got = {c.id: (c.state, c.outcome, c.in_part, c.run_ended) for c in await db.commands_of(run)}
     assert got == {
-        done.id: ("done", "the sandbox of agent a did not freeze: boom", False),
-        refused.id: ("dropped", "dropped: the run ended", False),
-        answered.id: ("done", "done", False),
-        unanswered.id: ("dropped", "dropped: the run ended", True),
+        done.id: ("done", "the sandbox of agent a did not freeze: boom", True, False),
+        refused.id: ("dropped", "dropped: the run ended", False, False),
+        answered.id: ("done", "done", False, False),
+        unanswered.id: ("dropped", "dropped: the run ended", False, True),
     }
     assert await db.command_counts([run]) == {run: (4, 0, 2)}
     # another token took the runner name: no answer changes the old runner's commands
@@ -211,7 +211,9 @@ async def test_runs_keep_their_first_runner_and_divergence(db: ServerDB) -> None
 def downgrade(path: Path, version: int) -> None:
     """Make the database at `path` look like one of schema `version`."""
     raw = sqlite3.connect(path)
-    raw.execute("alter table commands drop column state")
+    raw.execute("alter table commands drop column in_part")
+    if version < 6:
+        raw.execute("alter table commands drop column state")
     if version < 5:
         raw.execute("alter table commands drop column run_ended")
     if version < 4:
@@ -382,11 +384,11 @@ async def test_an_older_db_keeps_its_drops_and_takes_late_answers_after(
     finally:
         await db.close()
     raw = sqlite3.connect(path)
-    assert raw.execute("pragma user_version").fetchone() == (VERSION,) == (6,)
+    assert raw.execute("pragma user_version").fetchone() == (VERSION,) == (7,)
     raw.close()
 
 
-@pytest.mark.parametrize("version", [4, 5])
+@pytest.mark.parametrize("version", [4, 5, 6])
 async def test_an_older_db_keeps_the_state_of_each_command_its_outcome_said(
     tmp_path: Path, version: int
 ) -> None:
@@ -401,17 +403,22 @@ async def test_an_older_db_keeps_the_state_of_each_command_its_outcome_said(
     outcomes.append("dropped: the run ended")
     for c, outcome in zip(sent, outcomes, strict=False):
         raw.execute("update commands set acked = 1, outcome = ? where id = ?", (outcome, c.id))
+    if version == 6:
+        # v6 kept each command's state; it read done in part from the outcome text
+        states = ["done", "done", "failed", "dropped"]
+        for c, state in zip(sent, states, strict=False):
+            raw.execute("update commands set state = ? where id = ?", (state, c.id))
     raw.commit()
     raw.close()
     db = await ServerDB.open(path)
     try:
-        got = [(c.state, c.outcome) for c in await db.commands_of(run)]
+        got = [(c.state, c.outcome, c.in_part) for c in await db.commands_of(run)]
         assert got == [
-            ("done", "done"),
-            ("done", "the sandbox of agent a did not freeze"),
-            ("failed", "failed: no agent b"),
-            ("dropped", "dropped: the run ended"),
-            ("waiting", None),
+            ("done", "done", False),
+            ("done", "the sandbox of agent a did not freeze", True),
+            ("failed", "failed: no agent b", False),
+            ("dropped", "dropped: the run ended", False),
+            ("waiting", None, False),
         ]
         assert await db.command_counts([run]) == {run: (5, 1, 1)}
     finally:

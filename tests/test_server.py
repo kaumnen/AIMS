@@ -920,9 +920,10 @@ async def test_a_commands_state_comes_from_the_answer_never_from_its_text(
     (run_id,) = await start_run(cp)
     await play_job(fake, local, await fake.next(OfferMessage))
     answers = [
-        Ack(ok=True, outcome="failed: the sandbox of a"),
-        Ack(ok=True, outcome="dropped: the sandbox of a"),
-        Ack(ok=False, outcome="dropped: no such agent"),
+        Ack(ok=True, outcome="failed: the sandbox of a", in_part=True),
+        Ack(ok=True, outcome="dropped: the sandbox of a", in_part=True),
+        Ack(ok=False, outcome="dropped: no such agent", in_part=True),
+        Ack(ok=True, outcome="Done."),
     ]
     async with cp.client(cp.operator) as c:
         for ack in answers:
@@ -930,13 +931,15 @@ async def test_a_commands_state_comes_from_the_answer_never_from_its_text(
             await fake.next(CommandMessage)
             await fake.client.ack(sent, ack)
         listed = (await c.get(f"/api/runs/{run_id}/commands")).json()
-        assert [(x["state"], x["outcome"], x["final"]) for x in listed] == [
-            ("done", "failed: the sandbox of a", True),
-            ("done", "dropped: the sandbox of a", True),
-            ("failed", "failed: dropped: no such agent", True),
+        assert [(x["state"], x["outcome"], x["in_part"], x["final"]) for x in listed] == [
+            ("done", "failed: the sandbox of a", True, True),
+            ("done", "dropped: the sandbox of a", True, True),
+            # a refusal took no effect at all
+            ("failed", "failed: dropped: no such agent", False, True),
+            ("done", "Done.", False, True),
         ]
         run = (await c.get(f"/api/runs/{run_id}")).json()["run"]
-        assert (run["commands"], run["commands_waiting"], run["commands_dropped"]) == (3, 0, 0)
+        assert (run["commands"], run["commands_waiting"], run["commands_dropped"]) == (4, 0, 0)
 
 
 # operator bodies as JSON text, each with the escape of a lone surrogate in one field

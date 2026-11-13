@@ -1815,7 +1815,7 @@ async def test_aims_control_exits_non_zero_for_a_command_not_carried_out_in_full
     sent = asyncio.create_task(control(cp, run_id, "pause", token=cp.operator))
     message = await fake.next(CommandMessage)
     note = "the sandbox of agent a did not freeze: boom"
-    await fake.client.ack(message.id, Ack(ok=True, outcome=note))
+    await fake.client.ack(message.id, Ack(ok=True, outcome=note, in_part=True))
     result = await sent
     assert result.exit_code == EXIT_PART_DONE == 5
     assert result.stdout.strip() == f"pause {run_id}: done in part: {note}"
@@ -1862,10 +1862,28 @@ async def test_aims_control_reads_a_done_answer_as_done_whatever_its_text_says(
     await play_job(fake, local, await fake.next(OfferMessage))
     sent = asyncio.create_task(control(cp, run_id, "pause", token=cp.operator))
     message = await fake.next(CommandMessage)
-    await fake.client.ack(message.id, Ack(ok=True, outcome=note))
+    await fake.client.ack(message.id, Ack(ok=True, outcome=note, in_part=True))
     result = await sent
     assert result.exit_code == EXIT_PART_DONE, result.output
     assert result.stdout.strip() == f"pause {run_id}: done in part: {note}"
+
+
+@pytest.mark.parametrize(("note", "in_part"), [("Done.", False), ("done", True)])
+async def test_aims_control_tells_done_in_part_by_the_answer_not_its_text(
+    cp: CP, fake: FakeRunner, local: LocalEventStore, note: str, in_part: bool
+) -> None:
+    (run_id,) = await start_run(cp)
+    await play_job(fake, local, await fake.next(OfferMessage))
+    sent = asyncio.create_task(control(cp, run_id, "pause", token=cp.operator))
+    message = await fake.next(CommandMessage)
+    await fake.client.ack(message.id, Ack(ok=True, outcome=note, in_part=in_part))
+    result = await sent
+    if in_part:
+        assert result.exit_code == EXIT_PART_DONE, result.output
+        assert result.stdout.strip() == f"pause {run_id}: done in part: {note}"
+    else:
+        assert result.exit_code == 0, result.output
+        assert result.stdout.strip() == f"pause {run_id}: done"
 
 
 async def test_aims_control_finds_a_local_ui(
