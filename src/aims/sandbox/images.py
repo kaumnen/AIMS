@@ -9,6 +9,7 @@ import logging
 import os
 import tarfile
 import tempfile
+import time
 from collections.abc import AsyncGenerator, Mapping
 from datetime import UTC, datetime
 from importlib.resources import files
@@ -37,6 +38,9 @@ KEEP_DAYS = 30.0
 ASSET_KEEP_DAYS = 1.0
 # Docker's LastTagTime of an image never tagged here, such as one `docker load` made
 NEVER = datetime(1, 1, 1, tzinfo=UTC)
+# How long a build lock waits for a lock file it may not read to become readable: another
+# user makes the file, then sets its mode.
+UNREADABLE_S = 1.0
 
 
 def registry(env: Mapping[str, str] = os.environ) -> str:
@@ -292,7 +296,7 @@ async def _lock(path: Path, poll: float) -> int:
     file the holder removed meanwhile locks the file at `path` now instead, so no two hold
     the lock at once."""
     while True:
-        fd = _open(path)
+        fd = await _open(path, poll)
         try:
             while True:
                 try:
@@ -309,17 +313,25 @@ async def _lock(path: Path, poll: float) -> int:
         os.close(fd)
 
 
-def _open(path: Path) -> int:
+async def _open(path: Path, poll: float) -> int:
     """A read-only fd of the lock file `path`, which a lock needs no more than, made readable
     by every user if it is not there. A file that is there opens without O_CREAT: Linux's
     fs.protected_regular refuses that of another user's file in a sticky folder such as /tmp.
-    It never follows a symlink, nor waits for a writer of a FIFO."""
+    One this user may not read is tried again for UNREADABLE_S, as another user's new file is
+    until its maker sets its mode. It never follows a symlink, nor waits for a writer of a
+    FIFO."""
     flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    until = time.monotonic() + UNREADABLE_S
     while True:
         try:
             return os.open(path, flags)
         except FileNotFoundError:
             pass
+        except PermissionError:
+            if time.monotonic() >= until:
+                raise
+            await asyncio.sleep(poll)
+            continue
         try:
             fd = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o644)
         except FileExistsError:

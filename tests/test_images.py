@@ -378,6 +378,47 @@ async def test_a_build_lock_file_another_user_left_is_locked(
         assert held("aims-env:users")
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a file whatever its mode")
+async def test_a_build_lock_file_another_user_just_made_is_locked_once_readable(
+    lock_dir: Path,
+) -> None:
+    """Its maker sets its mode just after it makes it, as the umask can take the read bits of
+    others away. A file of this user's with no read bits stands in for it."""
+    path = images._lock_path("aims-env:users")
+    path.touch()
+    path.chmod(0)
+
+    async def lock() -> bool:
+        async with images._host_lock("aims-env:users", poll=0.01):
+            return held("aims-env:users")
+
+    task = asyncio.create_task(lock())
+    await asyncio.sleep(0.1)
+    path.chmod(0o644)
+    assert await task
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a file whatever its mode")
+async def test_a_build_lock_file_that_stays_unreadable_raises(
+    lock_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """As a file another user left with no read bits for others does."""
+    monkeypatch.setattr(images, "UNREADABLE_S", 0.2)
+    path = images._lock_path("aims-env:users")
+    path.touch()
+    path.chmod(0)
+
+    async def lock() -> None:
+        async with images._host_lock("aims-env:users", poll=0.01):
+            pass
+
+    started = time.monotonic()
+    with pytest.raises(PermissionError):
+        await lock()
+    assert 0.2 <= time.monotonic() - started < 2
+    assert path.exists()
+
+
 async def test_a_build_lock_never_follows_a_symlink(lock_dir: Path) -> None:
     path = images._lock_path("aims-env:link")
     target = lock_dir / "target"
