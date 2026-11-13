@@ -5,6 +5,7 @@ import contextlib
 import io
 import queue
 from collections.abc import AsyncIterator, Awaitable, Buffer, Callable, Iterable
+from typing import Any
 
 
 async def shielded[T](fut: asyncio.Future[T]) -> T:
@@ -44,6 +45,28 @@ async def every[T](aws: Iterable[Awaitable[T]]) -> list[T]:
             raise one
         results.append(one)
     return results
+
+
+async def stopped(*tasks: asyncio.Future[Any]) -> None:
+    """Cancel `tasks`, wait until every one has ended, then raise the first error among them.
+    A task's own cancel is no error. A cancel of the caller meanwhile is raised once all have
+    ended: `await task` under a `suppress` would take it for the task's own and drop it."""
+    for task in tasks:
+        task.cancel()
+    cancelled = False
+    pending = {task for task in tasks if not task.done()}
+    while pending:
+        try:
+            _, pending = await asyncio.wait(pending)
+        except asyncio.CancelledError:
+            cancelled = True
+            pending = {task for task in pending if not task.done()}
+    errors = [None if task.cancelled() else task.exception() for task in tasks]
+    if cancelled:
+        raise asyncio.CancelledError
+    for error in errors:
+        if error is not None:
+            raise error
 
 
 class Pipe(io.RawIOBase):

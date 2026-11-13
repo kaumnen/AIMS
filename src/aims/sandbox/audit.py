@@ -368,7 +368,7 @@ class AuditedSandbox:
             if audited._samples is not None:
                 audited._sampling = asyncio.create_task(audited._sample(audited._samples))
         except BaseException as e:
-            await audited._abort(started, e)
+            await settle(audited._abort(started, e))
             raise
         return audited
 
@@ -569,7 +569,11 @@ class AuditedSandbox:
         self, reason: Literal["killed", "exec_failed"] = "killed", detail: str | None = None
     ) -> None:
         """Kill the sandbox. Its volumes stay until `close`. When the kill fails it raises and
-        the sandbox does not count as stopped, so `close` kills it again."""
+        the sandbox does not count as stopped, so `close` kills it again. A cancel waits for
+        the kill and its last records, and is raised then."""
+        await settle(self._stop(reason, detail))
+
+    async def _stop(self, reason: Literal["killed", "exec_failed"], detail: str | None) -> None:
         if self._stopped:
             return
         self._stopped = True
@@ -585,6 +589,11 @@ class AuditedSandbox:
         await self._append([*await self._end_sampling(), stopped])
 
     async def close(self, *, keep_volumes: bool = False) -> None:
+        """Record what is left and remove the sandbox. A cancel waits for both and is raised
+        then."""
+        await settle(self._close(keep_volumes))
+
+    async def _close(self, keep_volumes: bool) -> None:
         try:
             if not self._stopped and not self.spec.keep:
                 try:
@@ -608,7 +617,8 @@ class AuditedSandbox:
             await self.sandbox.close(keep_volumes=keep_volumes)
 
     async def _abort(self, started: bool, error: BaseException) -> None:
-        """Undo a start that failed after the sandbox was created."""
+        """Undo a start that failed after the sandbox was created. It runs under `settle`, so
+        a cancel of the caller never lands in here."""
         if self._consumer is not None:
             self._consumer.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):

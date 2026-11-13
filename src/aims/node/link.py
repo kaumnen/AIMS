@@ -11,7 +11,7 @@ from collections.abc import Awaitable, Callable
 import httpx2
 
 from aims import __version__
-from aims.aio import shielded
+from aims.aio import shielded, stopped
 from aims.events import LocalEventStore, RunCorrupt
 from aims.models import Delta, DeltaBus
 from aims.node.client import FEED, ApiError, ControlClient
@@ -125,13 +125,12 @@ class Link:
 
     async def close(self) -> None:
         tasks = [*self._loops, *self._tasks, *self._ships.values()]
-        for task in tasks:
-            task.cancel()
-        for task in tasks:
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
-        self._loops.clear()
-        await self.client.aclose()
+        try:
+            with contextlib.suppress(Exception):
+                await stopped(*tasks)
+        finally:
+            self._loops.clear()
+            await self.client.aclose()
 
     async def drain(self, within: float) -> bool:
         """Wait until every shipper is done, or `within` seconds. True if all were."""

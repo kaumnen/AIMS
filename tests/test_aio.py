@@ -1,12 +1,13 @@
 """asyncio helpers: waits that outlast a cancel of the caller."""
 
 import asyncio
+import gc
 from collections.abc import Generator
 from contextlib import contextmanager
 
 import pytest
 
-from aims.aio import every, settle, shielded
+from aims.aio import every, settle, shielded, stopped
 
 
 @contextmanager
@@ -130,3 +131,86 @@ async def test_every_returns_the_results_in_order() -> None:
         return n
 
     assert await every(one(n) for n in range(3)) == [0, 1, 2]
+
+
+async def _slow_to_end(ended: list[str], name: str, error: Exception | None = None) -> None:
+    try:
+        await asyncio.sleep(3600)
+    except asyncio.CancelledError:
+        await asyncio.sleep(0.05)
+        ended.append(name)
+        if error is not None:
+            raise error from None
+        raise
+
+
+@pytest.mark.anyio
+async def test_stopped_raises_a_cancel_of_the_caller_once_every_task_has_ended() -> None:
+    ended: list[str] = []
+    tasks = [asyncio.create_task(_slow_to_end(ended, name)) for name in ("a", "b")]
+    await asyncio.sleep(0)
+    after: list[str] = []
+
+    async def close() -> None:
+        await stopped(*tasks)
+        after.append("went on")
+
+    closing = asyncio.create_task(close())
+    await asyncio.sleep(0.01)
+    closing.cancel()
+    await asyncio.sleep(0.01)
+    closing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    assert sorted(ended) == ["a", "b"]
+    assert after == []
+
+
+@pytest.mark.anyio
+async def test_stopped_takes_a_task_s_own_cancel_for_its_end() -> None:
+    ended: list[str] = []
+    task = asyncio.create_task(_slow_to_end(ended, "a"))
+    done = asyncio.get_running_loop().create_future()
+    done.set_result(None)
+    await asyncio.sleep(0)
+    await stopped(task, done)
+    await stopped()
+    assert ended == ["a"]
+    assert task.cancelled()
+
+
+@pytest.mark.anyio
+async def test_stopped_raises_the_first_error_after_all_ended_and_logs_none() -> None:
+    ended: list[str] = []
+    tasks = [
+        asyncio.create_task(_slow_to_end(ended, "a", ValueError("a"))),
+        asyncio.create_task(_slow_to_end(ended, "b", ValueError("b"))),
+        asyncio.create_task(_slow_to_end(ended, "c")),
+    ]
+    await asyncio.sleep(0)
+    with loop_errors() as errors:
+        with pytest.raises(ValueError, match="a"):
+            await stopped(*tasks)
+        assert sorted(ended) == ["a", "b", "c"]
+        del tasks
+        gc.collect()
+        await asyncio.sleep(0)
+    assert errors == []
+
+
+@pytest.mark.anyio
+async def test_stopped_puts_the_caller_s_cancel_ahead_of_a_task_s_error() -> None:
+    ended: list[str] = []
+    task = asyncio.create_task(_slow_to_end(ended, "a", ValueError("a")))
+    await asyncio.sleep(0)
+    with loop_errors() as errors:
+        closing = asyncio.create_task(stopped(task))
+        await asyncio.sleep(0.01)
+        closing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await closing
+        assert ended == ["a"]
+        del task
+        gc.collect()
+        await asyncio.sleep(0)
+    assert errors == []

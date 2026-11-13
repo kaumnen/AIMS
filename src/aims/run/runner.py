@@ -19,7 +19,7 @@ from pydantic import JsonValue
 
 from aims import __version__
 from aims.agent import CONTINUE, DENY, Agent, Gate, OpenGate, ReplayPlan, RunBudget, Verdict
-from aims.aio import settle, shielded
+from aims.aio import settle, shielded, stopped
 from aims.channels import Board, Channel, ChannelError, ChannelSetup, tool_names, tool_texts
 from aims.channels import build as build_channel
 from aims.events import (
@@ -965,7 +965,7 @@ class Runner:
             tasks[agent.id] = asyncio.create_task(start_then(agent.start, made.run))
 
         subjects = self.scenario.subjects
-        stopped = [a.id for a in self.scenario.agents if a.role != "subject"]
+        others = [a.id for a in self.scenario.agents if a.role != "subject"]
 
         async def everyone() -> None:
             done = asyncio.create_task(watch.subjects_done(subjects))
@@ -976,7 +976,7 @@ class Runner:
                         break
                     await asyncio.wait([*pending, done], return_when=asyncio.FIRST_COMPLETED)
                 if done.done():
-                    for agent_id in stopped:
+                    for agent_id in others:
                         task = tasks.get(agent_id)
                         if task is not None and not task.done():
                             task.cancel()
@@ -987,9 +987,7 @@ class Runner:
                 await asyncio.gather(*tasks.values(), return_exceptions=True)
                 raise
             finally:
-                done.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await done
+                await stopped(done)
             for agent_id, outcome in zip(tasks, gathered, strict=True):
                 if isinstance(outcome, AgentFinished):
                     result.agents[agent_id] = outcome

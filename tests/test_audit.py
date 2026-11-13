@@ -1494,6 +1494,53 @@ async def test_a_second_cancel_while_an_exec_ends_still_logs_its_end(
     await audited.close()
 
 
+async def test_a_cancel_while_the_sandbox_closes_still_logs_its_stop(
+    store: LocalEventStore,
+) -> None:
+    sb = FakeSandbox(kernel=False)
+    sb.trees = [tree("d0"), tree("d0")]
+    run_id, audited = await start(store, sb)
+    sb.tree_hold = asyncio.Event()
+    task = asyncio.create_task(audited.close())
+    await sb.tree_entered.wait()
+    for _ in range(2):
+        task.cancel()
+        await asyncio.sleep(0)
+    assert not task.done()
+    sb.tree_hold.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert kinds(await events(store, run_id))[-1] == "sandbox.stopped"
+    assert sb.closed
+
+
+async def test_a_cancel_while_the_sandbox_is_killed_still_logs_its_stop(
+    store: LocalEventStore,
+) -> None:
+    entered, hold = asyncio.Event(), asyncio.Event()
+
+    class Slow(FakeSandbox):
+        async def quiesce(self) -> None:
+            entered.set()
+            await hold.wait()
+
+    sb = Slow(kernel=False)
+    sb.trees = [tree("d0"), tree("d0")]
+    run_id, audited = await start(store, sb)
+    task = asyncio.create_task(audited.stop())
+    await entered.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    hold.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    stopped = await events(store, run_id, "sandbox.stopped")
+    assert [e.data["reason"] for e in stopped] == ["killed"]
+    await audited.close()
+    assert len(await events(store, run_id, "sandbox.stopped")) == 1
+
+
 async def test_a_failed_start_closes_the_sandbox(
     store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -344,6 +344,11 @@ class ImdsServer:
     follower: asyncio.Task[None]
 
     async def close(self) -> None:
+        """Stop the server, read its log to the end and remove its container. A cancel waits
+        for that and is raised then."""
+        await settle(self._close())
+
+    async def _close(self) -> None:
         with contextlib.suppress(aiodocker.DockerError):
             await self.container.stop(t=STOP_S)
         done, _ = await asyncio.wait({self.follower}, timeout=DRAIN_S)

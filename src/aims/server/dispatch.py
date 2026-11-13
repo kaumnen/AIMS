@@ -7,6 +7,7 @@ import contextlib
 import logging
 import time
 
+from aims.aio import stopped
 from aims.server import audit, retention
 from aims.server.db import Job
 from aims.server.runner_api import send
@@ -123,6 +124,4 @@ async def run(state: ServerState) -> None:
                 keeping = asyncio.create_task(_keep(state))
     finally:
         if keeping is not None:
-            keeping.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await keeping
+            await stopped(keeping)

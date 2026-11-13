@@ -13,6 +13,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 
+from aims.aio import stopped
 from aims.events import RunCorrupt
 from aims.events.index import BIND_MAX
 from aims.models import Delta
@@ -89,11 +90,8 @@ async def _first(waits: list[Coroutine[Any, Any, Any]], within: float) -> None:
     try:
         await asyncio.wait(tasks, timeout=within, return_when=asyncio.FIRST_COMPLETED)
     finally:
-        for t in tasks:
-            t.cancel()
-        for t in tasks:
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await t
+        with contextlib.suppress(Exception):
+            await stopped(*tasks)
 
 
 Runs = Annotated[list[str] | None, Query(max_length=MAX_RUNS)]

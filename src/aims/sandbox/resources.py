@@ -15,6 +15,7 @@ import aiodocker
 from aiodocker.containers import DockerContainer
 from aiodocker.execs import Exec as DockerExec
 
+from aims.aio import stopped
 from aims.events import ResourceSample
 from aims.sandbox.base import RUNNER_UID, Lost, Sample
 from aims.sandbox.containers import create_container, remove_container
@@ -108,9 +109,8 @@ class Watch:
 
     async def close(self) -> None:
         self._closing = True
-        self._reader.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await self._reader
+        with contextlib.suppress(Exception):
+            await stopped(self._reader)
 
     async def ended(self, timeout_s: float) -> None:
         """Wait up to `timeout_s` for the readings to end, as they do once the cgroup is gone."""

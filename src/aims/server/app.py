@@ -2,7 +2,6 @@
 touches Docker; runners do."""
 
 import asyncio
-import contextlib
 import json
 import mimetypes
 from collections.abc import AsyncGenerator
@@ -20,6 +19,7 @@ from pydantic.json_schema import models_json_schema
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from aims import __version__
+from aims.aio import stopped
 from aims.events.schema import payload_types
 from aims.server import (
     api,
@@ -76,9 +76,7 @@ def create_app(
             yield
         finally:
             if task is not None:
-                task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
+                await stopped(task)
 
     app = AimsAPI(
         title="AIMS",

@@ -15,7 +15,7 @@ from aiodocker.containers import DockerContainer
 from aiodocker.volumes import DockerVolume
 from pydantic import JsonValue
 
-from aims.aio import settle
+from aims.aio import settle, stopped
 from aims.events import AuditLevel, Proc
 from aims.sandbox.base import (
     AGENT_UID,
@@ -721,11 +721,11 @@ class DockerSandbox:
                     else:
                         await _read_feeding(exe, stream, capture, feeder)
                 finally:
-                    if feeder is not None:
-                        feeder.cancel()
-                        with contextlib.suppress(asyncio.CancelledError):
-                            await feeder
-                    await stream.close()
+                    try:
+                        if feeder is not None:
+                            await stopped(feeder)
+                    finally:
+                        await stream.close()
         except TimeoutError:
             end = "timeout"
         except aiodocker.DockerError as e:
@@ -1187,9 +1187,7 @@ async def _read_feeding(
         if reader.done():
             reader.result()
     finally:
-        reader.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await reader
+        await stopped(reader)
 
 
 async def _call(container: DockerContainer, argv: list[str], user: str) -> int | None:

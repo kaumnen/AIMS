@@ -1593,3 +1593,32 @@ async def test_a_cancel_while_the_tracer_stops_is_raised_once_it_has_stopped() -
     with pytest.raises(asyncio.CancelledError):
         await stop
     assert reader.done()
+
+
+@pytest.mark.anyio
+async def test_a_cancel_while_an_imds_server_closes_still_removes_its_container() -> None:
+    from aims.sandbox.imds import ImdsServer
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls: list[str] = []
+
+    class Container:
+        async def stop(self, t: int) -> None:
+            entered.set()
+            await release.wait()
+            calls.append("stop")
+
+        async def delete(self, force: bool) -> None:
+            calls.append("delete")
+
+    follower = asyncio.create_task(asyncio.sleep(0))
+    server = ImdsServer(cast(aiodocker.Docker, None), cast(Any, Container()), "log", follower)
+    close = asyncio.create_task(server.close())
+    await entered.wait()
+    close.cancel()
+    await asyncio.sleep(0)
+    assert not close.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await close
+    assert calls == ["stop", "delete"]

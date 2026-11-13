@@ -696,6 +696,44 @@ async def test_a_command_sent_twice_while_running_is_carried_out_once(tmp_path: 
     assert [c for c, _ in acks] == ["c1", "c1"]
 
 
+async def test_a_cancel_while_the_link_closes_still_closes_its_client(tmp_path: Path) -> None:
+    from aims.models import DeltaBus
+    from aims.node.link import Link
+
+    ending, release = asyncio.Event(), asyncio.Event()
+    closed: list[bool] = []
+
+    class Client:
+        runner = "r"
+
+        async def aclose(self) -> None:
+            closed.append(True)
+
+    async def work() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            ending.set()
+            await release.wait()
+            raise
+
+    async with await LocalEventStore.open(tmp_path) as store:
+        link = Link(cast(Any, Client()), store, DeltaBus())
+        task = asyncio.create_task(work())
+        link._tasks.add(task)
+        await asyncio.sleep(0)
+        closing = asyncio.create_task(link.close())
+        await ending.wait()
+        closing.cancel()
+        await asyncio.sleep(0)
+        assert not closing.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await closing
+    assert task.done()
+    assert closed == [True]
+
+
 async def test_a_command_answers_with_what_did_not_take_effect(tmp_path: Path) -> None:
     from aims.models import DeltaBus
     from aims.node.link import Link

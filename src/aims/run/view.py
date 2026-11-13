@@ -18,6 +18,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from aims.aio import stopped
 from aims.events import BlobRef, Event, EventStore, MonitorVerdict, ResumeThen
 from aims.models import Delta, DeltaBus
 from aims.monitor.core import HumanRequest
@@ -150,11 +151,8 @@ class LiveView:
         self._tasks.append(asyncio.create_task(self._watch(run_id)))
 
     async def stop(self) -> None:
-        for task in self._tasks:
-            task.cancel()
-        for task in self._tasks:
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
+        with contextlib.suppress(Exception):
+            await stopped(*self._tasks)
 
     async def _watch(self, run_id: str) -> None:
         async for event in self.store.stream(run_id):
@@ -603,12 +601,9 @@ class JsonLines:
     async def stop(self, within: float = 5.0) -> None:
         """Let each watch reach its run's seal, for `within` seconds, then stop it."""
         if self._tasks:
-            _, pending = await asyncio.wait(self._tasks, timeout=within)
-            for task in pending:
-                task.cancel()
-        for task in self._tasks:
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
+            await asyncio.wait(self._tasks, timeout=within)
+        with contextlib.suppress(Exception):
+            await stopped(*self._tasks)
 
 
 def event_line(kind: str, run_id: str, e: Event) -> dict[str, object]:
@@ -655,11 +650,8 @@ class HumanPrompt:
         return ask
 
     async def close(self) -> None:
-        for task in list(self._tasks):
-            task.cancel()
-        for task in list(self._tasks):
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
+        with contextlib.suppress(Exception):
+            await stopped(*self._tasks)
 
     def _waiting(self, runner: Runner, request: HumanRequest) -> list[str]:
         if runner.finished or runner.killed:
