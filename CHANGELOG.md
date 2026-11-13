@@ -57,7 +57,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - The control plane's database moves to version 5. It upgrades in place at the next start.
 - A scripted agent holds before each of its steps while it is paused, with its sandbox frozen. It took its steps through a pause before. Its `after_s` waits do not count paused time. Its `agent.finished` reports `paused_ms`.
 - A runner's first stop cancels its monitor and score jobs at once. A job whose run had not begun goes back to the control plane for the next runner.
-- Ctrl-C while `aims run` or `aims monitor` closes its runs does nothing. The cleanup left is short. Ctrl-C while `aims monitor` ships its runs ends the shipping.
+- Ctrl-C while `aims run` or `aims monitor` closes its runs cancels nothing. The cleanup left is short. Ctrl-C while `aims monitor` ships its runs ends the shipping.
 - A resume tries a sandbox that does not unfreeze three times, one second apart.
 - A cancelled command in a sandbox has its processes ended, within 5 s. A frozen sandbox is left as it is.
 - Every text field of an API request body refuses a lone surrogate such as `\ud800` with a 422 that names the field. That covers run, fork, monitor, score, self-test, model check, label, token, scenario and config bodies, and a key or a string at any depth of a JSON field.
@@ -112,7 +112,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - Opening a data directory deletes temp files of blob and truth writes that are over an hour old.
 - A new event, `sandbox.freeze_failed`, records a sandbox that did not freeze or unfreeze when asked, with the state wanted and the error. The operator, the monitor and an agent's own gate all write it. The run view shows it as a Sandbox note.
 - A command in a container paused outside AIMS, as with `docker pause`, waits until the container runs again. The wait does not count against its timeout. It failed before and its sandbox was stopped. A resume of the agent leaves such a pause alone.
-- `aims score` and `aims models check` stopped by Ctrl-C, SIGTERM or a hangup seal their run as cancelled and exit 130. A second Ctrl-C does nothing more.
+- `aims score` and `aims models check` stopped by Ctrl-C, SIGTERM or a hangup seal their run as cancelled and exit 130. A second Ctrl-C cancels nothing more.
 - `aims run --json` and `aims monitor --json` exit 1 when a JSON line could not be written, other than to a closed pipe. The line is skipped with one warning per run and the next lines still come.
 - A second stop of `aims runner` kills its runs. Stops after that, or once it closes, do nothing.
 - The server database moves to version 6. A command's state is kept in its own column. An older AIMS refuses the file.
@@ -126,6 +126,13 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - A stopped `aims monitor`, `aims score` or `aims models check` says how each run was sealed, read from the store.
 - `aims monitor` waits for every monitor run to end before it reports one that failed.
 - A search of one run reads the run's span once. On a 55,000 event run a query takes about 8 ms, down from 14 ms.
+- A third Ctrl-C or SIGTERM quits `aims run`, `aims monitor`, `aims score`, `aims models check`, `aims runner` and `aims ui` at once with exit code 130 and no cleanup. The second one says so first. A hangup never counts. `aims ui` kills its local runner before it quits. Sandboxes left behind are removed at the next start.
+- A viewer's stream sends nothing of a run whose kind the control plane does not know yet, as while the index is rebuilt. When the run turns out to be one a viewer may not read, the stream ends and a new one answers 403.
+- The score, monitor, fork, sweep, pause, resume, inject, kill and cancel routes of a run answer 503 with `Retry-After` while the run's log is there but its index is not. So does `GET /api/runs/{id}/monitor/estimate`. They answered 404, forks 422.
+- `DELETE /api/runs/{id}` and `GET /api/runs/{id}/dependents` answer 503 with `Retry-After` while the index does not hold a run made from that run yet, forced or not. The retention sweep keeps such a family until the index holds it.
+- `aims runner` prints `cannot start the sandbox backend` with the reason and exits 1 when Docker is down. It printed a traceback.
+- A build lock file this user cannot open is reported with its path and what to do. A tracer whose image cannot be built for that reason leaves the sandboxes on snapshot audit.
+- A kernel tracer loss is logged in a sandbox only from the time the sandbox registered. A loss that ended before then is left out.
 
 ### Fixed
 
@@ -324,6 +331,16 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - A build or pull the Docker daemon cuts midway is a Docker error like any other: an asset image is built when its pull is cut, and a tracer whose image cannot be made leaves the sandboxes on snapshot audit.
 - Build lock files that no one holds are removed a day after they were made, at each backend start and hourly in a runner. AIMS 0.2.2 and older left one per image tag in the temp folder.
 - A build waits up to a second for a lock file that another user is just making. It failed when it opened the file before its mode was set.
+- A job stored with a kind this version does not know is left out of the run list and the stream. `GET /api/runs` answered 500.
+- A log whose only line is torn no longer counts as a run still to be indexed. Its reads answered 503 without end.
+- Index rows left past a run's last event by a drop that raced another process go with the next batch. Every later catch-up of that run failed.
+- While a run is indexed again from its log, readers see no run and then a growing first part of it. They saw a run that lost events. A stream could skip events or fail.
+- `aims token list` and `aims control list` show a stored time no date holds as the first or last date there is. They failed.
+- `aims push`, a runner's monitor job and a self-test end the shipping of a run that was deleted under them. It waited without end.
+- `aims run --score` stops shipping a score run that never began. The link waited a minute for it at the end.
+- The cleanup of `aims run` closes its link when an earlier step fails.
+- A stream the Docker daemon cuts midway is a Docker error like any other: an archive read, a helper's wait or log, an exec or attach stream as it opens. An exec whose stream is cut as it opens ends as failed with its `exec.finished` line.
+- The runner's tracer watch goes on after a restart fails in any way.
 
 ## [0.2.2] - 2026-11-10
 
