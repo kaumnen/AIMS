@@ -1,11 +1,13 @@
 """Signals over the agent's own loop: repeated calls, no progress, a submission the score
 contradicts, and calls that come back to a denied one."""
 
+import asyncio
 import base64
 import binascii
 import codecs
 import hashlib
 import re
+import time
 from collections import deque
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -23,6 +25,7 @@ from aims.events import (
     ToolCall,
     ToolResult,
 )
+from aims.monitor.signals import scan
 from aims.monitor.signals.base import Base, Hit, Options, SignalSetup
 from aims.monitor.state import CallInfo, State
 
@@ -970,6 +973,73 @@ class _Denial:
     parts: int = 0
 
 
+# A look for a denied call's parts in a later call reads this many characters on the event
+# loop; a larger one runs in a thread.
+LOOK_INLINE = 2_000_000
+
+
+class _Look:
+    """One call's text, searched for the parts of each denied call before it. Every part is
+    looked for in the whole text and in each of its `decodings`, so the work is parts times
+    characters, and a denied call sets the number of parts. A large look runs in a thread. All
+    of one call's looks share `scan.THREAD_S` seconds of thread CPU time: a look past it stops
+    with what it found, and `cut` counts those."""
+
+    def __init__(self, text: str, tokens: frozenset[str]) -> None:
+        self.text = text
+        self.tokens = tokens
+        self.left = scan.THREAD_S
+        self.cut = 0
+        self._alts: list[str] | None = None
+
+    async def carried(self, novel: frozenset[str]) -> tuple[set[str], set[str]]:
+        """The parts in `novel` the text carries as they are, and those only a decoding of it
+        carries, which are not looked for once nine in ten are there as they are."""
+        direct = set(novel & self.tokens)
+        rest = len(novel) - len(direct)
+        if len(direct) >= 0.9 * len(novel):
+            return direct, set()
+        if rest * len(self.text) * 5 <= LOOK_INLINE:
+            hidden, _ = self._find(novel, direct, None)
+            return direct, hidden
+        if self.left <= 0:
+            self.cut += 1
+            return direct, set()
+        hidden, spent = await asyncio.to_thread(self._find, novel, direct, self.left)
+        if spent >= self.left:
+            self.cut += 1
+        self.left -= spent
+        return direct, hidden
+
+    def _find(
+        self, novel: frozenset[str], direct: set[str], budget: float | None
+    ) -> tuple[set[str], float]:
+        """Add to `direct` the parts found inside longer words of the text, and give those
+        only a decoding carries with the thread time spent, which ends the look at `budget`."""
+        start = time.thread_time()
+        hidden: set[str] = set()
+
+        def spent() -> float:
+            return time.thread_time() - start
+
+        for t in novel - direct:
+            if budget is not None and spent() >= budget:
+                return hidden, spent()
+            if t in self.text:
+                direct.add(t)
+        if len(direct) >= 0.9 * len(novel):
+            return hidden, spent()
+        if self._alts is None:
+            self._alts = list(decodings(self.text))
+        for alt in self._alts:
+            for t in novel - direct - hidden:
+                if budget is not None and spent() >= budget:
+                    return hidden, spent()
+                if t in alt:
+                    hidden.add(t)
+        return hidden, spent()
+
+
 class DenyOptions(Options):
     """`window` is how many later calls are compared with a denied one."""
 
@@ -1012,34 +1082,42 @@ class DenyRetry(Base):
         if call is None:
             return []
         text = payload_text(call)
+        tokens = frozenset(_TOKEN.findall(text))
         out: list[Hit] = []
         active = []
+        look = _Look(text, tokens)
         for denial in self.denials.get(agent, []):
             if denial.after >= self.opts.window:
                 continue
             denial.after += 1
             active.append(denial)
-            hit = self._compare(event, call, text, denial)
+            hit = await self._compare(event, call, look, denial)
             if hit is not None:
                 out.append(hit)
         self.denials[agent] = active
+        if look.cut:
+            self.problem = scan.SlowScan(
+                f"the parts of {look.cut} denied call(s) were not all looked for in a call of"
+                f" {len(text)} characters within {scan.THREAD_S} s"
+            )
         first = self.first.setdefault(agent, {})
         at = self.index[call.call_id] = len(self.index)
-        for token in _TOKEN.findall(text):
+        for token in tokens:
             first.setdefault(token, at)
         return out
 
-    def _compare(self, event: Event, call: CallInfo, text: str, denial: _Denial) -> Hit | None:
+    async def _compare(
+        self, event: Event, call: CallInfo, look: _Look, denial: _Denial
+    ) -> Hit | None:
         o = self.opts
-        if signature(call) == denial.signature or _plain(text) == denial.plain:
+        if signature(call) == denial.signature or _plain(look.text) == denial.plain:
             return self._hit(event, denial, "retry", o.retry, "the same call again")
         if not denial.novel:
             return None
-        direct = {t for t in denial.novel if t in text}
+        direct, hidden = await look.carried(denial.novel)
         share = len(direct) / len(denial.novel)
         if share >= 0.9:
             return self._hit(event, denial, "retry", o.retry, "a call carrying its parts")
-        hidden = {t for alt in decodings(text) for t in denial.novel if t in alt} - direct
         if hidden and (len(direct) + len(hidden)) / len(denial.novel) >= 0.6:
             return self._hit(event, denial, "encoded", o.encoded, "its parts encoded")
         gained = (direct | hidden) - denial.covered

