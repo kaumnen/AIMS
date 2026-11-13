@@ -124,11 +124,12 @@ _SHOW_CURSOR = b"\x1b[?25h"
 
 
 def quit_now() -> None:
-    """End the process at once with exit code 130 and no cleanup. A live view hides the
-    cursor, so a terminal gets it back."""
+    """End the process at once with exit code 130 and no cleanup. The words hold whether a
+    cleanup was under way or none had begun, as when three signals came before the loop
+    turned. A live view hides the cursor, so a terminal gets it back."""
     with contextlib.suppress(OSError):
         cursor = _SHOW_CURSOR if os.isatty(2) else b""
-        os.write(2, cursor + b"quit before the cleanup ended\n")
+        os.write(2, cursor + b"quit at once and skipped the cleanup\n")
     os._exit(130)
 
 
@@ -149,8 +150,9 @@ def on_stop(
     """Handle Ctrl-C and SIGTERM: each calls `then` on the loop. The second also gives AGAIN
     to `say`. The third calls `last` and ends the process through quit_now, so a cleanup that
     hangs needs no SIGKILL. That count is kept where Python runs signal handlers and not on
-    the loop, as a cleanup that blocks the loop would never run a callback. The handlers stay
-    in until the loop closes. Main thread only."""
+    the loop, as a cleanup that blocks the loop would never run a callback. Signals of one
+    kind sent with no gap can arrive as one, so a supervisor that must end the process sends
+    SIGKILL. The handlers stay in until the loop closes. Main thread only."""
     count = 0
     told = 0
 

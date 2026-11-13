@@ -1891,7 +1891,7 @@ async def test_a_third_ctrl_c_quits_aims_ui_at_once_with_its_runner(tmp_path: Pa
             async with asyncio.timeout(20):
                 err = (await proc.stderr.read()).decode()
                 assert await proc.wait() == 130
-        assert "quit before the cleanup ended" in err
+        assert "quit at once and skipped the cleanup" in err
 
         def gone() -> bool:
             try:

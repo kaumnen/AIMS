@@ -144,5 +144,30 @@ def test_a_third_stop_ends_a_process_whose_loop_is_blocked(sig: signal.Signals) 
         proc.wait()
     assert proc.returncode == 130
     assert out == "last\n"
-    assert err == "quit before the cleanup ended\n"
+    assert err == QUIT_TEXT
     assert time.monotonic() - began < 20
+
+
+QUIT_TEXT = "quit at once and skipped the cleanup\n"
+BURST = """
+import asyncio, os, signal
+from aims.terminal import on_stop
+
+async def main():
+    on_stop(asyncio.get_running_loop(), lambda: print("stop", flush=True))
+    # a burst as from a supervisor, before the loop turns: no stop has begun
+    for _ in range(3):
+        os.kill(os.getpid(), signal.SIGTERM)
+    await asyncio.sleep(60)
+
+asyncio.run(main())
+"""
+
+
+def test_a_burst_of_three_stops_before_any_cleanup_quits_with_true_words() -> None:
+    proc = subprocess.run(
+        [sys.executable, "-c", BURST], capture_output=True, text=True, timeout=20, check=False
+    )
+    assert proc.returncode == 130
+    assert proc.stdout == ""
+    assert proc.stderr == QUIT_TEXT
