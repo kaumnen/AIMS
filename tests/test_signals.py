@@ -1638,6 +1638,34 @@ SUBTESTS_FAILED_PLUGIN = (
     "FAILED tests/test_s.py::test_fails - assert False\n"
     "====== 2 failed, 3 passed, 3 subtests passed, 1 subtests xfailed in 0.03s ======\n"
 )
+# pytest 9.2 over five tests: one that passes, one whose subtests pass, fail and pass, one with
+# an xfailed and a passed subtest, one with a skipped and a passed subtest, and one that fails.
+# Only the progress letters show some subtests: u for a failed one, and for a passed one when
+# the verbosity is not 0, and y for an xfailed one.
+SUBTESTS_LETTERS = ".uuuFyu.-u.F" + " " * 61 + "[100%]\n"
+SUBTESTS_LETTERS_SUMMARY = "3 failed, 3 passed, 1 skipped, 1 xfailed, 4 subtests passed in 0.09s\n"
+# -q names the failed subtest but not the xfailed one.
+SUBTESTS_UNNAMED_XFAIL = (
+    SUBTESTS_LETTERS
+    + "=========================== short test summary info ============================\n"
+    "SUBFAILED(i=1) tests/test_s.py::test_sub - assert 1 != 1\n"
+    "FAILED tests/test_s.py::test_sub - contains 1 failed subtest\n"
+    "FAILED tests/test_s.py::test_fails - assert False\n" + SUBTESTS_LETTERS_SUMMARY
+)
+# -q -rN names neither.
+SUBTESTS_UNNAMED = SUBTESTS_LETTERS + SUBTESTS_LETTERS_SUMMARY
+# -rN at verbosity 0 counts only the failed subtest and does not name it.
+SUBTESTS_UNNAMED_FAIL = (
+    "============================= test session starts ==============================\n"
+    "platform darwin -- Python 3.15.2, pytest-9.2.0, pluggy-1.7.0\n"
+    "rootdir: /work\n"
+    "configfile: pytest.ini\n"
+    "collected 5 items\n"
+    "\n"
+    "tests/test_s.py .uF..F                                                   [100%]\n"
+    "\n"
+    "========================= 3 failed, 3 passed in 0.10s ==========================\n"
+)
 # pytest 9 with -s, its tests printing 1.2 MB.
 LOUD = (
     SESSION
@@ -1668,6 +1696,12 @@ LOUD = (
         (SUBTESTS_PLUGIN, 0, 3, {"skips"}),
         (SUBTESTS_FAILED_PLUGIN, 1, 4, set()),
         (SUBTESTS_FAILED_PLUGIN, 1, 5, {"fewer_tests"}),
+        (SUBTESTS_UNNAMED_XFAIL, 1, 5, {"skips"}),
+        (SUBTESTS_UNNAMED_XFAIL, 1, 6, {"skips", "fewer_tests"}),
+        (SUBTESTS_UNNAMED, 1, 5, {"skips"}),
+        (SUBTESTS_UNNAMED, 1, 6, {"skips", "fewer_tests"}),
+        (SUBTESTS_UNNAMED_FAIL, 1, 5, set()),
+        (SUBTESTS_UNNAMED_FAIL, 1, 6, {"fewer_tests"}),
         (LOUD, 0, 3, set()),
         (LOUD, 0, 4, {"fewer_tests"}),
     ],
@@ -1683,6 +1717,12 @@ LOUD = (
         "plugin",
         "plugin-failed",
         "plugin-failed-fewer",
+        "unnamed-xfail",
+        "unnamed-xfail-fewer",
+        "unnamed",
+        "unnamed-fewer",
+        "unnamed-fail",
+        "unnamed-fail-fewer",
         "over-1-MiB",
         "over-1-MiB-fewer",
     ],

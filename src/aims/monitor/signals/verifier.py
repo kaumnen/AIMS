@@ -354,6 +354,7 @@ _PROGRESS = scan.compile(
 )
 # The letters of tests, as against those of subtests, which pytest prints as u, y, - and `,`.
 _TESTS = ".FExX"
+_SUBTESTS_PASSED = scan.compile(r"(?<!\d)(\d+) subtests passed")
 _DURATION = scan.compile(r"(?m)^([\d.]+)s call\s+\S+")
 # How much of the end of a long output is read for the summary, which pytest prints last.
 SUMMARY_TAIL = 256 * 1024
@@ -370,7 +371,8 @@ class VerifierAnomaly(Base):
     at -qq -s still counts as one without a summary.
 
     pytest counts a failed subtest as a failed test. pytest 9 counts an xfailed one as an
-    xfailed test unless its verbosity is 0. Those the output names are taken off the count."""
+    xfailed test unless its verbosity is 0. Those the output names or shows by their progress
+    letters are taken off the count."""
 
     name = "verifier_anomaly"
     version = "4"
@@ -451,11 +453,13 @@ class VerifierAnomaly(Base):
             counts[word] = counts.get(word, 0) + int(m[1])
         if counts.get("skipped", 0) or counts.get("deselected", 0):
             found.append(("skips", f"tests were skipped: {line}"))
-        # Subtests named in the output are taken off the outcome they were counted under, unless
+        # Subtests the output shows are taken off the outcome they were counted under, unless
         # the summary counts them apart as `subtests failed` or the like. Only this run's output
         # is read: from the summary before it, if any.
-        run = text[summary[-2].end() if len(summary) > 1 else 0 : summary[-1].start()]
-        for outcome, n in _subtests(run).items():
+        start, end = summary[-2].end() if len(summary) > 1 else 0, summary[-1].start()
+        run, letters = text[start:end], _letters(progress, start, end)
+        passed = sum(int(m[1]) for m in _SUBTESTS_PASSED.finditer(line))
+        for outcome, n in _subtests(run, letters, passed).items():
             if f"subtests {outcome}" not in line:
                 counts[outcome] = max(0, counts.get(outcome, 0) - n)
         return sum(counts.get(k, 0) for k in ("passed", "failed", "error", "xfailed", "xpassed"))
@@ -474,11 +478,20 @@ def _letters(progress: Sequence[scan.Match], start: int, end: int) -> str:
     return "".join(m["letters"] for m in lines[ends[-1] + 1 if ends else 0 :])
 
 
-def _subtests(text: str) -> dict[str, int]:
-    """How many subtests failed and xfailed in a pytest run's output. A run may name each in the
-    short summary, on its progress line or both, so the larger count of the two is taken."""
+def _subtests(text: str, letters: str, passed: int) -> dict[str, int]:
+    """How many subtests failed and xfailed in a pytest run's output, its progress `letters`
+    and the `passed` subtests its summary counts. A run may name each in the short summary or
+    on a verbose progress line, or show it by its letter, so the largest count is taken.
+
+    A failed subtest's letter is u, which pytest 9 prints for a passed one too unless its
+    verbosity is 0. The pytest-subtests plugin prints `,` for a passed one. Both count passed
+    ones apart, so those are taken off. An xfailed one's letter is y."""
     seen = [[m[1] for m in p.finditer(text)] for p in (_SUBTEST_SUMMARY, _SUBTEST_PROGRESS)]
-    return {"failed": max(s.count("") for s in seen), "xfailed": max(s.count("X") for s in seen)}
+    failed = letters.count("u") + letters.count(",") - passed
+    return {
+        "failed": max(failed, *(s.count("") for s in seen)),
+        "xfailed": max(letters.count("y"), *(s.count("X") for s in seen)),
+    }
 
 
 class LinkOptions(Options):
