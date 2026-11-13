@@ -1,5 +1,5 @@
 import contextlib
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -384,6 +384,19 @@ async def _stop_lines(store: Any, kind: str, run_ids: list[str]) -> list[str]:
     return lines
 
 
+async def _seal_left(store: Any, say: Callable[[str], object]) -> None:
+    """Seal as failed each run in `store` that an earlier process left running, as `aims
+    runner` does when it starts. `say` gets one line with how many. A run another process
+    still writes is left alone."""
+    from aims.run.runner import ENDED, seal_unsealed
+
+    sealed = len(await seal_unsealed(store, reason=ENDED))
+    if sealed == 1:
+        say("an earlier process left 1 run running; it is sealed as failed")
+    elif sealed:
+        say(f"an earlier process left {sealed} runs running; they are sealed as failed")
+
+
 async def _stopped(store: Any, run_id: str, kind: str) -> None:
     """Say where a command that was stopped left its run `run_id`, as the store has it."""
     for line in await _stop_lines(store, kind, [run_id]):
@@ -402,6 +415,7 @@ async def _check(models: Any, chosen: list[Any], runs_dir: Path, run_id: str) ->
     async with await LocalEventStore.open(runs_dir) as store:
         try:
             with _stoppable():
+                await _seal_left(store, lambda text: typer.echo(text, err=True))
                 _, checks = await record_check(store, models, chosen, run_id=run_id, on_check=show)
         except asyncio.CancelledError:
             await _stopped(store, run_id, "run")
@@ -620,6 +634,7 @@ def _selftest(settings: Any, bundle: Any, profile: str | None, keep: Path | None
         except Exception as e:
             return f"the self-test needs Docker and the kernel tracer: {e}"
         async with backend, await LocalEventStore.open(root) as store:
+            await _seal_left(store, lambda text: typer.echo(text, err=True))
             bench = Bench(
                 store,
                 backend,
@@ -1062,6 +1077,7 @@ async def _run(**o: Any) -> int:
         return fail(str(e))
     models, prompts = settings.models, settings.prompts
     async with await LocalEventStore.open(o["runs_dir"]) as store:
+        await _seal_left(store, lambda text: err.print(shown(text, "yellow")))
         origin = None
         fork_base: Fork | None = None
         try:
@@ -2125,6 +2141,7 @@ async def _monitor_runs(**o: Any) -> int:
     mode = "signals_only" if o["signals_only"] else "judge_only" if o["judge_only"] else "full"
     results: list[OfflineResult] = []
     async with await LocalEventStore.open(o["runs_dir"]) as store:
+        await _seal_left(store, lambda text: err.print(shown(text, "yellow")))
         planned = []
         costs = []
         for run_id in dict.fromkeys(o["runs"]):
@@ -3072,6 +3089,7 @@ def score_cmd(
         async with await LocalEventStore.open(runs_dir) as store:
             try:
                 with _stoppable():
+                    await _seal_left(store, lambda text: typer.echo(text, err=True))
                     cost = await estimate_sealed(
                         store, settings, run, awareness=awareness, answer=answer
                     )

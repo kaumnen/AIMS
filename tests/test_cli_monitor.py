@@ -19,7 +19,7 @@ import threading
 import time
 import tracemalloc
 import uuid
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Generator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -765,6 +765,114 @@ def test_a_late_ctrl_c_leaves_the_cleanup_of_aims_run_alone(
     assert killed == stopped
     found = [x["status"] for x in lines(result.stdout) if x["type"] == "result"]
     assert found == ([] if stopped else ["completed"])
+
+
+# Runs an earlier process left running
+
+ENDED = "the process that ran it ended before it was sealed"
+
+
+def left_open(root: Path) -> str:
+    """A run that a process which ended left in `root`: started, never sealed."""
+
+    async def make() -> str:
+        async with await LocalEventStore.open(root) as store:
+            return await store.create_run(RunStarted(scenario="left", oversight="observe"))
+
+    return asyncio.run(make())
+
+
+@contextlib.contextmanager
+def live_run(root: Path) -> Generator[str]:
+    """A run that another store writes in `root` while the block runs, on its own thread and
+    loop, as a second aims command at the same time would."""
+    made: list[str] = []
+    ready, done = threading.Event(), threading.Event()
+
+    async def hold() -> None:
+        async with await LocalEventStore.open(root) as store:
+            made.append(await store.create_run(RunStarted(scenario="live", oversight="observe")))
+            ready.set()
+            await asyncio.to_thread(done.wait)
+
+    thread = threading.Thread(target=asyncio.run, args=(hold(),))
+    thread.start()
+    try:
+        assert ready.wait(10)
+        yield made[0]
+    finally:
+        done.set()
+        thread.join(10)
+
+
+def ends(root: Path, *run_ids: str) -> list[tuple[str, object]]:
+    """Each run's status, with the reason its run.finished gives."""
+
+    async def read() -> list[tuple[str, object]]:
+        async with await LocalEventStore.open(root) as store:
+            out: list[tuple[str, object]] = []
+            for run_id in run_ids:
+                info = await store.run(run_id)
+                assert info is not None
+                end = await store.events(run_id, types=["run.finished"])
+                out.append((info.status, end[0].data["reason"] if end else None))
+            return out
+
+    return asyncio.run(read())
+
+
+def test_aims_run_seals_the_runs_an_earlier_process_left_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "runs"
+    left = left_open(root)
+
+    async def run(self: Runner) -> Result:
+        return await sealed(self)
+
+    with live_run(root) as live:
+        result, _ = run_stubbed(tmp_path, monkeypatch, run)
+        assert result.exit_code == 0, result.output
+        said = " ".join(result.stderr.split())
+        assert said.count("an earlier process left 1 run running; it is sealed as failed") == 1
+        # --quiet keeps one line per run on stdout
+        assert statuses(result) == ["completed"]
+        # the run another aims command writes now is left alone
+        assert ends(root, left, live) == [("failed", ENDED), ("running", None)]
+        again, _ = run_stubbed(tmp_path, monkeypatch, run, "--json")
+        assert again.exit_code == 0, again.output
+        assert "earlier process" not in again.stderr
+        assert {x["type"] for x in lines(again.stdout)} == {"estimate", "result"}
+        assert len(lines(again.stdout)) == len(again.stdout.splitlines())
+    assert ends(root, live) == [("running", None)]
+
+
+def test_aims_monitor_and_aims_score_seal_the_runs_an_earlier_process_left_running(
+    runs: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from aims.run.scoring import ScoreError
+
+    root, origin = runs
+    left = left_open(root)
+    args = ["--runs-dir", str(root), "--no-server", "--signals-only", "--json"]
+    result = invoke("monitor", origin, *args)
+    assert result.exit_code == 0, result.output
+    said = " ".join(result.stderr.split())
+    assert "an earlier process left 1 run running; it is sealed as failed" in said
+    assert [x["status"] for x in lines(result.stdout) if x["type"] == "result"] == ["completed"]
+    assert ends(root, left) == [("failed", ENDED)]
+
+    async def unscored(*args: Any, **kwargs: Any) -> Any:
+        raise ScoreError("no truth file")
+
+    monkeypatch.setattr("aims.run.scoring.estimate_sealed", unscored)
+    two = [left_open(root), left_open(root)]
+    result = invoke("score", origin, "--runs-dir", str(root), "--json")
+    assert result.exit_code == 1, result.output
+    said = " ".join(result.stderr.split())
+    assert "an earlier process left 2 runs running; they are sealed as failed" in said
+    assert result.stdout == ""
+    assert ends(root, *two) == [("failed", ENDED)] * 2
 
 
 def test_prompts_show_lists_the_monitor_texts() -> None:

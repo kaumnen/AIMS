@@ -1060,6 +1060,37 @@ def test_a_ctrl_c_while_aims_models_check_makes_its_run_is_told_as_it_lands(
     assert f"stopped; run {run_id} is sealed as cancelled" in result.output
 
 
+def test_aims_models_check_seals_the_runs_an_earlier_process_left_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "runs"
+
+    async def left() -> str:
+        async with await LocalEventStore.open(root) as store:
+            return await store.create_run(RunStarted(scenario="left", oversight="observe"))
+
+    async def nothing(client: object, p: Profile) -> list[Any]:
+        return []
+
+    run_id = asyncio.run(left())
+    settings = SimpleNamespace(models=config(profile()))
+    monkeypatch.setattr("aims.cli._settings", lambda config: settings)
+    monkeypatch.setattr(check, "check_profile", nothing)
+    result = CliRunner().invoke(app, ["models", "check", "--runs-dir", str(root)])
+    monkeypatch.undo()
+    assert result.exit_code == 0, result.output
+    said = " ".join(result.stderr.split())
+    assert "an earlier process left 1 run running; it is sealed as failed" in said
+
+    async def read() -> tuple[str | None, object]:
+        async with await LocalEventStore.open(root) as store:
+            info = await store.run(run_id)
+            (end,) = await store.events(run_id, types=["run.finished"])
+            return None if info is None else info.status, end.data["reason"]
+
+    assert asyncio.run(read()) == ("failed", "the process that ran it ended before it was sealed")
+
+
 async def test_replay_can_keep_the_recorded_pace(store: LocalEventStore) -> None:
     source = await new_run(store)
     parts = [part for e in CHAT_EVENTS for part in (*sse([e], done=False), 0.1)]

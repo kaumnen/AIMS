@@ -10,6 +10,7 @@ import tarfile
 import uuid
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Any, Literal
 
@@ -42,6 +43,7 @@ from aims.events import (
     Series,
     TaskScored,
 )
+from aims.events.schema import format_ts
 from aims.models import (
     DeltaBus,
     Limiters,
@@ -1368,22 +1370,30 @@ def seeded(files: bytes | None, scenario: Scenario, globs: Sequence[str]) -> byt
 
 
 RESTARTED = "runner restarted"
+# The reason a command other than the runner seals a run with
+ENDED = "the process that ran it ended before it was sealed"
+_LAST_TS = format_ts(datetime.max.replace(tzinfo=UTC))
 
 
 async def seal_unsealed(store: LocalEventStore, *, reason: str = RESTARTED) -> list[str]:
     """Seal as failed every run in `store` left running by a process that is gone. A run whose
-    log another process holds open is still being written and is left alone."""
+    log another process holds open is still being written and is left alone, as is one that
+    process seals meanwhile. Only the runs the index does not hold sealed are read one by one,
+    so a folder of sealed runs costs two reads of the index."""
     sealed: list[str] = []
-    for run_id in store.run_ids():
+    ended = set(await store.ended_before(_LAST_TS))
+    for run_id in sorted(await store.indexed() - ended):
         info = await store.run(run_id)
-        if info is None or info.status != "running":
+        if info is None or info.status != "running" or not store.logged(run_id):
             continue
         try:
             await store.append(run_id, [Draft(RunFinished(status="failed", reason=reason))])
         except RunLocked:
             continue
         except Exception as e:
-            log.warning("could not seal run %s: %s", run_id, e)
+            now = await store.run(run_id)
+            if now is not None and now.status == "running":
+                log.warning("could not seal run %s: %s", run_id, e)
             continue
         sealed.append(run_id)
     return sealed

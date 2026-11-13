@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import io
+import logging
 import os
 import tarfile
 import time
@@ -438,6 +439,30 @@ async def test_runs_left_open_are_sealed_failed(tmp_path: Path) -> None:
         live_info = await store.run(live)
         assert live_info is not None
         assert live_info.status == "running"
+
+
+async def test_a_run_its_writer_seals_as_it_is_found_open_is_left_quietly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Another process seals its run between the read that finds it running and the seal of
+    the run here: its own end stays. Nothing says the seal failed."""
+    started = RunStarted(scenario="x", oversight="observe")
+    async with await LocalEventStore.open(tmp_path) as store:
+        live = await store.create_run(started)
+        async with await LocalEventStore.open(tmp_path) as second:
+            append = second.append
+
+            async def late(run_id: str, drafts: Any) -> Any:
+                await store.append(run_id, [Draft(RunFinished(status="completed"))])
+                return await append(run_id, drafts)
+
+            monkeypatch.setattr(second, "append", late)
+            with caplog.at_level(logging.WARNING, logger="aims.run"):
+                assert await seal_unsealed(second) == []
+        assert "could not seal" not in caplog.text
+        info = await store.run(live)
+        assert info is not None
+        assert info.status == "completed"
 
 
 # Real sandboxes
