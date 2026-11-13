@@ -266,6 +266,10 @@ class IndexDiverged(Exception):
     another hash there, or its first new event does not follow the last one there."""
 
 
+class _Leftovers(Exception):
+    """More rows past a run's head than one transaction of `add` deletes."""
+
+
 class HoldInfo(BaseModel):
     """An agent the monitor or an operator paused that has not been let go. `seq` and `since`
     are the action that paused it, `flags` the flags behind a monitor's pause and `mode` the
@@ -736,7 +740,8 @@ class Index:
         busy handler only polls, gets the lock in between. A remove cut short leaves rows no run
         owns, which the next remove of the run deletes. Meanwhile a batch another process
         indexes is refused unless it starts the run. One that does first takes the rows left,
-        as `add` does. The remove then stops: the rows from there on are that batch's."""
+        as `add` does. The remove then stops at that batch's head: the rows up to there are
+        that batch's."""
         await self._remove_row(run_id)
         await self._remove_rows(run_id)
 
@@ -752,8 +757,8 @@ class Index:
                 await self._db.execute(f"delete from {table} where run_id = ?", (run_id,))
 
     async def _remove_rows(self, run_id: str) -> None:
-        """Delete the events and samples of a run, REMOVE_ROWS to a transaction, each followed
-        by a pause half as long."""
+        """Delete the events and samples of a run that no run holds, as `_remove_some` takes
+        them, REMOVE_ROWS to a transaction, each followed by a pause half as long."""
         loop = asyncio.get_running_loop()
         for table in ("events", "samples"):
             while True:
@@ -763,13 +768,17 @@ class Index:
                 await asyncio.sleep((loop.time() - start) / 2)
 
     async def _remove_some(self, table: Literal["events", "samples"], run_id: str) -> bool:
-        """Delete the first REMOVE_ROWS rows of `run_id` in `table`, in seq order, in one
-        transaction. False when it had none, or when the run has a row again."""
+        """Delete the first REMOVE_ROWS rows of `run_id` in `table` that no run holds, in seq
+        order, in one transaction: all of them while the run has no row, those past its head
+        once it has one again. False when it had none."""
         async with self._write():
+            async with self._db.execute(f"select coalesce({HEAD}, -1)", (run_id,)) as cur:
+                row = await cur.fetchone()
+            held = -1 if row is None else row[0]
             async with self._db.execute(
-                f"select max(seq) from (select seq from {table} where run_id = ?1"
-                " order by seq limit ?2) where not exists (select 1 from runs where run_id = ?1)",
-                (run_id, REMOVE_ROWS),
+                f"select max(seq) from (select seq from {table} where run_id = ? and seq > ?"
+                " order by seq limit ?)",
+                (run_id, held, REMOVE_ROWS),
             ) as cur:
                 row = await cur.fetchone()
             last = None if row is None else row[0]
@@ -778,11 +787,12 @@ class Index:
             if table == "events":
                 await self._db.execute(
                     "insert into events_fts (events_fts, rowid, text) select 'delete', id, text"
-                    f" from events where run_id = ? and seq <= ? and {HAS_TEXT}",
-                    (run_id, last),
+                    f" from events where run_id = ? and seq > ? and seq <= ? and {HAS_TEXT}",
+                    (run_id, held, last),
                 )
             await self._db.execute(
-                f"delete from {table} where run_id = ? and seq <= ?", (run_id, last)
+                f"delete from {table} where run_id = ? and seq > ? and seq <= ?",
+                (run_id, held, last),
             )
         return True
 
@@ -797,7 +807,10 @@ class Index:
         index holds raises IndexDiverged, so lines that were cut from a log, which a reader in
         another process took from it first, never mix with the lines written in their place.
         Rows no run owns, which a remove cut short left, go before their run id starts again,
-        and rows past the run's last indexed event go before the batch does.
+        and rows past the run's last indexed event go before the batch does: in the batch's
+        transaction when they are REMOVE_ROWS or fewer. More go first, a few to a transaction
+        as `remove` deletes them, so no transaction holds the write lock for long. The batch
+        then tries again and deletes in its own transaction any that a drop left meanwhile.
         The batch that seals the run names its `variant`, from its truth file, and drops its
         cost row, as `set_variant` does."""
         if not events:
@@ -823,6 +836,25 @@ class Index:
             for e in events
         ]
         windows = [w for e in events if e.type == ResourceSample.type if (w := _window(e))]
+        try:
+            await self._put(events, head, rows, windows, variant, bounded=True)
+        except _Leftovers:
+            await self._remove_rows(run_id)
+            await self._put(events, head, rows, windows, variant, bounded=False)
+
+    async def _put(
+        self,
+        events: Sequence[Event],
+        head: Head,
+        rows: Sequence[Sequence[Any]],
+        windows: Sequence[Mapping[str, Any]],
+        variant: str | None,
+        *,
+        bounded: bool,
+    ) -> None:
+        """The transaction of `add`, given the rows and windows of `events`. `bounded` is as
+        `_trim` takes it."""
+        run_id = events[0].run_id
         finished = next((e for e in events if e.type == "run.finished"), None)
         # one try: the store catches a batch the index did not take up from the log later,
         # and the writer that waits here holds its run's appends
@@ -878,7 +910,7 @@ class Index:
                     f"run {run_id}: event {first.seq} follows {first.prev_hash[:16]}, the index"
                     f" ends at event {last} with {last_hash[:16]}"
                 )
-            await self._trim(run_id, last)
+            await self._trim(run_id, last, bounded=bounded)
             await self._monitor(run_id, [e for e in fresh if e.type in MONITOR_TYPES])
             await self._totals(run_id, fresh)
             units = [e for e in events if e.type == ScoreUnit.type]
@@ -929,19 +961,25 @@ class Index:
                 f" {'none' if stored is None else stored[:16]} there"
             )
 
-    async def _trim(self, run_id: str, last: int) -> None:
+    async def _trim(self, run_id: str, last: int, *, bounded: bool) -> None:
         """Delete the events and samples of `run_id` past seq `last`, its last indexed event,
         in the caller's transaction. No batch the run's row took holds them: a drop or remove
-        left them when a batch of another process raced it."""
+        left them when a batch of another process raced it. With `bounded`, more than
+        REMOVE_ROWS of them raise _Leftovers before any goes, so the caller's transaction ends
+        short and the rows go a few to a transaction."""
         async with self._db.execute(
-            "select exists (select 1 from events where run_id = ?1 and seq > ?2)"
-            " or exists (select 1 from samples where run_id = ?1 and seq > ?2)",
-            (run_id, last),
+            "select (select count(*) from (select 1 from events where run_id = ?1 and seq > ?2"
+            " limit ?3)) + (select count(*) from (select 1 from samples where run_id = ?1"
+            " and seq > ?2 limit ?3))",
+            (run_id, last, REMOVE_ROWS + 1),
         ) as cur:
             row = await cur.fetchone()
-        if not (row and row[0]):
+        found = 0 if row is None else row[0]
+        if not found:
             return
         log.warning("run %s: the index held rows past its last event %d, which go", run_id, last)
+        if bounded and found > REMOVE_ROWS:
+            raise _Leftovers(run_id)
         await self._db.execute(
             "insert into events_fts (events_fts, rowid, text) select 'delete', id, text"
             f" from events where run_id = ? and seq > ? and {HAS_TEXT}",

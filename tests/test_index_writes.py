@@ -1,11 +1,12 @@
 import asyncio
+import contextlib
 import json
 import logging
 import shutil
 import sqlite3
 import threading
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -1357,6 +1358,114 @@ async def test_rows_a_drop_leaves_past_a_batch_that_raced_it_go_with_that_batch(
     finally:
         await other.close()
     assert await rows(index) == {e.seq: e.hash for e in events}
+
+
+async def deletes_of(index: Index, monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """How many event rows each transaction of `index` deletes from here on, in the order
+    they end, rolled back or not."""
+    deletes: list[int] = []
+    per: list[int] = []
+
+    def deleted() -> int:
+        deletes.append(1)
+        return 1
+
+    await index._db.create_function("deleted", 0, deleted)
+    await index._db.execute(
+        "create temp trigger counted after delete on main.events begin select deleted(); end"
+    )
+    write = index._write
+
+    @contextlib.asynccontextmanager
+    async def counted(tries: int = BUSY_TRIES) -> AsyncGenerator[None]:
+        start = len(deletes)
+        try:
+            async with write(tries):
+                yield
+        finally:
+            per.append(len(deletes) - start)
+
+    monkeypatch.setattr(index, "_write", counted)
+    return per
+
+
+async def test_a_batch_that_raced_a_drop_deletes_the_rows_left_a_few_to_a_transaction(
+    index: Index, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same race over more rows than REMOVE_ROWS: the batch's transaction leaves them,
+    they go a few to a transaction, as a remove deletes them, then the batch goes in with no
+    row past its head. No transaction holds the write lock for all of them."""
+    monkeypatch.setattr(index_module, "REMOVE_ROWS", 2)
+    events, heads = chain(12)
+    cut, cut_heads = fork(heads, 8, 3)
+    await index.add(events[:9], heads[8])
+    await index.add(cut[:2], cut_heads[1])
+    other = await Index.open(tmp_path / "index.sqlite")
+    checked, dropped = asyncio.Event(), asyncio.Event()
+    orphaned, remove_row = other._orphaned, index._remove_row
+    per = await deletes_of(other, monkeypatch)
+
+    async def check_then_wait(run_id: str) -> bool:
+        found = await orphaned(run_id)
+        checked.set()
+        await dropped.wait()
+        return found
+
+    async def raced(run_id: str) -> None:
+        await other.add(cut[2:], cut_heads[2])
+        start = asyncio.create_task(other.add(events[:9], heads[8]))
+        await checked.wait()
+        await remove_row(run_id)
+        dropped.set()
+        await start
+
+    monkeypatch.setattr(other, "_orphaned", check_then_wait)
+    monkeypatch.setattr(index, "_remove_row", raced)
+    try:
+        await index.drop(RUN)
+        assert sum(per) == 12
+        assert max(per) <= 2
+        found = await index.head(RUN)
+        assert found is not None
+        assert found[0] == heads[8]
+        assert await rows(index) == {e.seq: e.hash for e in events[:9]}
+        await other.add(events[9:], heads[11])
+    finally:
+        await other.close()
+    assert await rows(index) == {e.seq: e.hash for e in events}
+    await index._db.execute(
+        "insert into events_fts (events_fts, rank) values ('integrity-check', 1)"
+    )
+
+
+async def test_many_rows_past_the_head_of_a_run_go_a_few_to_a_transaction_before_a_batch(
+    index: Index, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Rows of a cut step past the head of a run that has its row, as an old drop left them:
+    the next batch's transaction leaves them, they go a few to a transaction, then the batch
+    goes in. The rows up to the head stay."""
+    monkeypatch.setattr(index_module, "REMOVE_ROWS", 2)
+    head = await a_run_of_steps(index)
+    held = await rows(index)
+    await plant_past(index, head)
+    past = len(await rows(index)) - len(held)
+    per = await deletes_of(index, monkeypatch)
+    batch, end = step_of(head, 3, "next")
+    with caplog.at_level(logging.WARNING, logger="aims.events"):
+        await index.add(batch, end)
+    assert caplog.messages == [
+        f"run {RUN}: the index held rows past its last event {head.seq}, which go"
+    ]
+    assert (sum(per), max(per)) == (past, 2)
+    assert await rows(index) == held | {e.seq: e.hash for e in batch}
+    async with index._db.execute("select count(*) from samples where run_id = ?", (RUN,)) as cur:
+        assert await cur.fetchone() == (3,)
+    found = await index.head(RUN)
+    assert found is not None
+    assert found[0] == end
+    await index._db.execute(
+        "insert into events_fts (events_fts, rank) values ('integrity-check', 1)"
+    )
 
 
 async def test_a_catch_up_over_rows_of_cut_lines_past_its_head_takes_the_log(
