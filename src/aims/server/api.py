@@ -381,7 +381,8 @@ def summary(
 async def summaries(
     state: ServerState, run_ids: list[str], skip: Sequence[str] = ()
 ) -> list[RunSummary]:
-    """The runs and jobs of `run_ids` that exist, in that order, none of a kind in `skip`."""
+    """The runs and jobs of `run_ids` that exist, in that order, none of a kind in `skip` and no
+    job this version cannot read."""
     jobs = await state.db.jobs_of(run_ids)
     metas = await state.db.runs_meta(run_ids)
     reviews = await state.db.review_jobs(run_ids)
@@ -391,7 +392,12 @@ async def summaries(
         info = await state.store.run(run_id)
         if info is None and run_id not in jobs:
             continue
-        found = summary(state, run_id, info, jobs.get(run_id), metas.get(run_id))
+        try:
+            found = summary(state, run_id, info, jobs.get(run_id), metas.get(run_id))
+        except ValidationError:
+            # a job row this version cannot read, as of a kind a newer one added: what it
+            # runs and who may see it are unknown here
+            continue
         if found.kind in skip:
             continue
         found.commands, found.commands_waiting, found.commands_dropped = sent.get(run_id, (0, 0, 0))

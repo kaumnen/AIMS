@@ -864,6 +864,35 @@ async def test_queued_runs_cancel_without_a_log_and_say_why_they_wait(cp: CP) ->
     await fake.client.aclose()
 
 
+async def test_a_job_of_a_kind_this_version_does_not_know_breaks_no_list(
+    cp: CP, fake: FakeRunner
+) -> None:
+    from aims.server.db import Job as JobRow
+
+    (good,) = await start_run(cp)
+    bad = "01a18000-0000-7000-8000-00000000000b"
+    # as a newer version may store, before a downgrade
+    payload = {"kind": "unknown"}
+    now = time.time()
+    row = JobRow(bad, None, None, "queued", payload, {}, None, None, None, [], None, now, now, None)
+    await cp.state.db.add_jobs([row])
+    cp.state.changes.touch(bad)
+    async with cp.client(cp.operator) as c:
+        r = await c.get("/api/runs")
+        assert r.status_code == 200, r.text
+        assert [i["run_id"] for i in r.json()["items"]] == [good]
+        assert (await c.get(f"/api/runs/{bad}")).status_code == 404
+        # the bad row sorts first, so the stream would send it before the good one
+        listed: list[str] = []
+        params = {"runs": "true", "last_event_id": "@0"}
+        async with asyncio.timeout(10), c.sse("/api/stream", params=params) as source:
+            async for e in source:
+                if e.event == "run":
+                    listed.append(json.loads(e.data)["run"]["run_id"])
+                    break
+        assert listed == [good]
+
+
 @pytest.mark.parametrize(
     ("action", "said"), [("cancel", "cancelled by op"), ("kill", "killed by op")]
 )
