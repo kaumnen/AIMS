@@ -17,7 +17,7 @@ from aims.aio import stopped
 from aims.events import RunCorrupt
 from aims.events.index import BIND_MAX
 from aims.models import Delta
-from aims.server.api import Cursor, State, Viewer, _kind, _visible, hidden, summaries
+from aims.server.api import Cursor, State, Viewer, _kind, _visible, hidden, summaries, unseen
 from aims.server.problems import ProblemException, responses
 from aims.server.state import ServerState
 from aims.wire import (
@@ -115,14 +115,15 @@ async def _asked(
 
 
 async def _hides(state: ServerState, unsure: set[str], skip: Sequence[str]) -> bool:
-    """Whether a run of `unsure` turned out to be of a kind in `skip`. Each run whose kind is
-    known now leaves `unsure`."""
+    """Whether a run of `unsure` turned out to be of a kind `unseen` keeps from a principal who
+    does not see `skip`. Each run whose kind is known now leaves `unsure`."""
     for run_id in list(unsure):
         kind = await _kind(state, run_id)
-        if kind in skip:
+        if kind is None:
+            continue
+        if unseen(kind, skip):
             return True
-        if kind is not None:
-            unsure.discard(run_id)
+        unsure.discard(run_id)
     return False
 
 
@@ -263,7 +264,7 @@ async def stream(
                     shown = {s.run_id for s in found}
                     for run_id in pick:
                         kind = state.gone.get(run_id)
-                        if run_id not in shown and kind is not None and kind not in skip:
+                        if run_id not in shown and kind is not None and not unseen(kind, skip):
                             yield message(RunDeletedMessage(run_id=run_id), with_id=True)
             if runs:
                 for conn in sorted(state.runners.values(), key=lambda c: c.name):

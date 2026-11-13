@@ -12,7 +12,7 @@ from compression import zstd
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Annotated, Literal, Self, cast
+from typing import IO, Annotated, Literal, Self, cast, get_args
 
 from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
@@ -492,11 +492,21 @@ async def get_series(name: str, principal: Viewer, state: State) -> SeriesInfo:
 # and the facts the classifier was told; a self-test and its cases run the exploit and say
 # which plants it took. Viewers neither see them listed nor open them.
 TRUTH_KINDS = ("score", "selftest", "selftest.case")
+# Every run kind this version knows. What a run of another kind shows, as a newer version may
+# store one, is unknown here, so viewers do not see it either.
+KNOWN_KINDS: tuple[str, ...] = get_args(RunKind)
 
 
 def hidden(principal: Principal) -> tuple[str, ...]:
-    """The run kinds `principal` does not see."""
+    """The run kinds `principal` does not see. Viewers do not see a kind this version does not
+    know either, which `unseen` says."""
     return TRUTH_KINDS if principal.role == "viewer" else ()
+
+
+def unseen(kind: str, skip: Sequence[str]) -> bool:
+    """Whether a run of `kind` is kept from a principal who does not see the kinds `skip`: one
+    of them or, when `skip` keeps any, a kind this version does not know."""
+    return bool(skip) and (kind in skip or kind not in KNOWN_KINDS)
 
 
 # Seconds a client waits before it asks again for a run the index does not hold yet.
@@ -542,10 +552,14 @@ async def _kind(state: ServerState, run_id: str) -> str | None:
 
 
 async def _visible(state: ServerState, principal: Principal, run_id: str) -> None:
-    """Raises 403 when a viewer asks for a run of `TRUTH_KINDS`, started or still a job."""
-    if principal.role != "viewer":
+    """Raises 403 when a viewer asks for a run of `TRUTH_KINDS` or of a kind this version does
+    not know, started or still a job."""
+    skip = hidden(principal)
+    if not skip:
         return
     kind = await _kind(state, run_id)
+    if kind is None or not unseen(kind, skip):
+        return
     if kind in TRUTH_KINDS:
         raise ProblemException(
             403,
@@ -553,6 +567,12 @@ async def _visible(state: ServerState, principal: Principal, run_id: str) -> Non
             f"a {kind} run shows what a scenario hides; this needs the operator role",
             code="truth",
         )
+    raise ProblemException(
+        403,
+        "Forbidden",
+        f"run {run_id} is of a kind this version does not know; this needs the operator role",
+        code="kind",
+    )
 
 
 @router.get("/runs/{run_id}/truth", tags=["runs"], responses=responses(404))

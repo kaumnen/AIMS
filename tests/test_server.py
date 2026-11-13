@@ -893,6 +893,44 @@ async def test_a_job_of_a_kind_this_version_does_not_know_breaks_no_list(
         assert listed == [good]
 
 
+async def test_a_viewer_gets_nothing_of_a_job_of_a_kind_this_version_does_not_know(
+    cp: CP, fake: FakeRunner
+) -> None:
+    """What such a job shows is unknown here, so a viewer is refused it, as for a score run.
+    An operator can still cancel it."""
+    from aims.server.db import Job as JobRow
+
+    bad = "01a18000-0000-7000-8000-00000000000d"
+    t = time.time()
+    payload = {"kind": "unknown"}
+    row = JobRow(bad, None, None, "queued", payload, {}, None, None, None, [], None, t, t, None)
+    async with cp.client(cp.viewer) as viewer, cp.client(cp.operator) as c:
+        # subscribed before the job is here, so its kind is not known yet
+        params = {"run": [bad], "after": [-1]}
+        async with asyncio.timeout(10), viewer.sse("/api/stream", params=params) as source:
+            await cp.state.db.add_jobs([row])
+            cp.state.changes.touch(bad)
+            got = [e.event async for e in source if e.event not in ("message", "")]
+        assert got == []
+        for path in ("", "/events", "/flags"):
+            r = await viewer.get(f"/api/runs/{bad}{path}")
+            assert (r.status_code, r.json()["code"]) == (403, "kind"), path
+        assert (await viewer.get("/api/stream", params={"run": [bad]})).status_code == 403
+        cp.state.note_deleted(bad, "unknown")
+        cp.state.note_deleted("01a18000-0000-7000-8000-00000000000e", "scenario")
+        deleted: list[str] = []
+        stream = {"runs": "true", "last_event_id": "@0"}
+        async with asyncio.timeout(10), viewer.sse("/api/stream", params=stream) as source:
+            async for e in source:
+                if e.event == "deleted":
+                    deleted.append(json.loads(e.data)["run_id"])
+                    if len(deleted) == 1:
+                        break
+        assert deleted == ["01a18000-0000-7000-8000-00000000000e"]
+        r = await c.post(f"/api/runs/{bad}/cancel", json={})
+        assert (r.status_code, r.json()["state"]) == (202, "cancelled"), r.text
+
+
 @pytest.mark.parametrize("needs", [{"envs": 5}, {"envs": [1, "KEY"]}, ["kernel"], None])
 async def test_a_job_whose_needs_this_version_cannot_read_breaks_no_list_and_no_queue(
     cp: CP, fake: FakeRunner, needs: Any
