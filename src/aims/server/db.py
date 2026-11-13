@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import aiosqlite
-from pydantic import Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 log = logging.getLogger("aims.server")
 
@@ -263,6 +263,15 @@ class Runner:
     seen: float
 
 
+class Needs(BaseModel):
+    """What a job needs of the runner that takes it: one that runs jobs of `kind`, has each
+    env var of `envs` set and, with `kernel`, the kernel tracer up."""
+
+    kind: str | None = None
+    envs: list[str] | None = None
+    kernel: bool | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class Job:
     run_id: str
@@ -280,6 +289,11 @@ class Job:
     updated: float
     reason: str | None
     releases: int = 0
+
+    def wants(self) -> Needs:
+        """What the job needs of a runner. Raises ValidationError for a stored `needs` this
+        version cannot read, as another version or a damaged row may hold."""
+        return Needs.model_validate(self.needs)
 
 
 @dataclass(frozen=True, slots=True)

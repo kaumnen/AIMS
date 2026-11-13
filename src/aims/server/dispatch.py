@@ -7,6 +7,8 @@ import contextlib
 import logging
 import time
 
+from pydantic import ValidationError
+
 from aims.aio import stopped
 from aims.server import audit, retention
 from aims.server.db import Job
@@ -22,16 +24,19 @@ HOUSEKEEPING_S = 86400.0
 
 
 def can_take(conn: Connected, job: Job) -> bool:
+    """Whether `conn` can run `job` now. No runner can run a job whose needs this version
+    cannot read, so it waits in the queue and the jobs after it go on."""
     if conn.streams <= 0 or conn.stale or conn.free() <= 0:
         return False
-    needs = job.needs
-    kind = needs.get("kind")
-    if kind is not None and kind not in conn.hello.kinds:
+    try:
+        needs = job.wants()
+    except ValidationError:
         return False
-    if needs.get("kernel") and not conn.tracer_alive:
+    if needs.kind is not None and needs.kind not in conn.hello.kinds:
         return False
-    envs = needs.get("envs") or []
-    return set(envs) <= set(conn.envs)
+    if needs.kernel and not conn.tracer_alive:
+        return False
+    return set(needs.envs or []) <= set(conn.envs)
 
 
 def pick(state: ServerState, job: Job) -> Connected | None:

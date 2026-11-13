@@ -294,22 +294,25 @@ def _run_id(run_id: str) -> str:
 
 
 def queue_reason(state: ServerState, job: sdb.Job) -> str | None:
+    """Why the job has not started. Raises ValidationError for a job whose needs this version
+    cannot read."""
     if job.state == "waiting":
         return job.reason or sseries.waiting_reason(job)
     if job.state not in ("queued", "offered"):
         return job.reason
+    needs = job.wants()
     if job.target is not None and job.target not in state.runners:
         return f"runner {job.target} is not connected"
     live = [c for c in state.runners.values() if c.streams > 0 and not c.stale]
     if not live:
         return "no runner is connected"
-    kind = job.needs.get("kind")
+    kind = needs.kind
     if kind is not None and not any(kind in c.hello.kinds for c in live):
         return f"no connected runner runs {kind} jobs"
-    envs = set(job.needs.get("envs") or [])
+    envs = set(needs.envs or [])
     if envs and not any(envs <= set(c.envs) for c in live):
         return f"no connected runner has {', '.join(sorted(envs))} set"
-    if job.needs.get("kernel") and not any(c.tracer_alive for c in live):
+    if needs.kernel and not any(c.tracer_alive for c in live):
         return "no connected runner has the kernel tracer up"
     if not any(c.free() > 0 for c in live):
         return "every runner is busy"

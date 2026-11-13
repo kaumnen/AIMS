@@ -893,6 +893,38 @@ async def test_a_job_of_a_kind_this_version_does_not_know_breaks_no_list(
         assert listed == [good]
 
 
+@pytest.mark.parametrize("needs", [{"envs": 5}, {"envs": [1, "KEY"]}, ["kernel"], None])
+async def test_a_job_whose_needs_this_version_cannot_read_breaks_no_list_and_no_queue(
+    cp: CP, fake: FakeRunner, needs: Any
+) -> None:
+    from aims.server.db import Job as JobRow
+
+    bad = "01a18000-0000-7000-8000-00000000000c"
+    # as another version or a damaged row may hold; older, so the queue takes it first
+    t = time.time() - 60
+    payload = {"kind": "scenario", "scenario": "control"}
+    row = JobRow(bad, None, None, "queued", payload, needs, None, None, None, [], None, t, t, None)
+    await cp.state.db.add_jobs([row])
+    cp.state.changes.touch(bad)
+    (good,) = await start_run(cp)
+    offer = await fake.next(OfferMessage, within=5)
+    assert offer.run_id == good
+    assert await job_state(cp, bad) == "queued"
+    async with cp.client(cp.operator) as c:
+        r = await c.get("/api/runs")
+        assert r.status_code == 200, r.text
+        assert [i["run_id"] for i in r.json()["items"]] == [good]
+        assert (await c.get(f"/api/runs/{bad}")).status_code == 404
+        listed: list[str] = []
+        params = {"runs": "true", "last_event_id": "@0"}
+        async with asyncio.timeout(10), c.sse("/api/stream", params=params) as source:
+            async for e in source:
+                if e.event == "run":
+                    listed.append(json.loads(e.data)["run"]["run_id"])
+                    break
+        assert listed == [good]
+
+
 @pytest.mark.parametrize(
     ("action", "said"), [("cancel", "cancelled by op"), ("kill", "killed by op")]
 )
