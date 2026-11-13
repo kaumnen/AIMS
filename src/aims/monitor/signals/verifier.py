@@ -816,10 +816,13 @@ class Link:
 class Pending:
     """A whole file snapshot whose changes are still coming in, as `fs.change` events of its
     seq: the links its exec made that it has not listed yet, the hard links and targets it
-    walks, and the sha256 of each of those it lists as modified."""
+    walks, and the sha256 of each of those it lists as modified. `left` counts the changes
+    still to come: one the monitor could not read leaves it above zero, and then the snapshot
+    settles nothing, since a link it did list would look unlisted."""
 
     seq: int
     agent: str | None
+    left: int
     unlisted: dict[str, None]
     watched: frozenset[str] = frozenset()
     modified: dict[str, str | None] = field(default_factory=dict)
@@ -899,6 +902,7 @@ class LinkRedirect(Base):
         if isinstance(p, FsChangeRecord):
             pending = self.pending
             if pending is not None and pending.seq == event.seq and pending.agent == agent:
+                pending.left -= 1
                 pending.unlisted.pop(p.path, None)
                 if p.path in pending.watched and p.change == "modified":
                     pending.modified[p.path] = p.sha256
@@ -976,12 +980,16 @@ class LinkRedirect(Base):
             for path, link in walked.items()
             if link.op == "link" and any(_under(link.resolved, r) for r in roots)
         ]
-        return Pending(event.seq, agent, made, frozenset(p for pair in hard for p in pair))
+        watched = frozenset(p for pair in hard for p in pair)
+        return Pending(event.seq, agent, snapshot.total, made, watched)
 
     def _settle(self, pending: Pending) -> None:
         """Drops each link of `pending` its snapshot did not list, as the exec that made it left
         the path as it found it, and each hard link it lists as modified to other content than
-        its target. A file the snapshot did not hash tells nothing."""
+        its target. A file the snapshot did not hash tells nothing, and neither does a snapshot
+        with a change that did not come in."""
+        if pending.left != 0:
+            return
         for path in pending.unlisted:
             link = self.links.get((pending.agent, path))
             if link is not None and link.seq < pending.seq:

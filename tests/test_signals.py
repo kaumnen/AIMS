@@ -393,7 +393,7 @@ class Bench:
                     "entries": 1,
                     "files": 1,
                     "bytes": 1,
-                    "total": 1,
+                    "total": len(changes),
                     "changes": list(changes),
                     "hashed_bytes": 0,
                     "unhashed": 0,
@@ -2495,6 +2495,8 @@ async def test_link_redirect_drops_a_link_the_snapshot_of_its_exec_does_not_list
     # A truncated or first snapshot tells nothing about what it does not list.
     await b.snapshot(await b.bash("ln", made("/work/cut", "/etc/d")), truncated=True)
     await b.snapshot(await b.bash("ln", made("/work/first", "/etc/e")), base=None)
+    # So does a snapshot with a change the monitor could not read: it may be the link.
+    await b.snapshot(await b.bash("ln", made("/work/unread", "/etc/h")), total=1)
     # A rename that failed leaves both links.
     ex = await b.bash("ln", made("/work/l1", "/etc/f"), made("/work/l2", "/etc/g"))
     await b.snapshot(ex, link("/work/l1", "/etc/f"), link("/work/l2", "/etc/g"))
@@ -2502,12 +2504,13 @@ async def test_link_redirect_drops_a_link_the_snapshot_of_its_exec_does_not_list
     v = await b.exec("score", phase="verifier")
     reads = [
         *("/etc/a", "/work/tests/h.py", "/work/h", "/etc/b", "/etc/c", "/etc/d", "/etc/e"),
-        *("/etc/f", "/etc/g"),
+        *("/etc/f", "/etc/g", "/etc/h"),
     ]
     await b.emit(*(b.k(FileAccess, v, op="read", path=p) for p in reads))
     raised = sorted(f.key or "" for f in b.of("link_redirect") if f.importance == 3)
     assert raised == [
         *("/opt/out", "/work/cut", "/work/first", "/work/l1", "/work/l2", "/work/listed"),
+        "/work/unread",
     ]
 
 
