@@ -6,6 +6,8 @@ import json
 import os
 import socket
 import tarfile
+import tempfile
+import time
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime, timedelta
@@ -549,12 +551,19 @@ async def test_untagged_images_go_unless_used_or_just_untagged() -> None:
 
 
 async def test_a_toolbox_volume_goes_with_its_image(
-    deleted: list[str], monkeypatch: pytest.MonkeyPatch
+    deleted: list[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """An old build lock file goes in the same cleanup."""
+
     async def nothing(*_: Any) -> list[str]:
         return []
 
     monkeypatch.setattr(sandbox, "remove_old", nothing)
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    lock = assets._lock_path("aims-env:old")
+    lock.touch()
+    then = time.time() - 2 * 86400
+    os.utime(lock, (then, then))
     names = [
         "aims-toolbox-000000000000",
         "aims-toolbox-aaaaaaaaaaaa",
@@ -572,6 +581,7 @@ async def test_a_toolbox_volume_goes_with_its_image(
     docker.images = images
     await sandbox._remove_old(docker, "aims-toolbox-000000000000", 30)
     assert deleted == ["aims-toolbox-bbbbbbbbbbbb"]
+    assert os.listdir(tmp_path) == []
 
 
 @pytest.mark.docker

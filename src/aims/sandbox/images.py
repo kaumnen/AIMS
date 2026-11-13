@@ -7,6 +7,7 @@ import io
 import json
 import logging
 import os
+import stat
 import tarfile
 import tempfile
 import time
@@ -41,6 +42,10 @@ NEVER = datetime(1, 1, 1, tzinfo=UTC)
 # How long a build lock waits for a lock file it may not read to become readable: another
 # user makes the file, then sets its mode.
 UNREADABLE_S = 1.0
+# Build lock files no one holds go this many seconds after they were made. A tag is mostly
+# built soon after its file is made, so this keeps the files that a waiter of an AIMS version
+# that never removed one, and so never checks for that, is likely to have open.
+LOCK_KEEP_S = 86400.0
 
 
 def registry(env: Mapping[str, str] = os.environ) -> str:
@@ -339,6 +344,48 @@ async def _open(path: Path, poll: float) -> int:
         # The umask can take the read bits of others away.
         os.fchmod(fd, 0o644)
         return fd
+
+
+def remove_old_locks() -> list[Path]:
+    """Remove this user's build lock files in the temp folder that no one holds and that were
+    made more than LOCK_KEEP_S ago. AIMS 0.2.2 and older never removed one, and a holder that
+    is killed leaves one. Each goes under its lock, as a holder's does, so a waiter on it
+    locks a new file instead. Returns the files removed."""
+    folder = Path(tempfile.gettempdir())
+    before = time.time() - LOCK_KEEP_S
+    removed = [path for path in folder.glob("aims-build-*.lock") if _remove_lock(path, before)]
+    if removed:
+        log.info("removed %d build lock files left in %s", len(removed), folder)
+    return removed
+
+
+def _remove_lock(path: Path, before: float) -> bool:
+    """Remove the lock file `path` if it is this user's, made before `before`, and no one holds
+    it. Anything else at `path`, such as a symlink, is not opened."""
+    try:
+        if not _stale(os.lstat(path), before):
+            return False
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return False
+    try:
+        if not _stale(os.fstat(fd), before):
+            return False
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # Only a holder removes a lock file, so a file at `path` now that is not this one was
+        # made after this one went.
+        if not os.path.samestat(os.fstat(fd), os.lstat(path)):
+            return False
+        os.unlink(path)
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+    return True
+
+
+def _stale(found: os.stat_result, before: float) -> bool:
+    return stat.S_ISREG(found.st_mode) and found.st_uid == os.getuid() and found.st_mtime < before
 
 
 async def ensure_pulled(docker: aiodocker.Docker, image: str) -> dict:

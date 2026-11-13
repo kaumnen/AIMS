@@ -37,7 +37,14 @@ from aims.sandbox.base import (
 )
 from aims.sandbox.containers import create_container, remove_container
 from aims.sandbox.execs import open_stream
-from aims.sandbox.images import KEEP_DAYS, ensure_built, ensure_image, ensure_pulled, remove_old
+from aims.sandbox.images import (
+    KEEP_DAYS,
+    ensure_built,
+    ensure_image,
+    ensure_pulled,
+    remove_old,
+    remove_old_locks,
+)
 from aims.sandbox.imds import Identity
 from aims.sandbox.imds import start as start_imds_server
 from aims.sandbox.reader import Reader, stream_archive
@@ -175,7 +182,8 @@ class DockerBackend:
         await settle(_teardown(self.docker, self.tracer, self.sampler))
 
     async def remove_old(self, keep_days: float) -> None:
-        """Remove what `open` removes: the images and toolbox volumes AIMS needs no more."""
+        """Remove what `open` removes: the images, toolbox volumes and build lock files AIMS
+        needs no more."""
         await _remove_old(self.docker, self._toolbox_volume, keep_days)
 
     async def restart_tracer(self) -> None:
@@ -1255,9 +1263,10 @@ async def _toolbox(docker: aiodocker.Docker, labels: dict[str, str]) -> tuple[st
 
 async def _remove_old(docker: aiodocker.Docker, toolbox: str, keep_days: float) -> None:
     """Remove what `remove_old` removes, such as the asset images of other AIMS versions unused
-    for a day and the scenario images unused for `keep_days` days, then the toolbox volumes
-    whose image is gone."""
+    for a day and the scenario images unused for `keep_days` days, and what `remove_old_locks`
+    removes, then the toolbox volumes whose image is gone."""
     await remove_old(docker, keep_days)
+    await asyncio.to_thread(remove_old_locks)
     listing = await docker.volumes.list(filters={"label": ["aims.managed=1"]})
     for volume in listing.get("Volumes") or []:
         name = volume["Name"]

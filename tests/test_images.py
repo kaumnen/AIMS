@@ -419,6 +419,66 @@ async def test_a_build_lock_file_that_stays_unreadable_raises(
     assert path.exists()
 
 
+def aged(path: Path, days: float = 2) -> Path:
+    """`path`, made `days` days ago if it is not there."""
+    path.touch()
+    then = time.time() - days * 86400
+    os.utime(path, (then, then), follow_symlinks=False)
+    return path
+
+
+def test_old_build_lock_files_no_one_holds_go(
+    lock_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """As versions that never removed one left them, and a holder that was killed."""
+    old = aged(images._lock_path("aims-env:old"))
+    fresh = aged(images._lock_path("aims-env:fresh"), days=0.9)
+    taken = aged(images._lock_path("aims-env:held"))
+    other = aged(lock_dir / "aims-other.lock")
+    target = aged(lock_dir / "target")
+    link = images._lock_path("aims-env:link")
+    link.symlink_to(target)
+    aged(link)
+    fd = os.open(taken, os.O_RDONLY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        uid = os.getuid()
+        monkeypatch.setattr(os, "getuid", lambda: uid + 1)
+        assert images.remove_old_locks() == []
+        monkeypatch.setattr(os, "getuid", lambda: uid)
+        assert images.remove_old_locks() == [old]
+    finally:
+        os.close(fd)
+    assert {p.name for p in lock_dir.iterdir()} == {
+        p.name for p in (fresh, taken, other, target, link)
+    }
+
+
+async def test_a_waiter_on_a_lock_file_the_sweep_removed_locks_a_new_one(lock_dir: Path) -> None:
+    """Its holder, of a version that never removed one, left it; the sweep removes it under
+    its lock, as a holder does."""
+    tag = "aims-env:swept"
+    path = aged(images._lock_path(tag))
+    holder = os.open(path, os.O_RDONLY)
+    fcntl.flock(holder, fcntl.LOCK_EX)
+    inside = asyncio.Event()
+
+    async def wait() -> None:
+        async with images._host_lock(tag, poll=0.3):
+            assert os.stat(path).st_mtime > time.time() - 60
+            assert held(tag)
+            inside.set()
+
+    task = asyncio.create_task(wait())
+    await asyncio.sleep(0.1)
+    assert images.remove_old_locks() == []
+    os.close(holder)
+    assert images.remove_old_locks() == [path]
+    await asyncio.wait_for(task, 5)
+    assert inside.is_set()
+    assert os.listdir(lock_dir) == []
+
+
 async def test_a_build_lock_never_follows_a_symlink(lock_dir: Path) -> None:
     path = images._lock_path("aims-env:link")
     target = lock_dir / "target"
