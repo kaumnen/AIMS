@@ -84,9 +84,14 @@ class Shipper:
     the run's truth file and its labels, each by its own path, and ends. Local writes never
     wait for it. A run the server deleted ends it with `deleted` set, one deleted from the
     local store meanwhile with `gone` set. It retries without end; `streak` counts the tries
-    that failed in a row."""
+    that failed in a row.
 
-    def __init__(self, store: LocalEventStore, client: ControlClient, run_id: str) -> None:
+    A shipper may start before its run does, so only a run it saw here can be gone: `seen`
+    says the caller saw it, and a run the server holds events of was here too."""
+
+    def __init__(
+        self, store: LocalEventStore, client: ControlClient, run_id: str, *, seen: bool = False
+    ) -> None:
         self.store = store
         self.client = client
         self.run_id = run_id
@@ -98,7 +103,7 @@ class Shipper:
         self.refused: str | None = None
         self.deleted = False
         self.gone = False
-        self.seen = False
+        self.seen = seen
         self.batches = 0
         self.lines = 0
         self.truthful = False
@@ -178,8 +183,9 @@ class Shipper:
         server = heads.get(self.run_id, Head())
         if server.deleted:
             raise Deleted("the control plane deleted it")
-        local = await self._seek(server.seq) if server.seq >= 0 else LogHead()
+        # the server holds events of the run, so the run is not one still to start
         self.seen = self.seen or server.seq >= 0
+        local = await self._seek(server.seq) if server.seq >= 0 else LogHead()
         if server.seq >= 0 and local.hash != server.hash:
             raise Diverged(f"event {server.seq} has another hash there")
         self.server, self.local = server, local

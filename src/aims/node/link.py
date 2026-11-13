@@ -149,7 +149,7 @@ class Link:
 
         def started(run_id: str) -> None:
             self.runners[run_id] = runner
-            self.ship(run_id)
+            self.ship(run_id, seen=True)
             if previous is not None:
                 previous(run_id)
 
@@ -158,11 +158,13 @@ class Link:
     def untrack(self, run_id: str) -> None:
         self.runners.pop(run_id, None)
 
-    def ship(self, run_id: str) -> None:
+    def ship(self, run_id: str, *, seen: bool = False) -> None:
+        """Ship a run. `seen` says the run is in the store now; without it the shipper may
+        start before its run and waits for it."""
         task = self._ships.get(run_id)
         if task is not None and not task.done():
             return
-        shipper = Shipper(self.store, self.client, run_id)
+        shipper = Shipper(self.store, self.client, run_id, seen=seen)
         task = asyncio.create_task(shipper.run())
         self.shippers[run_id] = shipper
         self._ships[run_id] = task
@@ -233,7 +235,7 @@ class Link:
             or server.hash != local.hash
             or (local.finished and not server.truth and self.store.truth_path(run_id).is_file())
         ):
-            self.ship(run_id)
+            self.ship(run_id, seen=True)
         elif server.seq >= 0:
             await self._labels(run_id)
 

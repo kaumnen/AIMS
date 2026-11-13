@@ -18,7 +18,7 @@ import threading
 import time
 import typing
 import uuid
-from collections.abc import AsyncGenerator, AsyncIterator, Generator
+from collections.abc import AsyncGenerator, AsyncIterator, Generator, Sequence
 from compression import zstd
 from pathlib import Path
 from typing import Any, Literal
@@ -724,6 +724,63 @@ async def test_a_shipper_whose_run_is_deleted_while_it_reads_a_blob_ends(
     async with asyncio.timeout(10):
         await shipper.run()
     assert (shipper.gone, shipper.refused) == (True, "the run was deleted here")
+
+
+async def test_a_shipper_ends_when_its_run_was_deleted_here_before_it_read_it(
+    cp: CP, fake: FakeRunner, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The server holds events of the run, so it is no run still to start."""
+    run_id = await local.create_run(STARTED)
+    await local.append(run_id, [call(1)])
+    first = Shipper(local, fake.client, run_id)
+    task = asyncio.create_task(first.run())
+
+    async def shipped() -> int:
+        head = await cp.state.store.head(run_id)
+        return -1 if head is None else head.seq
+
+    await until(shipped, 1)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    shutil.rmtree(local.root / run_id)
+    await local._index.remove(run_id)
+    shipper = Shipper(local, fake.client, run_id)
+    async with asyncio.timeout(10):
+        await shipper.run()
+    assert (shipper.gone, shipper.refused, shipper.streak.failures) == (
+        True,
+        "the run was deleted here",
+        0,
+    )
+
+
+async def test_a_shipper_of_a_run_ship_all_found_ends_when_it_goes_before_the_first_read(
+    cp: CP, fake: FakeRunner, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(shipper_module, "IDLE_S", 0.05)
+    run_id = await local.create_run(STARTED)
+    await local.append(run_id, [call(1)])
+    link = Link(fake.client, local, DeltaBus())
+    heads = fake.client.heads
+    asked = 0
+
+    async def then_deleted(run_ids: Sequence[str]) -> Any:
+        nonlocal asked
+        asked += 1
+        if asked == 2:
+            # the shipper's first ask: the run was deleted since ship_all read it
+            shutil.rmtree(local.root / run_id)
+            await local._index.remove(run_id)
+        return await heads(run_ids)
+
+    monkeypatch.setattr(fake.client, "heads", then_deleted)
+    await link.ship_all()
+    shipper, task = link.shippers[run_id], link._ships[run_id]
+    async with asyncio.timeout(10):
+        await task
+    assert (shipper.gone, shipper.refused) == (True, "the run was deleted here")
+    assert await cp.state.store.head(run_id) is None
 
 
 async def test_a_shipper_that_starts_before_its_run_waits_for_it(
