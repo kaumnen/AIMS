@@ -550,3 +550,23 @@ def test_aims_audit_reads_the_local_trail(tmp_path: Path) -> None:
     assert (out.exit_code, out.output) == (0, "")
     out = runner.invoke(cli, ["audit", *data, "--outcome", "maybe"])
     assert out.exit_code == 2
+
+
+@pytest.mark.parametrize("jsonl", [False, True])
+def test_aims_audit_prints_no_rows_when_one_fails(tmp_path: Path, jsonl: bool) -> None:
+    data = tmp_path / "server"
+    runner = CliRunner()
+    made = runner.invoke(cli, ["token", "create", "a", "--data-dir", str(data)])
+    assert made.exit_code == 0, made.output
+    # a row whose time no date holds, older than the next one
+    db = sqlite3.connect(data / "server.sqlite")
+    try:
+        with db:
+            db.execute("insert into audit (at_us, action, outcome) values (?, 'x', 'ok')", (2**62,))
+    finally:
+        db.close()
+    made = runner.invoke(cli, ["token", "create", "b", "--data-dir", str(data)])
+    assert made.exit_code == 0, made.output
+    out = runner.invoke(cli, ["audit", "--data-dir", str(data), *(["--jsonl"] if jsonl else [])])
+    assert out.exit_code == 1
+    assert out.stdout == ""

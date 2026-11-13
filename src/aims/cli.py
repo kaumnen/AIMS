@@ -2864,14 +2864,17 @@ def audit_cmd(
         finally:
             await db.close()
 
+    # The text is built in full first, so a row that fails to show writes nothing.
+    out: list[str] = []
     for r in asyncio.run(main()):
         if jsonl:
-            typer.echo(json_text(entry(r).model_dump(mode="json")))
+            out.append(json_text(entry(r).model_dump(mode="json")) + "\n")
             continue
         when = datetime.fromtimestamp(r.at, UTC).strftime("%Y-%m-%d %H:%M:%S")
         result = r.outcome if r.status is None else f"{r.outcome} {r.status}"
         parts = [when, r.token or "-", r.action, r.target or "-", result, r.ip or "-"]
-        typer.echo("  ".join(one_line(part) for part in [*parts, r.detail or ""]).rstrip())
+        out.append("  ".join(one_line(part) for part in [*parts, r.detail or ""]).rstrip() + "\n")
+    typer.echo("".join(out), nl=False)
 
 
 @app.command()
