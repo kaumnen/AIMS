@@ -652,6 +652,38 @@ def test_a_refused_runner_aims_ui_starts_says_only_the_refusal_when_aims_ui_ends
     assert "aims ui ended" not in result.output
 
 
+def test_aims_ui_with_a_data_dir_keeps_its_runner_inside_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    served: list[UiOptions] = []
+
+    async def serve(o: UiOptions) -> int:
+        served.append(o)
+        return 0
+
+    monkeypatch.setattr("aims.server.serve.serve", serve)
+    for args in (["ui", "--no-open"], ["ui", "--no-open", "--data-dir", str(tmp_path)]):
+        r = CliRunner().invoke(app, args)
+        assert r.exit_code == 0, r.output
+    assert [o.runner_data for o in served] == [None, tmp_path / "runner"]
+
+
+async def test_aims_ui_hands_its_runner_the_folder_for_its_runs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    argv: list[str] = []
+
+    async def spawn(*args: str, **kwargs: Any) -> None:
+        argv.extend(args)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    await _spawn_runner("http://127.0.0.1:9", "t", UiOptions(), 7)
+    assert "--data-dir" not in argv
+    argv.clear()
+    await _spawn_runner("http://127.0.0.1:9", "t", UiOptions(runner_data=tmp_path / "runner"), 7)
+    assert argv[argv.index("--data-dir") + 1] == str(tmp_path / "runner")
+
+
 async def test_aims_ui_tells_its_runner_to_leave_ctrl_c_to_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1822,7 +1854,9 @@ async def test_aims_ui_brings_a_runner_and_stops_it(tmp_path: Path) -> None:
         proc.send_signal(signal.SIGTERM)
         async with asyncio.timeout(120):
             assert await proc.wait() == 0
-    assert (tmp_path / "xdg" / "aims" / "runner" / "runs").is_dir()
+    # --data-dir holds the local runner's runs too, not the runner's folder under the home
+    assert (tmp_path / "server" / "runner" / "runs").is_dir()
+    assert not (tmp_path / "xdg" / "aims" / "runner").exists()
 
 
 @pytest.mark.docker

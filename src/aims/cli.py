@@ -1606,7 +1606,10 @@ def ui(
     data_dir: Annotated[
         Path | None,
         typer.Option(
-            "--data-dir", file_okay=False, help="Where the control plane keeps its state."
+            "--data-dir",
+            file_okay=False,
+            help="Where the control plane keeps its state. The local runner then keeps its"
+            " runs in the `runner` folder inside it.",
         ),
     ] = None,
     runner: Annotated[bool, typer.Option(help="Start a local runner with it.")] = True,
@@ -1683,6 +1686,7 @@ def ui(
         data=data_dir or server_dir(),
         project=project,
         runner=runner,
+        runner_data=None if data_dir is None else data_dir / "runner",
         slots=slots,
         audit=audit,
         tls_cert=tls_cert,

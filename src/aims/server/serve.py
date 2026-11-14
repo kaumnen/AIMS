@@ -70,6 +70,8 @@ class UiOptions:
     data: Path = field(default_factory=server_dir)
     project: Path | None = None
     runner: bool = True
+    # where the local runner keeps its runs, None for the runner's own default
+    runner_data: Path | None = None
     slots: int = 2
     audit: str = "auto"
     tls_cert: Path | None = None
@@ -485,6 +487,7 @@ async def _spawn_runner(
         str(o.slots),
         "--audit",
         o.audit,
+        *(["--data-dir", str(o.runner_data)] if o.runner_data is not None else []),
         *(["--config", str(o.project)] if o.project is not None else []),
         *(["--tls-ca", str(o.tls_cert)] if o.tls_cert is not None else []),
         *(["--keep-days", f"{o.keep_days:g}"] if o.keep_days is not None else []),
