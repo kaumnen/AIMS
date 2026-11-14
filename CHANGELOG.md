@@ -11,6 +11,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 ### Changed
 
+- For contributors: the tests sit in one folder per area under `tests/`. CI runs only the jobs a change needs, so a docs change runs no test and a web change runs no Python suite. A nightly run and each release run everything on Python 3.14 and 3.15. A pull request needs one check, `ci`. The new `CONTRIBUTING.md` has the rules.
 - `aims ui --data-dir` keeps the local runner's runs in the `runner` folder inside that directory. The runner used its own folder under the home directory, so a new data directory filled with the runs of earlier sessions.
 - The estimate leaves out a run that an operator killed, as it leaves out a cancelled one. It counted such a run as a whole run, which made the typical cost too low. A run that the monitor killed still counts.
 - The estimate assumes that 50% of a monitor model's input is cached when no past call of that model is on record. It assumed 90%, as for an agent's model. A sweep repeats less of the call before it than an agent does.

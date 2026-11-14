@@ -361,7 +361,7 @@ uv run pytest -m "serial or timing"                                 # full suite
 cd web && bun run test && bun run lint
 ```
 
-The tests sit in one folder per area under `tests/`, such as `tests/monitor` and `tests/server`. The full suite needs Docker and starts the kernel tracer. Part 2 runs one test at a time. It holds the tests that need the machine to themselves (`serial`) and those with a short time limit (`timing`).
+The tests sit in one folder per area under `tests/`, such as `tests/monitor` and `tests/server`. The full suite needs Docker and starts the kernel tracer. Part 2 runs one test at a time. It holds the tests that need the machine to themselves (`serial`) and those with a short time limit (`timing`). [CONTRIBUTING.md](https://github.com/kaumnen/AIMS/blob/main/CONTRIBUTING.md) lists the checks to run before a push and the jobs CI runs for each kind of change.
 
 ## License
 
