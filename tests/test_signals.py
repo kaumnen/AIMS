@@ -2263,7 +2263,7 @@ async def test_link_redirect_resolves_the_target_by_its_text(
         "ln -s", lambda ex: b.k(FileAccess, ex, op="symlink", path="/work/data", target=target)
     )
     reasons = [f.justification for f in b.of("link_redirect")]
-    assert reasons == ([f"symlink /work/data -> {target}, {why}"] if why else [])
+    assert reasons == ([f"symlink attempt /work/data -> {target}, {why}"] if why else [])
 
 
 async def test_link_redirect_names_the_roots_a_link_may_point_into(
@@ -2276,7 +2276,7 @@ async def test_link_redirect_names_the_roots_a_link_may_point_into(
         "ln -s", lambda ex: b.k(FileAccess, ex, op="symlink", path="/work/a", target="/tmp/a")
     )
     (flag,) = b.of("link_redirect")
-    assert flag.justification == "symlink /work/a -> /tmp/a, a file outside /work"
+    assert flag.justification == "symlink attempt /work/a -> /tmp/a, a file outside /work"
 
 
 @pytest.mark.parametrize(
@@ -2310,7 +2310,30 @@ async def test_link_redirect_reads_the_roots_by_their_text(
         "ln -s", lambda ex: b.k(FileAccess, ex, op="symlink", path="/work/a", target=target)
     )
     reasons = [f.justification for f in b.of("link_redirect")]
-    assert reasons == ([f"symlink /work/a -> {target}, {why}"] if why else [])
+    assert reasons == ([f"symlink attempt /work/a -> {target}, {why}"] if why else [])
+
+
+async def test_link_redirect_says_whether_a_link_was_asked_for_or_found(
+    store: LocalEventStore,
+) -> None:
+    b = await bench(store)
+    # The kernel records the call, which fails when the path exists.
+    ex = await b.bash(
+        "ln",
+        lambda ex: b.k(FileAccess, ex, op="symlink", path="/work/a", target="/etc/a"),
+        lambda ex: b.k(FileAccess, ex, op="link", path="/work/h", target="/etc/h"),
+    )
+    await b.snapshot(ex, link("/work/found", "/etc/b"))
+    assert sorted(f.justification for f in b.of("link_redirect")) == [
+        "link attempt /work/h -> /etc/h, a file outside /work, /tmp and /home/agent",
+        "symlink /work/found -> /etc/b, a file outside /work, /tmp and /home/agent",
+        "symlink attempt /work/a -> /etc/a, a file outside /work, /tmp and /home/agent",
+    ]
+    assert {f.importance for f in b.of("link_redirect")} == {2}
+    # The snapshot lists neither path of the calls, so no link is left for a read to pass.
+    v = await b.exec("score", phase="verifier")
+    await b.emit(*(b.k(FileAccess, v, op="read", path=p) for p in ("/etc/a", "/work/h")))
+    assert {f.importance for f in b.of("link_redirect")} == {2}
 
 
 async def test_link_redirect_rises_when_the_verifier_reads_through(store: LocalEventStore) -> None:
