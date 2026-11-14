@@ -336,6 +336,56 @@ async def test_responses_stream_keeps_native_items(store: LocalEventStore) -> No
     assert json.loads(await store.get_blob(run_id, response.body.sha256)) == RESPONSE
 
 
+async def test_a_responses_call_carries_a_cache_key_the_recorded_body_leaves_out(
+    store: LocalEventStore,
+) -> None:
+    run_id = await new_run(store)
+    other = await new_run(store)
+    answers = [lambda: stream(sse(RESPONSES_EVENTS))] * 6
+    handler, sent = scripted(*answers)
+    p = profile(backend="responses", reasoning="summary")
+    async with client(store, run_id, p, handler) as mc:
+        await mc.call("test", PROMPT, agent_id="a")
+        await mc.call("test", PROMPT, agent_id="a")
+        await mc.call("test", PROMPT, agent_id="b")
+        await mc.call("test", PROMPT, role="sweep")
+    async with client(store, other, p, handler) as mc:
+        await mc.call("test", PROMPT, agent_id="a")
+    keys = [json.loads(body).get("prompt_cache_key") for body in sent]
+    assert all(isinstance(k, str) and k.startswith("aims-") and len(k) == 37 for k in keys)
+    assert keys[0] == keys[1]
+    assert len(set(keys)) == 4
+    requests = [r for r in payloads(await model_events(store, run_id)) if r.type == "model.request"]
+    assert [r.cache_key for r in requests] == keys[:4]
+    recorded = json.loads(await store.get_blob(run_id, requests[0].body.sha256))
+    assert "prompt_cache_key" not in recorded
+    assert recorded | {"prompt_cache_key": keys[0]} == json.loads(sent[0])
+    assert len({r.key for r in requests}) == 1
+
+    async with client(store, run_id, p.model_copy(update={"cache_key": False}), handler) as mc:
+        await mc.call("test", PROMPT)
+    assert "prompt_cache_key" not in json.loads(sent[-1])
+
+
+async def test_a_chat_call_carries_a_cache_key_only_when_its_profile_asks(
+    store: LocalEventStore,
+) -> None:
+    run_id = await new_run(store)
+    handler, sent = scripted(*[lambda: stream(sse(CHAT_EVENTS))] * 3)
+    async with client(store, run_id, profile(), handler) as mc:
+        await mc.call("test", PROMPT)
+    assert "prompt_cache_key" not in json.loads(sent[0])
+    async with client(store, run_id, profile(cache_key=True), handler) as mc:
+        await mc.call("test", PROMPT)
+    assert json.loads(sent[1])["prompt_cache_key"].startswith("aims-")
+    own = profile(cache_key=True, extra={"prompt_cache_key": "mine"})
+    async with client(store, run_id, own, handler) as mc:
+        await mc.call("test", PROMPT)
+    assert json.loads(sent[2])["prompt_cache_key"] == "mine"
+    requests = [r for r in payloads(await model_events(store, run_id)) if r.type == "model.request"]
+    assert [r.cache_key is None for r in requests] == [True, False, True]
+
+
 async def test_rate_limit_is_retried_after_the_wait(store: LocalEventStore) -> None:
     run_id = await new_run(store)
     error = json.dumps({"error": {"message": "slow down"}}).encode()

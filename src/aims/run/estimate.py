@@ -48,6 +48,10 @@ Tier = Literal["scenario", "models", "cap"]
 MonitorKey = tuple[str, tuple[tuple[str, str | None], ...]]
 MIN_RUNS = 10
 CACHED_SHARE = 0.9
+# A monitor's calls repeat less of the call before them than an agent's: a sweep's window
+# starts at a new step each time and its history collapses in jumps. On the 0.2.3 demo run
+# 56% of the sweeps' input repeated the sweep before it.
+WATCH_CACHED_SHARE = 0.5
 PROJECT_AFTER = 3
 # A killed run counts when its monitor killed it, which is an end of its own. A run a person
 # cut short, by a kill or a cancel, says nothing of what a whole run costs.
@@ -135,7 +139,8 @@ class CostTotal(_Out):
 
 class CachedRate(_Out):
     """The input price of `model` per million tokens with `cached_share` of it cached, the
-    share its past calls reported, or 90% when `assumed`."""
+    share its past calls reported. When `assumed` it has none: 90% for a model an agent uses,
+    50% for one only the monitor uses."""
 
     model: str
     cached_share: float
@@ -236,8 +241,10 @@ class History:
     spend: dict[str, float] = field(default_factory=dict)
     shares: dict[str, float] = field(default_factory=dict)
 
-    def share(self, model: str) -> float:
-        return self.shares.get(model, CACHED_SHARE)
+    def share(self, model: str, watch: bool = False) -> float:
+        """The cached share of `model`'s input: what its past calls reported, else the one
+        assumed for an agent's model, or for a monitor's with `watch`."""
+        return self.shares.get(model, WATCH_CACHED_SHARE if watch else CACHED_SHARE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -567,12 +574,13 @@ def estimate(
                 if figures.high_usd is not None:
                     high[name] += figures.high_usd * share * samples
         watched = _watch_profiles(p.monitor)
+        acting = {prof.model for prof in _model_agents(p)}
         for prof in [*_model_agents(p), *watched]:
             if prof.price is None:
                 unpriced.add(prof.name)
                 continue
             priced = True
-            share = found.share(prof.model)
+            share = found.share(prof.model, watch=prof.model not in acting)
             blended = share * prof.price.cached + (1 - share) * prof.price.input
             rates[prof.model] = CachedRate(
                 model=prof.model,
@@ -755,7 +763,10 @@ def _side(
             scale = 1.0 if tier == "scenario" or budget is None else _scale(budget, past)
             calls = past.agents if side == "agents" else past.watch
             share = scale * _left(done or {}, past, tier, scale)
-            each = {m: t.priced(prices.get(m), found.share(m)) * share for m, t in calls.items()}
+            watch = side == "watch"
+            each = {
+                m: t.priced(prices.get(m), found.share(m, watch)) * share for m, t in calls.items()
+            }
             cost = sum(each.values())
             if cost <= 0:
                 continue

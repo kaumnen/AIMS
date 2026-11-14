@@ -1311,7 +1311,7 @@
         "type": "object"
       },
       "CachedRate": {
-        "description": "The input price of `model` per million tokens with `cached_share` of it cached, the\nshare its past calls reported, or 90% when `assumed`.",
+        "description": "The input price of `model` per million tokens with `cached_share` of it cached, the\nshare its past calls reported. When `assumed` it has none: 90% for a model an agent uses,\n50% for one only the monitor uses.",
         "properties": {
           "assumed": {
             "title": "Assumed",
@@ -7074,7 +7074,7 @@
       },
       "ModelRequest": {
         "additionalProperties": false,
-        "description": "Written before the HTTP request of one attempt is sent.\n\n`body` holds the exact bytes sent, RFC 8785 canonical JSON, so `key`, the sha256 of the\ncanonical body, is also the blob's hash. Headers and keys are never recorded. `queued_ms` is\nthe wait for the rate limiter and the concurrency cap before the request went out. `role` marks\na call the monitor made: a sweep, the judge, or a review; None is an agent's call.",
+        "description": "Written before the HTTP request of one attempt is sent.\n\n`body` holds the bytes sent, less `cache_key`, RFC 8785 canonical JSON, so `key`, the sha256\nof the canonical body, is also the blob's hash. Headers and keys are never recorded.\n`queued_ms` is the wait for the rate limiter and the concurrency cap before the request went\nout. `role` marks a call the monitor made: a sweep, the judge, or a review; None is an\nagent's call.\n`cache_key` is the request's `prompt_cache_key`, which only routes it to a prompt cache,\nNone when none went with it. It names the run, so a replay could not match a body that\nheld it.",
         "properties": {
           "attempt": {
             "minimum": 1,
@@ -7091,6 +7091,18 @@
           },
           "body": {
             "$ref": "#/components/schemas/BlobRef"
+          },
+          "cache_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cache Key"
           },
           "call_id": {
             "title": "Call Id",
@@ -7151,7 +7163,8 @@
           "body",
           "key",
           "queued_ms",
-          "role"
+          "role",
+          "cache_key"
         ],
         "title": "ModelRequest",
         "type": "object"
@@ -9795,6 +9808,17 @@
               }
             ],
             "title": "Base Url Env"
+          },
+          "cache_key": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Key"
           },
           "context_tokens": {
             "anyOf": [

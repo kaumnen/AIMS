@@ -2100,7 +2100,8 @@ export interface components {
         /**
          * CachedRate
          * @description The input price of `model` per million tokens with `cached_share` of it cached, the
-         *     share its past calls reported, or 90% when `assumed`.
+         *     share its past calls reported. When `assumed` it has none: 90% for a model an agent uses,
+         *     50% for one only the monitor uses.
          */
         CachedRate: {
             /** Assumed */
@@ -4281,10 +4282,14 @@ export interface components {
          * ModelRequest
          * @description Written before the HTTP request of one attempt is sent.
          *
-         *     `body` holds the exact bytes sent, RFC 8785 canonical JSON, so `key`, the sha256 of the
-         *     canonical body, is also the blob's hash. Headers and keys are never recorded. `queued_ms` is
-         *     the wait for the rate limiter and the concurrency cap before the request went out. `role` marks
-         *     a call the monitor made: a sweep, the judge, or a review; None is an agent's call.
+         *     `body` holds the bytes sent, less `cache_key`, RFC 8785 canonical JSON, so `key`, the sha256
+         *     of the canonical body, is also the blob's hash. Headers and keys are never recorded.
+         *     `queued_ms` is the wait for the rate limiter and the concurrency cap before the request went
+         *     out. `role` marks a call the monitor made: a sweep, the judge, or a review; None is an
+         *     agent's call.
+         *     `cache_key` is the request's `prompt_cache_key`, which only routes it to a prompt cache,
+         *     None when none went with it. It names the run, so a replay could not match a body that
+         *     held it.
          */
         ModelRequest: {
             /** Attempt */
@@ -4295,6 +4300,11 @@ export interface components {
              */
             backend: "responses" | "chat";
             body: components["schemas"]["BlobRef"];
+            /**
+             * Cache Key
+             * @default null
+             */
+            cache_key: string | null;
             /** Call Id */
             call_id: string;
             /** Key */
@@ -5430,6 +5440,8 @@ export interface components {
             base_url?: string | null;
             /** Base Url Env */
             base_url_env?: string | null;
+            /** Cache Key */
+            cache_key?: boolean | null;
             /** Context Tokens */
             context_tokens?: number | null;
             /** Effort */

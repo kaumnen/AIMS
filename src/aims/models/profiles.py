@@ -117,6 +117,10 @@ class Profile(_Strict):
     # False where the server cannot hold an answer to a schema, so the model serves no role
     # that needs one.
     structured_output: bool = True
+    # Whether a call carries `prompt_cache_key`, which sends a run's calls with one prefix to
+    # one cache at providers that route by it. None: yes on the responses backend, whose API
+    # has the field, and no on chat, where a strict server may refuse a field it does not know.
+    cache_key: bool | None = None
     sampling: Sampling = Field(default_factory=Sampling)
     extra: dict[str, JsonValue] = Field(default_factory=dict)
     price: Price | None = None

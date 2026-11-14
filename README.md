@@ -243,7 +243,7 @@ The roles `agent`, `sweep` and `judge` each use a model profile. The built-in pr
 
 The `agent` role uses `meta-spark-1.3-contributor`. The `sweep` and `judge` roles use `meta-wonder-1.0`. Keys come from the environment only. `aims models list` shows which keys are set. `aims models check` sends each provider a few small requests.
 
-A config file can add a profile for another provider and change the roles. `backend` is `chat` for the Chat Completions API or `responses` for the Responses API. `weights` names the trained model. The monitor refuses to watch an agent on its own weights. Prices are USD per million tokens.
+A config file can add a profile for another provider and change the roles. `backend` is `chat` for the Chat Completions API or `responses` for the Responses API. `weights` names the trained model. The monitor refuses to watch an agent on its own weights. Prices are USD per million tokens. A `responses` profile sends a `prompt_cache_key` with each call, so a provider that routes by it answers a run from one prompt cache. `cache_key = true` does the same on a `chat` profile.
 
 ```toml
 # aims.toml

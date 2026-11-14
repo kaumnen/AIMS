@@ -217,10 +217,14 @@ class ModelParams(BaseModel):
 class ModelRequest(Payload):
     """Written before the HTTP request of one attempt is sent.
 
-    `body` holds the exact bytes sent, RFC 8785 canonical JSON, so `key`, the sha256 of the
-    canonical body, is also the blob's hash. Headers and keys are never recorded. `queued_ms` is
-    the wait for the rate limiter and the concurrency cap before the request went out. `role` marks
-    a call the monitor made: a sweep, the judge, or a review; None is an agent's call.
+    `body` holds the bytes sent, less `cache_key`, RFC 8785 canonical JSON, so `key`, the sha256
+    of the canonical body, is also the blob's hash. Headers and keys are never recorded.
+    `queued_ms` is the wait for the rate limiter and the concurrency cap before the request went
+    out. `role` marks a call the monitor made: a sweep, the judge, or a review; None is an
+    agent's call.
+    `cache_key` is the request's `prompt_cache_key`, which only routes it to a prompt cache,
+    None when none went with it. It names the run, so a replay could not match a body that
+    held it.
     """
 
     type = "model.request"
@@ -236,6 +240,7 @@ class ModelRequest(Payload):
     key: Hash
     queued_ms: int = 0
     role: ModelRole | None = None
+    cache_key: str | None = None
 
 
 class ModelUsage(BaseModel):

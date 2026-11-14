@@ -41,6 +41,7 @@ from aims.monitor.offline import offline_monitor
 from aims.monitor.setup import ResolvedMonitor
 from aims.run.estimate import (
     CACHED_SHARE,
+    WATCH_CACHED_SHARE,
     Estimate,
     History,
     Progress,
@@ -686,8 +687,9 @@ async def test_each_model_prices_unreported_cache_at_its_own_share(
     assert rates["agent-model"].cached_share == pytest.approx(0.8)
     assert rates["agent-model"].input_usd == pytest.approx(0.8 * 0.1 + 0.2 * 1.0)
     assert not rates["agent-model"].assumed
-    assert rates["watch-model"].cached_share == CACHED_SHARE
+    assert rates["watch-model"].cached_share == WATCH_CACHED_SHARE == 0.5
     assert rates["watch-model"].assumed
+    assert found.share("new-model") == CACHED_SHARE == 0.9
     assert any(line.startswith("Blended input per million tokens:") for line in e.lines)
 
 

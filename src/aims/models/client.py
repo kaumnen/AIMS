@@ -1,5 +1,6 @@
 import asyncio
 import email.utils
+import hashlib
 import json
 import logging
 import os
@@ -44,6 +45,7 @@ from aims.text import scrub
 log = logging.getLogger("aims.models")
 
 REPLAY_URL = "http://replay.invalid/v1"
+CACHE_KEY = "prompt_cache_key"
 _RETRY_STATUS = frozenset({408, 409, 425, 429})
 
 
@@ -71,6 +73,12 @@ class _Outcome:
     retryable: bool = False
     reraise: BaseException | None = None
     ratelimit: RateLimit = field(default_factory=RateLimit)
+
+
+def _dump(body: Mapping[str, Any]) -> bytes:
+    """Keys go out in the order the body was built: a model writes a structured answer in its
+    schema's order, and that order is part of the prompt."""
+    return json.dumps(body, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
 
 
 class ModelClient:
@@ -139,16 +147,12 @@ class ModelClient:
             raise ProfileError(f"profile {profile.name} cannot answer to a schema")
         profile = profile.apply(overrides)
         backend = BACKENDS[profile.backend]
-        # Keys go out in the order the body was built: a model writes a structured answer in
-        # its schema's order, and that order is part of the prompt.
-        content = json.dumps(
-            backend.body(profile, prompt),
-            ensure_ascii=False,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode()
+        made = backend.body(profile, prompt)
+        content = _dump(made)
         body = await self.store.put_blob(self.run_id, content)
         key = canonical_key(content)
+        cache_key = self._cache_key(profile, prompt, agent_id, role)
+        wire = content if cache_key is None else _dump(made | {CACHE_KEY: cache_key})
         url = self._url(profile)
         client = self._client(profile, url)
         group = None if self.replay else self.limiters.group(profile.group, profile.limits)
@@ -173,12 +177,13 @@ class ModelClient:
                     key=key,
                     queued_ms=0 if lease is None else lease.queued_ms,
                     role=role,
+                    cache_key=cache_key,
                 )
                 await self.store.append(self.run_id, [Draft(request, agent_id)])
                 if attempt == 1 and recorded is not None:
                     recorded(call_id)
                 outcome = await self._attempt(
-                    client, backend, profile, content, call_id, attempt, agent_id
+                    client, backend, profile, wire, call_id, attempt, agent_id
                 )
             finally:
                 if group is not None and lease is not None:
@@ -204,6 +209,20 @@ class ModelClient:
                 raise ModelCallError(reply)
             await self._backoff(profile, attempt, outcome.ratelimit)
         raise AssertionError("unreachable")
+
+    def _cache_key(
+        self, profile: Profile, prompt: Prompt, agent_id: str | None, role: ModelRole | None
+    ) -> str | None:
+        """The `prompt_cache_key` of a call, None when it carries none. Calls of one run that
+        share a prefix share a key: the same caller, the same model and the same answer
+        schema. Without one, a provider with many backends answers a repeated prefix from
+        whichever backend it lands on, mostly one that never saw it. A replay sends nothing."""
+        on = profile.backend == "responses" if profile.cache_key is None else profile.cache_key
+        if not on or self.replay is not None or CACHE_KEY in profile.extra:
+            return None
+        schema = "" if prompt.output_schema is None else prompt.output_schema.name
+        who = "\0".join([self.run_id, role or "agent", agent_id or "", profile.model, schema])
+        return "aims-" + hashlib.sha256(who.encode()).hexdigest()[:32]
 
     def _url(self, profile: Profile) -> str:
         try:
