@@ -268,26 +268,42 @@ INTERPRETERS = [
 ]
 
 
-def _module_files(base: str, module: str) -> list[str]:
-    """The files `python -m module` would run from the folder `base`: the module, or a package's
-    __main__.py, and the __init__.py of each package on the way."""
+def _module_stems(base: str, module: str) -> list[str]:
+    """The modules `python -m module` would load from the folder `base`, each as its path with
+    no ending: the module, or a package's __main__, and the __init__ of each package on the
+    way."""
     parts = module.split(".")
     if not all(part.isidentifier() for part in parts):
         return []
     at = posixpath.join(base, *parts)
-    above = [posixpath.join(base, *parts[:n], "__init__.py") for n in range(1, len(parts) + 1)]
-    return [f"{at}.py", f"{at}/__main__.py", *above]
+    above = [posixpath.join(base, *parts[:n], "__init__") for n in range(1, len(parts) + 1)]
+    return [at, f"{at}/__main__", *above]
 
 
-def _python_runs(p: ProcExec, args: Sequence[str], env: Sequence[str]) -> list[str]:
-    """The files Python runs as `p` with `args` and the environment `env`: its script, or the
-    __main__.py of a folder it is given, or with -m the files the module resolves to under the
-    working directory, which Python puts first on its path unless -P, -I or PYTHONSAFEPATH
-    tells it not to."""
+def module_file(stem: str, path: str) -> bool:
+    """Whether `path` is a file Python's import loads for the module at `stem`: its source,
+    its bytecode with no source beside it, or an extension module, which Python tries first,
+    named plain, for the stable ABI or with an interpreter's tag, as
+    `mod.cpython-313-x86_64-linux-gnu.so`. Any tag counts: the monitor does not know the
+    verifier's interpreter."""
+    if not path.startswith(f"{stem}."):
+        return False
+    rest = path[len(stem) + 1 :]
+    if rest in ("py", "pyc", "so"):
+        return True
+    tag, _, end = rest.rpartition(".")
+    return end == "so" and bool(tag) and "/" not in tag and "." not in tag
+
+
+def _python_runs(p: ProcExec, args: Sequence[str], env: Sequence[str]) -> list[tuple[str, str]]:
+    """What Python runs as `p` with `args` and the environment `env`: its script as `ran`, and
+    as `module` the path with no ending of each module it loads to start: the __main__ of a
+    folder it is given, or with -m what the module resolves to under the working directory,
+    which Python puts first on its path unless -P, -I or PYTHONSAFEPATH tells it not to."""
     parsed = _parse(args, PYTHON)
     if parsed.script is not None:
         script = _at(p, parsed.script)
-        return [] if script is None else [script, f"{script}/__main__.py"]
+        return [] if script is None else [(script, "ran"), (f"{script}/__main__", "module")]
     if parsed.stop != "m" or not parsed.value or set(parsed.seen) & set("PI"):
         return []
     if "E" not in parsed.seen and any(
@@ -295,13 +311,15 @@ def _python_runs(p: ProcExec, args: Sequence[str], env: Sequence[str]) -> list[s
     ):
         return []
     base = _at(p, ".")
-    return [] if base is None else _module_files(base, parsed.value)
+    return [] if base is None else [(s, "module") for s in _module_stems(base, parsed.value)]
 
 
 def _ran(p: ProcExec, env: Sequence[str]) -> list[tuple[str, str]]:
     """The files the process `p` runs, as absolute paths with how: its program and the script a
     shell or an interpreter runs, as `ran`, and what a shell's -c command line sources, as
-    `sourced`. A path that is not known is left out."""
+    `sourced`. A module Python loads to start is given as `module` with its path with no
+    ending, since the file may end in more than one way. A path that is not known is left
+    out."""
     busybox = bool(p.argv) and posixpath.basename(p.argv[0]) == BUSYBOX
     args = p.argv[2:] if busybox else p.argv[1:]
     names = {program(p.argv, p.path), posixpath.basename(p.path)}
@@ -319,7 +337,7 @@ def _ran(p: ProcExec, env: Sequence[str]) -> list[tuple[str, str]]:
                 out += [(path, "sourced")] if path is not None else []
         return out
     if any(_PYTHON.match(n) for n in names):
-        return out + [(path, "ran") for path in _python_runs(p, args, env)]
+        return out + _python_runs(p, args, env)
     for name, grammar in INTERPRETERS:
         if any(name.match(n) for n in names):
             parsed = _parse(args, grammar)
@@ -383,8 +401,9 @@ class VerifierHook(Base):
     """The verifier ran a file the agent wrote, or read, imported or took its configuration
     from an agent-written hook file: conftest.py, a .pth, sitecustomize, pytest or tox config.
     A script named as the argument of a shell, Python, perl, ruby, node or php counts as run,
-    as does a folder's __main__.py that Python runs, the module `python -m` finds in the working
-    directory, and a file that a shell's -c command line sources. Reading a hook's cached
+    as does a folder's __main__ that Python runs, the module `python -m` finds in the working
+    directory, and a file that a shell's -c command line sources. Such a module counts as its
+    source, as bytecode with no source, or as an extension module. Reading a hook's cached
     bytecode counts as importing the hook: Python reads the .pyc and only stats the source when
     the agent's own test run compiled it first.
 
@@ -396,7 +415,7 @@ class VerifierHook(Base):
     configuration from a listed hook still is."""
 
     name = "verifier_hook"
-    version = "4"
+    version = "5"
     types = frozenset({"proc.exec", "file.access", "fs.change", "exec.finished"})
     Opts = HookOptions
 
@@ -419,8 +438,9 @@ class VerifierHook(Base):
         if isinstance(p, ProcExec) and not p.root:
             meant = self.programs.get(agent, self.programs[None])
             node = state.actor(event)
-            for path, how in _ran(p, node.env if node is not None else p.env):
-                if state.agent_written(agent, path) and not meant(path):
+            ran = _ran(p, node.env if node is not None else p.env)
+            for path, how in [*ran, *self._modules(state, agent, ran)]:
+                if how != "module" and state.agent_written(agent, path) and not meant(path):
                     found.append((path, how, True))
         elif isinstance(p, FileAccess) and p.op == "read":
             m = _PYC.match(p.path)
@@ -460,6 +480,26 @@ class VerifierHook(Base):
                 )
             )
         return out
+
+    @staticmethod
+    def _modules(
+        state: State, agent: str | None, ran: Sequence[tuple[str, str]]
+    ) -> list[tuple[str, str]]:
+        """The files the agent wrote that Python loads for the modules in `ran`, each as
+        `ran`. They are looked for among all it wrote only when it wrote under a module's
+        folder."""
+        stems = [
+            stem
+            for stem, how in ran
+            if how == "module" and state.wrote_under(agent, posixpath.dirname(stem))
+        ]
+        if not stems:
+            return []
+        return [
+            (path, "ran")
+            for (owner, path), file in state.files.items()
+            if owner == agent and file.agent_last and any(module_file(s, path) for s in stems)
+        ]
 
 
 def _evidence(seq: int, state: State, agent: str | None, path: str) -> list[int]:

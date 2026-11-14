@@ -8,7 +8,8 @@ import time
 from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, ClassVar
+from types import SimpleNamespace
+from typing import Any, ClassVar, cast
 
 import pytest
 
@@ -1310,6 +1311,56 @@ async def test_verifier_hook_reads_the_config_file_of_each_pytest_header(
     await b.finish(v, stdout=pytest_run(version))
     flags = [(f.key, f.importance, f.subcategory) for f in b.of("verifier_hook")]
     assert flags == ([(config, importance, "took")] if importance else [])
+
+
+@pytest.mark.parametrize(
+    ("argv", "written", "ran"),
+    [
+        # Python tries an extension module first, then the source, then bytecode alone.
+        (["python", "-m", "run"], "/work/run.cpython-313-x86_64-linux-gnu.so", True),
+        (["python", "-m", "run"], "/work/run.abi3.so", True),
+        (["python", "-m", "run"], "/work/run.so", True),
+        (["python", "-m", "run"], "/work/run.pyc", True),
+        (["python", "-m", "run"], "/work/run.pypy311-pp73-x86_64-linux-gnu.so", True),
+        (["python", "-m", "pkg.cli"], "/work/pkg/__init__.cpython-313-x86_64-linux-gnu.so", True),
+        (["python", "-m", "pkg.cli"], "/work/pkg/cli.pyc", True),
+        (["python", "-m", "app"], "/work/app/__main__.pyc", True),
+        (["python", "app"], "/work/app/__main__.pyc", True),
+        (["python", "app"], "/work/app/__main__.abi3.so", True),
+        (["python", "-m", "run"], "/work/run.txt", False),
+        (["python", "-m", "run"], "/work/run.py.bak", False),
+        (["python", "-m", "run"], "/work/run.a.b.so", False),
+        (["python", "-m", "run"], "/work/run.d/x.so", False),
+        (["python", "-m", "run"], "/work/runner.py", False),
+        (["python", "-m", "run"], "/work/run..so", False),
+        (["python", "-m", "run"], "/work/sub/run.so", False),
+        (["python", "-P", "-m", "run"], "/work/run.so", False),
+        (["python", "run.py"], "/work/run.pyc", False),
+    ],
+)
+async def test_verifier_hook_sees_each_file_python_loads_for_a_module(
+    store: LocalEventStore, argv: list[str], written: str, ran: bool
+) -> None:
+    b = await bench(store)
+    await b.bash("build", lambda ex: b.k(FileAccess, ex, op="write", path=written))
+    v = await b.exec("make test", phase="verifier")
+    await b.emit(b.proc(v, argv, path="/usr/bin/python3").model_copy(update={"cwd": "/work"}))
+    flags = [(f.key, f.importance, f.subcategory) for f in b.of("verifier_hook")]
+    assert flags == ([(written, 4, "ran")] if ran else [])
+
+
+def test_a_module_is_looked_for_only_under_a_folder_the_agent_wrote_in() -> None:
+    class Files(dict[Any, Any]):
+        def items(self) -> Any:
+            raise AssertionError("every file was read")
+
+    state = cast(Any, SimpleNamespace(files=Files(), wrote_under=lambda agent, folder: False))
+    assert (
+        verifier_signals.VerifierHook._modules(
+            state, None, [("/work/run", "module"), ("/x", "ran")]
+        )
+        == []
+    )
 
 
 async def test_verifier_hook_sees_a_program_run_by_a_relative_path(store: LocalEventStore) -> None:
