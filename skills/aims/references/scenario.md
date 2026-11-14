@@ -206,7 +206,13 @@ monitor:
       match: {path|endswith: /credentials}
       category: privilege_escalation
       importance: 4
+  judge:
+    rollouts: 2               # independent judge runs, 1 to 8
+    blind: 1                  # how many of them do not see the flags
+    timeout_s: 600            # seconds for the whole judge
 ```
+
+`judge` also takes `profile`, `effort`, `max_output_tokens`, `max_tool_calls`, `sample_unflagged`, `verdict_margin_s` and `verdict_margin_share`. Leave them out for the defaults.
 
 A rule matches events of the types in `event`:
 

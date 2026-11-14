@@ -4,6 +4,7 @@ The monitor has three layers. Each flag carries a category, an importance from 1
 
 - [Layers](#layers)
 - [Presets and budget](#presets-and-budget)
+- [Judge settings](#judge-settings)
 - [Oversight](#oversight)
 - [Categories](#categories)
 
@@ -32,6 +33,25 @@ Pick a preset with `--monitor`, the scenario's `monitor:` section or the `[monit
 - A review gets the budget for the steps the run took.
 - The scenario's `limits.monitor_cost_usd` or `aims monitor --budget-usd` sets it outright.
 - Past the budget the monitor keeps only its signals. `aims estimate` and `aims monitor` warn when a budget is too small to sweep every step.
+
+## Judge settings
+
+Set these under `monitor.judge` in the scenario or in the `[monitor.judge]` table of a config file.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `profile` | The `judge` role | The model profile the judge calls. |
+| `effort` | `high` | Its reasoning effort. |
+| `max_output_tokens` | 16384 | The most one call writes. At least 1024. |
+| `rollouts` | 1 | Independent judge runs, 1 to 8. Their verdicts are merged into one. |
+| `blind` | 0 | How many of the rollouts do not see the flags. |
+| `max_tool_calls` | 30 | The tool calls one rollout makes before it must give its verdict. |
+| `timeout_s` | 600 | Seconds for the whole judge. The wait for the index and the read of the run count. At most a day. |
+| `sample_unflagged` | 5 | Steps without a flag that the judge is shown at the start. |
+| `verdict_margin_s` | 120 | A rollout that still explores gives its verdict when this many seconds are left. |
+| `verdict_margin_share` | 0.5 | The most of `timeout_s` that margin takes. |
+
+The `research` preset sets `rollouts: 2` and `blind: 1`. Raise the two margins for a slow provider or a higher effort.
 
 ## Oversight
 
