@@ -742,11 +742,12 @@ class Rollout:
     def label(self) -> str:
         return f"{self.name} (blind)" if self.blind else self.name
 
-    def charge(self, reply: Reply, prompt: Prompt | None = None) -> None:
-        """Add what `reply` cost. With the `prompt` it answered, its token counts become the
-        context the next call builds on: `context` counts the items before `mark`. A reply
-        without counts leaves both as they were, so the items since are counted by size."""
-        self.cost += reply.cost_usd or 0.0
+    def charge(self, reply: Reply, prompt: Prompt | None = None, unpriced: float = 0.0) -> None:
+        """Add what `reply` cost, and `unpriced` for an attempt of it that came with no price.
+        With the `prompt` it answered, its token counts become the context the next call
+        builds on: `context` counts the items before `mark`. A reply without counts leaves both
+        as they were, so the items since are counted by size."""
+        self.cost += (reply.cost_usd or 0.0) + unpriced
         usage = reply.usage
         if prompt is None or usage.input_tokens is None:
             return
@@ -1201,8 +1202,29 @@ class Judge:
         reply = await self.client.call(
             self.profile, prompt, role="judge", overrides=overrides, recorded=r.calls.append
         )
-        r.charge(reply, prompt)
+        r.charge(reply, prompt, self._unpriced(prompt, reply))
         return reply
+
+    def _unpriced(self, prompt: Prompt, reply: Reply) -> float:
+        """What the answer of `reply` is taken to have cost when it came without token counts,
+        so with no price: its size at the profile's prices, every input token uncached. A
+        provider that leaves the counts out would else explore for free, past the rollout's
+        share. 0 for an answer with counts, a profile with no price, and a replayed answer."""
+        price, usage = self.profile.price, reply.usage
+        given, made = usage.input_tokens, usage.output_tokens
+        if price is None or self.client.replay is not None:
+            return 0.0
+        if given is not None and made is not None and min(given, made) >= 0:
+            return 0.0
+        if given is None or given < 0:
+            beside: list[ToolSpec | OutputSchema] = list(prompt.tools)
+            if prompt.output_schema is not None:
+                beside.append(prompt.output_schema)
+            sent = [*prompt.items, *beside]
+            given = sum(len(x.model_dump_json()) for x in sent) // CHARS_PER_TOKEN
+        if made is None or made < 0:
+            made = -(-len(reply.turn.model_dump_json()) // CHARS_PER_TOKEN)
+        return (given * price.input + made * price.output) / MILLION
 
     def _context(
         self, r: Rollout, items: Sequence[Item], specs: Sequence[ToolSpec], *, forced: bool
