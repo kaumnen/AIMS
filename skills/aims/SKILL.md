@@ -26,7 +26,7 @@ docker info --format '{{.ServerVersion}}'
 aims models list
 ```
 
-`aims models list` shows which keys are set. The default models need `MODEL_API_KEY`, the key for the Meta Model API. `aims scenario check` and the self-test need Docker but no key.
+`aims models list` shows which keys are set. The default models need `MODEL_API_KEY`, the key for the Meta Model API. `aims models add openrouter <model id> --write` adds a profile for a model on OpenRouter, which needs `OPENROUTER_API_KEY`. `aims scenario check` and the self-test need Docker but no key.
 
 `aims scenario check` and `aims run` start a privileged kernel tracer. On a shared machine, use `aims run --audit snapshot` and `aims scenario check --no-selftest`.
 

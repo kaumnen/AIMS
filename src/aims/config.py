@@ -272,6 +272,8 @@ STARTER = """\
 # [roles]
 # agent = "my-agent"
 
+# `aims models add openrouter <model id> --write` adds a profile for a model on OpenRouter.
+
 # [prompts]
 # system = "..."
 

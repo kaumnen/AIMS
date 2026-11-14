@@ -93,6 +93,8 @@ A runner stops when the control plane answers 401 or 403 five times in a row, as
 
 Runners, the CLI and model calls go through the proxy in `HTTPS_PROXY`, `HTTP_PROXY` or `ALL_PROXY`, except to hosts, domains and networks in `NO_PROXY`. Loopback always goes direct. A private CA can come from `SSL_CERT_FILE`, or from the runner's `--tls-ca`, which wins over it.
 
+The control plane itself calls one outside host. **Add from OpenRouter** under **Settings** > **Models** reads the public list of models at `openrouter.ai`, with no key and through the same proxy settings. On a host that cannot reach it, the lookup fails and nothing else changes. [Models](models.md#openrouter) has the command that does the same on another machine.
+
 ## Helper images and offline hosts
 
 A runner needs two helper images: `aims-toolbox` and `aims-tracer`. It pulls them from GHCR by the digests the release pinned. Print the tags and digests of the version you run:

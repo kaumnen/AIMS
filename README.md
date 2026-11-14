@@ -260,6 +260,15 @@ price = { input = 1.00, cached = 0.10, output = 4.00 }
 agent = "my-agent"
 ```
 
+`aims models add openrouter <model id>` prints a profile for any model on [OpenRouter](https://openrouter.ai), filled in from its public list of models. `--write` adds it to the project's `aims.toml`. Its key is `OPENROUTER_API_KEY`.
+
+```sh
+aims models add openrouter author/model-name --write
+aims models check openrouter-model-name
+```
+
+A profile can also steer a router with a `routing` table and send its own `headers`. A run records the provider that served each call and the cost that provider reported. [Models](https://github.com/kaumnen/AIMS/blob/main/docs/models.md) covers every profile field, OpenRouter and routing.
+
 Config files also override every text the agent or the monitor reads. Layers, lowest first:
 
 1. Built-in defaults
@@ -311,6 +320,7 @@ The last command prints a sign-in link for http://localhost:8484. [Deploy](https
 | `aims verify` | Check a run's hash chain and blobs |
 | `aims spend` | Show what each provider was paid |
 | `aims models list`, `check` | Show model profiles and test providers |
+| `aims models add` | Print or save a profile for a model on OpenRouter |
 | `aims images prune` | Remove images AIMS no longer needs |
 | `aims prompts show` | Print every text agents and the monitor read |
 | `aims init` | Write a commented starter config file |
@@ -328,6 +338,7 @@ The last command prints a sign-in link for http://localhost:8484. [Deploy](https
 | [Scenario reference](https://github.com/kaumnen/AIMS/blob/main/skills/aims/references/scenario.md) | Every field of the scenario format |
 | [The monitor](https://github.com/kaumnen/AIMS/blob/main/docs/monitor.md) | Layers, budgets, oversight rules and the 15 categories |
 | [Runs and reports](https://github.com/kaumnen/AIMS/blob/main/docs/runs.md) | Run logs, forks, scoring, deletion and reports |
+| [Models](https://github.com/kaumnen/AIMS/blob/main/docs/models.md) | Profile fields, OpenRouter, routing and what a run records of a call |
 | [Deploy](https://github.com/kaumnen/AIMS/blob/main/docs/deploy.md) | Compose, a public address, more runners, proxies, offline hosts and the audit log |
 | [Model organism](https://github.com/kaumnen/AIMS/tree/main/organism) | The scripts that made the organism |
 | [SECURITY.md](https://github.com/kaumnen/AIMS/blob/main/SECURITY.md) | The security model and how to report a vulnerability |
