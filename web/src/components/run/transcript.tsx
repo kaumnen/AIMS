@@ -383,6 +383,11 @@ function Exec({
   const s = data(started);
   const f = data(finished);
   const stderr = f["stderr"];
+  // `truncated` is one flag for both streams; the stream that ran past its limit is the one
+  // with its end kept. An exec logged with no ends kept does not say which.
+  const ends = Boolean(f["stdout_tail"] || f["stderr_tail"]);
+  const cut = (name: string) =>
+    f[`${name}_tail`] || (f["truncated"] && !ends) ? ", cut short" : "";
   return (
     <div className="border-grid flex flex-col gap-1 border-l pl-3">
       <details>
@@ -395,14 +400,14 @@ function Exec({
           <TextOf runId={runId} value={s["command"]} />
           {f["stdout"] ? (
             <>
-              <p className="text-muted-foreground">Stdout{f["truncated"] ? ", cut short" : ""}</p>
+              <p className="text-muted-foreground">Stdout{cut("stdout")}</p>
               <TextOf runId={runId} value={f["stdout"]} />
               {end(runId, f, "stdout")}
             </>
           ) : null}
           {stderr ? (
             <>
-              <p className="text-muted-foreground">Stderr</p>
+              <p className="text-muted-foreground">Stderr{cut("stderr")}</p>
               <TextOf runId={runId} value={stderr} />
               {end(runId, f, "stderr")}
             </>
@@ -420,14 +425,17 @@ function Exec({
   );
 }
 
-// The end of a stream the sandbox kept past its output limit, after the bytes it left out.
-const end = (runId: string, f: Data, name: string) =>
-  f[`${name}_tail`] ? (
+// The end of a stream the sandbox kept past its output limit, after the bytes it left out. With
+// none left out the end goes on where the head stops.
+const end = (runId: string, f: Data, name: string) => {
+  const omitted = num(f[`${name}_omitted`]) ?? 0;
+  return f[`${name}_tail`] ? (
     <>
-      <p className="text-muted-foreground">{bytes(num(f[`${name}_omitted`]) ?? 0)} left out</p>
+      {omitted > 0 && <p className="text-muted-foreground">{bytes(omitted)} left out</p>}
       <TextOf runId={runId} value={f[`${name}_tail`]} />
     </>
   ) : null;
+};
 
 function Score({ event, lit }: { event: Event; lit: Tone | undefined }) {
   const d = data(event);
