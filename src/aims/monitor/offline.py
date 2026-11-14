@@ -162,7 +162,9 @@ def stamped(resolved: ResolvedMonitor, *, judge_only: bool = False) -> ResolvedM
         profiles["extract"] = resolved.extract
     if resolved.channels is not None:
         profiles["channels"] = resolved.channels
-    digest = identity(resolved.config, resolved.texts, profiles, versions, resolved.programs)
+    digest = identity(
+        resolved.config, resolved.texts, profiles, versions, resolved.programs, resolved.expects
+    )
     return dataclasses.replace(resolved, signals=versions, identity=digest)
 
 

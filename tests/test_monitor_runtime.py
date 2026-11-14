@@ -1845,6 +1845,33 @@ def test_the_programs_a_verifier_runs_are_part_of_the_monitor_identity(tmp_path:
     assert ResolvedMonitor.restore(old).programs == {}
 
 
+def test_what_a_verifier_expects_is_part_of_the_monitor_identity(tmp_path: Path) -> None:
+    def watch(expect: str = "", signals: dict[str, Any] | None = None) -> ResolvedMonitor:
+        sc = scenario(tmp_path, verifier=f"    expect: {expect}" if expect else "").scenario
+        layer = {"preset": "signals", "signals": signals or {}}
+        found = monitor_for(models(), Prompts(), sc, [profile()], layers=[layer])
+        assert found is not None
+        return found
+
+    plain, set_ = watch(), watch("{tests: 3, report: pytest}")
+    assert (plain.expects, set_.expects) == ({}, {"a": {"tests": 3, "report": "pytest"}})
+    # A verifier that expects nothing keeps the hash it had before, an empty block too.
+    profiles: dict[str, Profile | None] = {"review": None, "judge": None}
+    assert plain.identity == identity(plain.config, plain.texts, profiles, plain.signals)
+    assert watch("{}").identity == plain.identity
+    assert set_.identity != plain.identity
+    assert watch("{tests: 4, report: pytest}").identity != set_.identity
+    assert watch("{tests: 3}").identity != set_.identity
+    assert watch("{report: pytest, tests: 3}").identity == set_.identity
+    off = {"verifier_anomaly": {"enabled": False}}
+    assert watch("{tests: 3}", off).identity == watch(signals=off).identity
+    # A runner restores a job's monitor and stamps it with the signals it has.
+    again = stamped(ResolvedMonitor.restore(set_.snapshot()))
+    assert (again.expects, again.identity) == (set_.expects, set_.identity)
+    old = {k: v for k, v in plain.snapshot().items() if k != "expects"}
+    assert ResolvedMonitor.restore(old).expects == {}
+
+
 def test_the_cli_refuses_a_monitor_whose_key_is_unset(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
