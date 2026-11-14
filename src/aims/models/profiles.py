@@ -1,5 +1,6 @@
 import copy
 import os
+import re
 import tomllib
 from collections.abc import Iterable, Mapping
 from importlib import resources
@@ -11,16 +12,29 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
+    StrictFloat,
+    StrictInt,
     ValidationError,
     model_validator,
 )
 
 from aims.events import ModelBackend, ReasoningKind
+from aims.models.transport import DROPPED_HEADERS
 from aims.stored import Known
 
 Effort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 Summary = Literal["auto", "concise", "detailed"]
 Role = Literal["agent", "sweep", "judge"]
+SortKey = Literal["price", "throughput", "latency"]
+
+# A number kept as written, so 50 goes out as 50. Strict, so `true` is not 1.
+Positive = (
+    Annotated[StrictInt, Field(gt=0)] | Annotated[StrictFloat, Field(gt=0, allow_inf_nan=False)]
+)
+NonNegative = (
+    Annotated[StrictInt, Field(ge=0)] | Annotated[StrictFloat, Field(ge=0, allow_inf_nan=False)]
+)
+Names = Annotated[list[Annotated[str, Field(min_length=1)]], Field(min_length=1)]
 
 
 class ProfileError(Exception):
@@ -35,9 +49,103 @@ def _url(value: str) -> str:
 
 Url = Annotated[str, AfterValidator(_url)]
 
+_TOKEN = re.compile(r"[-!#$%&'*+.^_`|~0-9A-Za-z]+")
+_FIELD = re.compile(r"[\x21-\x7e]+(?:[ \t]+[\x21-\x7e]+)*")
+# Headers that the HTTP client, the SDK or the recorder sets or drops, the hop-by-hop headers
+# of the connection and those that carry a secret.
+_OWNED_HEADERS = DROPPED_HEADERS | {
+    "accept",
+    "accept-encoding",
+    "authorization",
+    "connection",
+    "content-length",
+    "content-type",
+    "cookie",
+    "host",
+    "keep-alive",
+    "proxy-authorization",
+    "proxy-connection",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+}
+
+
+def _headers(value: dict[str, str]) -> dict[str, str]:
+    seen: dict[str, str] = {}
+    for name, text in value.items():
+        if not _TOKEN.fullmatch(name):
+            raise ValueError(f"header name {name!r} is not an HTTP token")
+        low = name.lower()
+        if low in _OWNED_HEADERS or low.startswith("x-stainless-"):
+            raise ValueError(f"header {name} is set by AIMS or carries a secret")
+        if low in seen:
+            raise ValueError(f"headers {seen[low]} and {name} differ only by case")
+        seen[low] = name
+        if not _FIELD.fullmatch(text):
+            raise ValueError(
+                f"header {name}: the value must be printable ASCII with no space at either end"
+            )
+    return value
+
+
+Headers = Annotated[dict[str, str], AfterValidator(_headers)]
+
 
 class _Strict(Known):
     model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class _SomeSet(_Strict):
+    @model_validator(mode="after")
+    def _some(self) -> Self:
+        if all(getattr(self, k) is None for k in type(self).model_fields):
+            raise ValueError(f"set at least one of {', '.join(type(self).model_fields)}")
+        return self
+
+
+class SortBy(_Strict):
+    by: SortKey
+    partition: Literal["model", "none"] | None = None
+
+
+class Percentiles(_SomeSet):
+    p50: Positive | None = None
+    p75: Positive | None = None
+    p90: Positive | None = None
+    p99: Positive | None = None
+
+
+class MaxPrice(_SomeSet):
+    prompt: NonNegative | None = None
+    completion: NonNegative | None = None
+    request: NonNegative | None = None
+    image: NonNegative | None = None
+
+
+class Routing(_Strict):
+    """Where a router such as OpenRouter sends a request, sent as its `provider` object.
+    Providers go by their slugs."""
+
+    order: Names | None = None
+    only: Names | None = None
+    ignore: Names | None = None
+    allow_fallbacks: bool | None = None
+    require_parameters: bool | None = None
+    data_collection: Literal["allow", "deny"] | None = None
+    zdr: bool | None = None
+    enforce_distillable_text: bool | None = None
+    # Free text: providers add new ones.
+    quantizations: Names | None = None
+    sort: SortKey | SortBy | None = None
+    preferred_min_throughput: Positive | Percentiles | None = None
+    preferred_max_latency: Positive | Percentiles | None = None
+    max_price: MaxPrice | None = None
+
+    def body(self) -> dict[str, JsonValue]:
+        """The `provider` object: what is set, at every depth. Empty when nothing is."""
+        return self.model_dump(mode="json", exclude_none=True)
 
 
 class Sampling(_Strict):
@@ -113,7 +221,8 @@ class Profile(_Strict):
     max_output_tokens: int | None = Field(default=None, ge=1)
     context_tokens: int | None = Field(default=None, ge=1)
     stream: bool = True
-    parallel_tool_calls: bool = False
+    # None sends no `parallel_tool_calls`, which leaves it to the provider.
+    parallel_tool_calls: bool | None = None
     # False where the server cannot hold an answer to a schema, so the model serves no role
     # that needs one.
     structured_output: bool = True
@@ -123,6 +232,10 @@ class Profile(_Strict):
     cache_key: bool | None = None
     sampling: Sampling = Field(default_factory=Sampling)
     extra: dict[str, JsonValue] = Field(default_factory=dict)
+    routing: Routing = Field(default_factory=Routing)
+    # Sent with every request. The run's profile snapshot records them, so they are not for
+    # secrets.
+    headers: Headers = Field(default_factory=dict)
     price: Price | None = None
     limits: Limits = Field(default_factory=Limits)
     timeouts: Timeouts = Field(default_factory=Timeouts)
@@ -136,6 +249,8 @@ class Profile(_Strict):
             raise ValueError("summary is only sent by the responses backend")
         if self.effort_kwarg is not None and self.backend != "chat":
             raise ValueError("effort_kwarg is only sent by the chat backend")
+        if "provider" in self.extra and self.routing.body():
+            raise ValueError("routing and extra.provider both set the provider object; keep one")
         return self
 
     @property
@@ -280,7 +395,11 @@ def _merge(base: Mapping[str, Any], top: Mapping[str, Any]) -> dict[str, Any]:
     out = dict(base)
     for key, value in top.items():
         old = out.get(key)
-        if isinstance(old, Mapping) and isinstance(value, Mapping) and key != "extra":
+        if key == "headers" and isinstance(old, Mapping) and isinstance(value, Mapping):
+            # A header's name ignores case, so a layer's name replaces it in any case.
+            names = {str(k).lower() for k in value}
+            out[key] = {k: v for k, v in old.items() if str(k).lower() not in names} | dict(value)
+        elif isinstance(old, Mapping) and isinstance(value, Mapping) and key != "extra":
             out[key] = _merge(old, value)
         else:
             out[key] = value

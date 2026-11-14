@@ -235,7 +235,7 @@ class ModelClient:
 
     def _client(self, profile: Profile, url: str) -> AsyncOpenAI:
         t = profile.timeouts
-        key = (url, profile.api_key_env, t)
+        key = (url, profile.api_key_env, t, tuple(profile.headers.items()))
         client = self._clients.get(key)
         if client is not None:
             return client
@@ -255,6 +255,7 @@ class ModelClient:
             max_retries=0,
             timeout=timeout,
             http_client=http,
+            default_headers=profile.headers,
         )
         self._clients[key] = client
         return client

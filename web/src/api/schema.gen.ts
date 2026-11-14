@@ -4160,6 +4160,17 @@ export interface components {
             /** Reason */
             reason: string;
         };
+        /** MaxPrice */
+        MaxPrice: {
+            /** Completion */
+            completion?: number | null;
+            /** Image */
+            image?: number | null;
+            /** Prompt */
+            prompt?: number | null;
+            /** Request */
+            request?: number | null;
+        };
         /**
          * MemExec
          * @description A request to run a program without a file on disk, or to map a written file executable.
@@ -5022,6 +5033,17 @@ export interface components {
             /** Reason */
             reason?: string | null;
         };
+        /** Percentiles */
+        Percentiles: {
+            /** P50 */
+            p50?: number | null;
+            /** P75 */
+            p75?: number | null;
+            /** P90 */
+            p90?: number | null;
+            /** P99 */
+            p99?: number | null;
+        };
         /**
          * Pins
          * @description Every input the report was built from. Two builds from the same pins give the same
@@ -5482,6 +5504,10 @@ export interface components {
             extra?: {
                 [key: string]: components["schemas"]["JsonValue"];
             };
+            /** Headers */
+            headers?: {
+                [key: string]: string;
+            };
             limits?: components["schemas"]["Limits"];
             /** Max Output Tokens */
             max_output_tokens?: number | null;
@@ -5489,11 +5515,8 @@ export interface components {
             model: string;
             /** Name */
             name: string;
-            /**
-             * Parallel Tool Calls
-             * @default false
-             */
-            parallel_tool_calls?: boolean;
+            /** Parallel Tool Calls */
+            parallel_tool_calls?: boolean | null;
             price?: components["schemas"]["Price"] | null;
             /**
              * Reasoning
@@ -5501,6 +5524,7 @@ export interface components {
              */
             reasoning: "none" | "summary" | "full";
             retries?: components["schemas"]["Retries"];
+            routing?: components["schemas"]["Routing"];
             sampling?: components["schemas"]["Sampling"];
             /**
              * Stream
@@ -6016,6 +6040,38 @@ export interface components {
             total: components["schemas"]["CostTotal"];
             /** Typical Usd */
             typical_usd: number | null;
+        };
+        /**
+         * Routing
+         * @description Where a router such as OpenRouter sends a request, sent as its `provider` object.
+         *     Providers go by their slugs.
+         */
+        Routing: {
+            /** Allow Fallbacks */
+            allow_fallbacks?: boolean | null;
+            /** Data Collection */
+            data_collection?: ("allow" | "deny") | null;
+            /** Enforce Distillable Text */
+            enforce_distillable_text?: boolean | null;
+            /** Ignore */
+            ignore?: string[] | null;
+            max_price?: components["schemas"]["MaxPrice"] | null;
+            /** Only */
+            only?: string[] | null;
+            /** Order */
+            order?: string[] | null;
+            /** Preferred Max Latency */
+            preferred_max_latency?: number | components["schemas"]["Percentiles"] | null;
+            /** Preferred Min Throughput */
+            preferred_min_throughput?: number | components["schemas"]["Percentiles"] | null;
+            /** Quantizations */
+            quantizations?: string[] | null;
+            /** Require Parameters */
+            require_parameters?: boolean | null;
+            /** Sort */
+            sort?: ("price" | "throughput" | "latency") | components["schemas"]["SortBy"] | null;
+            /** Zdr */
+            zdr?: boolean | null;
         };
         /**
          * RunCaps
@@ -7121,6 +7177,16 @@ export interface components {
         Shas: {
             /** Shas */
             shas: string[];
+        };
+        /** SortBy */
+        SortBy: {
+            /**
+             * By
+             * @enum {string}
+             */
+            by: "price" | "throughput" | "latency";
+            /** Partition */
+            partition?: ("model" | "none") | null;
         };
         /**
          * Source
@@ -14812,6 +14878,8 @@ export const replayDivergenceKindValues: ReadonlyArray<FlattenedDeepRequired<com
 export const resumeBodyThenValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ResumeBody"]["then"]> = ["continue", "kill", "inject", "deny"];
 export const reviewEstimateModeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ReviewEstimate"]["mode"]> = ["full", "signals_only", "judge_only"];
 export const reviewEstimatePresetValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ReviewEstimate"]["preset"]> = ["off", "signals", "standard", "research"];
+export const routingData_collectionAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Routing"]["data_collection"]> = ["allow", "deny"];
+export const routingSortAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Routing"]["sort"]> = ["price", "throughput", "latency"];
 export const runDeletedMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunDeletedMessage"]["kind"]> = ["deleted"];
 export const runFinishedStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunFinished"]["status"]> = ["completed", "failed", "killed", "cancelled"];
 export const runMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["RunMessage"]["kind"]> = ["run"];
@@ -14841,6 +14909,8 @@ export const scoreUnitRoleValues: ReadonlyArray<FlattenedDeepRequired<components
 export const scoreUnitToldAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreUnit"]["told"]> = ["yes", "partly", "no"];
 export const selfTestCaseCaseValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["SelfTestCase"]["case"]> = ["reference", "exploit", "empty", "impossible"];
 export const separationLayerValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Separation"]["layer"]> = ["signal", "sweep", "judge", "llm", "any"];
+export const sortByByValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["SortBy"]["by"]> = ["price", "throughput", "latency"];
+export const sortByPartitionAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["SortBy"]["partition"]> = ["model", "none"];
 export const sourceClaim_matchedAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Source"]["claim_matched"]> = ["yes", "no", "unclear"];
 export const startForkAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["StartFork"]["audit"]> = ["kernel", "snapshot"];
 export const startForkMonitorAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["StartFork"]["monitor"]> = ["off", "signals", "standard", "research"];

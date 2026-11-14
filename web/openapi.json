@@ -6827,6 +6827,77 @@
         "title": "LogTruncated",
         "type": "object"
       },
+      "MaxPrice": {
+        "additionalProperties": false,
+        "properties": {
+          "completion": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completion"
+          },
+          "image": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt"
+          },
+          "request": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request"
+          }
+        },
+        "title": "MaxPrice",
+        "type": "object"
+      },
       "MemExec": {
         "additionalProperties": false,
         "description": "A request to run a program without a file on disk, or to map a written file executable.\n\nIt is recorded when asked for, so it does not prove the exec or mapping happened. A `proc.exec`\nwith the same path confirms the exec; an mmap has no confirmation event. `nlink` is 0 for a\nmemfd or a file already deleted. `prot` is the requested mmap protection. A `partial` path is\nnot exact: it lacks its leading part or may be cut at the tracer's string cap.",
@@ -8791,6 +8862,77 @@
         "title": "PauseBody",
         "type": "object"
       },
+      "Percentiles": {
+        "additionalProperties": false,
+        "properties": {
+          "p50": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P50"
+          },
+          "p75": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P75"
+          },
+          "p90": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P90"
+          },
+          "p99": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P99"
+          }
+        },
+        "title": "Percentiles",
+        "type": "object"
+      },
       "Pins": {
         "additionalProperties": false,
         "description": "Every input the report was built from. Two builds from the same pins give the same\nreport apart from `built_at`. `source` is `live` or the monitor run picked; `monitor` is\nthe identity hash of its monitor. `labels` counts the flags a person labelled.",
@@ -9945,6 +10087,13 @@
             "title": "Extra",
             "type": "object"
           },
+          "headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Headers",
+            "type": "object"
+          },
           "limits": {
             "$ref": "#/components/schemas/Limits"
           },
@@ -9969,9 +10118,15 @@
             "type": "string"
           },
           "parallel_tool_calls": {
-            "default": false,
-            "title": "Parallel Tool Calls",
-            "type": "boolean"
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parallel Tool Calls"
           },
           "price": {
             "anyOf": [
@@ -9994,6 +10149,9 @@
           },
           "retries": {
             "$ref": "#/components/schemas/Retries"
+          },
+          "routing": {
+            "$ref": "#/components/schemas/Routing"
           },
           "sampling": {
             "$ref": "#/components/schemas/Sampling"
@@ -11366,6 +11524,204 @@
           "lines"
         ],
         "title": "ReviewEstimate",
+        "type": "object"
+      },
+      "Routing": {
+        "additionalProperties": false,
+        "description": "Where a router such as OpenRouter sends a request, sent as its `provider` object.\nProviders go by their slugs.",
+        "properties": {
+          "allow_fallbacks": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allow Fallbacks"
+          },
+          "data_collection": {
+            "anyOf": [
+              {
+                "enum": [
+                  "allow",
+                  "deny"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data Collection"
+          },
+          "enforce_distillable_text": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enforce Distillable Text"
+          },
+          "ignore": {
+            "anyOf": [
+              {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ignore"
+          },
+          "max_price": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MaxPrice"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "only": {
+            "anyOf": [
+              {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Only"
+          },
+          "order": {
+            "anyOf": [
+              {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order"
+          },
+          "preferred_max_latency": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "$ref": "#/components/schemas/Percentiles"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preferred Max Latency"
+          },
+          "preferred_min_throughput": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "$ref": "#/components/schemas/Percentiles"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preferred Min Throughput"
+          },
+          "quantizations": {
+            "anyOf": [
+              {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quantizations"
+          },
+          "require_parameters": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Require Parameters"
+          },
+          "sort": {
+            "anyOf": [
+              {
+                "enum": [
+                  "price",
+                  "throughput",
+                  "latency"
+                ],
+                "type": "string"
+              },
+              {
+                "$ref": "#/components/schemas/SortBy"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sort"
+          },
+          "zdr": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Zdr"
+          }
+        },
+        "title": "Routing",
         "type": "object"
       },
       "RunCaps": {
@@ -14369,6 +14725,40 @@
           "shas"
         ],
         "title": "Shas",
+        "type": "object"
+      },
+      "SortBy": {
+        "additionalProperties": false,
+        "properties": {
+          "by": {
+            "enum": [
+              "price",
+              "throughput",
+              "latency"
+            ],
+            "title": "By",
+            "type": "string"
+          },
+          "partition": {
+            "anyOf": [
+              {
+                "enum": [
+                  "model",
+                  "none"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Partition"
+          }
+        },
+        "required": [
+          "by"
+        ],
+        "title": "SortBy",
         "type": "object"
       },
       "Source": {

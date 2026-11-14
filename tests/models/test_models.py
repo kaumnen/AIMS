@@ -42,8 +42,10 @@ from aims.models import (
     Recording,
     ReplayError,
     ReplayMiss,
+    Reply,
     Retries,
     Roles,
+    Routing,
     Sampling,
     Timeouts,
     ToolOutput,
@@ -56,7 +58,8 @@ from aims.models import (
     load_models,
     parse_ratelimit,
 )
-from aims.models.backends import Chat, Responses, _reported_cost
+from aims.models.backends import BACKENDS, Chat, Responses, _reported_cost, params
+from aims.models.check import check_profile
 from aims.models.client import _cost
 from aims.models.replay import canonical_key
 from aims.models.transport import decode_chunks
@@ -195,7 +198,7 @@ async def test_chat_stream_records_the_attempt(store: LocalEventStore) -> None:
     handler, sent = scripted(lambda: stream(sse(CHAT_EVENTS), x_ratelimit_over_limit="no"))
     bus = DeltaBus()
     sub = bus.subscribe(run_id)
-    p = profile()
+    p = profile(parallel_tool_calls=False)
     async with client(store, run_id, p, handler, bus=bus) as mc:
         reply = await mc.call("test", Prompt(items=PROMPT.items, tools=[WEATHER]), agent_id="a1")
     assert reply.status == "completed"
@@ -986,6 +989,8 @@ def test_builtin_profiles() -> None:
     assert models.role("judge").weights != agent.weights
     for p in models.profiles.values():
         assert p.effort is not None or p.backend == "chat"
+    # Each says so, as they sent `false` when it was the default.
+    assert {p.parallel_tool_calls for p in models.profiles.values()} == {False}
     glimmer = models.get("modal-glimmer")
     assert glimmer.weights == "meta-models/Muse-Glimmer-30B"
     with pytest.raises(ProfileError, match="AIMS_GLIMMER_URL"):
@@ -1549,3 +1554,416 @@ def test_a_model_response_recorded_before_the_provider_fields_loads() -> None:
         del data[key]
     loaded = ModelResponse.model_validate(data)
     assert (loaded.provider, loaded.model, loaded.service_tier) == (None, None, None)
+
+
+TOOLS = Prompt(items=PROMPT.items, tools=[WEATHER])
+ROUTES: list[tuple[dict[str, Any], dict[str, Any]]] = [
+    ({"order": ["deepinfra", "together"]}, {"order": ["deepinfra", "together"]}),
+    ({"only": ["azure"]}, {"only": ["azure"]}),
+    ({"ignore": ["openai"]}, {"ignore": ["openai"]}),
+    ({"allow_fallbacks": False}, {"allow_fallbacks": False}),
+    ({"require_parameters": True}, {"require_parameters": True}),
+    ({"data_collection": "deny"}, {"data_collection": "deny"}),
+    ({"zdr": True}, {"zdr": True}),
+    ({"enforce_distillable_text": False}, {"enforce_distillable_text": False}),
+    ({"quantizations": ["fp8", "int4"]}, {"quantizations": ["fp8", "int4"]}),
+    ({"sort": "price"}, {"sort": "price"}),
+    ({"sort": {"by": "throughput"}}, {"sort": {"by": "throughput"}}),
+    (
+        {"sort": {"partition": "none", "by": "latency"}},
+        {"sort": {"by": "latency", "partition": "none"}},
+    ),
+    ({"preferred_min_throughput": 50}, {"preferred_min_throughput": 50}),
+    ({"preferred_min_throughput": 12.5}, {"preferred_min_throughput": 12.5}),
+    (
+        {"preferred_max_latency": {"p90": 3, "p50": 1.5}},
+        {"preferred_max_latency": {"p50": 1.5, "p90": 3}},
+    ),
+    (
+        {"max_price": {"completion": 2.5, "prompt": 1, "image": 0}},
+        {"max_price": {"prompt": 1, "completion": 2.5, "image": 0}},
+    ),
+]
+
+
+@pytest.mark.parametrize("backend", ["chat", "responses"])
+@pytest.mark.parametrize(("routing", "provider"), ROUTES)
+def test_routing_goes_out_as_the_provider_object(
+    backend: str, routing: dict[str, Any], provider: dict[str, Any]
+) -> None:
+    p = profile(backend=backend, routing=routing, extra={"x": 1})
+    body = BACKENDS[p.backend].body(p, TOOLS)
+    # The JSON tells 50 from 50.0 and keeps the order of the fields.
+    assert json.dumps(body["provider"]) == json.dumps(provider)
+    assert list(body)[-2:] == ["provider", "x"]
+
+
+# What a profile with tools and an extra field sent before routing came, byte for byte.
+BEFORE_ROUTING = {
+    "chat": '{"model":"m","messages":[{"role":"user","content":"hi"}],"stream":true,'
+    '"stream_options":{"include_usage":true},"tools":[{"type":"function","function":'
+    '{"name":"get_weather","description":"","parameters":{"type":"object","properties":{}}}}],'
+    '"parallel_tool_calls":false,"x":1}',
+    "responses": '{"model":"m","input":[{"role":"user","content":"hi"}],"store":false,'
+    '"stream":true,"include":["reasoning.encrypted_content"],"tools":[{"type":"function",'
+    '"name":"get_weather","description":"","parameters":{"type":"object","properties":{}}}],'
+    '"parallel_tool_calls":false,"x":1}',
+}
+
+
+@pytest.mark.parametrize("backend", ["chat", "responses"])
+@pytest.mark.parametrize("routing", [None, {}, {"order": None, "max_price": None}])
+def test_a_profile_without_routing_sends_the_body_it_sent_before(
+    backend: str, routing: dict[str, Any] | None
+) -> None:
+    kw = {} if routing is None else {"routing": routing}
+    p = profile(backend=backend, parallel_tool_calls=False, extra={"x": 1}, **kw)
+    assert p.routing.body() == {}
+    body = BACKENDS[p.backend].body(p, TOOLS)
+    assert json.dumps(body, separators=(",", ":")) == BEFORE_ROUTING[backend]
+
+
+def test_routing_and_a_provider_in_extra_are_refused_together() -> None:
+    with pytest.raises(ValidationError, match=r"routing and extra\.provider both set"):
+        profile(routing={"zdr": True}, extra={"provider": {"order": ["a"]}})
+    own = profile(extra={"provider": {"order": ["a"]}})
+    assert Chat().body(own, PROMPT)["provider"] == {"order": ["a"]}
+    assert profile(routing={}, extra={"provider": {}}).extra == {"provider": {}}
+
+
+@pytest.mark.parametrize(
+    "routing",
+    [
+        {"order": []},
+        {"only": [""]},
+        {"ignore": "openai"},
+        {"quantizations": []},
+        {"allow_fallbacks": "sometimes"},
+        {"data_collection": "maybe"},
+        {"sort": "cheapest"},
+        {"sort": {"partition": "none"}},
+        {"sort": {"by": "price", "partition": "all"}},
+        {"preferred_min_throughput": True},
+        {"preferred_min_throughput": 0},
+        {"preferred_min_throughput": "50"},
+        {"preferred_min_throughput": {}},
+        {"preferred_max_latency": -1.5},
+        {"preferred_max_latency": float("inf")},
+        {"preferred_max_latency": float("nan")},
+        {"preferred_max_latency": {"p95": 1}},
+        {"preferred_max_latency": {"p50": False}},
+        {"preferred_max_latency": {"p50": 0}},
+        {"max_price": {}},
+        {"max_price": {"prompt": -1}},
+        {"max_price": {"prompt": True}},
+        {"max_price": {"prompt": float("inf")}},
+        {"max_price": {"tokens": 1}},
+        {"providers": ["a"]},
+    ],
+)
+def test_bad_routing_is_refused(routing: dict[str, Any]) -> None:
+    with pytest.raises(ValidationError) as info:
+        profile(routing=routing)
+    assert {e["loc"][:2] for e in info.value.errors()} == {("routing", *routing)}
+
+
+def test_a_routing_table_with_nothing_in_it_says_what_it_takes() -> None:
+    with pytest.raises(ValidationError, match="set at least one of prompt, completion"):
+        profile(routing={"max_price": {}})
+    with pytest.raises(ValidationError, match="set at least one of p50, p75, p90, p99"):
+        profile(routing={"preferred_min_throughput": {}})
+
+
+@pytest.mark.parametrize(
+    ("headers", "match"),
+    [
+        ({"X Title": "a"}, "not an HTTP token"),
+        ({"": "a"}, "not an HTTP token"),
+        ({"X-Tïtle": "a"}, "not an HTTP token"),
+        ({"X-Title:": "a"}, "not an HTTP token"),
+        ({"X-Title": ""}, "printable ASCII"),
+        ({"X-Title": "a\r\nX-Injected: 1"}, "printable ASCII"),
+        ({"X-Title": "a\nb"}, "printable ASCII"),
+        ({"X-Title": "a\rb"}, "printable ASCII"),
+        ({"X-Title": "a\x00b"}, "printable ASCII"),
+        ({"X-Title": " a"}, "printable ASCII"),
+        ({"X-Title": "a\t"}, "printable ASCII"),
+        ({"X-Title": "café"}, "printable ASCII"),
+        ({"X-Title": "a", "x-title": "b"}, "headers X-Title and x-title differ only by case"),
+    ],
+)
+def test_bad_headers_are_refused(headers: dict[str, str], match: str) -> None:
+    with pytest.raises(ValidationError, match=match):
+        profile(headers=headers)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Accept",
+        "accept-encoding",
+        "Authorization",
+        "AUTHORIZATION",
+        "Connection",
+        "Content-Length",
+        "Content-Type",
+        "Cookie",
+        "Host",
+        "Keep-Alive",
+        "OpenAI-Organization",
+        "OpenAI-Project",
+        "Proxy-Authorization",
+        "Proxy-Connection",
+        "TE",
+        "Trailer",
+        "Transfer-Encoding",
+        "Upgrade",
+        "X-Stainless-Retry-Count",
+        "x-stainless-lang",
+    ],
+)
+def test_headers_that_aims_sets_or_that_carry_a_secret_are_refused(name: str) -> None:
+    with pytest.raises(ValidationError, match=f"header {name} is set by AIMS or carries a secret"):
+        profile(headers={name: "x"})
+
+
+def test_headers_keep_their_names_and_values_in_the_snapshot() -> None:
+    headers = {
+        "HTTP-Referer": "https://example.com/aims",
+        "X-Title": "AIMS\tbench run",
+        "User-Agent": "aims-test/1",
+    }
+    p = profile(headers=headers)
+    assert p.headers == headers
+    assert p.snapshot()["headers"] == headers
+
+
+def _heard(seen: list[httpx2.Request], answer: Callable[[], httpx2.Response]) -> Handler:
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        return answer()
+
+    return handle
+
+
+@pytest.mark.parametrize("backend", ["chat", "responses"])
+async def test_profile_headers_go_out_beside_the_sdks_own(
+    store: LocalEventStore, backend: str
+) -> None:
+    run_id = await new_run(store)
+    events = CHAT_EVENTS if backend == "chat" else RESPONSES_EVENTS
+    seen: list[httpx2.Request] = []
+    handler = _heard(seen, lambda: stream(sse(events)))
+    headers = {"X-Title": "AIMS bench", "HTTP-Referer": "https://example.com"}
+    reasoning = "full" if backend == "chat" else "summary"
+    p = profile(backend=backend, reasoning=reasoning, api_key_env="TEST_KEY", headers=headers)
+    async with ModelClient(
+        store,
+        run_id,
+        config(p),
+        transport=httpx2.MockTransport(handler),
+        env={"TEST_KEY": "sk-test"},
+    ) as mc:
+        reply = await mc.call("test", PROMPT)
+    assert reply.status == "completed"
+    (request,) = seen
+    assert request.headers["x-title"] == "AIMS bench"
+    assert request.headers["http-referer"] == "https://example.com"
+    assert request.headers["authorization"] == "Bearer sk-test"
+    assert request.headers["content-type"] == "application/json"
+    assert request.headers["user-agent"].startswith("AsyncOpenAI/Python")
+    assert request.headers["x-stainless-retry-count"] == "0"
+    assert request.headers["accept-encoding"] == "identity"
+
+    # A replay sends no request, so the headers change nothing there.
+    def refuse(request: httpx2.Request) -> httpx2.Response:
+        raise AssertionError("replay must not reach the provider")
+
+    for sent in (headers, {"X-Title": "elsewhere"}):
+        replayed = await new_run(store)
+        recording = await Recording.load(store, run_id)
+        again = p.model_copy(update={"headers": sent})
+        async with client(store, replayed, again, refuse, replay=recording) as mc:
+            assert (await mc.call("test", PROMPT)).turn == reply.turn
+
+
+async def test_profiles_that_differ_only_in_headers_get_their_own_client(
+    store: LocalEventStore,
+) -> None:
+    run_id = await new_run(store)
+    seen: list[httpx2.Request] = []
+    handler = _heard(seen, lambda: stream(sse(CHAT_EVENTS)))
+    a = profile(name="a", headers={"X-Title": "a"})
+    b = profile(name="b", headers={"X-Title": "b"})
+    same = profile(name="same", headers={"X-Title": "a"})
+    bare = profile(name="bare")
+    async with client(store, run_id, a, handler) as mc:
+        for p in (a, b, same, bare, a):
+            await mc.call(p, PROMPT)
+        assert len(mc._clients) == 3
+    assert [r.headers.get("x-title") for r in seen] == ["a", "b", "a", None, "a"]
+
+
+@pytest.mark.parametrize("backend", ["chat", "responses"])
+@pytest.mark.parametrize("parallel", [None, True, False])
+def test_parallel_tool_calls_goes_out_only_when_set_and_with_tools(
+    backend: str, parallel: bool | None
+) -> None:
+    p = profile(backend=backend, parallel_tool_calls=parallel)
+    backend_ = BACKENDS[p.backend]
+    sent = backend_.body(p, TOOLS).get("parallel_tool_calls", "unsent")
+    assert sent == ("unsent" if parallel is None else parallel)
+    assert "parallel_tool_calls" not in backend_.body(p, PROMPT)
+    assert params(p, TOOLS).parallel_tool_calls is parallel
+    assert params(p, PROMPT).parallel_tool_calls is None
+
+
+def test_a_profile_sends_no_parallel_tool_calls_unless_it_says() -> None:
+    assert profile().parallel_tool_calls is None
+    assert "parallel_tool_calls" not in Chat().body(profile(), TOOLS)
+
+
+@pytest.mark.parametrize(("parallel", "verdict"), [(False, "warn"), (None, "ok"), (True, "ok")])
+async def test_the_tools_check_warns_of_parallel_calls_only_when_the_profile_turns_them_off(
+    parallel: bool | None, verdict: str
+) -> None:
+    async def answer(p: Profile, prompt: Prompt, *, overrides: Overrides | None = None) -> Reply:
+        if prompt.tools and isinstance(prompt.items[-1], Message):
+            calls = [
+                ToolRequest(id=f"t{i}", name="get_weather", arguments='{"city":"Paris"}')
+                for i in (1, 2)
+            ]
+            turn = Turn(tool_calls=calls, backend=p.backend)
+        elif prompt.output_schema is not None:
+            turn = Turn(text='{"answer":42,"sure":true}', backend=p.backend)
+        else:
+            turn = Turn(text="42", backend=p.backend)
+        return Reply(call_id="c", profile=p.name, status="completed", attempts=1, turn=turn)
+
+    fake: Any = SimpleNamespace(call=answer)
+    checks = {c.name: c for c in await check_profile(fake, profile(parallel_tool_calls=parallel))}
+    tools = checks["tools"]
+    assert tools.verdict == verdict
+    if verdict == "warn":
+        assert tools.detail == "2 calls in one turn with parallel_tool_calls off"
+
+
+def test_routing_and_headers_layer_key_by_key(tmp_path: Path) -> None:
+    user = tmp_path / "user.toml"
+    user.write_text(
+        """
+[profiles.router]
+extends = "fireworks-spark-open"
+base_url = "https://router.example/api/v1"
+headers = { "X-Title" = "AIMS", "HTTP-Referer" = "https://example.com" }
+
+[profiles.router.routing]
+order = ["a", "b"]
+sort = { by = "price" }
+max_price = { prompt = 1 }
+preferred_min_throughput = { p50 = 10 }
+"""
+    )
+    project = tmp_path / "aims.toml"
+    project.write_text(
+        """
+[profiles.router.routing]
+allow_fallbacks = false
+
+[profiles.router.headers]
+"X-Extra" = "1"
+
+[profiles.child]
+extends = "router"
+headers = { "x-title" = "Child" }
+
+[profiles.child.routing]
+order = ["c"]
+sort = { partition = "none" }
+max_price = { completion = 2 }
+
+[profiles.other]
+extends = "child"
+routing = { sort = "latency", preferred_min_throughput = 20 }
+
+[profiles.plain]
+backend = "chat"
+base_url = "http://localhost:8000/v1"
+model = "m"
+weights = "w"
+reasoning = "none"
+"""
+    )
+    models = load_models(user, project)
+    router = models.get("router")
+    assert router.routing.body() == {
+        "order": ["a", "b"],
+        "allow_fallbacks": False,
+        "sort": {"by": "price"},
+        "preferred_min_throughput": {"p50": 10},
+        "max_price": {"prompt": 1},
+    }
+    assert router.headers == {
+        "X-Title": "AIMS",
+        "HTTP-Referer": "https://example.com",
+        "X-Extra": "1",
+    }
+    child = models.get("child")
+    assert child.routing.body() == {
+        "order": ["c"],
+        "allow_fallbacks": False,
+        "sort": {"by": "price", "partition": "none"},
+        "preferred_min_throughput": {"p50": 10},
+        "max_price": {"prompt": 1, "completion": 2},
+    }
+    # A header's name ignores case, so the child's replaces the parent's.
+    assert child.headers == {
+        "HTTP-Referer": "https://example.com",
+        "X-Extra": "1",
+        "x-title": "Child",
+    }
+    assert Chat().body(child, PROMPT)["provider"] == child.routing.body()
+    other = models.get("other").routing.body()
+    assert (other["sort"], other["preferred_min_throughput"], other["order"]) == (
+        "latency",
+        20,
+        ["c"],
+    )
+    assert child.parallel_tool_calls is False
+    assert models.get("plain").parallel_tool_calls is None
+
+    for bad, match in [
+        ('[profiles.x]\nextends = "router"\nextra = { provider = {} }\n', "extra.provider"),
+        ('[profiles.x]\nextends = "router"\nrouting = { sort = { by = "fast" } }\n', "sort"),
+        ('[profiles.x]\nextends = "router"\nrouting = { zdr = 1.5 }\n', "zdr"),
+        ('[profiles.x]\nextends = "router"\nrouting = { order = "a" }\n', "order"),
+        ('[profiles.router.headers]\nAuthorization = "Bearer k"\n', "set by AIMS"),
+        ('[profiles.x]\nextends = "router"\nheaders = { "X-A" = 1 }\n', "X-A"),
+        (
+            '[profiles.x]\nextends = "router"\nrouting = { preferred_min_throughput = true }\n',
+            "preferred_min_throughput",
+        ),
+    ]:
+        project.write_text(bad)
+        with pytest.raises(ProfileError, match=match):
+            load_models(user, project)
+
+
+def test_a_profile_snapshot_from_before_routing_and_headers_loads() -> None:
+    p = profile(parallel_tool_calls=False)
+    old = p.snapshot()
+    del old["routing"], old["headers"]
+    loaded = Profile.model_validate(old)
+    assert (loaded.routing, loaded.headers, loaded.parallel_tool_calls) == (Routing(), {}, False)
+    assert loaded == p
+    assert Chat().body(loaded, TOOLS) == Chat().body(p, TOOLS)
+
+
+def test_a_profile_snapshot_keeps_routing_and_headers() -> None:
+    p = profile(
+        routing={"order": ["a"], "preferred_min_throughput": 50, "sort": {"by": "price"}},
+        headers={"X-Title": "AIMS"},
+    )
+    loaded = Profile.model_validate(json.loads(json.dumps(p.snapshot())))
+    assert loaded == p
+    assert json.dumps(Chat().body(loaded, PROMPT)) == json.dumps(Chat().body(p, PROMPT))

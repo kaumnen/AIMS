@@ -98,7 +98,7 @@ async def check_profile(client: ModelClient, profile: Profile) -> list[Check]:
         if r2.status != "completed":
             return "fail", f"round trip status {r2.status}"
         calls = len(r.tool_calls)
-        if not profile.parallel_tool_calls and calls > 1:
+        if profile.parallel_tool_calls is False and calls > 1:
             return "warn", f"{calls} calls in one turn with parallel_tool_calls off"
         return "ok", f"{calls} call(s), round trip {r2.status}"
 

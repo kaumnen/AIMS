@@ -167,7 +167,8 @@ class Responses:
                 }
                 for t in prompt.tools
             ]
-            body["parallel_tool_calls"] = profile.parallel_tool_calls
+            if profile.parallel_tool_calls is not None:
+                body["parallel_tool_calls"] = profile.parallel_tool_calls
         reasoning: dict[str, JsonValue] = {}
         if profile.effort is not None:
             reasoning["effort"] = profile.effort
@@ -188,6 +189,8 @@ class Responses:
                     "strict": o.strict,
                 }
             }
+        if provider := profile.routing.body():
+            body["provider"] = provider
         return body | profile.extra
 
     def render(self, prompt: Prompt) -> list[JsonValue]:
@@ -375,7 +378,8 @@ class Chat:
                 }
                 for t in prompt.tools
             ]
-            body["parallel_tool_calls"] = profile.parallel_tool_calls
+            if profile.parallel_tool_calls is not None:
+                body["parallel_tool_calls"] = profile.parallel_tool_calls
         if profile.effort is not None and profile.effort_kwarg is not None:
             body["chat_template_kwargs"] = {profile.effort_kwarg: profile.effort}
         elif profile.effort is not None:
@@ -389,6 +393,8 @@ class Chat:
                 "type": "json_schema",
                 "json_schema": {"name": o.name, "schema": o.json_schema, "strict": o.strict},
             }
+        if provider := profile.routing.body():
+            body["provider"] = provider
         return body | profile.extra
 
     def render(self, prompt: Prompt) -> list[JsonValue]:

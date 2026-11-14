@@ -19,6 +19,7 @@ effort = "high"
 structured_output = false
 max_output_tokens = 16384
 context_tokens = 131072
+parallel_tool_calls = false
 sampling = { temperature = 1.0, top_p = 0.95, top_k = 64 }
 limits = { concurrency = 12, group = "fireworks-glimmer" }
 timeouts = { connect = 30, stall = 600, wall = 1800 }
