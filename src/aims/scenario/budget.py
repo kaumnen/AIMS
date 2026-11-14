@@ -24,7 +24,12 @@ from aims.scenario.model import Scenario
 
 Key = Literal["steps", "output_tokens", "cost_usd", "wall_s"]
 KEYS: tuple[Key, ...] = get_args(Key)
-"""The caps an override may change, on an agent and on the run."""
+"""The caps an override may change on an agent."""
+RunKey = Literal["steps", "output_tokens", "cost_usd", "wall_s", "monitor_cost_usd"]
+RUN_KEYS: tuple[RunKey, ...] = get_args(RunKey)
+"""The caps an override may change on the run. The first four count what the agents use;
+`monitor_cost_usd` is the monitor's own."""
+MONITOR_COST: RunKey = "monitor_cost_usd"
 
 Value = int | float | None
 
@@ -40,6 +45,7 @@ class GivenCaps(TypedDict, total=False):
     output_tokens: int | None
     cost_usd: float | None
     wall_s: float | None
+    monitor_cost_usd: float | None
 
 
 class Caps(BaseModel):
@@ -62,7 +68,15 @@ class Caps(BaseModel):
         return cast(GivenCaps, {k: v for k, v in data.items() if k in self.model_fields_set})
 
     def given(self) -> dict[str, Value]:
-        return {k: getattr(self, k) for k in KEYS if k in self.model_fields_set}
+        fields = type(self).model_fields
+        return {k: getattr(self, k) for k in fields if k in self.model_fields_set}
+
+
+class RunLimits(Caps):
+    """The run's caps to change. `monitor_cost_usd` caps the monitor's model spend, which the
+    run's `cost_usd` does not count; None gives the monitor its preset's cap back."""
+
+    monitor_cost_usd: float | None = Field(default=None, ge=0)
 
 
 class BudgetOverride(BaseModel):
@@ -73,7 +87,7 @@ class BudgetOverride(BaseModel):
 
     every: Caps | None = None
     agents: dict[Name, Caps] = Field(default_factory=dict)
-    run: Caps | None = None
+    run: RunLimits | None = None
 
     @property
     def empty(self) -> bool:
@@ -140,6 +154,7 @@ _FORMS = {
     "output_tokens": "a whole number in digits, such as 50000",
     "cost_usd": "dollars in digits, such as 2.5",
     "wall_s": "seconds in digits, such as 600",
+    "monitor_cost_usd": "dollars in digits, such as 2.5",
 }
 
 
@@ -173,8 +188,9 @@ def _bad_part(before: str, part: str) -> str:
 
 def parse(text: str) -> BudgetOverride:
     """Read `--budget`: comma separated `key=value` pairs. A bare key (`steps=200`) sets every
-    agent, `AGENT.key` one agent and `run.key` the run's limits; `none` lifts the cap. A value
-    is plain ASCII digits, with a point on cost_usd and wall_s. Raises BudgetError."""
+    agent, `AGENT.key` one agent and `run.key` the run's limits; `none` lifts the cap. Only the
+    run has `monitor_cost_usd`, and `none` there gives the monitor its preset's cap. A value
+    is plain ASCII digits, with a point on the costs and wall_s. Raises BudgetError."""
     every: dict[str, Value] = {}
     agents: dict[str, dict[str, Value]] = {}
     run: dict[str, Value] = {}
@@ -188,8 +204,12 @@ def parse(text: str) -> BudgetOverride:
         if not sep or not key or not raw:
             raise BudgetError(_bad_part(before, part))
         scope, dot, cap = key.rpartition(".")
-        if cap not in KEYS:
-            raise BudgetError(f"{key}: no cap {cap!r}; use {', '.join(KEYS)}")
+        on_run = bool(dot) and scope == "run"
+        if cap == MONITOR_COST and not on_run:
+            raise BudgetError(f"{key}: the monitor's cap is the run's; write run.{MONITOR_COST}")
+        if cap not in (RUN_KEYS if on_run else KEYS):
+            more = f"; the run also has {MONITOR_COST}" if on_run else ""
+            raise BudgetError(f"{key}: no cap {cap!r}; use {', '.join(KEYS)}{more}")
         target = every if not dot else run if scope == "run" else agents.setdefault(scope, {})
         if cap in target:
             raise BudgetError(f"{key} is given twice")
@@ -231,7 +251,7 @@ def over(
     run = base.run_caps() | top.run_caps()
     return BudgetOverride(
         agents={a: Caps.model_validate(c) for a, c in agents.items() if c},
-        run=Caps.model_validate(run) if run else None,
+        run=RunLimits.model_validate(run) if run else None,
     )
 
 
@@ -278,7 +298,7 @@ class BudgetChange(BaseModel):
 
     scope: Scope
     agent: str | None = None
-    key: Key
+    key: RunKey
     value: Value
     scenario: Value
 
@@ -295,16 +315,17 @@ def changes(resolved: Mapping[str, Any], override: BudgetOverride | None) -> lis
             out.append(
                 BudgetChange(scope="agent", agent=agent_id, key=key, value=value, scenario=was)
             )
-    for key, value, was in _changed(override.run_caps(), _dict(resolved.get("limits"))):
+    limits = _dict(resolved.get("limits"))
+    for key, value, was in _changed(override.run_caps(), limits, RUN_KEYS):
         out.append(BudgetChange(scope="run", key=key, value=value, scenario=was))
     return out
 
 
 def _changed(
-    caps: Mapping[str, Value], recorded: Mapping[str, Any]
-) -> list[tuple[Key, Value, Value]]:
-    out: list[tuple[Key, Value, Value]] = []
-    for key in KEYS:
+    caps: Mapping[str, Value], recorded: Mapping[str, Any], keys: tuple[RunKey, ...] = KEYS
+) -> list[tuple[RunKey, Value, Value]]:
+    out: list[tuple[RunKey, Value, Value]] = []
+    for key in keys:
         if key not in caps:
             continue
         value = caps[key]
@@ -315,14 +336,21 @@ def _changed(
     return out
 
 
-NAMES = {"steps": "steps", "output_tokens": "output tokens", "cost_usd": "cost", "wall_s": "wall"}
+NAMES = {
+    "steps": "steps",
+    "output_tokens": "output tokens",
+    "cost_usd": "cost",
+    "wall_s": "wall",
+    "monitor_cost_usd": "monitor cost",
+}
 
 
 def cap_text(key: str, value: Value) -> str:
-    """`value` of cap `key` in words: 200 steps reads `200`, a cost `$4`, a wall `30m`."""
+    """`value` of cap `key` in words: 200 steps reads `200`, a cost `$4`, a wall `30m`. The
+    monitor is never without a cap: with none set it has its preset's."""
     if value is None:
-        return "no cap"
-    if key == "cost_usd":
+        return "the preset's" if key == MONITOR_COST else "no cap"
+    if key in ("cost_usd", MONITOR_COST):
         return f"${value:g}"
     if key == "wall_s":
         return _duration(float(value))
@@ -343,7 +371,8 @@ def describe(found: Iterable[BudgetChange], agents: int = 1) -> str | None:
     when the scenario has several."""
     parts = []
     for c in found:
-        who = "run " if c.scope == "run" else f"{c.agent} " if agents > 1 else ""
+        who = f"{c.agent} " if c.scope == "agent" and agents > 1 else ""
+        who = "run " if c.scope == "run" and c.key != MONITOR_COST else who
         parts.append(
             f"{who}{NAMES[c.key]} {cap_text(c.key, c.value)}"
             f" (scenario {cap_text(c.key, c.scenario)})"

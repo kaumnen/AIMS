@@ -31,7 +31,8 @@ Pick a preset with `--monitor`, the scenario's `monitor:` section or the `[monit
 
 - The budget grows with the agent steps the run allows, at the prices of the monitor's models. An 80-step `cache-keys` run gets $9.45 under `standard` with the default models.
 - A review gets the budget for the steps the run took.
-- The scenario's `limits.monitor_cost_usd` or `aims monitor --budget-usd` sets it outright.
+- The scenario's `limits.monitor_cost_usd` sets it outright. So does `--budget run.monitor_cost_usd=3` on one run, the Monitor row of the Budget section in the New run form, or `aims monitor --budget-usd` on a review.
+- A run's cost cap counts only the agents. The monitor's spend comes on top, up to this budget.
 - Past the budget the monitor keeps only its signals. `aims estimate` and `aims monitor` warn when a budget is too small to sweep every step.
 
 ## Judge settings

@@ -969,7 +969,9 @@ BudgetOption = Annotated[
         "--budget",
         help="Caps over the scenario's, such as steps=200,cost_usd=10: steps, output_tokens,"
         " cost_usd and wall_s set every agent, AGENT.steps one agent and run.steps the run's"
-        " limits; none lifts a cap. A fork keeps its origin's and lays these over them.",
+        " limits; none lifts a cap. The run's caps count the agents;"
+        " run.monitor_cost_usd caps the monitor's own spend. A fork keeps its origin's and"
+        " lays these over them.",
     ),
 ]
 

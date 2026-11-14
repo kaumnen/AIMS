@@ -4,6 +4,7 @@ import {
   capText,
   changesText,
   draftText,
+  EMPTY_DRAFT,
   inForce,
   type Key,
   KEYS,
@@ -86,6 +87,7 @@ test("a comma reads only as a thousands separator, so 2,50 is not a cap of 250",
     every: { cost_usd: "2,50" },
     agents: {},
     run: { cost_usd: "2,500" },
+    monitor: {},
   });
   expect(budget).toEqual({ run: { cost_usd: 2500 } });
   expect(problems).toEqual({ "every.cost_usd": dollars });
@@ -111,6 +113,7 @@ test("the draft becomes the override the API takes, rows left empty left out", (
     every: { steps: "200", cost_usd: "" },
     agents: { alice: { wall_s: "1h" }, bob: {} },
     run: { cost_usd: "none", steps: "x" },
+    monitor: {},
   });
   expect(budget).toEqual({
     every: { steps: 200 },
@@ -118,7 +121,7 @@ test("the draft becomes the override the API takes, rows left empty left out", (
     run: { cost_usd: null },
   });
   expect(problems).toEqual({ "run.steps": "Write a whole number from 1, or none." });
-  expect(readDraft({ every: {}, agents: {}, run: {} }).budget).toBeUndefined();
+  expect(readDraft(EMPTY_DRAFT).budget).toBeUndefined();
   expect(draftText(budget, true)).toBe("every agent steps 200, alice wall 1h, run cost no cap");
   expect(draftText({ every: { steps: 9 } }, false)).toBe("steps 9");
 });
@@ -145,6 +148,7 @@ test("a placeholder shows the cap in force, varies when the agents differ", () =
       bob: { ...none, steps: 30, cost_usd: 4 },
     },
     run: { ...none, cost_usd: 10 },
+    monitor_cost_usd: 9.45,
   };
   expect(inForce(caps, "every", "steps")).toBe("varies");
   expect(inForce(caps, "every", "cost_usd")).toBe("$4");
@@ -152,4 +156,26 @@ test("a placeholder shows the cap in force, varies when the agents differ", () =
   expect(inForce(caps, "run", "cost_usd")).toBe("$10");
   expect(inForce(caps, "run", "wall_s")).toBe("no cap");
   expect(inForce(undefined, "run", "steps")).toBe("");
+  expect(inForce(caps, "monitor", "cost_usd")).toBe("$9.45");
+  expect(inForce({ ...caps, monitor_cost_usd: null }, "monitor", "cost_usd")).toBe("off");
+});
+
+test("the monitor's cost is a cap of the run, read apart from the run's own cost", () => {
+  const set = readDraft({ ...EMPTY_DRAFT, run: { cost_usd: "5" }, monitor: { cost_usd: "$3" } });
+  expect(set.budget).toEqual({ run: { cost_usd: 5, monitor_cost_usd: 3 } });
+  expect(draftText(set.budget, false)).toBe("run cost $5, monitor cost $3");
+  const preset = readDraft({ ...EMPTY_DRAFT, monitor: { cost_usd: "none" } });
+  expect(preset.budget).toEqual({ run: { monitor_cost_usd: null } });
+  expect(draftText(preset.budget, false)).toBe("monitor cost the preset's");
+  const bad = readDraft({ ...EMPTY_DRAFT, monitor: { cost_usd: "lots" } });
+  expect(bad.budget).toBeUndefined();
+  expect(bad.problems).toEqual({
+    "monitor.cost_usd": "Write dollars above 0, or none for the preset's cap.",
+  });
+  expect(
+    changesText(
+      [{ scope: "run", agent: null, key: "monitor_cost_usd", value: 3, scenario: null }],
+      true,
+    ),
+  ).toBe("monitor cost $3 (scenario the preset's)");
 });

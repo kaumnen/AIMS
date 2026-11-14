@@ -1110,7 +1110,8 @@
               "steps",
               "output_tokens",
               "cost_usd",
-              "wall_s"
+              "wall_s",
+              "monitor_cost_usd"
             ],
             "title": "Key",
             "type": "string"
@@ -1185,7 +1186,7 @@
           "run": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/Caps-Input"
+                "$ref": "#/components/schemas/RunLimits-Input"
               },
               {
                 "type": "null"
@@ -1220,7 +1221,7 @@
           "run": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/Caps-Output"
+                "$ref": "#/components/schemas/RunLimits-Output"
               },
               {
                 "type": "null"
@@ -5063,6 +5064,17 @@
               }
             ],
             "title": "Cost Usd"
+          },
+          "monitor_cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Monitor Cost Usd"
           },
           "output_tokens": {
             "anyOf": [
@@ -11294,7 +11306,7 @@
         "type": "object"
       },
       "RunCaps": {
-        "description": "The caps a run would have, its budget override applied: each agent's, in the scenario's\norder, and the run's own.",
+        "description": "The caps a run would have, its budget override applied: each agent's, in the scenario's\norder, and the run's own, which count what the agents use. `monitor_cost_usd` is the\nmonitor's own cost cap, None when the monitor is off.",
         "properties": {
           "agents": {
             "additionalProperties": {
@@ -11303,13 +11315,25 @@
             "title": "Agents",
             "type": "object"
           },
+          "monitor_cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Monitor Cost Usd"
+          },
           "run": {
             "$ref": "#/components/schemas/CapsInForce"
           }
         },
         "required": [
           "agents",
-          "run"
+          "run",
+          "monitor_cost_usd"
         ],
         "title": "RunCaps",
         "type": "object"
@@ -11458,6 +11482,77 @@
         ],
         "title": "RunFinished",
         "type": "object"
+      },
+      "RunLimits-Input": {
+        "additionalProperties": false,
+        "description": "The run's caps to change. `monitor_cost_usd` caps the monitor's model spend, which the\nrun's `cost_usd` does not count; None gives the monitor its preset's cap back.",
+        "properties": {
+          "cost_usd": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          },
+          "monitor_cost_usd": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Monitor Cost Usd"
+          },
+          "output_tokens": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Tokens"
+          },
+          "steps": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Steps"
+          },
+          "wall_s": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wall S"
+          }
+        },
+        "title": "RunLimits",
+        "type": "object"
+      },
+      "RunLimits-Output": {
+        "$ref": "#/components/schemas/GivenCaps"
       },
       "RunMessage": {
         "additionalProperties": false,

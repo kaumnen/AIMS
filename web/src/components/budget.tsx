@@ -6,7 +6,8 @@ import { useOpenWhen } from "@/lib/use-open-when";
 import { cn } from "@/lib/utils";
 
 // The caps of a new run or fork, folded under its summary: each cell keeps the cap in force
-// (its placeholder) when empty, sets it to a value, or lifts it with "none".
+// (its placeholder) when empty, sets it to a value, or lifts it with "none". The Monitor row
+// has one cell, its cost: the run's cost cap does not count what the monitor spends.
 export function BudgetSection({
   caps,
   draft,
@@ -24,7 +25,14 @@ export function BudgetSection({
 }) {
   const agents = Object.keys(caps?.agents ?? {});
   const several = agents.length > 1;
-  const rows: { id: string; label: string; row: Row; set: (row: Row) => void }[] = [
+  const watched = typeof caps?.monitor_cost_usd === "number";
+  const rows: {
+    id: string;
+    label: string;
+    row: Row;
+    set: (row: Row) => void;
+    only?: (typeof KEYS)[number];
+  }[] = [
     {
       id: "every",
       label: several ? "Every agent" : "Agent",
@@ -40,6 +48,13 @@ export function BudgetSection({
         }))
       : []),
     { id: "run", label: "Run", row: draft.run, set: (row) => onChange({ ...draft, run: row }) },
+    {
+      id: "monitor",
+      label: "Monitor",
+      row: draft.monitor,
+      set: (row) => onChange({ ...draft, monitor: row }),
+      only: "cost_usd",
+    },
   ];
   const shown = Object.entries(problems);
   const fold = useOpenWhen(shown.length > 0);
@@ -64,7 +79,7 @@ export function BudgetSection({
             <span key={k}>{LABELS[k]}</span>
           ))}
         </div>
-        {rows.map(({ id, label, row, set }) => (
+        {rows.map(({ id, label, row, set, only }) => (
           <div
             key={id}
             role="group"
@@ -76,6 +91,9 @@ export function BudgetSection({
             </span>
             {KEYS.map((k) => {
               const problem = problems[`${id}.${k}`];
+              if (only && k !== only) {
+                return <span key={k} aria-hidden className="hidden sm:block" />;
+              }
               return (
                 <label key={k} className="flex min-w-0 flex-col gap-0.5">
                   <span className="text-muted-foreground sm:sr-only">{LABELS[k]}</span>
@@ -84,6 +102,7 @@ export function BudgetSection({
                     placeholder={inForce(caps, id, k)}
                     aria-label={`${label} ${LABELS[k].toLowerCase()}`}
                     aria-invalid={problem ? true : undefined}
+                    disabled={id === "monitor" && caps !== undefined && !watched}
                     className={cn("h-7 font-mono md:text-sm", problem && "border-flag")}
                     onChange={(e) => set({ ...row, [k]: e.currentTarget.value })}
                   />
@@ -98,7 +117,9 @@ export function BudgetSection({
           </p>
         ))}
         <p className="text-muted-foreground">
-          Empty keeps the cap shown, none lifts it. Wall takes seconds, 30m or 2h.
+          Empty keeps the cap shown, none lifts it. Wall takes seconds, 30m or 2h. The run's caps
+          count the agents. The monitor spends on top, up to its own cost cap; none there gives it
+          its preset's.
         </p>
       </div>
     </details>
@@ -109,6 +130,7 @@ function problemWhere(where: string, several: boolean): string {
   const [row = "", key = ""] = where.split(/\.(?=[^.]+$)/);
   const cap = LABELS[key as keyof typeof LABELS] ?? key;
   if (row === "run") return `Run ${cap.toLowerCase()}`;
+  if (row === "monitor") return `Monitor ${cap.toLowerCase()}`;
   if (row === "every") return several ? `Every agent ${cap.toLowerCase()}` : cap;
   return `${row.slice("agent:".length)} ${cap.toLowerCase()}`;
 }

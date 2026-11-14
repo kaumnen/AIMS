@@ -57,7 +57,10 @@ def test_bare_keys_set_every_agent_a_prefix_one_agent_or_the_run() -> None:
         ("wall_s=inf", "wall_s: 'inf' does not read; write seconds in digits, such as 600"),
         ("output_tokens=1__0", "output_tokens: '1__0' does not read"),
         ("warn_at=0.5", "warn_at: no cap 'warn_at'; use steps, output_tokens, cost_usd, wall_s"),
-        ("run.monitor_cost_usd=1", "no cap 'monitor_cost_usd'"),
+        ("monitor_cost_usd=1", "the monitor's cap is the run's; write run.monitor_cost_usd"),
+        ("bob.monitor_cost_usd=1", "the monitor's cap is the run's; write run.monitor_cost_usd"),
+        ("run.monitor_cost_usd=-1", "run.monitor_cost_usd: Input should be greater than or"),
+        ("run.warn_at=1", "cost_usd, wall_s; the run also has monitor_cost_usd"),
         ("steps", "write key=value"),
         ("steps=1,steps=2", "steps is given twice"),
         ("Bob.steps=3", "'Bob' is not a valid name"),
@@ -232,3 +235,29 @@ def test_a_fork_s_step_cap_must_leave_it_a_live_step() -> None:
     with pytest.raises(BudgetError, match="the agents replay 65 steps, so a run cap of 65"):
         origin.check_budget(parse("run.steps=65"), replayed)
     origin.check_budget(parse("run.steps=66"), replayed)
+
+
+def test_the_run_takes_a_cap_on_the_monitors_cost() -> None:
+    o = parse("run.cost_usd=5, run.monitor_cost_usd=3")
+    assert o.run_caps() == {"cost_usd": 5.0, "monitor_cost_usd": 3.0}
+    assert o.dump() == {"run": {"cost_usd": 5.0, "monitor_cost_usd": 3.0}}
+    scenario = parse_scenario(SCENARIO)
+    capped = apply(scenario, o)
+    assert (capped.limits.cost_usd, capped.limits.monitor_cost_usd) == (5.0, 3.0)
+    resolved = scenario.model_dump(mode="json")
+    assert apply_resolved(resolved, load(o.dump()))["limits"]["monitor_cost_usd"] == 3.0
+    found = changes(resolved, o)
+    assert [(c.scope, c.key, c.value, c.scenario) for c in found][-1] == (
+        "run",
+        "monitor_cost_usd",
+        3.0,
+        None,
+    )
+    assert describe(found, 2) == (
+        "Budget: run cost $5 (scenario $8), monitor cost $3 (scenario the preset's)"
+    )
+    back = parse("run.monitor_cost_usd=none")
+    assert back.run_caps() == {"monitor_cost_usd": None}
+    both = over(o, back, ["alice", "bob"])
+    assert both is not None
+    assert both.run_caps() == {"cost_usd": 5.0, "monitor_cost_usd": None}

@@ -4,8 +4,12 @@ export type BudgetOverride = Schemas["BudgetOverride-Input"];
 export type Caps = Schemas["Caps-Input"];
 export type RunCaps = Schemas["RunCaps"];
 export type CapsInForce = Schemas["CapsInForce"];
+export type RunLimits = Schemas["RunLimits-Input"];
 export type BudgetChange = Schemas["BudgetChange"];
-export type Key = BudgetChange["key"];
+// The monitor's own cost cap, which only the run has.
+export const MONITOR = "monitor_cost_usd";
+export type ChangeKey = BudgetChange["key"];
+export type Key = Exclude<ChangeKey, typeof MONITOR>;
 
 export const KEYS: readonly Key[] = ["steps", "output_tokens", "cost_usd", "wall_s"];
 
@@ -16,23 +20,26 @@ export const LABELS: Record<Key, string> = {
   wall_s: "Wall",
 };
 
-const NAMES: Record<Key, string> = {
+const NAMES: Record<ChangeKey, string> = {
   steps: "steps",
   output_tokens: "output tokens",
   cost_usd: "cost",
   wall_s: "wall",
+  monitor_cost_usd: "monitor cost",
 };
 
 // What the operator typed in one row of caps: empty keeps a cap, "none" lifts it, a value sets it.
 export type Row = Partial<Record<Key, string>>;
 
+// `monitor` holds one cell, its cost: the monitor's own cap, which the run's cost does not count.
 export interface BudgetDraft {
   every: Row;
   agents: Record<string, Row>;
   run: Row;
+  monitor: Row;
 }
 
-export const EMPTY_DRAFT: BudgetDraft = { every: {}, agents: {}, run: {} };
+export const EMPTY_DRAFT: BudgetDraft = { every: {}, agents: {}, run: {}, monitor: {} };
 
 const WALL = /^(.+?)\s*([smh]?)$/i;
 const UNIT: Record<string, number> = { s: 1, m: 60, h: 3600 };
@@ -76,7 +83,7 @@ function readRow(row: Row, problems: Record<string, string>, where: string): Cap
 }
 
 // The override the draft asks for, undefined when it changes nothing, and the cells that do
-// not read, by "every.steps", "agent:<id>.steps" or "run.steps".
+// not read, by "every.steps", "agent:<id>.steps", "run.steps" or "monitor.cost_usd".
 export function readDraft(draft: BudgetDraft): {
   budget: BudgetOverride | undefined;
   problems: Record<string, string>;
@@ -88,7 +95,11 @@ export function readDraft(draft: BudgetDraft): {
     const caps = readRow(row, problems, `agent:${id}`);
     if (caps) agents[id] = caps;
   }
-  const run = readRow(draft.run, problems, "run");
+  const caps = readRow(draft.run, problems, "run");
+  const watch = readCell("cost_usd", draft.monitor.cost_usd);
+  if (typeof watch === "string") problems["monitor.cost_usd"] = MONITOR_PROBLEM;
+  const run: RunLimits | undefined =
+    typeof watch === "string" || watch === undefined ? caps : { ...caps, [MONITOR]: watch };
   const budget: BudgetOverride = {
     ...(every ? { every } : {}),
     ...(Object.keys(agents).length > 0 ? { agents } : {}),
@@ -97,16 +108,19 @@ export function readDraft(draft: BudgetDraft): {
   return { budget: Object.keys(budget).length > 0 ? budget : undefined, problems };
 }
 
+const MONITOR_PROBLEM = "Write dollars above 0, or none for the preset's cap.";
+
 function duration(seconds: number): string {
   if (seconds >= 3600 && seconds % 3600 === 0) return `${seconds / 3600}h`;
   if (seconds >= 60 && seconds % 60 === 0) return `${seconds / 60}m`;
   return `${seconds}s`;
 }
 
-// A cap in words: 200 steps reads "200", a cost "$4", a wall "30m", none "no cap".
-export function capText(key: Key, value: number | null | undefined): string {
-  if (value === null || value === undefined) return "no cap";
-  if (key === "cost_usd") return `$${value}`;
+// A cap in words: 200 steps reads "200", a cost "$4", a wall "30m", none "no cap". The monitor
+// is never without a cap: with none set it has its preset's.
+export function capText(key: ChangeKey, value: number | null | undefined): string {
+  if (value === null || value === undefined) return key === MONITOR ? "the preset's" : "no cap";
+  if (key === "cost_usd" || key === MONITOR) return `$${value}`;
   if (key === "wall_s") return duration(value);
   return value.toLocaleString("en-US");
 }
@@ -123,6 +137,8 @@ export function draftText(budget: BudgetOverride | undefined, several: boolean):
   add(several ? "every agent " : "", budget.every);
   for (const [id, caps] of Object.entries(budget.agents ?? {})) add(`${id} `, caps);
   add("run ", budget.run);
+  if (budget.run && MONITOR in budget.run)
+    parts.push(`${NAMES[MONITOR]} ${capText(MONITOR, budget.run[MONITOR])}`);
   return parts.length > 0 ? parts.join(", ") : null;
 }
 
@@ -132,15 +148,20 @@ export function changesText(changes: BudgetChange[], several: boolean): string |
   if (changes.length === 0) return null;
   return changes
     .map((c) => {
-      const who = c.scope === "run" ? "run " : several ? `${c.agent} ` : "";
+      const who =
+        c.key === MONITOR ? "" : c.scope === "run" ? "run " : several ? `${c.agent} ` : "";
       return `${who}${NAMES[c.key]} ${capText(c.key, c.value)} (scenario ${capText(c.key, c.scenario)})`;
     })
     .join(", ");
 }
 
-// The placeholder of a cell: the cap in force, or for every agent the one they share.
+// The placeholder of a cell: the cap in force, or for every agent the one they share. The
+// monitor's is its cost cap, "off" when the run has no monitor.
 export function inForce(caps: RunCaps | undefined, row: string, key: Key): string {
   if (!caps) return "";
+  if (row === "monitor") {
+    return typeof caps.monitor_cost_usd === "number" ? `$${caps.monitor_cost_usd}` : "off";
+  }
   if (row === "run") return capText(key, caps.run[key]);
   if (row === "every") {
     const values = new Set(Object.values(caps.agents).map((c) => c[key] ?? null));

@@ -2021,7 +2021,7 @@ export interface components {
              * Key
              * @enum {string}
              */
-            key: "steps" | "output_tokens" | "cost_usd" | "wall_s";
+            key: "steps" | "output_tokens" | "cost_usd" | "wall_s" | "monitor_cost_usd";
             /** Scenario */
             scenario: number | null;
             /**
@@ -2043,7 +2043,7 @@ export interface components {
                 [key: string]: components["schemas"]["Caps-Input"];
             };
             every?: components["schemas"]["Caps-Input"] | null;
-            run?: components["schemas"]["Caps-Input"] | null;
+            run?: components["schemas"]["RunLimits-Input"] | null;
         };
         /**
          * BudgetOverride
@@ -2056,7 +2056,7 @@ export interface components {
                 [key: string]: components["schemas"]["Caps-Output"];
             };
             every?: components["schemas"]["Caps-Output"] | null;
-            run?: components["schemas"]["Caps-Output"] | null;
+            run?: components["schemas"]["RunLimits-Output"] | null;
         };
         /**
          * CacheProbe
@@ -3518,6 +3518,8 @@ export interface components {
         GivenCaps: {
             /** Cost Usd */
             cost_usd?: number | null;
+            /** Monitor Cost Usd */
+            monitor_cost_usd?: number | null;
             /** Output Tokens */
             output_tokens?: number | null;
             /** Steps */
@@ -5990,13 +5992,16 @@ export interface components {
         /**
          * RunCaps
          * @description The caps a run would have, its budget override applied: each agent's, in the scenario's
-         *     order, and the run's own.
+         *     order, and the run's own, which count what the agents use. `monitor_cost_usd` is the
+         *     monitor's own cost cap, None when the monitor is off.
          */
         RunCaps: {
             /** Agents */
             agents: {
                 [key: string]: components["schemas"]["CapsInForce"];
             };
+            /** Monitor Cost Usd */
+            monitor_cost_usd: number | null;
             run: components["schemas"]["CapsInForce"];
         };
         /**
@@ -6052,6 +6057,24 @@ export interface components {
              */
             status: "completed" | "failed" | "killed" | "cancelled";
         };
+        /**
+         * RunLimits
+         * @description The run's caps to change. `monitor_cost_usd` caps the monitor's model spend, which the
+         *     run's `cost_usd` does not count; None gives the monitor its preset's cap back.
+         */
+        "RunLimits-Input": {
+            /** Cost Usd */
+            cost_usd?: number | null;
+            /** Monitor Cost Usd */
+            monitor_cost_usd?: number | null;
+            /** Output Tokens */
+            output_tokens?: number | null;
+            /** Steps */
+            steps?: number | null;
+            /** Wall S */
+            wall_s?: number | null;
+        };
+        "RunLimits-Output": components["schemas"]["GivenCaps"];
         /** RunMessage */
         RunMessage: {
             /**
@@ -14647,7 +14670,7 @@ export const agentStepStatusValues: ReadonlyArray<FlattenedDeepRequired<componen
 export const anomalyKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Anomaly"]["kind"]> = ["behaviour", "environment"];
 export const auditEntryOutcomeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AuditEntry"]["outcome"]> = ["ok", "refused", "error"];
 export const auditLostScopeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AuditLost"]["scope"]> = ["sandbox", "tracer"];
-export const budgetChangeKeyValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["BudgetChange"]["key"]> = ["steps", "output_tokens", "cost_usd", "wall_s"];
+export const budgetChangeKeyValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["BudgetChange"]["key"]> = ["steps", "output_tokens", "cost_usd", "wall_s", "monitor_cost_usd"];
 export const budgetChangeScopeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["BudgetChange"]["scope"]> = ["agent", "run"];
 export const cacheProbeOpValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CacheProbe"]["op"]> = ["fadvise_dontneed", "preadv2_nowait", "cachestat", "mincore"];
 export const categoryFindingCategoryValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CategoryFinding"]["category"]> = ["covert_communication", "scorer_tampering", "transcript_tampering", "deceiving_operator", "evading_checks", "collective_over_own_task", "drift", "loop_or_confusion", "fabricated_completion", "constraint_violation", "eval_awareness", "alerting_operator", "egress_attempt", "privilege_escalation", "monitor_manipulation"];

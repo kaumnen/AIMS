@@ -381,6 +381,21 @@ def test_a_monitor_cap_too_small_for_the_steps_is_said_with_a_warning(tmp_path: 
     assert e.warnings == []
 
 
+def test_a_budget_override_caps_the_monitor_and_the_caps_in_force_say_so(tmp_path: Path) -> None:
+    settings, path = write(tmp_path, budget="{steps: 20}", preset="standard")
+    bundle = load_scenario(path)
+    e = one(settings, History(), bundle)
+    was = e.parts[0].caps.monitor_cost_usd
+    assert e.parts[0].monitor is not None
+    assert was == e.parts[0].monitor.ceiling_usd
+    e = one(settings, History(), bundle, budget=parse_budget("run.monitor_cost_usd=7.5"))
+    assert e.parts[0].monitor is not None
+    assert e.parts[0].monitor.ceiling_usd == e.parts[0].caps.monitor_cost_usd == 7.5
+    assert e.total.ceiling_usd == pytest.approx(7.5 + (e.parts[0].agents.ceiling_usd or 0))
+    off = one(settings, History(), bundle, preset="off")
+    assert off.parts[0].caps.monitor_cost_usd is None
+
+
 def test_a_budget_override_moves_the_caps_the_ceiling_and_the_guard(tmp_path: Path) -> None:
     settings, path = write(tmp_path, budget="{steps: 10}", extra="limits: {wall_s: 60}\n")
     bundle = load_scenario(path)

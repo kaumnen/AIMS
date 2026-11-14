@@ -88,7 +88,7 @@ function estimate(samples: number, budget: string | null = null): Estimate {
         monitor_preset: "standard",
         steps: {},
         replayed: {},
-        caps: { agents: { agent: { ...CAPS, ...every } }, run: NO_CAPS },
+        caps: { agents: { agent: { ...CAPS, ...every } }, run: NO_CAPS, monitor_cost_usd: 9.45 },
       },
     ],
     rates: [],
@@ -349,6 +349,15 @@ test("a budget over the scenario's caps is estimated and goes with the run", asy
     expect(budgets.at(-1)).toBe(JSON.stringify({ every: { steps: 200 }, run: { cost_usd: null } })),
   );
   expect(within(fold).getByText("steps 200, run cost no cap")).toBeTruthy();
+  const watch = form.getByRole("textbox", { name: "Monitor cost" });
+  expect(watch.getAttribute("placeholder")).toBe("$9.45");
+  fireEvent.change(watch, { target: { value: "3" } });
+  await waitFor(() =>
+    expect(budgets.at(-1)).toBe(
+      JSON.stringify({ every: { steps: 200 }, run: { cost_usd: null, monitor_cost_usd: 3 } }),
+    ),
+  );
+  expect(within(fold).getByText("steps 200, run cost no cap, monitor cost $3")).toBeTruthy();
 
   fireEvent.change(wall, { target: { value: "soon" } });
   expect(await form.findByText("Wall: Write seconds, or 30m, 2h, or none.")).toBeTruthy();
@@ -359,7 +368,7 @@ test("a budget over the scenario's caps is estimated and goes with the run", asy
   fireEvent.click(start);
   await waitFor(() => expect(posted).toHaveLength(1));
   expect(posted[0]).toMatchObject({
-    budget: { every: { steps: 200, wall_s: 7200 }, run: { cost_usd: null } },
+    budget: { every: { steps: 200, wall_s: 7200 }, run: { cost_usd: null, monitor_cost_usd: 3 } },
   });
 });
 

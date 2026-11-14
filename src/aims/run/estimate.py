@@ -107,10 +107,12 @@ class CapsInForce(_Out):
 
 class RunCaps(_Out):
     """The caps a run would have, its budget override applied: each agent's, in the scenario's
-    order, and the run's own."""
+    order, and the run's own, which count what the agents use. `monitor_cost_usd` is the
+    monitor's own cost cap, None when the monitor is off."""
 
     agents: dict[str, CapsInForce] = Field(default_factory=dict)
     run: CapsInForce = Field(default_factory=CapsInForce)
+    monitor_cost_usd: float | None = None
 
 
 class VariantCost(_Out):
@@ -729,16 +731,20 @@ def _part(found: History, p: Plan) -> tuple[VariantCost, tuple[dict[str, float],
         monitor_preset=preset,
         steps=steps,
         replayed=dict(p.done),
-        caps=_caps(s),
+        caps=_caps(s, None if p.monitor is None else p.monitor.budget_usd),
     )
     return part, (agent_shares, watch_shares)
 
 
-def _caps(s: Scenario) -> RunCaps:
+def _caps(s: Scenario, monitor: float | None) -> RunCaps:
     def of(caps: object) -> CapsInForce:
         return CapsInForce(**{k: getattr(caps, k) for k in budgets.KEYS})
 
-    return RunCaps(agents={a.id: of(a.budget) for a in s.agents}, run=of(s.limits))
+    return RunCaps(
+        agents={a.id: of(a.budget) for a in s.agents},
+        run=of(s.limits),
+        monitor_cost_usd=monitor,
+    )
 
 
 def _side(
