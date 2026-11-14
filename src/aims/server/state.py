@@ -69,7 +69,9 @@ class Changes:
     """A short history of which runs changed, so a stream that lists runs sends only those."""
 
     def __init__(self, size: int = 10_000) -> None:
-        self.version = 0
+        # Versions start at the boot time, so one from before a restart is below every version
+        # of this server: a stream that resumes from it gets the run list again, not nothing.
+        self.version = (time.time_ns() // 1_000_000) << 20
         self._log: deque[tuple[int, str]] = deque(maxlen=size)
         self._event = asyncio.Event()
 
@@ -83,9 +85,13 @@ class Changes:
         return self._event
 
     def since(self, version: int) -> tuple[int, list[str] | None]:
-        """Runs changed after `version`, or None when the history no longer reaches back."""
-        if version >= self.version:
+        """Runs changed after `version`, or None when the history no longer reaches back. A
+        version ahead of this one is no version of this server, as after a restart with the
+        clock set back."""
+        if version == self.version:
             return self.version, []
+        if version > self.version:
+            return self.version, None
         if not self._log or self._log[0][0] > version + 1:
             return self.version, None
         return self.version, list(dict.fromkeys(r for v, r in self._log if v > version))

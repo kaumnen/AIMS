@@ -254,8 +254,16 @@ async def stream(
                 ids = set(changed) if changed is not None else None
                 if runs or ids:
                     if ids is None:
+                        # as the first page of the run list: with the jobs not started yet
                         listed = await state.store.runs(limit=MAX_RUNS, skip_kinds=skip)
-                        pick = [i.run_id for i in listed] + list(cursors)
+                        jobs = await state.db.jobs_page(
+                            before=None, limit=MAX_RUNS, skip_kinds=skip
+                        )
+                        newest = {i.run_id for i in listed} | {j.run_id for j in jobs}
+                        pick = sorted(newest, reverse=True)[:MAX_RUNS] + list(cursors)
+                        # and the runs deleted lately, which a list held from before may show
+                        lately = list(state.gone)[-MAX_RUNS:]
+                        pick += [gone for gone in lately if gone not in newest]
                     else:
                         pick = sorted(ids if runs else ids & set(cursors))
                     found = await summaries(state, pick, skip)

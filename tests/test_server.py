@@ -2050,6 +2050,33 @@ def test_a_stream_cursor_reads_ascii_digits_within_the_index() -> None:
     assert parse_id("@-1,c:+5,d:٣,e:0") == (None, {"e": 0})
 
 
+def test_a_version_from_before_a_restart_gets_the_run_list_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aims.server.state import Changes
+
+    old = Changes()
+    for i in range(57):
+        old.touch(f"run-{i % 3}")
+    assert old.since(old.version) == (old.version, [])
+    assert old.since(old.version - 2) == (old.version, ["run-1", "run-2"])
+    # the restarted server touches runs before the browser's stream is back
+    later = time.time_ns() + 10**12
+    monkeypatch.setattr(time, "time_ns", lambda: later)
+    new = Changes()
+    assert new.since(new.version) == (new.version, [])
+    new.touch("run-a")
+    new.touch("run-b")
+    assert new.version > old.version
+    assert new.since(old.version) == (new.version, None)
+    assert new.since(new.version - 1) == (new.version, ["run-b"])
+    # a restart with the clock set back: the old version is ahead of every new one
+    monkeypatch.setattr(time, "time_ns", lambda: 0)
+    back = Changes()
+    back.touch("run-a")
+    assert back.since(old.version) == (back.version, None)
+
+
 async def test_a_new_stream_hears_of_runs_that_changed_since_its_cursor(
     cp: CP, local: LocalEventStore
 ) -> None:
@@ -2067,6 +2094,42 @@ async def test_a_new_stream_hears_of_runs_that_changed_since_its_cursor(
             async for e in source:
                 if e.event == "run" and json.loads(e.data)["run"]["run_id"] == run_id:
                     break
+    await pusher.client.aclose()
+
+
+async def test_a_stream_resumed_from_before_a_restart_gets_the_runs_and_the_jobs_waiting(
+    cp: CP, local: LocalEventStore
+) -> None:
+    """The browser's stream comes back with the version of the server that went away. No run
+    changes after that, and the list still comes: the run that ended meanwhile and a job not
+    started yet."""
+    from aims.server.db import Job as JobRow
+
+    pusher = FakeRunner(cp, "pusher")
+    await pusher.client.hello(pusher.hello_body())
+    run_id = await local.create_run(STARTED)
+    await local.append(run_id, [Draft(RunFinished(status="completed"))])
+    await ship(local, pusher.client, run_id)
+    waiting = "01a18000-0000-7000-8000-00000000000a"
+    t = time.time()
+    job = {"kind": "models.check", "models": {"profiles": {}}}
+    row = JobRow(waiting, None, None, "queued", job, {}, None, None, None, [], None, t, t, None)
+    await cp.state.db.add_jobs([row])
+    for before in (cp.state.changes.version + 10**9, 57):
+        seen: dict[str, str] = {}
+        params = {"runs": "true", "last_event_id": f"@{before}"}
+        async with (
+            cp.client(cp.viewer) as c,
+            asyncio.timeout(10),
+            c.sse("/api/stream", params=params) as source,
+        ):
+            async for e in source:
+                if e.event == "run":
+                    found = json.loads(e.data)["run"]
+                    seen[found["run_id"]] = found["status"]
+                if len(seen) == 2:
+                    break
+        assert seen == {run_id: "completed", waiting: "queued"}, before
     await pusher.client.aclose()
 
 
