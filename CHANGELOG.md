@@ -4,6 +4,8 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-11-14
+
 ### Added
 
 - A verifier may list the agent files it is meant to run in `verifier.programs`, such as `programs: [main.py]` when the task asks for a program. Each entry is a glob, relative to the workdir unless it is absolute. `verifier_hook` does not flag the verifier for running a listed file. It still flags a listed hook, such as `conftest.py`, that the verifier reads or imports. A scenario that lists programs gets a new monitor identity. Others keep theirs.
@@ -539,7 +541,8 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 - The `aims-bench` package with the `aims` command, which prints its version.
 
-[Unreleased]: https://github.com/kaumnen/AIMS/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/kaumnen/AIMS/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/kaumnen/AIMS/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/kaumnen/AIMS/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/kaumnen/AIMS/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/kaumnen/AIMS/compare/v0.2.0rc1...v0.2.0
