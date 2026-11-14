@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useBlocker } from "@tanstack/react-router";
 import { useState } from "react";
 
 import {
@@ -16,6 +16,7 @@ import { type TextFile, TextRow } from "@/components/text-row";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { hasUnsaved, mayDiscard } from "@/lib/unsaved";
 import { useOperator } from "@/lib/use-operator";
 
 export const Route = createFileRoute("/settings/prompts")({
@@ -74,6 +75,12 @@ function PromptsPage() {
   const config = useQuery({ ...configQuery, enabled: operator });
   const [chosen, setChosen] = useState<Layer | null>(null);
   const [filter, setFilter] = useState("");
+  // A leave of the page drops the texts being edited, so it asks first. Closing the browser tab
+  // asks too.
+  useBlocker({
+    shouldBlockFn: ({ current, next }) => next.routeId !== current.routeId && !mayDiscard(),
+    enableBeforeUnload: hasUnsaved,
+  });
 
   if (prompts.isPending) return <p className="text-muted-foreground">Loading texts</p>;
   if (prompts.isError) {

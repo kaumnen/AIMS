@@ -1,9 +1,10 @@
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useId, useState } from "react";
 
 import { isProblem } from "@/api/session";
 import { problemText } from "@/components/form";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { noteDraft } from "@/lib/unsaved";
 import { cn } from "@/lib/utils";
 
 // Where a text is written. Each edit starts from the file as it is now, so a save made in
@@ -52,6 +53,15 @@ export function TextRow({
   const [note, setNote] = useState<string | null>(null);
   // the value a save tried to write when the file had changed under it
   const [conflict, setConflict] = useState<{ value: string | null } | null>(null);
+  // A leave drops a draft that differs from the text, so the page's leave guard, sign out and
+  // the browser's close ask first.
+  const id = useId();
+  const changed = draft !== null && draft !== start;
+  useEffect(() => {
+    if (!changed) return;
+    noteDraft(id, label);
+    return () => noteDraft(id, null);
+  }, [changed, id, label]);
   // a tool's texts break after the tool's name
   const dot = label.indexOf(".");
 

@@ -52,6 +52,11 @@ function fileAt(at: Place): string | null {
   return `${at.pathname}#${fileIn(at)}`;
 }
 
+// The tab of this page shown at a place in the app; null on another page.
+function tabAt(at: Place): string | null {
+  return at.routeId === Route.id ? `${at.pathname}#${searchAt(at).tab ?? ""}` : null;
+}
+
 export const Route = createFileRoute("/scenarios/$source/$name")({
   staticData: { crumb: (p) => p["name"] ?? "" },
   validateSearch: readSearch,
@@ -71,9 +76,11 @@ function ScenarioPage() {
   const detail = useQuery(scenarioQuery(source, name));
   const sources = useQuery(sourcesQuery);
   // Anything that leaves the file, such as a tab, a link, another file or Back, drops its draft,
-  // so it asks first. Closing the browser tab asks too.
+  // so it asks first. So does a leave of a tab with a text edited in place, such as a prompt.
+  // Closing the browser tab asks too.
   useBlocker({
-    shouldBlockFn: ({ current, next }) => fileAt(next) !== fileAt(current) && !mayDiscard(),
+    shouldBlockFn: ({ current, next }) =>
+      (fileAt(next) !== fileAt(current) || tabAt(next) !== tabAt(current)) && !mayDiscard(),
     enableBeforeUnload: hasUnsaved,
   });
   if (detail.isPending) return <p className="text-muted-foreground">Loading scenario</p>;
