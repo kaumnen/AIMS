@@ -19,6 +19,11 @@ test("the worst smoke test decides a check, and old checks fall back on the run 
   expect(checkState(check("failed", ["warn", "fail"]))).toBe("fail");
   expect(checkState(check("completed", []))).toBe("ok");
   expect(checkState(check("failed", []))).toBe("fail");
+  // a check cancelled or killed before it reached the profile did not fail it
+  expect(checkState(check("cancelled", []))).toBe("cut");
+  expect(checkState(check("killed", []))).toBe("cut");
+  expect(checkState(check("cancelled", ["ok", "fail"]))).toBe("fail");
+  expect(checkState(check("killed", ["ok"]))).toBe("ok");
   expect(checkProblem(check("failed", ["warn", "fail"]))).toBe("t1: fail");
   expect(checkProblem(check("completed", ["ok"]))).toBeNull();
 });

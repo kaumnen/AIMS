@@ -3,13 +3,16 @@ import type { ScenarioInfo } from "@/api/scenarios";
 
 import { usd } from "./format";
 
-export type CheckState = "ok" | "warn" | "fail" | "running" | "none";
+export type CheckState = "ok" | "warn" | "fail" | "running" | "none" | "cut";
 
 // The worst smoke test decides; a check from before smoke tests were logged has only its status.
+// A check stopped before it reached the profile says nothing of the profile.
 export function checkState(check: ProfileCheck | null | undefined): CheckState {
   if (!check) return "none";
   if (check.status === "running") return "running";
   const verdicts = check.checks.map((c) => c.verdict);
+  const stopped = check.status === "cancelled" || check.status === "killed";
+  if (verdicts.length === 0 && stopped) return "cut";
   if (verdicts.includes("fail") || (verdicts.length === 0 && check.status !== "completed")) {
     return "fail";
   }

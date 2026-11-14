@@ -13,6 +13,7 @@ export const CHECK_TEXT = {
   fail: "failed",
   running: "checking",
   none: "never checked",
+  cut: "check stopped before it got here",
 } as const;
 
 // how often the models are read while a check runs, in case the stream misses its end
