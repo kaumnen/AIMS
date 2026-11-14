@@ -26,7 +26,9 @@ from aims.events import (
     ModelUsage,
     Payload,
     ReplayDivergence,
+    RunCorrupt,
     ToolResult,
+    logged_events,
 )
 from aims.models import (
     Item,
@@ -675,8 +677,7 @@ class Agent:
         assert turnstile is not None
         await turnstile.wait(turn)
         try:
-            last = await self.store.events(self.run_id, before=MAX_INT, limit=1)
-            mark = last[-1].seq if last else -1
+            mark = await self._mark()
             outcome = await self._run_logged(call, replayed)
         finally:
             await turnstile.done(turn)
@@ -684,6 +685,16 @@ class Agent:
         if versions is not None:
             await self._check_channels(call, mark, versions)
         return outcome
+
+    async def _mark(self) -> int:
+        """The seq of the run's last event: the log's head, as the index may be behind it. The
+        index's own for a run it marks corrupt, whose log head is not read."""
+        try:
+            head = await self.store.log_head(self.run_id)
+        except RunCorrupt:
+            last = await self.store.events(self.run_id, before=MAX_INT, limit=1)
+            return last[-1].seq if last else -1
+        return -1 if head is None else head.seq
 
     async def _pass_turn(self, call: ToolRequest) -> None:
         """Give up the turn of a replayed call that will not run, so the others go on."""
@@ -784,9 +795,10 @@ class Agent:
         self, call: ToolRequest, mark: int, versions: ChannelVersions
     ) -> None:
         """Compare what the replayed call met of the channels with the origin's: each board's
-        last message id it read, and the sha256 each shared file its exec left."""
+        last message id it read, and the sha256 each shared file its exec left. The events
+        are read from the log where the index is behind it."""
         types = ["exec.started", "channel.read", "channel.snapshot"]
-        events = await self.store.events(self.run_id, after=mark, types=types, limit=1000)
+        events = await logged_events(self.store, self.run_id, after=mark, types=types, limit=1000)
         execs = {
             str(e.data.get("exec_id"))
             for e in events

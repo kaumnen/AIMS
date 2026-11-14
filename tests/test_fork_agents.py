@@ -338,6 +338,58 @@ async def test_a_replayed_read_at_another_version_is_a_channel_divergence(
 
 
 @pytest.mark.docker
+async def test_a_replay_checks_the_channels_from_the_log_while_the_index_is_behind(
+    store: LocalEventStore, backend: DockerBackend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The index takes nothing of the fork while it runs: each replayed call still finds what
+    it read and wrote of the channels, so none reads as a divergence."""
+    origin_id = await origin_run(store, backend, tmp_path)
+    broken = [True]
+    real = store._index.add
+
+    async def add(events: Any, head: Any, **kw: Any) -> None:
+        if broken[0] and events and events[0].run_id != origin_id:
+            raise ValueError("the index cannot take it")
+        await real(events, head, **kw)
+
+    monkeypatch.setattr(store._index, "add", add)
+    origin = await load_origin(store, origin_id)
+    checked = [v for calls in origin.versions.values() for v in calls.values()]
+    assert any(v.reads for v in checked)
+    assert any(v.writes for v in checked)
+    found = cut_at(origin, "b:2")
+    assert isinstance(found, CutAt)
+    fork = Fork(
+        origin=origin_id,
+        step=min(found.steps.values()),
+        steps=dict(found.steps),
+        cut=found.seq,
+        agent=found.agent,
+        strict=True,
+    )
+    plays = {"a": [call("submit", answer="a")] * 3, "b": [call("submit", answer="b")] * 3}
+    bench = Bench(store, backend, models(profile()), transport=script(plays, 100).transport())
+    assert origin.full_bundle is not None
+    runner = Runner(
+        bench,
+        origin.full_bundle,
+        Options(fork=fork, seed=origin.seed, inherited=origin.inherited),
+        profiles=fork_profiles(bench.models, origin, fork),
+        schedules=fork_schedules(origin, fork),
+        texts=origin.texts,
+        replay=planner(bench, origin, fork),
+    )
+    result = await runner.run()
+    assert result.run_id is not None
+    assert broken[0]
+    broken[0] = False
+    lines = (store.root / result.run_id / "events.jsonl").read_bytes().splitlines()
+    events = [json.loads(line) for line in lines]
+    assert [e for e in events if e["type"] == "replay.divergence"] == []
+    assert {a: r.reason for a, r in result.agents.items()} == {"a": "submitted", "b": "submitted"}
+
+
+@pytest.mark.docker
 async def test_a_fork_seeds_folders_from_the_recorded_sources(
     store: LocalEventStore, backend: DockerBackend, tmp_path: Path
 ) -> None:
