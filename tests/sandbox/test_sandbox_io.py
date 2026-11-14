@@ -1091,27 +1091,35 @@ async def test_an_exec_stream_that_fails_to_open_is_closed(
     _, sb = await sandbox(backend, store)
     inner = sb.sandbox
     assert isinstance(inner, DockerSandbox)
+    argv = [f"{TOOLBOX}/busybox", "true"]
     streams: list[Stream] = []
-    start = Exec.start
+    create = inner._container.exec
 
-    def kept(self: Exec, **kw: Any) -> Any:
-        stream = start(self, **kw)
-        streams.append(stream)
-        return stream
+    async def kept(cmd: list[str], **kw: Any) -> Exec:
+        # Only the exec of this test: the tracer, the sampler and the audit start their own at
+        # any time.
+        exe = await create(cmd, **kw)
+        if cmd != argv:
+            return exe
+        start = exe.start
+
+        def started(**kw: Any) -> Stream:
+            stream = start(**kw)
+            streams.append(stream)
+            return stream
+
+        monkeypatch.setattr(exe, "start", started)
+        return exe
 
     def broken(*args: Any, **kw: Any) -> Any:
         raise OSError("socket set-up failed")
 
     try:
         with monkeypatch.context() as m:
-            m.setattr(Exec, "start", kept)
+            m.setattr(inner._container, "exec", kept)
             m.setattr(aiodocker.stream, "FlowControlDataQueue", broken)
             outcome = await inner.run(
-                [f"{TOOLBOX}/busybox", "true"],
-                uid=AGENT_UID,
-                cwd="/",
-                timeout_ms=10_000,
-                capture=Capture(1024),
+                argv, uid=AGENT_UID, cwd="/", timeout_ms=10_000, capture=Capture(1024)
             )
     finally:
         await sb.close()
