@@ -10,6 +10,17 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 ### Changed
 
+- The UI opens its live stream again when the browser gave up on it and the session still stands, as after a server restart behind a proxy. It waits 1 s, then twice as long each time, up to 30 s. Before, lists stayed as they were until a reload. A run page's own stream opens again with it.
+- A stream that resumes with a version from before a server restart gets the newest runs again, with the jobs not started yet and the runs deleted lately. It got nothing until a run changed, so a run that ended during the restart could show as running.
+- A session read that a proxy answers with an error and no body shows "Cannot reach the control plane". The whole page fell to "Something went wrong" until a reload.
+- The step list of a run opened again reads the steps logged since the last visit when the page opens. It waited for the next step event, so a run held meanwhile did not show the held step.
+- A search in a live run's raw events reads on when new events of its types come. It stopped at the matches it had when it reached the end of the log. A list with no rows yet reads on too.
+- A prompt edited in Settings or in a scenario's Prompts tab asks before a link, another tab, sign out or the browser's close drops the draft, as the Files tab does.
+- A model check cancelled or killed before it reached a profile shows "check stopped before it got here" for that profile. It showed "failed".
+- The answer to a kill or a cancel stays on the run page once the run has ended. It went with the buttons, so an answer such as a sandbox that did not stop was only in the Commands sheet.
+- The step view says "cut short" on the stream that ran past its output limit. It said it on stdout whichever stream it was. A kept end that goes on where the head stops shows no "0 B left out".
+- `aims verify .` works inside a run's folder. It failed with "event belongs to another run".
+- `aims report`, `check`, `score`, `spend`, `rates` and the other commands that read runs end with one line when the runs folder cannot be written, since they keep an index there. They ended with a traceback.
 - `aims run`, `aims monitor`, `aims score`, `aims models check` and the self-test seal as failed the runs an earlier process left running in their runs folder, as `aims runner` does when it starts. They say how many on stderr. A run another process still writes is left alone.
 - A store leaves a run log that a writer in another process holds to that writer. It indexed the lines it found there, which could be lines the writer had not synced and cut when the sync failed. The run then needed its index built again.
 - An exec whose connection to Docker drops while it runs is ended and fails with `the connection to Docker was lost while the exec ran`. It read as `exited` with no exit code and its process ran on.
