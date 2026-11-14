@@ -305,7 +305,11 @@ class ModelClient:
             if assembled.status is None:
                 error, kind, retryable = "the stream ended before the answer did", "protocol", True
             elif assembled.status == "error":
-                error, kind, retryable = assembled.error or "provider error", "provider", True
+                code = assembled.error_code
+                error = assembled.error or "provider error"
+                if code is not None:
+                    error = f"provider error {code}: {error}"
+                kind, retryable = "provider", _retry_code(code)
             else:
                 status = assembled.status
         except asyncio.CancelledError as e:
@@ -516,8 +520,7 @@ def _classify(
     if isinstance(exc, openai.APIStatusError):
         code = exc.status_code
         kind: ModelError = "redirect" if 300 <= code < 400 else "http"
-        retryable = code in _RETRY_STATUS or code >= 500
-        return f"HTTP {code}: {scrub(exc.message)}", kind, retryable, None
+        return f"HTTP {code}: {scrub(exc.message)}", kind, _retry_code(code), None
     for e in cause_chain(exc):
         match e:
             case httpx2.ReadTimeout():
@@ -531,8 +534,21 @@ def _classify(
             case httpx2.TransportError():
                 return f"{type(e).__name__}: {e}", "read", True, None
     if isinstance(exc, openai.APIError) and not isinstance(exc, openai.APIConnectionError):
-        return f"provider error: {scrub(exc.message)}", "provider", True, None
+        # An error chunk in a stream that began with HTTP 200; its body is the error object.
+        body = exc.body
+        code = body.get("code") if isinstance(body, dict) else None
+        code = code if isinstance(code, int) and not isinstance(code, bool) else None
+        label = "provider error" if code is None else f"provider error {code}"
+        return f"{label}: {scrub(exc.message)}", "provider", _retry_code(code), None
     return f"{type(exc).__name__}: {exc}", "protocol", False, None
+
+
+def _retry_code(code: int | None) -> bool:
+    """Whether a failure with this HTTP status, or this code in an error a provider sent after
+    HTTP 200, may pass on a retry. A 4xx says the request, the key or the account is at fault
+    (400, 401, 402, 403, 404), except the few that ask to wait. No code says nothing, so it
+    is retried."""
+    return code is None or code in _RETRY_STATUS or not 300 <= code < 500
 
 
 def _cost(price: Price | None, usage: ModelUsage) -> float | None:

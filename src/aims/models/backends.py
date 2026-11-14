@@ -32,6 +32,7 @@ class Assembled:
     native: list[JsonValue] = field(default_factory=list)
     final: dict[str, Any] | None = None
     error: str | None = None
+    error_code: int | None = None
 
     def turn(self, backend: ModelBackend) -> Turn:
         return Turn(
@@ -83,6 +84,14 @@ def _sampling(profile: Profile) -> dict[str, JsonValue]:
 
 def _int(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _fail(out: Assembled, error: object, default: str) -> None:
+    """Mark `out` failed with a provider's error: `{"code": .., "message": ..}`, a bare
+    message, or anything else, which says nothing more than that it failed."""
+    out.status = "error"
+    out.error = _str(error) or _str(_get(error, "message")) or default
+    out.error_code = _int(_get(error, "code"))
 
 
 def _get(obj: object, *path: str) -> object:
@@ -223,8 +232,7 @@ class _ResponsesAccumulator:
                 if isinstance(response, dict):
                     self.finish(response)
             case "error":
-                out.status = "error"
-                out.error = str(event.get("message") or event.get("code") or "stream error")
+                _fail(out, event, _str(event.get("code")) or "stream error")
         return []
 
     def finish(self, body: dict[str, Any]) -> None:
@@ -238,8 +246,7 @@ class _ResponsesAccumulator:
             out.status = "incomplete"
             out.finish_reason = _str(_get(body, "incomplete_details", "reason"))
         else:
-            out.status = "error"
-            out.error = _str(_get(body, "error", "message")) or f"response status {status}"
+            _fail(out, body.get("error"), f"response status {status}")
         output = body.get("output")
         if isinstance(output, list):
             self.items = [i for i in output if isinstance(i, dict)]
@@ -443,6 +450,12 @@ class _ChatAccumulator:
         usage = body.get("usage")
         if isinstance(usage, dict):
             out.usage = _chat_usage(usage)
+        # A provider behind a router can fail after the router answered 200: the body then
+        # holds an error, alone or beside a choice that finished with "error".
+        if body.get("error"):
+            _fail(out, body["error"], "the answer is an error with no message")
+        elif choice.get("error"):
+            _fail(out, choice["error"], "the answer ended with an error")
 
     def result(self) -> Assembled:
         out = self.out
@@ -457,6 +470,9 @@ class _ChatAccumulator:
             match out.finish_reason:
                 case "stop" | "tool_calls":
                     out.status = "completed"
+                case "error":
+                    out.status = "error"
+                    out.error = out.error or "the answer ended with an error"
                 case None:
                     pass
                 case _:

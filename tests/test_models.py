@@ -505,6 +505,115 @@ async def test_client_errors_are_not_retried(store: LocalEventStore) -> None:
     assert (response.status, response.http_status, response.retry) == ("error", 400, False)
 
 
+def failing(code: object, **more: Any) -> dict[str, Any]:
+    return {"error": {"code": code, "message": "no credits", "metadata": {}}, **more}
+
+
+@pytest.mark.parametrize("backend", ["chat", "responses"])
+@pytest.mark.parametrize(
+    ("code", "attempts"),
+    [(400, 1), (401, 1), (402, 1), (403, 1), (404, 1), (429, 3), (502, 3), ("overloaded", 3)],
+)
+async def test_an_error_body_behind_http_200_is_a_provider_error(
+    store: LocalEventStore, backend: str, code: object, attempts: int
+) -> None:
+    run_id = await new_run(store)
+    raw = json.dumps(failing(code)).encode()
+    handler, sent = scripted(*[lambda: stream([raw], content_type="application/json")] * attempts)
+    p = profile(backend=backend, stream=False)
+    async with client(store, run_id, p, handler) as mc:
+        with pytest.raises(ModelCallError) as info:
+            await mc.call("test", PROMPT)
+    assert len(sent) == attempts
+    label = f"provider error {code}: " if isinstance(code, int) else ""
+    assert info.value.reply.error == label + "no credits"
+    responses = [
+        e for e in payloads(await model_events(store, run_id)) if e.type != "model.request"
+    ]
+    assert [(r.status, r.http_status, r.error_kind) for r in responses] == [
+        ("error", 200, "provider")
+    ] * attempts
+    assert [r.retry for r in responses] == [True] * (attempts - 1) + [False]
+    assert await store.get_blob(run_id, responses[0].body.sha256) == raw
+
+
+@pytest.mark.parametrize(("code", "attempts"), [(402, 1), (403, 1), (502, 2), (None, 2)])
+async def test_an_error_chunk_in_a_stream_is_retried_by_its_code(
+    store: LocalEventStore, code: int | None, attempts: int
+) -> None:
+    run_id = await new_run(store)
+    error = {"message": "cut off"} if code is None else {"code": code, "message": "cut off"}
+    cut = [*CHAT_EVENTS[:4], chunk({"content": ""}, "error", error=error)]
+    handler, sent = scripted(lambda: stream(sse(cut)), lambda: stream(sse(CHAT_EVENTS)))
+    async with client(store, run_id, profile(), handler) as mc:
+        if attempts == 1:
+            with pytest.raises(ModelCallError):
+                await mc.call("test", PROMPT)
+        else:
+            assert (await mc.call("test", PROMPT)).attempts == 2
+    assert len(sent) == attempts
+    first = payloads(await model_events(store, run_id))[1]
+    label = "provider error" if code is None else f"provider error {code}"
+    assert (first.status, first.error_kind, first.error) == (
+        "error",
+        "provider",
+        f"{label}: cut off",
+    )
+    assert first.retry is (attempts == 2)
+    assert (first.text, first.reasoning, first.tool_calls) == ("Hel", "think more", 0)
+
+
+async def test_an_answer_that_finished_with_an_error_is_not_an_answer(
+    store: LocalEventStore,
+) -> None:
+    """Without the top-level error the SDK lets the chunk through; the finish reason alone
+    says the answer failed."""
+    bodies = [
+        {
+            "id": "c1",
+            "choices": [{"index": 0, "message": {"content": "Hel"}, "finish_reason": "error"}],
+        },
+        {
+            "id": "c1",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"content": "Hel"},
+                    "finish_reason": "error",
+                    "error": {"code": 403, "message": "flagged"},
+                }
+            ],
+        },
+    ]
+    for body, error, attempts in zip(
+        bodies,
+        ["the answer ended with an error", "provider error 403: flagged"],
+        [3, 1],
+        strict=True,
+    ):
+        run_id = await new_run(store)
+        raw = json.dumps(body).encode()
+        handler, sent = scripted(
+            *[lambda raw=raw: stream([raw], content_type="application/json")] * 3
+        )
+        async with client(store, run_id, profile(stream=False), handler) as mc:
+            with pytest.raises(ModelCallError) as info:
+                await mc.call("test", PROMPT)
+        assert (info.value.reply.error, len(sent)) == (error, attempts)
+    run_id = await new_run(store)
+    cut = [*CHAT_EVENTS[:4], chunk({}, "error")]
+    handler, sent = scripted(lambda: stream(sse(cut)), lambda: stream(sse(CHAT_EVENTS)))
+    async with client(store, run_id, profile(), handler) as mc:
+        assert (await mc.call("test", PROMPT)).attempts == 2
+    first = payloads(await model_events(store, run_id))[1]
+    assert (first.status, first.finish_reason, first.error_kind, first.retry) == (
+        "error",
+        "error",
+        "provider",
+        True,
+    )
+
+
 async def test_a_lone_surrogate_in_a_provider_error_is_logged_as_text(
     store: LocalEventStore,
 ) -> None:

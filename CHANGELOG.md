@@ -16,6 +16,8 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - The estimate assumes that 50% of a monitor model's input is cached when no past call of that model is on record. It assumed 90%, as for an agent's model. A sweep repeats less of the call before it than an agent does.
 - The Inject dialog keeps a typed message when it closes without sending. A click outside it, Escape or Close dropped the text.
 - A command dialog shows only the answer to its own command. It showed the answer to the command before it, such as "Paused." inside the Cancel dialog.
+- An error that a provider sends after HTTP 200 is a provider error with its code, such as `provider error 402: Insufficient credits`. A router answers 200 first when the provider behind it fails later. An unstreamed answer of this kind was reported as "the stream ended before the answer did". An answer that finished with `error` counted as an incomplete answer and went to the agent.
+- A provider error with code 400, 401, 402, 403 or 404 is not retried, as an HTTP status of the same number is not. Every provider error was retried, so a key with no credits took every attempt of a call.
 
 ## [0.2.3] - 2026-11-14
 
