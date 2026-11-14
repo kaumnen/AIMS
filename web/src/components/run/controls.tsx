@@ -94,6 +94,10 @@ export function RunControls({ detail }: { detail: RunDetail }) {
   const operator = useOperator();
   const { run: command, busy, answer } = useCommand(detail.run.run_id);
   const [dialog, setDialog] = useState<"inject" | "kill" | "cancel" | null>(null);
+  // whether the open dialog has sent a command: only then is the answer its own
+  const [sent, setSent] = useState(false);
+  // a message typed and not sent stays through a closed dialog, until the page is left
+  const [draft, setDraft] = useState("");
   const run = detail.run;
   const live = run.status === "running" && run.state === "running";
   const waiting = WAITING.has(run.state);
@@ -114,11 +118,19 @@ export function RunControls({ detail }: { detail: RunDetail }) {
   const steered = live && run.kind !== "selftest" && run.kind !== "selftest.case";
   const pausable = agents.length === 0 ? held.length === 0 : free.length > 0;
   const close = () => setDialog(null);
+  const open = (d: "inject" | "kill" | "cancel") => {
+    setSent(false);
+    setDialog(d);
+  };
   const act = (c: Command) => {
+    setSent(true);
     void command(c).then((a) => {
-      if (a && a.state !== "failed") close();
+      if (!a || a.state === "failed") return;
+      if (c.action === "inject") setDraft("");
+      close();
     });
   };
+  const own = sent ? answer : null;
   return (
     <div className="flex flex-col items-end gap-1">
       <div className="flex flex-wrap items-center gap-1.5">
@@ -143,27 +155,29 @@ export function RunControls({ detail }: { detail: RunDetail }) {
           />
         )}
         {steered && (
-          <Button variant="outline" size="sm" disabled={busy} onClick={() => setDialog("inject")}>
+          <Button variant="outline" size="sm" disabled={busy} onClick={() => open("inject")}>
             Inject
           </Button>
         )}
-        <Button variant="outline" size="sm" disabled={busy} onClick={() => setDialog("cancel")}>
+        <Button variant="outline" size="sm" disabled={busy} onClick={() => open("cancel")}>
           Cancel
         </Button>
         {live && (
-          <Button variant="outline" size="sm" disabled={busy} onClick={() => setDialog("kill")}>
+          <Button variant="outline" size="sm" disabled={busy} onClick={() => open("kill")}>
             Kill
           </Button>
         )}
       </div>
       {dialog === null && <CommandAnswer answer={answer} />}
-      <Dialog open={dialog !== null} onOpenChange={(open) => !open && close()}>
+      <Dialog open={dialog !== null} onOpenChange={(shown) => !shown && close()}>
         <DialogContent className="sm:max-w-md">
           {dialog === "inject" && (
             <InjectForm
               agents={agents}
               busy={busy}
-              answer={answer}
+              answer={own}
+              text={draft}
+              onText={setDraft}
               onSend={(agent, text) => act({ action: "inject", text, ...(agent ? { agent } : {}) })}
               onClose={close}
             />
@@ -173,7 +187,7 @@ export function RunControls({ detail }: { detail: RunDetail }) {
               action={dialog}
               waiting={waiting}
               busy={busy}
-              answer={answer}
+              answer={own}
               onStop={(reason) => act({ action: dialog, reason: reason || null })}
               onClose={close}
             />
@@ -228,17 +242,20 @@ function InjectForm({
   agents,
   busy,
   answer,
+  text,
+  onText,
   onSend,
   onClose,
 }: {
   agents: string[];
   busy: boolean;
   answer: Answer | null;
+  text: string;
+  onText: (text: string) => void;
   onSend: (agent: string | null, text: string) => void;
   onClose: () => void;
 }) {
   const [agent, setAgent] = useState(EVERY);
-  const [text, setText] = useState("");
   const items = [
     { value: EVERY, label: "Every agent" },
     ...agents.map((a) => ({ value: a, label: a })),
@@ -263,12 +280,7 @@ function InjectForm({
         </Field>
       )}
       <Field label="Message">
-        <Textarea
-          value={text}
-          rows={4}
-          onChange={(e) => setText(e.currentTarget.value)}
-          autoFocus
-        />
+        <Textarea value={text} rows={4} onChange={(e) => onText(e.currentTarget.value)} autoFocus />
       </Field>
       <CommandAnswer answer={answer} />
       <DialogFooter>

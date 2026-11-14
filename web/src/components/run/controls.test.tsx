@@ -1,5 +1,6 @@
 // What RunControls shows of a kill's answer when the run ends around it. The answer here is one
-// done in part, which says more than the header's new status does.
+// done in part, which says more than the header's new status does. Also what a dialog keeps and
+// shows: a typed message, and only the answer to its own command.
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -35,11 +36,15 @@ beforeEach(() => {
   fetch.mockImplementation(async (request) => {
     const path = new URL(request.url).pathname;
     if (path === "/api/session") return Response.json({ name: "op", role: "operator", auth: true });
+    if (path.endsWith("/pause")) {
+      return Response.json({ command_id: "p1", delivered: true, state: "sent" }, { status: 202 });
+    }
     if (path.endsWith("/kill")) {
       return Response.json({ command_id: "k1", delivered: true, state: "sent" }, { status: 202 });
     }
     if (path.endsWith("/commands")) {
       return Response.json([
+        { id: "p1", run_id: ID, action: "pause", outcome: "done", state: "done", final: true },
         {
           id: "k1",
           run_id: ID,
@@ -119,4 +124,27 @@ test("an ended run with no command sent shows no controls", () => {
   act(() => end());
   expect(screen.queryByRole("status")).toBeNull();
   expect(screen.queryByRole("button")).toBeNull();
+});
+
+test("a dialog does not show the answer of the command before it", async () => {
+  mount();
+  fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
+  expect(await screen.findByText("Paused.")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  await screen.findByRole("dialog", { name: "Cancel the run" });
+  expect(screen.queryByText("Paused.")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Keep running" }));
+  expect(await screen.findByText("Paused.")).toBeTruthy();
+});
+
+test("a typed message is still there when the inject dialog opens again", async () => {
+  mount();
+  fireEvent.click(await screen.findByRole("button", { name: "Inject" }));
+  const box = within(await screen.findByRole("dialog")).getByRole("textbox");
+  fireEvent.change(box, { target: { value: "stop reading the tests" } });
+  fireEvent.keyDown(box, { key: "Escape" });
+  await vi.waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  fireEvent.click(screen.getByRole("button", { name: "Inject" }));
+  const again = within(await screen.findByRole("dialog")).getByRole("textbox");
+  expect((again as HTMLTextAreaElement).value).toBe("stop reading the tests");
 });
