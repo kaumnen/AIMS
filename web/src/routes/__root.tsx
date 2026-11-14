@@ -36,7 +36,7 @@ function Root() {
   }
   return (
     <TooltipProvider>
-      <LiveProvider onClosed={() => void me.refetch()}>
+      <LiveProvider onClosed={async () => (await me.refetch()).isSuccess}>
         <div data-shell className="flex h-dvh flex-col print:h-auto">
           <a
             href="#main"

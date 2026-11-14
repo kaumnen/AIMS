@@ -3,7 +3,21 @@ import { hashKey, type QueryClient } from "@tanstack/react-query";
 import { reconnectLive } from "./channel";
 import { $api, client, type Problem, type Schemas } from "./client";
 
-export const whoami = $api.queryOptions("get", "/api/session");
+type Whoami = Schemas["Whoami"];
+
+// An answer with no body, such as a proxy's 502 while the server restarts, is an error here
+// too: read through `$api` it would come back as nobody at all, with no error.
+export const whoami = {
+  ...$api.queryOptions("get", "/api/session"),
+  queryFn: async ({ signal }: { signal: AbortSignal }): Promise<Whoami> => {
+    const got: { data?: Whoami; error?: unknown; response: Response } = await client.GET(
+      "/api/session",
+      { signal },
+    );
+    if (got.data) return got.data;
+    throw got.error ?? { type: "about:blank", title: "No answer", status: got.response.status };
+  },
+};
 
 // Drops all a session loaded but who is signed in, so none of it shows for the next one. The
 // server lists some runs to operators only.
@@ -11,8 +25,6 @@ export function forgetSession(qc: QueryClient): void {
   const keep = hashKey(whoami.queryKey);
   qc.removeQueries({ predicate: (q) => q.queryHash !== keep });
 }
-
-type Whoami = Schemas["Whoami"];
 
 const same = (a: Whoami, b: Whoami) => a.name === b.name && a.role === b.role && a.auth === b.auth;
 

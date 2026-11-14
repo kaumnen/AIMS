@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 
 import { type InFlight, RunTail } from "@/api/tail";
+import { useLiveEpoch } from "@/components/live";
 import { cn } from "@/lib/utils";
 
 import { PROSE } from "./transcript";
@@ -17,7 +18,10 @@ export function useRunTail(runId: string, open: boolean, after: number): readonl
   useEffect(() => {
     from.current = after;
   });
-  const tail = useMemo(() => (open ? new RunTail(runId, qc) : null), [runId, open, qc]);
+  // a stream the browser gave up on is opened again with the page's
+  const epoch = useLiveEpoch();
+  // oxlint-disable-next-line react-hooks/exhaustive-deps
+  const tail = useMemo(() => (open ? new RunTail(runId, qc) : null), [runId, open, qc, epoch]);
   useEffect(() => {
     if (tail === null) return;
     tail.start(from.current);
