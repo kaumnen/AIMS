@@ -7183,7 +7183,7 @@
       },
       "ModelResponse": {
         "additionalProperties": false,
-        "description": "How one attempt ended, failures included. Every attempt has one.\n\n`body` is the raw response body, or for a stream the final response object as the provider\nsent it, None when the stream ended early. `stream` holds the raw response bytes in the\nchunks they arrived in, as JSON lines `{\"ms\": .., \"text\": ..}` (or `\"b64\"` for bytes that are\nnot UTF-8), `ms` counted from the request. `text` and `reasoning` are assembled from what\narrived, so a cancelled or stalled attempt keeps its partial content. `reasoning_kind` is what\nthe provider exposed: a summary, the full chain, or nothing. `source` is replay when the\nanswer was served from the run `origin_run`, from its event `origin_seq`.",
+        "description": "How one attempt ended, failures included. Every attempt has one.\n\n`body` is the raw response body, or for a stream the final response object as the provider\nsent it, None when the stream ended early. `stream` holds the raw response bytes in the\nchunks they arrived in, as JSON lines `{\"ms\": .., \"text\": ..}` (or `\"b64\"` for bytes that are\nnot UTF-8), `ms` counted from the request. `text` and `reasoning` are assembled from what\narrived, so a cancelled or stalled attempt keeps its partial content. `reasoning_kind` is what\nthe provider exposed: a summary, the full chain, or nothing. `source` is replay when the\nanswer was served from the run `origin_run`, from its event `origin_seq`. `cost_source` says\nwhere `cost_usd` comes from: `provider` when the answer's usage carried the cost, `price`\nwhen it is the token counts at the profile's price, None for a replay or an unpriced call.",
         "properties": {
           "attempt": {
             "minimum": 1,
@@ -7204,6 +7204,22 @@
           "call_id": {
             "title": "Call Id",
             "type": "string"
+          },
+          "cost_source": {
+            "anyOf": [
+              {
+                "enum": [
+                  "provider",
+                  "price"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cost Source"
           },
           "cost_usd": {
             "anyOf": [
@@ -7431,6 +7447,7 @@
           "ttft_ms",
           "usage",
           "cost_usd",
+          "cost_source",
           "ratelimit",
           "text",
           "reasoning",

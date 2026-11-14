@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Literal, Protocol
 
@@ -33,6 +34,7 @@ class Assembled:
     final: dict[str, Any] | None = None
     error: str | None = None
     error_code: int | None = None
+    cost_usd: float | None = None
 
     def turn(self, backend: ModelBackend) -> Turn:
         return Turn(
@@ -84,6 +86,24 @@ def _sampling(profile: Profile) -> dict[str, JsonValue]:
 
 def _int(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _reported_cost(usage: dict[str, Any]) -> float | None:
+    """What the provider says the attempt cost in USD, as OpenRouter's `usage.cost` does. None
+    when it says nothing. `cost` is what the router charged. With the caller's own provider
+    key that is the router's fee alone, so the provider's bill is added to it."""
+    cost = _amount(usage.get("cost"))
+    if cost is None:
+        return None
+    if usage.get("is_byok") is True:
+        cost += _amount(_get(usage, "cost_details", "upstream_inference_cost")) or 0.0
+    return round(cost, 10)
+
+
+def _amount(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return float(value) if math.isfinite(value) and value >= 0 else None
 
 
 def _fail(out: Assembled, error: object, default: str) -> None:
@@ -259,6 +279,7 @@ class _ResponsesAccumulator:
                 output_tokens=_int(usage.get("output_tokens")),
                 reasoning_tokens=_int(_get(usage, "output_tokens_details", "reasoning_tokens")),
             )
+            out.cost_usd = _reported_cost(usage)
         if out.status == "completed" and out.finish_reason is None:
             out.finish_reason = "tool_calls" if out.tool_calls else "stop"
 
@@ -384,6 +405,7 @@ class _ChatAccumulator:
         self.calls: dict[int, dict[str, str]] = {}
         self.reasoning_field = "reasoning_content"
         self.head: dict[str, Any] = {}
+        self.billed: dict[str, Any] = {}
 
     def feed(self, event: dict[str, Any]) -> list[Piece]:
         out = self.out
@@ -395,6 +417,8 @@ class _ChatAccumulator:
         usage = event.get("usage")
         if isinstance(usage, dict):
             out.usage = _chat_usage(usage)
+            out.cost_usd = _reported_cost(usage)
+            self.billed = {k: usage[k] for k in _BILLED if k in usage}
         for choice in event.get("choices") or []:
             if not isinstance(choice, dict) or choice.get("index", 0) != 0:
                 continue
@@ -450,6 +474,8 @@ class _ChatAccumulator:
         usage = body.get("usage")
         if isinstance(usage, dict):
             out.usage = _chat_usage(usage)
+            out.cost_usd = _reported_cost(usage)
+            self.billed = {k: usage[k] for k in _BILLED if k in usage}
         # A provider behind a router can fail after the router answered 200: the body then
         # holds an error, alone or beside a choice that finished with "error".
         if body.get("error"):
@@ -483,6 +509,7 @@ class _ChatAccumulator:
                 "completion_tokens": out.usage.output_tokens,
                 "prompt_tokens_details": {"cached_tokens": out.usage.cached_tokens},
                 "completion_tokens_details": {"reasoning_tokens": out.usage.reasoning_tokens},
+                **self.billed,
             }
             out.final = {
                 **self.head,
@@ -491,6 +518,10 @@ class _ChatAccumulator:
                 "usage": usage,
             }
         return out
+
+
+# What a provider's usage says about the bill, kept in the body assembled from a stream.
+_BILLED = ("cost", "is_byok", "cost_details")
 
 
 def _chat_usage(usage: dict[str, Any]) -> ModelUsage:

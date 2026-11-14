@@ -4,7 +4,7 @@ import json
 import os
 import signal
 import time
-from collections.abc import AsyncIterator, Callable, Iterable
+from collections.abc import AsyncIterator, Callable, Iterable, Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -56,7 +56,7 @@ from aims.models import (
     load_models,
     parse_ratelimit,
 )
-from aims.models.backends import Chat, Responses
+from aims.models.backends import Chat, Responses, _reported_cost
 from aims.models.client import _cost
 from aims.models.replay import canonical_key
 from aims.models.transport import decode_chunks
@@ -1289,3 +1289,170 @@ async def test_replay_skips_the_rate_limiter(store: LocalEventStore) -> None:
     assert time.monotonic() - start < 1
     requests = payloads(await store.events(run_id, types=["model.request"]))
     assert [r.queued_ms for r in requests] == [0, 0, 0]
+
+
+BILL = {
+    "cost": 0.00042,
+    "is_byok": False,
+    "cost_details": {"upstream_inference_cost": 0.00042},
+}
+PRICED = (6 * 1.0 + 4 * 0.1 + 5 * 2.0) / 1e6
+
+
+def _usage(answer: Mapping[str, Any]) -> dict[str, Any]:
+    return dict(answer["usage"])
+
+
+def billed(backend: str, streamed: bool, bill: dict[str, Any]) -> httpx2.Response:
+    """An answer whose usage carries `bill`, as a router's does."""
+    events: list[dict[str, Any]]
+    body: dict[str, Any]
+    if backend == "chat":
+        usage = _usage(USAGE) | bill
+        events = [*CHAT_EVENTS[:-1], {**USAGE, "usage": usage}]
+        message = {"role": "assistant", "content": "Hello"}
+        body = {
+            "id": "c1",
+            "choices": [{"index": 0, "message": message, "finish_reason": "stop"}],
+            "usage": usage,
+        }
+    else:
+        body = RESPONSE | {"usage": _usage(RESPONSE) | bill}
+        events = [*RESPONSES_EVENTS[:-1], {"type": "response.completed", "response": body}]
+    if streamed:
+        return stream(sse(events))
+    return stream([json.dumps(body).encode()], content_type="application/json")
+
+
+@pytest.mark.parametrize("backend", ["chat", "responses"])
+@pytest.mark.parametrize("streamed", [True, False])
+async def test_a_cost_the_provider_reports_wins_over_the_price(
+    store: LocalEventStore, backend: str, streamed: bool
+) -> None:
+    run_id = await new_run(store)
+    p = profile(backend=backend, stream=streamed, reasoning="none")
+    handler, _ = scripted(lambda: billed(backend, streamed, BILL))
+    async with client(store, run_id, p, handler) as mc:
+        reply = await mc.call("test", PROMPT)
+    (response,) = [
+        e for e in payloads(await model_events(store, run_id)) if e.type == "model.response"
+    ]
+    assert reply.cost_usd == response.cost_usd == pytest.approx(0.00042)
+    assert response.cost_source == "provider"
+    assert response.body is not None
+    body = json.loads(await store.get_blob(run_id, response.body.sha256))
+    assert body["usage"]["cost"] == 0.00042
+    assert body["usage"]["cost_details"] == BILL["cost_details"]
+
+
+async def test_a_cost_comes_from_the_price_when_the_provider_reports_none(
+    store: LocalEventStore,
+) -> None:
+    run_id = await new_run(store)
+    handler, _ = scripted(*[lambda: stream(sse(CHAT_EVENTS))] * 2)
+    unpriced = profile(name="unpriced", price=None)
+    async with client(store, run_id, profile(), handler) as mc:
+        await mc.call("test", PROMPT)
+        await mc.call(unpriced, PROMPT)
+    priced, free = await store.events(run_id, types=["model.response"])
+    assert priced.data["cost_usd"] == pytest.approx(PRICED)
+    assert priced.data["cost_source"] == "price"
+    assert (free.data["cost_usd"], free.data["cost_source"]) == (None, None)
+    kept = ModelResponse.model_validate(priced.data).body
+    assert kept is not None
+    body = json.loads(await store.get_blob(run_id, kept.sha256))
+    assert "cost" not in body["usage"]
+
+
+async def test_a_reported_cost_prices_a_profile_with_no_price(store: LocalEventStore) -> None:
+    run_id = await new_run(store)
+    handler, _ = scripted(lambda: billed("chat", True, BILL))
+    async with client(store, run_id, profile(price=None), handler) as mc:
+        reply = await mc.call("test", PROMPT)
+    assert reply.cost_usd == pytest.approx(0.00042)
+
+
+@pytest.mark.parametrize(
+    ("bill", "cost"),
+    [
+        ({"cost": 0}, 0.0),
+        ({"cost": 3}, 3.0),
+        # The caller's own provider key: `cost` is the router's fee, the provider bills the rest.
+        (
+            {"cost": 0.001, "is_byok": True, "cost_details": {"upstream_inference_cost": 0.02}},
+            0.021,
+        ),
+        (
+            {"cost": 0.001, "is_byok": True, "cost_details": {"upstream_inference_cost": None}},
+            0.001,
+        ),
+        ({"cost": 0.001, "is_byok": True}, 0.001),
+        ({"cost": 0.001, "is_byok": True, "cost_details": {"upstream_inference_cost": -1}}, 0.001),
+        (
+            {"cost": 0.001, "is_byok": "yes", "cost_details": {"upstream_inference_cost": 0.02}},
+            0.001,
+        ),
+        ({"cost": 0.001, "cost_details": {"upstream_inference_cost": 0.02}}, 0.001),
+        ({}, None),
+        ({"cost": None}, None),
+        ({"cost": True}, None),
+        ({"cost": "0.001"}, None),
+        ({"cost": -0.001}, None),
+        ({"cost": float("nan")}, None),
+        ({"cost": float("inf")}, None),
+        ({"cost": {"usd": 1}}, None),
+        ({"is_byok": True, "cost_details": {"upstream_inference_cost": 0.02}}, None),
+    ],
+)
+def test_reported_cost(bill: dict[str, Any], cost: float | None) -> None:
+    assert _reported_cost(bill) == (None if cost is None else pytest.approx(cost))
+
+
+async def test_a_cost_the_provider_reports_badly_falls_back_to_the_price(
+    store: LocalEventStore,
+) -> None:
+    run_id = await new_run(store)
+    handler, _ = scripted(lambda: billed("chat", True, {"cost": -1}))
+    async with client(store, run_id, profile(), handler) as mc:
+        reply = await mc.call("test", PROMPT)
+    (response,) = await store.events(run_id, types=["model.response"])
+    assert reply.cost_usd == pytest.approx(PRICED)
+    assert response.data["cost_source"] == "price"
+
+
+async def test_the_reply_sums_reported_and_priced_attempts(store: LocalEventStore) -> None:
+    run_id = await new_run(store)
+    failed = FAILED | {"usage": _usage(FAILED) | {"cost": 0.01}}
+    handler, _ = scripted(
+        lambda: stream(sse([{"type": "response.failed", "response": failed}])),
+        lambda: stream(sse(RESPONSES_EVENTS)),
+    )
+    p = profile(backend="responses", reasoning="summary")
+    async with client(store, run_id, p, handler) as mc:
+        reply = await mc.call("test", PROMPT)
+    first, second = await store.events(run_id, types=["model.response"])
+    assert (first.data["cost_usd"], first.data["cost_source"]) == (0.01, "provider")
+    assert second.data["cost_source"] == "price"
+    assert reply.cost_usd == pytest.approx(0.01 + 38e-6)
+
+
+async def test_a_replayed_reported_cost_costs_nothing(store: LocalEventStore) -> None:
+    source = await new_run(store)
+    handler, _ = scripted(lambda: billed("chat", True, BILL))
+    p = profile()
+    async with client(store, source, p, handler) as mc:
+        await mc.call("test", PROMPT)
+    run_id = await new_run(store)
+    recording = await Recording.load(store, source)
+    async with client(store, run_id, p, lambda r: None, replay=recording) as mc:
+        reply = await mc.call("test", PROMPT)
+    (response,) = await store.events(run_id, types=["model.response"])
+    assert reply.cost_usd == 0.0
+    assert (response.data["cost_usd"], response.data["cost_source"]) == (0.0, None)
+
+
+def test_a_model_response_recorded_before_cost_source_loads() -> None:
+    old = ModelResponse(call_id="c", attempt=1, status="completed", latency_ms=1, cost_usd=0.5)
+    data = old.model_dump(mode="json")
+    del data["cost_source"]
+    assert ModelResponse.model_validate(data).cost_source is None

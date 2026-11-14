@@ -16,6 +16,7 @@ FdKind = Literal["pipe", "fifo", "file", "char", "sock", "dir", "other"]
 LossScope = Literal["sandbox", "tracer"]
 ModelBackend = Literal["responses", "chat"]
 ModelStatus = Literal["completed", "incomplete", "error", "cancelled"]
+CostSource = Literal["provider", "price"]
 ModelError = Literal[
     "http",
     "redirect",
@@ -276,7 +277,9 @@ class ModelResponse(Payload):
     not UTF-8), `ms` counted from the request. `text` and `reasoning` are assembled from what
     arrived, so a cancelled or stalled attempt keeps its partial content. `reasoning_kind` is what
     the provider exposed: a summary, the full chain, or nothing. `source` is replay when the
-    answer was served from the run `origin_run`, from its event `origin_seq`.
+    answer was served from the run `origin_run`, from its event `origin_seq`. `cost_source` says
+    where `cost_usd` comes from: `provider` when the answer's usage carried the cost, `price`
+    when it is the token counts at the profile's price, None for a replay or an unpriced call.
     """
 
     type = "model.response"
@@ -291,6 +294,7 @@ class ModelResponse(Payload):
     ttft_ms: int | None = None
     usage: ModelUsage = Field(default_factory=ModelUsage)
     cost_usd: float | None = None
+    cost_source: CostSource | None = None
     ratelimit: RateLimit = Field(default_factory=RateLimit)
     text: Content = ""
     reasoning: Content | None = None

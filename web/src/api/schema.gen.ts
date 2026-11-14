@@ -4339,7 +4339,9 @@ export interface components {
          *     not UTF-8), `ms` counted from the request. `text` and `reasoning` are assembled from what
          *     arrived, so a cancelled or stalled attempt keeps its partial content. `reasoning_kind` is what
          *     the provider exposed: a summary, the full chain, or nothing. `source` is replay when the
-         *     answer was served from the run `origin_run`, from its event `origin_seq`.
+         *     answer was served from the run `origin_run`, from its event `origin_seq`. `cost_source` says
+         *     where `cost_usd` comes from: `provider` when the answer's usage carried the cost, `price`
+         *     when it is the token counts at the profile's price, None for a replay or an unpriced call.
          */
         ModelResponse: {
             /** Attempt */
@@ -4348,6 +4350,11 @@ export interface components {
             body: components["schemas"]["BlobRef"] | null;
             /** Call Id */
             call_id: string;
+            /**
+             * Cost Source
+             * @default null
+             */
+            cost_source: ("provider" | "price") | null;
             /**
              * Cost Usd
              * @default null
@@ -14732,6 +14739,7 @@ export const memExecKindValues: ReadonlyArray<FlattenedDeepRequired<components>[
 export const modelCheckedVerdictValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelChecked"]["verdict"]> = ["ok", "warn", "fail"];
 export const modelRequestBackendValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelRequest"]["backend"]> = ["responses", "chat"];
 export const modelRequestRoleAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelRequest"]["role"]> = ["sweep", "judge", "review", "score"];
+export const modelResponseCost_sourceAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelResponse"]["cost_source"]> = ["provider", "price"];
 export const modelResponseError_kindAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelResponse"]["error_kind"]> = ["http", "redirect", "connect", "timeout", "stall", "wall", "read", "protocol", "provider", "replay"];
 export const modelResponseReasoning_kindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelResponse"]["reasoning_kind"]> = ["none", "summary", "full"];
 export const modelResponseSourceValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelResponse"]["source"]> = ["live", "replay"];

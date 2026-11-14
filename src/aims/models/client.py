@@ -20,6 +20,7 @@ from aims.aio import settle
 from aims.events import (
     BlobRef,
     Content,
+    CostSource,
     Draft,
     EventStore,
     ModelError,
@@ -419,8 +420,15 @@ class ModelClient:
         reasoning: Content | None = None
         if a.reasoning:
             reasoning = await self.store.content(self.run_id, a.reasoning)
-        # A replayed answer was paid for by the run it was recorded in.
-        cost = 0.0 if self.replay is not None else _cost(profile.price, a.usage)
+        # A replayed answer was paid for by the run it was recorded in. A live one costs what
+        # the provider reports, which a router knows per call and a price table does not.
+        cost: float | None = 0.0
+        cost_source: CostSource | None = None
+        if self.replay is None:
+            cost, cost_source = a.cost_usd, "provider"
+            if cost is None:
+                cost = _cost(profile.price, a.usage)
+                cost_source = None if cost is None else "price"
         response = ModelResponse(
             call_id=call_id,
             attempt=attempt,
@@ -432,6 +440,7 @@ class ModelClient:
             ttft_ms=o.ttft_ms,
             usage=a.usage,
             cost_usd=cost,
+            cost_source=cost_source,
             ratelimit=o.ratelimit,
             text=text,
             reasoning=reasoning,
