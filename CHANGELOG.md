@@ -159,6 +159,13 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - `aims runner` prints `cannot start the sandbox backend` with the reason and exits 1 when Docker is down. It printed a traceback.
 - A build lock file this user cannot open is reported with its path and what to do. A tracer whose image cannot be built for that reason leaves the sandboxes on snapshot audit.
 - A kernel tracer loss is logged in a sandbox only from the time the sandbox registered. A loss that ended before then is left out.
+- The judge's timeout covers the wait for the index and the read of the run. A judge whose index was behind could take about twice `timeout_s`. A judge that cannot read the run in time ends with `the judge's N s timeout ran out while it read the run`.
+- The judge's `events` tool shortens an event with a large nested object in steps. The last step keeps four keys of each nested object and counts the rest under `[more keys]`. Such an event showed as `too long to show`. A score with many metrics is shortened the same way in the judge's brief.
+- The judge's `events` tool shows the end of `stdout_tail` and `stderr_tail` as `tail`. It showed mostly their start, so the summary line of a test run was left to a `blob` call.
+- The judge's `proc_tree` tool cuts a long command, working directory and leftover list until the tree's rows fit. It answered `ask for less` for an exec with nothing to narrow. `leftover_more` counts the leftover processes it does not list.
+- The judge's `file_history` tool ends a page between events. A snapshot with several rows for the path showed some of them again on the next page, and one with more rows than a page came back as the same page forever. Such a page now holds what fits and `rows_cut` counts the rest.
+- A judge reply that comes with no token counts is charged by its size at the profile's prices. It was charged $0, so the judge could spend past its share with a provider that leaves the counts out.
+- `docs/monitor.md` lists the judge settings.
 
 ### Fixed
 
@@ -378,6 +385,8 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - The cleanup of `aims run` closes its link when an earlier step fails.
 - A stream the Docker daemon cuts midway is a Docker error like any other: an archive read, a helper's wait or log, an exec or attach stream as it opens. An exec whose stream is cut as it opens ends as failed with its `exec.finished` line.
 - The runner's tracer watch goes on after a restart fails in any way.
+- An autonomous or human pause review gets the flagged tool calls while the index is behind the log. It read them from the index only and reviewed without them.
+- A fork replays a call that reads a board or writes a shared folder while the index is behind the log. It found none of the call's channel events and recorded a channel divergence, which ended a strict fork.
 
 ## [0.2.2] - 2026-11-10
 
