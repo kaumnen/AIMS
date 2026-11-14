@@ -221,3 +221,56 @@ def test_every_command_checks_its_text_arguments() -> None:
 
     walk(get_command(app), "aims")
     assert leaves == []
+
+
+RUN = Path(__file__).parent / "fixtures/runs/misbehave/01a1a36a-d65d-7623-83e4-476ce247a487"
+
+
+def test_verify_takes_a_dot_inside_a_run_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The run's id is the folder's name, which `.` has only once it is resolved."""
+    run = tmp_path / "runs" / RUN.name
+    shutil.copytree(RUN, run)
+    monkeypatch.chdir(run)
+    for arg in (".", "./", str(run)):
+        r = CliRunner().invoke(app, ["verify", arg])
+        assert r.exit_code == 0, (arg, r.output)
+        assert r.output.startswith("ok: 93 events, finished"), arg
+    monkeypatch.chdir(run.parent)
+    r = CliRunner().invoke(app, ["verify", f"{RUN.name}/"])
+    assert r.exit_code == 0, r.output
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root writes a read-only folder")
+@pytest.mark.parametrize("indexed", [True, False])
+def test_a_runs_folder_that_cannot_be_written_ends_in_one_line(
+    tmp_path: Path, indexed: bool, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Every command that reads runs opens the index to write. A folder it may not write, such
+    as runs another user recorded, is the person's to fix: no traceback."""
+    runs = tmp_path / "runs"
+    shutil.copytree(RUN, runs / RUN.name)
+    if indexed:
+        assert CliRunner().invoke(app, ["spend", "--runs-dir", str(runs)]).exit_code == 0
+    paths = [runs, *runs.rglob("*")]
+    for path in paths:
+        path.chmod(path.stat().st_mode & ~0o222)
+    try:
+        for args in (["report", RUN.name], ["check", RUN.name], ["spend"], ["rates"]):
+            capsys.readouterr()
+            # as the `aims` command calls it: CliRunner goes past the app's own error handling
+            with pytest.raises(SystemExit) as end:
+                app([*args, "--runs-dir", str(runs)])
+            assert end.value.code == 1, args
+            out = capsys.readouterr()
+            assert out.out == "", args
+            [line] = out.err.splitlines()
+            assert line.startswith(f"error: {runs} cannot be written, and aims keeps its index")
+        # verify reads the log and its chain with no index
+        r = CliRunner().invoke(app, ["verify", RUN.name, "--runs-dir", str(runs)])
+        assert r.exit_code == 0, r.output
+        assert "ok: 93 events, finished" in r.output
+    finally:
+        for path in paths:
+            path.chmod(path.stat().st_mode | 0o200)

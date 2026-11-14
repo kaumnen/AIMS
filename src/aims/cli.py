@@ -38,12 +38,18 @@ class _Group(TyperGroup):
 class _App(typer.Typer):
     """An error no command handles ends with exit code 1 and its traceback on stderr, written
     through visible(). Typer's Rich traceback prints the error's text as it is, escape bytes
-    too. Exit, usage errors, Ctrl-C and a closed pipe end in typer as before."""
+    too. Exit, usage errors, Ctrl-C and a closed pipe end in typer as before. A folder of runs
+    that cannot be written ends with one line: a person can do that, it is no fault of aims."""
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         try:
             return super().__call__(*args, **kwargs)
         except Exception as e:
+            from aims.events.store import IndexUnwritable
+
+            if isinstance(e, IndexUnwritable):
+                _echo(f"error: {e}", err=True)
+                raise SystemExit(1) from None
             import contextlib
             import sys
             import traceback
@@ -246,7 +252,8 @@ def verify(
     from aims.events import LocalEventStore, Verification, verify_run
     from aims.events.store import INDEX, is_run_id
 
-    path = Path(run) if Path(run).is_dir() else runs_dir / run
+    # resolved, so `.` inside a run's folder has the run's id for its name
+    path = Path(run).resolve() if Path(run).is_dir() else runs_dir / run
 
     async def indexed() -> Verification | None:
         """What the store says of the run, as the server and a report say it. None when the

@@ -79,6 +79,11 @@ class TruthRefused(ValueError):
         self.status = status
 
 
+class IndexUnwritable(sqlite3.OperationalError):
+    """The index did not open because the folder of runs, or the index in it, cannot be
+    written. Every reader opens the index to write, since it is brought up to the logs first."""
+
+
 class IngestError(Exception):
     """A batch of log lines the store refused. `head` is where its copy of the run ends."""
 
@@ -328,6 +333,11 @@ class LocalEventStore:
             index = await Index.open(root / INDEX)
         except sqlite3.Error as e:
             await asyncio.to_thread(_note_space, e, root)
+            if isinstance(e, sqlite3.OperationalError) and not _writable(root):
+                raise IndexUnwritable(
+                    f"{root} cannot be written, and aims keeps its index of the runs there"
+                    f" ({e}). Use a copy you can write, or change who may write the folder"
+                ) from e
             raise
         store = cls(root, index, ingest_only=ingest_only)
         try:
@@ -1888,6 +1898,12 @@ def _note_space(error: Exception, path: Path) -> None:
         return
     if free < LOW_SPACE:
         error.add_note(f"likely cause: the disk that holds {path} is full ({free} bytes free)")
+
+
+def _writable(root: Path) -> bool:
+    """Whether this user may write the folder of runs and the index in it, if there is one."""
+    index = root / INDEX
+    return os.access(root, os.W_OK) and (not index.exists() or os.access(index, os.W_OK))
 
 
 def _close(writer: _Writer | _Sink) -> None:
