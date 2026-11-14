@@ -309,19 +309,25 @@ def init(path: Path, *, force: bool = False) -> Path:
     return path
 
 
+def appended(old: bytes, table: str) -> bytes:
+    """The bytes of a config file, `old`, with `table`, the TOML text of one, after a blank
+    line at its end."""
+    gap = b"" if not old else b"\n" if old.endswith(b"\n") else b"\n\n"
+    return old + gap + table.encode()
+
+
 def add_table(found: Layers, table: str) -> Path:
     """Append `table`, the TOML text of one, to the project file of `found`, or to a new
     aims.toml in the working directory when there is none. The layers must load with it first:
     a ConfigError, ProfileError or TextError leaves the file as it was."""
     path = found.project if found.project is not None else Path.cwd() / PROJECT
     old = path.read_bytes() if path.is_file() else b""
-    gap = b"" if not old else b"\n" if old.endswith(b"\n") else b"\n\n"
     # The trial file sits beside the real one, as `[scenarios] paths` are relative to it, and
     # becomes it once the layers load.
     tmp = path.parent / f".{path.name}.{secrets.token_hex(4)}"
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_bytes(old + gap + table.encode())
+        tmp.write_bytes(appended(old, table))
         try:
             load_layers(Layers(user=found.user, project=tmp))
         except (ConfigError, ProfileError, TextError) as e:

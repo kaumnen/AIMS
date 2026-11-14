@@ -177,6 +177,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/models/add": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add Model
+         * @description Add a profile for model `slug` to the project file, as `aims models add --write` does:
+         *     the profile `GET /models/lookup` shows, after what the file holds. A name that a profile
+         *     has already is refused. The merged layers must load first.
+         */
+        post: operations["add_model"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/models/check": {
         parameters: {
             query?: never;
@@ -207,8 +229,8 @@ export interface paths {
         /**
          * Lookup Model
          * @description A profile for model `slug`, filled in from the provider's public list of models, which
-         *     the server reads. Nothing is saved. `alias` takes an alias the provider moves to newer
-         *     models.
+         *     the server reads. Nothing is saved: `POST /models/add` does that. `alias` takes an alias the
+         *     provider moves to newer models.
          */
         get: operations["lookup_model"];
         put?: never;
@@ -4239,6 +4261,34 @@ export interface components {
         MergedConfig: {
             /** Text */
             text: string;
+        };
+        /** ModelAdd */
+        ModelAdd: {
+            /**
+             * Alias
+             * @default false
+             */
+            alias?: boolean;
+            /** Name */
+            name?: string | null;
+            /** Slug */
+            slug: string;
+            /**
+             * Source
+             * @default openrouter
+             * @constant
+             */
+            source?: "openrouter";
+        };
+        /**
+         * ModelAdded
+         * @description The profile `name` now in the project file at `path`.
+         */
+        ModelAdded: {
+            /** Name */
+            name: string;
+            /** Path */
+            path: string;
         };
         /**
          * ModelChecked
@@ -8726,6 +8776,120 @@ export interface operations {
             };
             /** @description Invalid request */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    add_model: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelAdd"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelAdded"];
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Precondition failed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unsupported media type */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Precondition required */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Bad gateway */
+            502: {
                 headers: {
                     [name: string]: unknown;
                 };

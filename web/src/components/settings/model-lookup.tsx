@@ -1,8 +1,10 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 
-import { lookupModel, type ProfileDraft } from "@/api/launch";
+import { addModel, lookupModel, type ProfileDraft } from "@/api/launch";
 import { isProblem } from "@/api/session";
+import { CONFIG_DEPENDENT } from "@/api/settings";
 import { Field, problemText } from "@/components/form";
 import { Button } from "@/components/ui/button";
 import {
@@ -35,8 +37,7 @@ const command = ({ draft, name, alias }: Found) =>
     "--write",
   ].join(" ");
 
-// A profile drafted from OpenRouter's list of models, to paste into a config file. The dialog
-// never writes the config itself.
+// A profile drafted from OpenRouter's list of models. Nothing is saved until Add.
 export function ModelLookup() {
   const [open, setOpen] = useState(false);
   return (
@@ -93,7 +94,7 @@ function Lookup() {
         <DialogTitle>Add from OpenRouter</DialogTitle>
         <DialogDescription>
           The control plane reads OpenRouter&apos;s public list of models and drafts a profile.
-          Nothing is saved.
+          Nothing is saved until you add it.
         </DialogDescription>
       </DialogHeader>
       <Field label="Model id">
@@ -150,8 +151,7 @@ function Notes({ draft }: { draft: ProfileDraft }) {
     <>
       {draft.exists && (
         <p className="font-medium">
-          A profile named {draft.name} exists already. Pasting this would change it. Give another
-          name to add a new one.
+          A profile named {draft.name} exists already. Give another name to add this one.
         </p>
       )}
       {draft.notes.length > 0 && (
@@ -166,7 +166,24 @@ function Notes({ draft }: { draft: ProfileDraft }) {
 }
 
 function Draft({ found }: { found: Found }) {
+  const qc = useQueryClient();
   const [copied, setCopied] = useState<boolean | null>(null);
+  const [adding, setAdding] = useState(false);
+  // the file the profile went to
+  const [added, setAdded] = useState<string | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const add = async () => {
+    setAdding(true);
+    setProblem(null);
+    try {
+      setAdded(await addModel(found.draft.slug, found.name, found.alias));
+      for (const queryKey of CONFIG_DEPENDENT) void qc.invalidateQueries({ queryKey });
+    } catch (e) {
+      setProblem(isProblem(e) ? problemText(e) : "The request failed.");
+    } finally {
+      setAdding(false);
+    }
+  };
   // missing outside a secure context, such as plain http on a LAN address
   const clipboard = (navigator as { clipboard?: Clipboard }).clipboard;
   const copy = async () => {
@@ -189,7 +206,7 @@ function Draft({ found }: { found: Found }) {
       </pre>
       <div className="flex items-start gap-2">
         <p className="text-muted-foreground min-w-0 flex-1 break-words">
-          Paste it into this project&apos;s aims.toml under{" "}
+          Add puts it at the end of this project&apos;s aims.toml. You can also paste it under{" "}
           <Link
             to="/settings/config"
             search={{ view: "project" }}
@@ -197,7 +214,7 @@ function Draft({ found }: { found: Found }) {
           >
             Config
           </Link>
-          . The CLI adds it for you with <code className="text-foreground">{command(found)}</code>.
+          . The CLI does the same with <code className="text-foreground">{command(found)}</code>.
         </p>
         {clipboard && (
           <Button size="sm" variant="outline" onClick={() => void copy()}>
@@ -208,6 +225,23 @@ function Draft({ found }: { found: Found }) {
       {copied === false && (
         <p className="text-muted-foreground">Copy failed. Select the text instead.</p>
       )}
+      <div aria-live="polite" className="flex items-center gap-2">
+        {added === null ? (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={adding || found.draft.exists}
+            onClick={() => void add()}
+          >
+            Add to project config
+          </Button>
+        ) : (
+          <p>
+            Added {found.draft.name} to <span className="font-mono break-all">{added}</span>.
+          </p>
+        )}
+        {problem !== null && <p className="font-medium">{problem}</p>}
+      </div>
     </div>
   );
 }

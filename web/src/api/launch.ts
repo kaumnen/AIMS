@@ -77,7 +77,7 @@ export async function checkModels(profiles: string[]): Promise<string> {
 }
 
 // A profile for OpenRouter model `slug`, as config file text. The server reads OpenRouter's list
-// each time and saves nothing. An empty `name` leaves the name to the server.
+// when its copy is old and saves nothing. An empty `name` leaves the name to the server.
 export async function lookupModel(
   slug: string,
   name: string,
@@ -90,4 +90,14 @@ export async function lookupModel(
   });
   if (error) throw error;
   return data;
+}
+
+// Add the profile a lookup with the same arguments shows to the project's config file. Returns
+// the file's path.
+export async function addModel(slug: string, name: string, alias: boolean): Promise<string> {
+  const { data, error } = await client.POST("/api/models/add", {
+    body: { slug, source: "openrouter", ...(name ? { name } : {}), ...(alias ? { alias } : {}) },
+  });
+  if (error) throw error;
+  return data.path;
 }

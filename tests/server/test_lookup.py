@@ -127,3 +127,71 @@ async def test_a_malformed_lookup_reads_no_list(cp: CP, params: dict[str, str]) 
     async with cp.client(cp.operator) as c:
         assert (await c.get(LOOKUP, params=params)).status_code == 422
     assert seen == []
+
+
+ADD = "/api/models/add"
+
+
+async def test_an_operator_adds_the_profile_to_the_project_file(cp: CP) -> None:
+    listed(cp)
+    before = cp.project.read_text()
+    async with cp.client(cp.operator) as c:
+        r = await c.post(ADD, json={"slug": FLASH["id"]})
+        assert r.status_code == 200, r.text
+        assert r.json() == {"name": "openrouter-deepseek-v4.1-flash", "path": str(cp.project)}
+        assert cp.project.read_text() == before + "\n" + draft(MODELS, FLASH["id"]).toml()
+        names = [p["name"] for p in (await c.get("/api/models")).json()["profiles"]]
+        assert "openrouter-deepseek-v4.1-flash" in names
+        # the name is taken now, by this profile or by any other
+        again = await c.post(ADD, json={"slug": FLASH["id"]})
+        assert (again.status_code, again.json()["code"]) == (409, "exists")
+        taken = await c.post(ADD, json={"slug": FLASH["id"], "name": "scripted"})
+        assert taken.status_code == 409
+        second = await c.post(ADD, json={"slug": FLASH["id"], "name": "second"})
+        assert second.status_code == 200, second.text
+        rows = (await c.get("/api/audit", params={"action": "models.add"})).json()
+    assert cp.state.config.settings().models.get("second").model == FLASH["id"]
+    found = [(row["target"], row["outcome"], row["status"], row["detail"]) for row in rows["items"]]
+    assert sorted(found) == sorted(
+        [
+            ("openrouter-deepseek-v4.1-flash", "ok", 200, FLASH["id"]),
+            ("openrouter-deepseek-v4.1-flash", "refused", 409, "exists"),
+            ("scripted", "refused", 409, "exists"),
+            ("second", "ok", 200, FLASH["id"]),
+        ]
+    )
+
+
+async def test_adding_is_for_operators_and_a_refused_add_leaves_the_file(cp: CP) -> None:
+    seen = listed(cp)
+    before = cp.project.read_bytes()
+    async with cp.client(cp.viewer) as c:
+        assert (await c.post(ADD, json={"slug": FLASH["id"]})).status_code == 403
+    async with cp.client() as c:
+        assert (await c.post(ADD, json={"slug": FLASH["id"]})).status_code == 401
+    assert seen == []
+    async with cp.client(cp.operator) as c:
+        for body, status, code in (
+            ({"slug": "nope"}, 422, "slug"),
+            ({"slug": "a/b"}, 404, "missing"),
+            ({"slug": "~anthropic/claude-haiku-latest"}, 422, "refused"),
+            ({"slug": FLASH["id"], "name": "a b"}, 422, "name"),
+            ({"slug": FLASH["id"], "source": "other"}, 422, "invalid"),
+            ({}, 422, "invalid"),
+        ):
+            r = await c.post(ADD, json=body)
+            assert (r.status_code, r.json().get("code")) == (status, code), r.text
+        alias = await c.post(ADD, json={"slug": "~anthropic/claude-haiku-latest", "alias": True})
+        assert alias.status_code == 200, alias.text
+    assert cp.project.read_bytes().startswith(before + b"\n[profiles.openrouter-claude-haiku")
+
+
+async def test_a_project_file_that_cannot_take_the_table_stays_as_it_was(cp: CP) -> None:
+    listed(cp)
+    cp.project.write_text(cp.project.read_text() + "\n[nope]\n")
+    before = cp.project.read_bytes()
+    async with cp.client(cp.operator) as c:
+        r = await c.post(ADD, json={"slug": FLASH["id"]})
+    assert (r.status_code, r.json()["code"]) == (422, "config")
+    assert cp.project.read_bytes() == before
+    assert sorted(p.name for p in cp.project.parent.iterdir()) == ["aims.toml", "scenarios"]

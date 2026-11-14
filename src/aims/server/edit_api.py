@@ -16,7 +16,7 @@ from fastapi import APIRouter, Header, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, JsonValue
 
-from aims.config import PROJECT, STARTER, ConfigError, Layers, load_layers
+from aims.config import PROJECT, STARTER, ConfigError, Layers, appended, load_layers
 from aims.merged import merged
 from aims.models import ProfileError
 from aims.monitor.config import MonitorConfigError
@@ -36,6 +36,7 @@ from aims.server.api import (
     State,
     Uploader,
     Viewer,
+    drafted,
     scenario_problems,
 )
 from aims.server.files import (
@@ -250,6 +251,48 @@ async def write_config(
 ) -> Response:
     """Replace a layer's text. The merged layers must load first."""
     return await _save(state, layer, body.text, if_match, if_none_match)
+
+
+class ModelAdd(BaseModel):
+    slug: Utf8 = Field(min_length=1, max_length=200)
+    source: Literal["openrouter"] = "openrouter"
+    name: Utf8 | None = Field(default=None, min_length=1, max_length=200)
+    alias: bool = False
+
+
+class ModelAdded(Out):
+    """The profile `name` now in the project file at `path`."""
+
+    name: str
+    path: str
+
+
+@router.post("/models/add", tags=["models"], responses=responses(409, 502))
+@audit.audited("models.add")
+async def add_model(
+    body: ModelAdd, principal: Operator, state: State, note: audit.Note
+) -> ModelAdded:
+    """Add a profile for model `slug` to the project file, as `aims models add --write` does:
+    the profile `GET /models/lookup` shows, after what the file holds. A name that a profile
+    has already is refused. The merged layers must load first."""
+    note.detail = body.slug
+    found = await drafted(state, body.slug, body.name, body.alias)
+    note.target = found.name
+    path = _path(state, "project")
+    async with _lock(path):
+        if found.name in state.config.settings().models.profiles:
+            raise ProblemException(
+                409, "Conflict", f"a profile named {found.name} exists", code="exists"
+            )
+        current = await asyncio.to_thread(read_or_none, path)
+        try:
+            text = appended(current or b"", found.toml()).decode()
+        except UnicodeDecodeError:
+            raise ProblemException(422, "Invalid request", f"{path} is not UTF-8") from None
+        await asyncio.to_thread(_validate, state, "project", text)
+        with writing(path):
+            await asyncio.to_thread(write_atomic, path, text.encode())
+    return ModelAdded(name=found.name, path=str(path))
 
 
 def _value(value: JsonValue) -> object:

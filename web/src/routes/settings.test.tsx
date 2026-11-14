@@ -38,6 +38,8 @@ let projectExists: boolean;
 let saves: { layer: string; text: string; ifMatch: string | null; ifNoneMatch: string | null }[];
 // the answer to a lookup of an OpenRouter model
 let lookup: (url: URL) => Response | Promise<Response>;
+// the answer to adding a looked-up profile to the project's config
+let added: () => Response;
 
 const profile = (over: Partial<ProfileInfo>): ProfileInfo => ({
   name: "spark",
@@ -250,6 +252,7 @@ beforeEach(() => {
   projectExists = true;
   saves = [];
   lookup = () => Response.json(draft());
+  added = () => Response.json({ name: "openrouter-gem-9", path: "/work/aims.toml" });
   FakeEventSource.all = [];
   vi.stubGlobal("EventSource", FakeEventSource);
   vi.stubGlobal("fetch", fetch);
@@ -272,6 +275,10 @@ beforeEach(() => {
         checks: [{ name: "tools", verdict: "warn", detail: "slow" }],
       };
       return Response.json({ run_ids: [CHECK] }, { status: 202 });
+    }
+    if (url.pathname === "/api/models/add") {
+      if (role !== "operator") return problem(403, "operators only");
+      return added();
     }
     if (url.pathname === "/api/models/lookup") {
       if (role !== "operator") return problem(403, "operators only");
@@ -453,7 +460,7 @@ test("a lookup asks only on submit and shows the profile to copy and where it go
   expect(dialog.getByRole("link", { name: "Config" }).getAttribute("href")).toBe(
     "/settings/config?view=project",
   );
-  expect(dialog.queryByRole("button", { name: /^Save/ })).toBeNull();
+  expect(calls("POST", "/api/models/add")).toHaveLength(0);
 
   fireEvent.click(dialog.getByRole("button", { name: "Copy" }));
   expect(await dialog.findByRole("button", { name: "Copied" })).toBeTruthy();
@@ -494,6 +501,51 @@ test("a lookup sends the name and alias it is given and warns of a name in use",
   ).toBeTruthy();
   expect(dialog.getByLabelText("Profile spark")).toBeTruthy();
   expect(dialog.queryByRole("button", { name: "Copy" })).toBeNull();
+  // the server would refuse a name in use
+  expect(dialog.getByRole("button", { name: "Add to project config" })).toHaveProperty(
+    "disabled",
+    true,
+  );
+});
+
+test("a looked-up profile is added to the project config on request", async () => {
+  added = () =>
+    Response.json(
+      { status: 422, title: "Config does not load", detail: "aims.toml: unknown table(s) nope" },
+      { status: 422 },
+    );
+  lookup = (url) => Response.json(draft({ slug: url.searchParams.get("slug") ?? "", name: "gem" }));
+  const { dialog, id } = await openLookup();
+  fireEvent.change(id, { target: { value: "~acme/gem-latest" } });
+  fireEvent.change(dialog.getByRole("textbox", { name: "Profile name (optional)" }), {
+    target: { value: "gem" },
+  });
+  fireEvent.click(dialog.getByRole("checkbox", { name: /^Allow an alias/ }));
+  fireEvent.submit(id);
+  const add = await dialog.findByRole("button", { name: "Add to project config" });
+  fireEvent.click(add);
+  expect(await dialog.findByText("aims.toml: unknown table(s) nope")).toBeTruthy();
+  expect(await calls("POST", "/api/models/add")[0]?.json()).toEqual({
+    slug: "~acme/gem-latest",
+    source: "openrouter",
+    name: "gem",
+    alias: true,
+  });
+
+  added = () => Response.json({ name: "gem", path: "/work/aims.toml" });
+  const lists = calls("GET", "/api/models").filter(
+    (r) => new URL(r.url).pathname === "/api/models",
+  );
+  fireEvent.click(add);
+  expect(await dialog.findByText("/work/aims.toml")).toBeTruthy();
+  expect(dialog.queryByText("aims.toml: unknown table(s) nope")).toBeNull();
+  expect(dialog.queryByRole("button", { name: "Add to project config" })).toBeNull();
+  // the profile list is read again
+  await waitFor(() =>
+    expect(
+      calls("GET", "/api/models").filter((r) => new URL(r.url).pathname === "/api/models").length,
+    ).toBeGreaterThan(lists.length),
+  );
 });
 
 test("a lookup shows it is under way and why the server refused it", async () => {

@@ -52,7 +52,7 @@ from aims.events.schema import blob_refs
 from aims.events.store import is_run_id
 from aims.models import Profile, ProfileError
 from aims.models.check import Verdict
-from aims.models.openrouter import CatalogError, draft
+from aims.models.openrouter import CatalogError, Draft, draft
 from aims.monitor import sweep_texts
 from aims.monitor import texts as monitor_texts
 from aims.monitor.config import MonitorConfigError, Preset
@@ -1930,6 +1930,15 @@ class ProfileDraft(Out):
     exists: bool
 
 
+async def drafted(state: ServerState, slug: str, name: str | None, alias: bool) -> Draft:
+    """The profile for OpenRouter model `slug`, or the problem that says why there is none."""
+    try:
+        return draft(await state.catalog.models(), slug, name=name, alias=alias)
+    except CatalogError as e:
+        status = {"missing": 404, "unreachable": 502}.get(e.kind, 422)
+        raise ProblemException(status, TITLES[status], str(e), code=e.kind) from None
+
+
 @router.get("/models/lookup", tags=["models"], responses=responses(404, 502))
 async def lookup_model(
     principal: Operator,
@@ -1940,13 +1949,9 @@ async def lookup_model(
     alias: bool = False,
 ) -> ProfileDraft:
     """A profile for model `slug`, filled in from the provider's public list of models, which
-    the server reads. Nothing is saved. `alias` takes an alias the provider moves to newer
-    models."""
-    try:
-        found = draft(await state.catalog.models(), slug, name=name, alias=alias)
-    except CatalogError as e:
-        status = {"missing": 404, "unreachable": 502}.get(e.kind, 422)
-        raise ProblemException(status, TITLES[status], str(e), code=e.kind) from None
+    the server reads. Nothing is saved: `POST /models/add` does that. `alias` takes an alias the
+    provider moves to newer models."""
+    found = await drafted(state, slug, name, alias)
     return ProfileDraft(
         name=found.name,
         slug=found.slug,
