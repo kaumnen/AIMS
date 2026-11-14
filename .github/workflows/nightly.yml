@@ -1,0 +1,18 @@
+name: nightly
+
+# A push runs only the jobs its change can break. This runs every job on both Python versions,
+# so a break the rules missed shows within a day.
+on:
+  schedule:
+    - cron: "43 2 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  ci:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml # zizmor: ignore[self-repository]
+    with:
+      full: true

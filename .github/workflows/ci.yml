@@ -5,22 +5,70 @@ on:
     branches: [main]
   pull_request:
   workflow_call:
+    inputs:
+      # Every job on both Python versions, whatever changed.
+      full:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
+# A push to main is compared with the push before it, so each one runs to its end: a cancelled
+# run would leave its change untested. A pull request is compared with its base each time, so a
+# new commit replaces the run of the last one. The name is the caller's in a called run.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Which jobs the change needs. The rules are in .github/changes.py.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      python: ${{ steps.pick.outputs.python }}
+      containers: ${{ steps.pick.outputs.containers }}
+      web: ${{ steps.pick.outputs.web }}
+      image: ${{ steps.pick.outputs.image }}
+      bench: ${{ steps.pick.outputs.bench }}
+      full: ${{ steps.pick.outputs.full }}
+    steps:
+      # Two commits deep: a pull request is checked out as its merge commit, whose first parent
+      # is the base.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      # A push names the commit it replaced, which the checkout did not fetch. A base that is
+      # missing or cannot be fetched turns every job on.
+      - id: pick
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          FORCED: ${{ github.event.forced }}
+          FULL: ${{ inputs.full }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            base=$(git rev-parse --verify --quiet HEAD^1) || base=
+          else
+            base=$BEFORE
+            case $base in
+              "" | *[!0-9a-f]*) base= ;;
+              *) git fetch --quiet --depth=1 origin "$base" || true ;;
+            esac
+          fi
+          python3 .github/changes.py --base "$base" --forced "$FORCED" --full "$FULL"
+
   python:
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.14", "3.15"]
+        python: ${{ fromJSON(needs.changes.outputs.full == 'true' && '["3.14", "3.15"]' || '["3.15"]') }}
         # Coverage is measured on one leg, as no code depends on the Python version.
         include:
           - python: "3.15"
@@ -29,6 +77,9 @@ jobs:
       UV_PYTHON: ${{ matrix.python }}
       AIMS_REQUIRE_DOCKER: "1"
       AIMS_REQUIRE_TRACER: "1"
+      CONTAINERS: ${{ needs.changes.outputs.containers }}
+      # Added to both test runs when the change cannot reach the container tests.
+      LEAVE_OUT: ${{ needs.changes.outputs.containers != 'true' && ' and not docker and not tracer' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -41,15 +92,16 @@ jobs:
       - run: uv run ruff check
       - run: uv run ruff format --check
       - run: uv run ty check
-      - run: uv run pytest -n 4 --dist loadfile -m "not serial and not timing"
+      - run: uv run pytest -n 4 --dist loadfile -m "not serial and not timing$LEAVE_OUT"
         env:
           PYTEST_ADDOPTS: ${{ matrix.coverage && '--cov' || '' }}
-      - if: matrix.coverage
+      # A run without the container tests would report a lower number.
+      - if: matrix.coverage && env.CONTAINERS == 'true'
         run: echo "Coverage $(uv run coverage report --format=total)%" >> "$GITHUB_STEP_SUMMARY"
       # The tracer and sampler tests need the runner to themselves, and the timing tests fail on
       # a busy one. -v names a test that times out, as the timeout ends the process before the
       # summary.
-      - run: uv run pytest -m "serial or timing" -v
+      - run: uv run pytest -m "(serial or timing)$LEAVE_OUT" -v
 
   workflows:
     runs-on: ubuntu-latest
@@ -66,6 +118,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
   web:
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -91,6 +145,8 @@ jobs:
       - run: bun run budget
 
   image:
+    needs: changes
+    if: needs.changes.outputs.image == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -110,6 +166,8 @@ jobs:
           fi
 
   ui-bench:
+    needs: changes
+    if: needs.changes.outputs.bench == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -149,3 +207,23 @@ jobs:
           name: pass-shots
           path: web/pass-shots
           if-no-files-found: ignore
+
+  # The one check a branch rule needs. Each job must have run and passed when the change asked
+  # for it, and must have been left out when it did not.
+  ci:
+    needs: [changes, python, workflows, web, image, ui-bench]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<< "$NEEDS"
+          jq -e '
+            def ran(job; switch):
+              .[job].result == (if .changes.outputs[switch] == "true" then "success" else "skipped" end);
+            .changes.result == "success" and .workflows.result == "success"
+            and ran("python"; "python") and ran("web"; "web")
+            and ran("image"; "image") and ran("ui-bench"; "bench")
+          ' <<< "$NEEDS" > /dev/null
