@@ -372,6 +372,58 @@ def models_check(
         raise typer.Exit(1)
 
 
+@models_app.command("add")
+def models_add(
+    source: Annotated[str, typer.Argument(help="Where the model is served: openrouter.")],
+    slug: Annotated[str, typer.Argument(help="The model's id there, such as author/model-name.")],
+    name: Annotated[
+        str | None, typer.Option(help="The profile's name instead of openrouter-<model>.")
+    ] = None,
+    alias: Annotated[
+        bool, typer.Option("--alias", help="Take an alias that OpenRouter moves to newer models.")
+    ] = False,
+    write: Annotated[
+        bool, typer.Option("--write", help="Add the profile to the project's aims.toml.")
+    ] = False,
+    config: ConfigOption = None,
+) -> None:
+    """Print a profile for a model, filled in from the provider's public list of models."""
+    import asyncio
+
+    from aims.models.openrouter import CatalogError, draft, fetch
+
+    if source != "openrouter":
+        raise typer.BadParameter("the only source is openrouter", param_hint="SOURCE")
+    settings = _settings(config) if write else None
+    try:
+        found = draft(asyncio.run(fetch()), slug, name=name, alias=alias)
+    except CatalogError as e:
+        _echo(f"error: {e}", err=True)
+        raise typer.Exit(1) from None
+    text = found.toml()
+    if settings is None:
+        typer.echo(text, nl=False)
+    else:
+        from aims.config import ConfigError, add_table
+        from aims.models import ProfileError
+        from aims.prompts import TextError
+
+        if found.name in settings.models.profiles:
+            _echo(f"error: a profile named {found.name} exists; pass --name for another", err=True)
+            raise typer.Exit(1)
+        try:
+            path = add_table(settings.layers, text)
+        except (ConfigError, ProfileError, TextError) as e:
+            _echo(f"error: {e}", err=True)
+            raise typer.Exit(1) from None
+        except OSError as e:
+            _echo(f"error: cannot write {e.filename or 'the config file'}: {e.strerror}", err=True)
+            raise typer.Exit(1) from None
+        _echo(f"added {found.name} to {path}", err=True)
+    for note in found.notes:
+        typer.echo(f"note: {note}", err=True)
+
+
 async def _stop_lines(store: Any, kind: str, run_ids: list[str]) -> list[str]:
     """Where a command that was stopped left each of its runs `run_ids`, of kind `kind`:
     sealed, with the status it has, or never made. A stop that came as a run sealed leaves the

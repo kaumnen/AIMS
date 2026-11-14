@@ -274,6 +274,13 @@
     { "name": "config-viewer", "path": "/settings/config", "as": "viewer", "ready": ".cm-content" },
     { "name": "prompts", "path": "/settings/prompts", "ready": "#main section ul" },
     { "name": "models", "path": "/settings/models", "ready": "#main table" },
+    {
+      "name": "model-lookup",
+      "path": "/settings/models",
+      "dialog": true,
+      "ready": "[role=dialog]",
+      "steps": [{ "wait": "#main table", "click": "Add from OpenRouter" }]
+    },
     { "name": "runners", "path": "/settings/runners", "ready": "#main table" },
     { "name": "tokens", "path": "/settings/tokens", "ready": "#main table" },
     { "name": "spend", "path": "/settings/spend", "ready": "#main table" },

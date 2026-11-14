@@ -197,6 +197,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/models/lookup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Lookup Model
+         * @description A profile for model `slug`, filled in from the provider's public list of models, which
+         *     the server reads. Nothing is saved. `alias` takes an alias the provider moves to newer
+         *     models.
+         */
+        get: operations["lookup_model"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/prompts": {
         parameters: {
             query?: never;
@@ -5557,6 +5579,23 @@ export interface components {
             /** Status */
             status: string;
         };
+        /**
+         * ProfileDraft
+         * @description A profile for a model a provider lists, as config file text to add under a layer.
+         *     `notes` say what its reader should know. `exists` when a profile has the name already.
+         */
+        ProfileDraft: {
+            /** Exists */
+            exists: boolean;
+            /** Name */
+            name: string;
+            /** Notes */
+            notes: string[];
+            /** Slug */
+            slug: string;
+            /** Toml */
+            toml: string;
+        };
         /** ProfileInfo */
         ProfileInfo: {
             /** Backend */
@@ -8765,6 +8804,76 @@ export interface operations {
             };
             /** @description Invalid request */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    lookup_model: {
+        parameters: {
+            query: {
+                slug: string;
+                source?: "openrouter";
+                name?: string | null;
+                alias?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileDraft"];
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Bad gateway */
+            502: {
                 headers: {
                     [name: string]: unknown;
                 };

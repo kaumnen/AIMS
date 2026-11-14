@@ -4,7 +4,7 @@ import { createBrowserHistory, createMemoryHistory, RouterProvider } from "@tans
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 
-import type { ProfileInfo } from "@/api/launch";
+import type { ProfileDraft, ProfileInfo } from "@/api/launch";
 import type { PromptText } from "@/api/scenario-files";
 import type { AuditEntry, ProviderCredit, TokenInfo } from "@/api/settings";
 import { makeRouter } from "@/router";
@@ -36,6 +36,8 @@ const CHECK = "01a19200-0000-7000-8000-000000000001";
 let texts: Record<"user" | "project", string>;
 let projectExists: boolean;
 let saves: { layer: string; text: string; ifMatch: string | null; ifNoneMatch: string | null }[];
+// the answer to a lookup of an OpenRouter model
+let lookup: (url: URL) => Response | Promise<Response>;
 
 const profile = (over: Partial<ProfileInfo>): ProfileInfo => ({
   name: "spark",
@@ -47,6 +49,17 @@ const profile = (over: Partial<ProfileInfo>): ProfileInfo => ({
   envs: ["META_API_KEY"],
   runners: ["local"],
   check: null,
+  ...over,
+});
+
+const TOML = '[profiles."openrouter-gem-9"]\nbackend = "chat"\nmodel = "acme/gem-9"\n';
+
+const draft = (over: Partial<ProfileDraft> = {}): ProfileDraft => ({
+  name: "openrouter-gem-9",
+  slug: "acme/gem-9",
+  toml: TOML,
+  notes: ["OpenRouter lists no context size for it, so context_tokens is unset."],
+  exists: false,
   ...over,
 });
 
@@ -236,6 +249,7 @@ beforeEach(() => {
   texts = { user: "", project: "[credits]\nmeta = 150\n" };
   projectExists = true;
   saves = [];
+  lookup = () => Response.json(draft());
   FakeEventSource.all = [];
   vi.stubGlobal("EventSource", FakeEventSource);
   vi.stubGlobal("fetch", fetch);
@@ -258,6 +272,10 @@ beforeEach(() => {
         checks: [{ name: "tools", verdict: "warn", detail: "slow" }],
       };
       return Response.json({ run_ids: [CHECK] }, { status: 202 });
+    }
+    if (url.pathname === "/api/models/lookup") {
+      if (role !== "operator") return problem(403, "operators only");
+      return lookup(url);
     }
     if (url.pathname === "/api/runners")
       return Response.json([
@@ -396,11 +414,124 @@ test("quick clicks start one model check, and one that did not start can be trie
   expect(posts()).toHaveLength(2);
 });
 
-test("viewers see the profiles without checks", async () => {
+test("viewers see the profiles without checks or a lookup", async () => {
   role = "viewer";
   renderAt("/settings/models");
   await screen.findByRole("table");
   expect(screen.queryByRole("button", { name: /Check/ })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Add from OpenRouter" })).toBeNull();
+});
+
+const lookups = () => calls("GET", "/api/models/lookup").map((r) => new URL(r.url));
+
+async function openLookup() {
+  renderAt("/settings/models");
+  await screen.findByRole("table");
+  fireEvent.click(screen.getByRole("button", { name: "Add from OpenRouter" }));
+  const dialog = within(await screen.findByRole("dialog"));
+  return { dialog, id: dialog.getByRole("textbox", { name: "Model id" }) };
+}
+
+test("a lookup asks only on submit and shows the profile to copy and where it goes", async () => {
+  const writeText = vi.fn<(text: string) => Promise<void>>(async () => undefined);
+  vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+  const { dialog, id } = await openLookup();
+  const button = dialog.getByRole("button", { name: "Look up" });
+  expect(button).toHaveProperty("disabled", true);
+
+  fireEvent.change(id, { target: { value: " acme/gem-9 " } });
+  expect(lookups()).toHaveLength(0);
+  // what Enter in the field does
+  fireEvent.submit(id);
+  expect(await dialog.findByText(/^OpenRouter lists no context size/)).toBeTruthy();
+  expect(lookups().map((u) => Object.fromEntries(u.searchParams))).toEqual([
+    { slug: "acme/gem-9", source: "openrouter" },
+  ]);
+  expect(dialog.getByLabelText("Profile openrouter-gem-9").textContent).toBe(TOML);
+  expect(dialog.queryByText(/exists already/)).toBeNull();
+  expect(dialog.getByText("aims models add openrouter acme/gem-9 --write")).toBeTruthy();
+  expect(dialog.getByRole("link", { name: "Config" }).getAttribute("href")).toBe(
+    "/settings/config?view=project",
+  );
+  expect(dialog.queryByRole("button", { name: /^Save/ })).toBeNull();
+
+  fireEvent.click(dialog.getByRole("button", { name: "Copy" }));
+  expect(await dialog.findByRole("button", { name: "Copied" })).toBeTruthy();
+  expect(writeText).toHaveBeenCalledWith(TOML);
+  expect(lookups()).toHaveLength(1);
+});
+
+test("a lookup sends the name and alias it is given and warns of a name in use", async () => {
+  // plain http on a LAN address has no clipboard
+  vi.stubGlobal("navigator", { ...navigator, clipboard: undefined });
+  lookup = (url) =>
+    Response.json(
+      draft({
+        slug: url.searchParams.get("slug") ?? "",
+        name: url.searchParams.get("name") ?? "",
+        notes: [],
+        exists: true,
+      }),
+    );
+  const { dialog, id } = await openLookup();
+  fireEvent.change(id, { target: { value: "~acme/gem-latest" } });
+  fireEvent.change(dialog.getByRole("textbox", { name: "Profile name (optional)" }), {
+    target: { value: "spark" },
+  });
+  fireEvent.click(
+    dialog.getByRole("checkbox", { name: "Allow an alias that OpenRouter moves to newer models" }),
+  );
+  fireEvent.click(dialog.getByRole("button", { name: "Look up" }));
+  expect(await dialog.findByText(/^A profile named spark exists already\./)).toBeTruthy();
+  expect(Object.fromEntries(lookups()[0]?.searchParams ?? [])).toEqual({
+    slug: "~acme/gem-latest",
+    source: "openrouter",
+    name: "spark",
+    alias: "true",
+  });
+  expect(
+    dialog.getByText("aims models add openrouter '~acme/gem-latest' --name spark --alias --write"),
+  ).toBeTruthy();
+  expect(dialog.getByLabelText("Profile spark")).toBeTruthy();
+  expect(dialog.queryByRole("button", { name: "Copy" })).toBeNull();
+});
+
+test("a lookup shows it is under way and why the server refused it", async () => {
+  const answer = Promise.withResolvers<Response>();
+  lookup = () => answer.promise;
+  const { dialog, id } = await openLookup();
+  const button = dialog.getByRole("button", { name: "Look up" });
+  fireEvent.change(id, { target: { value: "acme/gem-0" } });
+  act(() => {
+    fireEvent.submit(id);
+    fireEvent.submit(id);
+  });
+  expect(await dialog.findByText("Looking up acme/gem-0")).toBeTruthy();
+  expect(button).toHaveProperty("disabled", true);
+  expect(lookups()).toHaveLength(1);
+  answer.resolve(
+    Response.json(
+      {
+        status: 404,
+        title: "Not Found",
+        detail: "no model acme/gem-0 on OpenRouter; close ids: acme/gem-9",
+        code: "missing",
+      },
+      { status: 404 },
+    ),
+  );
+  expect(
+    await dialog.findByText("no model acme/gem-0 on OpenRouter; close ids: acme/gem-9"),
+  ).toBeTruthy();
+  expect(dialog.queryByText(/^Looking up/)).toBeNull();
+  expect(document.querySelector("[role=dialog] pre")).toBeNull();
+
+  // a problem with no detail says its title
+  lookup = () =>
+    Response.json({ status: 502, title: "Bad Gateway", detail: null }, { status: 502 });
+  fireEvent.click(button);
+  expect(await dialog.findByText("Bad Gateway")).toBeTruthy();
+  expect(lookups()).toHaveLength(2);
 });
 
 test("runners join the list with the live stream", async () => {

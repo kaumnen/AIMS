@@ -18,6 +18,8 @@ A scenario overrides all of them for its agents. A missing file adds nothing; no
 import hashlib
 import math
 import os
+import secrets
+import stat
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -26,10 +28,10 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from aims.models import ModelsConfig, load_models
+from aims.models import ModelsConfig, ProfileError, load_models
 from aims.monitor.config import MonitorConfigError, layer, merge
 from aims.monitor.texts import resolve
-from aims.prompts import Prompts, load_prompts
+from aims.prompts import Prompts, TextError, load_prompts
 from aims.sandbox.images import KEEP_DAYS
 from aims.tools import registry
 
@@ -304,4 +306,29 @@ def init(path: Path, *, force: bool = False) -> Path:
         raise ConfigError(f"{path} exists; pass --force to replace it")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(STARTER)
+    return path
+
+
+def add_table(found: Layers, table: str) -> Path:
+    """Append `table`, the TOML text of one, to the project file of `found`, or to a new
+    aims.toml in the working directory when there is none. The layers must load with it first:
+    a ConfigError, ProfileError or TextError leaves the file as it was."""
+    path = found.project if found.project is not None else Path.cwd() / PROJECT
+    old = path.read_bytes() if path.is_file() else b""
+    gap = b"" if not old else b"\n" if old.endswith(b"\n") else b"\n\n"
+    # The trial file sits beside the real one, as `[scenarios] paths` are relative to it, and
+    # becomes it once the layers load.
+    tmp = path.parent / f".{path.name}.{secrets.token_hex(4)}"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_bytes(old + gap + table.encode())
+        try:
+            load_layers(Layers(user=found.user, project=tmp))
+        except (ConfigError, ProfileError, TextError) as e:
+            raise type(e)(str(e).replace(str(tmp), str(path))) from None
+        if old or path.is_file():
+            tmp.chmod(stat.S_IMODE(path.stat().st_mode))
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
     return path

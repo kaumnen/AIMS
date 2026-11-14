@@ -3,6 +3,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 
 import { modelsQuery, type ProfileInfo } from "@/api/launch";
 import { CHECK_TEXT, useModelCheck } from "@/components/model-check";
+import { ModelLookup } from "@/components/settings/model-lookup";
 import { Button } from "@/components/ui/button";
 import { started } from "@/lib/format";
 import { checkProblem, checkState } from "@/lib/launch";
@@ -45,16 +46,20 @@ function Models() {
             ? "Set in the config files; a check makes a few small paid calls per profile."
             : "Set in the config files."}
         </span>
-        {operator && profiles.length > 0 && (
-          <Button
-            variant="outline"
-            size="xs"
-            className="ml-auto"
-            disabled={checking !== null}
-            onClick={() => void check(profiles.map((p) => p.name))}
-          >
-            Check all
-          </Button>
+        {operator && (
+          <div className="ml-auto flex gap-2">
+            <ModelLookup />
+            {profiles.length > 0 && (
+              <Button
+                variant="outline"
+                size="xs"
+                disabled={checking !== null}
+                onClick={() => void check(profiles.map((p) => p.name))}
+              >
+                Check all
+              </Button>
+            )}
+          </div>
         )}
       </div>
       {problem && <p className="text-flag">{problem}</p>}

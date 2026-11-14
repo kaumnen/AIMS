@@ -81,6 +81,7 @@ TITLES = {
     428: "Precondition required",
     429: "Too many requests",
     500: "Server error",
+    502: "Bad gateway",
     503: "Unavailable",
 }
 

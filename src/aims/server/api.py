@@ -52,6 +52,7 @@ from aims.events.schema import blob_refs
 from aims.events.store import is_run_id
 from aims.models import Profile, ProfileError
 from aims.models.check import Verdict
+from aims.models.openrouter import CatalogError, draft
 from aims.monitor import sweep_texts
 from aims.monitor import texts as monitor_texts
 from aims.monitor.config import MonitorConfigError, Preset
@@ -81,7 +82,7 @@ from aims.server import series as sseries
 from aims.server.auth import Principal, require
 from aims.server.codings import allowed
 from aims.server.files import Source, Sources
-from aims.server.problems import ProblemError, ProblemException, responses
+from aims.server.problems import TITLES, ProblemError, ProblemException, responses
 from aims.server.runner_api import JOBS, send
 from aims.server.state import FileCache, ServerState
 from aims.text import NoLoneSurrogate, Utf8, scrub
@@ -1916,6 +1917,43 @@ async def check_models(
     )
     note.detail = audit.runs(started.run_ids)
     return started
+
+
+class ProfileDraft(Out):
+    """A profile for a model a provider lists, as config file text to add under a layer.
+    `notes` say what its reader should know. `exists` when a profile has the name already."""
+
+    name: str
+    slug: str
+    toml: str
+    notes: list[str]
+    exists: bool
+
+
+@router.get("/models/lookup", tags=["models"], responses=responses(404, 502))
+async def lookup_model(
+    principal: Operator,
+    state: State,
+    slug: Annotated[Utf8, Query(min_length=1, max_length=200)],
+    source: Literal["openrouter"] = "openrouter",
+    name: Annotated[Utf8 | None, Query(min_length=1, max_length=200)] = None,
+    alias: bool = False,
+) -> ProfileDraft:
+    """A profile for model `slug`, filled in from the provider's public list of models, which
+    the server reads. Nothing is saved. `alias` takes an alias the provider moves to newer
+    models."""
+    try:
+        found = draft(await state.catalog.models(), slug, name=name, alias=alias)
+    except CatalogError as e:
+        status = {"missing": 404, "unreachable": 502}.get(e.kind, 422)
+        raise ProblemException(status, TITLES[status], str(e), code=e.kind) from None
+    return ProfileDraft(
+        name=found.name,
+        slug=found.slug,
+        toml=found.toml(),
+        notes=list(found.notes),
+        exists=found.name in state.config.settings().models.profiles,
+    )
 
 
 class Text(Out):

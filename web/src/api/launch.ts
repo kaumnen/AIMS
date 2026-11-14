@@ -8,6 +8,7 @@ export type StartRun = Schemas["StartRun"];
 export type Estimate = Schemas["Estimate"];
 export type ProfileInfo = Schemas["ProfileInfo"];
 export type ProfileCheck = Schemas["ProfileCheck"];
+export type ProfileDraft = Schemas["ProfileDraft"];
 export type Preset = NonNullable<StartRun["monitor"]>;
 export type Started = Schemas["Started"];
 
@@ -73,4 +74,20 @@ export async function checkModels(profiles: string[]): Promise<string> {
   const [id] = data.run_ids;
   if (id === undefined) throw new Error("no check run");
   return id;
+}
+
+// A profile for OpenRouter model `slug`, as config file text. The server reads OpenRouter's list
+// each time and saves nothing. An empty `name` leaves the name to the server.
+export async function lookupModel(
+  slug: string,
+  name: string,
+  alias: boolean,
+): Promise<ProfileDraft> {
+  const { data, error } = await client.GET("/api/models/lookup", {
+    params: {
+      query: { slug, source: "openrouter", ...(name ? { name } : {}), ...(alias ? { alias } : {}) },
+    },
+  });
+  if (error) throw error;
+  return data;
 }

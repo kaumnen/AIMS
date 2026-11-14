@@ -12,6 +12,7 @@ from pathlib import Path
 from aims.config import ConfigError, Layers, Settings, layers, load
 from aims.events import Event, LocalEventStore
 from aims.models import Delta, DeltaBus, ProfileError
+from aims.models.openrouter import Catalog
 from aims.monitor.config import MonitorConfigError
 from aims.prompts import TextError
 from aims.run.estimate import History, history
@@ -301,6 +302,8 @@ class ServerState:
     # each model check run the models list read, by run id: the head it was read at, the
     # profiles it checks and its model.checked events
     check_runs: dict[str, tuple[str, list[str], list[Event]]] = field(default_factory=dict)
+    # OpenRouter's list of models, for the profile lookup
+    catalog: Catalog = field(default_factory=Catalog)
 
     def spool(self) -> Path:
         """A private folder in the data directory for request bodies too large for memory, made
