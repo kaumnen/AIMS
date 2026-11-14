@@ -97,7 +97,16 @@ export function RunControls({ detail }: { detail: RunDetail }) {
   const run = detail.run;
   const live = run.status === "running" && run.state === "running";
   const waiting = WAITING.has(run.state);
-  if (!operator || (!live && !waiting)) return null;
+  if (!operator) return null;
+  // the run can end before its last command is answered or read: the answer stays, as one that
+  // says what a kill left behind
+  if (!live && !waiting) {
+    return answer === null ? null : (
+      <div className="flex flex-col items-end gap-1">
+        <CommandAnswer answer={answer} />
+      </div>
+    );
+  }
   const agents = agentsOf(detail);
   const held = [...new Set(run.held.map((h) => h.agent))];
   const free = agents.filter((a) => !held.includes(a));
