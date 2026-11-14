@@ -29,6 +29,7 @@ from aims.events import (
     ModelUsage,
     MonitorDegraded,
     MonitorSweep,
+    OperatorAction,
     RunFinished,
     RunStarted,
     RunStatus,
@@ -169,9 +170,11 @@ async def record(
     fork: bool = False,
     profile: str | None = None,
     budget: BudgetOverride | None = None,
+    operator: OperatorAction | None = None,
 ) -> str:
     """A sealed run of `bundle` as the runner writes it: run.started with the agents' profiles,
-    the resolved scenario and monitor, one agent call costing `cost`, the end of each agent."""
+    the resolved scenario and monitor, one agent call costing `cost`, the end of each agent.
+    `operator` is a command an operator sent it."""
     p = plan(settings, bundle, profile=profile)
     agent = p.profiles["a"]
     config: dict[str, Any] = {
@@ -199,6 +202,8 @@ async def record(
         ]
     if monitor_capped:
         drafts.append(Draft(MonitorDegraded(part="budget", reason="spent", then="signals_only")))
+    if operator is not None:
+        drafts.append(Draft(operator))
     finished = AgentFinished(reason=reason, steps=taken, cost_usd=cost)
     drafts += [Draft(finished, "a"), Draft(RunFinished(status=status))]
     await store.append(run_id, drafts)
@@ -642,6 +647,24 @@ async def test_forks_unsealed_and_failed_runs_are_left_out_but_their_spend_count
     found = await history(store)
     assert found.runs == []
     assert found.spend == {"meta": pytest.approx(3.0)}
+
+
+@pytest.mark.anyio
+async def test_a_run_an_operator_killed_is_left_out_and_one_its_monitor_killed_counts(
+    tmp_path: Path, store: LocalEventStore
+) -> None:
+    settings, path = write(tmp_path)
+    bundle = load_scenario(path)
+    kill = OperatorAction(action="kill")
+    then = OperatorAction(action="resume", then="kill")
+    await record(store, settings, bundle, 1.0, status="killed", reason="killed", operator=kill)
+    await record(store, settings, bundle, 1.0, status="killed", reason="killed", operator=then)
+    gate = await record(store, settings, bundle, 1.0, status="killed", reason="killed")
+    paused = OperatorAction(action="pause")
+    held = await record(store, settings, bundle, 1.0, status="killed", operator=paused)
+    found = await history(store)
+    assert sorted(r.run_id for r in found.runs) == sorted([gate, held])
+    assert found.spend == {"meta": pytest.approx(4.0)}
 
 
 @pytest.mark.anyio

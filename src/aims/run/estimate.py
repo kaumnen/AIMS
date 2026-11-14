@@ -49,11 +49,20 @@ MonitorKey = tuple[str, tuple[tuple[str, str | None], ...]]
 MIN_RUNS = 10
 CACHED_SHARE = 0.9
 PROJECT_AFTER = 3
+# A killed run counts when its monitor killed it, which is an end of its own. A run a person
+# cut short, by a kill or a cancel, says nothing of what a whole run costs.
 STATUSES = frozenset({"completed", "killed"})
-TYPES = ("run.started", "agent.finished", "model.request", "model.response", "monitor.degraded")
+TYPES = (
+    "run.started",
+    "agent.finished",
+    "model.request",
+    "model.response",
+    "monitor.degraded",
+    "operator.action",
+)
 PAGE = 1000
 # The shape of a run's cost row in the index; a row of another shape is read again.
-ROW = 2
+ROW = 3
 MILLION = 1_000_000
 
 
@@ -339,7 +348,7 @@ async def _read(store: LocalEventStore, info: RunInfo) -> _Run:
     sides: tuple[dict[str, Tokens], dict[str, Tokens]] = ({}, {})
     started: dict[str, Any] | None = None
     steps: dict[str, int] = {}
-    capped = watch_capped = False
+    capped = watch_capped = cut = False
     cursor: int | None = None
     while page := await store.events(info.run_id, after=cursor, limit=PAGE, types=TYPES):
         cursor = page[-1].seq
@@ -376,8 +385,12 @@ async def _read(store: LocalEventStore, info: RunInfo) -> _Run:
                     capped = capped or _str(d.get("reason")).startswith("budget_")
                 case "monitor.degraded":
                     watch_capped = watch_capped or d.get("part") == "budget"
+                case "operator.action":
+                    cut = cut or "kill" in (d.get("action"), d.get("then"))
     out.spend, out.cached = dict(spend), dict(cached)
     if info.kind != "scenario" or info.status not in STATUSES or started is None:
+        return out
+    if info.status == "killed" and cut:
         return out
     config = _dict(started.get("config"))
     if config.get("fork") is not None or started.get("cut") is not None:
