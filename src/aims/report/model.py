@@ -20,6 +20,7 @@ from aims.events import (
     RunKind,
     RunStatus,
     ScoreMatch,
+    Served,
     Told,
 )
 from aims.events.index import FlagStatus
@@ -257,7 +258,8 @@ class AgentFacts(_Model):
 class Facts(_Model):
     """`kernel` counts the kernel events by type. `agent_cost_usd` and `monitor_cost_usd` sum
     the priced live model calls of the agents and of the live monitor, its judge included.
-    `review_cost_usd` is what the review picked as the source cost."""
+    `review_cost_usd` is what the review picked as the source cost. `served` lists the
+    providers that answered each model's calls, for the models whose answers named one."""
 
     agents: list[AgentFacts] = Field(default_factory=list)
     duration_ms: int | None = None
@@ -267,6 +269,7 @@ class Facts(_Model):
     monitor_cost_usd: float | None = None
     review_cost_usd: float | None = None
     costs: list[CallCost] = Field(default_factory=list)
+    served: list[Served] = Field(default_factory=list)
     kernel: dict[str, int] = Field(default_factory=dict)
     flags: int = 0
 

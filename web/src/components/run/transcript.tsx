@@ -15,6 +15,7 @@ import { usd } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 import { KernelFold } from "./kernel";
+import { visible } from "./report/parts";
 import { TextOf } from "./text-of";
 import { parseArgs } from "./tool-text";
 
@@ -156,6 +157,7 @@ export function Transcript({
       ? `${((num(r["latency_ms"]) ?? 0) / 1000).toFixed(1)} s`
       : null,
     step.cost_usd !== null && step.cost_usd !== undefined ? usd(step.cost_usd) : null,
+    typeof r["provider"] === "string" && r["provider"] ? `via ${visible(r["provider"])}` : null,
     responses.length > 1 ? `${responses.length} attempts` : null,
     step.source === "replay" ? "replayed" : null,
   ].filter(Boolean);

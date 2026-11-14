@@ -1456,3 +1456,96 @@ def test_a_model_response_recorded_before_cost_source_loads() -> None:
     data = old.model_dump(mode="json")
     del data["cost_source"]
     assert ModelResponse.model_validate(data).cost_source is None
+
+
+ROUTED = {"provider": "Wafer", "model": "vendor/m-0910", "service_tier": "flex"}
+
+
+def routed(backend: str, streamed: bool, said: dict[str, Any]) -> httpx2.Response:
+    """An answer that says `said` about itself at the top, as a router's does."""
+    events: list[dict[str, Any]]
+    body: dict[str, Any]
+    if backend == "chat":
+        events = [{**e, **said} for e in CHAT_EVENTS]
+        message = {"role": "assistant", "content": "Hello"}
+        choices = [{"index": 0, "message": message, "finish_reason": "stop"}]
+        body = {"id": "c1", "choices": choices, "usage": _usage(USAGE), **said}
+    else:
+        body = RESPONSE | said
+        created = {"id": "resp_1", "status": "in_progress", **said}
+        events = [
+            {"type": "response.created", "response": created},
+            *RESPONSES_EVENTS[1:-1],
+            {"type": "response.completed", "response": body},
+        ]
+    if streamed:
+        return stream(sse(events))
+    return stream([json.dumps(body).encode()], content_type="application/json")
+
+
+async def _answered(store: LocalEventStore, backend: str, streamed: bool, said: Any) -> Any:
+    run_id = await new_run(store)
+    p = profile(backend=backend, stream=streamed, reasoning="none")
+    handler, _ = scripted(lambda: routed(backend, streamed, said))
+    async with client(store, run_id, p, handler) as mc:
+        await mc.call("test", PROMPT)
+    (response,) = [
+        e for e in payloads(await model_events(store, run_id)) if e.type == "model.response"
+    ]
+    assert response.body is not None
+    return response, json.loads(await store.get_blob(run_id, response.body.sha256))
+
+
+@pytest.mark.parametrize("backend", ["chat", "responses"])
+@pytest.mark.parametrize("streamed", [True, False])
+async def test_the_response_records_who_served_it(
+    store: LocalEventStore, backend: str, streamed: bool
+) -> None:
+    response, body = await _answered(store, backend, streamed, ROUTED)
+    assert (response.provider, response.model, response.service_tier) == (
+        "Wafer",
+        "vendor/m-0910",
+        "flex",
+    )
+    assert {k: body[k] for k in ROUTED} == ROUTED
+
+
+@pytest.mark.parametrize("backend", ["chat", "responses"])
+@pytest.mark.parametrize("streamed", [True, False])
+async def test_the_routing_metadata_names_the_provider_when_the_top_does_not(
+    store: LocalEventStore, backend: str, streamed: bool
+) -> None:
+    available = [
+        {"provider": "River", "model": "vendor/m-0910", "selected": False},
+        {"provider": "Cohere", "model": "vendor/m-0910", "selected": True},
+    ]
+    said = {"openrouter_metadata": {"attempt": 1, "endpoints": {"available": available}}}
+    response, body = await _answered(store, backend, streamed, said)
+    assert response.provider == "Cohere"
+    assert body["openrouter_metadata"] == said["openrouter_metadata"]
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        {},
+        {"provider": None, "service_tier": None},
+        {"provider": 7, "service_tier": ["x"], "openrouter_metadata": "yes"},
+        {"openrouter_metadata": {"endpoints": {"available": [{"selected": True}, "x"]}}},
+    ],
+)
+async def test_an_answer_that_names_no_provider_records_none(
+    store: LocalEventStore, said: dict[str, Any]
+) -> None:
+    response, _ = await _answered(store, "chat", True, said)
+    assert (response.provider, response.service_tier) == (None, None)
+    assert response.model == "m"
+
+
+def test_a_model_response_recorded_before_the_provider_fields_loads() -> None:
+    old = ModelResponse(call_id="c", attempt=1, status="completed", latency_ms=1)
+    data = old.model_dump(mode="json")
+    for key in ("provider", "model", "service_tier"):
+        del data[key]
+    loaded = ModelResponse.model_validate(data)
+    assert (loaded.provider, loaded.model, loaded.service_tier) == (None, None, None)

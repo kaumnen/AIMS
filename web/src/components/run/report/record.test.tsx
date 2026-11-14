@@ -320,3 +320,23 @@ test("an empty appendix says none", async () => {
   expect(appendix.getByText("None.")).toBeTruthy();
   expect(appendix.queryByText(/^Final answers/)).toBeNull();
 });
+
+test("run facts name the providers that served each model", async () => {
+  const r = live();
+  state.report = {
+    ...r,
+    facts: {
+      ...r.facts,
+      served: [
+        { model: "vendor/a", providers: { Wafer: 12, River: 1 } },
+        { model: "vendor/b", providers: { Cohere: 4 } },
+      ],
+    },
+  };
+  const facts = await section("Run facts");
+  const said = facts.getAllByText(/was served by/).map((p) => p.textContent);
+  expect(said).toEqual([
+    "vendor/a was served by 2 providers: Wafer (12 answers), River (1 answer).",
+    "vendor/b was served by Cohere.",
+  ]);
+});

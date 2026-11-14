@@ -35,6 +35,9 @@ class Assembled:
     error: str | None = None
     error_code: int | None = None
     cost_usd: float | None = None
+    provider: str | None = None
+    model: str | None = None
+    service_tier: str | None = None
 
     def turn(self, backend: ModelBackend) -> Turn:
         return Turn(
@@ -112,6 +115,23 @@ def _fail(out: Assembled, error: object, default: str) -> None:
     out.status = "error"
     out.error = _str(error) or _str(_get(error, "message")) or default
     out.error_code = _int(_get(error, "code"))
+
+
+def _served(out: Assembled, body: dict[str, Any]) -> None:
+    """Keep what `body`, a response or a chunk of one, says about who answered: the provider a
+    router picked, the model and the service tier. A router names the provider at the top, as
+    OpenRouter's chat answers do, or only in the routing metadata it was asked for."""
+    out.provider = _str(body.get("provider")) or _selected(body) or out.provider
+    out.model = _str(body.get("model")) or out.model
+    out.service_tier = _str(body.get("service_tier")) or out.service_tier
+
+
+def _selected(body: dict[str, Any]) -> str | None:
+    endpoints = _get(body, "openrouter_metadata", "endpoints", "available")
+    for endpoint in endpoints if isinstance(endpoints, list) else []:
+        if _get(endpoint, "selected") is True:
+            return _str(_get(endpoint, "provider"))
+    return None
 
 
 def _get(obj: object, *path: str) -> object:
@@ -219,6 +239,8 @@ class _ResponsesAccumulator:
         match kind:
             case "response.created" | "response.in_progress":
                 out.provider_id = _str(_get(event, "response", "id")) or out.provider_id
+                if isinstance(response := event.get("response"), dict):
+                    _served(out, response)
             case "response.output_text.delta":
                 delta = str(event.get("delta", ""))
                 out.text += delta
@@ -259,6 +281,7 @@ class _ResponsesAccumulator:
         out = self.out
         out.final = body
         out.provider_id = _str(body.get("id")) or out.provider_id
+        _served(out, body)
         status = body.get("status")
         if status == "completed":
             out.status = "completed"
@@ -411,7 +434,8 @@ class _ChatAccumulator:
         out = self.out
         pieces: list[Piece] = []
         out.provider_id = _str(event.get("id")) or out.provider_id
-        for key in ("id", "created", "model", "system_fingerprint"):
+        _served(out, event)
+        for key in _HEAD:
             if key in event and key not in self.head:
                 self.head[key] = event[key]
         usage = event.get("usage")
@@ -454,6 +478,7 @@ class _ChatAccumulator:
         out = self.out
         out.final = body
         out.provider_id = _str(body.get("id"))
+        _served(out, body)
         choices = body.get("choices") or []
         choice = choices[0] if choices and isinstance(choices[0], dict) else {}
         message = choice.get("message") or {}
@@ -519,6 +544,17 @@ class _ChatAccumulator:
             }
         return out
 
+
+# What a stream's chunks say about the answer as a whole, kept in the body assembled from it.
+_HEAD = (
+    "id",
+    "created",
+    "model",
+    "provider",
+    "system_fingerprint",
+    "service_tier",
+    "openrouter_metadata",
+)
 
 # What a provider's usage says about the bill, kept in the body assembled from a stream.
 _BILLED = ("cost", "is_byok", "cost_details")

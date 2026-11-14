@@ -84,6 +84,8 @@ class _Run:
     sweeps: int = 0
     sweeping: set[str] = field(default_factory=set)
     notes: list[str] = field(default_factory=list)
+    models: dict[str, str] = field(default_factory=dict)
+    served: dict[str, list[str]] = field(default_factory=dict)
     verdict: str = ""
     failed: list[str] = field(default_factory=list)
     cost_cap: float | None = None
@@ -180,6 +182,10 @@ class LiveView:
 
     def _on_event(self, run: _Run, e: Event) -> None:
         data = e.data
+        if e.type == "model.request":
+            run.models.setdefault(str(data.get("call_id")), str(data.get("model")))
+        elif e.type == "model.response":
+            self._served(run, data)
         match e.type:
             case "model.request" if data.get("role") is not None:
                 run.monitor_calls.add(str(data.get("call_id")))
@@ -258,6 +264,20 @@ class LiveView:
             case "run.finished":
                 run.status = str(data.get("status"))
                 run.phase = "done"
+
+    def _served(self, run: _Run, data: Mapping[str, Any]) -> None:
+        """Note it when a second provider answers a model: a router moved the run's calls."""
+        provider = data.get("provider")
+        model = run.models.get(str(data.get("call_id")))
+        if not isinstance(provider, str) or not provider or model is None:
+            return
+        names = run.served.setdefault(model, [])
+        if provider in names:
+            return
+        names.append(provider)
+        if len(names) > 1:
+            note = f"{model} now served by {provider}, after {', '.join(names[:-1])}"
+            run.notes = [*run.notes, visible(note)][-SHOWN_NOTES:]
 
     def _acted(self, run: _Run, e: Event) -> None:
         data = e.data

@@ -719,6 +719,7 @@ async def _facts(
         monitor_cost_usd=_sum(c.cost_usd for c in costs if c.role is not None),
         review_cost_usd=None if review is None else review.cost_usd,
         costs=costs,
+        served=await store.served(run_id),
         kernel={k: n for k, n in sorted(counts.items()) if k in KERNEL_TYPES},
         flags=len(flags),
     )

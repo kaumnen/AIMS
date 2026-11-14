@@ -41,7 +41,7 @@ from aims.models import Delta, DeltaBus
 from aims.monitor.core import HumanRequest
 from aims.report.escape import visible
 from aims.run.runner import Result, Runner
-from aims.run.view import Digest, HumanPrompt, JsonLines, LiveView, digest, summary
+from aims.run.view import Digest, HumanPrompt, JsonLines, LiveView, _Run, digest, summary
 from aims.server.db import ServerDB
 from aims.terminal import VisibleLog, json_text, one_line, shown
 
@@ -662,3 +662,24 @@ def test_a_server_error_body_comes_back_as_text(capsys: pytest.CaptureFixture[st
     answer = SimpleNamespace(status_code=409, json=lambda: {"detail": f"busy {ESCAPES}"}, text="")
     assert _problem(answer) == 1
     assert capsys.readouterr().err == "error: 409 busy \\u001B]0;owned\\u0007\\u001B[2J\\u001B[H\n"
+
+
+async def test_the_live_view_notes_a_second_provider_of_a_model(tmp_path: Path) -> None:
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        view = LiveView(store, DeltaBus())
+    run = _Run("r1")
+
+    def event(kind: str, **data: Any) -> Any:
+        return SimpleNamespace(type=kind, data=data, agent_id="a")
+
+    answers = [("c1", "Wafer"), ("c2", "Wafer"), ("c3", f"River{ESCAPES}"), ("c4", "Wafer")]
+    for call, provider in answers:
+        view._on_event(run, event("model.request", call_id=call, model="vendor/a"))
+        view._on_event(run, event("model.response", call_id=call, provider=provider))
+    view._on_event(run, event("model.request", call_id="d1", model="direct"))
+    view._on_event(run, event("model.response", call_id="d1", provider=None))
+    view._on_event(run, event("model.response", call_id="lost", provider="Nowhere"))
+    (note,) = run.notes
+    assert note.startswith("vendor/a now served by River\\u001B")
+    assert note.endswith(", after Wafer")
+    assert "\x1b" not in note

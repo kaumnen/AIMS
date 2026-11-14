@@ -14,6 +14,7 @@ from aims.report.model import (
     Moment,
     Plant,
     RunReport,
+    Served,
     Warning,
 )
 
@@ -489,6 +490,7 @@ def _facts(r: RunReport) -> str:
             for c in f.costs
         ]
         out.append(_details(texts.COSTS_TITLE, _table(head, rows)))
+    out.extend(_served(s) for s in f.served)
     if f.kernel:
         rows = [[code(k, in_cell=True), f"{n:,}"] for k, n in f.kernel.items()]
         out.append(_details(texts.KERNEL_TITLE, _table(["Type", "Count"], rows)))
@@ -644,6 +646,18 @@ def _duration(ms: int | None) -> str:
 
 def _at_least(value: float) -> str:
     return texts.UNKNOWN if value == 0 else texts.AT_LEAST.format(usd=_usd(value))
+
+
+def _served(s: Served) -> str:
+    """Who answered the calls to one model. The names come from the provider's answers."""
+    model = code(s.model)
+    if len(s.providers) == 1:
+        return texts.SERVED_ONE.format(model=model, provider=text(next(iter(s.providers))))
+    providers = ", ".join(
+        texts.SERVED_BY.format(provider=text(name), answers=_n(n, "answer"))
+        for name, n in s.providers.items()
+    )
+    return texts.SERVED_MANY.format(model=model, n=len(s.providers), providers=providers)
 
 
 def _n(count: int, word: str) -> str:

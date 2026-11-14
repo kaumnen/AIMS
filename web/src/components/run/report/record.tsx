@@ -172,6 +172,19 @@ export function FactsSection({ report }: SectionProps) {
       <p className="tabular-nums">
         {counts} {costs}
       </p>
+      {f.served.map((s) => {
+        const names = Object.entries(s.providers);
+        return (
+          <p key={s.model} className="tabular-nums">
+            {mono(s.model)} was served by{" "}
+            {names.length === 1
+              ? `${visible(names[0]?.[0] ?? "")}.`
+              : `${names.length} providers: ${names
+                  .map(([name, n]) => `${visible(name)} (${count(n, "answer")})`)
+                  .join(", ")}.`}
+          </p>
+        );
+      })}
       {f.costs.length > 0 && (
         <Fold summary={COSTS_TITLE}>
           <ReportTable

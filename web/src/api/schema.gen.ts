@@ -3034,7 +3034,8 @@ export interface components {
          * Facts
          * @description `kernel` counts the kernel events by type. `agent_cost_usd` and `monitor_cost_usd` sum
          *     the priced live model calls of the agents and of the live monitor, its judge included.
-         *     `review_cost_usd` is what the review picked as the source cost.
+         *     `review_cost_usd` is what the review picked as the source cost. `served` lists the
+         *     providers that answered each model's calls, for the models whose answers named one.
          */
         Facts: {
             /** Agent Cost Usd */
@@ -3063,6 +3064,8 @@ export interface components {
             monitor_cost_usd?: number | null;
             /** Review Cost Usd */
             review_cost_usd?: number | null;
+            /** Served */
+            served?: components["schemas"]["Served"][];
             /**
              * Steps
              * @default 0
@@ -4342,6 +4345,9 @@ export interface components {
          *     answer was served from the run `origin_run`, from its event `origin_seq`. `cost_source` says
          *     where `cost_usd` comes from: `provider` when the answer's usage carried the cost, `price`
          *     when it is the token counts at the profile's price, None for a replay or an unpriced call.
+         *     `provider` names who served the answer when a router says so, `model` is the model the
+         *     answer says it came from and `service_tier` its tier, each None when the answer does not
+         *     say. `provider_id` is the answer's own id.
          */
         ModelResponse: {
             /** Attempt */
@@ -4387,6 +4393,11 @@ export interface components {
             /** Latency Ms */
             latency_ms: number;
             /**
+             * Model
+             * @default null
+             */
+            model: string | null;
+            /**
              * Origin Run
              * @default null
              */
@@ -4396,6 +4407,11 @@ export interface components {
              * @default null
              */
             origin_seq: number | null;
+            /**
+             * Provider
+             * @default null
+             */
+            provider: string | null;
             /**
              * Provider Id
              * @default null
@@ -4418,6 +4434,11 @@ export interface components {
              * @default false
              */
             retry: boolean;
+            /**
+             * Service Tier
+             * @default null
+             */
+            service_tier: string | null;
             /**
              * Source
              * @default live
@@ -7071,6 +7092,20 @@ export interface components {
             previous: string | null;
             /** Runs */
             runs: components["schemas"]["RunSummary"][];
+        };
+        /**
+         * Served
+         * @description Who answered a run's calls to one model: `model` as the requests named it and
+         *     `providers` the answers each named provider gave, in the order they first answered. An
+         *     answer that names no provider is in none.
+         */
+        Served: {
+            /** Model */
+            model: string;
+            /** Providers */
+            providers: {
+                [key: string]: number;
+            };
         };
         /**
          * SessionStart

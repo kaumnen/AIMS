@@ -280,6 +280,9 @@ class ModelResponse(Payload):
     answer was served from the run `origin_run`, from its event `origin_seq`. `cost_source` says
     where `cost_usd` comes from: `provider` when the answer's usage carried the cost, `price`
     when it is the token counts at the profile's price, None for a replay or an unpriced call.
+    `provider` names who served the answer when a router says so, `model` is the model the
+    answer says it came from and `service_tier` its tier, each None when the answer does not
+    say. `provider_id` is the answer's own id.
     """
 
     type = "model.response"
@@ -295,6 +298,9 @@ class ModelResponse(Payload):
     usage: ModelUsage = Field(default_factory=ModelUsage)
     cost_usd: float | None = None
     cost_source: CostSource | None = None
+    provider: str | None = None
+    model: str | None = None
+    service_tier: str | None = None
     ratelimit: RateLimit = Field(default_factory=RateLimit)
     text: Content = ""
     reasoning: Content | None = None

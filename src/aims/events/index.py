@@ -603,6 +603,15 @@ class CallCost(BaseModel):
     output_tokens: int
 
 
+class Served(BaseModel):
+    """Who answered a run's calls to one model: `model` as the requests named it and
+    `providers` the answers each named provider gave, in the order they first answered. An
+    answer that names no provider is in none."""
+
+    model: str
+    providers: dict[str, int]
+
+
 class Index:
     """Derived SQLite view of the run logs. Every row can be rebuilt from `events.jsonl`."""
 
@@ -1918,6 +1927,30 @@ class Index:
             )
             for (role, schema), (calls, nanos, priced, given, made) in found.items()
         ]
+
+    async def served(self, run_id: str) -> list[Served]:
+        """Which providers answered the run's model calls up to its head, per requested model
+        in the order each was first answered by a named provider. More than one provider for
+        a model means a router moved its calls between them."""
+        if not _held(run_id):
+            return []
+        async with self._db.execute(
+            "select type, json_extract(data, '$.call_id'), json_extract(data, '$.model'),"
+            " json_extract(data, '$.provider')"
+            f" from events where run_id = ? and +seq <= {HEAD} and type in (?, ?) order by seq",
+            (run_id, run_id, ModelRequest.type, ModelResponse.type),
+        ) as cur:
+            rows = await cur.fetchall()
+        models: dict[str, str] = {}
+        found: dict[str, dict[str, int]] = {}
+        for type_, call, model, provider in rows:
+            if type_ == ModelRequest.type:
+                if isinstance(model, str):
+                    models.setdefault(call, model)
+            elif isinstance(provider, str) and provider and call in models:
+                names = found.setdefault(models[call], {})
+                names[provider] = names.get(provider, 0) + 1
+        return [Served(model=model, providers=names) for model, names in found.items()]
 
 
 def _steps(page: Sequence[Sequence[Any]], rows: Sequence[Sequence[Any]]) -> list[StepInfo]:

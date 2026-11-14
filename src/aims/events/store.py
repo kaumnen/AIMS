@@ -32,6 +32,7 @@ from aims.events.index import (
     LabelKind,
     RunInfo,
     SampleWindow,
+    Served,
     StepInfo,
     UnitRow,
 )
@@ -1325,6 +1326,10 @@ class LocalEventStore:
     async def call_costs(self, run_id: str) -> list[CallCost]:
         """What the run's live model calls cost, per role and output schema."""
         return await self._index.call_costs(run_id)
+
+    async def served(self, run_id: str) -> list[Served]:
+        """Which providers answered the run's model calls, per requested model."""
+        return await self._index.served(run_id)
 
     async def every(self, run_id: str, *, types: Sequence[str] = ()) -> list[Event]:
         """Every event of a run in seq order, read page by page past the index's page cap."""

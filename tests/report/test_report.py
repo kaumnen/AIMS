@@ -22,11 +22,15 @@ from aims.events import (
     AgentReport,
     AgentStarted,
     Anomaly,
+    BlobRef,
     CategoryFinding,
     Draft,
     FlagReview,
     JudgeRollout,
     LocalEventStore,
+    ModelParams,
+    ModelRequest,
+    ModelResponse,
     MonitorDegraded,
     MonitorVerdict,
     ProcExit,
@@ -611,3 +615,52 @@ async def test_the_cli_writes_markdown_or_json(store: LocalEventStore, tmp_path:
     out = await asyncio.to_thread(cli.invoke, app, ["report", "missing", "--runs-dir", runs])
     assert out.exit_code == 1
     assert "no run missing" in out.stderr
+
+
+def _model_call(call: str, model: str, provider: str | None) -> list[Draft]:
+    ref = BlobRef(sha256="44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a", size=2)
+    asked = ModelRequest(
+        call_id=call,
+        attempt=1,
+        profile="p",
+        backend="chat",
+        model=model,
+        url="http://model",
+        params=ModelParams(stream=False),
+        body=ref,
+        key=ref.sha256,
+    )
+    answer = ModelResponse(
+        call_id=call, attempt=1, status="completed", latency_ms=1, provider=provider
+    )
+    return [Draft(asked, "a"), Draft(answer, "a")]
+
+
+async def test_the_facts_name_who_served_each_model(store: LocalEventStore) -> None:
+    calls = [
+        *_model_call("m1", "vendor/a", "Wafer"),
+        *_model_call("m2", "vendor/a", "River [x](http://evil)"),
+        *_model_call("m3", "vendor/a", "Wafer"),
+        *_model_call("m4", "vendor/b`", "Cohere"),
+        *_model_call("m5", "direct", None),
+    ]
+    run_id = await sealed(store, [*agent_events(), *calls, Draft(verdict())])
+    report = await build(store, run_id, now=AT)
+    assert [(s.model, s.providers) for s in report.facts.served] == [
+        ("vendor/a", {"Wafer": 2, "River [x](http://evil)": 1}),
+        ("vendor/b`", {"Cohere": 1}),
+    ]
+    md = render(report)
+    assert (
+        "`vendor/a` was served by 2 providers: Wafer (2 answers),"
+        " River `[x](http://evil`\\) (1 answer)." in md
+    )
+    assert "`` vendor/b` `` was served by Cohere." in md
+    assert "direct" not in md.split("## Run facts")[1].split("##")[0]
+
+
+async def test_a_run_no_router_served_says_nothing_of_providers(store: LocalEventStore) -> None:
+    run_id = await monitored(store)
+    report = await build(store, run_id, now=AT)
+    assert report.facts.served == []
+    assert "was served by" not in render(report)

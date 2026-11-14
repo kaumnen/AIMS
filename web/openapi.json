@@ -3831,7 +3831,7 @@
       },
       "Facts": {
         "additionalProperties": false,
-        "description": "`kernel` counts the kernel events by type. `agent_cost_usd` and `monitor_cost_usd` sum\nthe priced live model calls of the agents and of the live monitor, its judge included.\n`review_cost_usd` is what the review picked as the source cost.",
+        "description": "`kernel` counts the kernel events by type. `agent_cost_usd` and `monitor_cost_usd` sum\nthe priced live model calls of the agents and of the live monitor, its judge included.\n`review_cost_usd` is what the review picked as the source cost. `served` lists the\nproviders that answered each model's calls, for the models whose answers named one.",
         "properties": {
           "agent_cost_usd": {
             "anyOf": [
@@ -3907,6 +3907,13 @@
               }
             ],
             "title": "Review Cost Usd"
+          },
+          "served": {
+            "items": {
+              "$ref": "#/components/schemas/Served"
+            },
+            "title": "Served",
+            "type": "array"
           },
           "steps": {
             "default": 0,
@@ -7183,7 +7190,7 @@
       },
       "ModelResponse": {
         "additionalProperties": false,
-        "description": "How one attempt ended, failures included. Every attempt has one.\n\n`body` is the raw response body, or for a stream the final response object as the provider\nsent it, None when the stream ended early. `stream` holds the raw response bytes in the\nchunks they arrived in, as JSON lines `{\"ms\": .., \"text\": ..}` (or `\"b64\"` for bytes that are\nnot UTF-8), `ms` counted from the request. `text` and `reasoning` are assembled from what\narrived, so a cancelled or stalled attempt keeps its partial content. `reasoning_kind` is what\nthe provider exposed: a summary, the full chain, or nothing. `source` is replay when the\nanswer was served from the run `origin_run`, from its event `origin_seq`. `cost_source` says\nwhere `cost_usd` comes from: `provider` when the answer's usage carried the cost, `price`\nwhen it is the token counts at the profile's price, None for a replay or an unpriced call.",
+        "description": "How one attempt ended, failures included. Every attempt has one.\n\n`body` is the raw response body, or for a stream the final response object as the provider\nsent it, None when the stream ended early. `stream` holds the raw response bytes in the\nchunks they arrived in, as JSON lines `{\"ms\": .., \"text\": ..}` (or `\"b64\"` for bytes that are\nnot UTF-8), `ms` counted from the request. `text` and `reasoning` are assembled from what\narrived, so a cancelled or stalled attempt keeps its partial content. `reasoning_kind` is what\nthe provider exposed: a summary, the full chain, or nothing. `source` is replay when the\nanswer was served from the run `origin_run`, from its event `origin_seq`. `cost_source` says\nwhere `cost_usd` comes from: `provider` when the answer's usage carried the cost, `price`\nwhen it is the token counts at the profile's price, None for a replay or an unpriced call.\n`provider` names who served the answer when a router says so, `model` is the model the\nanswer says it came from and `service_tier` its tier, each None when the answer does not\nsay. `provider_id` is the answer's own id.",
         "properties": {
           "attempt": {
             "minimum": 1,
@@ -7304,6 +7311,18 @@
             "title": "Latency Ms",
             "type": "integer"
           },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model"
+          },
           "origin_run": {
             "anyOf": [
               {
@@ -7327,6 +7346,18 @@
             ],
             "default": null,
             "title": "Origin Seq"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Provider"
           },
           "provider_id": {
             "anyOf": [
@@ -7372,6 +7403,18 @@
             "default": false,
             "title": "Retry",
             "type": "boolean"
+          },
+          "service_tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Service Tier"
           },
           "source": {
             "default": "live",
@@ -7448,6 +7491,9 @@
           "usage",
           "cost_usd",
           "cost_source",
+          "provider",
+          "model",
+          "service_tier",
           "ratelimit",
           "text",
           "reasoning",
@@ -14250,6 +14296,28 @@
           "runs"
         ],
         "title": "SeriesInfo",
+        "type": "object"
+      },
+      "Served": {
+        "description": "Who answered a run's calls to one model: `model` as the requests named it and\n`providers` the answers each named provider gave, in the order they first answered. An\nanswer that names no provider is in none.",
+        "properties": {
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "providers": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Providers",
+            "type": "object"
+          }
+        },
+        "required": [
+          "model",
+          "providers"
+        ],
+        "title": "Served",
         "type": "object"
       },
       "SessionStart": {

@@ -513,3 +513,37 @@ async def test_the_api_serves_steps_activity_and_exec_events(
         assert [e["seq"] for e in r.json()["items"]] == [19, 20, 24, 25]
         r = await c.get(f"/api/runs/{run_id}/events", params={"exec": "e1", "limit": 2})
         assert ([e["seq"] for e in r.json()["items"]], r.json()["next"]) == ([9, 10], "10")
+
+
+def asked_of(call: str, model: str) -> Draft:
+    draft = request(call, "a1")
+    return Draft(draft.payload.model_copy(update={"model": model}), None)
+
+
+async def test_served_counts_the_answers_of_each_provider_per_model(
+    store: LocalEventStore,
+) -> None:
+    run_id = await store.create_run(STARTED)
+    await store.append(
+        run_id,
+        [
+            asked_of("c1", "vendor/a"),
+            response("c1", "a1", 0.1, provider="Wafer", status="error"),
+            asked_of("c1", "vendor/a"),
+            response("c1", "a1", 0.1, attempt=2, provider="River", model="vendor/a-0910"),
+            asked_of("c2", "vendor/a"),
+            response("c2", "a1", 0.1, provider="Wafer"),
+            asked_of("j1", "vendor/b"),
+            response("j1", "a1", 0.1, provider="Cohere", source="replay"),
+            asked_of("d1", "direct"),
+            response("d1", "a1", 0.1, model="direct-2026"),
+            response("lost", "a1", 0.1, provider="Nowhere"),
+        ],
+    )
+    served = await store.served(run_id)
+    assert [(s.model, s.providers) for s in served] == [
+        ("vendor/a", {"Wafer": 2, "River": 1}),
+        ("vendor/b", {"Cohere": 1}),
+    ]
+    assert list(served[0].providers) == ["Wafer", "River"]
+    assert await store.served("no-such-run") == []

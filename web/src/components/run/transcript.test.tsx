@@ -40,10 +40,15 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function show(finished: Record<string, unknown>) {
+function show(finished: Record<string, unknown>, answer: Record<string, unknown> = {}) {
   const qc = new QueryClient();
   const events = [
-    ev(1, "model.response", { call_id: "m1", text: "", finish_reason: "tool_calls" }),
+    ev(1, "model.response", {
+      call_id: "m1",
+      text: "",
+      finish_reason: "tool_calls",
+      ...answer,
+    }),
     ev(2, "agent.step", { n: 1, call_id: "m1", status: "completed" }),
     ev(3, "tool.call", { call_id: "c1", name: "bash", arguments: '{"command": "make"}' }),
     ev(4, "exec.started", { exec_id: "x1", call_id: "c1", command: "make" }),
@@ -100,4 +105,16 @@ test("output within the limit has no note", async () => {
   show({ stdout: "a\n", stderr: "b\n", truncated: false });
   await screen.findByText(/^Stdout/);
   expect(labels()).toBe("Stdout | Stderr");
+});
+
+test("a step names the provider that served its answer", async () => {
+  show({ stdout: "a\n", stderr: "" }, { provider: "Wafer\u202e", latency_ms: 1500 });
+  const heading = await screen.findByRole("heading", { name: /^Step 1/ });
+  expect(heading.textContent).toBe("Step 11.5 s · via Wafer\\u202E");
+});
+
+test("a step whose answer names no provider says nothing of one", async () => {
+  show({ stdout: "a\n", stderr: "" }, { provider: null, latency_ms: 1500 });
+  const heading = await screen.findByRole("heading", { name: /^Step 1/ });
+  expect(heading.textContent).toBe("Step 11.5 s");
 });
