@@ -15,6 +15,7 @@ import secrets
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from itertools import groupby
 from pathlib import PurePosixPath
 from typing import Annotated, Any, Literal
 
@@ -114,9 +115,21 @@ MODEL_TYPES = frozenset({"model.request", "model.response", "tool.call"})
 PROC_TYPES = ("proc.exec", "proc.fork", "proc.exit")
 ARGV_ITEMS = 12
 NO_HEAD = frozenset({"body", "stream", "more", "records", "dropped"})
+# The key that counts the keys a nested object was shown without.
+MORE_KEYS = "[more keys]"
+# How far `Reader.fit` shortens a value, tried in turn: what it divides the characters of a text
+# by, the most items of a list, and the most keys of a nested object, None for all of them.
+FITS = ((1, LIST_ITEMS, None), (4, LIST_ITEMS // 4, None), (10, 2, 4))
+# Characters a tool output holds around its rows.
+WRAPPER = 100
+# The most characters of a score in the brief.
+SCORE_CHARS = 8_000
+# The most characters of a tool output the head of a process tree takes, its rows the rest.
+HEAD_CHARS = OUTPUT_CHARS // 2
+# The cuts of the head's command, its leftover commands and how many it lists, tried in turn.
+HEADS = ((NOTE_CHARS, 200, LIST_ITEMS), (TEXT_CHARS, 60, 10), (TEXT_CHARS // 4, 30, 3))
 RANK: dict[str, int] = {"no": 0, "unclear": 1, "yes": 2}
 CUT_OFF = "the answer was cut off before it ended"
-WRAPPER = 100
 UNREVIEWED = "no rollout that was shown the flags gave a verdict"
 
 
@@ -149,6 +162,13 @@ def clip(text: str, limit: int) -> str:
     head = limit * 2 // 3
     tail = limit - head
     return f"{text[:head]}[{len(text) - head - tail} chars cut]{text[-tail:]}"
+
+
+def clip_end(text: str, limit: int) -> str:
+    """`text` cut to its last `limit` characters."""
+    if len(text) <= limit:
+        return text
+    return f"[{len(text) - limit} chars cut]{text[-limit:]}"
 
 
 # Tool arguments. None stands for a parameter left out.
@@ -510,45 +530,91 @@ class Reader:
                 self._cached += len(data)
         return data
 
-    async def text(self, run_id: str, value: Any, limit: int) -> str:
-        """A `Content` value as text, clipped to `limit` characters."""
+    async def text(self, run_id: str, value: Any, limit: int, *, end: bool = False) -> str:
+        """A `Content` value as text, clipped to `limit` characters: its head and tail, or with
+        `end` only its end."""
+        cut = clip_end if end else clip
         if isinstance(value, str):
-            return clip(value, limit)
+            return cut(value, limit)
         if is_blob_ref(value):
             try:
                 data = await self.blob(run_id, value["sha256"])
             except BlobError, KeyError:
                 return f"[blob {value['sha256']} is missing]"
-            return clip(data.decode("utf-8", "replace"), limit)
+            return cut(data.decode("utf-8", "replace"), limit)
         return ""
 
-    async def compact(self, run_id: str, value: Any, chars: int, items: int, key: str = "") -> Any:
+    async def compact(
+        self,
+        run_id: str,
+        value: Any,
+        chars: int,
+        items: int,
+        key: str = "",
+        *,
+        keys: int | None = None,
+        nested: bool = False,
+    ) -> Any:
+        """`value` with each text cut to `chars` characters and each list to `items` items.
+        With `keys`, an object inside it keeps that many keys and counts the rest under
+        MORE_KEYS; `value` itself keeps every key, as an event's payload has a fixed set. A
+        blob shows as its hash and size with the head of its text, or the end of it under a
+        key that names a tail, where the last lines say how a command ended."""
         if isinstance(value, str):
             return clip(value, chars)
         if is_blob_ref(value):
             ref: dict[str, Any] = {"blob": value["sha256"], "size": value["size"]}
             if key not in NO_HEAD and value["size"] <= HEAD_BLOB:
-                ref["head"] = await self.text(run_id, value, chars)
+                if key.endswith("_tail"):
+                    ref["tail"] = await self.text(run_id, value, chars, end=True)
+                else:
+                    ref["head"] = await self.text(run_id, value, chars)
             return ref
         if isinstance(value, Mapping):
-            return {
-                k: await self.compact(run_id, v, chars, items, k)
-                for k, v in value.items()
-                if v is not None
+            kept = [(k, v) for k, v in value.items() if v is not None]
+            shown = kept[:keys] if nested and keys is not None else kept
+            out: dict[str, Any] = {
+                k: await self.compact(run_id, v, chars, items, k, keys=keys, nested=True)
+                for k, v in shown
             }
-        if isinstance(value, list):
-            out = [await self.compact(run_id, v, chars, items, key) for v in value[:items]]
-            if len(value) > items:
-                out.append(f"[{len(value) - items} more]")
+            if len(kept) > len(shown):
+                out[MORE_KEYS] = len(kept) - len(shown)
             return out
+        if isinstance(value, list):
+            short = [
+                await self.compact(run_id, v, chars, items, key, keys=keys, nested=True)
+                for v in value[:items]
+            ]
+            if len(value) > items:
+                short.append(f"[{len(value) - items} more]")
+            return short
         return value
 
-    async def row(self, e: Event, *, drop: Iterable[str] = ()) -> dict[str, Any]:
-        """`e` as one compact record, its long values cut."""
+    async def fit(
+        self, run_id: str, value: Any, limits: Sequence[int], chars: int = TEXT_CHARS
+    ) -> Any:
+        """`value` compacted, its texts cut to `chars` characters at most, then further by each
+        next form of FITS while the one before is longer as JSON than its entry of `limits`.
+        The shortest form when none fits."""
+        compact: Any = None
+        for (by, items, keys), limit in zip(FITS, [*limits, 0], strict=False):
+            compact = await self.compact(run_id, value, chars // by, items, keys=keys)
+            if len(dumps(compact)) <= limit:
+                break
+        return compact
+
+    async def row(
+        self, e: Event, *, drop: Iterable[str] = (), short: bool = False
+    ) -> dict[str, Any]:
+        """`e` as one compact record, its long values cut: once more when its data is past
+        EVENT_CHARS, and then shown as it is. `short` gives the shortest form, for an event
+        whose row no tool output could hold."""
         data = {k: v for k, v in e.data.items() if k not in drop}
-        compact = await self.compact(e.run_id, data, TEXT_CHARS, LIST_ITEMS)
-        if len(dumps(compact)) > EVENT_CHARS:
-            compact = await self.compact(e.run_id, data, TEXT_CHARS // 4, LIST_ITEMS // 4)
+        if short:
+            by, items, keys = FITS[-1]
+            compact = await self.compact(e.run_id, data, TEXT_CHARS // by, items, keys=keys)
+        else:
+            compact = await self.fit(e.run_id, data, (EVENT_CHARS,))
         out: dict[str, Any] = {"seq": e.seq, "type": e.type, "ts": format_ts(e.ts)}
         if e.agent_id is not None:
             out["agent"] = e.agent_id
@@ -856,7 +922,7 @@ class Judge:
                     row["finished"] = other["finished"] = finished
                     self._agent_seqs.add(e.seq)
                 case "task.scored":
-                    score = await self.reader.compact(src, d, NOTE_CHARS, LIST_ITEMS)
+                    score = await self.reader.fit(src, d, (SCORE_CHARS, SCORE_CHARS), NOTE_CHARS)
                     row["score"] = {"seq": e.seq, **score}
                     other["score"] = {
                         "seq": e.seq,
@@ -1301,6 +1367,9 @@ class Judge:
             row = await self.reader.row(e, drop=self._drop(r, e))
             n = len(dumps(row)) + 1
             if not rows and size + n > TOOL_CHARS:
+                row = await self.reader.row(e, drop=self._drop(r, e), short=True)
+                n = len(dumps(row)) + 1
+            if not rows and size + n > TOOL_CHARS:
                 row = cut_row(e)
                 rows.append(row)
                 size += len(dumps(row)) + 1
@@ -1397,37 +1466,50 @@ class Judge:
         procs, more = await self.reader.page(
             types=PROC_TYPES, query=exec_id, limit=TREE_ROWS * 4, keep=mine
         )
-        head: dict[str, Any] = {
-            "exec_id": exec_id,
-            "seq": started.seq,
-            "agent": started.agent_id,
-            "phase": d.phase,
-            "call_id": d.call_id,
-            "user": d.user,
-            "cwd": d.cwd,
-            "command": await self.reader.text(started.run_id, started.data["command"], NOTE_CHARS),
-        }
         r.seen.add(started.seq)
+        ended = None
         if finished:
-            f = finished[0]
-            p = ExecFinished.model_validate(f.data)
-            r.seen.add(f.seq)
-            done: dict[str, Any] = {
-                "seq": f.seq,
-                "end": p.end,
-                "exit_code": p.exit_code,
-                "pid": p.pid,
-                "duration_ms": p.duration_ms,
-                "procs": p.procs,
-                "dropped": p.dropped,
-                "spilled": p.spilled,
+            ended = ExecFinished.model_validate(finished[0].data)
+            r.seen.add(finished[0].seq)
+        # The head leaves the rows their part of the output: it is cut further until it does.
+        head: dict[str, Any] = {}
+        for chars, left_chars, left_items in HEADS:
+            head = {
+                "exec_id": exec_id,
+                "seq": started.seq,
+                "agent": started.agent_id,
+                "phase": d.phase,
+                "call_id": d.call_id,
+                "user": clip(d.user, TEXT_CHARS // 4),
+                "cwd": clip(d.cwd, min(chars, TEXT_CHARS)),
+                "command": await self.reader.text(started.run_id, started.data["command"], chars),
             }
-            if p.leftover:
-                done["leftover"] = [
-                    {"pid": x.pid, "ppid": x.ppid, "uid": x.uid, "command": clip(x.command, 200)}
-                    for x in p.leftover[:LIST_ITEMS]
-                ]
-            head["finished"] = done
+            if ended is not None:
+                done: dict[str, Any] = {
+                    "seq": finished[0].seq,
+                    "end": ended.end,
+                    "exit_code": ended.exit_code,
+                    "pid": ended.pid,
+                    "duration_ms": ended.duration_ms,
+                    "procs": ended.procs,
+                    "dropped": ended.dropped,
+                    "spilled": ended.spilled,
+                }
+                if ended.leftover:
+                    done["leftover"] = [
+                        {
+                            "pid": x.pid,
+                            "ppid": x.ppid,
+                            "uid": x.uid,
+                            "command": clip(x.command, left_chars),
+                        }
+                        for x in ended.leftover[:left_items]
+                    ]
+                    if len(ended.leftover) > left_items:
+                        done["leftover_more"] = len(ended.leftover) - left_items
+                head["finished"] = done
+            if len(dumps(head)) <= HEAD_CHARS:
+                break
         nodes: dict[int, dict[str, Any]] = {}
         forked: dict[int, int] = {}
         for e in procs:
@@ -1560,23 +1642,38 @@ class Judge:
                     row["content"] = {"blob": c.content.sha256, "size": c.content.size}
                 rows.append((e.seq, row))
         rows.sort(key=lambda x: x[0])
+        # A page ends between events, never inside the rows of one: the next page starts at a
+        # seq, and would show the rows of that event again. An event with more rows than a
+        # whole page holds shows what fits, and the page says how many it left out.
+        groups = [(seq, [row for _, row in g]) for seq, g in groupby(rows, key=lambda x: x[0])]
         out_rows: list[dict[str, Any]] = []
         size = WRAPPER
         nxt = stop
-        for seq, row in rows:
-            n = len(dumps(row)) + 1
-            if not out_rows and size + n > TOOL_CHARS:
-                row = {"seq": seq, "type": row["type"], "cut": TOO_LONG}
-                out_rows.append(row)
-                size += len(dumps(row)) + 1
-                continue
-            if len(out_rows) >= HISTORY_ROWS or (out_rows and size + n > OUTPUT_CHARS):
+        cut: dict[str, int] | None = None
+        for at, (seq, group) in enumerate(groups):
+            sizes = [len(dumps(row)) + 1 for row in group]
+            fits = len(out_rows) + len(group) <= HISTORY_ROWS and size + sum(sizes) <= OUTPUT_CHARS
+            if out_rows and not fits:
                 nxt = seq
                 break
-            out_rows.append(row)
-            size += n
-            r.seen.add(seq)
-        return dumps({"path": path, "history": out_rows, "next_from_seq": nxt})
+            for i, (row, n) in enumerate(zip(group, sizes, strict=True)):
+                if not out_rows and size + n > TOOL_CHARS:
+                    row = {"seq": seq, "type": row["type"], "cut": TOO_LONG}
+                    n = len(dumps(row)) + 1
+                elif len(out_rows) >= HISTORY_ROWS or (out_rows and size + n > OUTPUT_CHARS):
+                    cut = {"seq": seq, "rows": len(group) - i}
+                    break
+                else:
+                    r.seen.add(seq)
+                out_rows.append(row)
+                size += n
+            if cut is not None:
+                nxt = groups[at + 1][0] if at + 1 < len(groups) else stop
+                break
+        out: dict[str, Any] = {"path": path, "history": out_rows, "next_from_seq": nxt}
+        if cut is not None:
+            out["rows_cut"] = cut
+        return dumps(out)
 
     # The verdict.
 

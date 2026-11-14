@@ -45,6 +45,7 @@ from aims.events import (
     ToolResult,
 )
 from aims.models import ModelClient, Profile, Prompt, Reply, ToolRequest
+from aims.monitor import judge as judge_module
 from aims.monitor import judge_texts
 from aims.monitor.config import (
     CATEGORIES,
@@ -58,10 +59,15 @@ from aims.monitor.judge import (
     ANOMALY_CHARS,
     BLOB_MAX,
     CHARS_PER_TOKEN,
+    EVENT_CHARS,
     EVENTS_PAGE,
+    HEAD_CHARS,
+    HISTORY_ROWS,
     MIN_OUTPUT,
+    MORE_KEYS,
     OUTPUT_CHARS,
     PROBLEM_CHARS,
+    SCORE_CHARS,
     TOOL_CHARS,
     TOOL_PARAMETERS,
     VERDICT_SCHEMA,
@@ -516,7 +522,35 @@ async def test_search_pages_under_the_cap(store: LocalEventStore) -> None:
     assert found == [run.seqs[f"r{i}"] for i in range(30)]
 
 
-async def test_an_event_too_long_for_one_output_is_cut(store: LocalEventStore) -> None:
+async def test_an_event_with_a_large_object_is_shortened(store: LocalEventStore) -> None:
+    config: dict[str, Any] = {f"key{i}": "\x00" * 20 for i in range(1000)}
+    config["nested"] = {"list": [{f"k{i}": i for i in range(30)}] * 50}
+    run_id = await store.create_run(RunStarted(scenario="t", oversight="observe", config=config))
+    run = Run(store, run_id)
+    judge = make_judge(store, run, Script())
+    r = Rollout(1, False, 1.0)
+    out = await tool(judge, "events", r, from_seq=0)
+    [first] = out["events"]
+    assert (first["seq"], first["type"]) == (0, "run.started")
+    data = first["data"]
+    assert (data["scenario"], data["oversight"]) == ("t", "observe")
+    shown = data["config"]
+    assert len(shown) == 5
+    assert shown[MORE_KEYS] == 997
+    assert len(dumps(first)) < EVENT_CHARS
+    assert r.seen == {0}
+    # An event that fits keeps every key of its objects.
+    wide = {f"k{i}": i for i in range(60)}
+    event = await run.add("wide", TaskScored(reward=1.0, metrics=wide), agent=None)
+    out = await tool(judge, "events", r, from_seq=event.seq)
+    assert out["events"][0]["data"]["metrics"] == wide
+
+
+async def test_an_event_too_long_for_one_output_is_cut(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no form of it short enough, an event shows as a row that says it is cut."""
+    monkeypatch.setattr(judge_module, "FITS", ((1, 20, None), (4, 5, None), (4, 5, None)))
     config: dict[str, Any] = {f"key{i}": "\x00" * 20 for i in range(1000)}
     run_id = await store.create_run(RunStarted(scenario="t", oversight="observe", config=config))
     run = Run(store, run_id)
@@ -584,11 +618,50 @@ async def test_a_tool_output_past_the_cap_is_refused(store: LocalEventStore) -> 
     judge = make_judge(store, run, Script())
     r = Rollout(1, False, 1.0)
     out = await tool(judge, "proc_tree", r, exec_id="e")
-    assert out["error"].startswith("the output had ")
-    assert out["error"].endswith("ask for less")
-    assert r.seen == set()
+    # The tree's head has nothing a caller could narrow: it is cut until it fits.
+    head = out["exec"]
+    assert len(dumps(head)) <= HEAD_CHARS
+    assert "chars cut" in head["command"]
+    assert len(head["finished"]["leftover"]) + head["finished"]["leftover_more"] == 20
+    assert r.seen == {0 + 1, 2}
     bad = await tool(judge, "events", r, types=["no.such\x00" * 3000])
     assert bad["error"].startswith("the output had ")
+    assert bad["error"].endswith("ask for less")
+    assert r.seen == {1, 2}
+
+
+async def test_a_process_tree_with_a_long_head_still_shows_its_rows(store: LocalEventStore) -> None:
+    run_id = await store.create_run(RunStarted(scenario="t", oversight="observe"))
+    run = Run(store, run_id)
+    started = ExecStarted(
+        exec_id="e",
+        call_id="c",
+        command="\x00" * 2500,
+        wrapper=[],
+        user="agent",
+        cwd="/" + "\x00" * 5000,
+        timeout_ms=1000,
+        audit="kernel",
+    )
+    await run.add("started", started)
+    proc = ProcExec(
+        exec_id="e",
+        pid=7,
+        ppid=1,
+        ns_pid=2,
+        uid=0,
+        path="/bin/true",
+        argv=["true"],
+        argv_bytes=4,
+        root=True,
+        **K,
+    )
+    await run.add("proc", proc)
+    judge = make_judge(store, run, Script())
+    out = await tool(judge, "proc_tree", exec_id="e")
+    assert len(dumps(out["exec"])) <= HEAD_CHARS
+    assert [p["pid"] for p in out["procs"]] == [7]
+    assert "procs_cut" not in out
 
 
 async def test_proc_tree_builds_the_tree(store: LocalEventStore) -> None:
@@ -625,6 +698,128 @@ async def test_file_history_joins_kernel_and_snapshot(store: LocalEventStore) ->
         judge, "file_history", path="/work/conftest.py", from_seq=run.seqs["snapshot"] + 1
     )
     assert later["history"] == []
+
+
+def snapshot_of(changes: list[FsChange]) -> FsSnapshot:
+    return FsSnapshot(
+        exec_id=None,
+        roots=["/work"],
+        base=None,
+        digest="1" * 64,
+        entries=1,
+        files=1,
+        bytes=4,
+        total=len(changes),
+        changes=changes,
+        hashed_bytes=4,
+        unhashed=0,
+        content_skipped=0,
+        truncated=False,
+        duration_ms=1,
+    )
+
+
+def links(n: int, to: str) -> list[FsChange]:
+    return [
+        FsChange(
+            path=f"/work/link{i}",
+            change="added",
+            kind="symlink",
+            size=1,
+            mode=0,
+            mtime_us=1,
+            target=to,
+        )
+        for i in range(n)
+    ]
+
+
+async def history_pages(judge: Judge, path: str) -> list[dict[str, Any]]:
+    pages: list[dict[str, Any]] = []
+    start: int | None = 0
+    while start is not None:
+        page = await tool(judge, "file_history", path=path, from_seq=start)
+        pages.append(page)
+        assert page["next_from_seq"] is None or page["next_from_seq"] > start
+        start = page["next_from_seq"]
+        assert len(pages) < 10
+    return pages
+
+
+async def test_file_history_pages_end_between_events(store: LocalEventStore) -> None:
+    """Each of two snapshots gives 60 rows for the path: a page of 100 holds the first whole
+    and leaves the second whole to the next, so no row shows twice."""
+    run_id = await store.create_run(RunStarted(scenario="t", oversight="observe"))
+    run = Run(store, run_id)
+    first = await run.add("one", snapshot_of(links(60, "/work/x")))
+    second = await run.add("two", snapshot_of(links(60, "/work/x")))
+    judge = make_judge(store, run, Script())
+    one, two = await history_pages(judge, "/work/x")
+    assert [r["seq"] for r in one["history"]] == [first.seq] * 60
+    assert one["next_from_seq"] == second.seq
+    assert [r["seq"] for r in two["history"]] == [second.seq] * 60
+    assert [r["path"] for r in two["history"]] == [f"/work/link{i}" for i in range(60)]
+    assert "rows_cut" not in one
+    assert "rows_cut" not in two
+
+
+async def test_file_history_gets_past_an_event_with_more_rows_than_a_page(
+    store: LocalEventStore,
+) -> None:
+    run_id = await store.create_run(RunStarted(scenario="t", oversight="observe"))
+    run = Run(store, run_id)
+    big = await run.add("big", snapshot_of(links(HISTORY_ROWS + 50, "/work/x")))
+    after = await run.add("after", snapshot_of(links(1, "/work/x")))
+    judge = make_judge(store, run, Script())
+    one, two = await history_pages(judge, "/work/x")
+    assert [r["seq"] for r in one["history"]] == [big.seq] * HISTORY_ROWS
+    assert one["rows_cut"] == {"seq": big.seq, "rows": 50}
+    assert one["next_from_seq"] == after.seq
+    assert [r["seq"] for r in two["history"]] == [after.seq]
+
+
+async def test_events_shows_the_end_of_a_tail_blob(store: LocalEventStore) -> None:
+    """The last lines of a long output say how the command ended: the row shows those."""
+    run_id = await store.create_run(RunStarted(scenario="t", oversight="observe"))
+    run = Run(store, run_id)
+    text = "collected 3 items\n" + "noise\n" * 5000 + "1 failed, 2 passed in 0.10s\n"
+    tail = await store.content(run_id, text)
+    assert isinstance(tail, BlobRef)
+    finished = ExecFinished(
+        exec_id="e",
+        call_id="c",
+        end="exited",
+        exit_code=1,
+        pid=1,
+        duration_ms=5,
+        stdout=tail,
+        stderr="",
+        stdout_tail=tail,
+        stdout_bytes=len(text),
+        stderr_bytes=0,
+        truncated=True,
+    )
+    event = await run.add("finished", finished)
+    judge = make_judge(store, run, Script())
+    out = await tool(judge, "events", from_seq=event.seq)
+    data = out["events"][0]["data"]
+    assert data["stdout_tail"]["tail"].endswith("1 failed, 2 passed in 0.10s\n")
+    assert data["stdout_tail"]["tail"].startswith("[")
+    assert "head" not in data["stdout_tail"]
+    assert data["stdout"]["head"].startswith("collected 3 items")
+
+
+async def test_a_score_with_many_metrics_is_shortened_in_the_brief(store: LocalEventStore) -> None:
+    run = await make_run(store)
+    metrics: dict[str, Any] = {f"metric{i}": "\x00" * 10 for i in range(900)}
+    await run.add("big", TaskScored(reward=0.0, metrics=metrics, source="reward.json"))
+    judge = make_judge(store, run, Script(say(json.dumps(verdict()))))
+    payload_of(await judge.run(flags=[], sweeps=[]))
+    [agent] = judge._agents
+    score = agent["score"]
+    assert len(dumps(score)) <= SCORE_CHARS
+    assert score["reward"] == 0.0
+    assert score["metrics"][MORE_KEYS] == 896
 
 
 async def test_flags_tool_lists_given_flags(store: LocalEventStore) -> None:
