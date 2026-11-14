@@ -12,6 +12,7 @@ name; `*` stays within one path part and `**` crosses them. A `distinct` field t
 or a map counts it whole as one value.
 """
 
+import fnmatch
 import glob
 import ipaddress
 import re
@@ -416,13 +417,127 @@ def _spreads_lists(rule: Rule) -> bool:
     )
 
 
+_MAGIC = re.compile(r"[*?[]")
+# The states of a `**` between parts: not entered, one empty part taken, and free to end.
+_FRESH, _EMPTY, _FREE = 0, 1, 2
+
+
+def _part(pattern: str) -> Callable[[str], bool]:
+    """A test of one path part against one part of a glob. `*` alone needs a part that is not
+    empty. `fnmatch` gives each `*` but the last one way to match, so a part with many of them
+    is still read in about linear time."""
+    if pattern == "*":
+        return bool
+    if _MAGIC.search(pattern) is None:
+        return pattern.__eq__
+    match = re.compile(fnmatch.translate(pattern)).match
+    return lambda part: match(part) is not None
+
+
+def _crossing(
+    tests: Sequence[Callable[[str], bool] | None], rest: bool
+) -> Callable[[Sequence[str]], bool]:
+    """A matcher of path parts for a glob with more than one `**` between parts, None in
+    `tests`. It keeps every place the glob can be at after each part, so its time grows with
+    the parts times the places and never with the ways to split the path among the `**`."""
+    count = len(tests)
+
+    def reach(places: set[tuple[int, int]], at: int) -> None:
+        places.add((at, _FRESH))
+        if at < count and tests[at] is None:
+            reach(places, at + 1)
+
+    def full(parts: Sequence[str]) -> bool:
+        places: set[tuple[int, int]] = set()
+        reach(places, 0)
+        for part in parts:
+            after: set[tuple[int, int]] = set()
+            for at, state in places:
+                if at == count:
+                    if rest:
+                        after.add((at, _FREE))
+                    continue
+                test = tests[at]
+                if test is None:
+                    if state == _FRESH and not part:
+                        after.add((at, _EMPTY))
+                    else:
+                        after.add((at, _FREE))
+                        reach(after, at + 1)
+                elif test(part):
+                    reach(after, at + 1)
+            if not after:
+                return False
+            places = after
+        return (count, _FREE if rest else _FRESH) in places
+
+    return full
+
+
 def compile_glob(pattern: str) -> Callable[[str], bool]:
     """A matcher for `pattern`: `*` within a path part, `**` across parts; a pattern without a
-    `/` also matches the base name."""
-    full = re.compile(glob.translate(pattern, recursive=True, include_hidden=True, seps="/"))
+    `/` also matches the base name. It reads as `glob.translate` reads a recursive pattern that
+    includes hidden files, but for a class such as `[!a]`, which matches no `/` here.
+
+    A `**` between parts takes any number of whole parts, none too, and one part alone only
+    when it is not empty, so `**/a` does not match `/a`. A last `**` takes the one or more
+    parts left. A pattern with several `*` in a part, several `**` or a class is matched part
+    by part: as one regex over the whole path it took time polynomial in the path's length,
+    on a path an agent can shape."""
+    names = pattern.split("/")
+    rest = names[-1] == "**"
+    tests: list[Callable[[str], bool] | None] = []
+    for n, name in enumerate(names[:-1] if rest else names):
+        if name != "**":
+            tests.append(_part(name))
+        elif names[n + 1] != "**":
+            tests.append(None)
+    count, gaps = len(tests), tests.count(None)
+    gap = tests.index(None) if gaps else count
+    head = [test for test in tests[:gap] if test is not None]
+    tail = [test for test in tests[gap + 1 :] if test is not None]
+
+    def fits(checks: Sequence[Callable[[str], bool]], parts: Sequence[str]) -> bool:
+        return all(test(part) for test, part in zip(checks, parts, strict=True))
+
+    def plain(parts: Sequence[str]) -> bool:
+        enough = len(parts) > count if rest else len(parts) == count
+        return enough and fits(head, parts[:count])
+
+    def one(parts: Sequence[str]) -> bool:
+        # The parts the `**` and a last `**` share. A last one needs a part, so the first
+        # takes each number from the most it can down to none.
+        spare = len(parts) - len(head) - len(tail)
+        if spare < rest or not fits(head, parts[:gap]):
+            return False
+        for taken in range(spare - rest, -1 if rest else spare - 1, -1):
+            at = gap + taken
+            if (taken != 1 or parts[gap]) and fits(tail, parts[at : at + len(tail)]):
+                return True
+        return False
+
+    if (
+        "[" not in pattern
+        and gaps <= 1
+        and all(name == "**" or name.count("*") <= 1 for name in names)
+    ):
+        # With one `*` to a part and one `**` before the last part a single regex has about
+        # one way to match and is the fastest. It matches as the parts do; a class is left
+        # out, as it could take a `/` there.
+        whole = re.compile(glob.translate(pattern, recursive=True, include_hidden=True, seps="/"))
+
+        def match(path: str) -> bool:
+            return whole.match(path) is not None
+
+    else:
+        full = plain if gaps == 0 else one if gaps == 1 else _crossing(tests, rest)
+
+        def match(path: str) -> bool:
+            return full(path.split("/"))
+
     if "/" in pattern:
-        return lambda s: full.match(s) is not None
-    return lambda s: full.match(s) is not None or full.match(s.rsplit("/", 1)[-1]) is not None
+        return match
+    return lambda path: match(path) or match(path.rsplit("/", 1)[-1])
 
 
 def _number(v: Any) -> bool:
@@ -873,9 +988,23 @@ class RuleSignal(Base):
         ]
 
 
+def _class_globs(rule: Rule) -> bool:
+    """Whether a glob of `rule` holds a character class."""
+    return any(
+        "glob" in path.split("|")[1:] and "[" in value
+        for fields in (rule.match, *rule.filter)
+        for path, values in fields.items()
+        for value in (values if isinstance(values, list) else [values])
+        if isinstance(value, str)
+    )
+
+
 def _revision(rule: Rule) -> int:
     """The last fix that changed what `rule` flags, 0 for none. Each fix takes the next number,
     so a rule it touches gets a version no older code gave it."""
+    if _class_globs(rule):
+        # A class in a glob, such as `[!a]`, matches no `/`.
+        return 7
     if _spreads_lists(rule):
         # A key or distinct path through a list without an index reads every item, not the
         # first.

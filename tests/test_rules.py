@@ -1,7 +1,10 @@
 import asyncio
+import glob
 import json
+import random
+import re
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -120,6 +123,81 @@ def test_globs() -> None:
     assert compile_glob("/work/**")("/work/a/b.py")
     assert compile_glob("**/.ssh/**")("/home/agent/.ssh/id")
     assert not compile_glob("/work/test_*.py")("/work/__pycache__/test_a.cpython-313.pyc")
+
+
+def _one_regex(pattern: str) -> Callable[[str], bool]:
+    """The glob matcher of before: one regex over the whole path."""
+    full = re.compile(glob.translate(pattern, recursive=True, include_hidden=True, seps="/"))
+    if "/" in pattern:
+        return lambda s: full.match(s) is not None
+    return lambda s: full.match(s) is not None or full.match(s.rsplit("/", 1)[-1]) is not None
+
+
+def test_a_glob_matches_what_one_regex_over_the_path_matched() -> None:
+    rng = random.Random(454)
+    names = ["a", "b", "*", "**", "?", "a*", "*a", "*a*b", "a?", "", "***", "[ab]", "ab"]
+    names += ["*.py", "a*b*a", "\n", "**a", "a**"]
+    parts = ["a", "b", "", "ab", "aa", "ba", "a.py", "aab", "bab", "\n", "abba", "."]
+    for _ in range(20_000):
+        pattern = "/".join(rng.choice(names) for _ in range(rng.randint(1, 6)))
+        path = "/".join(rng.choice(parts) for _ in range(rng.randint(1, 7)))
+        assert compile_glob(pattern)(path) == _one_regex(pattern)(path), (pattern, path)
+
+
+@pytest.mark.parametrize(
+    ("pattern", "path", "matches"),
+    [
+        ("**/a", "/a", False),
+        ("**/a", "x/a", True),
+        ("**/a", "//a", True),
+        ("**/a", "a", True),
+        ("/work/**", "/work", False),
+        ("/work/**", "/work/", True),
+        ("**", "", True),
+        ("*", "", False),
+        ("/work/**/**/a", "/work/a", True),
+        ("**/a/**/b/**/c", "x/a/b/y/z/c", True),
+        ("**/a/**/b/**/c", "x/a/b/y/z/c/d", False),
+        ("**/a/**/b/**", "a/b", False),
+        ("**/a/**/b/**", "a/b/", True),
+        ("**/a/**/b", "a//b", False),
+        ("**/a/**/b", "a///b", True),
+        ("*a*a*b", "xaxab", True),
+        ("*a*a*b", "xab", False),
+        ("x/*a*a*b/y", "x/aab/y", True),
+    ],
+)
+def test_a_glob_reads_parts_as_before(pattern: str, path: str, matches: bool) -> None:
+    assert compile_glob(pattern)(path) is matches
+    assert _one_regex(pattern)(path) is matches
+
+
+def test_a_class_in_a_glob_matches_no_slash() -> None:
+    assert compile_glob("/work/a[!b]c")("/work/axc")
+    assert not compile_glob("/work/a[!b]c")("/work/a/c")
+    assert _one_regex("/work/a[!b]c")("/work/a/c")
+    assert not compile_glob("/work/[+-0]x")("/work//x")
+    assert compile_glob("*.py[co]")("/work/__pycache__/a.pyc")
+
+
+@pytest.mark.parametrize(
+    ("pattern", "path"),
+    [
+        ("*a*a*a*a*a*b", "a" * 4095),
+        ("/work/*a*a*a*a*b/x", "/work/" + "a" * 4000 + "/y"),
+        ("**/a/**/a/**/a/**/a/**/b", "a/" * 2047 + "c"),
+        ("**/*a*a/**/*a*a/**/b", "aa/" * 1365),
+        ("*[a]*[a]*[a]*[a]*b", "a" * 4095),
+        ("**/a/**", "/" * 4095),
+    ],
+)
+def test_a_glob_reads_a_shaped_path_in_linear_time(pattern: str, path: str) -> None:
+    # One regex over the path took 0.5 s for `*a*a*a*b` on 256 characters, and about 16 times
+    # that for each doubling.
+    test = compile_glob(pattern)
+    start = time.process_time()
+    assert not test(path)
+    assert time.process_time() - start < 0.5
 
 
 async def run_rule(
@@ -572,6 +650,12 @@ async def test_a_distinct_rule_keeps_true_apart_from_1(store: LocalEventStore) -
         ({"event": ["run.started"], "key": "{config.x.y}"}, ".6"),
         ({"event": ["run.started"], "key": "{config.x}"}, ""),
         ({"event": ["proc.exec"], "key": "{argv} {fds.1.ino}"}, ""),
+        ({"event": ["file.access"], "match": {"path|glob": "/work/[!.]*"}}, ".7"),
+        ({"event": ["file.access"], "match": {"path|glob|all": ["/a", "/b[0-9]"]}}, ".7"),
+        ({"event": ["file.access"], "filter": [{"path|glob": "*.py[co]"}]}, ".7"),
+        ({"event": ["proc.exec"], "distinct": "fds.ino", "match": {"path|glob": "[a]"}}, ".7"),
+        ({"event": ["file.access"], "match": {"path|glob": "/work/*", "path|re": "[a]"}}, ""),
+        ({"event": ["file.access"], "match": {"path|contains": "[a]"}}, ""),
     ],
 )
 def test_a_rule_that_counts_lists_or_maps_has_a_new_version(
