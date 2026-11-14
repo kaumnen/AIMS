@@ -720,6 +720,7 @@ def test_a_distinct_field_must_exist() -> None:
     assert any("distinct" in p for p in problems(distinct="nope"))
 
 
+@pytest.mark.timing
 async def test_a_slow_rule_regex_degrades_the_rule_at_its_budget(
     store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -740,6 +741,7 @@ async def test_a_slow_rule_regex_degrades_the_rule_at_its_budget(
 
 
 @pytest.mark.parametrize("size", [30_000, 100_000], ids=["short", "long"])
+@pytest.mark.timing
 async def test_a_slow_rule_regex_leaves_the_loop_free(
     store: LocalEventStore, monkeypatch: pytest.MonkeyPatch, size: int
 ) -> None:

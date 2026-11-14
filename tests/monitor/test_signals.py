@@ -451,6 +451,7 @@ def test_signal_versions_hash_the_rules() -> None:
     assert signal_versions(MonitorConfig(preset="off")) == {}
 
 
+@pytest.mark.timing
 async def test_the_recorded_clean_run_raises_no_flag(tmp_path: Path) -> None:
     (origin,) = FIXTURE.iterdir()
     root = tmp_path / "runs"
@@ -1516,6 +1517,7 @@ async def test_verifier_hook_sees_a_file_a_shell_command_sources(
 
 
 @pytest.mark.parametrize("command", [";" * 200_000, "x " * 100_000, ". " * 100_000])
+@pytest.mark.timing
 async def test_a_long_shell_command_line_reads_in_bounded_time(
     store: LocalEventStore, command: str
 ) -> None:
@@ -2852,6 +2854,7 @@ LONG = 200_000
         *("eq-comment", "eq-open-defs", "eq-defs-on-one-line"),
     ],
 )
+@pytest.mark.timing
 async def test_a_long_whitespace_run_scans_in_linear_time(
     store: LocalEventStore, path: str | None, text: str
 ) -> None:
@@ -2888,6 +2891,7 @@ async def test_eq_always_true_reads_a_comment_and_a_long_signature_as_they_are(
     ]
 
 
+@pytest.mark.timing
 async def test_a_slow_pattern_degrades_its_signal_and_keeps_the_other_hits(
     store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2912,6 +2916,7 @@ async def test_a_slow_pattern_degrades_its_signal_and_keeps_the_other_hits(
     assert "'hi\\\\s*,?\\\\s+judge' ran past 0.2 s" in (degraded[0].detail or "")
 
 
+@pytest.mark.timing
 async def test_a_long_digit_run_in_a_pytest_summary_scans_in_linear_time(
     store: LocalEventStore,
 ) -> None:
@@ -2929,6 +2934,7 @@ async def test_a_long_digit_run_in_a_pytest_summary_scans_in_linear_time(
     ["1 passed in 1s (\n" * (LONG // 8), "rootdir: " + "x" * LONG, "rootdir: x\n" * (LONG // 8)],
     ids=["unclosed-brackets", "rootdir-line", "rootdir-lines"],
 )
+@pytest.mark.timing
 async def test_lines_like_a_pytest_header_or_summary_scan_in_linear_time(
     store: LocalEventStore, stdout: str
 ) -> None:
@@ -2956,6 +2962,7 @@ async def test_lines_like_a_pytest_header_or_summary_scan_in_linear_time(
     ],
     ids=["brackets", "parens", "msg-parens", "progress", "nodeid", "colons", "lines"],
 )
+@pytest.mark.timing
 async def test_lines_like_a_subtest_scan_in_linear_time(store: LocalEventStore, body: str) -> None:
     sc = scenario(verifier={"command": "pytest", "expect": {"tests": 1, "report": "pytest"}})
     b = await bench(store, scenario=sc)
@@ -2979,6 +2986,7 @@ async def test_lines_like_a_subtest_scan_in_linear_time(store: LocalEventStore, 
     ],
     ids=["letters", "open-share", "file-and-share", "tokens", "file-name", "lines"],
 )
+@pytest.mark.timing
 async def test_lines_like_a_progress_line_scan_in_linear_time(
     store: LocalEventStore, body: str
 ) -> None:
@@ -3152,6 +3160,7 @@ MIB = 1024 * 1024
     "unit",
     ["no ", "not pass ", "0 failed, ", "fixed the failing test and ", "19 of 22 ", "a.", "\n"],
 )
+@pytest.mark.timing
 async def test_a_long_answer_reads_in_linear_time(store: LocalEventStore, unit: str) -> None:
     b = await bench(store)
     answer = await b.content((unit * (MIB // len(unit) + 1))[:MIB])
@@ -3189,6 +3198,7 @@ async def test_deny_retry(store: LocalEventStore) -> None:
     assert [(f.subcategory, f.importance) for f in b.of("deny_retry")] == [("split", 3)]
 
 
+@pytest.mark.timing
 async def test_deny_retry_compares_a_denied_call_of_many_parts_off_the_event_loop(
     store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3245,6 +3255,7 @@ async def test_deny_retry_finds_parts_inside_longer_words_of_a_large_call(
     "unit",
     ["abc ", "A" * 11 + " ", "A" * 12 + "===", "\\x41" * 3 + " ", "\\x4", "ab" * 5 + "g", "$'"],
 )
+@pytest.mark.timing
 def test_the_deny_retry_patterns_read_a_long_text_in_linear_time(unit: str) -> None:
     text = (unit * (MIB // len(unit) + 1))[:MIB]
     start = time.perf_counter()

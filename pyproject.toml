@@ -177,6 +177,7 @@ markers = [
     "docker: needs a Docker daemon",
     "tracer: needs the privileged kernel tracer",
     "serial: needs the machine to itself (floods the tracer or times CPU use); run apart from -n",
+    "timing: holds a short wall-clock limit or was seen to fail on a busy machine; run apart from -n",
 ]
 # A hung anyio test under the "signal" method fails, then hangs in fixture teardown on anyio's
 # stuck runner task. "thread" ends the process instead. xdist then reruns the test's file on a

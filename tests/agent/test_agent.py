@@ -321,6 +321,7 @@ async def test_an_end_that_cannot_be_logged_ends_the_agent_as_an_error(
     assert (logged.reason, logged.answer) == ("error", None)
 
 
+@pytest.mark.timing
 async def test_a_cancelled_agent_whose_end_cannot_be_logged_still_raises_the_cancel(
     store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:

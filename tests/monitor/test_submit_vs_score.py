@@ -445,6 +445,7 @@ async def test_the_flag_says_how_the_claim_was_made(store: LocalEventStore) -> N
         "except that ",
     ],
 )
+@pytest.mark.timing
 def test_new_rules_read_in_linear_time(unit: str) -> None:
     text = (unit * (2**20 // len(unit) + 1))[: 2**20]
     start = time.perf_counter()

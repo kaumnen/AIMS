@@ -758,6 +758,7 @@ async def test_a_runner_stops_a_selftest_between_its_cases_when_its_run_is_delet
         assert not (store.root / job.run_id).exists()
 
 
+@pytest.mark.timing
 async def test_a_monitor_job_whose_run_a_forced_delete_took_is_cancelled_and_dropped(
     cp: CP, local: LocalEventStore, runner: FakeRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -870,6 +870,7 @@ async def test_a_scripted_agent_that_starts_during_a_pause_holds_until_it_is_let
     assert box.refused == []
 
 
+@pytest.mark.timing
 async def test_a_scripted_step_waits_out_its_delay_in_time_its_agent_is_not_paused(
     store: LocalEventStore, tmp_path: Path
 ) -> None:

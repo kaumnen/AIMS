@@ -1992,6 +1992,7 @@ async def test_aims_control_with_wait_0_sends_and_does_not_wait(
     assert message.command.action == "pause"
 
 
+@pytest.mark.timing
 async def test_aims_control_exits_non_zero_for_a_command_not_carried_out_in_full(
     cp: CP, fake: FakeRunner, local: LocalEventStore
 ) -> None:

@@ -524,6 +524,7 @@ async def test_a_cancel_while_a_helper_is_deleted_waits_for_the_delete(
         await scrub(backend, run_id)
 
 
+@pytest.mark.timing
 async def test_undo_waits_for_a_volume_only_while_its_container_goes(
     backend: DockerBackend, monkeypatch: pytest.MonkeyPatch
 ) -> None:

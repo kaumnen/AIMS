@@ -425,6 +425,7 @@ async def test_folder_exchanges_match_a_scan_of_every_write(folders: tuple[str, 
                 assert joint._exchange_seq(x, y, now) == scanned_joint._exchange_seq(x, y, now)
 
 
+@pytest.mark.timing
 async def test_shared_folder_reads_stay_fast_after_many_writes() -> None:
     setup = SignalSetup(MonitorConfig(preset="signals"), folder_scenario("/shared"), {})
     signals = [CredentialFlow(setup), JointAction(setup)]
@@ -614,6 +615,7 @@ async def test_exchange_checks_do_not_scan_every_exchange() -> None:
         "ab" * 5 + "g",
     ],
 )
+@pytest.mark.timing
 def test_key_like_reads_a_long_text_in_linear_time(unit: str) -> None:
     mib = 1024 * 1024
     text = (unit * (mib // len(unit) + 1))[:mib]

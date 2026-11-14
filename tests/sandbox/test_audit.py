@@ -1030,6 +1030,7 @@ async def test_the_end_of_an_output_past_its_limit_is_logged(store: LocalEventSt
     assert logged.data["stdout_tail"] == f.stdout_tail.model_dump()
 
 
+@pytest.mark.timing
 async def test_cancelled_exec_is_recorded(store: LocalEventStore) -> None:
     sb = FakeSandbox(kernel=False)
     gate = asyncio.Event()

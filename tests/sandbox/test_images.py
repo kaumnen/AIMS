@@ -400,6 +400,7 @@ async def test_a_build_lock_file_another_user_just_made_is_locked_once_readable(
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a file whatever its mode")
+@pytest.mark.timing
 async def test_a_build_lock_file_that_stays_unreadable_raises(
     lock_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

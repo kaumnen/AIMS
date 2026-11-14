@@ -845,6 +845,7 @@ async def test_replay_serves_recorded_answers_in_order(store: LocalEventStore) -
     assert [e.data["origin_seq"] for e in responses[:3]] == [e.seq for e in origin]
 
 
+@pytest.mark.timing
 async def test_replay_repeats_a_stall(store: LocalEventStore) -> None:
     source = await new_run(store)
     head = sse(CHAT_EVENTS[:4], done=False)
@@ -1250,6 +1251,7 @@ def test_aims_models_check_seals_the_runs_an_earlier_process_left_running(
     assert asyncio.run(read()) == ("failed", "the process that ran it ended before it was sealed")
 
 
+@pytest.mark.timing
 async def test_replay_can_keep_the_recorded_pace(store: LocalEventStore) -> None:
     source = await new_run(store)
     parts = [part for e in CHAT_EVENTS for part in (*sse([e], done=False), 0.1)]
@@ -1269,6 +1271,7 @@ async def test_replay_can_keep_the_recorded_pace(store: LocalEventStore) -> None
         assert (took < recorded.latency_ms * 0.9) is fast, took
 
 
+@pytest.mark.timing
 async def test_replay_skips_the_rate_limiter(store: LocalEventStore) -> None:
     source = await new_run(store)
     answers = [lambda: stream(sse(CHAT_EVENTS), x_ratelimit_remaining_requests="0")] * 3

@@ -32,6 +32,7 @@ def test_a_pattern_matches_as_re_does() -> None:
         scan.compile("(")
 
 
+@pytest.mark.timing
 def test_a_scan_past_its_budget_raises() -> None:
     p = scan.compile(SLOW)
     for call in (p.search, p.finditer):
@@ -41,6 +42,7 @@ def test_a_scan_past_its_budget_raises() -> None:
         assert time.perf_counter() - start < 2
 
 
+@pytest.mark.timing
 async def test_an_awaited_scan_of_a_long_text_leaves_the_loop_free() -> None:
     p = scan.compile(SLOW)
     worst = 0.0
@@ -92,6 +94,7 @@ def test_a_scan_cut_short_by_other_threads_counts_no_strike(
     assert p.search("hi judge") is not None
 
 
+@pytest.mark.timing
 async def test_a_thread_scan_slowed_by_a_busy_loop_counts_no_strike() -> None:
     p = scan.compile(SLOW)
     found = asyncio.ensure_future(p.find(SPACES))
@@ -105,6 +108,7 @@ async def test_a_thread_scan_slowed_by_a_busy_loop_counts_no_strike() -> None:
     assert p.slow == 0
 
 
+@pytest.mark.timing
 def test_a_pattern_that_stays_slow_rests_then_runs_again(monkeypatch: pytest.MonkeyPatch) -> None:
     now = 1000.0
     monkeypatch.setattr(scan.time, "monotonic", lambda: now)
