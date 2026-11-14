@@ -20,6 +20,7 @@ from aims.events import (
     AgentFinished,
     AgentStarted,
     AgentStep,
+    CostSource,
     Draft,
     LocalEventStore,
     ModelParams,
@@ -36,7 +37,7 @@ from aims.events import (
     split_lines,
 )
 from aims.events.store import LOG
-from aims.models import DeltaBus
+from aims.models import DeltaBus, Price
 from aims.monitor.offline import offline_monitor
 from aims.monitor.setup import ResolvedMonitor
 from aims.run.estimate import (
@@ -45,6 +46,7 @@ from aims.run.estimate import (
     Estimate,
     History,
     Progress,
+    Tokens,
     estimate,
     estimate_fork,
     estimate_review,
@@ -172,6 +174,7 @@ async def record(
     profile: str | None = None,
     budget: BudgetOverride | None = None,
     operator: OperatorAction | None = None,
+    source: CostSource | None = None,
 ) -> str:
     """A sealed run of `bundle` as the runner writes it: run.started with the agents' profiles,
     the resolved scenario and monitor, one agent call costing `cost`, the end of each agent.
@@ -191,7 +194,7 @@ async def record(
     usage = usage or ModelUsage(input_tokens=0, cached_tokens=0, output_tokens=output_for(cost))
     drafts = [
         Draft(_request("c1", agent.name, agent.model, str(agent.base_url), None, body), "a"),
-        Draft(_response("c1", usage, cost), "a"),
+        Draft(_response("c1", usage, cost, source), "a"),
     ]
     if p.monitor is not None and p.monitor.sweeps:
         sweep = next(iter(p.monitor.sweeps.values()))
@@ -230,9 +233,17 @@ def _request(
     )
 
 
-def _response(call: str, usage: ModelUsage, cost: float | None) -> ModelResponse:
+def _response(
+    call: str, usage: ModelUsage, cost: float | None, source: CostSource | None = None
+) -> ModelResponse:
     return ModelResponse(
-        call_id=call, attempt=1, status="completed", latency_ms=1, usage=usage, cost_usd=cost
+        call_id=call,
+        attempt=1,
+        status="completed",
+        latency_ms=1,
+        usage=usage,
+        cost_usd=cost,
+        cost_source=source,
     )
 
 
@@ -706,6 +717,58 @@ async def test_each_model_prices_unreported_cache_at_its_own_share(
     assert rates["watch-model"].assumed
     assert found.share("new-model") == CACHED_SHARE == 0.9
     assert any(line.startswith("Blended input per million tokens:") for line in e.lines)
+
+
+@pytest.mark.anyio
+async def test_a_past_call_counts_at_the_cost_its_provider_reported(
+    tmp_path: Path, store: LocalEventStore
+) -> None:
+    """A router bills one model at the price of the provider it picked. Four live calls to one
+    model cost 2.8 to 3.4 times its list price, so the tokens at the list price say too little."""
+    settings, path = write(tmp_path, budget="{steps: null, cost_usd: 50}")
+    bundle = load_scenario(path)
+    usage = ModelUsage(input_tokens=1000, cached_tokens=0, output_tokens=0)
+    at_list = 1000 * 1.0 / 1e6
+    for _ in range(3):
+        await record(store, settings, bundle, 3 * at_list, usage=usage, source="provider")
+    found = await history(store)
+    (tokens, *_) = _agent_tokens(found)
+    assert (tokens.input, tokens.output, tokens.billed) == (0, 0, pytest.approx(3 * at_list))
+    assert one(settings, found, bundle).parts[0].agents.typical_usd == pytest.approx(3 * at_list)
+    # The share of cached input still comes from every call that reported it.
+    assert found.shares == {"agent-model": 0.0}
+    assert sum(found.spend.values()) == pytest.approx(9 * at_list)
+
+    # A cost the price table made is priced again at today's price, as before.
+    await record(store, settings, bundle, 3 * at_list, usage=usage, source="price")
+    await record(store, settings, bundle, 3 * at_list, usage=usage)
+    costs = [
+        t.priced(settings.models.get("agent").price, 0.9)
+        for t in _agent_tokens(await history(store))
+    ]
+    assert sorted(costs) == pytest.approx([at_list, at_list, 3 * at_list, 3 * at_list, 3 * at_list])
+
+
+def test_tokens_add_billed_calls_to_the_priced_ones() -> None:
+    price = Price(input=1.0, cached=0.1, output=2.0)
+    t = Tokens()
+    t.add({"input_tokens": 1000, "cached_tokens": 0, "output_tokens": 500}, 0.002)
+    t.add({"input_tokens": 9000, "cached_tokens": 0, "output_tokens": 9000}, 0.5, billed=True)
+    t.add({}, 0.25, billed=True)
+    assert (t.input, t.output, t.cost, t.billed) == (1000, 500, 0.752, 0.75)
+    assert t.priced(price, 0.9) == pytest.approx(0.002 + 0.75)
+    assert t.priced(None, 0.9) == pytest.approx(0.752)
+
+
+@pytest.mark.anyio
+async def test_a_billed_call_without_token_counts_still_counts(
+    tmp_path: Path, store: LocalEventStore
+) -> None:
+    settings, path = write(tmp_path, budget="{steps: null, cost_usd: 50}")
+    bundle = load_scenario(path)
+    await record(store, settings, bundle, 0.4, usage=ModelUsage(), source="provider")
+    found = await history(store)
+    assert one(settings, found, bundle).parts[0].agents.typical_usd == pytest.approx(0.4)
 
 
 def _agent_tokens(found: History) -> list[Any]:

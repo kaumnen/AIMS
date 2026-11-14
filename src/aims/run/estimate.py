@@ -7,6 +7,8 @@ count; failing that on the models and effort alone, from any scenario, scaled by
 budget (a past run without one by the steps its agents took); failing that only the caps
 speak. Past token counts are priced at today's list prices; where a provider did not say how
 much input was cached, the model's own cached share from its other calls stands in, else 90%.
+A past call whose provider reported its cost counts at that cost, since a router bills one model
+at the price of the provider it picked, which the list price does not say.
 
 The variant of a past run comes from its truth file, which stays on the operator's machine; a
 run without one counts as the base scenario.
@@ -66,7 +68,7 @@ TYPES = (
 )
 PAGE = 1000
 # The shape of a run's cost row in the index; a row of another shape is read again.
-ROW = 3
+ROW = 4
 MILLION = 1_000_000
 
 
@@ -183,7 +185,9 @@ class Estimate(_Out):
 @dataclass(slots=True)
 class Tokens:
     """The calls to one model in one run. `reported` is the input of the calls that said how
-    much of it was cached and `cached` that cached part; `cost` is what the log recorded."""
+    much of it was cached and `cached` that cached part; `cost` is what the log recorded.
+    `billed` is the part of `cost` the provider reported itself: those calls count at it, so
+    their tokens are in none of the counts."""
 
     provider: str = ""
     input: int = 0
@@ -191,26 +195,29 @@ class Tokens:
     cached: int = 0
     output: int = 0
     cost: float = 0.0
+    billed: float = 0.0
 
-    def add(self, usage: Mapping[str, Any], cost: float) -> None:
+    def add(self, usage: Mapping[str, Any], cost: float, billed: bool = False) -> None:
+        self.cost += cost
+        if billed:
+            self.billed += cost
+            return
         tokens = _int(usage.get("input_tokens"))
         self.input += tokens
         if usage.get("cached_tokens") is not None:
             self.reported += tokens
             self.cached += _int(usage.get("cached_tokens"))
         self.output += _int(usage.get("output_tokens"))
-        self.cost += cost
 
     def priced(self, price: Price | None, share: float) -> float:
-        """The cost at `price`, with `share` of the unreported input cached; the recorded cost
-        without a price."""
+        """The cost at `price`, with `share` of the unreported input cached, and what the
+        provider billed itself; the recorded cost without a price."""
         if price is None:
             return self.cost
         cached = self.cached + (self.input - self.reported) * share
         uncached = self.input - cached
-        return (uncached * price.input + cached * price.cached + self.output * price.output) / (
-            MILLION
-        )
+        tokens = uncached * price.input + cached * price.cached + self.output * price.output
+        return tokens / MILLION + self.billed
 
 
 @dataclass(slots=True)
@@ -382,13 +389,17 @@ async def _read(store: LocalEventStore, info: RunInfo) -> _Run:
                     if isinstance(cost, int | float):
                         spend[where] += float(cost)
                     usage = _dict(d.get("usage"))
-                    if usage.get("input_tokens") is None or usage.get("output_tokens") is None:
+                    counted = usage.get("input_tokens") is not None and (
+                        usage.get("output_tokens") is not None
+                    )
+                    billed = d.get("cost_source") == "provider" and isinstance(cost, int | float)
+                    if not counted and not billed:
                         continue
-                    if usage.get("cached_tokens") is not None:
+                    if counted and usage.get("cached_tokens") is not None:
                         cached[model][0] += _int(usage.get("cached_tokens"))
                         cached[model][1] += _int(usage.get("input_tokens"))
                     tokens = sides[watching].setdefault(model, Tokens(provider=where))
-                    tokens.add(usage, _num(cost))
+                    tokens.add(usage, _num(cost), billed)
                 case "agent.finished":
                     steps[e.agent_id or ""] = _int(d.get("steps"))
                     capped = capped or _str(d.get("reason")).startswith("budget_")
