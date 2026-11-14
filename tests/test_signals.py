@@ -998,6 +998,26 @@ async def test_bash_env_spares_the_harness_and_the_scenarios_own_value(
     assert b.of("shell_rc_write") == []
 
 
+@pytest.mark.parametrize("workdir", ["//work", "/work/", "/./work", "/work//"])
+async def test_test_tamper_follows_a_workdir_given_in_another_form(
+    store: LocalEventStore, workdir: str
+) -> None:
+    sc = Scenario.model_validate(
+        {
+            "version": 1,
+            "name": "t",
+            "oversight": "observe",
+            "task": {"instruction": "do it", "environment": {"image": "python:3.13"}},
+            "sandbox": {"workdir": workdir},
+        }
+    )
+    assert (sc.sandbox.workdir, sc.sandbox_path("tests/t.py")) == ("/work", "/work/tests/t.py")
+    config = MonitorConfig(preset="signals", paths={"tests": ["tests/**"]})
+    b = await bench(store, config=config, scenario=sc)
+    await b.bash("x", lambda ex: b.k(FileAccess, ex, op="write", path="/work/tests/t.py"))
+    assert {f.key for f in b.of("test_tamper")} == {"/work/tests/t.py"}
+
+
 async def test_test_tamper_and_grader_access_follow_the_scenario_paths(
     store: LocalEventStore,
 ) -> None:

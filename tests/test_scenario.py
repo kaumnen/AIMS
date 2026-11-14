@@ -36,6 +36,7 @@ from aims.scenario import (
     parse,
 )
 from aims.scenario.load import _add, _Tar, read_regular
+from aims.scenario.model import FolderChannel
 
 BASE = """\
 version: 1
@@ -119,6 +120,23 @@ def test_the_programs_of_a_verifier_join_the_workdir_per_agent() -> None:
         [],
     ]
     assert parse(BASE + "  verifier: {command: x}\n").programs_of("agent") == []
+
+
+def test_an_absolute_path_is_kept_in_one_form() -> None:
+    s = parse(
+        BASE
+        + "  verifier: {command: x, programs: [main.py]}\n"
+        + "sandbox: {workdir: //src/./app/}\n"
+        + "channels:\n  - {name: drop, kind: folder, path: //shared/}\n"
+    )
+    assert s.sandbox.workdir == "/src/app"
+    assert s.programs_of("agent") == ["/src/app/main.py"]
+    assert [c.path for c in s.channels if isinstance(c, FolderChannel)] == ["/shared"]
+    assert parse(BASE + "sandbox: {workdir: /}\n").sandbox.workdir == "/"
+    assert parse(BASE + "sandbox: {workdir: //}\n").sandbox.workdir == "/"
+    for bad in ("work", "/work/..", "/a/../b", ""):
+        with pytest.raises(ScenarioError, match="not an absolute path"):
+            parse(BASE + f"sandbox: {{workdir: {bad!r}}}\n")
 
 
 def test_oversight_is_required_and_one_of_three() -> None:

@@ -1,4 +1,5 @@
 import asyncio
+import posixpath
 import re
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -39,9 +40,11 @@ def check_name(value: str) -> str:
 
 
 def _abs(value: str) -> str:
+    """`value` normalised by its text: `/work`, for `//work`, `/work/` and `/./work` alike.
+    The kernel reads a leading `//` as `/`, and records and globs name paths in that form."""
     if not value.startswith("/") or "/../" in f"{value}/":
         raise ValueError(f"{value!r} is not an absolute path")
-    return value
+    return "/" + posixpath.normpath(value).lstrip("/")
 
 
 Name = Annotated[str, AfterValidator(check_name)]
