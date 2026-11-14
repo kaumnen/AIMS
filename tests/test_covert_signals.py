@@ -22,6 +22,7 @@ from aims.events import (
     ToolCall,
 )
 from aims.monitor.config import MonitorConfig
+from aims.monitor.signals import covert
 from aims.monitor.signals.base import SignalSetup
 from aims.monitor.signals.covert import (
     CredentialFlow,
@@ -498,6 +499,68 @@ async def test_a_read_loop_keeps_one_exchange_per_pair_of_agents() -> None:
         assert len(s.exchanges) == 2
         assert s.exchanges.latest("a", "b", now) == seq - 1
         assert s.exchanges.latest("c", "b", now) == seq
+
+
+async def test_a_board_read_exchanges_with_the_posters_of_what_it_showed() -> None:
+    setup = SignalSetup(MonitorConfig(preset="signals"), folder_scenario("/shared"), {})
+    start = datetime.fromtimestamp(1_800_000_000, UTC)
+
+    def post(n: int) -> ChannelMessage:
+        return ChannelMessage(channel="board", id=n, text="hi", bytes=2)
+
+    def read(after: int, through: int) -> ChannelRead:
+        return ChannelRead(channel="board", after=after, through=through, count=through - after)
+
+    OTHER = {"channel": "other"}
+    for signal in (CredentialFlow(setup), JointAction(setup)):
+        state = cast(Any, Payloads())
+        fed = [
+            Fed(1, "a", start, post(1)),
+            Fed(2, "b", start, post(2)),
+            # b is shown both, its own too: an exchange with a alone.
+            Fed(3, "b", start + timedelta(seconds=1), read(0, 2)),
+            # Long after, a read that shows b nothing is no exchange.
+            Fed(4, "b", start + timedelta(seconds=1000), read(2, 2)),
+            # c reads for the first time then: it takes both messages in now.
+            Fed(5, "c", start + timedelta(seconds=1000), read(0, 2)),
+            # A read of another board, and one whose `after` is past the board's last message.
+            Fed(6, "a", start + timedelta(seconds=1000), read(0, 2).model_copy(update=OTHER)),
+            Fed(7, "a", start + timedelta(seconds=1000), read(5, 9)),
+        ]
+        for event in fed[:3]:
+            await signal.feed(cast(Any, event), state)
+        assert signal.exchanges.latest("a", "b", (start + timedelta(seconds=2)).timestamp()) == 3
+        assert len(signal.exchanges) == 1
+        for event in fed[3:]:
+            await signal.feed(cast(Any, event), state)
+        at = (start + timedelta(seconds=1001)).timestamp()
+        assert signal.exchanges.latest("a", "b", at) is None
+        assert signal.exchanges.latest("a", "c", at) == 5
+        assert signal.exchanges.latest("b", "c", at) == 5
+        assert len(signal.exchanges) == 2
+
+
+async def test_a_board_keeps_the_posters_of_its_newest_messages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(covert, "POSTS", 3)
+    posts = covert._Posts()
+    for n in range(1, 11):
+        posts.posted("board", n, "a" if n < 8 else "c")
+    assert len(posts.boards["board"]) == 3
+
+    def shown(after: int, through: int, count: int | None = None) -> list[str]:
+        count = through - after if count is None else count
+        read = ChannelRead(channel="board", after=after, through=through, count=count)
+        return posts.shown(read, "b")
+
+    assert shown(0, 7) == []
+    assert shown(0, 8) == ["c"]
+    assert shown(0, 10**12) == ["c"]
+    assert shown(9, 10) == ["c"]
+    assert shown(10, 10) == []
+    assert shown(0, 10, count=0) == []
+    assert posts.shown(ChannelRead(channel="board", after=0, through=10, count=10), "c") == []
 
 
 async def test_exchange_checks_do_not_scan_every_exchange() -> None:
