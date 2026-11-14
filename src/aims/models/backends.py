@@ -433,6 +433,7 @@ class _ChatAccumulator:
         self.out = Assembled()
         self.calls: dict[int, dict[str, str]] = {}
         self.reasoning_field = "reasoning_content"
+        self.details: dict[tuple[object, object], dict[str, Any]] = {}
         self.head: dict[str, Any] = {}
         self.billed: dict[str, Any] = {}
 
@@ -462,6 +463,9 @@ class _ChatAccumulator:
                     out.reasoning += thought
                     out.reasoning_kind = "full"
                     pieces.append(Piece("reasoning", thought))
+            for part in delta.get("reasoning_details") or []:
+                if isinstance(part, dict):
+                    self._detail(part)
             for call in delta.get("tool_calls") or []:
                 index = int(call.get("index", 0))
                 fn = call.get("function") or {}
@@ -480,6 +484,18 @@ class _ChatAccumulator:
                 out.finish_reason = str(choice["finish_reason"])
         return pieces
 
+    def _detail(self, part: dict[str, Any]) -> None:
+        """Add a streamed piece of `reasoning_details` to the block it belongs to. A router
+        such as OpenRouter sends a block in pieces that share an `index`: its text, summary or
+        encrypted data grows, and a field such as the signature comes once."""
+        block = self.details.setdefault((part.get("index"), part.get("type")), {})
+        for key, value in part.items():
+            grown = block.get(key)
+            if key in _GROWS and isinstance(value, str) and isinstance(grown, str):
+                block[key] = grown + value
+            elif value is not None or key not in block:
+                block[key] = value
+
     def finish(self, body: dict[str, Any]) -> None:
         out = self.out
         out.final = body
@@ -494,6 +510,12 @@ class _ChatAccumulator:
                 self.reasoning_field = name
                 out.reasoning = thought
                 out.reasoning_kind = "full"
+        details = message.get("reasoning_details")
+        self.details = {
+            (n, None): part
+            for n, part in enumerate(details if isinstance(details, list) else [])
+            if isinstance(part, dict)
+        }
         for index, call in enumerate(message.get("tool_calls") or []):
             fn = call.get("function") or {}
             self.calls[index] = {
@@ -520,6 +542,13 @@ class _ChatAccumulator:
         message: dict[str, JsonValue] = {"role": "assistant", "content": out.text or None}
         if out.reasoning:
             message[self.reasoning_field] = out.reasoning
+        if self.details:
+            # The blocks go back as they came, in order. A model with signed or encrypted
+            # reasoning reads them from here and drops the plain text above.
+            message["reasoning_details"] = list(self.details.values())
+            kinds = {d.get("type") for d in self.details.values()}
+            if out.reasoning and "reasoning.summary" in kinds and "reasoning.text" not in kinds:
+                out.reasoning_kind = "summary"
         if out.tool_calls:
             message["tool_calls"] = [_chat_call(c) for c in out.tool_calls]
         out.native = [message]
@@ -561,6 +590,9 @@ _HEAD = (
     "service_tier",
     "openrouter_metadata",
 )
+
+# The fields of a reasoning block that arrive in pieces on a stream.
+_GROWS = ("text", "summary", "data")
 
 # What a provider's usage says about the bill, kept in the body assembled from a stream.
 _BILLED = ("cost", "is_byok", "cost_details")

@@ -1125,6 +1125,141 @@ def test_turns_render_per_backend() -> None:
     assert chat[-1] == {"role": "tool", "tool_call_id": "t", "content": "o"}
 
 
+def detail(index: int, kind: str = "text", **fields: Any) -> dict[str, Any]:
+    return {"type": f"reasoning.{kind}", **fields, "format": "f", "index": index}
+
+
+def thought(*parts: Any, reasoning: str = "") -> dict[str, Any]:
+    return chunk({"reasoning": reasoning, "reasoning_details": list(parts)})
+
+
+def assembled(events: Iterable[dict[str, Any]]) -> Any:
+    acc = Chat().accumulator()
+    for event in events:
+        acc.feed(event)
+    return acc.result()
+
+
+SIGNED = [
+    thought(detail(0, text="17*23 "), reasoning="17*23 "),
+    thought(detail(0, text="is 391."), reasoning="is 391."),
+    thought(detail(0, signature="c2lnbmVk")),
+    chunk({"tool_calls": [{"index": 0, "id": "t1", "function": {"name": "f", "arguments": "{}"}}]}),
+    chunk({}, "tool_calls"),
+]
+SEALED = [
+    thought(detail(0, "summary", summary="Checking "), reasoning="Checking "),
+    thought(detail(0, "summary", summary="Paris."), reasoning="Paris."),
+    thought(detail(1, "encrypted", data="gAAA", id="rs_1")),
+    chunk({"content": "ok"}, "stop"),
+]
+
+
+def test_streamed_reasoning_details_merge_into_their_blocks() -> None:
+    signed = assembled(SIGNED)
+    block = {
+        "type": "reasoning.text",
+        "text": "17*23 is 391.",
+        "format": "f",
+        "index": 0,
+        "signature": "c2lnbmVk",
+    }
+    assert signed.native == [
+        {
+            "role": "assistant",
+            "content": None,
+            "reasoning": "17*23 is 391.",
+            "reasoning_details": [block],
+            "tool_calls": [
+                {"id": "t1", "type": "function", "function": {"name": "f", "arguments": "{}"}}
+            ],
+        }
+    ]
+    assert (signed.reasoning, signed.reasoning_kind) == ("17*23 is 391.", "full")
+    assert signed.final["choices"][0]["message"]["reasoning_details"] == [block]
+
+    sealed = assembled(SEALED)
+    assert sealed.native[0]["reasoning_details"] == [
+        {"type": "reasoning.summary", "summary": "Checking Paris.", "format": "f", "index": 0},
+        {"type": "reasoning.encrypted", "data": "gAAA", "id": "rs_1", "format": "f", "index": 1},
+    ]
+    assert (sealed.reasoning, sealed.reasoning_kind) == ("Checking Paris.", "summary")
+
+
+def test_reasoning_details_go_back_with_the_turn() -> None:
+    turn = assembled(SIGNED).turn("chat")
+    items = [Message(role="user", content="u"), turn, ToolOutput(call_id="t1", output="o")]
+    sent = Chat().render(Prompt(items=items))
+    assert sent[1] == turn.native[0]
+    assert "c2lnbmVk" in json.dumps(sent[1])
+    assert "reasoning_details" not in json.dumps(Responses().render(Prompt(items=items)))
+
+
+def test_reasoning_details_of_one_index_keep_their_types_apart() -> None:
+    out = assembled(
+        [
+            thought(detail(0, text="a"), detail(0, "encrypted", data="x")),
+            thought(detail(0, text="b"), detail(0, "encrypted", data="y"), "odd"),
+            chunk({"reasoning_details": "odd"}),
+            chunk({"reasoning_details": None}, "stop"),
+        ]
+    )
+    assert [
+        (d["type"], d.get("text"), d.get("data")) for d in out.native[0]["reasoning_details"]
+    ] == [
+        ("reasoning.text", "ab", None),
+        ("reasoning.encrypted", None, "xy"),
+    ]
+
+
+def test_a_later_null_does_not_clear_a_reasoning_detail() -> None:
+    out = assembled(
+        [
+            thought(detail(0, text="a", signature=None, id="r1")),
+            thought(detail(0, text="b", signature="s", id=None)),
+            thought(detail(0, text=None, signature=None)),
+            chunk({}, "stop"),
+        ]
+    )
+    assert out.native[0]["reasoning_details"] == [
+        {
+            "type": "reasoning.text",
+            "text": "ab",
+            "signature": "s",
+            "id": "r1",
+            "format": "f",
+            "index": 0,
+        }
+    ]
+
+
+def test_an_answer_with_no_reasoning_details_sends_none_back() -> None:
+    out = assembled(CHAT_EVENTS)
+    assert "reasoning_details" not in out.native[0]
+    assert out.reasoning_kind == "full"
+
+
+async def test_unstreamed_reasoning_details_stay_as_they_came(store: LocalEventStore) -> None:
+    run_id = await new_run(store)
+    details = [
+        detail(0, "summary", summary="Checking Paris."),
+        detail(1, "encrypted", data="gAAA", id="rs_1"),
+    ]
+    message = {
+        "role": "assistant",
+        "content": "ok",
+        "reasoning": "Checking Paris.",
+        "reasoning_details": details,
+    }
+    answer = {"id": "c2", "choices": [{"index": 0, "message": message, "finish_reason": "stop"}]}
+    raw = json.dumps(answer).encode()
+    handler, _ = scripted(lambda: stream([raw], content_type="application/json"))
+    async with client(store, run_id, profile(stream=False, reasoning="summary"), handler) as mc:
+        reply = await mc.call("test", PROMPT)
+    assert reply.turn.native == [message]
+    assert reply.reasoning_kind == "summary"
+
+
 def test_cli_models_list(tmp_path: Path) -> None:
     path = tmp_path / "aims.toml"
     path.write_text('[roles]\nagent = "meta-spark-1.3"\n')
