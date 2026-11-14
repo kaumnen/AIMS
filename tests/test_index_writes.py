@@ -23,6 +23,7 @@ from aims.events import (
     RunStarted,
     ToolCall,
     Verification,
+    logged_events,
     split_lines,
 )
 from aims.events import index as index_module
@@ -559,6 +560,54 @@ async def behind_at_open(
     assert run_id in store._lags
     assert run_id not in store._writers
     return run_id, store
+
+
+async def test_the_events_past_a_lagging_index_are_read_from_the_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    breaker = Breaker(monkeypatch, sqlite3.OperationalError("disk I/O error"))
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        run_id = await store.create_run(STARTED)
+        await store.append(run_id, [call(1)])
+        assert await store.unindexed(run_id) == []
+        breaker.left = 10**6
+        await store.append(run_id, [call(2), Draft(FLAG, "a2"), call(4)])
+        await store.append(run_id, [call(5)])
+        assert await indexed(store, run_id) == [0, 1]
+        assert [e.seq for e in await store.unindexed(run_id)] == [2, 3, 4, 5]
+        assert [e.seq for e in await store.unindexed(run_id, after=2, before=5)] == [3, 4]
+        assert [e.seq for e in await store.unindexed(run_id, limit=2)] == [2, 3]
+        calls = await store.unindexed(run_id, types=["tool.call"], agent_id="a1")
+        assert [e.seq for e in calls] == [2, 4, 5]
+        assert calls[0] == Event.model_validate(
+            json.loads((store.root / run_id / LOG).read_bytes().splitlines()[2])
+        )
+        assert await store.unindexed(run_id, agent_id="a2", types=["tool.call"]) == []
+        assert await store.unindexed(run_id, before=2) == []
+        whole = await logged_events(store, run_id, limit=1000)
+        assert [e.seq for e in whole] == [0, 1, 2, 3, 4, 5]
+        page = await logged_events(store, run_id, after=0, before=5, types=["tool.call"])
+        assert [e.seq for e in page] == [1, 2, 4]
+        assert [e.seq for e in await logged_events(store, run_id, limit=1)] == [0]
+        assert [e.seq for e in await logged_events(store, run_id, limit=3)] == [0, 1, 2]
+        breaker.left = 0
+        await eventually(store, lambda: caught_up(store, run_id))
+        assert await store.unindexed(run_id) == []
+        assert [e.seq for e in await logged_events(store, run_id)] == [0, 1, 2, 3, 4, 5]
+
+
+async def caught_up(store: LocalEventStore, run_id: str) -> bool:
+    return run_id not in store._lags
+
+
+async def test_a_lagging_run_another_process_deleted_has_no_events_past_its_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id, store = await behind_at_open(tmp_path / "runs", monkeypatch, sealed=True)
+    async with store:
+        assert [e.seq for e in await store.unindexed(run_id)] == [0, 1, 2]
+        shutil.rmtree(store.root / run_id)
+        assert await store.unindexed(run_id) == []
 
 
 async def test_a_log_head_read_while_a_writer_opens_counts_no_line_it_has_not_synced(

@@ -21,6 +21,7 @@ from aims.events import (
     MonitorFlag,
     MonitorVerdict,
     SweepTrigger,
+    logged_events,
 )
 from aims.models import ModelClient, Profile, Prompt
 from aims.monitor.channels import NAME as CHANNELS
@@ -1082,15 +1083,22 @@ class Monitor:
         return result
 
     async def _flagged_calls(self, agent_id: str, flags: Sequence[Event]) -> list[Event]:
-        """The tool calls the flags cite; else the agent's calls in the steps they cite."""
+        """The tool calls the flags cite; else the agent's calls in the steps they cite. Read
+        from the index and, where it is behind, from the log, so a review right after the
+        flagged call does not miss it."""
         seqs = sorted({s for e in flags for s in MonitorFlag.model_validate(e.data).evidence})
         if not seqs:
             return []
         lo, hi = seqs[0], seqs[-1]
         cited: list[Event] = []
         for seq in seqs:
-            found = await self.store.events(
-                self.source, after=seq - 1, before=seq + 1, types=["tool.call"], agent_id=agent_id
+            found = await logged_events(
+                self.store,
+                self.source,
+                after=seq - 1,
+                before=seq + 1,
+                types=["tool.call"],
+                agent_id=agent_id,
             )
             cited += [e for e in found if not self._own(e)]
         if cited:
@@ -1098,7 +1106,8 @@ class Monitor:
         start = self.policy.step_start(agent_id, lo)
         if start is None:
             return []
-        calls = await self.store.events(
+        calls = await logged_events(
+            self.store,
             self.source,
             after=start,
             before=hi + 1,

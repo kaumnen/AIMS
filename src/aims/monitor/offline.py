@@ -22,6 +22,7 @@ from aims.events import (
     Draft,
     Event,
     EventStore,
+    Head,
     RunFinished,
     RunInfo,
     RunStarted,
@@ -529,6 +530,23 @@ class OriginStore:
 
     async def wait_indexed(self, run_id: str, seq: int) -> None:
         await self._of(run_id).wait_indexed(run_id, seq)
+
+    async def log_head(self, run_id: str) -> Head | None:
+        return await self._of(run_id).log_head(run_id)
+
+    async def unindexed(
+        self,
+        run_id: str,
+        *,
+        after: int = -1,
+        before: int | None = None,
+        types: Sequence[str] = (),
+        agent_id: str | None = None,
+        limit: int = 1000,
+    ) -> list[Event]:
+        return await self._of(run_id).unindexed(
+            run_id, after=after, before=before, types=types, agent_id=agent_id, limit=limit
+        )
 
     async def rebuild(self) -> None:
         return None

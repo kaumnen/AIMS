@@ -920,6 +920,39 @@ async def test_review_finds_cited_calls_past_a_page_of_calls(tmp_path: Path) -> 
         assert frame(key, last.seq) in proposal
 
 
+async def test_review_reads_cited_calls_the_index_does_not_hold_yet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The index is behind the log from the flagged call on: the review still gets it."""
+    config = sweep_config(every=1) | {"policy": {"pause_timeout_s": 5}, "review": {"resamples": 0}}
+    async with harness(tmp_path, config=config) as h:
+        await h.add(started())
+        behind(h, monkeypatch)
+        [request, _, first] = await own_call(h, "m1", None)
+        call_event = await h.add(ToolCall(call_id="e1", name="exec", arguments='{"cmd": "x"}'))
+        other = await h.add(ToolCall(call_id="e2", name="exec", arguments="{}"))
+        assert await h.store.events(h.run_id, types=["tool.call"]) == []
+
+        def flag(evidence: list[int]) -> Event:
+            payload = MonitorFlag(
+                layer="signal",
+                source="s",
+                category="scorer_tampering",
+                importance=4,
+                evidence=evidence,
+                justification="j",
+            )
+            return Event.model_validate(
+                call_event.model_dump() | {"type": "monitor.flag", "data": payload.model_dump()}
+            )
+
+        assert await h.monitor._flagged_calls("a", [flag([call_event.seq])]) == [call_event]
+        await h.monitor.barrier()
+        # A flag that cites no call gets the calls of the step it cites.
+        cited = await h.monitor._flagged_calls("a", [flag([request.seq, other.seq + 1])])
+        assert cited == [first, call_event, other]
+
+
 async def test_a_failed_review_score_counts_its_cost(tmp_path: Path) -> None:
     def failing(proposal: str) -> Score:
         raise SweepError("the answer does not fit the schema", cost_usd=0.07)

@@ -133,6 +133,7 @@ from aims.events.store import (
     MissingBlobs,
     RunCorrupt,
     Verification,
+    logged_events,
     split_lines,
     verify_run,
 )
@@ -274,6 +275,7 @@ __all__ = [
     "ToolResult",
     "UnitRow",
     "Verification",
+    "logged_events",
     "payload_type",
     "split_lines",
     "verify_run",

@@ -207,6 +207,24 @@ class EventStore(Protocol):
 
     async def wait_indexed(self, run_id: str, seq: int) -> None: ...
 
+    async def log_head(self, run_id: str) -> Head | None:
+        """Where the synced part of a run's log ends, also past an index that is behind it."""
+        ...
+
+    async def unindexed(
+        self,
+        run_id: str,
+        *,
+        after: int = -1,
+        before: int | None = None,
+        types: Sequence[str] = (),
+        agent_id: str | None = None,
+        limit: int = MAX_PAGE,
+    ) -> list[Event]:
+        """The events a run's log holds past its index, filtered as `events` filters: none
+        unless the index is behind the log."""
+        ...
+
     async def rebuild(self) -> None: ...
 
     async def close(self) -> None: ...
@@ -453,6 +471,57 @@ class LocalEventStore:
         if found.finished:
             self._sealed[run_id] = found
         return found if found.seq >= 0 else head
+
+    async def unindexed(
+        self,
+        run_id: str,
+        *,
+        after: int = -1,
+        before: int | None = None,
+        types: Sequence[str] = (),
+        agent_id: str | None = None,
+        limit: int = MAX_PAGE,
+    ) -> list[Event]:
+        """The events of a run that the synced part of its log holds past its index, in seq
+        order: none unless the index is behind the log. Of those, up to `limit` after seq
+        `after` and before seq `before`, of `types` and of `agent_id` when given. A reader that
+        must not miss the newest events of a run adds them to what `events` gives, as
+        `logged_events` does. The read ends early at a line that does not follow the index
+        head, as while the run is indexed again."""
+        if run_id not in self._lags:
+            return []
+        try:
+            start = await self.head(run_id) or Head()
+            end = await self.log_head(run_id)
+        except RunCorrupt:
+            return []
+        if end is None:
+            return []
+        last = end.seq if before is None else min(end.seq, before - 1)
+        kinds = frozenset(types)
+
+        def read() -> list[Event]:
+            out: list[Event] = []
+            if last <= max(after, start.seq) or limit < 1:
+                return out
+            events = read_events(self._log(run_id), run_id, start)
+            try:
+                for body, head in events:
+                    if (
+                        head.seq > after
+                        and (not kinds or body["type"] in kinds)
+                        and (agent_id is None or body["agent_id"] == agent_id)
+                    ):
+                        out.append(Event.model_validate(body))
+                    if head.seq >= last or len(out) >= limit:
+                        break
+            except OSError, ChainError:
+                pass
+            finally:
+                events.close()
+            return out
+
+        return await asyncio.to_thread(read)
 
     def holds(self, run_id: str) -> bool:
         """Whether the run has a directory here. A run that was deleted has none, whichever
@@ -1662,6 +1731,38 @@ class LocalEventStore:
         """Events of every run whose text holds `query`, newest first, and the cursor of the
         next page, leaving out runs of `skip_kinds`."""
         return await self._index.search(query, limit=limit, before=before, skip_kinds=skip_kinds)
+
+
+async def logged_events(
+    store: EventStore,
+    run_id: str,
+    *,
+    after: int = -1,
+    before: int | None = None,
+    limit: int = 100,
+    types: Sequence[str] = (),
+    agent_id: str | None = None,
+) -> list[Event]:
+    """The page of a run's events after seq `after` as `store.events` gives it, with the events
+    the log holds past an index that is behind it. For a reader that acts on events just
+    written, which the index may not hold yet."""
+    limit = max(1, min(limit, MAX_PAGE))
+    # The log first: the index only moves on meanwhile, so the two parts leave no gap.
+    tail = await store.unindexed(
+        run_id,
+        after=after,
+        before=before,
+        types=types,
+        agent_id=agent_id,
+        limit=limit,
+    )
+    page = await store.events(
+        run_id, after=after, before=before, limit=limit, types=types, agent_id=agent_id
+    )
+    if not tail or len(page) >= limit:
+        return page
+    last = page[-1].seq if page else -1
+    return [*page, *(e for e in tail if e.seq > last)][:limit]
 
 
 def verify_run(run_dir: Path, *, where: str | None = None) -> Verification:
