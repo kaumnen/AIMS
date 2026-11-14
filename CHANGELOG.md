@@ -4,6 +4,19 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Added
+
+- `--budget run.monitor_cost_usd=3` caps the monitor's model spend for one run, as the scenario's `limits.monitor_cost_usd` does. `none` gives the monitor its preset's cap back. The New run and Fork forms have a Monitor row in Budget for it. The estimate counts the cap. A run's cost cap counts only the agents, so a run with `run cost $5` could pass $5 on the monitor's spend with no way to bound it from the form.
+- Model calls on the `responses` backend carry a `prompt_cache_key`. Calls of one run from the same caller on the same model share a key, so the provider answers them from one prompt cache. On Meta's API a repeated 11,000 token prefix was never cached without the key in a test of 4 calls. With it every call after the first was. A live `standard` monitor cost about $0.09 per agent step on one run for this reason. A `chat` profile sends the key with `cache_key = true`. `cache_key = false` turns it off. A `model.request` event records the key in `cache_key`. The recorded body leaves it out, so replays match as before.
+
+### Changed
+
+- `aims ui --data-dir` keeps the local runner's runs in the `runner` folder inside that directory. The runner used its own folder under the home directory, so a new data directory filled with the runs of earlier sessions.
+- The estimate leaves out a run that an operator killed, as it leaves out a cancelled one. It counted such a run as a whole run, which made the typical cost too low. A run that the monitor killed still counts.
+- The estimate assumes that 50% of a monitor model's input is cached when no past call of that model is on record. It assumed 90%, as for an agent's model. A sweep repeats less of the call before it than an agent does.
+- The Inject dialog keeps a typed message when it closes without sending. A click outside it, Escape or Close dropped the text.
+- A command dialog shows only the answer to its own command. It showed the answer to the command before it, such as "Paused." inside the Cancel dialog.
+
 ## [0.2.3] - 2026-11-14
 
 ### Added
