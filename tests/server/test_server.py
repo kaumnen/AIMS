@@ -1820,7 +1820,7 @@ async def test_every_write_a_person_makes_declares_the_media_type_refusal(tmp_pa
 
 
 async def test_scenario_files_and_truth_are_for_operators(cp: CP) -> None:
-    src = Path(__file__).parent.parent / "src/aims/scenarios/cache-keys/scenario.yaml"
+    src = Path(__file__).parents[2] / "src/aims/scenarios/cache-keys/scenario.yaml"
     dst = cp.project.parent / "scenarios/cache-keys"
     dst.mkdir()
     (dst / "scenario.yaml").write_bytes(src.read_bytes())
@@ -1891,7 +1891,7 @@ async def test_the_built_in_scenarios_are_read_only_and_duplicate_to_edit(cp: CP
 
 
 async def test_a_selftest_is_queued_for_a_runner_that_runs_it(cp: CP) -> None:
-    src = Path(__file__).parent.parent / "src/aims/scenarios/cache-keys"
+    src = Path(__file__).parents[2] / "src/aims/scenarios/cache-keys"
     shutil.copytree(src, cp.project.parent / "scenarios/cache-keys")
     runner = FakeRunner(cp)
     await runner.client.hello(runner.hello_body())

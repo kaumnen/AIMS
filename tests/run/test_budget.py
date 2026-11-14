@@ -103,7 +103,7 @@ def test_digits_after_a_comma_say_the_comma_split_a_number(text: str, problem: s
     assert str(e.value).startswith(problem)
 
 
-NUMBERS = Path(__file__).resolve().parents[1] / "web" / "src" / "lib" / "budget-numbers.json"
+NUMBERS = Path(__file__).resolve().parents[2] / "web" / "src" / "lib" / "budget-numbers.json"
 KIND = {"steps": "whole", "output_tokens": "whole", "cost_usd": "decimal", "wall_s": "decimal"}
 
 

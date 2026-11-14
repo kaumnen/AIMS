@@ -58,7 +58,7 @@ from aims.server.serve import (
 from aims.terminal import AGAIN
 
 pytestmark = pytest.mark.anyio
-ROOT = Path(__file__).parent.parent
+ROOT = Path(__file__).parents[2]
 
 
 def test_exposed_binds_need_tls_or_a_proxy() -> None:

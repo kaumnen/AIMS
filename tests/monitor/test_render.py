@@ -45,7 +45,7 @@ KEY = b"k" * 32
 AGENT = "a1"
 TASK = "Fix the bug in /work/app.py.\nDo not touch the tests."
 FULL: list[SweepPart] = ["evidence", "output", "messages", "reasoning"]
-FIXTURE = Path(__file__).parent / "fixtures" / "runs" / "word-count"
+FIXTURE = Path(__file__).parents[1] / "fixtures" / "runs" / "word-count"
 HARNESS = (
     "RUN RECORDS OF AGENT ",
     "PREAMBLE",

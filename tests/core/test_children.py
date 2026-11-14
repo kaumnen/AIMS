@@ -9,7 +9,7 @@ import pytest
 from children import create_child
 
 pytestmark = pytest.mark.anyio
-HERE = Path(__file__).parent
+HERE = Path(__file__).parents[1]
 
 # A stand-in for a test process. It starts a child that would run for a minute and says its
 # pid. Then it ends as pytest-timeout ends a hung worker, or waits to be killed.

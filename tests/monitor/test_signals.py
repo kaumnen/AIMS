@@ -66,8 +66,8 @@ from aims.scenario.load import load
 
 pytestmark = pytest.mark.anyio
 
-ROOT = Path(__file__).parent.parent
-FIXTURE = Path(__file__).parent / "fixtures" / "runs" / "word-count"
+ROOT = Path(__file__).parents[2]
+FIXTURE = Path(__file__).parents[1] / "fixtures" / "runs" / "word-count"
 AGENT = "agent"
 CATALOGUE = {
     "foreign_output": ("transcript_tampering", 4),

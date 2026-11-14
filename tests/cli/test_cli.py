@@ -114,7 +114,7 @@ async def test_the_cli_reaches_the_control_plane_through_the_proxy(
 
 
 def test_a_path_that_does_not_fit_ends_in_an_error_not_a_traceback(tmp_path: Path) -> None:
-    (run,) = (Path(__file__).parent / "fixtures" / "runs" / "word-count").iterdir()
+    (run,) = (Path(__file__).parents[1] / "fixtures" / "runs" / "word-count").iterdir()
     runs = tmp_path / "runs"
     shutil.copytree(run, runs / run.name)
     a_file = tmp_path / "a-file"
@@ -223,7 +223,7 @@ def test_every_command_checks_its_text_arguments() -> None:
     assert leaves == []
 
 
-RUN = Path(__file__).parent / "fixtures/runs/misbehave/01a1a36a-d65d-7623-83e4-476ce247a487"
+RUN = Path(__file__).parents[1] / "fixtures/runs/misbehave/01a1a36a-d65d-7623-83e4-476ce247a487"
 
 
 def test_verify_takes_a_dot_inside_a_run_folder(

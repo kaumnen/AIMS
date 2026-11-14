@@ -354,13 +354,14 @@ The repository has no `aims.toml`, so a checkout runs with the built-in defaults
 Tests:
 
 ```sh
+uv run pytest tests/models                            # one area
 uv run pytest -n auto -m "not docker and not tracer"   # fast, no Docker
 uv run pytest -n 4 --dist loadfile -m "not serial"     # full suite, part 1
 uv run pytest -m serial                                # full suite, part 2
 cd web && bun run test && bun run lint
 ```
 
-The full suite needs Docker and starts the kernel tracer.
+The tests sit in one folder per area under `tests/`, such as `tests/monitor` and `tests/server`. The full suite needs Docker and starts the kernel tracer.
 
 ## License
 

@@ -1927,7 +1927,7 @@ def test_the_verdict_margin_is_checked() -> None:
     assert MonitorConfig.model_validate(old) == MonitorConfig()
 
 
-FIXTURE = Path(__file__).parent / "fixtures" / "runs" / "word-count"
+FIXTURE = Path(__file__).parents[1] / "fixtures" / "runs" / "word-count"
 PYTEST_EXEC = "01a18281-16b2-716f-ab6c-a874661092a2"
 
 

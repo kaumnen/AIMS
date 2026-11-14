@@ -72,7 +72,7 @@ from aims.wire import Ack, CommandAction, CommandMessage, MonitorJob, OfferMessa
 
 pytestmark = pytest.mark.anyio
 
-FIXTURE = Path(__file__).parent / "fixtures" / "runs" / "word-count"
+FIXTURE = Path(__file__).parents[1] / "fixtures" / "runs" / "word-count"
 SCENARIO = """\
 version: 1
 name: watched

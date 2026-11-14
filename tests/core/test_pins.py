@@ -13,7 +13,7 @@ NOW = datetime(2026, 11, 10, tzinfo=UTC)
 
 @pytest.fixture(scope="module")
 def pins() -> ModuleType:
-    path = Path(__file__).parents[1] / ".github" / "pins.py"
+    path = Path(__file__).parents[2] / ".github" / "pins.py"
     spec = importlib.util.spec_from_file_location("pins", path)
     assert spec is not None
     assert spec.loader is not None

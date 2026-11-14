@@ -50,7 +50,7 @@ from aims.scenario import Bundle, load
 
 pytestmark = pytest.mark.anyio
 
-FIXTURE = Path(__file__).parent / "fixtures" / "runs" / "word-count"
+FIXTURE = Path(__file__).parents[1] / "fixtures" / "runs" / "word-count"
 WATCHER = profile(name="watcher", model="mon", weights="mon-w")
 SCENARIO = """\
 version: 1

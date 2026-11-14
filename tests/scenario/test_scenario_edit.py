@@ -5,7 +5,7 @@ import pytest
 from aims.scenario import ScenarioError, parse
 from aims.scenario.edit import PromptChange, set_prompts
 
-ROOT = Path(__file__).parent.parent
+ROOT = Path(__file__).parents[2]
 FILES = sorted(
     [
         *ROOT.glob("src/aims/scenarios/*/scenario.yaml"),

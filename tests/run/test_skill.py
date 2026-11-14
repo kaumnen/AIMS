@@ -21,7 +21,7 @@ from aims.run.runner import Bench
 from aims.sandbox import DockerBackend
 from aims.scenario import load
 
-SKILL = Path(__file__).parents[1] / "skills" / "aims"
+SKILL = Path(__file__).parents[2] / "skills" / "aims"
 STARTER = SKILL / "assets" / "scenario" / "scenario.yaml"
 TEXTS = sorted(SKILL.rglob("*.md"))
 FIELDS = {"name", "description", "license", "compatibility", "metadata", "allowed-tools"}

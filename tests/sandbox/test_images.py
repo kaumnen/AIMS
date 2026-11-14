@@ -38,7 +38,7 @@ pytestmark = pytest.mark.anyio
 
 DEFAULT = {"AIMS_IMAGE_REGISTRY": "ghcr.io/kaumnen"}
 DIGEST = "sha256:" + "ab" * 32
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 class Images:

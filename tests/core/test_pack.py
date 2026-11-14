@@ -7,7 +7,7 @@ from pathlib import Path
 
 from aims.events.store import GRAVE
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 RUN = "019a6f00-0000-7000-8000-000000000001"
 
 

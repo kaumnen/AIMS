@@ -33,7 +33,7 @@ from aims.scenario import load
 
 pytestmark = pytest.mark.anyio
 
-FIXTURE = Path(__file__).parent / "fixtures" / "runs" / "crew"
+FIXTURE = Path(__file__).parents[1] / "fixtures" / "runs" / "crew"
 RECORD = bool(os.environ.get("AIMS_RECORD_FIXTURES"))
 KEY = b"aims crew replay fixture key!!!!"
 CHEAP = [{"extract": ["meta-spark-1.3-contributor", "meta-spark-1.2-contributor"]}]

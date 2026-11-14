@@ -47,7 +47,7 @@ from aims.terminal import VisibleLog, json_text, one_line, shown
 
 pytestmark = pytest.mark.anyio
 
-FIXTURE = Path(__file__).parent / "fixtures" / "runs" / "word-count"
+FIXTURE = Path(__file__).parents[1] / "fixtures" / "runs" / "word-count"
 # An OSC title write, a screen clear and a cursor move, as a tool might print them
 ESCAPES = "\x1b]0;owned\x07\x1b[2J\x1b[H"
 

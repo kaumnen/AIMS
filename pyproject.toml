@@ -157,6 +157,21 @@ ban-relative-imports = "all"
 
 [tool.pytest]
 testpaths = ["tests"]
+# The helpers in tests/ and the test modules of every area import each other by bare name.
+pythonpath = [
+    "tests",
+    "tests/agent",
+    "tests/cli",
+    "tests/core",
+    "tests/events",
+    "tests/models",
+    "tests/monitor",
+    "tests/report",
+    "tests/run",
+    "tests/sandbox",
+    "tests/scenario",
+    "tests/server",
+]
 strict = true
 markers = [
     "docker: needs a Docker daemon",
@@ -180,6 +195,22 @@ skip_covered = true
 [tool.ty.src]
 # train_organism.py is a uv script with its own dependencies.
 exclude = ["src/aims/scenarios", "skills/aims/assets", "organism/train_organism.py"]
+
+[tool.ty.environment]
+# As pytest's pythonpath: test modules import those of other areas by bare name.
+extra-paths = [
+    "tests/agent",
+    "tests/cli",
+    "tests/core",
+    "tests/events",
+    "tests/models",
+    "tests/monitor",
+    "tests/report",
+    "tests/run",
+    "tests/sandbox",
+    "tests/scenario",
+    "tests/server",
+]
 
 [tool.ty.analysis]
 # modal is in the deploy group, which a plain uv sync leaves out.

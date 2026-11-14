@@ -47,7 +47,7 @@ task:
   environment: {image: python:3.13-slim}
 """
 WORD_COUNT = (
-    Path(__file__).parent.parent / "src" / "aims" / "scenarios" / "word-count" / "scenario.yaml"
+    Path(__file__).parents[2] / "src" / "aims" / "scenarios" / "word-count" / "scenario.yaml"
 )
 
 

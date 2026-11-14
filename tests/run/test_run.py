@@ -36,9 +36,7 @@ from aims.scenario.budget import parse as parse_budget
 
 pytestmark = [pytest.mark.anyio, pytest.mark.docker]
 
-SCENARIO = (
-    Path(__file__).parent.parent / "src" / "aims" / "scenarios" / "word-count" / "scenario.yaml"
-)
+SCENARIO = Path(__file__).parents[2] / "src" / "aims" / "scenarios" / "word-count" / "scenario.yaml"
 FIX_LOWER = call(
     "edit",
     command="str_replace",
@@ -345,7 +343,7 @@ async def test_a_fork_replays_under_its_origin_s_caps_and_goes_live_under_its_ow
     ]
 
 
-FIXTURE = Path(__file__).parent / "fixtures" / "runs" / "word-count"
+FIXTURE = Path(__file__).parents[1] / "fixtures" / "runs" / "word-count"
 
 
 async def test_the_recorded_live_run_replays(backend: DockerBackend, tmp_path: Path) -> None:

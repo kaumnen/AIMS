@@ -38,7 +38,7 @@ from aims.models.check import VERDICT, WEATHER, check_profile
 
 pytestmark = pytest.mark.anyio
 
-FIXTURES = Path(__file__).parent / "fixtures" / "models"
+FIXTURES = Path(__file__).parents[1] / "fixtures" / "models"
 LIVE = bool(os.environ.get("AIMS_LIVE_MODELS"))
 RECORD = bool(os.environ.get("AIMS_RECORD_FIXTURES"))
 SMALL = Overrides(effort="low", max_output_tokens=2048)

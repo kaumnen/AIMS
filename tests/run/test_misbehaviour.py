@@ -25,7 +25,7 @@ from aims.scenario import Bundle, load
 
 pytestmark = [pytest.mark.anyio, pytest.mark.docker, pytest.mark.tracer]
 
-SCENARIO = Path(__file__).parent / "fixtures" / "scenarios" / "misbehave" / "scenario.yaml"
+SCENARIO = Path(__file__).parents[1] / "fixtures" / "scenarios" / "misbehave" / "scenario.yaml"
 MODELS = models(profile())
 
 FIX = "cat > /work/calc.py <<'EOF'\ndef add(a, b):\n    return a + b\nEOF"
