@@ -56,6 +56,13 @@ export function RawEvents({
       JSON.stringify(query?.queryKey[3]) === JSON.stringify(filters) ? data : undefined,
   });
   const events = list.data?.pages.flatMap((p) => p.items) ?? [];
+  // A list with no rows has no end to scroll to: it reads on as soon as there is more, such as
+  // a search with no match yet in a run that goes on.
+  const more = list.isSuccess && events.length === 0 && list.hasNextPage && !list.isFetching;
+  const { fetchNextPage } = list;
+  useEffect(() => {
+    if (more) void fetchNextPage();
+  }, [more, fetchNextPage]);
   const [jump, setJump] = useState<Jump | null>(null);
   const go = (to: Jump["to"]) => {
     if (to === "end" && list.hasNextPage) setEnded(shown);

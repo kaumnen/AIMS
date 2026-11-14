@@ -104,6 +104,9 @@ export class RunTail {
   start(after: number): void {
     this.#stopped = false;
     this.#readOnAll(after);
+    // a steps list kept from an earlier visit lacks what the run logged since, and no step
+    // event may come for a while, as when the run is held
+    if (this.qc.getQueryData(["runs", "steps", this.runId]) !== undefined) this.refreshSteps();
     const live = new Live({ run: [{ id: this.runId, after }], deltas: [this.runId] }, () =>
       this.#closed(),
     );
@@ -245,18 +248,20 @@ export class RunTail {
     for (const fn of this.#watchers) fn();
   }
 
-  // Raw tabs that reach the end of the log take the new events of their types; a tab with a
-  // search or more pages to load gets them by paging. A tab whose page is being read takes them
-  // once the page is in.
+  // Raw tabs that reach the end of the log take the new events of their types; a tab with more
+  // pages to load gets them by paging. So does a tab with a search once events of its types
+  // come, since only the server can tell which of them match. A tab whose page is being read
+  // takes them once the page is in.
   #appendRaw(events: readonly Event[]): void {
     for (const query of this.#rawLists()) {
       const filters = (query.queryKey[3] ?? {}) as RawFilters;
       const types = filters.types ? new Set(filters.types) : null;
       const mine = types === null ? events : events.filter((e) => types.has(e.type));
       if (mine.length === 0) continue;
-      if (query.state.fetchStatus !== "idle" || this.#held.has(query.queryHash)) {
-        this.#hold(query.queryHash, mine);
-      } else this.#append(query.queryKey, mine);
+      const busy = query.state.fetchStatus !== "idle" || this.#held.has(query.queryHash);
+      if (busy) this.#hold(query.queryHash, filters.q ? "over" : mine);
+      else if (filters.q) this.#readOn(query.queryKey);
+      else this.#append(query.queryKey, mine);
     }
   }
 
@@ -296,16 +301,13 @@ export class RunTail {
     this.qc.setQueryData<InfiniteData<RawPage>>(key, { pages, pageParams: params });
   }
 
-  // The raw lists that take the stream; a search gets new events by paging.
   #rawLists() {
-    return this.qc
-      .getQueryCache()
-      .findAll({ queryKey: ["runs", "events", this.runId] })
-      .filter((q) => !(q.queryKey[3] as RawFilters | undefined)?.q);
+    return this.qc.getQueryCache().findAll({ queryKey: ["runs", "events", this.runId] });
   }
 
   // A list that stops before `after`, where the stream starts, reads on past its last event once
-  // shown: one kept from an earlier visit, or one a stopped tail no longer keeps current. A list
+  // shown: one kept from an earlier visit, or one a stopped tail no longer keeps current. A
+  // search stops at its last match, so it reads on whenever that is before `after`. A list
   // whose page is read does so once the read is in, while the tail runs.
   #readOnAll(after: number): void {
     for (const query of this.#rawLists()) {

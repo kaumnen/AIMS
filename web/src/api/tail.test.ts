@@ -462,6 +462,59 @@ test("a raw list kept from an earlier visit whose page is read reads on once it 
   tail.stop();
 });
 
+test("a search at the end of the log reads on by paging once events of its types come", async () => {
+  const log = [event(40, "tool.call", { q: "pytest" }), event(41, "exec.started")];
+  fetch.mockImplementation(async (request) => {
+    const after = Number(new URL(request.url).searchParams.get("after") ?? -1);
+    const items = log.filter((e) => e.seq > after && "q" in (e.data as object));
+    return Response.json({ items, next: null });
+  });
+  const qc = new QueryClient();
+  const searched = rawEventsQuery(RUN, { q: "pytest" });
+  const other = rawEventsQuery(RUN, { q: "pytest", types: ["exec.started"] });
+  const none = rawEventsQuery(RUN, { q: "nothing" });
+  const { source, tail } = open(qc);
+  const observer = new InfiniteQueryObserver(qc, searched);
+  await observer.refetch();
+  qc.setQueryData(other.queryKey, page([]));
+  qc.setQueryData(none.queryKey, page([]));
+  expect(lastNewer(qc, searched.queryKey)).toBeNull();
+  log.push(event(42, "tool.call", { q: "pytest" }), event(43, "file.access"));
+  source.send({ kind: "events", run_id: RUN, events: log.slice(2) });
+  flush();
+  // only the server can tell which events match: the list has a next page from its last match
+  expect(rawSeqs(qc, searched.queryKey)).toEqual([40]);
+  expect(lastNewer(qc, searched.queryKey)).toBe(40);
+  // no event of its types came
+  expect(lastNewer(qc, other.queryKey)).toBeNull();
+  // one with no match yet reads from the first event
+  expect(lastNewer(qc, none.queryKey)).toBe(-1);
+  await observer.fetchNextPage();
+  expect(rawSeqs(qc, searched.queryKey)).toEqual([40, 42]);
+  expect(lastNewer(qc, searched.queryKey)).toBeNull();
+  tail.stop();
+});
+
+test("a steps list kept from an earlier visit reads what the run logged since at the start", async () => {
+  const qc = new QueryClient();
+  qc.setQueryData<InfiniteData<StepPage, number | null>>(stepsQuery(RUN).queryKey, {
+    pages: [{ items: [step(10, 1, "a", true), step(20, 2, "a", true)], next: null }],
+    pageParams: [null],
+  });
+  // the run went on and is now held before the tool call of step 4: no step event comes
+  const asked = stepReads(() => [
+    step(10, 1, "a", true),
+    step(20, 2, "a", true),
+    step(30, 3, "a", true),
+    step(40, 4),
+  ]);
+  const { tail } = open(qc, 45);
+  await waitFor(() => expect(stepSeqs(qc)).toEqual([10, 20, 30, 40]));
+  expect(asked.steps).toHaveLength(1);
+  expect(asked.steps[0]?.searchParams.get("after")).toBe("20");
+  tail.stop();
+});
+
 // Answers step reads from `rows` and reads of agent ends with `ends`; the URLs asked, by kind.
 function stepReads(rows: () => StepInfo[], ends: Event[] = []) {
   const asked = { steps: [] as URL[], ends: [] as URL[] };
@@ -486,12 +539,12 @@ const stepSeqs = (qc: QueryClient) =>
 test("step events read the rows that can still change once a frame and merge them", async () => {
   const qc = new QueryClient();
   const steps = stepsQuery(RUN);
+  const asked = stepReads(() => [step(20, 1, "b"), step(30, 2), step(50, 3)]);
+  const { source, tail } = open(qc);
   qc.setQueryData<InfiniteData<StepPage, number | null>>(steps.queryKey, {
     pages: [{ items: [step(10, 1), step(20, 1, "b"), step(30, 2)], next: null }],
     pageParams: [null],
   });
-  const asked = stepReads(() => [step(20, 1, "b"), step(30, 2), step(50, 3)]);
-  const { source, tail } = open(qc);
   source.send({ kind: "events", run_id: RUN, events: [event(49, "exec.finished")] });
   source.send({ kind: "events", run_id: RUN, events: [event(50, "agent.step")] });
   flush();
@@ -502,8 +555,8 @@ test("step events read the rows that can still change once a frame and merge the
   tail.stop();
 });
 
-// Step rows of agents a and b: b was killed while it held before its tool call, which never
-// runs; a goes on.
+// Step rows of agents a and b, read after the tail opened: b was killed while it held before its
+// tool call, which never runs; a goes on.
 function killedB(qc: QueryClient) {
   qc.setQueryData<InfiniteData<StepPage, number | null>>(stepsQuery(RUN).queryKey, {
     pages: [{ items: [step(10, 1, "b"), step(20, 1, "a", true), step(30, 2)], next: null }],
@@ -516,10 +569,10 @@ function killedB(qc: QueryClient) {
 
 test("an agent that ended with a tool call under way leaves the tail once its rows are read", async () => {
   const qc = new QueryClient();
-  const landed = killedB(qc);
   let rows = [step(10, 1, "b"), step(20, 1, "a", true), step(30, 2)];
   const asked = stepReads(() => rows);
   const { source, tail } = open(qc);
+  const landed = killedB(qc);
   source.send({
     kind: "events",
     run_id: RUN,
@@ -540,12 +593,12 @@ test("an agent that ended with a tool call under way leaves the tail once its ro
 
 test("an agent that ended before the stream opened is read once, then leaves the tail", async () => {
   const qc = new QueryClient();
-  const landed = killedB(qc);
   const asked = stepReads(
     () => [step(10, 1, "b"), step(20, 1, "a", true), step(30, 2)],
     [event(12, "agent.finished", {}, "b")],
   );
   const { source, tail } = open(qc);
+  const landed = killedB(qc);
   for (const seq of [41, 42, 43]) {
     source.send({ kind: "events", run_id: RUN, events: [event(seq, "exec.started")] });
     flush();
