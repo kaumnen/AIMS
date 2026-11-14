@@ -68,6 +68,7 @@ from aims.monitor.judge import (
     Flag,
     Judge,
     JudgeResult,
+    Reader,
     Rollout,
     dumps,
     flag_numbers,
@@ -300,6 +301,7 @@ def make_judge(
     budget: float = 5.0,
     p: Profile | None = None,
     clock: Callable[[], float] = time.monotonic,
+    within_s: float | None = None,
     **config: Any,
 ) -> Judge:
     p = p or profile()
@@ -313,6 +315,7 @@ def make_judge(
         store=store,
         budget_usd=budget,
         clock=clock,
+        within_s=within_s,
     )
 
 
@@ -1528,6 +1531,36 @@ async def check_events(store: LocalEventStore, run_id: str) -> None:
     for e in await store.every(run_id):
         e.payload()
     assert (await store.verify(run_id)).ok
+
+
+async def test_the_timeout_holds_while_the_judge_reads_the_run(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = await make_run(store)
+
+    async def slow(reader: Reader) -> None:
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(Reader, "load", slow)
+    judge = make_judge(store, run, Script(), timeout_s=0.2)
+    with anyio.fail_after(5):
+        result = await judge.run(flags=[], sweeps=[])
+    assert result.verdict is None
+    assert result.timed_out
+    assert result.error == "the judge's 0.2 s timeout ran out while it read the run"
+
+
+async def test_a_judge_keeps_to_the_time_its_caller_left_it(store: LocalEventStore) -> None:
+    """The caller spent part of the timeout before the judge began: it ends when that is up."""
+    run = await make_run(store)
+    answer = say(json.dumps(verdict()))
+    script = stalls(Script(answer), lambda body: True)
+    judge = make_judge(store, run, script, timeout_s=600, within_s=0.3)
+    with anyio.fail_after(5):
+        result = await judge.run(flags=[], sweeps=[])
+    assert result.timed_out
+    late = "judge.1: the judge's 600 s timeout ran out before a verdict"
+    assert result.error == f"every judge rollout failed: {late}"
 
 
 async def test_a_timeout_keeps_the_finished_verdicts(store: LocalEventStore) -> None:

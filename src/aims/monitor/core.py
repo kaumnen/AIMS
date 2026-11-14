@@ -358,7 +358,8 @@ class Monitor:
     async def judge(self, *, skip: bool = False) -> None:
         """Run the judge after the verifier, before the seal; `skip` on a cancelled run. It
         starts once the index holds every event fed, and is skipped if the index stays behind
-        the log for the judge's timeout. A `cut` ends it early and the run still seals. A judge
+        the log for the judge's timeout. The wait counts against that timeout: the judge gets
+        what is left of it. A `cut` ends it early and the run still seals. A judge
         its timeout cut short writes the verdicts it has, and `monitor.degraded` names the
         rollouts that gave none. A rollout that failed otherwise beside a verdict shows only in
         the verdict's `rollouts`."""
@@ -372,8 +373,12 @@ class Monitor:
         if left <= 0:
             await self._degrade("judge", "the monitor budget is spent", "skip")
             return
+        loop = asyncio.get_running_loop()
+        began = loop.time()
         if not await self._indexed(config.timeout_s):
             return
+        # The wait for the index is part of the judge's timeout.
+        within = max(0.0, config.timeout_s - (loop.time() - began))
         judge = self._judge_factory(
             source=self.source,
             config=config,
@@ -383,13 +388,14 @@ class Monitor:
             store=self.store,
             budget_usd=left,
             key=self._key,
+            within_s=within,
         )
         running = asyncio.ensure_future(
             judge.run(flags=list(self._flags), sweeps=list(self._sweep_events))
         )
         self._judging = running
         try:
-            async with asyncio.timeout(config.timeout_s + JUDGE_GRACE_S):
+            async with asyncio.timeout(within + JUDGE_GRACE_S):
                 result: JudgeResult = await running
         except TimeoutError:
             self._spent += getattr(judge, "cost_usd", 0.0)

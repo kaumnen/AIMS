@@ -594,14 +594,18 @@ class LocalEventStore:
                         return
             await asyncio.sleep(0)
 
-    async def wait_indexed(self, run_id: str, seq: int) -> None:
-        """Wait until the run's index holds event `seq`, while it is behind the log."""
+    async def wait_indexed(self, run_id: str, seq: int, *, poll: float = 0.5) -> None:
+        """Wait until the run's index holds event `seq`, while it is behind the log. The index
+        is read again every `poll` seconds too: a catch-up that got as far as `seq` and then
+        failed tells of no change."""
         while True:
             changed = self.changed()
             indexed = await self._index.head(run_id)
             if (-1 if indexed is None else indexed[0].seq) >= seq:
                 return
-            await changed.wait()
+            with contextlib.suppress(TimeoutError):
+                async with asyncio.timeout(poll):
+                    await changed.wait()
 
     async def remove(self, run_id: str) -> None:
         """Delete a sealed run's directory and its index rows. An ingest-only store also drops

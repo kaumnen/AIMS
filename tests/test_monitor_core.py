@@ -1219,6 +1219,33 @@ async def test_the_judge_waits_for_an_index_behind_the_log(
         assert [d["reason"] for d in degraded_in_log(h)] == ["the judge gave no verdict"]
 
 
+async def test_the_wait_for_the_index_counts_against_the_judges_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = {"sweeps": [], "judge": {"timeout_s": 30}}
+    async with harness(tmp_path, config=config) as h:
+        built: list[dict[str, Any]] = []
+        factory = h.monitor._judge_factory
+
+        def noting(**kw: Any) -> Any:
+            built.append(kw)
+            return factory(**kw)
+
+        monkeypatch.setattr(h.monitor, "_judge_factory", noting)
+        await h.add(started())
+        await h.monitor.judge()
+        assert 29.5 < built[0]["within_s"] <= 30
+        broken = behind(h, monkeypatch)
+        await h.add(ToolCall(call_id="c", name="exec", arguments="{}"))
+        judging = asyncio.create_task(h.monitor.judge())
+        await h.until(lambda: h.monitor._judging is not None)
+        await asyncio.sleep(0.4)
+        broken[0] = False
+        async with asyncio.timeout(5):
+            await judging
+        assert 20 < built[1]["within_s"] < 29.7
+
+
 async def test_the_judge_never_reads_an_index_that_stays_behind(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

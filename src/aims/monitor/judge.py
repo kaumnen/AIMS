@@ -709,10 +709,11 @@ class Judge:
     answer fits. The delimiters around the run data derive from the secret `key`, so a replay
     with the same key sends the same requests.
 
-    `run` keeps to `config.timeout_s`, read on `clock`. A rollout still exploring when
-    `config.verdict_margin_s` are left, or `config.verdict_margin_share` of the timeout if
-    less, gives its verdict early. At the timeout the rollouts still open are cancelled and the
-    verdicts of the others are merged.
+    `run` keeps to `config.timeout_s`, read on `clock`, or to the `within_s` seconds that are
+    left of it when the caller spent some before the judge began. Reading the run for the brief
+    is inside that time. A rollout still exploring when `config.verdict_margin_s` are left, or
+    `config.verdict_margin_share` of the timeout if less, gives its verdict early. At the
+    timeout the rollouts still open are cancelled and the verdicts of the others are merged.
     """
 
     def __init__(
@@ -727,8 +728,10 @@ class Judge:
         budget_usd: float,
         key: bytes | None = None,
         clock: Callable[[], float] = time.monotonic,
+        within_s: float | None = None,
     ) -> None:
         self.source = source
+        self.within_s = within_s
         self.key = key or secrets.token_bytes(32)
         self.clock = clock
         self.config = config
@@ -765,7 +768,7 @@ class Judge:
         through as it came, after the open rollouts were cancelled and awaited."""
         start = self.clock()
         timeout = self.config.timeout_s
-        end = start + timeout
+        end = start + (timeout if self.within_s is None else min(timeout, self.within_s))
         margin = min(self.config.verdict_margin_s, timeout * self.config.verdict_margin_share)
         self._force_at = end - margin
         for e in flags:
@@ -778,23 +781,28 @@ class Judge:
             f.number = numbers[f.seq]
         self._numbered = {n: seq for seq, n in numbers.items()}
         self.sweeps = [e for e in sweeps if e.type == "monitor.sweep"]
-        try:
-            await self.reader.load()
-            await self._prepare()
-        except Exception as e:
-            log.exception("the judge could not read run %s", self.source)
-            return JudgeResult(error=f"reading the run failed: {type(e).__name__}: {e}")
         n = self.config.rollouts
         share = self.budget_usd / n
-        # The blind rollouts come last, so the first rollout always sees the flags.
-        self._rollouts = [Rollout(i + 1, i >= n - self.config.blind, share) for i in range(n)]
         timed_out = False
         try:
-            async with asyncio.timeout(end - self.clock()):
+            async with asyncio.timeout(max(0.0, end - self.clock())):
+                try:
+                    await self.reader.load()
+                    await self._prepare()
+                except Exception as e:
+                    log.exception("the judge could not read run %s", self.source)
+                    return JudgeResult(error=f"reading the run failed: {type(e).__name__}: {e}")
+                # The blind rollouts come last, so the first rollout always sees the flags.
+                self._rollouts = [
+                    Rollout(i + 1, i >= n - self.config.blind, share) for i in range(n)
+                ]
                 async with asyncio.TaskGroup() as tg:
                     for r in self._rollouts:
                         tg.create_task(self._rollout(r), name=f"{r.name} of {self.source}")
         except TimeoutError:
+            if not self._rollouts:
+                error = f"the judge's {timeout:g} s timeout ran out while it read the run"
+                return JudgeResult(error=error, timed_out=True)
             # The task group cancelled the rollouts still open and awaited them. The calls
             # they finished stay in their cost.
             for r in self._rollouts:
