@@ -48,6 +48,7 @@ function Models() {
     );
   }
   const { profiles } = models.data;
+  const unset = Object.keys(models.data.roles).filter((r) => models.data.roles[r] === null);
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -73,6 +74,12 @@ function Models() {
           </div>
         )}
       </div>
+      {unset.length > 0 && (
+        <p className="text-muted-foreground">
+          Unset roles: {unset.join(", ")}. Set {unset.length > 1 ? "them" : "it"} under [roles] in
+          aims.toml.
+        </p>
+      )}
       {problem && <p className="text-flag">{problem}</p>}
       <table className="w-full">
         <thead className="text-muted-foreground text-left">

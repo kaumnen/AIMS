@@ -127,7 +127,10 @@ def merged(settings: Settings) -> str:
     roles: Labels = {}
     for source, data in [(BUILTIN, builtin_tables()), *files]:
         roles |= _labels(data.get("roles", {}), source)
-    doc.add("roles", _table(settings.models.roles.model_dump(mode="json"), roles, ()))
+    set_roles = settings.models.roles.model_dump(mode="json", exclude_none=True)
+    unset = settings.models.roles.unset()
+    note = f"unset: {', '.join(unset)}" if unset else None
+    doc.add("roles", _table(set_roles, roles, (), note))
 
     profile_labels, parents = _profiles(files)
     profiles = tomlkit.table(is_super_table=True)

@@ -325,22 +325,40 @@ class Profile(_Strict):
 
 
 class Roles(_Strict):
-    agent: str
-    sweep: str
-    judge: str
+    """The profile each role falls back to; a role may be unset."""
+
+    agent: str | None = None
+    sweep: str | None = None
+    judge: str | None = None
+
+    def unset(self) -> list[Role]:
+        return [r for r in ROLES if getattr(self, r) is None]
+
+
+ROLES: tuple[Role, ...] = ("agent", "sweep", "judge")
+
+# How to fix a role that is unset, for the error of the thing that needs it.
+UNSET_FIX: dict[Role, str] = {
+    "agent": "set agent under [roles] in aims.toml, or give the run a profile",
+    "sweep": "set sweep under [roles] in aims.toml, or use a signals-only monitor"
+    " (--monitor signals)",
+    "judge": "set judge under [roles] in aims.toml, or use a signals-only monitor"
+    " (--monitor signals)",
+}
 
 
 class ModelsConfig(_Strict):
     """Profiles by name and the profile of each role. `load_models` also holds the roles of a
-    config file to what the monitor asks of them; a config a job builds has roles no one reads."""
+    config file to what the monitor asks of them. A config a job builds sets no role, since
+    the job names each profile it calls."""
 
     profiles: dict[str, Profile]
-    roles: Roles
+    roles: Roles = Field(default_factory=Roles)
 
     @model_validator(mode="after")
     def _roles_exist(self) -> Self:
         for role, name in self.roles.model_dump().items():
-            if name not in self.profiles:
+            if name is not None and name not in self.profiles:
                 raise ValueError(f"role {role} names unknown profile {name!r}")
         return self
 
@@ -348,11 +366,15 @@ class ModelsConfig(_Strict):
         try:
             return self.profiles[name]
         except KeyError:
-            known = ", ".join(sorted(self.profiles))
+            known = ", ".join(sorted(self.profiles)) or "none"
             raise ProfileError(f"unknown profile {name!r}; known: {known}") from None
 
     def role(self, role: Role) -> Profile:
-        return self.get(getattr(self.roles, role))
+        """The profile of `role`. Raises ProfileError naming the fix when the role is unset."""
+        name = getattr(self.roles, role)
+        if name is None:
+            raise ProfileError(f"no profile has the {role} role; {UNSET_FIX[role]}")
+        return self.get(name)
 
     def snapshot(self, names: Iterable[str]) -> dict[str, JsonValue]:
         """The resolved profiles `names`, for the `run.started` config."""
@@ -374,8 +396,9 @@ def load_models(*paths: Path | None) -> ModelsConfig:
     exists.
 
     A table whose name matches an earlier one is merged into it key by key. `extends = "name"`
-    starts a profile from another one. The sweep and judge roles must name profiles with
-    structured output, since the monitor asks them for answers to a schema.
+    starts a profile from another one. A role may be unset; what needs it raises then. A set
+    sweep or judge role must name a profile with structured output, since the monitor asks it
+    for answers to a schema.
     """
     base = _File.model_validate(builtin_tables())
     tables = copy.deepcopy(base.profiles)
@@ -408,6 +431,8 @@ def load_models(*paths: Path | None) -> ModelsConfig:
     except ValidationError as e:
         raise ProfileError(str(e)) from None
     for role in ("sweep", "judge"):
+        if getattr(models.roles, role) is None:
+            continue
         profile = models.role(role)
         if not profile.structured_output:
             raise ProfileError(f"role {role} needs structured output, which {profile.name} lacks")

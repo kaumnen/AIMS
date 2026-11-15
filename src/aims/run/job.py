@@ -15,7 +15,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from aims.events import AuditLevel, EventStore, Oversight, Series
-from aims.models import ModelsConfig, Profile, Roles
+from aims.models import ModelsConfig, Profile
 from aims.monitor.config import MonitorConfigError, Preset
 from aims.monitor.setup import ResolvedMonitor, resolve_config, resolve_monitor
 from aims.monitor.signals import signal_versions
@@ -173,12 +173,11 @@ def monitor_profiles(monitor: ResolvedMonitor | None) -> dict[str, Profile]:
 def models_config(profiles: Iterable[Profile]) -> ModelsConfig:
     """A config holding `profiles` by name, for a runner that has no config file. The job names
     the profile of each agent and the monitor brings its own, so the runner looks each one up by
-    name and reads no role. The roles name the first profile only because a config needs some."""
+    name and reads no role, so the config sets none."""
     by_name = {p.name: p for p in profiles}
     if not by_name:
         raise RunError("the job names no model profile")
-    first = next(iter(by_name))
-    return ModelsConfig(profiles=by_name, roles=Roles(agent=first, sweep=first, judge=first))
+    return ModelsConfig(profiles=by_name)
 
 
 def scenario_jobs(

@@ -440,6 +440,11 @@ function ProfileField({
           onChange={onChange}
         />
       </Field>
+      {value === DEFAULT && scenario.needs_profile && (
+        <p className="text-flag">
+          No profile has the agent role. Pick one here, or set agent under [roles] in aims.toml.
+        </p>
+      )}
       <ProfileChecks profiles={shown} />
     </div>
   );

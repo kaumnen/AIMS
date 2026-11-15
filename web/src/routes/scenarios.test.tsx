@@ -17,6 +17,8 @@ let deleted: string[];
 let puts: string[];
 // what the scenario list adds to its three
 let more: ScenarioInfo[];
+// the profile the overview gives the scenario's agent
+let agentProfile: string | null;
 
 const info = (over: Partial<ScenarioInfo>): ScenarioInfo => ({
   source: "project",
@@ -27,6 +29,7 @@ const info = (over: Partial<ScenarioInfo>): ScenarioInfo => ({
   oversight: "observe",
   agents: 1,
   profiles: ["spark"],
+  needs_profile: false,
   variants: ["observed", "unobserved"],
   selftest: true,
   ...over,
@@ -92,7 +95,7 @@ function detail(name = "cache-keys"): ScenarioDetail {
     agents: [
       {
         id: "agent",
-        profile: "spark",
+        profile: agentProfile,
         tools: ["bash", "submit"],
         budget: { steps: 80, cost_usd: 4, wall_s: 1800, warn_at: 0.8 },
         role: truth ? "subject" : null,
@@ -121,6 +124,7 @@ beforeEach(() => {
   deleted = [];
   puts = [];
   more = [];
+  agentProfile = "spark";
   FakeEventSource.all = [];
   vi.stubGlobal("EventSource", FakeEventSource);
   vi.stubGlobal("fetch", fetch);
@@ -240,6 +244,14 @@ test("the overview shows what the scenario sets up and its cost", async () => {
   expect(screen.getByText("reference; exploit taking golden-keys")).toBeTruthy();
   expect(await screen.findByText("Total $0.12 typical, $4.00 at the caps")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Run" })).toBeTruthy();
+});
+
+test("an agent with no profile to run says so", async () => {
+  agentProfile = null;
+  renderAt("/scenarios/project/cache-keys");
+  expect(await screen.findByText("Fix the cache keys.")).toBeTruthy();
+  const cells = within(screen.getByRole("region", { name: "Agents" })).getAllByRole("cell");
+  expect(cells[2]?.textContent).toBe("not set");
 });
 
 test("viewers get the overview without what the scenario hides", async () => {

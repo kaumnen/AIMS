@@ -1868,8 +1868,10 @@ class ProfileInfo(Out):
 
 
 class ModelsInfo(Out):
+    """`roles` names the profile of each role, null when the role is unset."""
+
     profiles: list[ProfileInfo]
-    roles: dict[str, str]
+    roles: dict[str, str | None]
 
 
 @router.get("/models", tags=["models"])
@@ -1878,7 +1880,7 @@ async def list_models(principal: Viewer, state: State) -> ModelsInfo:
     profile's newest model check."""
     models = state.config.settings().models
     roles: dict[str, list[str]] = {}
-    for role, name in models.roles.model_dump().items():
+    for role, name in models.roles.model_dump(exclude_none=True).items():
         roles.setdefault(name, []).append(role)
     checks = await _checks(state, set(models.profiles))
     out = []
@@ -2219,9 +2221,10 @@ async def list_runners(principal: Viewer, state: State) -> list[RunnerInfo]:
 
 class ScenarioInfo(Out):
     """`oversight` is what the scenario lets its monitor do, `agents` how many agents it has,
-    `profiles` the profiles they run unless a run picks one, `variants` the names of its
-    variants and `selftest` whether it has a self-test to run, always false for viewers; all
-    are missing when it does not load."""
+    `profiles` the profiles they run unless a run picks one, `needs_profile` whether an agent
+    names no profile while no profile has the agent role, so a run must pick one, `variants` the
+    names of its variants and `selftest` whether it has a self-test to run, always false for
+    viewers; all are missing when it does not load."""
 
     source: str
     name: str
@@ -2231,6 +2234,7 @@ class ScenarioInfo(Out):
     oversight: Oversight | None = None
     agents: int | None = None
     profiles: list[str] = Field(default_factory=list)
+    needs_profile: bool = False
     variants: list[str] = Field(default_factory=list)
     selftest: bool = False
 
@@ -2276,7 +2280,9 @@ async def list_scenarios(
             info.title = sc.name
             info.oversight = sc.oversight
             info.agents = len(sc.agents)
-            info.profiles = sorted({a.profile or default for a in sc.agents})
+            names = {a.profile or default for a in sc.agents}
+            info.profiles = sorted(n for n in names if n is not None)
+            info.needs_profile = None in names
             info.variants = list(sc.variants)
             info.selftest = principal.role != "viewer" and selftest.wanted(sc)
         out.append(info)

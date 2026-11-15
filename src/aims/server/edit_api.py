@@ -612,11 +612,12 @@ async def scenario_sources(principal: Viewer, sources: SourcesDep) -> list[Sourc
 
 
 class AgentOverview(Out):
-    """`profile` is the one it runs unless a run picks another. `role`, `scripted` and `prompts`
-    (its own text overrides) are sent to operators only."""
+    """`profile` is the one it runs unless a run picks another, null when it names none and no
+    profile has the agent role. `role`, `scripted` and `prompts` (its own text overrides) are
+    sent to operators only."""
 
     id: str
-    profile: str
+    profile: str | None
     tools: list[str]
     budget: dict[str, JsonValue]
     role: Role | None = None
@@ -710,7 +711,7 @@ async def scenario_detail(
     return _overview(out, scenario, state.config.settings().models.roles.agent)
 
 
-def _overview(out: ScenarioDetail, sc: Scenario, default: str) -> ScenarioDetail:
+def _overview(out: ScenarioDetail, sc: Scenario, default: str | None) -> ScenarioDetail:
     truth = out.truth
     env = sc.task.environment
     out.title = sc.name

@@ -214,7 +214,7 @@ function AgentRow({ a, truth }: { a: Agent; truth: boolean }) {
           {a.scripted && <span className="text-muted-foreground"> scripted</span>}
         </td>
       )}
-      <td className={td}>{a.profile}</td>
+      <td className={td}>{a.profile ?? <span className="text-muted-foreground">not set</span>}</td>
       <td className={cn(td, wide)}>{tools}</td>
       <td className={cn(td, wide)}>{capsText(a.budget)}</td>
       {truth && <td className={cn("py-1.5 align-top", wide)}>{prompts}</td>}

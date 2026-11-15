@@ -327,12 +327,12 @@ def check_plants(
 
 @models_app.command("list")
 def models_list(config: ConfigOption = None) -> None:
-    """Show the model profiles and whether their keys are set."""
+    """Show the model profiles, their roles and whether their keys are set."""
     import os
 
     models = _settings(config).models
     roles = {}
-    for role, name in models.roles.model_dump().items():
+    for role, name in models.roles.model_dump(exclude_none=True).items():
         roles.setdefault(name, []).append(role)
     for name, p in sorted(models.profiles.items()):
         envs = [e for e in (p.api_key_env, p.base_url_env) if e]
@@ -341,6 +341,10 @@ def models_list(config: ConfigOption = None) -> None:
         role = f"  [{', '.join(roles[name])}]" if name in roles else ""
         price = _price_source(p)
         _echo(f"{name}  {p.backend}  {p.model}  reasoning {p.reasoning}  {price}  {state}{role}")
+    unset = models.roles.unset()
+    if unset:
+        them = "them" if len(unset) > 1 else "it"
+        _echo(f"unset roles: {', '.join(unset)}; set {them} under [roles] in aims.toml")
 
 
 def _price_source(p: Any) -> str:
@@ -885,6 +889,9 @@ def _monitor_problems(settings: Any, bundle: Any, profile: str | None) -> list[s
         return problems
     try:
         agents = [agent_profile(settings.models, a, profile) for a in scenario.agents]
+    except ProfileError:
+        return problems  # the agent's own check reports it
+    try:
         monitor_for(settings.models, settings.prompts, scenario, agents, layers=settings.monitor)
     except (MonitorConfigError, ProfileError, TextError) as e:
         problems.append(f"monitor: {e}")

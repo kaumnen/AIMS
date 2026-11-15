@@ -40,6 +40,7 @@ const scenarios: ScenarioInfo[] = [
     oversight: "human",
     agents: 1,
     profiles: ["spark"],
+    needs_profile: false,
     variants: ["observed", "unobserved"],
     selftest: true,
   },
@@ -52,6 +53,7 @@ const scenarios: ScenarioInfo[] = [
     oversight: "observe",
     agents: 2,
     profiles: ["spark"],
+    needs_profile: false,
     variants: [],
     selftest: false,
   },
@@ -64,6 +66,7 @@ const scenarios: ScenarioInfo[] = [
     oversight: null,
     agents: null,
     profiles: [],
+    needs_profile: false,
     variants: [],
     selftest: false,
   },
@@ -252,6 +255,20 @@ test("the form shows the scenario, its oversight, profile checks and the estimat
   await pick(form, "Profile", /wonder/);
   expect(form.getByText("wonder: never checked")).toBeTruthy();
   expect(form.getByText("No connected runner has OTHER_KEY.")).toBeTruthy();
+});
+
+test("a scenario whose agent names no profile asks for one while no profile has the agent role", async () => {
+  const first = scenarios[0]!;
+  scenarios[0] = { ...first, profiles: [], needs_profile: true };
+  try {
+    renderAt("/runs");
+    const form = await openForm();
+    expect(form.getByText(/^No profile has the agent role\. Pick one here/)).toBeTruthy();
+    await pick(form, "Profile", /spark/);
+    expect(form.queryByText(/No profile has the agent role/)).toBeNull();
+  } finally {
+    scenarios[0] = first;
+  }
 });
 
 test("an oversight over the scenario's changes the warning and goes with the run", async () => {

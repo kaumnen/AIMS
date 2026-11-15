@@ -204,8 +204,9 @@ class _Phase(Exception):
 
 
 def agent_profile(models: ModelsConfig, agent: AgentConfig, override: str | None) -> Profile:
-    name = override or agent.profile or models.roles.agent
-    return models.get(name).apply(agent.overrides)
+    name = override or agent.profile
+    profile = models.get(name) if name else models.role("agent")
+    return profile.apply(agent.overrides)
 
 
 @dataclass(frozen=True, slots=True)

@@ -18,6 +18,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 ### Changed
 
+- A role under `[roles]` may be unset. What needs an unset role stops before any container starts and says how to fix it: set the role in `aims.toml`, give the run a profile for the agent role, or use a signals-only monitor for the sweep and judge roles. A set sweep or judge role must still name a profile with structured output. `aims models list`, `aims config --merged` and Settings > Models name the unset roles. The New run form asks for a profile when an agent names none and no profile has the agent role. `GET /api/models` gives an unset role as null. In a scenario's overview an agent with no profile to run has a null `profile`. The scenario list's new `needs_profile` says that a run must pick a profile. `aims scenario check` names an agent's missing profile once. It also named it as a monitor problem.
 - The index moves to version 13. Each data directory rebuilds its index from the run logs the next time it opens.
 - The New run, Fork and Review forms say that no cap bounds the cost when that is why they ask for a yes. They said the high estimate was above the limit, even when it was under it.
 - For contributors: the tests sit in one folder per area under `tests/`. CI runs only the jobs a change needs, so a docs change runs no test and a web change runs no Python suite. A nightly run and each release run everything on Python 3.14 and 3.15. A pull request needs one check, `ci`. The new `CONTRIBUTING.md` has the rules.

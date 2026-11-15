@@ -1817,8 +1817,9 @@ export interface components {
         };
         /**
          * AgentOverview
-         * @description `profile` is the one it runs unless a run picks another. `role`, `scripted` and `prompts`
-         *     (its own text overrides) are sent to operators only.
+         * @description `profile` is the one it runs unless a run picks another, null when it names none and no
+         *     profile has the agent role. `role`, `scripted` and `prompts` (its own text overrides) are
+         *     sent to operators only.
          */
         AgentOverview: {
             /** Budget */
@@ -1828,7 +1829,7 @@ export interface components {
             /** Id */
             id: string;
             /** Profile */
-            profile: string;
+            profile: string | null;
             /** Prompts */
             prompts: {
                 [key: string]: components["schemas"]["JsonValue"];
@@ -4714,13 +4715,16 @@ export interface components {
             /** Runner */
             runner?: string | null;
         };
-        /** ModelsInfo */
+        /**
+         * ModelsInfo
+         * @description `roles` names the profile of each role, null when the role is unset.
+         */
         ModelsInfo: {
             /** Profiles */
             profiles: components["schemas"]["ProfileInfo"][];
             /** Roles */
             roles: {
-                [key: string]: string;
+                [key: string]: string | null;
             };
         };
         /**
@@ -7011,9 +7015,10 @@ export interface components {
         /**
          * ScenarioInfo
          * @description `oversight` is what the scenario lets its monitor do, `agents` how many agents it has,
-         *     `profiles` the profiles they run unless a run picks one, `variants` the names of its
-         *     variants and `selftest` whether it has a self-test to run, always false for viewers; all
-         *     are missing when it does not load.
+         *     `profiles` the profiles they run unless a run picks one, `needs_profile` whether an agent
+         *     names no profile while no profile has the agent role, so a run must pick one, `variants` the
+         *     names of its variants and `selftest` whether it has a self-test to run, always false for
+         *     viewers; all are missing when it does not load.
          */
         ScenarioInfo: {
             /** Agents */
@@ -7022,6 +7027,11 @@ export interface components {
             error: string | null;
             /** Name */
             name: string;
+            /**
+             * Needs Profile
+             * @default false
+             */
+            needs_profile: boolean;
             /** Oversight */
             oversight: ("observe" | "autonomous" | "human") | null;
             /** Profiles */

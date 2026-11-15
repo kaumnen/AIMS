@@ -42,6 +42,8 @@ let lookup: (url: URL) => Response | Promise<Response>;
 let added: () => Response;
 // profiles the models list holds after spark and glimmer
 let more: ProfileInfo[];
+// the profile of each role, null when the role is unset
+let modelRoles: Record<string, string | null>;
 // the answer to a read of the price map, by the search text
 let prices: (search: string) => ModelPrices;
 
@@ -281,6 +283,7 @@ beforeEach(() => {
   lookup = () => Response.json(draft());
   added = () => Response.json({ name: "openrouter-gem-9", path: "/work/aims.toml" });
   more = [];
+  modelRoles = { agent: "spark", sweep: "spark", judge: "spark" };
   prices = () => mapSays();
   FakeEventSource.all = [];
   vi.stubGlobal("EventSource", FakeEventSource);
@@ -295,7 +298,7 @@ beforeEach(() => {
           profile({ name: "glimmer", roles: [], envs: ["MODAL_KEY"], runners: [], price: null }),
           ...more,
         ],
-        roles: { agent: "spark" },
+        roles: modelRoles,
       });
     if (url.pathname === "/api/models/prices") {
       return Response.json(prices(url.searchParams.get("search") ?? ""));
@@ -452,6 +455,18 @@ test("quick clicks start one model check, and one that did not start can be trie
   twice();
   expect(await within(spark).findByText("checking")).toBeTruthy();
   expect(posts()).toHaveLength(2);
+});
+
+test("the models page names the roles no profile has", async () => {
+  renderAt("/settings/models");
+  await screen.findByRole("table");
+  expect(screen.queryByText(/Unset roles/)).toBeNull();
+  cleanup();
+  modelRoles = { agent: "spark", sweep: null, judge: null };
+  renderAt("/settings/models");
+  expect(
+    await screen.findByText("Unset roles: sweep, judge. Set them under [roles] in aims.toml."),
+  ).toBeTruthy();
 });
 
 test("viewers see the profiles without checks or a lookup", async () => {

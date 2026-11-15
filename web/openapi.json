@@ -391,7 +391,7 @@
         "type": "object"
       },
       "AgentOverview": {
-        "description": "`profile` is the one it runs unless a run picks another. `role`, `scripted` and `prompts`\n(its own text overrides) are sent to operators only.",
+        "description": "`profile` is the one it runs unless a run picks another, null when it names none and no\nprofile has the agent role. `role`, `scripted` and `prompts` (its own text overrides) are\nsent to operators only.",
         "properties": {
           "budget": {
             "additionalProperties": {
@@ -405,8 +405,15 @@
             "type": "string"
           },
           "profile": {
-            "title": "Profile",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile"
           },
           "prompts": {
             "anyOf": [
@@ -7952,6 +7959,7 @@
         "type": "object"
       },
       "ModelsInfo": {
+        "description": "`roles` names the profile of each role, null when the role is unset.",
         "properties": {
           "profiles": {
             "items": {
@@ -7962,7 +7970,14 @@
           },
           "roles": {
             "additionalProperties": {
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "title": "Roles",
             "type": "object"
@@ -14126,7 +14141,7 @@
         "type": "object"
       },
       "ScenarioInfo": {
-        "description": "`oversight` is what the scenario lets its monitor do, `agents` how many agents it has,\n`profiles` the profiles they run unless a run picks one, `variants` the names of its\nvariants and `selftest` whether it has a self-test to run, always false for viewers; all\nare missing when it does not load.",
+        "description": "`oversight` is what the scenario lets its monitor do, `agents` how many agents it has,\n`profiles` the profiles they run unless a run picks one, `needs_profile` whether an agent\nnames no profile while no profile has the agent role, so a run must pick one, `variants` the\nnames of its variants and `selftest` whether it has a self-test to run, always false for\nviewers; all are missing when it does not load.",
         "properties": {
           "agents": {
             "anyOf": [
@@ -14153,6 +14168,11 @@
           "name": {
             "title": "Name",
             "type": "string"
+          },
+          "needs_profile": {
+            "default": false,
+            "title": "Needs Profile",
+            "type": "boolean"
           },
           "oversight": {
             "anyOf": [
@@ -14218,6 +14238,7 @@
           "oversight",
           "agents",
           "profiles",
+          "needs_profile",
           "variants",
           "selftest"
         ],
