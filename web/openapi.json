@@ -10196,6 +10196,17 @@
               }
             ]
           },
+          "price_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Key"
+          },
           "reasoning": {
             "enum": [
               "none",

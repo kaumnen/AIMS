@@ -92,6 +92,17 @@ def _headers(value: dict[str, str]) -> dict[str, str]:
 
 Headers = Annotated[dict[str, str], AfterValidator(_headers)]
 
+_PRICE_KEY = re.compile(r"[\x21-\x7e]{1,200}")
+
+
+def _price_key(value: str) -> str:
+    if not _PRICE_KEY.fullmatch(value):
+        raise ValueError("price_key takes 1 to 200 printable ASCII characters and no space")
+    return value
+
+
+PriceKey = Annotated[str, AfterValidator(_price_key)]
+
 
 class _Strict(Known):
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -237,6 +248,10 @@ class Profile(_Strict):
     # secrets.
     headers: Headers = Field(default_factory=dict)
     price: Price | None = None
+    # The profile's row in LiteLLM's public price map, as the map writes its key. An estimate
+    # takes the list price from that row when the profile has no `price`. The key is never
+    # guessed: one model sits under several keys there, at different prices.
+    price_key: PriceKey | None = None
     limits: Limits = Field(default_factory=Limits)
     timeouts: Timeouts = Field(default_factory=Timeouts)
     retries: Retries = Field(default_factory=Retries)

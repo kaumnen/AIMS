@@ -5590,6 +5590,8 @@ export interface components {
             /** Parallel Tool Calls */
             parallel_tool_calls?: boolean | null;
             price?: components["schemas"]["Price"] | null;
+            /** Price Key */
+            price_key?: string | null;
             /**
              * Reasoning
              * @enum {string}
