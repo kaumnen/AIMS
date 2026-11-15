@@ -133,7 +133,7 @@ export MODEL_API_KEY=<your key>
 aims run builtin/cache-keys
 ```
 
-`aims run` records into `./runs`. With `aims ui` running on the same machine, the run also ships there. When the run ends, `aims run` scores it against its plants. With the default models a `cache-keys` run cannot cost more than $13.56 at list prices: $4.11 for the agent and $9.45 for the monitor. `aims estimate builtin/cache-keys` prints these numbers.
+`aims run` records into `./runs`. With `aims ui` running on the same machine, the run also ships there. When the run ends, `aims run` scores it against its plants. With the default models a `cache-keys` run cannot cost more than $23.29 at list prices: $4.11 for the agent and $19.18 for the monitor. `aims estimate builtin/cache-keys` prints these numbers.
 
 > [!TIP]
 > `--audit snapshot` runs without the privileged kernel tracer. `--monitor signals` runs the monitor without a model.
@@ -243,7 +243,7 @@ The roles `agent`, `sweep` and `judge` each use a model profile. The built-in pr
 
 The `agent` role uses `meta-spark-1.3-contributor`. The `sweep` and `judge` roles use `meta-wonder-1.0`. Keys come from the environment only. `aims models list` shows which keys are set. `aims models check` sends each provider a few small requests.
 
-A config file can add a profile for another provider and change the roles. `backend` is `chat` for the Chat Completions API or `responses` for the Responses API. `weights` names the trained model. The monitor refuses to watch an agent on its own weights. Prices are USD per million tokens. An estimate leaves out the calls of a profile with no price. Its `price_key` can name a row of LiteLLM's public price map instead. `aims models prices` finds the key. A `responses` profile sends a `prompt_cache_key` with each call, so a provider that routes by it answers a run from one prompt cache. `cache_key = true` does the same on a `chat` profile.
+A config file can add a profile for another provider and change the roles. `backend` is `chat` for the Chat Completions API or `responses` for the Responses API. `weights` names the trained model. The monitor refuses to watch an agent on its own weights. Prices are USD per million tokens. A profile with no price can name a row of LiteLLM's public price map in `price_key`. Runs and estimates then count its calls at that list price. `aims models prices` finds the key. A `responses` profile sends a `prompt_cache_key` with each call, so a provider that routes by it answers a run from one prompt cache. `cache_key = true` does the same on a `chat` profile.
 
 ```toml
 # aims.toml

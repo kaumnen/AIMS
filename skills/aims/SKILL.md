@@ -28,7 +28,7 @@ aims models list
 
 `aims models list` shows which keys are set. The default models need `MODEL_API_KEY`, the key for the Meta Model API. `aims models add openrouter <model id> --write` adds a profile for a model on OpenRouter, which needs `OPENROUTER_API_KEY`. `aims scenario check` and the self-test need Docker but no key.
 
-`aims estimate` leaves out the calls of a profile with no price and says so. Tell the user. `aims models prices <profile>` lists rows of LiteLLM's price map that may price it. The user picks one for the profile's `price_key`.
+`aims estimate` leaves out the calls of a profile with no price and says so. A run caps them only when the provider reports their cost. Tell the user. `aims models prices <profile>` lists rows of LiteLLM's price map that may price it. The user picks one for the profile's `price_key`. Runs and estimates then count its calls at that list price.
 
 `aims scenario check` and `aims run` start a privileged kernel tracer. On a shared machine, use `aims run --audit snapshot` and `aims scenario check --no-selftest`.
 

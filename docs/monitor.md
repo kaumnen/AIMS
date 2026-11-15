@@ -32,7 +32,7 @@ Pick a preset with `--monitor`, the scenario's `monitor:` section or the `[monit
 - The budget grows with the agent steps the run allows, at the prices of the monitor's models. An 80-step `cache-keys` run gets $19.18 under `standard` with the default models. This is a cap. It assumes the heaviest sweeps measured so far, so most runs spend less.
 - A sweep that runs more often costs more per step. The budget follows the sweep's `every`, `window`, `window_steps` and `collapse_tokens`.
 - The sweeps leave the judge its cost at the price of its model. A judge on a model with no price gets $1.
-- Only a profile's own `price` sizes the budget. A [list price](models.md#list-prices) does not.
+- A [list price](models.md#list-prices) counts as a profile's price here, for the budget and for the monitor's spend. So it does in a review.
 - A review gets the budget for the steps the run took.
 - The scenario's `limits.monitor_cost_usd` sets it outright. So does `--budget run.monitor_cost_usd=3` on one run, the Monitor row of the Budget section in the New run form, or `aims monitor --budget-usd` on a review.
 - A run's cost cap counts only the agents. The monitor's spend comes on top, up to this budget.

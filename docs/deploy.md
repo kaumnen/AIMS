@@ -98,7 +98,7 @@ The control plane itself calls two outside hosts, with no key and through the sa
 | Host | What reads it | When the host cannot reach it |
 | --- | --- | --- |
 | `openrouter.ai` | **Add from OpenRouter** under **Settings** > **Models** reads the public list of models. | The lookup fails. [Models](models.md#openrouter) has the command that does the same on another machine. |
-| `raw.githubusercontent.com` | Estimates and **Settings** > **Models** read [LiteLLM's price map](models.md#list-prices) for a profile that names a `price_key`. | A kept copy serves with its date. Without one such a profile stays unpriced. Give it a `price` instead. |
+| `raw.githubusercontent.com` | A run, fork, review or score reads [LiteLLM's price map](models.md#list-prices) when it calls a profile that names a `price_key` and sets no `price`. So do estimates and **Settings** > **Models**. A runner never reads it. | A kept copy serves with its date. Without one such a profile stays unpriced. Give it a `price` instead. |
 
 Nothing else changes when a lookup fails. A read of the price map waits 5 seconds at most. After a failed one the next try comes 10 minutes later. Compose keeps the copy on the server's volume, in `/data/cache`.
 

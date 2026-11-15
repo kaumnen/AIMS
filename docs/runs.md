@@ -43,4 +43,5 @@ aims report <run> --html report.html   # one self-contained HTML page to print o
 - Text from the log is escaped, so an agent cannot forge headings, links or alerts.
 - A report takes its monitor from the newest finished review of the run, else from the live monitor. `--source` or the API's `?source=` picks another.
 - The run page in the UI has a **Report** tab with a Markdown download.
+- When part of a run's cost is at a [list price](models.md#list-prices), the report says how much for each profile, with the row and the date of the copy. The run page says it under the run's cost.
 - `GET /api/runs/{run_id}/report` gives JSON. `?format=md` gives the Markdown file. A viewer token gets the report without plants or scores.

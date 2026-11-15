@@ -58,7 +58,7 @@ agent = "my-agent"
 | `headers` | HTTP headers for every request of the profile |
 | `extra` | Any other fields of the request body |
 | `price` | USD per million tokens: `input`, `cached`, `output`. Wins over `price_key`. |
-| `price_key` | A row of LiteLLM's price map. Estimates count the profile's calls at its list price. See [List prices](#list-prices). |
+| `price_key` | A row of LiteLLM's price map. Runs and estimates count the profile's calls at its list price. See [List prices](#list-prices). |
 | `limits` | `rpm`, `tpm`, `concurrency` and a `group` that profiles can share |
 | `timeouts` | Seconds: `connect`, `stall`, `wall` |
 | `retries` | `attempts`, `backoff`, `max` |
@@ -67,7 +67,7 @@ A scenario may change `effort`, `max_output_tokens` and `sampling` on the profil
 
 ## List prices
 
-An estimate leaves out the calls of a profile with no price. Such a profile can name a row of [LiteLLM's price map](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json) in `price_key` instead. Estimates then count its calls at that row's list price.
+A run counts the calls of a profile with no price only when the provider reports their cost. No cost cap holds on the others. An estimate leaves out the profile's calls. Such a profile can name a row of [LiteLLM's price map](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json) in `price_key` instead. Runs, forks, reviews, scores and estimates then count its calls at that row's list price.
 
 ```toml
 [profiles.my-agent]
@@ -94,21 +94,29 @@ What a row gives:
 
 When AIMS reads the map:
 
-- Only when it needs a row: for an estimate with a profile that names a `price_key` and sets no `price`, for `aims models prices` and for the Models page.
+- Only when it needs a row: for a run, fork, review, score or estimate that calls a profile with a `price_key` and no `price`, for `aims models prices` and for the Models page.
+- Where the profiles are resolved: in `aims run`, `aims monitor`, `aims score` and `aims estimate`, or in the control plane. A runner never reads the map. Its job carries the price.
 - From `raw.githubusercontent.com` with no key, through the [proxy settings](deploy.md#proxies). It waits 5 seconds at most.
 - It keeps a copy, `litellm-prices.json.gz`, in the cache folder. That is `$AIMS_CACHE_DIR` when set. Otherwise it is `%LOCALAPPDATA%\aims\cache` on Windows, else `$XDG_CACHE_HOME/aims` or `~/.cache/aims`.
 - A copy older than 24 hours is checked with GitHub again.
 - When GitHub does not answer, the copy serves at any age, with its date. The next try comes 10 minutes later.
-- With no copy, or a key the map lacks, the profile stays unpriced. The estimate says why.
+- With no copy, or a key the map lacks, the profile stays unpriced. Its runs still start. The estimate says why.
 
-Each list price names its source, key and date. The date is when GitHub last confirmed the copy current. From `aims estimate`, with placeholder figures:
+Each list price names its source, key and date. The date is when GitHub last confirmed the copy current. `aims estimate`, `aims run`, `aims monitor` and `aims score` print it. Here with placeholder figures:
 
 ```text
-Profile my-agent: LiteLLM list price for provider/model-name, fetched 2026-11-15: $1.00 input, $0.10 cached, $4.00 output per million tokens. A cost cap holds on its calls only if the provider reports each call's cost.
+Profile my-agent: LiteLLM list price for provider/model-name, fetched 2026-11-15: $1.00 input, $0.10 cached, $4.00 output per million tokens.
 ```
 
+What a run does with it:
+
+- A call costs what its provider reported. When the provider reported nothing, the call costs the list price times the tokens. Its `cost_source` is then `list`.
+- The agents' cost caps and the monitor's budget count that cost. The monitor's budget is sized at the list prices of its models.
+- The run records the profile with the list price in its `price`. Its `listed` holds the date of the copy. A config file may not set `listed`.
+- A fork keeps the list price its origin recorded. When the origin recorded no price, the fork takes the price of the config's profile of the same name, if that names the same model. A profile from `--profile` and the fork's monitor get the current list price.
+
 > [!IMPORTANT]
-> A list price serves estimates only. A run records the cost its provider reported, or the profile's own `price` times the tokens. So a cost cap on a list-priced profile holds only when its provider reports each call's cost. The estimate's ceiling leaves out such a cap. It also leaves out the monitor's budget when a monitor model has only a list price. A run that only such a cap bounds asks before it starts.
+> A cap on a list-priced call holds on its cost at the list price. The provider's bill can be higher.
 
 ## OpenRouter
 
@@ -212,13 +220,14 @@ A config layer or `extends` merges both tables key by key. A header's name ignor
 
 | Field of a `model.response` event | Meaning |
 | --- | --- |
-| `cost_usd` | The cost the provider reported in the answer's usage. The profile's price times the tokens when it reported none. |
-| `cost_source` | `provider`, `price` or `list`, after where the cost came from. `list` is a list price AIMS laid on the profile |
+| `cost_usd` | The cost the provider reported in the answer's usage. The profile's price or list price times the tokens when it reported none. |
+| `cost_source` | `provider`, `price` or `list`, after where the cost came from. `list` is a list price AIMS laid on the profile. |
 | `provider` | The provider a router picked |
 | `model` | The model the answer names |
 | `service_tier` | The tier the answer names |
 
 - Budgets and `aims spend` count the recorded cost.
+- The run page and the report say how much of a run's cost is at a list price, with the key and the date of each. The run API gives the amount in `listed_usd`. The run detail lists it by profile in `listed`.
 - The estimate counts a past call at the cost its provider reported. It prices other past calls and the calls to come at the profile's price or list price. A router can bill above the list price. Four test calls through OpenRouter cost 2.8 to 3.4 times the list price.
 - A step in the app names its provider. The report lists the providers of each model with their answers. The live view notes it when a second provider answers a model.
 - A `chat` answer's `reasoning_details` go back unchanged with the turn in the next request. OpenRouter returns a model's signed or encrypted reasoning there. The model keeps its reasoning between a tool call and the tool's result that way.
