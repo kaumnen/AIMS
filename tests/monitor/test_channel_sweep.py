@@ -37,13 +37,17 @@ from aims.events.schema import Payload
 from aims.models import ModelClient, ModelsConfig, Profile, Roles
 from aims.monitor.channels import ChannelLog, ChannelResult, ChannelSweeper, evaluate_schema
 from aims.monitor.config import (
+    JUDGE_RESERVE_USD,
     ChannelSweepConfig,
     Escalate,
     MonitorConfig,
     SweepConfig,
     budget_usd,
+    judge_reserve,
     judge_usd,
     merge,
+    sweep_tokens,
+    sweep_usd,
 )
 from aims.monitor.core import Monitor
 from aims.monitor.offline import offline_monitor
@@ -620,7 +624,7 @@ def test_a_run_without_channels_has_no_channel_sweep() -> None:
     resolved = resolve_monitor(config_of(agent, wonder), Prompts(), lone, [agent])
     assert resolved is not None
     assert resolved.channels is None
-    assert resolved.budget_usd == 10.0
+    assert resolved.budget_usd == 10.92
 
 
 def test_the_monitor_budget_scales_with_agents_and_channels() -> None:
@@ -642,15 +646,54 @@ def test_the_monitor_budget_scales_with_steps_at_the_monitor_prices() -> None:
     standard, research = merge(), merge({"preset": "research"})
     wonder = profile(name="wonder", price=WONDER)
     sweeps = {"main": wonder}
-    assert budget_usd(standard, None, steps=80, sweeps=sweeps, judge=wonder) == 9.45
-    assert budget_usd(research, None, steps=80, sweeps=sweeps, judge=wonder) == 10.9
-    assert budget_usd(standard, None, steps=20, sweeps=sweeps, judge=wonder) == 5.0
+    assert budget_usd(standard, None, steps=80, sweeps=sweeps, judge=wonder) == 19.18
+    assert budget_usd(research, None, steps=80, sweeps=sweeps, judge=wonder) == 20.75
+    assert budget_usd(standard, None, steps=10, sweeps=sweeps, judge=wonder) == 5.0
     assert budget_usd(standard, 4.0, steps=80, sweeps=sweeps, judge=wonder) == 4.0
     free = profile(name="free", price=None)
     assert budget_usd(standard, None, steps=500, sweeps={"main": free}, judge=free) == 5.0
     signals = merge({"preset": "signals"})
     assert budget_usd(signals, None, steps=80, sweeps=sweeps, judge=wonder) == 0.0
-    assert judge_usd(standard, wonder) == pytest.approx(1.448)
+    assert judge_usd(standard, wonder) == pytest.approx(1.568)
+
+
+def test_a_sweep_that_runs_more_often_costs_more_a_step() -> None:
+    sweeps = {"main": profile(name="wonder", price=WONDER)}
+
+    def per_step(**sweep: Any) -> float:
+        return sweep_usd(merge({"sweeps": [{"name": "main", **sweep}]}), sweeps)
+
+    assert sweep_tokens(merge().sweeps[0]) == (25_520, 400)
+    assert per_step() == pytest.approx(0.22016)
+    # every sweep reads the collapsed trajectory again; the window reads a step once
+    assert per_step(every=1) == pytest.approx(0.7936)
+    assert per_step(window=False) == pytest.approx(0.14336)
+    assert per_step(window_steps=10) == pytest.approx(0.29696)
+    assert per_step(collapse_tokens=20_000) == pytest.approx(0.15936)
+    assert per_step(every=None, every_s=30) == per_step()
+    assert sweep_usd(merge(), {"main": profile(price=None)}) == 0.0
+
+
+def test_the_judge_reserve_follows_the_price_of_the_judge() -> None:
+    standard = merge()
+    cheap = profile(name="cheap", price={"input": 0.1, "cached": 0.01, "output": 0.5})
+    assert judge_reserve(standard, cheap) == pytest.approx(0.0444)
+    assert judge_reserve(standard, profile(name="wonder", price=WONDER)) == pytest.approx(1.568)
+    assert judge_reserve(merge({"preset": "research"}), cheap) == pytest.approx(0.0888)
+    # no price to work the judge's cost out from
+    assert judge_reserve(standard, profile(price=None)) == JUDGE_RESERVE_USD
+    assert judge_reserve(standard, None) == JUDGE_RESERVE_USD
+    assert judge_reserve(merge({"judge": None}), cheap) == 0.0
+    # a $1.30 cap on such a judge leaves the sweeps all but 4 cents of it
+    agent = named("agent", "meta/muse-spark-1.3")
+    watcher = named("wonder", "author/cheap").model_copy(update={"price": cheap.price})
+    lone = parse(SCENARIO.split("channels:")[0])
+    limits = lone.limits.model_copy(update={"monitor_cost_usd": 1.3})
+    lone = lone.model_copy(update={"limits": limits})
+    resolved = resolve_monitor(config_of(agent, watcher), Prompts(), lone, [agent])
+    assert resolved is not None
+    assert resolved.judge_reserve_usd == pytest.approx(0.0444)
+    assert resolved.covers() == int((1.3 - 0.0444) / sweep_usd(resolved.config, resolved.sweeps))
 
 
 def test_the_monitor_cap_scales_with_the_steps_a_scenario_allows() -> None:
@@ -664,13 +707,13 @@ def test_the_monitor_cap_scales_with_the_steps_a_scenario_allows() -> None:
     assert planned_steps(lone) == 130
     resolved = resolve_monitor(config_of(agent, wonder), Prompts(), lone, [agent])
     assert resolved is not None
-    assert resolved.budget_usd == 14.45
-    assert resolved.judge_reserve_usd == pytest.approx(1.448)
+    assert resolved.budget_usd == 30.19
+    assert resolved.judge_reserve_usd == pytest.approx(1.568)
     capped = lone.model_copy(update={"limits": lone.limits.model_copy(update={"steps": 50})})
     assert planned_steps(capped) == 50
     watched = resolve_monitor(config_of(agent, wonder), Prompts(), lone, [agent], steps=200)
     assert watched is not None
-    assert watched.budget_usd == 21.45
+    assert watched.budget_usd == 45.6
 
 
 def test_an_escalation_band_needs_low_at_or_below_high() -> None:

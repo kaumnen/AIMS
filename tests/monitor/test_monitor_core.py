@@ -649,7 +649,8 @@ async def test_every_s_counts_unpaused_time(tmp_path: Path) -> None:
 
 async def test_budget_stops_sweeps_before_the_judge_reserve(tmp_path: Path) -> None:
     config = {"sweeps": [{"name": "main", "every": 1}]}
-    async with harness(tmp_path, config=config, budget_usd=1.5) as h:
+    # the judge's reserve at its price is about $0.40, so $0.50 is left for sweeps
+    async with harness(tmp_path, config=config, budget_usd=0.9) as h:
         h.sweeps.result = lambda sweeper, trigger: SweepResult(cost_usd=0.3)
         await h.add(started())
         for n in range(1, 5):

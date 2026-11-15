@@ -30,6 +30,7 @@ Preset = Literal["off", "signals", "standard", "research"]
 PRESETS: tuple[Preset, ...] = ("off", "signals", "standard", "research")
 CATEGORIES: tuple[Category, ...] = get_args(Category)
 FailureMode = Literal["continue", "pause"]
+# What the sweeps leave for a judge whose model has no price to work its cost out from.
 JUDGE_RESERVE_USD = 1.0
 # The longest a pause may wait for its review or a person before the run is killed.
 MAX_HOLD_S = 30 * 86_400
@@ -43,14 +44,22 @@ JUDGE_MIN_OUTPUT = 1024
 # short one still explores.
 JUDGE_VERDICT_S = 120.0
 JUDGE_VERDICT_SHARE = 0.5
-# Tokens a sweep lane reads and writes per agent step. Below them, one judge rollout's. From the
-# twelve standard reviews of 80-step cache-keys runs on Nov 10 2026: medians of 22k in and 480 out
-# per step over two lanes; the judge read up to 1.28M (86% cached) and wrote up to 8.6k.
-SWEEP_INPUT_TOKENS = 11_000
-SWEEP_OUTPUT_TOKENS = 300
+# What one lane of a sweep reads and writes, from the heaviest of the runs measured: a standard
+# monitor over 55 steps of a cache-keys run on Nov 15 2026 (24 lane sweeps). An extract call late
+# in the run read 1.9 times `collapse_tokens` (74k of real tokens for a render of 40k estimated
+# ones), a window call 9.6k for each step it showed, an evaluate call 3.6k, and the three wrote
+# 1.9k together. Another model's tokenizer made 1.1 times `collapse_tokens` and 4.3k a step of
+# the same kind of run (272 lane sweeps, Nov 10 2026), so past sweeps of the same models, where
+# there are any, say more than these do.
+SWEEP_EXTRACT_SHARE = 1.9
+SWEEP_WINDOW_TOKENS = 9_600
+SWEEP_EVALUATE_TOKENS = 3_600
+SWEEP_OUTPUT_TOKENS = 2_000
+# One judge rollout's tokens. The judge read up to 1.28M (76% to 93% cached) over the thirteen
+# standard reviews of Nov 10 2026 and wrote up to 15.7k on the run of Nov 15.
 JUDGE_INPUT_TOKENS = 1_300_000
 JUDGE_CACHED_SHARE = 0.8
-JUDGE_OUTPUT_TOKENS = 10_000
+JUDGE_OUTPUT_TOKENS = 16_000
 MILLION = 1_000_000
 
 
@@ -412,22 +421,36 @@ def budget_usd(
 
 
 def sweep_usd(config: MonitorConfig, profiles: Mapping[str, Profile]) -> float:
-    """What the sweeps cost per agent step at their profiles' prices, input uncached."""
+    """What the sweeps cost per agent step at their profiles' prices, input uncached. A lane
+    reads the collapsed trajectory, the steps of its window and its quotes once a sweep, so a
+    sweep that runs more often costs more a step."""
     out = 0.0
     for s in config.sweeps:
         p = profiles.get(s.name)
         if p is not None and p.price is not None:
-            one = SWEEP_INPUT_TOKENS * p.price.input + SWEEP_OUTPUT_TOKENS * p.price.output
-            out += len(s.lanes) * one / MILLION
+            read, written = sweep_tokens(s)
+            out += len(s.lanes) * (read * p.price.input + written * p.price.output) / MILLION
     return out
 
 
+def sweep_tokens(sweep: SweepConfig) -> tuple[float, float]:
+    """The tokens one lane of `sweep` reads and writes per agent step. A sweep with no `every`
+    counts as one that runs at the default pace."""
+    every = sweep.every or SweepConfig.model_fields["every"].default
+    read = SWEEP_EXTRACT_SHARE * sweep.collapse_tokens + SWEEP_EVALUATE_TOKENS
+    if sweep.window:
+        read += (sweep.window_steps or every) * SWEEP_WINDOW_TOKENS
+    return read / every, SWEEP_OUTPUT_TOKENS / every
+
+
 def judge_reserve(config: MonitorConfig, profile: Profile | None) -> float:
-    """What the sweeps leave for the judge: its cost at its price, at least JUDGE_RESERVE_USD;
-    0 without a judge."""
+    """What the sweeps leave for the judge: its cost at its profile's price, JUDGE_RESERVE_USD
+    when the profile has none; 0 without a judge."""
     if config.judge is None:
         return 0.0
-    return max(JUDGE_RESERVE_USD, judge_usd(config, profile))
+    if profile is None or profile.price is None:
+        return JUDGE_RESERVE_USD
+    return judge_usd(config, profile)
 
 
 def judge_usd(config: MonitorConfig, profile: Profile | None) -> float:

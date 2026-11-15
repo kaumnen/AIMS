@@ -64,11 +64,12 @@ TYPES = (
     "model.request",
     "model.response",
     "monitor.degraded",
+    "monitor.sweep",
     "operator.action",
 )
 PAGE = 1000
 # The shape of a run's cost row in the index; a row of another shape is read again.
-ROW = 4
+ROW = 5
 MILLION = 1_000_000
 
 
@@ -225,7 +226,8 @@ class Past:
     """A sealed scenario run, as the estimate matches it. `models` holds each agent's model and
     effort, `budget` the step budget of the agents that call a model and `taken` the steps they
     took together, `agents` and `watch` the agents' and the monitor's calls by model, `steps`
-    the steps each agent took."""
+    the steps each agent took. `swept` is what the monitor's sweeps cost and `covered` the
+    agent steps they reached."""
 
     run_id: str
     scenario: str
@@ -239,6 +241,8 @@ class Past:
     taken: int = 0
     agents_capped: bool = False
     monitor_capped: bool = False
+    swept: float = 0.0
+    covered: int = 0
 
 
 @dataclass(slots=True)
@@ -307,6 +311,8 @@ class _Run:
                     taken=p["taken"],
                     agents_capped=p["agents_capped"],
                     monitor_capped=p["monitor_capped"],
+                    swept=p["swept"],
+                    covered=p["covered"],
                 )
             return cls(past, dict(value["spend"]), {k: list(v) for k, v in value["cached"].items()})
         except KeyError, TypeError, ValueError, AttributeError:
@@ -364,6 +370,8 @@ async def _read(store: LocalEventStore, info: RunInfo) -> _Run:
     sides: tuple[dict[str, Tokens], dict[str, Tokens]] = ({}, {})
     started: dict[str, Any] | None = None
     steps: dict[str, int] = {}
+    swept = 0.0
+    reached: dict[str | None, int] = {}
     capped = watch_capped = cut = False
     cursor: int | None = None
     while page := await store.events(info.run_id, after=cursor, limit=PAGE, types=TYPES):
@@ -405,6 +413,9 @@ async def _read(store: LocalEventStore, info: RunInfo) -> _Run:
                     capped = capped or _str(d.get("reason")).startswith("budget_")
                 case "monitor.degraded":
                     watch_capped = watch_capped or d.get("part") == "budget"
+                case "monitor.sweep":
+                    swept += _num(d.get("cost_usd"))
+                    reached[e.agent_id] = max(reached.get(e.agent_id, 0), _int(d.get("step_to")))
                 case "operator.action":
                     cut = cut or "kill" in (d.get("action"), d.get("then"))
     out.spend, out.cached = dict(spend), dict(cached)
@@ -437,6 +448,8 @@ async def _read(store: LocalEventStore, info: RunInfo) -> _Run:
         taken=sum(n for a, n in steps.items() if a not in scripted),
         agents_capped=capped,
         monitor_capped=watch_capped,
+        swept=swept,
+        covered=sum(reached.values()),
     )
     return out
 
@@ -601,7 +614,7 @@ def estimate(
                 assumed=prof.model not in found.shares,
                 input_usd=blended,
             )
-        warnings += [w for w in [*_uncapped(p), *_coverage(p)] if w not in warnings]
+        warnings += [w for w in [*_uncapped(p), *_coverage(found, p)] if w not in warnings]
     total = CostTotal(
         typical_usd=sums["typical"], high_usd=sums["high"], ceiling_usd=sums["ceiling"]
     )
@@ -973,10 +986,17 @@ def _uncapped(p: Plan) -> list[str]:
     ]
 
 
-def _coverage(p: Plan) -> list[str]:
+def _coverage(found: History, p: Plan) -> list[str]:
+    """A warning when the monitor's cap pays for sweeps over fewer steps than the run allows,
+    at what the sweeps of past runs with the same monitor cost a step: this scenario's runs,
+    else any. Without such runs the sweeps count at their profiles' prices."""
     m = p.monitor
     steps = planned_steps(p.scenario)
-    covers = None if m is None else m.covers()
+    key = _monitor_key(m)
+    past = [r for r in found.runs if r.monitor == key and r.covered > 0 and r.swept > 0]
+    past = [r for r in past if r.scenario == p.scenario.name] or past
+    per_step = statistics.median(r.swept / r.covered for r in past) if past else None
+    covers = None if m is None else m.covers(per_step)
     if m is None or steps is None or covers is None or covers >= steps:
         return []
     return [

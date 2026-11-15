@@ -395,7 +395,7 @@ def test_a_budget_replaces_the_preset_cap(tmp_path: Path) -> None:
     raised = offline_monitor(
         m, Prompts(), bundle.scenario, agents, preset="standard", budget_usd=12.5
     )
-    assert (default.budget_usd, raised.budget_usd) == (5.0, 12.5)
+    assert (default.budget_usd, raised.budget_usd) == (5.66, 12.5)
     assert raised.judge_reserve_usd == default.judge_reserve_usd
     assert ResolvedMonitor.restore(raised.snapshot()).budget_usd == 12.5
 

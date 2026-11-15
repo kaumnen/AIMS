@@ -175,10 +175,12 @@ async def record(
     budget: BudgetOverride | None = None,
     operator: OperatorAction | None = None,
     source: CostSource | None = None,
+    swept: tuple[float, int] | None = None,
 ) -> str:
     """A sealed run of `bundle` as the runner writes it: run.started with the agents' profiles,
     the resolved scenario and monitor, one agent call costing `cost`, the end of each agent.
-    `operator` is a command an operator sent it."""
+    `operator` is a command an operator sent it. `swept` is what its sweeps cost and the step
+    they reached, in two lanes."""
     p = plan(settings, bundle, profile=profile)
     agent = p.profiles["a"]
     config: dict[str, Any] = {
@@ -203,6 +205,23 @@ async def record(
         drafts += [
             Draft(_request("w1", sweep.name, sweep.model, str(sweep.base_url), "sweep", body), "a"),
             Draft(_response("w1", watch, monitor_cost), "a"),
+        ]
+    if swept is not None:
+        drafts += [
+            Draft(
+                MonitorSweep(
+                    name="main",
+                    lane=lane,
+                    parts=["evidence"],
+                    trigger="every",
+                    step_from=0,
+                    step_to=swept[1],
+                    seq_to=1,
+                    cost_usd=swept[0] / 2,
+                ),
+                "a",
+            )
+            for lane in ("evidence", "full")
         ]
     if monitor_capped:
         drafts.append(Draft(MonitorDegraded(part="budget", reason="spent", then="signals_only")))
@@ -382,14 +401,40 @@ def test_a_monitor_cap_too_small_for_the_steps_is_said_with_a_warning(tmp_path: 
     settings, path = write(tmp_path, budget="{steps: 200}", preset="standard", extra=extra)
     e = one(settings, History(), load_scenario(path))
     assert e.warnings == [
-        "the monitor's $3.00 cap pays for sweeps over about 43 of 200 agent steps, then it keeps"
+        "the monitor's $3.00 cap pays for sweeps over about 20 of 200 agent steps, then it keeps"
         " only its signals; raise limits.monitor_cost_usd to cover them all"
     ]
     settings, path = write(tmp_path, budget="{steps: 200}", preset="standard")
     e = one(settings, History(), load_scenario(path))
     assert e.parts[0].monitor is not None
-    assert e.parts[0].monitor.ceiling_usd == pytest.approx(10.28)
+    assert e.parts[0].monitor.ceiling_usd == pytest.approx(21.85)
     assert e.warnings == []
+
+
+@pytest.mark.anyio
+async def test_the_cap_warning_goes_by_what_past_sweeps_of_the_same_monitor_cost(
+    tmp_path: Path, store: LocalEventStore
+) -> None:
+    extra = "limits: {monitor_cost_usd: 3}\n"
+    settings, path = write(tmp_path, budget="{steps: 200}", preset="standard", extra=extra)
+    bundle = load_scenario(path)
+    # $2 over 50 steps is 4 cents a step, where the prices alone say 10.5
+    await record(store, settings, bundle, 0.1, monitor_cost=2.5, swept=(2.0, 50))
+    found = await history(store)
+    assert [(past.swept, past.covered) for past in found.runs] == [(2.0, 50)]
+    assert [(past.swept, past.covered) for past in (await history(store)).runs] == [(2.0, 50)]
+    e = one(settings, found, bundle)
+    assert e.warnings == [
+        "the monitor's $3.00 cap pays for sweeps over about 55 of 200 agent steps, then it keeps"
+        " only its signals; raise limits.monitor_cost_usd to cover them all"
+    ]
+    # a run of another monitor says nothing of this one's sweeps
+    other = one(settings, found, bundle, preset="research")
+    assert "about 13 of 200 agent steps" in other.warnings[0]
+    # at a cent a step the cap covers every step
+    await record(store, settings, bundle, 0.1, monitor_cost=1.0, swept=(0.5, 50))
+    await record(store, settings, bundle, 0.1, monitor_cost=1.0, swept=(0.5, 50))
+    assert one(settings, await history(store), bundle).warnings == []
 
 
 def test_a_budget_override_caps_the_monitor_and_the_caps_in_force_say_so(tmp_path: Path) -> None:
@@ -806,10 +851,11 @@ async def test_a_past_monitor_that_stopped_at_a_lower_cap_counts_at_the_cap_now(
     e = one(settings, await history(store), bundle)
     monitor = e.parts[0].monitor
     assert monitor is not None
-    assert monitor.ceiling_usd == pytest.approx(10.28)
+    assert monitor.ceiling_usd == pytest.approx(21.85)
     assert (monitor.runs, monitor.capped) == (10, 10)
-    assert (monitor.typical_usd, monitor.high_usd) == (monitor.ceiling_usd, monitor.ceiling_usd)
-    assert e.total.high_usd == pytest.approx(1.0 + 10.28)
+    assert monitor.typical_usd == pytest.approx(monitor.ceiling_usd)
+    assert monitor.high_usd == pytest.approx(monitor.ceiling_usd)
+    assert e.total.high_usd == pytest.approx(1.0 + 21.85)
 
 
 @pytest.mark.anyio

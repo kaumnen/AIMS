@@ -984,7 +984,11 @@ async def test_a_run_needs_a_runner_with_its_keys(cp: CP, fake: FakeRunner) -> N
     async with cp.client(cp.operator) as c:
         r = await c.post(
             "/api/runs",
-            json={"scenario": {"source": "project", "name": "control"}, "profile": "keyed"},
+            json={
+                "scenario": {"source": "project", "name": "control"},
+                "profile": "keyed",
+                "confirm": True,
+            },
         )
         assert (r.status_code, r.json()["code"]) == (422, "envs")
         assert "AIMS_TEST_KEY_THAT_IS_NOT_SET" in r.json()["detail"]

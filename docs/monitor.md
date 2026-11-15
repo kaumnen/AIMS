@@ -29,11 +29,13 @@ Pick a preset with `--monitor`, the scenario's `monitor:` section or the `[monit
 | `standard` (default) | Signals, sweeps, one judge | Yes | At least $5 |
 | `research` | Adds a second judge that does not see the flags | Yes | At least $8 |
 
-- The budget grows with the agent steps the run allows, at the prices of the monitor's models. An 80-step `cache-keys` run gets $9.45 under `standard` with the default models.
+- The budget grows with the agent steps the run allows, at the prices of the monitor's models. An 80-step `cache-keys` run gets $19.18 under `standard` with the default models. This is a cap. It assumes the heaviest sweeps measured so far, so most runs spend less.
+- A sweep that runs more often costs more per step. The budget follows the sweep's `every`, `window`, `window_steps` and `collapse_tokens`.
+- The sweeps leave the judge its cost at the price of its model. A judge on a model with no price gets $1.
 - A review gets the budget for the steps the run took.
 - The scenario's `limits.monitor_cost_usd` sets it outright. So does `--budget run.monitor_cost_usd=3` on one run, the Monitor row of the Budget section in the New run form, or `aims monitor --budget-usd` on a review.
 - A run's cost cap counts only the agents. The monitor's spend comes on top, up to this budget.
-- Past the budget the monitor keeps only its signals. `aims estimate` and `aims monitor` warn when a budget is too small to sweep every step.
+- Past the budget the monitor keeps only its signals. `aims estimate` and `aims monitor` warn when a budget is too small to sweep every step. The warning goes by what the sweeps of past runs with the same monitor cost per step. Without such runs it goes by the prices.
 
 ## Judge settings
 
