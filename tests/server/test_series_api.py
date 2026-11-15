@@ -104,6 +104,7 @@ async def test_a_series_needs_a_name_and_one_sample_each(cp: CP) -> None:
             assert field in r.text, (body, r.text)
 
 
+@pytest.mark.usefixtures("profiles")
 async def test_a_series_queues_every_run_and_holds_all_but_the_first(
     cp: CP, fake: FakeRunner
 ) -> None:

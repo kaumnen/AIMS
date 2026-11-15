@@ -69,6 +69,7 @@ pytestmark = pytest.mark.anyio
 _groups = itertools.count()
 WEATHER = ToolSpec(name="get_weather", parameters={"type": "object", "properties": {}})
 PROMPT = Prompt(items=[Message(role="user", content="hi")])
+PROFILES = Path(__file__).parents[1] / "profiles.toml"
 
 
 def profile(**kw: Any) -> Profile:
@@ -246,7 +247,7 @@ async def test_chat_stream_records_the_attempt(store: LocalEventStore) -> None:
 
 
 async def test_chat_usage_on_every_chunk_keeps_the_last(store: LocalEventStore) -> None:
-    """Baseten sends the running usage on every chunk, so the last one is the total."""
+    """A server that sends the running usage on every chunk: the last one is the total."""
 
     def used(out: int, thought: int) -> dict[str, Any]:
         return {
@@ -979,81 +980,79 @@ async def test_the_bus_drops_for_slow_readers() -> None:
     bus.publish(Delta("r1", None, "c", 1, "text", "late"))
 
 
-def test_builtin_profiles() -> None:
+def test_no_profiles_ship() -> None:
     models = load_models()
-    agent = models.role("agent")
-    assert agent.name == "meta-spark-1.3-contributor"
-    assert agent.group == "meta-contributor"
-    assert models.role("judge").weights != agent.weights
-    for p in models.profiles.values():
-        assert p.effort is not None or p.backend == "chat"
-    # Each says so, as they sent `false` when it was the default.
-    assert {p.parallel_tool_calls for p in models.profiles.values()} == {False}
-    glimmer = models.get("modal-glimmer")
-    assert glimmer.weights == "meta-models/Muse-Glimmer-30B"
-    with pytest.raises(ProfileError, match="AIMS_GLIMMER_URL"):
-        glimmer.url({})
-    assert glimmer.url({"AIMS_GLIMMER_URL": "https://x.modal.run/v1/"}) == "https://x.modal.run/v1"
+    assert models.profiles == {}
+    assert models.roles.unset() == ["agent", "sweep", "judge"]
     with pytest.raises(ProfileError, match="unknown profile"):
         models.get("nope")
 
 
-def test_aims_toml_layers_on_the_builtins(tmp_path: Path) -> None:
+def test_config_files_layer_in_turn(tmp_path: Path) -> None:
+    user = tmp_path / "config.toml"
+    user.write_text(
+        PROFILES.read_text()
+        + """
+[profiles.served]
+backend = "chat"
+base_url_env = "SERVED_URL"
+model = "served-model"
+weights = "example/served-model"
+reasoning = "full"
+"""
+    )
     path = tmp_path / "aims.toml"
     path.write_text(
         """
-[profiles."meta-spark-1.3-contributor".limits]
+[profiles.agent-model.limits]
 rpm = 100
 
 [profiles.local]
-extends = "fireworks-spark-open"
+extends = "served"
 base_url = "http://localhost:8000/v1"
 api_key_env = "LOCAL_KEY"
-
-[profiles.glimmer]
-extends = "modal-glimmer"
-base_url = "http://gpu:8000/v1"
 
 [roles]
 agent = "local"
 """
     )
-    models = load_models(path)
-    contributor = models.get("meta-spark-1.3-contributor")
-    assert contributor.limits.rpm == 100
-    assert contributor.limits.tpm == 3000000
+    models = load_models(user, path)
+    agent = models.get("agent-model")
+    assert agent.limits.rpm == 100
+    assert agent.limits.tpm == 3000000
     local = models.get("local")
-    assert (local.backend, local.model, local.api_key_env) == (
-        "chat",
-        "accounts/fireworks/models/muse-spark-open",
-        "LOCAL_KEY",
-    )
-    assert models.get("glimmer").base_url_env is None
+    assert (local.backend, local.model, local.api_key_env) == ("chat", "served-model", "LOCAL_KEY")
+    assert local.base_url_env is None
+    served = models.get("served")
+    with pytest.raises(ProfileError, match="SERVED_URL"):
+        served.url({})
+    assert served.url({"SERVED_URL": "https://x.example/v1/"}) == "https://x.example/v1"
     assert models.role("agent").name == "local"
+    assert models.role("judge").name == "monitor-model"
     assert models.snapshot(["local"]) == {"local": local.model_dump(mode="json")}
 
     for bad, match in [
-        ('[profiles.x]\nextends = "meta-spark-1.3"\ncolour = "red"\n', "colour"),
+        ('[profiles.x]\nextends = "agent-model"\ncolour = "red"\n', "colour"),
         ('[profiles.x]\nextends = "missing"\n', "unknown profile"),
         ('[profiles.x]\nextends = "x"\n', "extends itself"),
         ('[roles]\njudge = "missing"\n', "unknown profile"),
-        ('[profiles."meta-spark-1.3".sampling]\ntemperature = 9\n', "temperature"),
-        ('[profiles.c]\nextends = "fireworks-spark-open"\nsummary = "auto"\n', "summary"),
+        ("[profiles.agent-model.sampling]\ntemperature = 9\n", "temperature"),
+        ('[profiles.c]\nextends = "served"\nsummary = "auto"\n', "summary"),
         ("[profiles\n", "aims.toml"),
     ]:
         path.write_text(bad)
         with pytest.raises(ProfileError, match=match):
-            load_models(path)
+            load_models(user, path)
 
 
 def test_weights_check() -> None:
-    models = load_models()
-    contributor = models.get("meta-spark-1.3-contributor")
-    standard = models.get("meta-spark-1.3")
-    with pytest.raises(ProfileError, match=r"meta/muse-spark-1\.3"):
-        check_weights([contributor], [standard])
-    check_weights([contributor], [standard], allow_same_model=True)
-    check_weights([contributor], [models.get("meta-wonder-1.0")])
+    models = load_models(PROFILES)
+    agent = models.get("agent-model")
+    paid = agent.model_copy(update={"name": "agent-model-paid"})
+    with pytest.raises(ProfileError, match=r"example/agent-model-1"):
+        check_weights([agent], [paid])
+    check_weights([agent], [paid], allow_same_model=True)
+    check_weights([agent], [models.get("monitor-model")])
 
 
 def test_overrides() -> None:
@@ -1260,10 +1259,10 @@ async def test_unstreamed_reasoning_details_stay_as_they_came(store: LocalEventS
 
 def test_cli_models_list(tmp_path: Path) -> None:
     path = tmp_path / "aims.toml"
-    path.write_text('[roles]\nagent = "meta-spark-1.3"\n')
+    path.write_text(PROFILES.read_text())
     result = CliRunner().invoke(app, ["models", "list", "--config", str(path)])
     assert result.exit_code == 0, result.output
-    assert "meta-spark-1.3  responses  muse-spark-1.3" in result.output
+    assert "agent-model  responses  agent-model-1" in result.output
     assert "[agent]" in result.output
     result = CliRunner().invoke(app, ["models", "check", "nope", "--config", str(path)])
     assert result.exit_code == 1
@@ -2004,7 +2003,11 @@ def test_routing_and_headers_layer_key_by_key(tmp_path: Path) -> None:
     user.write_text(
         """
 [profiles.router]
-extends = "fireworks-spark-open"
+backend = "chat"
+model = "router-model"
+weights = "example/router-model"
+reasoning = "full"
+parallel_tool_calls = false
 base_url = "https://router.example/api/v1"
 headers = { "X-Title" = "AIMS", "HTTP-Referer" = "https://example.com" }
 

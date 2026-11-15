@@ -73,9 +73,9 @@ function SpendPage() {
         </table>
       )}
       <p className="text-muted-foreground">
-        Set a provider's credit in the <code>[credits]</code> table of a config file, for example{" "}
-        <code>meta = 150</code> for $150. Run <code>aims spend</code> to see this table in a
-        terminal.
+        Set a provider's credit in the <code>[credits]</code> table of a config file, keyed by the
+        name in its URL: <code>example = 150</code> gives api.example.com $150. Run{" "}
+        <code>aims spend</code> to see this table in a terminal.
       </p>
     </div>
   );

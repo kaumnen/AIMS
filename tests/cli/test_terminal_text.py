@@ -346,6 +346,7 @@ agents:
 """
 
 
+@pytest.mark.usefixtures("profiles")
 def test_aims_run_shows_markup_in_an_error_as_written(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

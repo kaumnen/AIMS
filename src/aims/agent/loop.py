@@ -63,7 +63,8 @@ _CONTEXT = re.compile(
 def is_context_error(error: str | None) -> bool:
     """Whether a failed model call says the prompt no longer fits the model's context.
 
-    The patterns follow OpenAI, vLLM and Fireworks wording; what Meta returns is unverified.
+    The patterns follow the wording of OpenAI, vLLM and other OpenAI-compatible servers; a
+    server that words it otherwise is not caught.
     """
     return bool(error) and _CONTEXT.search(error or "") is not None
 

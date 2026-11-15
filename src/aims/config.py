@@ -213,7 +213,8 @@ def _amount(value: object) -> bool:
 
 
 def _credits(path: Path, table: object) -> dict[str, float]:
-    """`[credits]`: USD of credit per provider, such as `meta = 150`."""
+    """`[credits]`: USD of credit per provider, such as `example = 150` for the models at
+    api.example.com."""
     if table is None:
         return {}
     if not isinstance(table, dict) or not all(_amount(v) for v in table.values()):
@@ -271,14 +272,32 @@ STARTER = """\
 # file, and a scenario overrides both for its agents. `aims models list` shows the profiles and
 # `aims prompts show` every text the agent reads. API keys stay in environment variables.
 
+# AIMS ships no models. A profile says how to reach one; the roles say which profile runs the
+# agents (agent) and which the monitor asks (sweep, judge). The monitor's models need
+# structured output.
 # [profiles."my-agent"]
-# extends = "meta-spark-1.3-contributor"
-# effort = "high"
+# backend = "chat"
+# base_url = "https://api.example.com/v1"
+# model = "example/agent-model"
+# weights = "example/agent-model"
+# api_key_env = "EXAMPLE_API_KEY"
+# reasoning = "full"
+
+# [profiles."my-monitor"]
+# backend = "chat"
+# base_url = "https://api.example.com/v1"
+# model = "example/monitor-model"
+# weights = "example/monitor-model"
+# api_key_env = "EXAMPLE_API_KEY"
+# reasoning = "full"
 
 # [roles]
 # agent = "my-agent"
+# sweep = "my-monitor"
+# judge = "my-monitor"
 
-# `aims models add openrouter <model id> --write` adds a profile for a model on OpenRouter.
+# `aims models add openrouter <model id> --write --role agent` adds a profile for a model on
+# OpenRouter and gives it the agent role.
 
 # A profile with no price can take a LiteLLM list price for its runs and estimates.
 # `aims models prices <profile>` lists the keys that may fit.
@@ -298,8 +317,7 @@ STARTER = """\
 # paths = ["~/aims-scenarios"]
 
 # [credits]
-# meta = 150
-# fireworks = 100
+# example = 150
 
 # [estimate]
 # confirm_above_usd = 20

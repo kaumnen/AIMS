@@ -2,7 +2,7 @@
 extract`, then the sweep role, whose weights no agent of the run runs. When none fits, the
 score runs without those checks and its estimate says why."""
 
-import copy
+import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any, cast
@@ -19,7 +19,6 @@ from aims import config
 from aims.cli import app
 from aims.events import Draft, LocalEventStore, RunFinished, RunStarted
 from aims.models import ProfileError
-from aims.models import profiles as profiles_module
 from aims.monitor.setup import resolve_monitor
 from aims.prompts import Prompts
 from aims.run import scoring, truth
@@ -63,13 +62,6 @@ task:
 agents:
   - id: a
 """
-
-
-@pytest.fixture(autouse=True)
-def no_builtin_roles(monkeypatch: pytest.MonkeyPatch) -> None:
-    tables = profiles_module.builtin_tables()
-    del tables["roles"]
-    monkeypatch.setattr(profiles_module, "builtin_tables", lambda: copy.deepcopy(tables))
 
 
 @pytest.fixture
@@ -174,10 +166,22 @@ async def test_a_score_with_no_classifier_runs_without_its_checks(
 ) -> None:
     oracle(monkeypatch, [])
     s = settings(tmp_path, "")
-    result = await scoring.score_sealed(store, s, await run_on(store, "w-agent"))
+    run = await run_on(store, "w-agent")
+    result = await scoring.score_sealed(store, s, run)
     (began,) = await store.events(result.run_id, types=["run.started"], limit=1)
-    assert cast(dict[str, Any], began.data["config"])["classifier"] is None
+    config = cast(dict[str, Any], began.data["config"])
+    assert config["classifier"] is None
     assert await store.events(result.run_id, types=["model.request"], limit=1) == []
+    # the score records the checks asked for and why they did not run
+    off = "No model fits the awareness and answer checks, so they are off"
+    assert result.checks_off is not None
+    assert result.checks_off.startswith(off)
+    assert config["checks"] == {"awareness": True, "answer": True, "off": result.checks_off}
+    # checks turned off are not a reason to give
+    quiet = await scoring.score_sealed(store, s, run, awareness=False, answer=False)
+    (began,) = await store.events(quiet.run_id, types=["run.started"], limit=1)
+    checks = cast(dict[str, Any], began.data["config"])["checks"]
+    assert (quiet.checks_off, checks) == (None, {"awareness": False, "answer": False, "off": None})
 
 
 def test_aims_score_prints_why_its_checks_are_off(
@@ -198,6 +202,12 @@ def test_aims_score_prints_why_its_checks_are_off(
     )
     assert out.exit_code == 0, out.output
     assert "No model fits the awareness and answer checks, so they are off" in flat(out.stderr)
+    shown = CliRunner().invoke(
+        app, ["score", run, "--config", str(toml), "--runs-dir", str(tmp_path / "runs"), "--json"]
+    )
+    assert shown.exit_code == 0, shown.output
+    off = json.loads(shown.stdout)["checks_off"]
+    assert off.startswith("No model fits the awareness and answer checks, so they are off")
 
 
 def test_an_extract_profile_without_structured_output_is_refused_at_load(
@@ -254,7 +264,9 @@ async def _api(cp: CP, origin: str) -> None:
         (score_id,) = r.json()["run_ids"]
     job = await cp.state.db.job(score_id)
     assert job is not None
-    assert ScoreJob.model_validate(job.payload).classifier is None
+    queued = ScoreJob.model_validate(job.payload)
+    assert queued.classifier is None
+    assert queued.checks_off == e["checks_off"]
     # an extract profile on other weights than the agent's is the classifier
     cp.project.write_text(
         cp.project.read_text()
@@ -269,6 +281,7 @@ async def _api(cp: CP, origin: str) -> None:
         (score_id,) = r.json()["run_ids"]
     job = await cp.state.db.job(score_id)
     assert job is not None
-    profile = ScoreJob.model_validate(job.payload).profile()
+    queued = ScoreJob.model_validate(job.payload)
+    profile = queued.profile()
     assert profile is not None
-    assert profile.name == "classify"
+    assert (profile.name, queued.checks_off) == ("classify", None)

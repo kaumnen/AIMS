@@ -980,6 +980,7 @@ async def test_a_queued_run_stopped_with_no_reason_says_who_stopped_it(
     await fake.client.aclose()
 
 
+@pytest.mark.usefixtures("profiles")
 async def test_a_run_needs_a_runner_with_its_keys(cp: CP, fake: FakeRunner) -> None:
     async with cp.client(cp.operator) as c:
         r = await c.post(
@@ -1383,12 +1384,13 @@ async def test_config_text_is_checked_by_line_and_merged_for_viewers(cp: CP) -> 
         (error,) = r.json()["errors"]
         assert error["line"] is None
         assert error["msg"].startswith(f"{cp.project}: unknown table(s) nonsense")
-        r = await c.post("/api/config/user/check", json={"text": "[credits]\nmeta = 1\n"})
+        r = await c.post("/api/config/user/check", json={"text": "[credits]\nexample = 1\n"})
         assert r.json()["ok"]
         r = await c.put("/api/config/user", json={"text": "x = \n"}, headers={"If-None-Match": "*"})
         assert (r.status_code, r.json()["code"], r.json()["errors"][0]["line"]) == (422, "toml", 1)
         user = Path((await c.get("/api/config/user")).json()["path"])
         assert [p.name for p in user.parent.iterdir()] == []
+    cp.project.write_text((Path(__file__).parents[1] / "profiles.toml").read_text())
     async with cp.client(cp.viewer) as c:
         r = await c.post("/api/config/user/check", json={"text": ""})
         assert r.status_code == 403
@@ -1398,7 +1400,7 @@ async def test_config_text_is_checked_by_line_and_merged_for_viewers(cp: CP) -> 
 
 
 async def test_a_config_file_that_is_not_utf8_is_a_problem_not_a_crash(cp: CP) -> None:
-    cp.project.write_bytes("[credits]\nmeta = 1 # café\n".encode("latin-1"))
+    cp.project.write_bytes("[credits]\nexample = 1 # café\n".encode("latin-1"))
     error = f"{cp.project} is not UTF-8"
     async with cp.client(cp.operator) as c:
         r = await c.get("/api/config/merged")
@@ -1432,11 +1434,11 @@ async def test_config_routes_read_and_load_files_off_the_event_loop(
         assert (await c.get("/api/config/user")).status_code == 200
         r = await c.put(
             "/api/config/user",
-            json={"text": "[credits]\nmeta = 1\n"},
+            json={"text": "[credits]\nexample = 1\n"},
             headers={"If-None-Match": "*"},
         )
         assert r.status_code == 200, r.text
-        patch = {"set": [{"key": ["credits", "meta"], "value": 2}]}
+        patch = {"set": [{"key": ["credits", "example"], "value": 2}]}
         r = await c.patch("/api/config/user", json=patch, headers={"If-Match": r.headers["ETag"]})
         assert r.status_code == 200, r.text
     assert (len(threads["_problem"]), len(threads["read_or_none"])) == (2, 6)
@@ -1461,13 +1463,13 @@ async def test_without_a_project_file_saving_the_project_layer_makes_one(
         assert (await c.get("/api/config/project")).json()["text"] == STARTER
         r = await c.put(
             "/api/config/project",
-            json={"text": "[credits]\nmeta = 1\n"},
+            json={"text": "[credits]\nexample = 1\n"},
             headers={"If-None-Match": "*"},
         )
         assert r.status_code == 200, r.text
         assert (await c.get("/api/config")).json()["layers"][1]["exists"]
         merged = (await c.get("/api/config/merged")).json()["text"]
-        assert "meta = 1.0  # this project" in merged
+        assert "example = 1.0  # this project" in merged
 
 
 async def test_scenario_files_are_validated_and_confined(cp: CP) -> None:
@@ -1520,7 +1522,7 @@ async def test_scenario_files_are_validated_and_confined(cp: CP) -> None:
 
 FILES = "/api/scenarios/project/control/files"
 CONFIG = "/api/config/project"
-SET = {"set": [{"key": ["credits", "meta"], "value": 1}]}
+SET = {"set": [{"key": ["credits", "example"], "value": 1}]}
 RUN = str(uuid.UUID(int=1))
 
 
@@ -1565,7 +1567,6 @@ BODY_TEXT: list[tuple[str, str, dict[str, Any], list[str | int]]] = [
     ("POST", "/api/models/check", {"runner": LONE_TEXT}, ["runner"]),
     ("POST", "/api/scenarios/check", {"text": LONE_TEXT}, ["text"]),
     ("POST", "/api/scenarios/check", {"text": "x", "profile": LONE_TEXT}, ["profile"]),
-    ("POST", "/api/scenarios/project/control/selftest", {"profile": LONE_TEXT}, ["profile"]),
     ("POST", "/api/scenarios/project/control/selftest", {"runner": LONE_TEXT}, ["runner"]),
     (
         "POST",
@@ -1701,7 +1702,7 @@ async def test_a_problem_that_repeats_a_lone_surrogate_is_sent_as_its_escape(
         pytest.param(
             "PATCH",
             CONFIG,
-            {"set": [{"key": ["credits", "meta"], "value": None}]},
+            {"set": [{"key": ["credits", "example"], "value": None}]},
             None,
             422,
             None,

@@ -347,8 +347,8 @@ FIXTURE = Path(__file__).parents[1] / "fixtures" / "runs" / "word-count"
 
 
 async def test_the_recorded_live_run_replays(backend: DockerBackend, tmp_path: Path) -> None:
-    """A real run on Spark 1.3 Contributor, replayed to its submit: every model answer comes
-    from the recording and every tool call runs again here, so no key is needed."""
+    """A real run, replayed to its submit: every model answer comes from the recording and
+    every tool call runs again here, so no key is needed."""
     import shutil
 
     (origin_dir,) = FIXTURE.iterdir()

@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from aims.events import Event, LocalEventStore, RunStatus, TaskScored
+from aims.models import Profile
 from aims.run import truth
 from aims.run.runner import Bench, Options, Result, RunError, Runner
 from aims.run.score import Taken, check_run
@@ -24,6 +25,17 @@ from aims.scenario.model import ImpossiblePlant, ScriptStep, ToolPlant
 
 MAX_SCRIPT_BYTES = 100_000
 OK = "exit code 0"
+
+# What each agent of a self-test records as its profile. Every agent follows a script, so the
+# runs need no model from the config and this one is never called.
+SCRIPTED = Profile(
+    name="scripted",
+    backend="chat",
+    base_url="http://scripted.invalid",
+    model="scripted",
+    weights="scripted",
+    reasoning="none",
+)
 CaseKind = Literal["reference", "exploit", "empty", "impossible"]
 
 
@@ -132,23 +144,26 @@ def cases(bundle: Bundle) -> list[Case]:
     return out
 
 
+def profiles(bundle: Bundle) -> dict[str, Profile]:
+    """The profile each agent of a self-test of `bundle` records: SCRIPTED."""
+    return {a.id: SCRIPTED for a in bundle.scenario.agents}
+
+
 async def run(
     bench: Bench,
     bundle: Bundle,
     plan: Sequence[Case],
     *,
-    profile: str | None = None,
     on_outcome: Callable[[Outcome], Awaitable[None] | None] | None = None,
     origin: str | None = None,
     runner: Callable[[Options], Runner] | None = None,
 ) -> list[Outcome]:
     """Make each run of `plan` in turn and check it; a run cancelled or killed ends the
     self-test there. With `origin`, each is a `selftest.case` run under that one. `runner`
-    makes each Runner, by default on `bench`."""
+    makes each Runner, by default on `bench` with the SCRIPTED profile for every agent."""
     out: list[Outcome] = []
     for case in plan:
         options = Options(
-            profile=profile,
             scripts=case.scripts,
             overlays=case.overlays or None,
             kind="scenario" if origin is None else "selftest.case",
@@ -156,7 +171,10 @@ async def run(
             case=case.name,
         )
         try:
-            made = Runner(bench, bundle, options) if runner is None else runner(options)
+            if runner is None:
+                made = Runner(bench, bundle, options, profiles=profiles(bundle))
+            else:
+                made = runner(options)
             result = await made.run()
         except RunError as e:
             outcome = Outcome(case.name, None, problems=[f"the run did not start: {e}"])

@@ -10,7 +10,7 @@ import tomlkit
 import tomlkit.items
 
 from aims.config import Settings
-from aims.models.profiles import _layer, builtin_tables
+from aims.models.profiles import _layer
 from aims.monitor.config import _merge, layer, merge
 
 BUILTIN = "built in"
@@ -49,7 +49,7 @@ def _profiles(files: list[tuple[str, dict[str, Any]]]) -> tuple[Labels, dict[str
     what each profile extends."""
     values: dict[str, dict[str, Any]] = {}
     labels: dict[str, Labels] = {}
-    for source, data in [(BUILTIN, builtin_tables()), *files]:
+    for source, data in files:
         for name, table in data.get("profiles", {}).items():
             mine = _labels(table, source)
             values[name] = _layer(values[name], table) if name in values else dict(table)
@@ -125,7 +125,7 @@ def merged(settings: Settings) -> str:
         doc.add(tomlkit.comment(line))
 
     roles: Labels = {}
-    for source, data in [(BUILTIN, builtin_tables()), *files]:
+    for source, data in files:
         roles |= _labels(data.get("roles", {}), source)
     set_roles = settings.models.roles.model_dump(mode="json", exclude_none=True)
     unset = settings.models.roles.unset()

@@ -227,10 +227,31 @@ def build(
         out.pooled.append(
             _group(pool, pools[arm, monitor], dict(counts[arm, monitor]), presets[monitor])
         )
-    if not rows:
+    if rows:
+        out.notes.append(read(rows))
+    else:
         out.notes.append("No score runs over these runs.")
     out.lines = lines(out)
     return out
+
+
+REASONING = {"full": "full reasoning", "summary": "reasoning summaries", "none": "no reasoning"}
+
+
+def read(rows: Iterable[UnitRow]) -> str:
+    """What the awareness check read of each arm: the agents' words and the reasoning their
+    runs recorded. Scores from before units held it say nothing of an arm."""
+    kinds: dict[str, set[str]] = defaultdict(set)
+    for r in rows:
+        if r.unit.arm is not None:
+            kinds[r.unit.arm].update(r.unit.reasoning)
+    head = "Eval awareness is read from what the agents wrote"
+    parts = [
+        f"{' and '.join(REASONING[k] for k in REASONING if k in kinds[arm])} on {arm}"
+        for arm in sorted(kinds)
+        if kinds[arm]
+    ]
+    return f"{head}: {'; '.join(parts)}." if parts else f"{head}."
 
 
 def newest(rows: Iterable[UnitRow], watches: Mapping[str, Watch] | None = None) -> list[UnitRow]:
@@ -388,10 +409,6 @@ def lines(rates: Rates) -> list[str]:
         out.append(f"{_title(g)}: {g.runs} runs")
         out.extend(_body(g))
     out.extend(rates.notes)
-    out.append(
-        "Eval awareness is read from what the agents wrote; full reasoning only on Spark Open"
-        " and Glimmer, summaries elsewhere."
-    )
     return out
 
 

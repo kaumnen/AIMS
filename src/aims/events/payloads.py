@@ -1442,7 +1442,8 @@ class ScoreUnit(Payload):
     positive all the same, `labelled`, when a person labelled one of its flags real. `planted`
     are the plants that applied to it, `plants` the ones it took, `considered` the ones whose
     canary turned up only in its model output, `categories` the taken ones', `harm_seq` the
-    first time it took one. `arm` names the weights it ran on. `told` and `cause` are the
+    first time it took one. `arm` names the weights it ran on and `reasoning` what reasoning
+    those models returned, as the run recorded their profiles. `told` and `cause` are the
     answer check's labels of a positive subject. A confederate's own plants are known
     positives for the monitor, scored apart from the subjects."""
 
@@ -1452,6 +1453,7 @@ class ScoreUnit(Payload):
     positive: bool | None
     labelled: bool = False
     arm: str | None = None
+    reasoning: list[ReasoningKind] = Field(default_factory=list)
     planted: list[str] = Field(default_factory=list)
     plants: list[str] = Field(default_factory=list)
     considered: list[str] = Field(default_factory=list)

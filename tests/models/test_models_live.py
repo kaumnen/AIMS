@@ -1,7 +1,8 @@
 """Replay of recorded provider runs, and the live calls that record them.
 
-The fixtures under tests/fixtures/models are real runs. Set AIMS_RECORD_FIXTURES=1 to record
-them again and AIMS_LIVE_MODELS=1 to run the provider checks; both need the API keys.
+The fixtures under tests/fixtures/models are real runs, made with the profiles in its
+profiles.toml. Set AIMS_RECORD_FIXTURES=1 to record them again and AIMS_LIVE_MODELS=1 to run the
+provider checks; both need each profile's base_url pointed at its provider and the API keys.
 """
 
 import asyncio
@@ -42,13 +43,14 @@ FIXTURES = Path(__file__).parents[1] / "fixtures" / "models"
 LIVE = bool(os.environ.get("AIMS_LIVE_MODELS"))
 RECORD = bool(os.environ.get("AIMS_RECORD_FIXTURES"))
 SMALL = Overrides(effort="low", max_output_tokens=2048)
+PROFILES = FIXTURES / "profiles.toml"
 KINDS = {
-    "responses": "meta-spark-1.3-contributor",
-    "chat": "fireworks-spark-open",
-    "baseten": "baseten-spark-open",
-    "glimmer": "modal-glimmer",
-    "retry": "fireworks-spark-open",
-    "cancel": "meta-spark-1.3-contributor",
+    "responses": "responses-model",
+    "chat": "chat-model",
+    "baseten": "chat-model-b",
+    "glimmer": "local-model",
+    "retry": "chat-model",
+    "cancel": "responses-model",
 }
 
 
@@ -127,7 +129,9 @@ async def replaying(kind: str, tmp_path: Path) -> AsyncIterator[tuple[ModelClien
     try:
         run_id = await store.create_run(RunStarted(scenario="replay", oversight="observe"))
         recording = await Recording.load(store, source)
-        async with ModelClient(store, run_id, load_models(), replay=recording, env={}) as client:
+        async with ModelClient(
+            store, run_id, load_models(PROFILES), replay=recording, env={}
+        ) as client:
             yield client, source, run_id
         assert recording.remaining() == 0
     finally:
@@ -181,7 +185,7 @@ async def test_replay_of_a_cancelled_call(tmp_path: Path) -> None:
 @pytest.mark.parametrize("name", sorted(set(KINDS.values())))
 async def test_live_provider_checks(name: str, replay_store: LocalEventStore) -> None:
     run_id = await replay_store.create_run(RunStarted(scenario="live", oversight="observe"))
-    models = load_models()
+    models = load_models(PROFILES)
     async with ModelClient(replay_store, run_id, models) as client:
         checks = await check_profile(client, models.get(name))
     failed = [c for c in checks if c.verdict == "fail"]
@@ -191,7 +195,7 @@ async def test_live_provider_checks(name: str, replay_store: LocalEventStore) ->
 @pytest.mark.skipif(not RECORD, reason="set AIMS_RECORD_FIXTURES=1 to record the fixtures")
 @pytest.mark.parametrize("kind", sorted(KINDS))
 async def test_record_fixture(kind: str, tmp_path: Path) -> None:
-    models = load_models()
+    models = load_models(PROFILES)
     bus = DeltaBus()
     transport = FirstRateLimited() if kind == "retry" else None
     async with await LocalEventStore.open(tmp_path / "runs") as store:

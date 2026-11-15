@@ -44,6 +44,18 @@ def user_config(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.Mo
     return path
 
 
+PROFILES = Path(__file__).parent / "profiles.toml"
+
+
+@pytest.fixture
+def profiles(user_config: Path) -> Path:
+    """tests/profiles.toml as the user config: an agent and a monitor model in their roles.
+    AIMS ships no profiles, so a test without this fixture has none."""
+    path = user_config / "config.toml"
+    path.write_text(PROFILES.read_text())
+    return path
+
+
 SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 
 

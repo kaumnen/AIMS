@@ -268,6 +268,7 @@ async def claim(cp: CP, runner: str, run_id: str) -> httpx2.Response:
         return await c.post(f"/runner/v1/jobs/{run_id}/claim", headers={"X-Aims-Runner": runner})
 
 
+@pytest.mark.usefixtures("profiles")
 async def test_monitor_runs_queue_for_runners_that_take_them(
     cp: CP, local: LocalEventStore, fake: FakeRunner
 ) -> None:
@@ -393,6 +394,7 @@ async def test_a_review_budget_is_a_finite_number(
     assert [j for j in await cp.state.db.jobs() if j.payload.get("kind") == "monitor"] == []
 
 
+@pytest.mark.usefixtures("profiles")
 async def test_a_review_has_an_estimate_a_cost_guard_and_counts_as_listed(
     cp: CP, local: LocalEventStore, fake: FakeRunner
 ) -> None:
@@ -561,6 +563,7 @@ async def test_job_text_with_a_lone_surrogate_is_refused_before_it_is_queued(
     assert await cp.state.db.jobs() == []
 
 
+@pytest.mark.usefixtures("profiles")
 async def test_a_stored_job_with_a_lone_surrogate_is_claimed_as_text(
     cp: CP, local: LocalEventStore, fake: FakeRunner
 ) -> None:

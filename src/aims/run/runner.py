@@ -52,6 +52,7 @@ from aims.models import (
     Profile,
     ProfileError,
     Prompt,
+    UnsetRole,
 )
 from aims.monitor.core import HumanRequest, Monitor
 from aims.monitor.gate import MonitorGate
@@ -252,23 +253,39 @@ def check(
     models: ModelsConfig,
     profile: str | None = None,
     prompts: Prompts | None = None,
+    *,
+    unset: list[str] | None = None,
 ) -> list[str]:
-    """Problems that stop the scenario from running with these profiles, tools and texts."""
+    """Problems that stop the scenario from running with these profiles, tools and texts. An
+    agent whose profile would come from an unset role goes to `unset` when it is given: that is
+    the project's to set, not a fault of the scenario."""
     problems: list[str] = []
     for agent in bundle.scenario.agents:
         try:
             p = agent_profile(models, agent, profile)
+        except UnsetRole as e:
+            (problems if unset is None else unset).append(f"agent {agent.id}: {e}")
         except ProfileError as e:
             problems.append(f"agent {agent.id}: {e}")
-            continue
-        if agent.compaction is not None and p.context_tokens is None:
-            problems.append(
-                f"agent {agent.id}: compaction needs context_tokens in profile {p.name}"
-            )
+        else:
+            if agent.compaction is not None and p.context_tokens is None:
+                problems.append(
+                    f"agent {agent.id}: compaction needs context_tokens in profile {p.name}"
+                )
+        problems += text_problems(bundle, prompts, agent)
+    return problems
+
+
+def text_problems(
+    bundle: Bundle, prompts: Prompts | None = None, agent: AgentConfig | None = None
+) -> list[str]:
+    """Problems with the texts and tools of `agent`, by default of every agent."""
+    problems: list[str] = []
+    for a in bundle.scenario.agents if agent is None else [agent]:
         try:
-            resolve_texts(prompts or Prompts(), agent, bundle.scenario)
+            resolve_texts(prompts or Prompts(), a, bundle.scenario)
         except (UnknownTool, TextError) as e:
-            problems.append(f"agent {agent.id}: {e}")
+            problems.append(f"agent {a.id}: {e}")
     return problems
 
 

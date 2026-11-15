@@ -1,7 +1,7 @@
 """A role may be unset. What needs an unset role stops before any container starts and names
 the fix; what names its profiles itself runs without one."""
 
-import copy
+import shutil
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -9,11 +9,13 @@ from typing import Any
 import cp as cp_module
 import pytest
 from cp import CP, SCENARIO, control_plane
+from test_server import FakeRunner
 from typer.testing import CliRunner
 
 from aims.cli import app
 from aims.models import ProfileError, load_models
-from aims.models import profiles as profiles_module
+from aims.run import selftest
+from aims.run.job import Job
 from aims.sandbox.docker import DockerBackend
 
 PLAIN = """\
@@ -43,13 +45,6 @@ review = { profile = "watch" }
 judge = { profile = "watch" }
 channels = { profile = "watch" }
 """
-
-
-@pytest.fixture(autouse=True)
-def no_builtin_roles(monkeypatch: pytest.MonkeyPatch) -> None:
-    tables = profiles_module.builtin_tables()
-    del tables["roles"]
-    monkeypatch.setattr(profiles_module, "builtin_tables", lambda: copy.deepcopy(tables))
 
 
 @pytest.fixture
@@ -123,11 +118,40 @@ def test_a_run_that_names_its_profiles_needs_no_role(tmp_path: Path) -> None:
     assert named.exit_code == 0, named.output
 
 
-def test_scenario_check_names_a_missing_agent_role_once(tmp_path: Path) -> None:
+def test_scenario_check_notes_each_unset_role_once_and_passes(tmp_path: Path) -> None:
     toml, scenario = project(tmp_path, PLAIN)
     result = invoke("scenario", "check", str(scenario), "--config", str(toml), "--no-selftest")
+    assert result.exit_code == 0, result.output
+    out = flat(result.output)
+    assert out.count("no profile has the agent role") == 1
+    assert "note: agent a: no profile has the agent role" in out
+    assert "note: monitor: no profile has the sweep role" in out
+    assert "note: no cost estimate until those roles are set" in out
+    assert "error:" not in out
+
+
+def test_scenario_check_takes_the_monitor_preset_a_run_would(tmp_path: Path) -> None:
+    toml, scenario = project(tmp_path, PLAIN)
+    base = ["scenario", "check", str(scenario), "--config", str(toml), "--no-selftest"]
+    signals = invoke(*base, "--monitor", "signals")
+    assert signals.exit_code == 0, signals.output
+    assert "note: monitor:" not in signals.output
+    assert "no profile has the agent role" in flat(signals.output)
+    named = invoke(*base, "--monitor", "signals", "--profile", "plain")
+    assert named.exit_code == 0, named.output
+    assert "note:" not in named.output
+    bad = invoke(*base, "--monitor", "loud")
+    assert bad.exit_code == 2
+    assert "use off, signals" in flat(bad.output)
+
+
+def test_scenario_check_refuses_a_monitor_profile_that_does_not_exist(tmp_path: Path) -> None:
+    toml, scenario = project(tmp_path, PLAIN + '[monitor]\njudge = { profile = "missing" }\n')
+    result = invoke("scenario", "check", str(scenario), "--config", str(toml), "--no-selftest")
     assert result.exit_code == 1
-    assert flat(result.output).count("no profile has the agent role") == 1
+    out = flat(result.output)
+    assert "error: monitor: unknown profile 'missing'" in out
+    assert "note: monitor: no profile has the sweep role" in out
 
 
 def test_models_list_and_the_merged_config_show_unset_roles(tmp_path: Path) -> None:
@@ -157,6 +181,25 @@ def roleless(monkeypatch: pytest.MonkeyPatch) -> None:
 async def cp(tmp_path: Path, roleless: None) -> AsyncIterator[CP]:
     async with control_plane(tmp_path) as cp:
         yield cp
+
+
+@pytest.mark.anyio
+async def test_the_api_queues_a_selftest_with_no_role_set(cp: CP) -> None:
+    src = Path(__file__).parents[2] / "src/aims/scenarios/cache-keys"
+    shutil.copytree(src, cp.project.parent / "scenarios/cache-keys")
+    runner = FakeRunner(cp)
+    able = runner.hello_body().model_copy(update={"kinds": ["scenario", "selftest"]})
+    await runner.client.hello(able)
+    async with cp.client(cp.operator) as c:
+        assert (await c.get("/api/models")).json()["roles"]["agent"] is None
+        r = await c.post("/api/scenarios/project/cache-keys/selftest", json={})
+        assert r.status_code == 202, r.text
+        (run_id,) = r.json()["run_ids"]
+    job = await cp.state.db.job(run_id)
+    assert job is not None
+    profiles = Job.model_validate(job.payload).profiles
+    assert profiles
+    assert all(p == selftest.SCRIPTED for p in profiles.values())
 
 
 @pytest.mark.anyio

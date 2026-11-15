@@ -46,6 +46,7 @@ task:
   instruction: do it
   environment: {image: python:3.13-slim}
 """
+PROFILES = Path(__file__).parents[1] / "profiles.toml"
 WORD_COUNT = (
     Path(__file__).parents[2] / "src" / "aims" / "scenarios" / "word-count" / "scenario.yaml"
 )
@@ -632,11 +633,11 @@ def test_texts_layer_defaults_config_and_scenario(tmp_path: Path) -> None:
     assert texts.tools["bash"]["description"].startswith("Run a command with bash in {workdir}")
 
     bad = parse(BASE + "agents:\n  - id: a\n    prompts:\n      budget_steps: '{n} steps'\n")
-    problems = check(load(WORD_COUNT), load_models(None), None, None)
+    problems = check(load(WORD_COUNT), load_models(PROFILES), None, None)
     assert problems == []
     from aims.scenario import Bundle
 
-    problems = check(Bundle(bad, b""), load_models(None))
+    problems = check(Bundle(bad, b""), load_models(PROFILES))
     assert len(problems) == 1
     assert problems[0].startswith("agent a: budget_steps: unknown placeholder n")
 

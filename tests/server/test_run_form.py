@@ -118,6 +118,7 @@ def body(name: str = "control", **fields: Any) -> dict[str, Any]:
     return {"scenario": {"source": "project", "name": name}, "monitor": "signals", **fields}
 
 
+@pytest.mark.usefixtures("profiles")
 async def test_a_cap_given_as_inf_nan_or_a_string_is_refused(cp: CP) -> None:
     """A run's budget takes JSON numbers only, as the UI sends them; `--budget` reads text."""
     estimate = "/api/scenarios/project/control/estimate"
@@ -438,6 +439,7 @@ async def test_a_model_check_an_error_ends_is_sealed_as_failed_with_the_error(
     assert last.data["reason"] == "OSError: disk full"
 
 
+@pytest.mark.usefixtures("profiles")
 async def test_a_run_that_cannot_be_scored_says_why(cp: CP, local: LocalEventStore) -> None:
     # no runner has the classifier's key
     fake = ScoreRunner(cp, "scorer")
@@ -571,6 +573,7 @@ async def test_a_score_that_fails_to_queue_keeps_the_truth_file(
         await fake.close()
 
 
+@pytest.mark.usefixtures("profiles")
 async def test_a_truth_upload_the_index_refused_scores_the_run_once_on_its_retry(
     cp: CP, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:

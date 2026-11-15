@@ -39,7 +39,7 @@ const scenarios: ScenarioInfo[] = [
     error: null,
     oversight: "human",
     agents: 1,
-    profiles: ["spark"],
+    profiles: ["alpha"],
     needs_profile: false,
     variants: ["observed", "unobserved"],
     selftest: true,
@@ -52,7 +52,7 @@ const scenarios: ScenarioInfo[] = [
     error: null,
     oversight: "observe",
     agents: 2,
-    profiles: ["spark"],
+    profiles: ["alpha"],
     needs_profile: false,
     variants: [],
     selftest: false,
@@ -120,12 +120,12 @@ beforeEach(() => {
     if (path === "/api/scenarios") return Response.json(scenarios);
     if (path === "/api/models") {
       return Response.json({
-        roles: { agent: "spark" },
+        roles: { agent: "alpha" },
         profiles: [
           {
-            name: "spark",
+            name: "alpha",
             backend: "responses",
-            model: "muse-spark",
+            model: "alpha-1",
             weights: "w",
             reasoning: "summary",
             roles: ["agent"],
@@ -141,9 +141,9 @@ beforeEach(() => {
             },
           },
           {
-            name: "wonder",
+            name: "beta",
             backend: "responses",
-            model: "muse-wonder",
+            model: "beta-1",
             weights: "w",
             reasoning: "summary",
             roles: [],
@@ -239,7 +239,7 @@ test("the form shows the scenario, its oversight, profile checks and the estimat
   expect(form.queryByText(/broken/)).toBeNull();
   expect(form.getByText(/Human oversight: when the monitor pauses an agent/)).toBeTruthy();
   expect(form.queryByRole("alert")).toBeNull();
-  expect(form.getByText("spark: works with warnings")).toBeTruthy();
+  expect(form.getByText("alpha: works with warnings")).toBeTruthy();
   expect(form.getByText("tools: usage lacks cached")).toBeTruthy();
   expect(form.getByRole("combobox", { name: "Monitor" }).textContent).toContain(
     "From config (standard)",
@@ -252,8 +252,8 @@ test("the form shows the scenario, its oversight, profile checks and the estimat
   await pick(form, "Monitor", "off");
   expect(form.getByRole("alert").textContent).toContain("No monitor");
 
-  await pick(form, "Profile", /wonder/);
-  expect(form.getByText("wonder: never checked")).toBeTruthy();
+  await pick(form, "Profile", /beta/);
+  expect(form.getByText("beta: never checked")).toBeTruthy();
   expect(form.getByText("No connected runner has OTHER_KEY.")).toBeTruthy();
 });
 
@@ -267,7 +267,7 @@ test("a scenario whose agent names no profile asks for one while no profile has 
     expect(form.getByRole("link", { name: "add a model with the role" }).getAttribute("href")).toBe(
       "/settings/models?add=true",
     );
-    await pick(form, "Profile", /spark/);
+    await pick(form, "Profile", /alpha/);
     expect(form.queryByText(/No profile has the agent role/)).toBeNull();
   } finally {
     scenarios[0] = first;
@@ -292,17 +292,17 @@ test("a model check runs on demand and reads the result once it ends", async () 
   const form = await openForm();
   const before = models().length;
   fireEvent.click(form.getByRole("button", { name: "Check" }));
-  await waitFor(() => expect(checks).toEqual([["spark"]]));
-  expect(await form.findByText("spark: checking")).toBeTruthy();
+  await waitFor(() => expect(checks).toEqual([["alpha"]]));
+  expect(await form.findByText("alpha: checking")).toBeTruthy();
   const source = FakeEventSource.all[0];
   if (!source) throw new Error("no stream");
   act(() => source.send({ kind: "run", run: run("c2", { status: "queued", state: "claimed" }) }));
   act(() => source.send({ kind: "run", run: run("c2", { status: "running", state: "running" }) }));
-  expect(form.getByText("spark: checking")).toBeTruthy();
+  expect(form.getByText("alpha: checking")).toBeTruthy();
   expect(models().length).toBe(before);
   act(() => source.send({ kind: "run", run: run("c2", { status: "completed", state: "done" }) }));
   await waitFor(() => expect(models().length).toBe(before + 1));
-  expect(await form.findByText("spark: works with warnings")).toBeTruthy();
+  expect(await form.findByText("alpha: works with warnings")).toBeTruthy();
 });
 
 test("a run starts with the chosen options and opens", async () => {

@@ -466,10 +466,26 @@ async def test_a_runner_scores_a_job_with_the_checks_and_plants_it_carries(
             (second,) = r.json()["run_ids"]
         assert (await scored_by(second)).status == "completed"
         assert (checked, asked) == ([["deploy-call"], []], ["answer", "awareness"])
-    begun = [(await cp.state.store.events(r, limit=1))[0].payload() for r in (first, second)]
+
+        # with no classifier the runner records why the checks are off, as the job says
+        cp.project.write_text(cp.project.read_text().replace(CLASSIFY, ""))
+        async with cp.client(cp.operator) as c:
+            r = await c.post(f"/api/runs/{origin}/score", json={"runner": "n1"})
+            assert r.status_code == 202, r.text
+            (third,) = r.json()["run_ids"]
+        assert (await scored_by(third)).status == "completed"
+        assert asked == ["answer", "awareness"]
+    runs = (first, second, third)
+    begun = [(await cp.state.store.events(r, limit=1))[0].payload() for r in runs]
     assert all(isinstance(b, RunStarted) for b in begun)
-    one, two = cast(list[RunStarted], begun)
+    one, two, three = cast(list[RunStarted], begun)
     assert (one.kind, one.origin, two.origin) == ("score", origin, origin)
+    assert one.config["checks"] == {"awareness": False, "answer": True, "off": None}
+    assert two.config["checks"] == {"awareness": True, "answer": False, "off": None}
+    checks = three.config["checks"]
+    assert isinstance(checks, dict)
+    assert (checks["awareness"], checks["answer"]) == (True, True)
+    assert str(checks["off"]).startswith("No model fits the awareness and answer checks")
     added = one.config["added"]
     assert isinstance(added, dict)
     assert (added["from"], added["plants"]) == ("project/ruled", ["deploy-call"])

@@ -86,7 +86,7 @@ from aims.run.fork import (
     replayable_steps,
 )
 from aims.run.job import Job, fork_jobs, monitor_for, scenario_jobs, selftest_job
-from aims.run.runner import Fork, RunError, agent_profile, check
+from aims.run.runner import Fork, RunError, agent_profile, check, text_problems
 from aims.scenario import Bundle, Scenario, ScenarioError, folder_tar, load, parse
 from aims.scenario import budget as budgets
 from aims.scenario.budget import BudgetError, BudgetOverride
@@ -2325,9 +2325,8 @@ async def check_scenario(body: ScenarioCheck, principal: Viewer, state: State) -
 
 
 class StartSelfTest(BaseModel):
-    """`profile` as in StartRun; the agents are scripted, so no model is called."""
+    """`runner` as in StartRun. The agents are scripted, so no model is called."""
 
-    profile: Utf8 | None = None
     runner: Utf8 | None = None
 
 
@@ -2365,7 +2364,7 @@ async def start_selftest(
             "the scenario has no selftest and no impossible plant",
             code="selftest",
         )
-    problems = check(bundle, settings.models, body.profile, settings.prompts)
+    problems = text_problems(bundle, settings.prompts)
     try:
         await asyncio.to_thread(selftest.cases, bundle)
     except selftest.SelfTestError as e:
@@ -2384,13 +2383,11 @@ async def start_selftest(
     try:
         job = selftest_job(
             bundle,
-            settings.models,
             settings.prompts,
             folder=hashlib.sha256(folder).hexdigest(),
-            profile=body.profile,
             config_files=settings.layers.digests(),
         )
-    except (ProfileError, UnknownTool, TextError) as e:
+    except (UnknownTool, TextError) as e:
         raise ProblemException(422, "Self-test cannot run", str(e), code="selftest") from None
     blobs = {hashlib.sha256(b).hexdigest(): b for b in [*bundle.blobs(), folder]}
     started = await _queue(

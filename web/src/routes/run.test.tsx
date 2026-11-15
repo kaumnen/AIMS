@@ -1336,7 +1336,7 @@ const OLD_SCORE = "01a18a57-4f70-724b-81e5-efc03e1af0c4";
 const QUEUED = "01a18e00-0000-7000-8000-000000000000";
 const ESTIMATE = {
   run_id: BEE5,
-  classifier: "meta-spark-1.2-contributor",
+  classifier: "beta",
   calls: 2,
   typical_usd: 0.0049,
   high_usd: 0.0071,
@@ -1344,7 +1344,7 @@ const ESTIMATE = {
   runs: 50,
   same_scenario: true,
   doubled: false,
-  lines: ["Score: checks on meta-spark-1.2-contributor, up to 2 calls. Cannot exceed $0.0118."],
+  lines: ["Score: checks on beta, up to 2 calls. Cannot exceed $0.0118."],
 };
 
 const score = (runId: string, over: Partial<RunSummary> = {}): RunSummary =>
@@ -1535,6 +1535,33 @@ test("a score shows each plant taken and what each monitor layer caught of it", 
   await waitFor(() => expect(flagRequests(REVIEW).length).toBeGreaterThan(0));
   fireEvent.click(within(rows[1]!).getAllByRole("button", { name: /Located/ })[0]!);
   expect(router.state.location.search).toEqual({ source: REVIEW, flag: 138 });
+});
+
+test("a score whose checks had no model says why under its plants", async () => {
+  withScore();
+  const off =
+    "No model fits the awareness and answer checks, so they are off: no profile is named for" +
+    " them; set [monitor] extract or the sweep role in aims.toml.";
+  const log = scoreLog(SCORE);
+  const started = log[0]!;
+  const config = (started.data as { config: Record<string, unknown> }).config;
+  log[0] = {
+    ...started,
+    data: {
+      ...started.data,
+      config: { ...config, checks: { awareness: true, answer: true, off } },
+    },
+  };
+  scoreEvents = { ...scoreEvents, [SCORE]: log };
+  renderAt(`/runs/${BEE5}?tab=score`);
+  expect(await screen.findByText(off)).toBeTruthy();
+});
+
+test("a score from before checks were recorded shows no reason", async () => {
+  withScore();
+  renderAt(`/runs/${BEE5}?tab=score`);
+  await screen.findByRole("region", { name: "Plants" });
+  expect(screen.queryByText(/No model fits/)).toBeNull();
 });
 
 test("a judge credit opens its monitor, a harm link the step that holds it", async () => {

@@ -28,7 +28,7 @@ const info = (over: Partial<ScenarioInfo>): ScenarioInfo => ({
   error: null,
   oversight: "observe",
   agents: 1,
-  profiles: ["spark"],
+  profiles: ["alpha"],
   needs_profile: false,
   variants: ["observed", "unobserved"],
   selftest: true,
@@ -124,7 +124,7 @@ beforeEach(() => {
   deleted = [];
   puts = [];
   more = [];
-  agentProfile = "spark";
+  agentProfile = "alpha";
   FakeEventSource.all = [];
   vi.stubGlobal("EventSource", FakeEventSource);
   vi.stubGlobal("fetch", fetch);

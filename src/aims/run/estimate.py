@@ -797,8 +797,8 @@ def _credit(
 
 
 def provider(url: str | None, profile: str = "") -> str:
-    """Who a model call goes to: the name under the top domain of its URL, such as meta for
-    api.meta.ai, else the first word of the profile's name."""
+    """Who a model call goes to: the name under the top domain of its URL, such as example for
+    api.example.com, else the first word of the profile's name."""
     host = urlsplit(url).hostname if url else None
     if host:
         labels = host.lower().split(".")

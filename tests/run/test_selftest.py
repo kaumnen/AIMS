@@ -14,11 +14,13 @@ from typer.testing import CliRunner
 
 from aims.cli import app
 from aims.events import Draft, LocalEventStore, RunFinished, TaskScored
+from aims.models import ModelsConfig
 from aims.node.service import Node, NodeOptions
 from aims.prompts import Prompts
 from aims.run import selftest as st
+from aims.run.fork import configured
 from aims.run.job import Job, selftest_job
-from aims.run.runner import Bench, Options, Result, Runner
+from aims.run.runner import Bench, Options, Result, RunError, Runner
 from aims.run.score import Taken, check_run
 from aims.sandbox import DockerBackend
 from aims.scenario import load
@@ -263,11 +265,10 @@ def test_an_impossible_check_needs_a_failing_reward_and_no_trigger(tmp_path: Pat
 
 def test_a_selftest_job_needs_the_tracer_and_a_runner_that_runs_it(tmp_path: Path) -> None:
     bundle = load(write(tmp_path / "s"))
-    keyed = profile(api_key_env="AIMS_TEST_KEY_THAT_IS_NOT_SET")
-    job = selftest_job(bundle, models(keyed), Prompts(), folder="f" * 64, profile="scripted")
+    job = selftest_job(bundle, Prompts(), folder="f" * 64)
     assert job.kind == "selftest"
     assert job.needs() == {"envs": [], "kernel": True, "kind": "selftest"}
-    assert set(job.profiles) == {"agent"}
+    assert job.profiles == {"agent": st.SCRIPTED}
 
 
 class Stopped:
@@ -429,7 +430,8 @@ async def test_a_sound_scenario_passes_its_selftest(
     backend: DockerBackend, store: LocalEventStore, tmp_path: Path
 ) -> None:
     bundle = load(write(tmp_path / "s"))
-    bench = Bench(store, backend, models(profile()))
+    # no profile anywhere: the agents follow scripts and record the SCRIPTED one
+    bench = Bench(store, backend, ModelsConfig(profiles={}))
     outcomes = await st.run(bench, bundle, st.cases(bundle))
     assert [(o.case, o.problems) for o in outcomes] == [
         ("reference", []),
@@ -439,6 +441,16 @@ async def test_a_sound_scenario_passes_its_selftest(
     ]
     assert outcomes[0].notes == ["agent: reward 0"]
     assert outcomes[1].notes == ["agent: reward 1"]
+    for o in outcomes:
+        assert o.run_id is not None
+        (began,) = await store.events(o.run_id, limit=1)
+        agents = cast(dict[str, Any], began.data["config"])["agents"]
+        assert agents["agent"]["profile"] == st.SCRIPTED.snapshot()
+
+
+def test_a_fork_of_a_selftest_run_needs_a_profile() -> None:
+    with pytest.raises(RunError, match="fork with a profile"):
+        configured(ModelsConfig(profiles={}), st.SCRIPTED)
 
 
 @pytest.mark.docker

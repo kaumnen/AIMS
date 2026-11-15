@@ -613,6 +613,7 @@ def test_aims_run_lays_the_list_price_before_it_estimates(tmp_path: Path) -> Non
     assert line["total"]["ceiling_usd"] == pytest.approx(10 * STEP)
 
 
+@pytest.mark.usefixtures("profiles")
 async def test_the_api_estimate_carries_the_list_price(tmp_path: Path) -> None:
     async with control_plane(tmp_path) as cp:
         await _api(cp, tmp_path)

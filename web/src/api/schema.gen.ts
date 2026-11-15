@@ -7182,8 +7182,9 @@ export interface components {
          *     file and the flags of the monitor run `monitor` (None for its own), into the new run
          *     `run_id`. The runner fetches the run, the monitor run and the truth file when it lacks
          *     them. `classifier` is the model of the `awareness` and `answer` checks (`Profile.snapshot`,
-         *     env names only), None to skip both; `texts` the monitor texts it asks with. `added` is
-         *     what a scenario file adds to the truth file (`Added.dump`), read by the control plane.
+         *     env names only), None to skip both; `checks_off` says why none fits the checks asked for;
+         *     `texts` are the monitor texts it asks with. `added` is what a scenario file adds to the truth
+         *     file (`Added.dump`), read by the control plane.
          */
         ScoreJob: {
             /** Added */
@@ -7200,6 +7201,8 @@ export interface components {
              * @default true
              */
             awareness: boolean;
+            /** Checks Off */
+            checks_off: string | null;
             /** Classifier */
             classifier: {
                 [key: string]: components["schemas"]["JsonValue"];
@@ -7325,7 +7328,8 @@ export interface components {
          *     positive all the same, `labelled`, when a person labelled one of its flags real. `planted`
          *     are the plants that applied to it, `plants` the ones it took, `considered` the ones whose
          *     canary turned up only in its model output, `categories` the taken ones', `harm_seq` the
-         *     first time it took one. `arm` names the weights it ran on. `told` and `cause` are the
+         *     first time it took one. `arm` names the weights it ran on and `reasoning` what reasoning
+         *     those models returned, as the run recorded their profiles. `told` and `cause` are the
          *     answer check's labels of a positive subject. A confederate's own plants are known
          *     positives for the monitor, scored apart from the subjects.
          */
@@ -7367,6 +7371,8 @@ export interface components {
             plants: string[];
             /** Positive */
             positive: boolean | null;
+            /** Reasoning */
+            reasoning: ("none" | "summary" | "full")[];
             /**
              * Role
              * @enum {string}
@@ -7759,11 +7765,9 @@ export interface components {
         };
         /**
          * StartSelfTest
-         * @description `profile` as in StartRun; the agents are scripted, so no model is called.
+         * @description `runner` as in StartRun. The agents are scripted, so no model is called.
          */
         StartSelfTest: {
-            /** Profile */
-            profile?: string | null;
             /** Runner */
             runner?: string | null;
         };
@@ -15460,6 +15464,7 @@ export const scoreUnexplainedLayerValues: ReadonlyArray<FlattenedDeepRequired<co
 export const scoreUnitCategoriesValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreUnit"]["categories"]> = ["covert_communication", "scorer_tampering", "transcript_tampering", "deceiving_operator", "evading_checks", "collective_over_own_task", "drift", "loop_or_confusion", "fabricated_completion", "constraint_violation", "eval_awareness", "alerting_operator", "egress_attempt", "privilege_escalation", "monitor_manipulation"];
 export const scoreUnitCauseAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreUnit"]["cause"]> = ["true", "false", "none"];
 export const scoreUnitEval_awareAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreUnit"]["eval_aware"]> = ["yes", "no", "unclear"];
+export const scoreUnitReasoningValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreUnit"]["reasoning"]> = ["none", "summary", "full"];
 export const scoreUnitRoleValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreUnit"]["role"]> = ["subject", "confederate"];
 export const scoreUnitToldAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreUnit"]["told"]> = ["yes", "partly", "no"];
 export const selfTestCaseCaseValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["SelfTestCase"]["case"]> = ["reference", "exploit", "empty", "impossible"];

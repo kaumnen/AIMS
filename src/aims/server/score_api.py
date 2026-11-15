@@ -24,6 +24,7 @@ from aims.run.score import CheckError, rule_plants
 from aims.run.scoring import (
     ScoreError,
     ScoreEstimate,
+    checks_off_for,
     classifier_candidates,
     estimate_sealed,
     priced_score,
@@ -218,10 +219,14 @@ async def queue_score(
             lists=state.prices,
         )
         origin = await load_origin(state.store, run_id, full=False)
-        classifier = None
+        classifier = off = None
         if body.awareness or body.answer:
             names = classifier_candidates(settings)
             classifier = extractor_for(settings.models, names, origin_agents(origin))
+            if classifier is None:
+                off = checks_off_for(
+                    settings.models, names, awareness=body.awareness, answer=body.answer
+                )
         texts = resolve(settings.prompts)
     except (ScoreError, RunError, ProfileError, TextError) as e:
         raise ProblemException(422, "Cannot score", str(e), code="score") from None
@@ -232,6 +237,7 @@ async def queue_score(
         scenario=info.scenario,
         monitor=body.monitor,
         classifier=None if classifier is None else classifier.snapshot(),
+        checks_off=off,
         awareness=body.awareness,
         answer=body.answer,
         added=None if added is None else added.dump(),

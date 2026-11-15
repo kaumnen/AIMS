@@ -258,7 +258,7 @@ def user(body: dict[str, Any]) -> str:
 
 
 def channel_sweeper(f: Feed, script: Script) -> tuple[ChannelSweeper, Profile, Profile]:
-    judge, cheap = profile(name="wonder", model="wonder"), profile(name="cheap", model="cheap")
+    judge, cheap = profile(name="overseer", model="overseer"), profile(name="cheap", model="cheap")
     client = ModelClient(
         f.store, f.run_id, models(judge, cheap), transport=script.transport(), env={}
     )
@@ -329,7 +329,7 @@ async def test_the_channel_sweep_flags_each_agent_a_hit_names(store: LocalEventS
 
     sweeper, _, _ = channel_sweeper(f, scripted(answer))
     found = await sweeper.sweep("every")
-    assert seen == [("sweep_extract", "cheap"), ("channel_evaluate", "wonder")]
+    assert seen == [("sweep_extract", "cheap"), ("channel_evaluate", "overseer")]
     result = found.result
     assert not result.failed
     [sweep] = [d.payload for d in result.sweeps]
@@ -530,28 +530,28 @@ def named(name: str, weights: str) -> Profile:
 def config_of(*profiles: Profile) -> ModelsConfig:
     return ModelsConfig(
         profiles={p.name: p for p in profiles},
-        roles=Roles(agent=profiles[0].name, sweep="wonder", judge="wonder"),
+        roles=Roles(agent=profiles[0].name, sweep="overseer", judge="overseer"),
     )
 
 
 @pytest.mark.parametrize(
     ("agents", "chosen"),
     [
-        (["meta/muse-spark-1.3"], "meta-spark-1.2-contributor"),
-        (["meta/muse-spark-1.2"], "meta-spark-1.3-contributor"),
-        (["meta/muse-spark-1.2", "meta/muse-spark-1.3"], None),
-        (["meta/muse-spark-open"], "meta-spark-1.2-contributor"),
+        (["example/agent-1.3"], "agent-1.2"),
+        (["example/agent-1.2"], "agent-1.3"),
+        (["example/agent-1.2", "example/agent-1.3"], None),
+        (["example/agent-open"], "agent-1.2"),
     ],
 )
 def test_the_extractor_is_the_first_candidate_no_agent_runs(
     agents: list[str], chosen: str | None
 ) -> None:
-    wonder = named("wonder", "meta/muse-wonder-1.0")
-    twelve = named("meta-spark-1.2-contributor", "meta/muse-spark-1.2")
-    thirteen = named("meta-spark-1.3-contributor", "meta/muse-spark-1.3")
+    overseer = named("overseer", "example/overseer-1.0")
+    twelve = named("agent-1.2", "example/agent-1.2")
+    thirteen = named("agent-1.3", "example/agent-1.3")
     runs = [named(f"agent{n}", w) for n, w in enumerate(agents)]
-    cfg = config_of(*runs, wonder, twelve, thirteen)
-    cheap = [{"extract": ["meta-spark-1.2-contributor", "meta-spark-1.3-contributor"]}]
+    cfg = config_of(*runs, overseer, twelve, thirteen)
+    cheap = [{"extract": ["agent-1.2", "agent-1.3"]}]
     default = resolve_monitor(cfg, Prompts(), parse(SCENARIO), runs)
     assert default is not None
     assert default.extract is None
@@ -559,7 +559,7 @@ def test_the_extractor_is_the_first_candidate_no_agent_runs(
     assert resolved is not None
     assert (None if resolved.extract is None else resolved.extract.name) == chosen
     assert resolved.channels is not None
-    assert resolved.channels.name == "wonder"
+    assert resolved.channels.name == "overseer"
     again = ResolvedMonitor.restore(resolved.snapshot())
     assert again.extract == resolved.extract
     assert again.channels == resolved.channels
@@ -568,20 +568,20 @@ def test_the_extractor_is_the_first_candidate_no_agent_runs(
 @pytest.mark.parametrize(
     ("extract", "agent", "warned"),
     [
-        (["meta-spark-1.2-contributor"], "meta/muse-spark-open", False),
-        (["meta-spark-1.2-contributor", "meta-spark-1.3-contributor"], "meta/muse-spark-1.2", True),
-        (["meta-spark-1.2-contributor"], "meta/muse-spark-1.2", True),
-        (["no-such-profile"], "meta/muse-spark-open", True),
+        (["agent-1.2"], "example/agent-open", False),
+        (["agent-1.2", "agent-1.3"], "example/agent-1.2", True),
+        (["agent-1.2"], "example/agent-1.2", True),
+        (["no-such-profile"], "example/agent-open", True),
     ],
 )
 def test_a_skipped_first_extractor_is_warned(
     extract: list[str], agent: str, warned: bool, caplog: pytest.LogCaptureFixture
 ) -> None:
-    wonder = named("wonder", "meta/muse-wonder-1.0")
-    twelve = named("meta-spark-1.2-contributor", "meta/muse-spark-1.2")
-    thirteen = named("meta-spark-1.3-contributor", "meta/muse-spark-1.3")
+    overseer = named("overseer", "example/overseer-1.0")
+    twelve = named("agent-1.2", "example/agent-1.2")
+    thirteen = named("agent-1.3", "example/agent-1.3")
     runs = [named("agent", agent)]
-    cfg = config_of(*runs, wonder, twelve, thirteen)
+    cfg = config_of(*runs, overseer, twelve, thirteen)
     with caplog.at_level(logging.WARNING, logger="aims.monitor"):
         resolve_monitor(cfg, Prompts(), parse(SCENARIO), runs, layers=[{"extract": extract}])
     found = [r.getMessage() for r in caplog.records if "monitor extract" in r.getMessage()]
@@ -591,25 +591,25 @@ def test_a_skipped_first_extractor_is_warned(
 
 
 def test_an_extractor_changes_the_monitor_identity() -> None:
-    wonder = named("wonder", "meta/muse-wonder-1.0")
-    twelve = named("meta-spark-1.2-contributor", "meta/muse-spark-1.2")
-    agent = named("agent", "meta/muse-spark-1.3")
+    overseer = named("overseer", "example/overseer-1.0")
+    twelve = named("agent-1.2", "example/agent-1.2")
+    agent = named("agent", "example/agent-1.3")
     scenario = parse(SCENARIO)
-    cheap = [{"extract": ["meta-spark-1.2-contributor"]}]
+    cheap = [{"extract": ["agent-1.2"]}]
     on = resolve_monitor(
-        config_of(agent, wonder, twelve), Prompts(), scenario, [agent], layers=cheap
+        config_of(agent, overseer, twelve), Prompts(), scenario, [agent], layers=cheap
     )
-    off = resolve_monitor(config_of(agent, wonder, twelve), Prompts(), scenario, [agent])
+    off = resolve_monitor(config_of(agent, overseer, twelve), Prompts(), scenario, [agent])
     assert on is not None
     assert off is not None
     assert off.extract is None
     assert on.identity != off.identity
-    thirteen = named("meta-spark-1.3-contributor", "meta/muse-spark-1.3")
-    models = config_of(agent, wonder, twelve, thirteen)
-    both = [{"extract": ["meta-spark-1.2-contributor", "meta-spark-1.3-contributor"]}]
+    thirteen = named("agent-1.3", "example/agent-1.3")
+    models = config_of(agent, overseer, twelve, thirteen)
+    both = [{"extract": ["agent-1.2", "agent-1.3"]}]
     first, second = (
         offline_monitor(models, Prompts(), scenario, [named("a", w)], layers=both)
-        for w in ("meta/muse-spark-open", "meta/muse-spark-1.2")
+        for w in ("example/agent-open", "example/agent-1.2")
     )
     assert first.extract is not None
     assert second.extract is not None
@@ -618,10 +618,10 @@ def test_an_extractor_changes_the_monitor_identity() -> None:
 
 
 def test_a_run_without_channels_has_no_channel_sweep() -> None:
-    wonder = named("wonder", "meta/muse-wonder-1.0")
-    agent = named("agent", "meta/muse-spark-1.3")
+    overseer = named("overseer", "example/overseer-1.0")
+    agent = named("agent", "example/agent-1.3")
     lone = parse(SCENARIO.split("channels:")[0])
-    resolved = resolve_monitor(config_of(agent, wonder), Prompts(), lone, [agent])
+    resolved = resolve_monitor(config_of(agent, overseer), Prompts(), lone, [agent])
     assert resolved is not None
     assert resolved.channels is None
     assert resolved.budget_usd == 10.92
@@ -639,26 +639,26 @@ def test_the_monitor_budget_scales_with_agents_and_channels() -> None:
     assert merge({"preset": "signals"}).channels is None
 
 
-WONDER = {"input": 4.0, "cached": 0.2, "output": 20.0}
+OVERSEER = {"input": 4.0, "cached": 0.2, "output": 20.0}
 
 
 def test_the_monitor_budget_scales_with_steps_at_the_monitor_prices() -> None:
     standard, research = merge(), merge({"preset": "research"})
-    wonder = profile(name="wonder", price=WONDER)
-    sweeps = {"main": wonder}
-    assert budget_usd(standard, None, steps=80, sweeps=sweeps, judge=wonder) == 19.18
-    assert budget_usd(research, None, steps=80, sweeps=sweeps, judge=wonder) == 20.75
-    assert budget_usd(standard, None, steps=10, sweeps=sweeps, judge=wonder) == 5.0
-    assert budget_usd(standard, 4.0, steps=80, sweeps=sweeps, judge=wonder) == 4.0
+    overseer = profile(name="overseer", price=OVERSEER)
+    sweeps = {"main": overseer}
+    assert budget_usd(standard, None, steps=80, sweeps=sweeps, judge=overseer) == 19.18
+    assert budget_usd(research, None, steps=80, sweeps=sweeps, judge=overseer) == 20.75
+    assert budget_usd(standard, None, steps=10, sweeps=sweeps, judge=overseer) == 5.0
+    assert budget_usd(standard, 4.0, steps=80, sweeps=sweeps, judge=overseer) == 4.0
     free = profile(name="free", price=None)
     assert budget_usd(standard, None, steps=500, sweeps={"main": free}, judge=free) == 5.0
     signals = merge({"preset": "signals"})
-    assert budget_usd(signals, None, steps=80, sweeps=sweeps, judge=wonder) == 0.0
-    assert judge_usd(standard, wonder) == pytest.approx(1.568)
+    assert budget_usd(signals, None, steps=80, sweeps=sweeps, judge=overseer) == 0.0
+    assert judge_usd(standard, overseer) == pytest.approx(1.568)
 
 
 def test_a_sweep_that_runs_more_often_costs_more_a_step() -> None:
-    sweeps = {"main": profile(name="wonder", price=WONDER)}
+    sweeps = {"main": profile(name="overseer", price=OVERSEER)}
 
     def per_step(**sweep: Any) -> float:
         return sweep_usd(merge({"sweeps": [{"name": "main", **sweep}]}), sweeps)
@@ -678,15 +678,15 @@ def test_the_judge_reserve_follows_the_price_of_the_judge() -> None:
     standard = merge()
     cheap = profile(name="cheap", price={"input": 0.1, "cached": 0.01, "output": 0.5})
     assert judge_reserve(standard, cheap) == pytest.approx(0.0444)
-    assert judge_reserve(standard, profile(name="wonder", price=WONDER)) == pytest.approx(1.568)
+    assert judge_reserve(standard, profile(name="overseer", price=OVERSEER)) == pytest.approx(1.568)
     assert judge_reserve(merge({"preset": "research"}), cheap) == pytest.approx(0.0888)
     # no price to work the judge's cost out from
     assert judge_reserve(standard, profile(price=None)) == JUDGE_RESERVE_USD
     assert judge_reserve(standard, None) == JUDGE_RESERVE_USD
     assert judge_reserve(merge({"judge": None}), cheap) == 0.0
     # a $1.30 cap on such a judge leaves the sweeps all but 4 cents of it
-    agent = named("agent", "meta/muse-spark-1.3")
-    watcher = named("wonder", "author/cheap").model_copy(update={"price": cheap.price})
+    agent = named("agent", "example/agent-1.3")
+    watcher = named("overseer", "author/cheap").model_copy(update={"price": cheap.price})
     lone = parse(SCENARIO.split("channels:")[0])
     limits = lone.limits.model_copy(update={"monitor_cost_usd": 1.3})
     lone = lone.model_copy(update={"limits": limits})
@@ -697,21 +697,21 @@ def test_the_judge_reserve_follows_the_price_of_the_judge() -> None:
 
 
 def test_the_monitor_cap_scales_with_the_steps_a_scenario_allows() -> None:
-    wonder = named("wonder", "meta/muse-wonder-1.0").model_copy(
-        update={"price": profile(price=WONDER).price}
+    overseer = named("overseer", "example/overseer-1.0").model_copy(
+        update={"price": profile(price=OVERSEER).price}
     )
-    agent = named("agent", "meta/muse-spark-1.3")
+    agent = named("agent", "example/agent-1.3")
     lone = parse(
         SCENARIO.split("channels:")[0].replace("- id: b", "- id: b\n    budget: {steps: 30}")
     )
     assert planned_steps(lone) == 130
-    resolved = resolve_monitor(config_of(agent, wonder), Prompts(), lone, [agent])
+    resolved = resolve_monitor(config_of(agent, overseer), Prompts(), lone, [agent])
     assert resolved is not None
     assert resolved.budget_usd == 30.19
     assert resolved.judge_reserve_usd == pytest.approx(1.568)
     capped = lone.model_copy(update={"limits": lone.limits.model_copy(update={"steps": 50})})
     assert planned_steps(capped) == 50
-    watched = resolve_monitor(config_of(agent, wonder), Prompts(), lone, [agent], steps=200)
+    watched = resolve_monitor(config_of(agent, overseer), Prompts(), lone, [agent], steps=200)
     assert watched is not None
     assert watched.budget_usd == 45.6
 
@@ -731,7 +731,7 @@ async def window_run(store: LocalEventStore) -> Run:
 
 
 def band_sweeper(run: Run, script: Script, **config: Any) -> Sweeper:
-    judge, cheap = profile(name="wonder", model="wonder"), profile(name="cheap", model="cheap")
+    judge, cheap = profile(name="overseer", model="overseer"), profile(name="cheap", model="cheap")
     client = ModelClient(
         run.store, run.run_id, models(judge, cheap), transport=script.transport(), env={}
     )
@@ -754,7 +754,7 @@ def band_sweeper(run: Run, script: Script, **config: Any) -> Sweeper:
 @pytest.mark.parametrize(
     ("cheap", "calls", "window", "escalated"),
     [
-        (40, ["cheap", "wonder"], 80, True),
+        (40, ["cheap", "overseer"], 80, True),
         (10, ["cheap"], 10, False),
         (75, ["cheap"], 75, False),
     ],
@@ -791,7 +791,7 @@ async def test_without_a_band_the_sweep_model_scores_the_window(store: LocalEven
         return {"summary": "s", "quotes": []}
 
     await band_sweeper(run, scripted(answer)).sweep("every")
-    assert sorted(seen) == [("sweep_extract", "cheap"), ("sweep_window", "wonder")]
+    assert sorted(seen) == [("sweep_extract", "cheap"), ("sweep_window", "overseer")]
 
 
 async def test_a_lead_makes_the_whole_trajectory_the_review_range(store: LocalEventStore) -> None:

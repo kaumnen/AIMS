@@ -13,6 +13,7 @@ from aims.models.profiles import (
     Routing,
     Sampling,
     Timeouts,
+    UnsetRole,
     check_weights,
     load_models,
 )
@@ -59,6 +60,7 @@ __all__ = [
     "ToolRequest",
     "ToolSpec",
     "Turn",
+    "UnsetRole",
     "check_weights",
     "first_difference",
     "load_models",

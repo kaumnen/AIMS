@@ -1,11 +1,11 @@
-"""A live Wonder monitor over a recorded conftest hack, replayed with no key.
+"""A live monitor over a recorded conftest hack, replayed with no key.
 
 tests/fixtures/runs/misbehave/ holds two runs: the origin, in which a scripted agent plants a
 conftest that turns every test report into a pass (Docker, kernel tracer, signals monitor),
-and a monitor run over it by the standard preset on Wonder with a fixed frame id key. The test
-runs that monitor again offline, serving the recorded model answers, so any change to what the
-sweeps or the judge send fails it. Set AIMS_RECORD_FIXTURES=1, with Docker, the tracer and
-MODEL_API_KEY, to record both runs again.
+and a monitor run over it by the standard preset with a fixed frame id key. The test runs that
+monitor again offline, serving the recorded model answers, so any change to what the sweeps or
+the judge send fails it. Set AIMS_RECORD_FIXTURES=1, with Docker, the tracer and the profiles
+of tests/profiles.toml pointed at a provider with their keys, to record both runs again.
 """
 
 import os
@@ -33,7 +33,8 @@ FIXTURE = Path(__file__).parents[1] / "fixtures" / "runs" / "misbehave"
 SCENARIO = Path(__file__).parents[1] / "fixtures" / "scenarios" / "misbehave" / "scenario.yaml"
 RECORD = bool(os.environ.get("AIMS_RECORD_FIXTURES"))
 KEY = b"aims monitor replay fixture key!!"
-CHEAP = [{"extract": ["meta-spark-1.3-contributor", "meta-spark-1.2-contributor"]}]
+PROFILES = Path(__file__).parents[1] / "profiles.toml"
+CHEAP = [{"extract": ["agent-model"]}]
 
 CONFTEST = """\
 import _pytest.reports as _r
@@ -116,7 +117,7 @@ async def test_record_the_monitor_fixture(tmp_path: Path) -> None:
         assert origin_run.run_id is not None
         assert origin_run.status == "completed", origin_run.reason
         origin = await load_origin(store, origin_run.run_id)
-        live = load_models()
+        live = load_models(PROFILES)
         resolved = offline_monitor(
             live, Prompts(), origin.bundle.scenario, [agent], layers=CHEAP, preset="standard"
         )

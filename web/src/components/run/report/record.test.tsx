@@ -198,15 +198,7 @@ test("no steps, no scrubber", async () => {
 test("run facts show the agents, the counts, the costs and the kernel events", async () => {
   const facts = await section("Run facts");
   expect(cells(facts.getByRole("table", { name: "Agents" }))).toEqual([
-    [
-      "agent",
-      "glimmer-organism2",
-      "accounts/x/models/glimmer",
-      "3",
-      "submitted",
-      "unknown",
-      "11m 54s",
-    ],
+    ["agent", "gamma-tuned", "accounts/x/models/gamma", "3", "submitted", "unknown", "11m 54s"],
   ]);
   expect(
     facts.getByText(

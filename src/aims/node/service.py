@@ -421,7 +421,6 @@ class Node:
                 ctx.bench,
                 bundle,
                 plan,
-                profile=job.options.profile,
                 on_outcome=record,
                 origin=run_id,
                 runner=make,
@@ -542,6 +541,7 @@ class Node:
                 added=None if job.added is None else Added.load(job.added),
                 awareness=job.awareness,
                 answer=job.answer,
+                checks_off=job.checks_off,
             )
         except ScoreError as e:
             raise RunError(str(e)) from None

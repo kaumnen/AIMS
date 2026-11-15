@@ -1,9 +1,7 @@
-import copy
 import os
 import re
 import tomllib
 from collections.abc import Iterable, Mapping
-from importlib import resources
 from pathlib import Path
 from typing import Annotated, Any, Literal, Self
 
@@ -347,6 +345,14 @@ UNSET_FIX: dict[Role, str] = {
 }
 
 
+class UnsetRole(ProfileError):
+    """What needs `role` asked for it while no profile has it."""
+
+    def __init__(self, role: Role) -> None:
+        super().__init__(f"no profile has the {role} role; {UNSET_FIX[role]}")
+        self.role = role
+
+
 class ModelsConfig(_Strict):
     """Profiles by name and the profile of each role. `load_models` also holds the roles of a
     config file to what the monitor asks of them. A config a job builds sets no role, since
@@ -370,10 +376,10 @@ class ModelsConfig(_Strict):
             raise ProfileError(f"unknown profile {name!r}; known: {known}") from None
 
     def role(self, role: Role) -> Profile:
-        """The profile of `role`. Raises ProfileError naming the fix when the role is unset."""
+        """The profile of `role`. Raises UnsetRole, naming the fix, when the role is unset."""
         name = getattr(self.roles, role)
         if name is None:
-            raise ProfileError(f"no profile has the {role} role; {UNSET_FIX[role]}")
+            raise UnsetRole(role)
         return self.get(name)
 
     def check_structured(self, names: Iterable[str], what: str) -> None:
@@ -394,23 +400,17 @@ class _File(_Strict):
     roles: dict[str, str] = Field(default_factory=dict)
 
 
-def builtin_tables() -> dict[str, Any]:
-    text = resources.files("aims.models").joinpath("builtins.toml").read_text(encoding="utf-8")
-    return tomllib.loads(text)
-
-
 def load_models(*paths: Path | None) -> ModelsConfig:
-    """The built-in profiles, with each of `paths` (aims.toml files) layered on in turn when it
-    exists.
+    """The profiles and roles of `paths` (aims.toml files), each layered on in turn when it
+    exists. AIMS ships none.
 
     A table whose name matches an earlier one is merged into it key by key. `extends = "name"`
     starts a profile from another one. A role may be unset; what needs it raises then. A set
     sweep or judge role must name a profile with structured output, since the monitor asks it
     for answers to a schema.
     """
-    base = _File.model_validate(builtin_tables())
-    tables = copy.deepcopy(base.profiles)
-    roles = dict(base.roles)
+    tables: dict[str, dict[str, Any]] = {}
+    roles: dict[str, str] = {}
     for path in paths:
         if path is None or not path.is_file():
             continue

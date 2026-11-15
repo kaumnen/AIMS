@@ -23,6 +23,8 @@ from aims.models import ProfileError, load_models
 from aims.monitor.config import merge
 from aims.prompts import TextError, load_prompts
 
+PROFILES = Path(__file__).parents[1] / "profiles.toml"
+
 
 def test_the_user_dir_follows_the_platform_rules(tmp_path: Path) -> None:
     assert user_dir({"AIMS_CONFIG_DIR": "/x"}) == Path("/x")
@@ -45,8 +47,8 @@ def test_layers_merge_user_then_project(tmp_path: Path) -> None:
     user = tmp_path / "user"
     user.mkdir()
     (user / "config.toml").write_text(
-        '[prompts]\nsystem = "user"\nnudge = "user nudge"\n'
-        '[profiles."mine"]\nextends = "meta-spark-1.3-contributor"\neffort = "low"\n'
+        PROFILES.read_text() + '[prompts]\nsystem = "user"\nnudge = "user nudge"\n'
+        '[profiles."mine"]\nextends = "agent-model"\neffort = "low"\n'
     )
     project = tmp_path / "aims.toml"
     project.write_text('[prompts]\nnudge = "project nudge"\n[roles]\nagent = "mine"\n')
@@ -191,6 +193,17 @@ def test_init_writes_a_starter_that_loads(tmp_path: Path) -> None:
     init(path, force=True)
 
 
+def test_the_starter_s_models_load_once_uncommented(tmp_path: Path) -> None:
+    lines = STARTER.splitlines()
+    start = lines.index('# [profiles."my-agent"]')
+    end = lines.index('# judge = "my-monitor"') + 1
+    path = tmp_path / "aims.toml"
+    path.write_text("\n".join(line.removeprefix("# ") for line in lines[start:end]) + "\n")
+    models = load_models(path)
+    assert (models.role("agent").name, models.role("judge").name) == ("my-agent", "my-monitor")
+    assert models.roles.unset() == []
+
+
 def test_init_and_config_commands(
     tmp_path: Path, user_config: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -228,16 +241,16 @@ def test_merged_settings_name_the_source_of_each_value(tmp_path: Path) -> None:
     user = tmp_path / "user"
     user.mkdir()
     (user / "config.toml").write_text(
-        '[profiles."mine"]\nextends = "meta-spark-1.3-contributor"\neffort = "low"\n'
+        PROFILES.read_text() + '[profiles."mine"]\nextends = "agent-model"\neffort = "low"\n'
         '[profiles."mine".limits]\nrpm = 5\n'
-        '[credits]\nMeta = 10\n[scenarios]\npaths = ["lib"]\n[prompts]\nsystem = "hidden"\n'
+        '[credits]\nExample = 10\n[scenarios]\npaths = ["lib"]\n[prompts]\nsystem = "hidden"\n'
         "[images]\nkeep_days = 7\n[audit]\nkeep_days = 365\n"
     )
     project = tmp_path / "aims.toml"
     project.write_text(
         '[profiles."theirs"]\nextends = "mine"\nmax_output_tokens = 99\n'
         '[roles]\nagent = "theirs"\n[monitor]\npreset = "signals"\n'
-        "[credits]\nfireworks = 5\n[estimate]\nconfirm_above_usd = 3\n"
+        "[credits]\nother = 5\n[estimate]\nconfirm_above_usd = 3\n"
         '[scenarios]\npaths = ["more"]\n'
     )
     settings = load(project, {"AIMS_CONFIG_DIR": str(user)})
@@ -254,20 +267,21 @@ def test_merged_settings_name_the_source_of_each_value(tmp_path: Path) -> None:
 
     assert _section(text, "[roles]") == [
         'agent = "theirs"  # this project',
-        'sweep = "meta-wonder-1.0"  # built in',
-        'judge = "meta-wonder-1.0"  # built in',
+        'sweep = "monitor-model"  # this machine',
+        'judge = "monitor-model"  # this machine',
     ]
     theirs = _section(text, "[profiles.theirs]")
     assert theirs[0] == "# extends mine"
-    assert 'model = "muse-spark-1.3-contributor"  # built in' in theirs
+    assert 'model = "agent-model-1"  # this machine' in theirs
+    assert "stream = true  # built in" in theirs
     assert 'effort = "low"  # this machine' in theirs
     assert "max_output_tokens = 99  # this project" in theirs
     assert "rpm = 5  # this machine" in _section(text, "[profiles.theirs.limits]")
-    assert "tpm = 3000000  # built in" in _section(text, "[profiles.theirs.limits]")
+    assert "tpm = 3000000  # this machine" in _section(text, "[profiles.theirs.limits]")
     assert 'preset = "signals"  # this project' in _section(text, "[monitor]")
     assert _section(text, "[credits]") == [
-        "meta = 10.0  # this machine",
-        "fireworks = 5.0  # this project",
+        "example = 10.0  # this machine",
+        "other = 5.0  # this project",
     ]
     assert _section(text, "[estimate]") == ["confirm_above_usd = 3.0  # this project"]
     assert _section(text, "[images]") == ["keep_days = 7.0  # this machine"]

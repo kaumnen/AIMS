@@ -16,8 +16,8 @@ review range marker comes after the records, so each render is a prefix of the n
 open step or a collapse, which keeps provider prompt caches warm across sweeps. Above
 `collapse_tokens`, older steps with no marked record and no denied call collapse to one line
 each, oldest first, until the render is under three quarters of the cap; a collapsed step stays
-collapsed, so the prefix moves in jumps. Tokens are estimated as UTF-8 bytes / 4, which
-underestimates these renders on Wonder's tokenizer by a quarter to a third, so collapse comes
+collapsed, so the prefix moves in jumps. Tokens are estimated as UTF-8 bytes / 4, which can
+underestimate these renders by a quarter to a third on some tokenizers, so collapse may come
 later than the cap suggests.
 """
 

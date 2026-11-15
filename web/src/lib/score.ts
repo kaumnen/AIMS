@@ -27,6 +27,8 @@ export interface Score {
   // The monitor run whose flags it scored; null for the run's own.
   monitor: string | null;
   added: string[];
+  // Why the awareness and answer checks asked for did not run; null when they ran or were off.
+  checksOff: string | null;
   units: UnitRow[];
   plants: PlantRow[];
   answers: Map<string, Answer>;
@@ -45,6 +47,7 @@ export function readScore(events: readonly Event[]): Score {
   const out: Score = {
     monitor: null,
     added: [],
+    checksOff: null,
     units: [],
     plants: [],
     answers: new Map(),
@@ -62,6 +65,8 @@ export function readScore(events: readonly Event[]): Score {
         out.monitor = typeof config["monitor"] === "string" ? config["monitor"] : null;
         const added = (config["added"] ?? null) as Data | null;
         out.added = Array.isArray(added?.["plants"]) ? added["plants"].map(String) : [];
+        const checks = (config["checks"] ?? null) as Data | null;
+        out.checksOff = typeof checks?.["off"] === "string" ? checks["off"] : null;
         break;
       }
       case "plant.triggered":

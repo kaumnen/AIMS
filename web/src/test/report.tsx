@@ -212,7 +212,7 @@ export function fullReport(over: Partial<RunReport> = {}): RunReport {
     ],
     timeline: [
       moment(0, at(0), "run_started", { what: "cache-keys" }),
-      moment(1, at(0, 1), "agent_started", { agent: "agent", what: "accounts/x/models/glimmer" }),
+      moment(1, at(0, 1), "agent_started", { agent: "agent", what: "accounts/x/models/gamma" }),
       moment(5, at(1), "flag", {
         agent: "agent",
         step: 1,
@@ -246,8 +246,8 @@ export function fullReport(over: Partial<RunReport> = {}): RunReport {
       agents: [
         {
           agent: "agent",
-          profile: "glimmer-organism2",
-          model: "accounts/x/models/glimmer",
+          profile: "gamma-tuned",
+          model: "accounts/x/models/gamma",
           steps: 3,
           end: "submitted",
           cost_usd: 0,

@@ -40,7 +40,7 @@ let saves: { layer: string; text: string; ifMatch: string | null; ifNoneMatch: s
 let lookup: (url: URL) => Response | Promise<Response>;
 // the answer to adding a looked-up profile to the project's config
 let added: () => Response;
-// profiles the models list holds after spark and glimmer
+// profiles the models list holds after alpha and gamma
 let more: ProfileInfo[];
 // the profile of each role, null when the role is unset
 let modelRoles: Record<string, string | null>;
@@ -48,9 +48,9 @@ let modelRoles: Record<string, string | null>;
 let prices: (search: string) => ModelPrices;
 
 const profile = (over: Partial<ProfileInfo>): ProfileInfo => ({
-  name: "spark",
+  name: "alpha",
   backend: "responses",
-  model: "spark-1.3",
+  model: "alpha-1.3",
   weights: "closed",
   reasoning: "medium",
   roles: ["agent"],
@@ -96,7 +96,7 @@ const draft = (over: Partial<ProfileDraft> = {}): ProfileDraft => ({
 });
 
 const credit = (over: Partial<ProviderCredit>): ProviderCredit => ({
-  provider: "meta",
+  provider: "acme",
   spent_usd: 0,
   credit_usd: null,
   left_usd: null,
@@ -251,9 +251,9 @@ beforeEach(() => {
   role = "operator";
   checked = null;
   credits = [
-    credit({ provider: "fireworks", spent_usd: 1.5, credit_usd: null }),
-    credit({ provider: "meta", spent_usd: 145, credit_usd: 150, left_usd: 5 }),
-    credit({ provider: "modal", spent_usd: 21, credit_usd: 20, left_usd: -1 }),
+    credit({ provider: "provider-b", spent_usd: 1.5, credit_usd: null }),
+    credit({ provider: "acme", spent_usd: 145, credit_usd: 150, left_usd: 5 }),
+    credit({ provider: "provider-c", spent_usd: 21, credit_usd: 20, left_usd: -1 }),
   ];
   tokens = [
     token({ name: "old", role: "viewer", created: 1_761_800_000, revoked: 1_761_850_000 }),
@@ -278,13 +278,13 @@ beforeEach(() => {
       etag: "p1",
     },
   };
-  texts = { user: "", project: "[credits]\nmeta = 150\n" };
+  texts = { user: "", project: "[credits]\nacme = 150\n" };
   projectExists = true;
   saves = [];
   lookup = () => Response.json(draft());
   added = () => Response.json({ name: "openrouter-gem-9", path: "/work/aims.toml" });
   more = [];
-  modelRoles = { agent: "spark", sweep: "spark", judge: "spark" };
+  modelRoles = { agent: "alpha", sweep: "alpha", judge: "alpha" };
   prices = () => mapSays();
   FakeEventSource.all = [];
   vi.stubGlobal("EventSource", FakeEventSource);
@@ -296,7 +296,7 @@ beforeEach(() => {
       return Response.json({
         profiles: [
           profile({ check: checked }),
-          profile({ name: "glimmer", roles: [], envs: ["MODAL_KEY"], runners: [], price: null }),
+          profile({ name: "gamma", roles: [], envs: ["GAMMA_KEY"], runners: [], price: null }),
           ...more,
         ],
         roles: modelRoles,
@@ -339,7 +339,7 @@ beforeEach(() => {
         error: null,
       });
     if (url.pathname === "/api/config/merged")
-      return Response.json({ text: "meta = 150.0  # this project\n" });
+      return Response.json({ text: "acme = 150.0  # this project\n" });
     if (/^\/api\/config\/(user|project)\/check$/.test(url.pathname)) return checkLayer(request);
     const layer = /^\/api\/config\/(user|project)$/.exec(url.pathname)?.[1] as
       "user" | "project" | undefined;
@@ -404,16 +404,16 @@ function renderAt(path: string) {
 test("a check of a model profile follows its run", async () => {
   renderAt("/settings/models");
   const table = await screen.findByRole("table");
-  const spark = within(table).getByText("spark").closest("tr") as HTMLElement;
-  expect(within(spark).getByText("agent")).toBeTruthy();
-  expect(within(spark).getByText("set on local")).toBeTruthy();
-  expect(within(spark).getByText("never checked")).toBeTruthy();
-  const glimmer = within(table).getByText("glimmer").closest("tr") as HTMLElement;
-  expect(within(glimmer).getByText("no connected runner has them")).toBeTruthy();
+  const alpha = within(table).getByText("alpha").closest("tr") as HTMLElement;
+  expect(within(alpha).getByText("agent")).toBeTruthy();
+  expect(within(alpha).getByText("set on local")).toBeTruthy();
+  expect(within(alpha).getByText("never checked")).toBeTruthy();
+  const gamma = within(table).getByText("gamma").closest("tr") as HTMLElement;
+  expect(within(gamma).getByText("no connected runner has them")).toBeTruthy();
 
-  fireEvent.click(within(spark).getByRole("button", { name: "Check spark" }));
-  expect(await within(spark).findByText("checking")).toBeTruthy();
-  expect(await posts()[0]?.json()).toEqual({ profiles: ["spark"] });
+  fireEvent.click(within(alpha).getByRole("button", { name: "Check alpha" }));
+  expect(await within(alpha).findByText("checking")).toBeTruthy();
+  expect(await posts()[0]?.json()).toEqual({ profiles: ["alpha"] });
   expect(screen.getByRole("button", { name: "Check all" })).toHaveProperty("disabled", true);
 
   act(() => {
@@ -423,9 +423,9 @@ test("a check of a model profile follows its run", async () => {
       run: run(CHECK, { kind: "models.check", status: "completed", state: "done" }),
     });
   });
-  expect(await within(spark).findByText("works with warnings")).toBeTruthy();
-  expect(within(spark).getByText("tools: slow")).toBeTruthy();
-  expect(within(spark).getByRole("link").getAttribute("href")).toBe(`/runs/${CHECK}`);
+  expect(await within(alpha).findByText("works with warnings")).toBeTruthy();
+  expect(within(alpha).getByText("tools: slow")).toBeTruthy();
+  expect(within(alpha).getByRole("link").getAttribute("href")).toBe(`/runs/${CHECK}`);
 });
 
 test("quick clicks start one model check, and one that did not start can be tried again", async () => {
@@ -441,8 +441,8 @@ test("quick clicks start one model check, and one that did not start can be trie
   });
   renderAt("/settings/models");
   const table = await screen.findByRole("table");
-  const spark = within(table).getByText("spark").closest("tr") as HTMLElement;
-  const button = within(spark).getByRole("button", { name: "Check spark" });
+  const alpha = within(table).getByText("alpha").closest("tr") as HTMLElement;
+  const button = within(alpha).getByRole("button", { name: "Check alpha" });
   // both in one tick, before the page shows the first
   const twice = () =>
     act(() => {
@@ -454,7 +454,7 @@ test("quick clicks start one model check, and one that did not start can be trie
   expect(posts()).toHaveLength(1);
   await waitFor(() => expect(button).toHaveProperty("disabled", false));
   twice();
-  expect(await within(spark).findByText("checking")).toBeTruthy();
+  expect(await within(alpha).findByText("checking")).toBeTruthy();
   expect(posts()).toHaveLength(2);
 });
 
@@ -463,7 +463,7 @@ test("the models page names the roles no profile has and how to set them", async
   await screen.findByRole("table");
   expect(screen.queryByText(/Unset roles/)).toBeNull();
   cleanup();
-  modelRoles = { agent: "spark", sweep: null, judge: null };
+  modelRoles = { agent: "alpha", sweep: null, judge: null };
   renderAt("/settings/models");
   const line = (await screen.findByText(/^Unset roles/)) as HTMLElement;
   expect(line.textContent).toBe(
@@ -537,7 +537,7 @@ function keyedProfiles() {
   more = [
     profile({ name: "listed", roles: [], price: null, price_key: "cloud/eu/model-a" }),
     profile({ name: "missed", roles: [], price: null, price_key: "vendor-c/nope" }),
-    profile({ name: "bare", model: "router/muse-glimmer", roles: [], price: null }),
+    profile({ name: "bare", model: "router/gamma", roles: [], price: null }),
   ];
   prices = (search) =>
     mapSays({
@@ -551,7 +551,7 @@ function keyedProfiles() {
           candidates: [priceRow("vendor-c/model-c", { cached_usd: 0.002 })],
         },
       ],
-      found: search === "glimmer" ? [priceRow("fireworks_ai/muse-glimmer-30b")] : [],
+      found: search === "gamma" ? [priceRow("provider/gamma-30b")] : [],
     });
 }
 
@@ -567,9 +567,9 @@ test("the models page shows each price and where it comes from", async () => {
   keyedProfiles();
   renderAt("/settings/models");
   const table = await screen.findByRole("table");
-  const spark = priceCell(table, "spark");
-  expect(spark.getByText("$1.25 in · $0.15 cached · $4.25 out")).toBeTruthy();
-  expect(spark.getByText("own price")).toBeTruthy();
+  const alpha = priceCell(table, "alpha");
+  expect(alpha.getByText("$1.25 in · $0.15 cached · $4.25 out")).toBeTruthy();
+  expect(alpha.getByText("own price")).toBeTruthy();
   const listed = priceCell(table, "listed");
   expect(listed.getByText("Reading the price map")).toBeTruthy();
   expect(await listed.findByText("$2.75 in · $2.75 cached · $11.00 out")).toBeTruthy();
@@ -582,21 +582,21 @@ test("the models page shows each price and where it comes from", async () => {
   const missed = priceCell(table, "missed");
   expect(missed.getByText("LiteLLM lists no key vendor-c/nope")).toBeTruthy();
   expect(missed.getByRole("button", { name: "Find a price key for missed" })).toBeTruthy();
-  const glimmer = priceCell(table, "glimmer");
+  const gamma = priceCell(table, "gamma");
   expect(
-    glimmer.getByText("estimates leave out its calls; caps count only reported costs"),
+    gamma.getByText("estimates leave out its calls; caps count only reported costs"),
   ).toBeTruthy();
-  expect(glimmer.getByRole("button", { name: "Find a price key for glimmer" })).toBeTruthy();
+  expect(gamma.getByRole("button", { name: "Find a price key for gamma" })).toBeTruthy();
   // a narrow screen shows the price and the button under the profile's name
-  const narrow = within(profileRow(table, "glimmer").cells[0] as HTMLElement);
-  expect(narrow.getByRole("button", { name: "Find a price key for glimmer" })).toBeTruthy();
+  const narrow = within(profileRow(table, "gamma").cells[0] as HTMLElement);
+  expect(narrow.getByRole("button", { name: "Find a price key for gamma" })).toBeTruthy();
   expect(priceReads()).toHaveLength(1);
 });
 
 test("a page with no profile that names a key reads no price map", async () => {
   renderAt("/settings/models");
   const table = await screen.findByRole("table");
-  expect(priceCell(table, "glimmer").getByText("none")).toBeTruthy();
+  expect(priceCell(table, "gamma").getByText("none")).toBeTruthy();
   await act(async () => {
     await new Promise((r) => setTimeout(r, 20));
   });
@@ -626,10 +626,10 @@ test("a viewer finds a price key, copies its line and searches the map", async (
   expect(await dialog.findByText("Copied")).toBeTruthy();
 
   const search = dialog.getByRole("textbox", { name: "Search keys" });
-  fireEvent.change(search, { target: { value: " glimmer " } });
+  fireEvent.change(search, { target: { value: " gamma " } });
   fireEvent.click(dialog.getByRole("button", { name: "Search" }));
-  expect(await dialog.findByText("fireworks_ai/muse-glimmer-30b")).toBeTruthy();
-  expect(priceReads().map((u) => u.searchParams.get("search"))).toEqual([null, "glimmer"]);
+  expect(await dialog.findByText("provider/gamma-30b")).toBeTruthy();
+  expect(priceReads().map((u) => u.searchParams.get("search"))).toEqual([null, "gamma"]);
   fireEvent.change(search, { target: { value: "nothing" } });
   fireEvent.click(dialog.getByRole("button", { name: "Search" }));
   expect(await dialog.findByText("No row's key holds nothing.")).toBeTruthy();
@@ -643,9 +643,7 @@ test("a profile with no candidate rows asks for a search, and a missing map says
     priceCell(table, "bare").getByRole("button", { name: "Find a price key for bare" }),
   );
   let dialog = within(await screen.findByRole("dialog"));
-  expect(
-    await dialog.findByText("No row's key ends in muse-glimmer. Search instead."),
-  ).toBeTruthy();
+  expect(await dialog.findByText("No row's key ends in gamma. Search instead.")).toBeTruthy();
   cleanup();
 
   const why = "no copy of the LiteLLM price map is at hand (the map did not answer in 5 s)";
@@ -727,23 +725,23 @@ test("a lookup sends the name and alias it is given and warns of a name in use",
   const { dialog, id } = await openLookup();
   fireEvent.change(id, { target: { value: "~acme/gem-latest" } });
   fireEvent.change(dialog.getByRole("textbox", { name: "Profile name (optional)" }), {
-    target: { value: "spark" },
+    target: { value: "alpha" },
   });
   fireEvent.click(
     dialog.getByRole("checkbox", { name: "Allow an alias that OpenRouter moves to newer models" }),
   );
   fireEvent.click(dialog.getByRole("button", { name: "Look up" }));
-  expect(await dialog.findByText(/^A profile named spark exists already\./)).toBeTruthy();
+  expect(await dialog.findByText(/^A profile named alpha exists already\./)).toBeTruthy();
   expect(Object.fromEntries(lookups()[0]?.searchParams ?? [])).toEqual({
     slug: "~acme/gem-latest",
     source: "openrouter",
-    name: "spark",
+    name: "alpha",
     alias: "true",
   });
   expect(
-    dialog.getByText("aims models add openrouter '~acme/gem-latest' --name spark --alias --write"),
+    dialog.getByText("aims models add openrouter '~acme/gem-latest' --name alpha --alias --write"),
   ).toBeTruthy();
-  expect(dialog.getByLabelText("Profile spark")).toBeTruthy();
+  expect(dialog.getByLabelText("Profile alpha")).toBeTruthy();
   expect(dialog.queryByRole("button", { name: "Copy" })).toBeNull();
   // the server would refuse a name in use
   expect(dialog.getByRole("button", { name: "Add to project config" })).toHaveProperty(
@@ -863,18 +861,18 @@ test("spend shows each provider against its credit and what runs out", async () 
     screen.getByText("$167.50 paid to providers in the runs this control plane holds"),
   ).toBeTruthy();
   const row = (name: string) => within(table).getByText(name).closest("tr") as HTMLElement;
-  expect(within(row("fireworks")).getByText("not set")).toBeTruthy();
-  expect(within(row("fireworks")).queryByRole("meter")).toBeNull();
-  const meta = row("meta");
-  expect(within(meta).getByText("$5.00").className).toContain("text-flag");
-  expect(within(meta).getByRole("meter").getAttribute("aria-valuenow")).toBe("97");
-  expect(within(row("modal")).getByText("over by $1.00")).toBeTruthy();
+  expect(within(row("provider-b")).getByText("not set")).toBeTruthy();
+  expect(within(row("provider-b")).queryByRole("meter")).toBeNull();
+  const first = row("acme");
+  expect(within(first).getByText("$5.00").className).toContain("text-flag");
+  expect(within(first).getByRole("meter").getAttribute("aria-valuenow")).toBe("97");
+  expect(within(row("provider-c")).getByText("over by $1.00")).toBeTruthy();
 });
 
 test("spend is asked again when a run ends", async () => {
   renderAt("/settings/spend");
   await screen.findByRole("table");
-  credits = [credit({ provider: "meta", spent_usd: 146, credit_usd: 150, left_usd: 4 })];
+  credits = [credit({ provider: "acme", spent_usd: 146, credit_usd: 150, left_usd: 4 })];
   act(() => {
     FakeEventSource.all[0]?.open();
     FakeEventSource.all[0]?.send({ kind: "run", run: run("r2", { state: "done" }) });
@@ -1166,9 +1164,9 @@ test("settings open on the project's config, checked by line as you type", async
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
   await screen.findByText("Saved");
   expect(saves).toEqual([
-    { layer: "project", text: "[credits]\nmeta = 151\n", ifMatch: '"p1"', ifNoneMatch: null },
+    { layer: "project", text: "[credits]\nacme = 151\n", ifMatch: '"p1"', ifNoneMatch: null },
   ]);
-  expect(texts.project).toBe("[credits]\nmeta = 151\n");
+  expect(texts.project).toBe("[credits]\nacme = 151\n");
 });
 
 test("a save that does not load says why, and a changed file offers both ways", async () => {
@@ -1180,9 +1178,9 @@ test("a save that does not load says why, and a changed file offers both ways", 
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
   expect(await screen.findByText("Not saved: it does not load.")).toBeTruthy();
   expect(screen.getByText("/work/aims.toml: unknown table(s) nonsense")).toBeTruthy();
-  expect(texts.project).toBe("[credits]\nmeta = 150\n");
+  expect(texts.project).toBe("[credits]\nacme = 150\n");
 
-  retype(view, "[nonsense]", "[credits]\nfireworks = 5");
+  retype(view, "[nonsense]", "[credits]\nprovider-b = 5");
   layers.project.etag = "p9";
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
   const alert = await screen.findByRole("alert");
@@ -1193,7 +1191,7 @@ test("a save that does not load says why, and a changed file offers both ways", 
   fireEvent.click(screen.getByRole("button", { name: "Keep mine, overwrite" }));
   await screen.findByText("Saved");
   expect(saves.at(-1)?.ifMatch).toBe('"p9"');
-  expect(texts.project).toBe("[credits]\nfireworks = 5\nmeta = 150\n");
+  expect(texts.project).toBe("[credits]\nprovider-b = 5\nacme = 150\n");
 });
 
 // The questions the page asks with window.confirm, and the answer it gets.
@@ -1315,7 +1313,7 @@ test("viewers read the files and the settings in use, without checks", async () 
   role = "viewer";
   renderAt("/settings/config?view=merged");
   const merged = await configEditor("The settings in use");
-  expect(merged.state.doc.toString()).toBe("meta = 150.0  # this project\n");
+  expect(merged.state.doc.toString()).toBe("acme = 150.0  # this project\n");
   expect(merged.state.readOnly).toBe(true);
   // read only, CodeMirror drops contenteditable; a tab stop still lets keys scroll it
   expect(merged.contentDOM.getAttribute("contenteditable")).toBe("false");
@@ -1332,13 +1330,13 @@ test("viewers read the files and the settings in use, without checks", async () 
 });
 
 test("a looked-up profile can take the roles it fits", async () => {
-  modelRoles = { agent: "spark", sweep: null, judge: "spark" };
+  modelRoles = { agent: "alpha", sweep: null, judge: "alpha" };
   lookup = () => Response.json(draft({ fits: ["agent"] }));
   const { dialog, id } = await openLookup();
   fireEvent.change(id, { target: { value: "acme/gem-9" } });
   fireEvent.submit(id);
   const agent = await dialog.findByRole("checkbox", { name: /^agent/ });
-  expect(agent.closest("label")?.textContent).toBe("agent runs a scenario's agents · now spark");
+  expect(agent.closest("label")?.textContent).toBe("agent runs a scenario's agents · now alpha");
   const sweep = dialog.getByRole("checkbox", { name: /^sweep/ });
   expect(sweep).toHaveProperty("disabled", true);
   expect(sweep.closest("label")?.textContent).toBe(

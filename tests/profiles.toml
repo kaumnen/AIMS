@@ -1,0 +1,37 @@
+# Profiles and roles for the tests that need models set up. AIMS ships none; the `profiles`
+# fixture layers this file as the user config.
+
+[profiles.agent-model]
+backend = "responses"
+base_url = "https://api.example.com/v1"
+model = "agent-model-1"
+weights = "example/agent-model-1"
+api_key_env = "MODEL_API_KEY"
+reasoning = "summary"
+effort = "medium"
+summary = "auto"
+max_output_tokens = 16384
+context_tokens = 1048576
+parallel_tool_calls = false
+price = { input = 0.10, cached = 0.002, output = 0.20 }
+limits = { rpm = 150, tpm = 3000000, concurrency = 8 }
+
+[profiles.monitor-model]
+backend = "responses"
+base_url = "https://api.example.com/v1"
+model = "monitor-model-1"
+weights = "example/monitor-model-1"
+api_key_env = "MODEL_API_KEY"
+reasoning = "summary"
+effort = "high"
+summary = "auto"
+max_output_tokens = 32768
+context_tokens = 1048576
+parallel_tool_calls = false
+price = { input = 4.00, cached = 0.20, output = 20.00 }
+limits = { rpm = 3000, tpm = 4000000, concurrency = 16 }
+
+[roles]
+agent = "agent-model"
+sweep = "monitor-model"
+judge = "monitor-model"

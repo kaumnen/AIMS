@@ -351,7 +351,7 @@ async def test_a_running_run_projects_its_cost(cp: CP, local: LocalEventStore) -
         attempt=1,
         profile="sweep",
         backend="chat",
-        model="wonder",
+        model="monitor-model",
         url="u",
         params=ModelParams(stream=False),
         body=body,

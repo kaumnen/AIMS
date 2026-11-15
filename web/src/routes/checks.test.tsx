@@ -41,8 +41,8 @@ const line = (profile: string, name: string, verdict: string, detail = "") => ({
 beforeEach(() => {
   check = run(CHECK, { kind: "models.check", status: "running", state: "running" });
   checked = [
-    line("spark", "plain", "ok", "said ok"),
-    line("spark", "tools", "warn", "2 calls in one turn with parallel_tool_calls off"),
+    line("alpha", "plain", "ok", "said ok"),
+    line("alpha", "tools", "warn", "2 calls in one turn with parallel_tool_calls off"),
   ];
   FakeEventSource.all = [];
   vi.stubGlobal("EventSource", FakeEventSource);
@@ -56,7 +56,7 @@ beforeEach(() => {
         run: check,
         started: event(0, "run.started", {
           kind: "models.check",
-          config: { models: { spark: {}, glimmer: {}, ember: {} } },
+          config: { models: { alpha: {}, gamma: {}, ember: {} } },
         }) as RunDetail["started"],
         finished: null,
         verdict: null,
@@ -105,9 +105,9 @@ test("a model check lists each test: checked, running and waiting", async () => 
   expect(await within(checks).findByText("said ok")).toBeTruthy();
   const rows = within(checks).getAllByRole("row").slice(1);
   expect(rows.map((r) => r.textContent)).toEqual([
-    "sparkplainoksaid ok",
+    "alphaplainoksaid ok",
     "toolswarning2 calls in one turn with parallel_tool_calls off",
-    "glimmerrunning",
+    "gammarunning",
     "emberwaiting",
   ]);
   expect(within(checks).getByText("1 of 3 profiles passed, 1 with warnings.")).toBeTruthy();
@@ -116,7 +116,7 @@ test("a model check lists each test: checked, running and waiting", async () => 
 
 test("a failed check shows what it saw and the profiles it never reached", async () => {
   check = { ...check, status: "failed", state: "done" };
-  checked = [...checked, line("glimmer", "plain", "fail", "401 Unauthorized")];
+  checked = [...checked, line("gamma", "plain", "fail", "401 Unauthorized")];
   renderAt(`/runs/${CHECK}`);
   const checks = await screen.findByRole("region", { name: "Checks" });
   expect(await within(checks).findByText("401 Unauthorized")).toBeTruthy();

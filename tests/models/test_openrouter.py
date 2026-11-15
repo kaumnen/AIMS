@@ -415,7 +415,7 @@ def test_the_command_says_why_no_profile_came_out(listed: list[int], project: Pa
         assert (out.exit_code, out.stdout) == (1, ""), out.output
         assert problem in out.stderr
     assert run("openrouter", LATEST["id"], "--alias").exit_code == 0
-    other = run("fireworks", "a/b")
+    other = run("other", "a/b")
     assert other.exit_code == 2
     assert "the only source is openrouter" in other.stderr
     assert len(listed) == 5
@@ -439,11 +439,12 @@ def test_write_adds_the_profile_to_a_new_project_file(listed: list[int], project
     assert load(path).models.get("openrouter-deepseek-v4.1-flash").model == FLASH["id"]
 
 
+@pytest.mark.usefixtures("profiles")
 def test_write_keeps_what_the_file_holds_and_refuses_a_name_in_use(
     listed: list[int], project: Path
 ) -> None:
     path = project / "aims.toml"
-    before = '# mine\n[roles]\njudge = "meta-wonder-1.0"  # kept'
+    before = '# mine\n[roles]\njudge = "monitor-model"  # kept'
     path.write_text(before)
     path.chmod(0o600)
     assert run("openrouter", FLASH["id"], "--write").exit_code == 0
@@ -453,8 +454,8 @@ def test_write_keeps_what_the_file_holds_and_refuses_a_name_in_use(
     again = run("openrouter", FLASH["id"], "--write")
     assert again.exit_code == 1
     assert "a profile named openrouter-deepseek-v4.1-flash exists" in again.stderr
-    builtin = run("openrouter", FLASH["id"], "--write", "--name", "meta-wonder-1.0")
-    assert builtin.exit_code == 1
+    taken = run("openrouter", FLASH["id"], "--write", "--name", "monitor-model")
+    assert taken.exit_code == 1
     assert path.read_text() == text
     second = run("openrouter", HAIKU["id"], "--write", "--name", "small")
     assert second.exit_code == 0, second.output
@@ -500,14 +501,14 @@ def test_a_table_the_layers_do_not_load_with_leaves_the_file_as_it_was(project: 
 
 def test_a_table_is_added_after_a_last_line_with_no_newline(project: Path) -> None:
     path = project / "aims.toml"
-    path.write_bytes(b"[credits]\r\nmeta = 1")
+    path.write_bytes(b"[credits]\r\nexample = 1")
     table = draft(MODELS, FLASH["id"]).toml()
     assert add_table(layers(path), table) == path
-    assert path.read_bytes() == b"[credits]\r\nmeta = 1\n\n" + table.encode()
-    path.write_bytes(b"[credits]\nmeta = 1\n")
+    assert path.read_bytes() == b"[credits]\r\nexample = 1\n\n" + table.encode()
+    path.write_bytes(b"[credits]\nexample = 1\n")
     add_table(layers(path), table.replace("openrouter-", "second-"))
-    assert path.read_bytes().startswith(b"[credits]\nmeta = 1\n\n[profiles.")
-    assert json.dumps(sorted(load(path).credits.items())) == '[["meta", 1.0]]'
+    assert path.read_bytes().startswith(b"[credits]\nexample = 1\n\n[profiles.")
+    assert json.dumps(sorted(load(path).credits.items())) == '[["example", 1.0]]'
 
 
 # Roles

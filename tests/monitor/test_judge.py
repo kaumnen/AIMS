@@ -1513,7 +1513,7 @@ async def test_budget_stop(store: LocalEventStore) -> None:
 
 
 # Input, cached and output tokens of the judge calls of review 01a1c6d7-e8f1, Nov 10 2026. The
-# last one missed the cache and cost $0.24 at Wonder's prices; the old estimate (the last call
+# last one missed the cache and cost $0.24 at the overseer's prices; the old estimate (the last call
 # times 1.25) then left no room and the judge stopped without a verdict.
 E8F1 = [
     (10740, 116, 142), (17238, 10740, 59), (18750, 116, 58), (19347, 18676, 86),
@@ -1523,7 +1523,7 @@ E8F1 = [
     (51721, 49012, 83), (52145, 51700, 106), (52975, 50804, 74), (53554, 52084, 86),
     (54244, 52852, 78), (54722, 53492, 168), (55497, 54132, 322), (57209, 116, 712),
 ]  # fmt: skip
-WONDER = {"input": 4.0, "cached": 0.2, "output": 20.0}
+OVERSEER = {"input": 4.0, "cached": 0.2, "output": 20.0}
 
 
 async def test_a_cache_miss_leaves_room_for_the_verdict(store: LocalEventStore) -> None:
@@ -1543,7 +1543,7 @@ async def test_a_cache_miss_leaves_room_for_the_verdict(store: LocalEventStore) 
         return call("events") | {"usage": usage}
 
     script = Script(*[answer] * 40)
-    p = profile(price=WONDER, max_output_tokens=16384)
+    p = profile(price=OVERSEER, max_output_tokens=16384)
     judge = make_judge(store, run, script, budget=1.0639, p=p, max_tool_calls=40)
     result = await judge.run(flags=[], sweeps=[])
     assert payload_of(result).summary == "forced"
@@ -1578,14 +1578,14 @@ def reads(run: Run, *offsets: int) -> dict[str, Any]:
     return calls(*(call("blob", sha256=sha, offset=o, length=BLOB_MAX) for o in offsets))
 
 
-# Just above the budget at which the judge explores once at Wonder's prices.
+# Just above the budget at which the judge explores once at the overseer's prices.
 EXPLORE = 0.39
 
 
 async def test_parallel_reads_leave_room_for_the_verdict(store: LocalEventStore) -> None:
     run = await make_run(store)
     script = Script(*[uncached(reads(run, 0, 7000, 14000))] * 4)
-    p = profile(price=WONDER, max_output_tokens=16384)
+    p = profile(price=OVERSEER, max_output_tokens=16384)
     judge = make_judge(store, run, script, budget=EXPLORE, p=p)
     result = await judge.run(flags=[], sweeps=[])
     v = payload_of(result)
@@ -1606,7 +1606,7 @@ async def test_a_larger_budget_never_loses_the_verdict(
     store: LocalEventStore, offsets: tuple[int, ...]
 ) -> None:
     run = await make_run(store)
-    p = profile(price=WONDER, max_output_tokens=16384)
+    p = profile(price=OVERSEER, max_output_tokens=16384)
     judged = []
     for cents in range(2, 60):
         budget = cents / 100
@@ -1642,7 +1642,7 @@ async def test_a_refused_forced_answer_gets_its_second_try(store: LocalEventStor
     """Room is kept for every forced try: once a budget explores, a refused first forced answer
     still leaves the second try its room."""
     run = await make_run(store)
-    p = profile(price=WONDER, max_output_tokens=16384)
+    p = profile(price=OVERSEER, max_output_tokens=16384)
     explored: list[bool] = []
     judged: list[bool] = []
     for cents in range(2, 60):
@@ -1668,7 +1668,7 @@ async def test_a_result_left_unread_is_no_evidence(store: LocalEventStore) -> No
     found = {"present": "yes", "importance": 4, "evidence": [opened], "justification": "a hook"}
     final = verdict(categories={"scorer_tampering": found})
     script = Script(*[uncached(explore, final)] * 4)
-    p = profile(price=WONDER, max_output_tokens=16384)
+    p = profile(price=OVERSEER, max_output_tokens=16384)
     judge = make_judge(store, run, script, budget=EXPLORE, p=p)
     v = payload_of(await judge.run(flags=[], sweeps=[]))
     assert tool_outputs(script.requests[-1])[1] == judge_texts.FORCE
@@ -1681,7 +1681,7 @@ async def test_calls_whose_answers_do_not_fit_are_dropped(store: LocalEventStore
     run = await make_run(store)
     explore = calls(*[call("search", text="no such text")] * 300)
     script = Script(*[uncached(explore)] * 4)
-    p = profile(price=WONDER, max_output_tokens=16384)
+    p = profile(price=OVERSEER, max_output_tokens=16384)
     judge = make_judge(store, run, script, budget=EXPLORE, p=p)
     result = await judge.run(flags=[], sweeps=[])
     v = payload_of(result)

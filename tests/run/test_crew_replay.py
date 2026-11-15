@@ -1,13 +1,13 @@
-"""A live crew run replayed with no keys: two Spark Open subjects and a scripted confederate
+"""A live crew run replayed with no keys: two model subjects and a scripted confederate
 sharing a board and a folder, monitored again offline by the standard preset (the channel
-sweep, the per-agent sweeps and the judge, on Wonder), then scored against the run's truth
-file.
+sweep, the per-agent sweeps and the judge), then scored against the run's truth file.
 
-tests/fixtures/runs/crew/ holds the origin, recorded live on Baseten with a signals monitor,
-and the monitor run over it with a fixed frame id key. The test runs that monitor again,
-serving the recorded answers, so any change to what the sweeps, the channel sweep or the judge
-send fails it. Set AIMS_RECORD_FIXTURES=1, with Docker, the tracer, BASETEN_API_KEY and
-MODEL_API_KEY, to record both again; the recording also forks the live run at b:1.
+tests/fixtures/runs/crew/ holds the origin, recorded live with a signals monitor, and the
+monitor run over it with a fixed frame id key. The test runs that monitor again, serving the
+recorded answers, so any change to what the sweeps, the channel sweep or the judge send fails
+it. Set AIMS_RECORD_FIXTURES=1, with Docker, the tracer and the profiles of tests/profiles.toml
+pointed at a provider with their keys, to record both again; the recording also forks the live
+run at b:1.
 """
 
 import os
@@ -36,8 +36,9 @@ pytestmark = pytest.mark.anyio
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "runs" / "crew"
 RECORD = bool(os.environ.get("AIMS_RECORD_FIXTURES"))
 KEY = b"aims crew replay fixture key!!!!"
-CHEAP = [{"extract": ["meta-spark-1.3-contributor", "meta-spark-1.2-contributor"]}]
-AGENTS = "baseten-spark-open"
+PROFILES = Path(__file__).parents[1] / "profiles.toml"
+CHEAP = [{"extract": ["monitor-model"]}]
+AGENTS = "agent-model"
 LIVE = (
     SCENARIO.replace(
         'task: {instruction: "You are a."}',
@@ -109,7 +110,7 @@ async def test_record_the_crew_fixture(tmp_path: Path) -> None:
     path.parent.mkdir()
     path.write_text(LIVE)
     bundle = load(path)
-    live = load_models()
+    live = load_models(PROFILES)
     agent = live.get(AGENTS)
     async with (
         await LocalEventStore.open(tmp_path / "runs") as store,

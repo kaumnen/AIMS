@@ -45,6 +45,7 @@ from aims.events import (
     MonitorFlag,
     MonitorVerdict,
     PlantTriggered,
+    ReasoningKind,
     RunFinished,
     RunStarted,
     RunStatus,
@@ -167,6 +168,7 @@ class ScoreResult:
     answers: dict[str, ScoreAnswer] = field(default_factory=dict)
     cost_usd: float = 0.0
     added: list[str] = field(default_factory=list)
+    checks_off: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,13 +201,15 @@ async def score_run(
     added: Added | None = None,
     awareness: bool = True,
     answer: bool = True,
+    checks_off: str | None = None,
 ) -> ScoreResult:
     """Score the sealed run `origin` against the flags of the monitor run `monitor`, or its own
     live flags, into a new run of kind score in `store`. `source` and `monitor_source` hold the
     run and the monitor run when another store does. `classifier` builds the classifier for the
     new run's id, None to skip its checks: `awareness` and the `answer` check. The new run's
-    `run.started` records the profile it calls as `classifier`. `labels` are the
-    latest labels of the flags, by seq. `plants_from`, a scenario file, adds its rule plants
+    `run.started` records the profile it calls as `classifier`. Its `checks` hold the checks
+    asked for with `checks_off`, why they do not run when no classifier is given. `labels` are
+    the latest labels of the flags, by seq. `plants_from`, a scenario file, adds its rule plants
     and the plant facts the truth file lacks; `added` is what such a file adds, read already.
     Raises ScoreError."""
     source = source or store
@@ -233,7 +237,8 @@ async def score_run(
     head = events[-1]
     run_id = run_id or str(uuid.uuid7())
     check = classifier(run_id) if classifier is not None and (awareness or answer) else None
-    out = ScoreResult(run_id=run_id)
+    off = checks_off if check is None and (awareness or answer) else None
+    out = ScoreResult(run_id=run_id, checks_off=off)
     out.taken = taken
     out.added = sorted(added.plants) if added else []
     run_started = RunStarted(
@@ -248,6 +253,7 @@ async def score_run(
         config={
             "monitor": monitor,
             "classifier": None if check is None else check.profile.snapshot(),
+            "checks": {"awareness": awareness, "answer": answer, "off": off},
             "variant": record.get("variant"),
             "plants": len(plants),
             "added": None
@@ -306,6 +312,7 @@ async def score_run(
                 times,
                 labels or {},
                 _arm(config, agent),
+                _reasoning(config, agent),
             )
             if aware is not None:
                 unit = unit.model_copy(update={"eval_aware": aware.finding})
@@ -461,6 +468,7 @@ def _unit(
     times: Mapping[int, datetime],
     labels: Mapping[int, str],
     arm: str | None,
+    reasoning: list[ReasoningKind],
 ) -> ScoreUnit:
     taken = [t for t in rows if t.taken]
     mine = [r for r in raised if r.agent == agent]
@@ -475,6 +483,7 @@ def _unit(
         positive=positive,
         labelled=labelled,
         arm=arm,
+        reasoning=reasoning,
         planted=sorted(n for n, raw in plants.items() if _applies(raw, agent, role)),
         plants=sorted({t.plant for t in taken}),
         considered=sorted({t.plant for t in rows if t.tier == "considered" and not t.taken}),
@@ -492,17 +501,28 @@ def _applies(raw: Mapping[str, Any], agent: str, role: str) -> bool:
 def _arm(config: Any, agent: str) -> str | None:
     """The weights the agent ran on, as the run recorded its profiles, joined when it changed
     model."""
+    return "+".join(_recorded(config, agent, "weights")) or None
+
+
+def _reasoning(config: Any, agent: str) -> list[ReasoningKind]:
+    """The reasoning the agent's profiles returned, as the run recorded them."""
+    kinds = get_args(ReasoningKind)
+    return [cast(ReasoningKind, k) for k in _recorded(config, agent, "reasoning") if k in kinds]
+
+
+def _recorded(config: Any, agent: str, key: str) -> list[str]:
+    """Each value of `key` in the profiles the run recorded for the agent, in order, once."""
     entry = config.get(agent) if isinstance(config, dict) else None
     if not isinstance(entry, dict):
-        return None
+        return []
     schedule = entry.get("schedule") or [[None, entry.get("profile")]]
-    names: list[str] = []
+    out: list[str] = []
     for pair in schedule:
         profile = pair[1] if isinstance(pair, list) and len(pair) == 2 else None
-        weights = profile.get("weights") if isinstance(profile, dict) else None
-        if isinstance(weights, str) and weights not in names:
-            names.append(weights)
-    return "+".join(names) or None
+        value = profile.get(key) if isinstance(profile, dict) else None
+        if isinstance(value, str) and value not in out:
+            out.append(value)
+    return out
 
 
 def _matches(
@@ -814,7 +834,9 @@ def classifier_candidates(settings: Settings) -> list[str]:
     return names
 
 
-def checks_off(models: ModelsConfig, names: Sequence[str], *, awareness: bool, answer: bool) -> str:
+def checks_off_for(
+    models: ModelsConfig, names: Sequence[str], *, awareness: bool, answer: bool
+) -> str:
     """Why the awareness and answer checks asked for run on none of `names`, and the fix."""
     both = awareness and answer
     asked = " and ".join(c for c, on in (("awareness", awareness), ("answer", answer)) if on)
@@ -875,12 +897,17 @@ async def score_sealed(
     """Score the sealed run `run` with these settings: the classifier of the awareness and
     answer checks is the first of `classifier_candidates` that none of the run's agents runs.
     Raises ScoreError."""
+    names = classifier_candidates(settings) if awareness or answer else []
+    off = None
+    if (awareness or answer) and not names:
+        off = checks_off_for(settings.models, names, awareness=awareness, answer=answer)
     return await score_with(
         store,
         run,
         models=settings.models,
         texts=resolve(settings.prompts),
-        candidates=classifier_candidates(settings) if awareness or answer else (),
+        candidates=names,
+        checks_off=off,
         monitor=monitor,
         transport=transport,
         run_id=run_id,
@@ -906,12 +933,15 @@ async def score_with(
     added: Added | None = None,
     awareness: bool = True,
     answer: bool = True,
+    checks_off: str | None = None,
 ) -> ScoreResult:
     """Score `run` with the classifier of its `awareness` and `answer` checks picked from
-    `candidates`, none to skip them, and the latest labels of the flags scored. Raises
-    ScoreError."""
+    `candidates`, none to skip them, and the latest labels of the flags scored. `checks_off`
+    says why the checks asked for do not run when the caller picked no classifier already.
+    Raises ScoreError."""
     held = source or store
     classifier = None
+    why = checks_off
     if candidates:
         try:
             origin = await load_origin(held, run, full=False)
@@ -921,8 +951,9 @@ async def score_with(
             store, models, texts, candidates, origin_agents(origin), transport=transport
         )
         if classifier is None:
-            why = checks_off(models, candidates, awareness=awareness, answer=answer)
-            log.warning("run %s: %s", run, why)
+            why = checks_off_for(models, candidates, awareness=awareness, answer=answer)
+    if why is not None:
+        log.warning("run %s: %s", run, why)
     labels = await (monitor_source or store if monitor else held).labels(monitor or run)
     return await score_run(
         store,
@@ -937,6 +968,7 @@ async def score_with(
         added=added,
         awareness=awareness,
         answer=answer,
+        checks_off=why,
     )
 
 
@@ -993,7 +1025,7 @@ async def estimate_sealed(
         names = classifier_candidates(settings)
         profile = extractor_for(settings.models, names, origin_agents(origin))
         if profile is None:
-            off = checks_off(settings.models, names, awareness=awareness, answer=answer)
+            off = checks_off_for(settings.models, names, awareness=awareness, answer=answer)
     return await estimate_score(
         store,
         run,

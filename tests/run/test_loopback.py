@@ -553,11 +553,10 @@ async def test_a_runner_forks_a_run_it_does_not_hold(
 async def test_a_live_run_through_the_control_plane(
     cp: CP, backend: DockerBackend, tmp_path: Path
 ) -> None:
-    """The word-count scenario on the default agent profile, started from the API."""
+    """The word-count scenario on the agent role's profile, started from the API."""
     shutil.copytree(WORD_COUNT, cp.project.parent / "scenarios" / "word-count")
     settings = cp.state.config.settings()
-    agent = "meta-spark-1.3-contributor"
-    settings.models.get(agent)
+    agent = settings.models.role("agent").name
     async with running_node(cp, backend, tmp_path / "node", None):
         body = {
             "scenario": {"source": "project", "name": "word-count"},

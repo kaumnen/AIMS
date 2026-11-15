@@ -21,6 +21,7 @@ from aims.monitor.setup import ResolvedMonitor, resolve_config, resolve_monitor
 from aims.monitor.signals import signal_versions
 from aims.monitor.signals.base import SignalError
 from aims.prompts import Prompts
+from aims.run import selftest
 from aims.run.fork import CutAt, Origin, fork_of, fork_profiles, fork_schedules, planner
 from aims.run.runner import Bench, Fork, Options, RunError, Runner, Texts, agent_profile
 from aims.run.runner import resolve_texts as texts_of
@@ -235,24 +236,22 @@ def scenario_jobs(
 
 def selftest_job(
     bundle: Bundle,
-    models: ModelsConfig,
     prompts: Prompts,
     *,
     folder: str,
-    profile: str | None = None,
     config_files: dict[str, str | None] | None = None,
 ) -> Job:
     """The job that runs the self-test of the scenario in `bundle`, whose folder's tar has the
-    sha256 `folder`: every agent scripted, so no model is called. Raises ProfileError,
-    TextError or UnknownTool."""
+    sha256 `folder`: every agent scripted on the SCRIPTED profile, so no model is called.
+    Raises TextError or UnknownTool."""
     agents = bundle.scenario.agents
     return Job(
         kind="selftest",
         run_id=str(uuid.uuid7()),
         scenario=bundle.snapshot(),
-        profiles={a.id: agent_profile(models, a, profile) for a in agents},
+        profiles=selftest.profiles(bundle),
         texts={a.id: texts_of(prompts, a, bundle.scenario).snapshot() for a in agents},
-        options=JobOptions(profile=profile),
+        options=JobOptions(),
         config_files=dict(config_files or {}),
         folder=folder,
     )

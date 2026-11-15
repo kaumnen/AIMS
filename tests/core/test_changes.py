@@ -56,7 +56,7 @@ def tree(tmp_path: Path) -> Path:
         (["web/openapi.json"], WEB | PYTHON),
         (["web/src/lib/budget-numbers.json"], WEB | PYTHON),
         (["src/aims/models/client.py", "src/aims/cli.py"], PYTHON),
-        (["src/aims/models/builtins.toml"], PYTHON),
+        (["src/aims/models/defaults.toml"], PYTHON),
         (["src/aims/server/app.py"], PYTHON | {"bench"}),
         (["src/aims/sandbox/assets/tracer/Dockerfile"], SANDBOX),
         (["src/aims/node/runner.py"], SANDBOX),

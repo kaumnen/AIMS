@@ -39,7 +39,7 @@ const detail = {
   agents: [
     {
       id: "agent",
-      profile: "spark",
+      profile: "alpha",
       tools: ["bash", "submit"],
       budget: { steps: 80 },
       role: "subject",

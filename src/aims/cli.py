@@ -717,6 +717,7 @@ def scenario_check(
     path: Annotated[Path, typer.Argument(help=SCENARIO_HELP, callback=_scenario)],
     config: ConfigOption = None,
     profile: Annotated[str | None, typer.Option(help="Profile for every agent.")] = None,
+    monitor: MonitorPresetOption = None,
     runs_dir: Annotated[
         Path, typer.Option(file_okay=False, help="Directory of past runs the cost estimate reads.")
     ] = Path("runs"),
@@ -739,23 +740,29 @@ def scenario_check(
     """Validate a scenario file, the profiles and tools it names, and its monitor: the
     rules, the signal options and the monitor's models. Then estimate what a run costs.
 
+    A role the config leaves unset is a note, not an error: the scenario is fine and the
+    note names the fix. The estimate then waits for it.
+
     A scenario with a `selftest` or an impossible plant then gets its self-test: its
     reference script must exit 0 and trigger no plant, its exploit script must take each
     plant it claims, and an impossible plant's verifier must fail its reference and an
-    untouched workdir. Each is a run of scripted agents, checked as `aims check` checks a run."""
+    untouched workdir. Each is a run of scripted agents, checked as `aims check` checks a run.
+    The agents follow scripts, so it needs no model."""
     from aims.run.runner import check
     from aims.scenario import ScenarioError, load
 
+    _preset(monitor)
     if selftest_runs is not None and not selftest:
         raise typer.BadParameter("needs the self-test", param_hint="--selftest-runs")
     settings = _settings(config)
+    notes: list[str] = []
     try:
         bundle = load(path)
-        problems = check(bundle, settings.models, profile, settings.prompts)
+        problems = check(bundle, settings.models, profile, settings.prompts, unset=notes)
     except ScenarioError as e:
         problems = str(e).splitlines()
     else:
-        problems += _monitor_problems(settings, bundle, profile)
+        problems += _monitor_problems(settings, bundle, profile, monitor, notes)
         if bundle.scenario.plants:
             from aims.run import truth
 
@@ -768,21 +775,26 @@ def scenario_check(
                     problems += list(plant.lint())
     for problem in problems:
         _echo(f"error: {problem}", err=True)
+    for note in notes:
+        _echo(f"note: {note}", err=True)
     if problems:
         raise typer.Exit(EXIT_FAILED)
     s = bundle.scenario
     agents = ", ".join(a.id for a in s.agents)
     _echo(f"ok: {s.name}, agents {agents}, digest {bundle.digest[:16]}")
-    _echo_estimate(settings, [bundle], runs_dir, profile=profile)
+    if notes:
+        _echo("note: no cost estimate until those roles are set", err=True)
+    else:
+        _echo_estimate(settings, [bundle], runs_dir, profile=profile, preset=monitor)
     from aims.run import selftest as st
 
     if selftest and st.wanted(s):
-        code = _selftest(settings, bundle, profile, selftest_runs)
+        code = _selftest(settings, bundle, selftest_runs)
         if code:
             raise typer.Exit(code)
 
 
-def _selftest(settings: Any, bundle: Any, profile: str | None, keep: Path | None) -> int:
+def _selftest(settings: Any, bundle: Any, keep: Path | None) -> int:
     """Run the self-test of `bundle` and print each run's verdict."""
     import asyncio
     import shutil
@@ -824,7 +836,7 @@ def _selftest(settings: Any, bundle: Any, profile: str | None, keep: Path | None
                 prompts=settings.prompts,
                 config_files=settings.layers.digests(),
             )
-            return await st.run(bench, bundle, plan, profile=profile, on_outcome=show)
+            return await st.run(bench, bundle, plan, on_outcome=show)
 
     root = keep or Path(tempfile.mkdtemp(prefix="aims-selftest-"))
     found = asyncio.run(main(root))
@@ -891,10 +903,15 @@ def _echo_estimate(
         _echo(line)
 
 
-def _monitor_problems(settings: Any, bundle: Any, profile: str | None) -> list[str]:
-    """What stops the scenario's monitor: bad rules or signal options, and monitor models that
-    do not resolve or watch an agent's own model."""
-    from aims.models import ProfileError
+def _monitor_problems(
+    settings: Any, bundle: Any, profile: str | None, preset: Any, notes: list[str]
+) -> list[str]:
+    """What stops the scenario's monitor under `preset`: bad rules or signal options, and
+    monitor models that do not resolve or watch an agent's own model. A role it needs that is
+    unset goes to `notes`; a profile its config names must still exist."""
+    import contextlib
+
+    from aims.models import ProfileError, UnsetRole
     from aims.monitor.config import MonitorConfigError
     from aims.monitor.setup import resolve_config
     from aims.monitor.signals.engine import check_signals
@@ -904,18 +921,36 @@ def _monitor_problems(settings: Any, bundle: Any, profile: str | None) -> list[s
 
     scenario = bundle.scenario
     try:
-        config = resolve_config(settings.monitor, scenario)
+        config = resolve_config(settings.monitor, scenario, preset)
     except MonitorConfigError as e:
         return [f"monitor: {e}"]
     problems = [f"monitor: {p}" for p in check_signals(config, scenario)]
     if problems:
         return problems
+    agents = []
+    for a in scenario.agents:
+        # the agent's own check reports a profile that does not resolve
+        with contextlib.suppress(ProfileError):
+            agents.append(agent_profile(settings.models, a, profile))
     try:
-        agents = [agent_profile(settings.models, a, profile) for a in scenario.agents]
-    except ProfileError:
-        return problems  # the agent's own check reports it
-    try:
-        monitor_for(settings.models, settings.prompts, scenario, agents, layers=settings.monitor)
+        monitor_for(
+            settings.models,
+            settings.prompts,
+            scenario,
+            agents,
+            layers=settings.monitor,
+            preset=preset,
+        )
+    except UnsetRole as e:
+        notes.append(f"monitor: {e}")
+        if config.models_on:
+            named = [s.profile for s in config.sweeps] + [config.review.profile]
+            named += [c.profile for c in (config.channels, config.judge) if c is not None]
+            for name in dict.fromkeys(n for n in named if n):
+                try:
+                    settings.models.get(name)
+                except ProfileError as missing:
+                    problems.append(f"monitor: {missing}")
     except (MonitorConfigError, ProfileError, TextError) as e:
         problems.append(f"monitor: {e}")
     return problems
@@ -1571,7 +1606,9 @@ async def _run(**o: Any) -> int:
                 if link is not None:
                     link.ship(score_id)
                 try:
-                    await score_sealed(store, settings, run_id, run_id=score_id)
+                    scored = await score_sealed(store, settings, run_id, run_id=score_id)
+                    if scored.checks_off is not None:
+                        err.print(f"[yellow]score of run {run_id}:[/]", shown(scored.checks_off))
                 except ScoreError as e:
                     err.print(f"[yellow]run {run_id} was not scored:[/]", shown(e))
                 except Exception as e:
@@ -3383,6 +3420,7 @@ def score_cmd(
             "added": result.added,
             "answers": {a: x.model_dump(mode="json") for a, x in result.answers.items()},
             "plants": [t.model_dump(mode="json") for t in result.triggered],
+            "checks_off": result.checks_off,
             "estimate": None if cost is None else cost.model_dump(mode="json"),
         }
         typer.echo(json_text(out))

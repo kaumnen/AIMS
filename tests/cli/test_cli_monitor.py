@@ -325,6 +325,7 @@ def test_a_ctrl_c_during_the_push_of_aims_monitor_ends_the_push_once(
     assert result.stdout.split()[1:3] == [origin, "completed"]
 
 
+@pytest.mark.usefixtures("profiles")
 def test_aims_monitor_refuses_what_it_cannot_run(
     runs: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -347,7 +348,7 @@ def test_aims_monitor_signals_only_refuses_the_model_options(runs: tuple[Path, s
     root, origin = runs
     before = sorted(root.rglob("*"))
     base = ["monitor", origin, "--runs-dir", str(root), "--no-server", "--signals-only"]
-    for extra in (["--profile", "meta-spark-1.3"], ["--budget-usd", "0.5"]):
+    for extra in (["--profile", "agent-model"], ["--budget-usd", "0.5"]):
         result = invoke(*base, *extra)
         assert result.exit_code == 2, result.output
         assert extra[0] in result.output
@@ -356,6 +357,7 @@ def test_aims_monitor_signals_only_refuses_the_model_options(runs: tuple[Path, s
     assert invoke(*base, "--json").exit_code == 0
 
 
+@pytest.mark.usefixtures("profiles")
 def test_aims_monitor_prints_its_estimate_and_refuses_above_the_limit_unless_yes(
     runs: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -720,6 +722,28 @@ def test_a_score_run_that_never_began_is_not_left_shipping(
     assert unshipped == ([] if began else shipped)
 
 
+def test_aims_run_says_when_its_score_ran_without_the_checks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from aims.run.scoring import ScoreResult
+
+    async def run(self: Runner) -> Result:
+        return await sealed(self)
+
+    async def score(store: Any, settings: Any, run: str, *, run_id: str) -> ScoreResult:
+        return ScoreResult(run_id=run_id, checks_off="No model fits the awareness check.")
+
+    with monkeypatch.context() as m:
+        m.setattr("aims.cli._link", lambda *args: ("http://cp.invalid", "token"))
+        m.setattr("aims.node.link.Link", QuietLink)
+        m.setattr(DockerBackend, "open", backend)
+        m.setattr(Runner, "run", run)
+        m.setattr("aims.run.scoring.score_sealed", score)
+        result = invoke(*run_args(tmp_path), "--yes")
+    assert result.exit_code == 0, result.output
+    assert ": No model fits the awareness check." in " ".join(result.output.split())
+
+
 @pytest.mark.parametrize(
     ("step", "stopped"), [("lines", True), ("drain", True), ("store", True), ("store", False)]
 )
@@ -886,6 +910,7 @@ def test_prompts_show_lists_the_monitor_texts() -> None:
     assert "\nscorer_tampering = " in text
 
 
+@pytest.mark.usefixtures("profiles")
 def test_scenario_check_reports_bad_monitor_rules(tmp_path: Path) -> None:
     good = tmp_path / "good.yaml"
     good.write_text(SCENARIO + "monitor: {preset: signals}\n")
@@ -902,7 +927,7 @@ def test_scenario_check_reports_bad_monitor_rules(tmp_path: Path) -> None:
     assert "monitor: " in result.stderr
     assert "no.such.event" in result.stderr
     same = tmp_path / "same.yaml"
-    same.write_text(SCENARIO.replace("  - id: a", "  - id: a\n    profile: meta-wonder-1.0"))
+    same.write_text(SCENARIO.replace("  - id: a", "  - id: a\n    profile: monitor-model"))
     result = invoke("scenario", "check", str(same))
     assert result.exit_code == 1
     assert "allow_same_model" in result.stderr

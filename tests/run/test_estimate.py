@@ -75,7 +75,7 @@ from aims.wire import MonitorMode
 CONFIG = """\
 [profiles.agent]
 backend = "chat"
-base_url = "https://api.meta.ai/v1"
+base_url = "https://api.example.com/v1"
 model = "agent-model"
 weights = "agent-weights"
 reasoning = "full"
@@ -95,16 +95,16 @@ model = "free-model"
 weights = "free-weights"
 price = { input = 0.0, cached = 0.0, output = 0.0 }
 
-[profiles.glimmer]
+[profiles.served]
 backend = "chat"
-base_url = "https://someone--glimmer.modal.run/v1"
-model = "glimmer-model"
-weights = "glimmer-weights"
+base_url = "https://someone--served.host.run/v1"
+model = "served-model"
+weights = "served-weights"
 reasoning = "full"
 
 [profiles.watcher]
 backend = "chat"
-base_url = "https://api.fireworks.ai/inference/v1"
+base_url = "https://api.another.ai/inference/v1"
 model = "watch-model"
 weights = "watch-weights"
 reasoning = "full"
@@ -117,7 +117,7 @@ sweep = "watcher"
 judge = "watcher"
 
 [credits]
-meta = 100
+example = 100
 """
 
 SCENARIO = """\
@@ -282,11 +282,11 @@ async def one(settings: Settings, found: History, bundle: Bundle, **kw: Any) -> 
 def test_credits_and_the_confirm_threshold_come_from_the_config_layers(
     tmp_path: Path, user_config: Path
 ) -> None:
-    (user_config / "config.toml").write_text("[credits]\nmeta = 150\nFireworks = 100\n")
+    (user_config / "config.toml").write_text("[credits]\nexample = 150\nAnother = 100\n")
     project = tmp_path / "aims.toml"
-    project.write_text("[credits]\nmeta = 120\n[estimate]\nconfirm_above_usd = 3\n")
+    project.write_text("[credits]\nexample = 120\n[estimate]\nconfirm_above_usd = 3\n")
     settings = load(project)
-    assert settings.credits == {"meta": 120.0, "fireworks": 100.0}
+    assert settings.credits == {"example": 120.0, "another": 100.0}
     assert settings.confirm_above_usd == 3.0
     assert load(None).confirm_above_usd == 20.0
     for bad in ("[credits]\nmeta = -1\n", '[credits]\nmeta = "x"\n', "[estimate]\nother = 1\n"):
@@ -502,7 +502,7 @@ async def test_a_monitor_whose_model_runs_with_and_without_an_effort_is_matched(
     plain = """
 [profiles.plain]
 backend = "chat"
-base_url = "https://api.fireworks.ai/inference/v1"
+base_url = "https://api.another.ai/inference/v1"
 model = "watch-model"
 weights = "watch-weights"
 reasoning = "full"
@@ -526,8 +526,8 @@ price = { input = 2.0, cached = 0.2, output = 4.0 }
 @pytest.mark.anyio
 async def test_a_profile_without_a_price_is_named_and_not_counted(tmp_path: Path) -> None:
     settings, path = write(tmp_path)
-    e = await one(settings, History(), load_scenario(path), profile="glimmer")
-    assert e.unpriced == ["glimmer"]
+    e = await one(settings, History(), load_scenario(path), profile="served")
+    assert e.unpriced == ["served"]
     assert not e.parts[0].agents.priced
     assert "Agents: no list price, so not counted." in e.lines
     assert not e.confirm
@@ -588,7 +588,7 @@ async def test_agents_on_one_model_with_and_without_an_effort_are_estimated_and_
     plain = """
 [profiles.plain]
 backend = "chat"
-base_url = "https://api.meta.ai/v1"
+base_url = "https://api.example.com/v1"
 model = "agent-model"
 weights = "agent-weights"
 reasoning = "full"
@@ -732,7 +732,7 @@ async def test_forks_unsealed_and_failed_runs_are_left_out_but_their_spend_count
     await record(store, settings, bundle, 1.0, status="cancelled")
     found = await history(store)
     assert found.runs == []
-    assert found.spend == {"meta": pytest.approx(3.0)}
+    assert found.spend == {"example": pytest.approx(3.0)}
 
 
 @pytest.mark.anyio
@@ -750,7 +750,7 @@ async def test_a_run_an_operator_killed_is_left_out_and_one_its_monitor_killed_c
     held = await record(store, settings, bundle, 1.0, status="killed", operator=paused)
     found = await history(store)
     assert sorted(r.run_id for r in found.runs) == sorted([gate, held])
-    assert found.spend == {"meta": pytest.approx(4.0)}
+    assert found.spend == {"example": pytest.approx(4.0)}
 
 
 @pytest.mark.anyio
@@ -1033,7 +1033,7 @@ async def test_a_review_is_priced_per_step_from_past_reviews_of_the_same_monitor
     assert free.lines == [
         "Review: signals monitor, signals only; no layer calls a model, so it costs nothing."
     ]
-    unpriced = watcher(settings, bundle, preset="standard", profile="glimmer")
+    unpriced = watcher(settings, bundle, preset="standard", profile="served")
     e = await estimate_review(store, origin, unpriced, "full", samples=100)
     assert (e.priced, e.confirm, e.total.ceiling_usd) == (False, False, None)
     with pytest.raises(KeyError):
@@ -1112,15 +1112,15 @@ async def test_spend_is_counted_per_provider_against_the_credits(
     await record(store, settings, bundle, 1.5, monitor_cost=0.25)
     await record(store, settings, bundle, 2.5, monitor_cost=0.25)
     found = await history(store)
-    assert found.spend == {"meta": pytest.approx(4.0), "fireworks": pytest.approx(0.5)}
+    assert found.spend == {"example": pytest.approx(4.0), "another": pytest.approx(0.5)}
     credits = spend(found, settings.credits)
     assert [(c.provider, c.left_usd) for c in credits] == [
-        ("fireworks", None),
-        ("meta", pytest.approx(96.0)),
+        ("another", None),
+        ("example", pytest.approx(96.0)),
     ]
     assert spend_lines(credits) == [
-        "Fireworks: $0.50 spent.",
-        "Meta: $4.00 of $100.00 spent, $96.00 left.",
+        "Another: $0.50 spent.",
+        "Example: $4.00 of $100.00 spent, $96.00 left.",
     ]
     assert spend_lines([]) == ["No model calls on record."]
 
@@ -1134,12 +1134,12 @@ async def test_the_estimate_shows_the_credit_left_after_typical_and_high(
     for cost in (0.5, 0.5):
         await record(store, settings, bundle, cost)
     e = await one(settings, await history(store), bundle, samples=2)
-    meta = next(c for c in e.credits if c.provider == "meta")
-    assert meta.spent_usd == pytest.approx(1.0)
-    assert meta.left_after_typical_usd == pytest.approx(100 - 1.0 - 2 * 0.5)
-    assert meta.left_after_high_usd == pytest.approx(100 - 1.0 - 2 * 1.0)
+    example = next(c for c in e.credits if c.provider == "example")
+    assert example.spent_usd == pytest.approx(1.0)
+    assert example.left_after_typical_usd == pytest.approx(100 - 1.0 - 2 * 0.5)
+    assert example.left_after_high_usd == pytest.approx(100 - 1.0 - 2 * 1.0)
     assert (
-        "Meta: $1.00 of $100.00 spent, $98.00 left after the typical cost, $97.00 after the"
+        "Example: $1.00 of $100.00 spent, $98.00 left after the typical cost, $97.00 after the"
         " high one." in e.lines
     )
     assert (
@@ -1149,12 +1149,12 @@ async def test_the_estimate_shows_the_credit_left_after_typical_and_high(
 
 
 def test_providers_are_named_by_their_domain() -> None:
-    assert provider("https://api.meta.ai/v1") == "meta"
-    assert provider("https://api.fireworks.ai/inference/v1") == "fireworks"
-    assert provider("https://inference.baseten.co/v1") == "baseten"
-    assert provider("https://someone--glimmer.modal.run/v1") == "modal"
+    assert provider("https://api.example.com/v1") == "example"
+    assert provider("https://api.other.ai/inference/v1") == "other"
+    assert provider("https://inference.third.co/v1") == "third"
+    assert provider("https://someone--model.host.run/v1") == "host"
     assert provider("http://127.0.0.1:8000/v1") == "127.0.0.1"
-    assert provider(None, "modal-glimmer") == "modal"
+    assert provider(None, "local-model") == "local"
 
 
 # The guard
@@ -1233,7 +1233,7 @@ def test_aims_estimate_and_spend_print_the_same_figures(tmp_path: Path) -> None:
     )
     assert both.exit_code == 2
     spent = runner.invoke(app, ["spend", *config])
-    assert spent.stdout.splitlines() == ["Meta: $0.30 of $100.00 spent, $99.70 left."]
+    assert spent.stdout.splitlines() == ["Example: $0.30 of $100.00 spent, $99.70 left."]
     check = runner.invoke(app, ["scenario", "check", str(path), *config])
     assert check.exit_code == 0, check.output
     assert "Cost estimate for s, one run, at list prices." in check.stdout
@@ -1256,6 +1256,7 @@ async def cp(tmp_path: Path) -> AsyncIterator[CP]:
 
 
 @pytest.mark.anyio
+@pytest.mark.usefixtures("profiles")
 async def test_the_api_estimates_a_scenario_and_shows_spend(cp: CP) -> None:
     settings = cp.state.config.settings()
     bundle = load_scenario(cp.project.parent / "scenarios" / "control" / "scenario.yaml")
@@ -1344,7 +1345,7 @@ async def test_the_live_view_shows_what_the_run_is_on_track_for(store: LocalEven
             ),
             "a",
         ),
-        Draft(_request("w1", "w", "w", "https://api.meta.ai/v1", "sweep", body), "a"),
+        Draft(_request("w1", "w", "w", "https://api.example.com/v1", "sweep", body), "a"),
         Draft(_response("w1", ModelUsage(), 0.1), "a"),
     ]
     drafts += [

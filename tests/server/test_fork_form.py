@@ -180,6 +180,7 @@ async def test_runs_and_forks_take_an_oversight_over_the_scenarios(
     assert oversight == {run: "human", fork: "autonomous", plain: None}
 
 
+@pytest.mark.usefixtures("profiles")
 async def test_runs_and_forks_take_a_budget_over_the_scenarios(
     cp: CP, local: LocalEventStore
 ) -> None:
@@ -248,6 +249,7 @@ async def test_runs_and_forks_take_a_budget_over_the_scenarios(
     )
 
 
+@pytest.mark.usefixtures("profiles")
 async def test_runs_and_forks_are_watched_by_the_monitor_their_estimate_prices(
     cp: CP, local: LocalEventStore
 ) -> None:
@@ -313,6 +315,7 @@ agents:
 """
 
 
+@pytest.mark.usefixtures("profiles")
 async def test_a_fork_is_watched_over_the_full_scenario_its_estimate_prices(
     cp: CP, local: LocalEventStore
 ) -> None:
@@ -428,6 +431,7 @@ def test_aims_run_prices_a_replay_as_a_fork_and_checks_the_oversight(tmp_path: P
     assert "use observe, autonomous, human" in " ".join(result.output.split())
 
 
+@pytest.mark.usefixtures("profiles")
 def test_aims_run_and_estimate_take_a_budget_and_say_it(tmp_path: Path) -> None:
     config = tmp_path / "aims.toml"
     config.write_text(CONFIG + "[estimate]\nconfirm_above_usd = 1\n")
@@ -457,6 +461,7 @@ def test_aims_run_and_estimate_take_a_budget_and_say_it(tmp_path: Path) -> None:
     assert (caps["steps"], caps["cost_usd"]) == (100, None)
 
 
+@pytest.mark.usefixtures("profiles")
 def test_aims_run_is_watched_by_the_monitor_its_estimate_prices(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -585,6 +590,7 @@ async def test_a_forks_monitor_is_resolved_with_the_profiles_its_agents_run(
     assert names("a:0", profile="other") == ["other"]
 
 
+@pytest.mark.usefixtures("profiles")
 def test_aims_run_watches_a_cut_fork_with_the_monitor_its_estimate_prices(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -627,6 +633,7 @@ def test_aims_run_watches_a_cut_fork_with_the_monitor_its_estimate_prices(
     assert {a: p.name for a, p in runner.given_profiles.items()} == {"a": "new", "b": "new"}
 
 
+@pytest.mark.usefixtures("profiles")
 async def test_the_control_plane_queues_a_cut_fork_with_the_monitor_its_estimate_prices(
     cp: CP, local: LocalEventStore
 ) -> None:

@@ -15,7 +15,7 @@ let agents: ScenarioDetail["agents"];
 const agent = (id: string, prompts: Record<string, unknown>): ScenarioDetail["agents"][number] =>
   ({
     id,
-    profile: "spark",
+    profile: "alpha",
     tools: ["bash", "submit"],
     budget: {},
     role: "subject",
