@@ -10,9 +10,9 @@
 
 ## Profiles
 
-A model profile says how to reach one model. The roles `agent`, `sweep` and `judge` each name a profile. A scenario can name another profile for one of its agents.
+AIMS ships no models. A model profile says how to reach one model. The roles `agent`, `sweep` and `judge` each name a profile. `agent` runs the agents. `sweep` and `judge` run the monitor's model layers. A scenario can name another profile for one of its agents.
 
-A config file adds a profile and sets the roles:
+A config file adds the profiles and sets the roles:
 
 ```toml
 # aims.toml
@@ -25,10 +25,20 @@ api_key_env = "MY_API_KEY"
 reasoning = "none"
 price = { input = 1.00, cached = 0.10, output = 4.00 }
 
+[profiles.my-monitor]
+extends = "my-agent"
+model = "vendor/monitor-model"
+weights = "vendor/monitor-model"
+
 [roles]
 agent = "my-agent"
+sweep = "my-monitor"
+judge = "my-monitor"
 ```
 
+- A role may be unset. A run that needs it stops before any container starts and names the fix: set the role, give the agents a profile with `--profile`, or run the monitor with `--monitor signals`.
+- `aims scenario check` passes with unset roles. It prints a note for each one and skips the estimate.
+- The sweep and judge models need structured output. The monitor refuses to watch an agent on its own weights.
 - `extends = "<profile>"` starts a profile from another one.
 - A table with the name of a profile from a lower config layer merges into it key by key.
 - Keys come from the environment only. A profile names the variable, never the key.
@@ -120,7 +130,7 @@ What a run does with it:
 
 ## OpenRouter
 
-AIMS ships no profile for OpenRouter. One command makes a profile for any model there:
+One command makes a profile for any model on OpenRouter:
 
 ```sh
 aims models add openrouter author/model-name
@@ -149,18 +159,22 @@ price = {input = 1.23, cached = 0.123, output = 4.56}
 | Option | Effect |
 | --- | --- |
 | `--write` | Adds the profile to the project's `aims.toml`. Makes the file when there is none. Refuses a name that is taken. |
+| `--role <role>` | Also gives the profile a role under `[roles]`: `agent`, `sweep` or `judge`. Repeat it for more. Needs `--write`. Refuses a role the model does not fit, as OpenRouter lists it: the agent role needs tool calls, the sweep and judge roles structured output. Says which profile had the role before. |
 | `--name <name>` | The profile's name instead of `openrouter-<model>` |
 | `--alias` | Takes an alias such as `~author/model-latest` |
+| `--config <path>` | An `aims.toml` to use instead of the project's |
 
 Then set the key, test the profile and run with it:
 
 ```sh
 export OPENROUTER_API_KEY=<your key>
 aims models check openrouter-model-name
-aims run cache-keys --profile openrouter-model-name
+aims run cache-keys --profile openrouter-model-name --monitor signals
 ```
 
-In the app, **Settings** > **Models** > **Add from OpenRouter** does the same lookup for operators. **Add to project config** saves the profile as `--write` does.
+`--monitor signals` needs no monitor model. Give a second model the sweep and judge roles for the `standard` monitor.
+
+In the app, **Settings** > **Models** > **Add from OpenRouter** does the same lookup for operators. **Add to project config** saves the profile as `--write` does, with the roles picked in the dialog.
 
 What the profile sets:
 

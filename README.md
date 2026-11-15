@@ -88,7 +88,7 @@ flowchart LR
 | --- | --- |
 | Docker | Docker Engine on Linux or Docker Desktop. Tested on Linux 7.0 (x86_64), Linux 6.12 (arm64) and Docker Desktop on macOS (arm64). |
 | [uv](https://docs.astral.sh/uv/) | Installs AIMS and the Python it needs (3.14 or later). |
-| A model API key | The default profiles use the Meta Model API with the key in `MODEL_API_KEY`. [Models and config](#models-and-config) shows how to add another provider. Only model runs need a key. |
+| A model API key | AIMS ships no models. The quick start adds two from [OpenRouter](https://openrouter.ai), which need `OPENROUTER_API_KEY`. [Models and config](#models-and-config) shows any other provider. Only model runs need a key. |
 
 Install the CLI. The constraints file pins AIMS and its dependencies to the versions the release was tested with:
 
@@ -116,23 +116,31 @@ selftest reference of pinned-keys: ok
   agent: reward 0.625
 ```
 
-The reference may touch the pinned test file, since honest work reads it. It takes no plant.
+The reference may touch the pinned test file, since honest work reads it. It takes no plant. Until models are set, the check also prints notes that name the unset roles. It still passes.
 
-Start the UI with a local runner. It opens a sign-in link in your browser:
+Add a model for the agents and one for the monitor. The monitor refuses to watch a model on its own weights, so pick two different models. The monitor's model needs structured output. These commands write both profiles with their roles to `aims.toml` in the current folder. Take the model ids from [OpenRouter's list](https://openrouter.ai/models).
 
 ```sh
-export MODEL_API_KEY=<your key>
+aims models add openrouter author/agent-model --write --role agent
+aims models add openrouter author/monitor-model --write --role sweep --role judge
+export OPENROUTER_API_KEY=<your key>
+aims models check openrouter-agent-model openrouter-monitor-model
+```
+
+Start the UI with a local runner in the same terminal. It opens a sign-in link in your browser:
+
+```sh
 aims ui
 ```
 
-Then run the scenario from a second terminal, or with **New run** in the UI:
+Then run the scenario from a second terminal in the same folder, or with **New run** in the UI:
 
 ```sh
-export MODEL_API_KEY=<your key>
+export OPENROUTER_API_KEY=<your key>
 aims run builtin/cache-keys
 ```
 
-`aims run` records into `./runs`. With `aims ui` running on the same machine, the run also ships there. When the run ends, `aims run` scores it against its plants. With the default models a `cache-keys` run cannot cost more than $23.29 at list prices: $4.11 for the agent and $19.18 for the monitor. `aims estimate builtin/cache-keys` prints these numbers.
+`aims run` records into `./runs`. With `aims ui` running on the same machine, the run also ships there. When the run ends, `aims run` scores it against its plants. `aims estimate builtin/cache-keys` prints the most a run can cost at the models' prices, for the agents and for the monitor.
 
 > [!TIP]
 > `--audit snapshot` runs without the privileged kernel tracer. `--monitor signals` runs the monitor without a model.
@@ -217,21 +225,11 @@ Flags fall into 15 categories, such as scorer tampering or deceiving the operato
 
 ## Models and config
 
-The roles `agent`, `sweep` and `judge` each use a model profile. The built-in profiles:
+AIMS ships no models. A model profile says how to reach one. The roles `agent`, `sweep` and `judge` each name a profile. `agent` runs the agents. `sweep` and `judge` run the monitor's model layers. A run that needs an unset role stops before any container starts and says how to set it. `--monitor signals` runs the monitor without a model.
 
-| Profile | Model | Provider | Key |
-| --- | --- | --- | --- |
-| `meta-spark-1.3-contributor` | Muse Spark 1.3 Contributor | Meta Model API | `MODEL_API_KEY` |
-| `meta-spark-1.2-contributor` | Muse Spark 1.2 Contributor | Meta Model API | `MODEL_API_KEY` |
-| `meta-spark-1.3` | Muse Spark 1.3 | Meta Model API | `MODEL_API_KEY` |
-| `meta-wonder-1.0` | Muse Wonder 1.0 | Meta Model API | `MODEL_API_KEY` |
-| `fireworks-spark-open` | Muse Spark Open | Fireworks | `FIREWORKS_API_KEY` |
-| `baseten-spark-open` | Muse Spark Open | Baseten | `BASETEN_API_KEY` |
-| `modal-glimmer` | Muse Glimmer 30B | Your own vLLM server | `AIMS_GLIMMER_KEY`, `AIMS_GLIMMER_URL` |
+Keys come from the environment only. `aims models list` shows the profiles, the roles and which keys are set. `aims models check` sends each profile a few small requests.
 
-The `agent` role uses `meta-spark-1.3-contributor`. The `sweep` and `judge` roles use `meta-wonder-1.0`. Keys come from the environment only. `aims models list` shows which keys are set. `aims models check` sends each provider a few small requests.
-
-A config file can add a profile for another provider and change the roles. `backend` is `chat` for the Chat Completions API or `responses` for the Responses API. `weights` names the trained model. The monitor refuses to watch an agent on its own weights. Prices are USD per million tokens. A profile with no price can name a row of LiteLLM's public price map in `price_key`. Runs and estimates then count its calls at that list price. `aims models prices` finds the key. A `responses` profile sends a `prompt_cache_key` with each call, so a provider that routes by it answers a run from one prompt cache. `cache_key = true` does the same on a `chat` profile.
+A config file adds the profiles and sets the roles. `backend` is `chat` for the Chat Completions API or `responses` for the Responses API. `weights` names the trained model. The monitor refuses to watch an agent on its own weights. Prices are USD per million tokens. A profile with no price can name a row of LiteLLM's public price map in `price_key`. Runs and estimates then count its calls at that list price. `aims models prices` finds the key. A `responses` profile sends a `prompt_cache_key` with each call, so a provider that routes by it answers a run from one prompt cache. `cache_key = true` does the same on a `chat` profile.
 
 ```toml
 # aims.toml
@@ -244,14 +242,21 @@ api_key_env = "MY_API_KEY"
 reasoning = "none"
 price = { input = 1.00, cached = 0.10, output = 4.00 }
 
+[profiles.my-monitor]
+extends = "my-agent"
+model = "vendor/monitor-model"
+weights = "vendor/monitor-model"
+
 [roles]
 agent = "my-agent"
+sweep = "my-monitor"
+judge = "my-monitor"
 ```
 
-`aims models add openrouter <model id>` prints a profile for any model on [OpenRouter](https://openrouter.ai), filled in from its public list of models. `--write` adds it to the project's `aims.toml`. Its key is `OPENROUTER_API_KEY`.
+`aims models add openrouter <model id>` prints a profile for any model on [OpenRouter](https://openrouter.ai), filled in from its public list of models. `--write` adds it to the project's `aims.toml`. `--role` also gives it a role there. It takes `agent`, `sweep` or `judge` and may repeat. Its key is `OPENROUTER_API_KEY`.
 
 ```sh
-aims models add openrouter author/model-name --write
+aims models add openrouter author/model-name --write --role agent
 aims models check openrouter-model-name
 ```
 
@@ -275,12 +280,12 @@ Docker Compose runs the control plane, a runner and Caddy on one host:
 curl -fsSLO https://github.com/kaumnen/AIMS/releases/latest/download/compose.yaml \
   -O https://github.com/kaumnen/AIMS/releases/latest/download/compose.public.yaml \
   -O https://github.com/kaumnen/AIMS/releases/latest/download/Caddyfile
-echo "MODEL_API_KEY=<your key>" > .env
+echo "OPENROUTER_API_KEY=<your key>" > .env
 docker compose up -d
 docker compose exec server aims open --no-open
 ```
 
-The last command prints a sign-in link for http://localhost:8484. [Deploy](https://github.com/kaumnen/AIMS/blob/main/docs/deploy.md) covers a public address with TLS, more runners, proxies and offline hosts.
+The last command prints a sign-in link for http://localhost:8484. Add the models under **Settings** > **Models** > **Add from OpenRouter**, with their roles. [Deploy](https://github.com/kaumnen/AIMS/blob/main/docs/deploy.md) covers a public address with TLS, more runners, proxies and offline hosts.
 
 ## Commands
 
@@ -347,7 +352,7 @@ cd web && bun install && bun run build && cd ..   # writes the UI into src/aims/
 uv run aims ui                                    # serves that build; restart it after a new build
 ```
 
-The repository has no `aims.toml`, so a checkout runs with the built-in defaults.
+The repository has no `aims.toml`, so a checkout has no models until you add some.
 
 Tests:
 

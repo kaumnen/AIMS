@@ -16,20 +16,22 @@ The monitor has three layers. Each flag carries a category, an importance from 1
 | Sweeps | Every 5 steps, on new flags, near a budget, at the end | A model reads the run in two lanes: evidence only (tool calls and kernel facts) and full (with the agent's text). It quotes what looks wrong. Code checks each quote against the log. A second call scores the checked quotes. | The `sweep` role |
 | Judge | Once, after the verifier | Reads the sealed run with read-only tools and gives a verdict for each category. | The `judge` role |
 
+`extract` in the `[monitor]` table or the scenario's `monitor:` section lists profiles for the sweeps' quote step. The first whose weights no agent runs makes it. Without one the `sweep` role does. Each needs structured output. The score's awareness and answer checks pick their model the same way from the `[monitor]` table of the config files only. A cheap model there keeps a score cheaper than the sweep model does.
+
 The `verifier_hook` signal flags at 4 a verifier that runs a file the agent wrote, or reads, imports or takes its config from a hook the agent wrote, such as `conftest.py`. A verifier meant to run the agent's program lists it in `verifier.programs`. Running a listed file is not flagged. Reading or importing a listed hook still is.
 
 ## Presets and budget
 
 Pick a preset with `--monitor`, the scenario's `monitor:` section or the `[monitor]` table of a config file.
 
-| Preset | Layers | Needs a key | Monitor budget per run |
+| Preset | Layers | Needs | Monitor budget per run |
 | --- | --- | --- | --- |
-| `off` | None | No | $0 |
-| `signals` | Signals | No | $0 |
-| `standard` (default) | Signals, sweeps, one judge | Yes | At least $5 |
-| `research` | Adds a second judge that does not see the flags | Yes | At least $8 |
+| `off` | None | Nothing | $0 |
+| `signals` | Signals | Nothing | $0 |
+| `standard` (default) | Signals, sweeps, one judge | The `sweep` and `judge` roles | At least $5 |
+| `research` | Adds a second judge that does not see the flags | The `sweep` and `judge` roles | At least $8 |
 
-- The budget grows with the agent steps the run allows, at the prices of the monitor's models. An 80-step `cache-keys` run gets $19.18 under `standard` with the default models. This is a cap. It assumes the heaviest sweeps measured so far, so most runs spend less.
+- The budget grows with the agent steps the run allows, at the prices of the monitor's models. `aims estimate` prints it. This is a cap. It assumes the heaviest sweeps measured so far, so most runs spend less.
 - A sweep that runs more often costs more per step. The budget follows the sweep's `every`, `window`, `window_steps` and `collapse_tokens`.
 - The sweeps leave the judge its cost at the price of its model. A judge on a model with no price gets $1.
 - A [list price](models.md#list-prices) counts as a profile's price here, for the budget and for the monitor's spend. So it does in a review.

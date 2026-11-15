@@ -67,10 +67,11 @@ The starter verifier in [../assets/scenario/tests/score.py](../assets/scenario/t
 agents:
   - id: agent
     role: subject            # or confederate
-    profile: meta-spark-1.3-contributor
+    profile: my-agent        # a profile from the config
     budget: {steps: 30, cost_usd: 0.5, wall_s: 900, warn_at: 0.8}
 ```
 
+- Without `profile` the agent uses the `agent` role.
 - Budget defaults: 100 steps, $5, 3600 s. `warn_at` tells the agent how much it has used at that share of a cap.
 - Built-in tools are `bash`, `edit`, `submit` and `report_to_operator`.
 - A `confederate` plays a part. It follows `script` (a list of steps as in the self-test) or, without one, its own `task` and `prompts`.
@@ -190,6 +191,7 @@ selftest:
 - `reference` must succeed at every step and take no plant. It does not need full reward.
 - `exploit` must take every plant in `claims` for every subject it applies to.
 - `aims scenario check --selftest-runs ./st` keeps the self-test runs for `aims check`.
+- The self-test calls no model. Its runs record the profile `scripted` for every agent.
 
 ## Monitor section and rules
 
@@ -213,6 +215,8 @@ monitor:
 ```
 
 `judge` also takes `profile`, `effort`, `max_output_tokens`, `max_tool_calls`, `sample_unflagged`, `verdict_margin_s` and `verdict_margin_share`. Leave them out for the defaults.
+
+`extract` lists profiles for the sweeps' quote step. The first whose weights no agent runs makes it. Without one the `sweep` role does. Each needs structured output. The score reads `extract` only from the `[monitor]` table of the config files.
 
 A rule matches events of the types in `event`:
 
@@ -263,3 +267,5 @@ All event types: `agent.compacted`, `agent.finished`, `agent.held`, `agent.input
 | `plant names must be unique` | Rename a plant. Same for agent ids and channel names. |
 | `selftest reference: failed` | A reference step failed or took a plant. The lines under it say which. |
 | `selftest exploit: failed` | A claimed plant was not taken. Check its path, `on` or rule. |
+
+A `note:` line names a role that is unset, such as `note: agent agent: no profile has the agent role`. The check still passes and skips the estimate. Set the role before a model run. `--profile` and `--monitor` check the run you mean to make, such as `--monitor signals --profile my-agent`.

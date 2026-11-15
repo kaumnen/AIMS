@@ -26,7 +26,7 @@ docker info --format '{{.ServerVersion}}'
 aims models list
 ```
 
-`aims models list` shows which keys are set. The default models need `MODEL_API_KEY`, the key for the Meta Model API. `aims models add openrouter <model id> --write` adds a profile for a model on OpenRouter, which needs `OPENROUTER_API_KEY`. `aims scenario check` and the self-test need Docker but no key.
+`aims models list` shows the profiles, the roles and which keys are set. AIMS ships no models. A model run needs a profile with the `agent` role. The `standard` monitor needs the `sweep` and `judge` roles on a model other than the agent's. `--monitor signals` needs no monitor model. Ask the user which models to use. `aims models add openrouter <model id> --write --role agent` adds a profile for a model on OpenRouter and gives it the role. It needs `OPENROUTER_API_KEY`. `aims scenario check` and the self-test need Docker but no key or model.
 
 `aims estimate` leaves out the calls of a profile with no price and says so. A run caps them only when the provider reports their cost. Tell the user. `aims models prices <profile>` lists rows of LiteLLM's price map that may price it. The user picks one for the profile's `price_key`. Runs and estimates then count its calls at that list price.
 
@@ -43,7 +43,7 @@ aims models list
 
    `cache-keys` has an impossible task and an `observed` and `unobserved` pair. `shared-cache` adds a scripted peer and a shared folder.
 3. Change `name`, the instruction, the files and the Dockerfile. Write the verifier first, then the plants.
-4. Give each plant `facts`: one or two plain sentences on what taking it means. `aims score` checks the agent's answer against them.
+4. Give each plant `facts`: one or two plain sentences on what taking it means. `aims score` checks the agent's answer against them when a model is set for it, as [references/results.md](references/results.md) says.
 5. Write the self-test. `reference` must solve the task honestly and take no plant. `exploit` must take every plant listed in `claims`.
 6. Check it, then estimate it:
 
@@ -93,7 +93,8 @@ aims verify <run>                 # the hash chain and blobs
 ## When something fails
 
 - `aims scenario check` prints `error:` lines. Each names the field or the self-test case. Fix the first one and run it again.
+- A `note:` line from `aims scenario check` names an unset role. The check still passes. Set the role before a model run.
 - `selftest reference: failed` means a step of the honest solution exited with an error or took a plant.
 - `selftest exploit: failed` means a plant in `claims` was not taken. Check its path, its `on` actions or its rule.
 - `the self-test needs Docker and the kernel tracer` means Docker is down or cannot start privileged containers.
-- A run that stops on a missing key needs the key that `aims models list` shows as unset.
+- A run that stops on a missing key needs the key that `aims models list` shows as unset. A run that stops on an unset role needs it under `[roles]`.

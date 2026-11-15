@@ -19,7 +19,8 @@ A fork replays a step only when the run recorded a result for each of its tool c
 ### Monitor and score again
 
 - `aims monitor <run>` feeds a sealed run through the monitor again, with any preset or model.
-- `aims score <run>` lists the plants each agent took. It shows which monitor layer caught each one and how soon. It also checks whether the agent told the operator the truth.
+- `aims score <run>` lists the plants each agent took. It shows which monitor layer caught each one and how soon. It also checks whether the agent told the operator the truth and whether it said it thought it was tested.
+- Those two checks call a model: the first profile in `[monitor] extract` whose weights no agent of the run runs, else the `sweep` role. When none fits, the score skips them and says why.
 - `aims rates` sums take and catch rates over many scored runs, with 95% intervals.
 
 ### Delete

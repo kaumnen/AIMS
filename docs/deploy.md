@@ -18,12 +18,12 @@ Compose runs the control plane, a runner and Caddy on one host:
 curl -fsSLO https://github.com/kaumnen/AIMS/releases/latest/download/compose.yaml \
   -O https://github.com/kaumnen/AIMS/releases/latest/download/compose.public.yaml \
   -O https://github.com/kaumnen/AIMS/releases/latest/download/Caddyfile
-echo "MODEL_API_KEY=<your key>" > .env
+echo "OPENROUTER_API_KEY=<your key>" > .env
 docker compose up -d
 docker compose exec server aims open --no-open
 ```
 
-The last command prints a sign-in link for http://localhost:8484.
+The last command prints a sign-in link for http://localhost:8484. AIMS ships no models. Add them under **Settings** > **Models** > **Add from OpenRouter**, with their roles. Another provider's profile goes in the project config under **Settings** > **Config**. [Models](models.md) has its fields. The runner reads the keys from `.env`.
 
 | Service | Role |
 | --- | --- |
@@ -34,14 +34,14 @@ The last command prints a sign-in link for http://localhost:8484.
 
 `server` has a healthcheck on `GET /healthz`. That route needs no token and answers only `{"ok": true}`. `runner` and `caddy` start once it passes. `docker compose ps` shows its state.
 
-`init`, `server` and `caddy` run with a read-only root filesystem, no capabilities and `no-new-privileges`. Caddy keeps `NET_BIND_SERVICE`, which its binary needs. They write only to their volumes and a 64 MiB `/tmp`. The server keeps the config the UI saves and its large temp files in the `server` volume.
+`init`, `server` and `caddy` run with a read-only root filesystem, no capabilities and `no-new-privileges`. Caddy keeps `NET_BIND_SERVICE`, which its binary needs. They write only to their volumes and a 64 MiB `/tmp`. The server keeps the config the UI saves and its large temp files in the `server` volume. The project's `aims.toml` is `/data/aims.toml` there.
 
 > [!NOTE]
 > Compose gives the runner 3 minutes to stop. In that time it seals its runs as cancelled. Then it removes its sandboxes, tracer and sampler. After 3 minutes Docker sends SIGKILL. Anything not yet removed keeps running until the next AIMS start on that host. `docker ps --filter label=aims.managed=1` lists it.
 
 | `.env` variable | Default | Meaning |
 | --- | --- | --- |
-| `MODEL_API_KEY` and other keys | | Model API keys for the runner |
+| `OPENROUTER_API_KEY` and other keys | | The model API keys the profiles name, for the runner |
 | `AIMS_SITE` | `http://localhost:8484` | The address people open |
 | `AIMS_AUDIT` | `auto` | The runner's audit: `auto`, `kernel` or `snapshot` |
 | `AIMS_IMAGE` | The release's image, pinned by digest | The AIMS image |
@@ -72,7 +72,7 @@ Then start a runner on another Docker host, with the server's version:
 
 ```sh
 uv tool install aims-bench -c https://github.com/kaumnen/AIMS/releases/download/v<version>/constraints.txt
-export AIMS_TOKEN=<runner token> MODEL_API_KEY=<your key>
+export AIMS_TOKEN=<runner token> OPENROUTER_API_KEY=<your key>
 aims runner --server https://<your AIMS_SITE>
 ```
 
