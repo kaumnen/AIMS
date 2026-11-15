@@ -22,9 +22,9 @@ from aims.run.rates import Rates, gather
 from aims.run.runner import RunError
 from aims.run.score import CheckError, rule_plants
 from aims.run.scoring import (
-    CLASSIFIERS,
     ScoreError,
     ScoreEstimate,
+    classifier_candidates,
     estimate_sealed,
     priced_score,
     unfinished,
@@ -220,7 +220,8 @@ async def queue_score(
         origin = await load_origin(state.store, run_id, full=False)
         classifier = None
         if body.awareness or body.answer:
-            classifier = extractor_for(settings.models, CLASSIFIERS, origin_agents(origin))
+            names = classifier_candidates(settings)
+            classifier = extractor_for(settings.models, names, origin_agents(origin))
         texts = resolve(settings.prompts)
     except (ScoreError, RunError, ProfileError, TextError) as e:
         raise ProblemException(422, "Cannot score", str(e), code="score") from None

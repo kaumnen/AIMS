@@ -291,7 +291,9 @@ def _extractor(
     models: ModelsConfig, config: MonitorConfig, agents: Sequence[Profile]
 ) -> Profile | None:
     """The extractor, with a warning when the first candidate is unknown or shares weights
-    with an agent, since rows meant to share one extractor would then differ."""
+    with an agent, since rows meant to share one extractor would then differ. Raises
+    ProfileError when a candidate lacks structured output, as a scenario's may."""
+    models.check_structured(config.extract, "monitor extract")
     chosen = extractor_for(models, config.extract, agents)
     if config.extract and (chosen is None or chosen.name != config.extract[0]):
         log.warning(

@@ -376,6 +376,14 @@ class ModelsConfig(_Strict):
             raise ProfileError(f"no profile has the {role} role; {UNSET_FIX[role]}")
         return self.get(name)
 
+    def check_structured(self, names: Iterable[str], what: str) -> None:
+        """Raise ProfileError when a known profile of `names` lacks structured output, which
+        `what` asks for: it calls them with a schema. Unknown names pass."""
+        for name in names:
+            profile = self.profiles.get(name)
+            if profile is not None and not profile.structured_output:
+                raise ProfileError(f"{what} needs structured output, which {name} lacks")
+
     def snapshot(self, names: Iterable[str]) -> dict[str, JsonValue]:
         """The resolved profiles `names`, for the `run.started` config."""
         return {name: self.get(name).snapshot() for name in sorted(set(names))}
@@ -431,11 +439,9 @@ def load_models(*paths: Path | None) -> ModelsConfig:
     except ValidationError as e:
         raise ProfileError(str(e)) from None
     for role in ("sweep", "judge"):
-        if getattr(models.roles, role) is None:
-            continue
-        profile = models.role(role)
-        if not profile.structured_output:
-            raise ProfileError(f"role {role} needs structured output, which {profile.name} lacks")
+        name = getattr(models.roles, role)
+        if name is not None:
+            models.check_structured([name], f"role {role}")
     return models
 
 

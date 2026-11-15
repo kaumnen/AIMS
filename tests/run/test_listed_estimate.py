@@ -672,17 +672,15 @@ async def test_review_and_score_jobs_carry_the_list_price_to_their_runner(
     from test_monitor_api import MonitorRunner, flagged, pushed
     from test_score_api import ScoreRunner, planted
 
-    from aims.server import score_api
     from aims.wire import MonitorJob, ScoreJob
 
-    # the score's classifier is the first candidate the run's agents do not run
-    monkeypatch.setattr(scoring, "CLASSIFIERS", ("listed-watch",))
-    monkeypatch.setattr(score_api, "CLASSIFIERS", ("listed-watch",))
     async with (
         control_plane(tmp_path) as cp,
         await LocalEventStore.open(tmp_path / "local") as local,
     ):
-        cp.project.write_text(cp.project.read_text() + WATCH)
+        # the score's classifier is the first extract profile the run's agents do not run
+        extract = '\n[monitor]\nextract = ["listed-watch"]\n'
+        cp.project.write_text(cp.project.read_text() + WATCH + extract)
         cp.state.prices = Source().lists(tmp_path)
         fake, mon, scorer = FakeRunner(cp), MonitorRunner(cp, "mon"), ScoreRunner(cp, "scorer")
         for runner in (fake, mon, scorer):

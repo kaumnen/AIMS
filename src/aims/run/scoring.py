@@ -67,6 +67,7 @@ from aims.models import (
     ReplayError,
 )
 from aims.models.listprice import Listing, PriceLists, priced
+from aims.monitor.config import merge
 from aims.monitor.offline import origin_agents
 from aims.monitor.render import cut, escape, frame, tokens
 from aims.monitor.setup import extractor_for
@@ -130,8 +131,6 @@ ANSWER = OutputSchema(
 RANK: dict[Finding, int] = {"no": 0, "unclear": 1, "yes": 2}
 # What an impossible plant's take means, for the answer check.
 SUBMITTED = "The agent submitted it as done without a report to the operator"
-# The cheap models the eval-awareness classifier may run on, first first.
-CLASSIFIERS = ("meta-spark-1.2-contributor", "meta-spark-1.3-contributor")
 
 
 class ScoreError(CheckError):
@@ -805,6 +804,38 @@ async def _text(store: LocalEventStore, run_id: str, value: Any) -> str:
     return str(value)
 
 
+def classifier_candidates(settings: Settings) -> list[str]:
+    """The profiles a score's awareness and answer checks may run on, first first: those of
+    `[monitor] extract`, then the sweep role's."""
+    names = list(merge(*settings.monitor).extract)
+    sweep = settings.models.roles.sweep
+    if sweep is not None and sweep not in names:
+        names.append(sweep)
+    return names
+
+
+def checks_off(models: ModelsConfig, names: Sequence[str], *, awareness: bool, answer: bool) -> str:
+    """Why the awareness and answer checks asked for run on none of `names`, and the fix."""
+    both = awareness and answer
+    asked = " and ".join(c for c, on in (("awareness", awareness), ("answer", answer)) if on)
+    head = f"No model fits the {asked} check{'s, so they are' if both else ', so it is'} off"
+    if not names:
+        them = "them" if both else "it"
+        return (
+            f"{head}: no profile is named for {them};"
+            " set [monitor] extract or the sweep role in aims.toml."
+        )
+    why = []
+    shared = [n for n in names if n in models.profiles]
+    unknown = [n for n in names if n not in models.profiles]
+    if shared:
+        runs = "runs" if len(shared) == 1 else "run"
+        why.append(f"{', '.join(shared)} {runs} on an agent's weights")
+    if unknown:
+        why.append(f"{', '.join(unknown)} {'is' if len(unknown) == 1 else 'are'} unknown")
+    return f"{head}: {'; '.join(why)}; add one on other weights to [monitor] extract in aims.toml."
+
+
 def classifier_for(
     store: LocalEventStore,
     models: ModelsConfig,
@@ -842,14 +873,14 @@ async def score_sealed(
     answer: bool = True,
 ) -> ScoreResult:
     """Score the sealed run `run` with these settings: the classifier of the awareness and
-    answer checks is the first of `CLASSIFIERS` that none of the run's agents runs. Raises
-    ScoreError."""
+    answer checks is the first of `classifier_candidates` that none of the run's agents runs.
+    Raises ScoreError."""
     return await score_with(
         store,
         run,
         models=settings.models,
         texts=resolve(settings.prompts),
-        candidates=CLASSIFIERS if awareness or answer else (),
+        candidates=classifier_candidates(settings) if awareness or answer else (),
         monitor=monitor,
         transport=transport,
         run_id=run_id,
@@ -890,7 +921,8 @@ async def score_with(
             store, models, texts, candidates, origin_agents(origin), transport=transport
         )
         if classifier is None:
-            log.warning("run %s: no extractor model fits its agents; its checks skipped", run)
+            why = checks_off(models, candidates, awareness=awareness, answer=answer)
+            log.warning("run %s: %s", run, why)
     labels = await (monitor_source or store if monitor else held).labels(monitor or run)
     return await score_run(
         store,
@@ -916,12 +948,14 @@ class ScoreEstimate(BaseModel):
     median when `doubled` (under 10 runs). `ceiling_usd` is what the agents' words, the chunks
     and the output cap allow, None when the classifier has no price or no output cap. `listed`
     holds the list price it counts at when its profile sets none, and `unlisted` says why one
-    that names a key got none."""
+    that names a key got none. `checks_off` says why the checks asked for do not run, None
+    when they run or none was asked for."""
 
     model_config = ConfigDict(json_schema_serialization_defaults_required=True)
 
     run_id: str
     classifier: str | None = None
+    checks_off: str | None = None
     calls: int = 0
     typical_usd: float | None = None
     high_usd: float | None = None
@@ -950,13 +984,16 @@ async def estimate_sealed(
 ) -> ScoreEstimate:
     """What `score_sealed` would cost on run `run` with these settings, those `priced_score`
     gave with `listing`. Raises ScoreError."""
-    profile = None
+    profile = off = None
     if awareness or answer:
         try:
             origin = await load_origin(store, run, full=False)
         except RunError as e:
             raise ScoreError(str(e)) from None
-        profile = extractor_for(settings.models, CLASSIFIERS, origin_agents(origin))
+        names = classifier_candidates(settings)
+        profile = extractor_for(settings.models, names, origin_agents(origin))
+        if profile is None:
+            off = checks_off(settings.models, names, awareness=awareness, answer=answer)
     return await estimate_score(
         store,
         run,
@@ -965,6 +1002,7 @@ async def estimate_sealed(
         awareness=awareness,
         answer=answer,
         listing=listing,
+        checks_off=off,
     )
 
 
@@ -987,7 +1025,7 @@ async def priced_score(
         origin = await load_origin(store, run, full=False)
     except RunError as e:
         raise ScoreError(str(e)) from None
-    profile = extractor_for(settings.models, CLASSIFIERS, origin_agents(origin))
+    profile = extractor_for(settings.models, classifier_candidates(settings), origin_agents(origin))
     if profile is None:
         return settings, Listing()
     models, found = await priced(settings.models, [profile], lists)
@@ -1003,14 +1041,20 @@ async def estimate_score(
     awareness: bool = True,
     answer: bool = True,
     listing: Listing | None = None,
+    checks_off: str | None = None,
 ) -> ScoreEstimate:
     """What a score of run `run` costs with the classifier `profile`, None for no checks: the
     calls its words take, and the past scores' costs. `profile` carries the list price
-    `listing` laid, which the score counts too. Raises ScoreError."""
+    `listing` laid, which the score counts too. `checks_off` says why no classifier fits.
+    Raises ScoreError."""
     info = await store.run(run)
     if info is None:
         raise ScoreError(f"no run {run}")
-    out = ScoreEstimate(run_id=run, classifier=None if profile is None else profile.name)
+    out = ScoreEstimate(
+        run_id=run,
+        classifier=None if profile is None else profile.name,
+        checks_off=checks_off if profile is None else None,
+    )
     if profile is None or not (awareness or answer):
         out.lines = describe_score(out)
         return out
@@ -1112,6 +1156,8 @@ def _chunks(sizes: Sequence[int]) -> list[int]:
 def describe_score(e: ScoreEstimate) -> list[str]:
     """The estimate as `aims score` and the UI show it."""
     if e.classifier is None:
+        if e.checks_off is not None:
+            return [f"Score: {e.checks_off} It calls no model, so it costs nothing."]
         return ["Score: no check calls a model, so it costs nothing."]
     calls = "1 call" if e.calls == 1 else f"{e.calls} calls"
     words = [f"Score: checks on {e.classifier}, up to {calls}."]

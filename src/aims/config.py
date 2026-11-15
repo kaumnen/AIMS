@@ -172,11 +172,13 @@ def load_layers(found: Layers) -> Settings:
     prompts = load_prompts(*files)
     _check_texts(prompts)
     try:
-        merge(*monitor)
+        merged = merge(*monitor)
     except ValidationError as e:
         raise ConfigError(f"[monitor]: {e}") from None
+    models = load_models(*files)
+    models.check_structured(merged.extract, "[monitor] extract")
     return Settings(
-        models=load_models(*files),
+        models=models,
         prompts=prompts,
         layers=found,
         scenario_paths=tuple(paths),

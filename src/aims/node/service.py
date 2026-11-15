@@ -32,7 +32,7 @@ from aims.events.blobs import decode
 from aims.events.chain import MAX_LINE
 from aims.events.schema import blob_refs
 from aims.events.store import TruthRefused, is_run_id
-from aims.models import ModelsConfig, Roles, load_models
+from aims.models import ModelsConfig, load_models
 from aims.models.check import record_check
 from aims.monitor.config import MonitorConfigError
 from aims.monitor.offline import monitor_offline, stamped
@@ -521,8 +521,7 @@ class Node:
         profile = job.profile()
         models = ctx.bench.models
         if profile is not None:
-            roles = Roles(agent=profile.name, sweep=profile.name, judge=profile.name)
-            models = ModelsConfig(profiles={profile.name: profile}, roles=roles)
+            models = ModelsConfig(profiles={profile.name: profile})
         try:
             texts = MonitorTexts.restore(job.texts) if job.texts else resolve(ctx.bench.prompts)
         except TextError as e:

@@ -33,6 +33,17 @@ pytestmark = pytest.mark.anyio
 
 RECORD: dict[str, Any] = {"roles": {"a": "subject"}, "plants": {"p1": {}}, "variant": "v1"}
 
+# The classifier of a score's checks: an extract profile on other weights than the agent's.
+CLASSIFY = """
+[profiles.classify]
+extends = "scripted"
+weights = "w-classify"
+api_key_env = "MODEL_API_KEY"
+
+[monitor]
+extract = ["classify"]
+"""
+
 
 class ScoreRunner(FakeRunner):
     """A fake runner that says it runs score jobs."""
@@ -45,6 +56,7 @@ class ScoreRunner(FakeRunner):
 @pytest.fixture
 async def cp(tmp_path: Path) -> AsyncIterator[CP]:
     async with control_plane(tmp_path) as cp:
+        cp.project.write_text(cp.project.read_text() + CLASSIFY)
         yield cp
 
 
@@ -136,7 +148,7 @@ async def test_a_score_job_queues_for_runners_that_take_it(
             aware = ScoreJob.model_validate(job.payload)
             profile = aware.profile()
             assert profile is not None
-            assert profile.name == "meta-spark-1.2-contributor"
+            assert profile.name == "classify"
             assert aware.envs() == ["MODEL_API_KEY"]
         finally:
             await scorer.close()
@@ -419,12 +431,7 @@ async def test_a_runner_scores_a_job_with_the_checks_and_plants_it_carries(
     monkeypatch.setattr(scoring, "check_run", check)
     monkeypatch.setattr(scoring, "_awareness", awareness)
     monkeypatch.setattr(scoring, "_answer", answer)
-    models = cp.state.config.settings().models
-    for name in scoring.CLASSIFIERS:
-        keyed = models.get(name)
-        for env in (keyed.api_key_env, keyed.base_url_env):
-            if env:
-                monkeypatch.setenv(env, "set")
+    monkeypatch.setenv("MODEL_API_KEY", "set")
 
     async def scored_by(run_id: str) -> RunInfo:
         async with asyncio.timeout(30):
@@ -503,12 +510,7 @@ async def test_a_runners_first_stop_ends_a_score_job_at_once(
 
     monkeypatch.setattr(scoring, "check_run", check)
     monkeypatch.setattr(scoring, "_awareness", awareness)
-    models = cp.state.config.settings().models
-    for name in scoring.CLASSIFIERS:
-        keyed = models.get(name)
-        for env in (keyed.api_key_env, keyed.base_url_env):
-            if env:
-                monkeypatch.setenv(env, "set")
+    monkeypatch.setenv("MODEL_API_KEY", "set")
     stop = asyncio.Event()
     async with node(cp, tmp_path / "node", stop=stop) as n:
         async with cp.client(cp.operator) as c:
@@ -700,8 +702,8 @@ async def test_a_runs_detail_lists_its_scores_and_an_operator_gets_an_estimate(
         r = await c.get(url)
         assert r.status_code == 200, r.text
         e = r.json()
-        assert (e["classifier"], e["runs"]) == ("meta-spark-1.2-contributor", 0)
-        assert e["lines"][0].startswith("Score: checks on meta-spark-1.2-contributor")
+        assert (e["classifier"], e["runs"]) == ("classify", 0)
+        assert e["lines"][0].startswith("Score: checks on classify")
         r = await c.get(url, params={"awareness": False, "answer": False})
         assert (r.json()["classifier"], r.json()["calls"]) == (None, 0)
         assert (

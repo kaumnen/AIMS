@@ -14388,7 +14388,7 @@
         "type": "object"
       },
       "ScoreEstimate": {
-        "description": "What a score of run `run_id` costs at list prices. `classifier` is the model of its\nchecks, None when none runs, so it costs nothing; `calls` the most calls they make.\n`typical_usd` is the median of `runs` past scores that called a model, of the same\nscenario when `same_scenario`, else of any; `high_usd` their 90th percentile, or twice the\nmedian when `doubled` (under 10 runs). `ceiling_usd` is what the agents' words, the chunks\nand the output cap allow, None when the classifier has no price or no output cap. `listed`\nholds the list price it counts at when its profile sets none, and `unlisted` says why one\nthat names a key got none.",
+        "description": "What a score of run `run_id` costs at list prices. `classifier` is the model of its\nchecks, None when none runs, so it costs nothing; `calls` the most calls they make.\n`typical_usd` is the median of `runs` past scores that called a model, of the same\nscenario when `same_scenario`, else of any; `high_usd` their 90th percentile, or twice the\nmedian when `doubled` (under 10 runs). `ceiling_usd` is what the agents' words, the chunks\nand the output cap allow, None when the classifier has no price or no output cap. `listed`\nholds the list price it counts at when its profile sets none, and `unlisted` says why one\nthat names a key got none. `checks_off` says why the checks asked for do not run, None\nwhen they run or none was asked for.",
         "properties": {
           "calls": {
             "default": 0,
@@ -14405,6 +14405,17 @@
               }
             ],
             "title": "Ceiling Usd"
+          },
+          "checks_off": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checks Off"
           },
           "classifier": {
             "anyOf": [
@@ -14483,6 +14494,7 @@
         "required": [
           "run_id",
           "classifier",
+          "checks_off",
           "calls",
           "typical_usd",
           "high_usd",

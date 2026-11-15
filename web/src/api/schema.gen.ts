@@ -7121,7 +7121,8 @@ export interface components {
          *     median when `doubled` (under 10 runs). `ceiling_usd` is what the agents' words, the chunks
          *     and the output cap allow, None when the classifier has no price or no output cap. `listed`
          *     holds the list price it counts at when its profile sets none, and `unlisted` says why one
-         *     that names a key got none.
+         *     that names a key got none. `checks_off` says why the checks asked for do not run, None
+         *     when they run or none was asked for.
          */
         ScoreEstimate: {
             /**
@@ -7131,6 +7132,8 @@ export interface components {
             calls: number;
             /** Ceiling Usd */
             ceiling_usd: number | null;
+            /** Checks Off */
+            checks_off: string | null;
             /** Classifier */
             classifier: string | null;
             /**
