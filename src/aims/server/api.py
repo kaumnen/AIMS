@@ -55,6 +55,7 @@ from aims.models import Price, Profile, ProfileError
 from aims.models.check import Verdict
 from aims.models.listprice import SOURCE, Listing, ListPrice, PriceLists, survey
 from aims.models.openrouter import CatalogError, Draft, draft
+from aims.models.profiles import Role as ModelRole
 from aims.monitor import sweep_texts
 from aims.monitor import texts as monitor_texts
 from aims.monitor.config import MonitorConfigError, Preset
@@ -2070,13 +2071,16 @@ async def check_models(
 
 class ProfileDraft(Out):
     """A profile for a model a provider lists, as config file text to add under a layer.
-    `notes` say what its reader should know. `exists` when a profile has the name already."""
+    `notes` say what its reader should know. `exists` when a profile has the name already.
+    `fits` are the roles it can take: agent with tool calls, sweep and judge with structured
+    output."""
 
     name: str
     slug: str
     toml: str
     notes: list[str]
     exists: bool
+    fits: list[ModelRole]
 
 
 async def drafted(state: ServerState, slug: str, name: str | None, alias: bool) -> Draft:
@@ -2107,6 +2111,7 @@ async def lookup_model(
         toml=found.toml(),
         notes=list(found.notes),
         exists=found.name in state.config.settings().models.profiles,
+        fits=list(found.fits),
     )
 
 

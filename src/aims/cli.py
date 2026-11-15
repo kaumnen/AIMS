@@ -344,7 +344,10 @@ def models_list(config: ConfigOption = None) -> None:
     unset = models.roles.unset()
     if unset:
         them = "them" if len(unset) > 1 else "it"
-        _echo(f"unset roles: {', '.join(unset)}; set {them} under [roles] in aims.toml")
+        _echo(
+            f"unset roles: {', '.join(unset)}; set {them} under [roles] in aims.toml, or add a"
+            " model with aims models add openrouter <id> --write --role <role>"
+        )
 
 
 def _price_source(p: Any) -> str:
@@ -484,21 +487,38 @@ def models_add(
     write: Annotated[
         bool, typer.Option("--write", help="Add the profile to the project's aims.toml.")
     ] = False,
+    role: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--role",
+            help="Give the profile a role there too: agent, sweep or judge. Repeat for more."
+            " Needs --write.",
+        ),
+    ] = None,
     config: ConfigOption = None,
 ) -> None:
     """Print a profile for a model, filled in from the provider's public list of models."""
     import asyncio
 
     from aims.models.openrouter import CatalogError, draft, fetch
+    from aims.models.profiles import ROLES
 
     if source != "openrouter":
         raise typer.BadParameter("the only source is openrouter", param_hint="SOURCE")
+    roles = [r for r in ROLES if r in (role or [])]
+    if len(roles) < len(set(role or [])):
+        raise typer.BadParameter("use agent, sweep or judge", param_hint="--role")
+    if roles and not write:
+        raise typer.BadParameter("needs --write", param_hint="--role")
     settings = _settings(config) if write else None
     try:
         found = draft(asyncio.run(fetch()), slug, name=name, alias=alias)
     except CatalogError as e:
         _echo(f"error: {e}", err=True)
         raise typer.Exit(1) from None
+    if why := found.unfit(roles):
+        _echo(f"error: {why}", err=True)
+        raise typer.Exit(1)
     text = found.toml()
     if settings is None:
         typer.echo(text, nl=False)
@@ -511,7 +531,7 @@ def models_add(
             _echo(f"error: a profile named {found.name} exists; pass --name for another", err=True)
             raise typer.Exit(1)
         try:
-            path = add_table(settings.layers, text)
+            path = add_table(settings.layers, text, dict.fromkeys(roles, found.name))
         except (ConfigError, ProfileError, TextError) as e:
             _echo(f"error: {e}", err=True)
             raise typer.Exit(1) from None
@@ -519,6 +539,9 @@ def models_add(
             _echo(f"error: cannot write {e.filename or 'the config file'}: {e.strerror}", err=True)
             raise typer.Exit(1) from None
         _echo(f"added {found.name} to {path}", err=True)
+        for r in roles:
+            was = getattr(settings.models.roles, r)
+            _echo(f"role {r}: {found.name}" + (f" (was {was})" if was else ""), err=True)
     for note in found.notes:
         typer.echo(f"note: {note}", err=True)
 

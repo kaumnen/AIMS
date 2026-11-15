@@ -12,11 +12,12 @@ import pytest
 from typer.testing import CliRunner
 
 from aims.cli import app
-from aims.config import ConfigError, add_table, layers, load
+from aims.config import ConfigError, add_table, layers, load, with_roles
 from aims.models import Message, ProfileError, Prompt, load_models
 from aims.models import openrouter as router
 from aims.models.backends import BACKENDS
 from aims.models.openrouter import Catalog, CatalogError, default_name, draft, fetch
+from aims.models.profiles import Role
 
 CHAT = ["/api/v1/chat/completions", "/api/v1/responses"]
 # The shapes of OpenRouter's list on Nov 14 2026, cut to the fields a profile reads.
@@ -507,3 +508,86 @@ def test_a_table_is_added_after_a_last_line_with_no_newline(project: Path) -> No
     add_table(layers(path), table.replace("openrouter-", "second-"))
     assert path.read_bytes().startswith(b"[credits]\nmeta = 1\n\n[profiles.")
     assert json.dumps(sorted(load(path).credits.items())) == '[["meta", 1.0]]'
+
+
+# Roles
+
+
+def test_a_draft_says_which_roles_it_fits() -> None:
+    assert draft(MODELS, FLASH["id"]).fits == ("agent", "sweep", "judge")
+    assert draft(MODELS, FLASH["id"]).unfit(["agent", "sweep", "judge"]) is None
+    haiku = draft(MODELS, HAIKU["id"])
+    assert haiku.fits == ("agent",)
+    assert haiku.unfit(["agent", "sweep"]) == (
+        "openrouter-claude-haiku-5.5 cannot take the sweep role: OpenRouter lists no structured"
+        " output"
+    )
+    tool_less = draft(changed(FLASH, supported_parameters=["structured_outputs"]), FLASH["id"])
+    assert tool_less.fits == ("sweep", "judge")
+    assert tool_less.unfit(["judge", "agent"]) == (
+        "openrouter-deepseek-v4.1-flash cannot take the agent role: OpenRouter lists no tool calls"
+    )
+
+
+def test_role_gives_the_written_profile_its_roles(listed: list[int], project: Path) -> None:
+    path = project / "aims.toml"
+    small = run("openrouter", HAIKU["id"], "--write", "--name", "small", "--role", "agent")
+    assert small.exit_code == 0, small.output
+    assert "role agent: small" in small.stderr
+    text = path.read_text()
+    assert text == draft(MODELS, HAIKU["id"], name="small").toml() + '\n[roles]\nagent = "small"\n'
+    path.write_text(text.replace('"small"\n', '"small"  # kept\n'))
+    out = run("openrouter", FLASH["id"], "--write", "--role", "judge", "--role", "agent")
+    assert out.exit_code == 0, out.output
+    name = "openrouter-deepseek-v4.1-flash"
+    assert f"role agent: {name} (was small)\nrole judge: {name}" in out.stderr
+    roles = load(path).models.roles
+    assert (roles.agent, roles.judge) == (name, name)
+    # the role table keeps its place and its comment
+    assert path.read_text() == (
+        draft(MODELS, HAIKU["id"], name="small").toml()
+        + f'\n[roles]\nagent = "{name}"  # kept\njudge = "{name}"\n\n'
+        + draft(MODELS, FLASH["id"]).toml()
+    )
+
+
+def test_role_is_refused_before_anything_is_written(listed: list[int], project: Path) -> None:
+    path = project / "aims.toml"
+    for args, problem in (
+        (["--role", "agent"], "needs --write"),
+        (["--write", "--role", "agent", "--role", "boss"], "use agent, sweep or judge"),
+    ):
+        out = run("openrouter", FLASH["id"], *args)
+        assert out.exit_code == 2, out.output
+        assert problem in out.stderr
+    assert listed == []
+    out = run("openrouter", HAIKU["id"], "--write", "--role", "judge")
+    assert out.exit_code == 1
+    assert "error: openrouter-claude-haiku-5.5 cannot take the judge role" in out.stderr
+    assert not path.exists()
+
+
+def test_roles_are_set_in_the_table_the_file_has() -> None:
+    roles: dict[Role, str] = {"sweep": "b", "agent": "b"}
+    for text, want in (
+        ("", '[roles]\nagent = "b"\nsweep = "b"\n'),
+        ('roles.agent = "a"\n', 'roles.agent = "b"\nroles.sweep = "b"\n'),
+        (
+            'roles = { judge = "a" }  # c\n',
+            'roles = {judge = "a", agent = "b", sweep = "b"}  # c\n',
+        ),
+    ):
+        assert with_roles(text, roles) == want
+    for text, problem in (("roles = 1\n", "roles is not a table"), ("[a", "not TOML")):
+        with pytest.raises(ConfigError, match=problem):
+            with_roles(text, roles)
+
+
+def test_a_role_table_that_cannot_take_a_role_leaves_the_file(project: Path) -> None:
+    path = project / "aims.toml"
+    path.write_text("roles = 1\n")
+    table = draft(MODELS, FLASH["id"]).toml()
+    with pytest.raises(ConfigError, match=rf"^{path}: roles is not a table"):
+        add_table(layers(path), table, {"agent": "openrouter-deepseek-v4.1-flash"})
+    assert path.read_text() == "roles = 1\n"
+    assert sorted(p.name for p in project.iterdir()) == [".git", "aims.toml"]

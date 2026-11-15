@@ -10,6 +10,7 @@ import json
 import math
 import re
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal, get_args
@@ -17,7 +18,7 @@ from typing import Any, Literal, get_args
 import httpx2
 import tomlkit
 
-from aims.models.profiles import Effort, Profile
+from aims.models.profiles import ROLES, Effort, Profile, Role
 from aims.net import Outbound
 
 BASE_URL = "https://openrouter.ai/api/v1"
@@ -52,17 +53,34 @@ class CatalogError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class Draft:
-    """A profile ready to add to a config file. `notes` say what its reader should know."""
+    """A profile ready to add to a config file. `notes` say what its reader should know.
+    `tools` when OpenRouter lists tool calls for the model."""
 
     name: str
     slug: str
     table: dict[str, Any]
     efforts: tuple[str, ...]
     notes: tuple[str, ...]
+    tools: bool = True
 
     @property
     def profile(self) -> Profile:
         return Profile.model_validate({**self.table, "name": self.name})
+
+    @property
+    def fits(self) -> tuple[Role, ...]:
+        """The roles it can take: the agent's needs tool calls, the sweep's and judge's
+        structured output."""
+        structured = self.profile.structured_output
+        return tuple(r for r in ROLES if (self.tools if r == "agent" else structured))
+
+    def unfit(self, roles: Iterable[Role]) -> str | None:
+        """Why it cannot take one of `roles`, or None when it can take them all."""
+        for role in roles:
+            if role not in self.fits:
+                lacks = "tool calls" if role == "agent" else "structured output"
+                return f"{self.name} cannot take the {role} role: OpenRouter lists no {lacks}"
+        return None
 
     def toml(self) -> str:
         """The `[profiles."name"]` table as config file text."""
@@ -262,7 +280,14 @@ def draft(
     if isinstance(retires, str) and _DATE.fullmatch(retires):
         notes.append(f"OpenRouter retires it on {retires}.")
 
-    found = Draft(name=name, slug=slug, table=table, efforts=efforts, notes=tuple(notes))
+    found = Draft(
+        name=name,
+        slug=slug,
+        table=table,
+        efforts=efforts,
+        notes=tuple(notes),
+        tools="tools" in supported,
+    )
     found.profile  # noqa: B018  the table must load as a profile
     return found
 

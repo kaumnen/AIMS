@@ -16,9 +16,19 @@ from fastapi import APIRouter, Header, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, JsonValue
 
-from aims.config import PROJECT, STARTER, ConfigError, Layers, appended, load_layers
+from aims.config import (
+    PROJECT,
+    STARTER,
+    ConfigError,
+    Layers,
+    appended,
+    load_layers,
+    with_roles,
+)
 from aims.merged import merged
 from aims.models import ProfileError
+from aims.models.profiles import ROLES
+from aims.models.profiles import Role as ModelRole
 from aims.monitor.config import MonitorConfigError
 from aims.plants import PlantError, category_of, registry, taken_tier
 from aims.prompts import Prompts, TextError
@@ -254,10 +264,13 @@ async def write_config(
 
 
 class ModelAdd(BaseModel):
+    """`roles` the profile also takes under [roles], as `--role` does."""
+
     slug: Utf8 = Field(min_length=1, max_length=200)
     source: Literal["openrouter"] = "openrouter"
     name: Utf8 | None = Field(default=None, min_length=1, max_length=200)
     alias: bool = False
+    roles: list[ModelRole] = Field(default_factory=list, max_length=len(ROLES))
 
 
 class ModelAdded(Out):
@@ -273,11 +286,15 @@ async def add_model(
     body: ModelAdd, principal: Operator, state: State, note: audit.Note
 ) -> ModelAdded:
     """Add a profile for model `slug` to the project file, as `aims models add --write` does:
-    the profile `GET /models/lookup` shows, after what the file holds. A name that a profile
-    has already is refused. The merged layers must load first."""
-    note.detail = body.slug
+    the profile `GET /models/lookup` shows, after what the file holds, with `roles` set to it
+    under [roles]. A name that a profile has already is refused, as is a role the model does
+    not fit. The merged layers must load first."""
+    roles = [r for r in ROLES if r in body.roles]
+    note.detail = body.slug + (f"; roles {', '.join(roles)}" if roles else "")
     found = await drafted(state, body.slug, body.name, body.alias)
     note.target = found.name
+    if why := found.unfit(roles):
+        raise ProblemException(422, "Invalid request", why, code="role")
     path = _path(state, "project")
     async with _lock(path):
         if found.name in state.config.settings().models.profiles:
@@ -289,6 +306,11 @@ async def add_model(
             text = appended(current or b"", found.toml()).decode()
         except UnicodeDecodeError:
             raise ProblemException(422, "Invalid request", f"{path} is not UTF-8") from None
+        if roles:
+            try:
+                text = with_roles(text, dict.fromkeys(roles, found.name))
+            except ConfigError as e:
+                raise ProblemException(422, "Invalid request", f"{path}: {e}") from None
         await asyncio.to_thread(_validate, state, "project", text)
         with writing(path):
             await asyncio.to_thread(write_atomic, path, text.encode())

@@ -21,14 +21,18 @@ import os
 import secrets
 import stat
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import tomlkit
+import tomlkit.exceptions
+import tomlkit.items
 from pydantic import ValidationError
 
 from aims.models import ModelsConfig, ProfileError, load_models
+from aims.models.profiles import ROLES, Role
 from aims.monitor.config import MonitorConfigError, layer, merge
 from aims.monitor.texts import resolve
 from aims.prompts import Prompts, TextError, load_prompts
@@ -324,18 +328,51 @@ def appended(old: bytes, table: str) -> bytes:
     return old + gap + table.encode()
 
 
-def add_table(found: Layers, table: str) -> Path:
+def with_roles(text: str, roles: Mapping[Role, str]) -> str:
+    """Config file `text` with each role of `roles` set to its profile under [roles], its
+    comments and order kept. Raises ConfigError when `text` is not TOML or its roles are not a
+    table."""
+    try:
+        doc = tomlkit.parse(text)
+    except tomlkit.exceptions.ParseError as e:
+        raise ConfigError(f"not TOML: {e}") from None
+    if "roles" not in doc:
+        doc["roles"] = tomlkit.table()
+    table = doc["roles"]
+    if not isinstance(table, MutableMapping):
+        raise ConfigError("roles is not a table")
+    if isinstance(table, tomlkit.items.InlineTable):
+        # tomlkit spaces a key added to an inline table badly; a new one is spaced evenly
+        table = tomlkit.inline_table()
+        table.update(doc["roles"])
+        doc["roles"] = table
+    for role in ROLES:
+        if role in roles:
+            table[role] = roles[role]
+    return tomlkit.dumps(doc)
+
+
+def add_table(found: Layers, table: str, roles: Mapping[Role, str] | None = None) -> Path:
     """Append `table`, the TOML text of one, to the project file of `found`, or to a new
-    aims.toml in the working directory when there is none. The layers must load with it first:
-    a ConfigError, ProfileError or TextError leaves the file as it was."""
+    aims.toml in the working directory when there is none, and set `roles` under its [roles].
+    The layers must load with it first: a ConfigError, ProfileError or TextError leaves the
+    file as it was."""
     path = found.project if found.project is not None else Path.cwd() / PROJECT
     old = path.read_bytes() if path.is_file() else b""
+    data = appended(old, table)
+    if roles:
+        try:
+            data = with_roles(data.decode(), roles).encode()
+        except UnicodeDecodeError:
+            raise ConfigError(f"{path} is not UTF-8") from None
+        except ConfigError as e:
+            raise ConfigError(f"{path}: {e}") from None
     # The trial file sits beside the real one, as `[scenarios] paths` are relative to it, and
     # becomes it once the layers load.
     tmp = path.parent / f".{path.name}.{secrets.token_hex(4)}"
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_bytes(appended(old, table))
+        tmp.write_bytes(data)
         try:
             load_layers(Layers(user=found.user, project=tmp))
         except (ConfigError, ProfileError, TextError) as e:

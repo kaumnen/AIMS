@@ -1,8 +1,14 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 
-import { addModel, lookupModel, type ProfileDraft } from "@/api/launch";
+import {
+  addModel,
+  lookupModel,
+  type ModelRole,
+  modelsQuery,
+  type ProfileDraft,
+} from "@/api/launch";
 import { isProblem } from "@/api/session";
 import { CONFIG_DEPENDENT } from "@/api/settings";
 import { Field, problemText } from "@/components/form";
@@ -17,6 +23,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 
 // A draft with the name and alias it was asked with, for the matching command.
 interface Found {
@@ -28,20 +35,38 @@ interface Found {
 // A word the shell takes as written, such as an alias's leading ~.
 const word = (s: string) => (/^[\w./:@-]+$/.test(s) ? s : `'${s.replaceAll("'", "'\\''")}'`);
 
-const command = ({ draft, name, alias }: Found) =>
+const command = ({ draft, name, alias }: Found, roles: readonly ModelRole[]) =>
   [
     "aims models add openrouter",
     word(draft.slug),
     ...(name ? [`--name ${word(name)}`] : []),
     ...(alias ? ["--alias"] : []),
     "--write",
+    ...roles.map((r) => `--role ${r}`),
   ].join(" ");
 
+const ROLES: readonly ModelRole[] = ["agent", "sweep", "judge"];
+
+// What each role does, and why a model that does not fit it cannot take it.
+const ROLE_TEXT: Record<ModelRole, { does: string; lacks: string }> = {
+  agent: { does: "runs a scenario's agents", lacks: "OpenRouter lists no tool calls for it" },
+  sweep: { does: "reads a run as it goes", lacks: "OpenRouter lists no structured output for it" },
+  judge: {
+    does: "gives the verdict after a run",
+    lacks: "OpenRouter lists no structured output for it",
+  },
+};
+
 // A profile drafted from OpenRouter's list of models. Nothing is saved until Add.
-export function ModelLookup() {
-  const [open, setOpen] = useState(false);
+export function ModelLookup({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogTrigger render={<Button variant="outline" size="xs" />}>
         Add from OpenRouter
       </DialogTrigger>
@@ -167,6 +192,9 @@ function Notes({ draft }: { draft: ProfileDraft }) {
 
 function Draft({ found }: { found: Found }) {
   const qc = useQueryClient();
+  // the profile each role has now
+  const now = useQuery(modelsQuery).data?.roles;
+  const [roles, setRoles] = useState<ModelRole[]>([]);
   const [copied, setCopied] = useState<boolean | null>(null);
   const [adding, setAdding] = useState(false);
   // the file the profile went to
@@ -176,7 +204,7 @@ function Draft({ found }: { found: Found }) {
     setAdding(true);
     setProblem(null);
     try {
-      setAdded(await addModel(found.draft.slug, found.name, found.alias));
+      setAdded(await addModel(found.draft.slug, found.name, found.alias, roles));
       for (const queryKey of CONFIG_DEPENDENT) void qc.invalidateQueries({ queryKey });
     } catch (e) {
       setProblem(isProblem(e) ? problemText(e) : "The request failed.");
@@ -204,9 +232,40 @@ function Draft({ found }: { found: Found }) {
       >
         {found.draft.toml}
       </pre>
+      <fieldset className="flex flex-col gap-1">
+        <legend className="mb-1">Roles (optional)</legend>
+        {ROLES.map((r) => {
+          const fits = found.draft.fits.includes(r);
+          const holder = now?.[r];
+          return (
+            <label
+              key={r}
+              className={cn("flex items-start gap-2", !fits && "text-muted-foreground")}
+            >
+              <input
+                type="checkbox"
+                checked={roles.includes(r)}
+                disabled={!fits || added !== null}
+                onChange={(e) =>
+                  setRoles(ROLES.filter((x) => (x === r ? e.target.checked : roles.includes(x))))
+                }
+                className="accent-foreground mt-0.5"
+              />
+              <span>
+                {r}{" "}
+                <span className="text-muted-foreground">
+                  {ROLE_TEXT[r].does} ·{" "}
+                  {!fits ? ROLE_TEXT[r].lacks : holder ? `now ${holder}` : "unset"}
+                </span>
+              </span>
+            </label>
+          );
+        })}
+      </fieldset>
       <div className="flex items-start gap-2">
         <p className="text-muted-foreground min-w-0 flex-1 break-words">
-          Add puts it at the end of this project&apos;s aims.toml. You can also paste it under{" "}
+          Add puts it at the end of this project&apos;s aims.toml and gives it the roles ticked
+          above. You can also paste it under{" "}
           <Link
             to="/settings/config"
             search={{ view: "project" }}
@@ -214,7 +273,8 @@ function Draft({ found }: { found: Found }) {
           >
             Config
           </Link>
-          . The CLI does the same with <code className="text-foreground">{command(found)}</code>.
+          . The CLI does the same with{" "}
+          <code className="text-foreground">{command(found, roles)}</code>.
         </p>
         {clipboard && (
           <Button size="sm" variant="outline" onClick={() => void copy()}>

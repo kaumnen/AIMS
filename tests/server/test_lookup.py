@@ -8,7 +8,7 @@ from typing import Any
 import httpx2
 import pytest
 from cp import CP, control_plane
-from test_openrouter import FLASH, MODELS
+from test_openrouter import FLASH, HAIKU, MODELS
 
 from aims.models.openrouter import Catalog, draft
 
@@ -47,6 +47,7 @@ async def test_an_operator_looks_a_model_up_and_nothing_is_saved(cp: CP) -> None
             "toml": found.toml(),
             "notes": list(found.notes),
             "exists": False,
+            "fits": ["agent", "sweep", "judge"],
         }
         named = await c.get(LOOKUP, params={"slug": FLASH["id"], "name": "scripted"})
         assert named.json()["exists"] is True
@@ -195,3 +196,34 @@ async def test_a_project_file_that_cannot_take_the_table_stays_as_it_was(cp: CP)
     assert (r.status_code, r.json()["code"]) == (422, "config")
     assert cp.project.read_bytes() == before
     assert sorted(p.name for p in cp.project.parent.iterdir()) == ["aims.toml", "scenarios"]
+
+
+async def test_an_add_gives_the_profile_the_roles_asked_for(cp: CP) -> None:
+    listed(cp)
+    before = cp.project.read_text()
+    name = "openrouter-deepseek-v4.1-flash"
+    async with cp.client(cp.operator) as c:
+        # the model lists no structured output, so the judge role is refused
+        r = await c.get(LOOKUP, params={"slug": HAIKU["id"]})
+        assert r.json()["fits"] == ["agent"]
+        bad = await c.post(ADD, json={"slug": HAIKU["id"], "roles": ["agent", "judge"]})
+        assert (bad.status_code, bad.json()["code"]) == (422, "role"), bad.text
+        assert "cannot take the judge role" in bad.json()["detail"]
+        assert cp.project.read_text() == before
+        r = await c.post(ADD, json={"slug": FLASH["id"], "roles": ["judge", "agent", "judge"]})
+        assert r.status_code == 200, r.text
+        roles = (await c.get("/api/models")).json()["roles"]
+        rows = (await c.get("/api/audit", params={"action": "models.add"})).json()
+    assert (roles["agent"], roles["judge"]) == (name, name)
+    # the role table keeps its place; the profile goes after it
+    assert cp.project.read_text() == (
+        before.replace('agent = "scripted"', f'agent = "{name}"\njudge = "{name}"')
+        + "\n"
+        + draft(MODELS, FLASH["id"]).toml()
+    )
+    details = sorted(row["detail"] for row in rows["items"] if row["outcome"] == "ok")
+    assert details == [f"{FLASH['id']}; roles agent, judge"]
+    async with cp.client(cp.operator) as c:
+        for roles in (["nope"], ["agent"] * 4):
+            r = await c.post(ADD, json={"slug": FLASH["id"], "name": "x", "roles": roles})
+            assert (r.status_code, r.json()["code"]) == (422, "invalid"), r.text

@@ -264,6 +264,9 @@ test("a scenario whose agent names no profile asks for one while no profile has 
     renderAt("/runs");
     const form = await openForm();
     expect(form.getByText(/^No profile has the agent role\. Pick one here/)).toBeTruthy();
+    expect(form.getByRole("link", { name: "add a model with the role" }).getAttribute("href")).toBe(
+      "/settings/models?add=true",
+    );
     await pick(form, "Profile", /spark/);
     expect(form.queryByText(/No profile has the agent role/)).toBeNull();
   } finally {

@@ -11,8 +11,15 @@ import { checkProblem, checkState } from "@/lib/launch";
 import { useOperator } from "@/lib/use-operator";
 import { cn } from "@/lib/utils";
 
+// `add` opens the dialog that adds a model from OpenRouter.
+interface ModelsSearch {
+  add?: true;
+}
+
 export const Route = createFileRoute("/settings/models")({
   staticData: { crumb: "Models" },
+  validateSearch: (raw: Record<string, unknown>): ModelsSearch =>
+    raw["add"] === true ? { add: true } : {},
   component: Models,
 });
 
@@ -36,6 +43,16 @@ function Models() {
   });
   const operator = useOperator();
   const { checking, problem, check } = useModelCheck();
+  const adding = Route.useSearch().add === true;
+  const navigate = Route.useNavigate();
+  const setAdding = (open: boolean) =>
+    void navigate({ search: open ? { add: true } : {}, replace: true });
+  // a link that opens the dialog
+  const addLink = (text: string) => (
+    <button type="button" className="text-foreground underline" onClick={() => setAdding(true)}>
+      {text}
+    </button>
+  );
   if (models.isPending) return <p className="text-muted-foreground">Loading profiles</p>;
   if (models.isError) {
     return (
@@ -60,7 +77,7 @@ function Models() {
         </span>
         {operator && (
           <div className="ml-auto flex gap-2">
-            <ModelLookup />
+            <ModelLookup open={adding} onOpenChange={setAdding} />
             {profiles.length > 0 && (
               <Button
                 variant="outline"
@@ -74,43 +91,63 @@ function Models() {
           </div>
         )}
       </div>
-      {unset.length > 0 && (
+      {unset.length > 0 && profiles.length > 0 && (
         <p className="text-muted-foreground">
-          Unset roles: {unset.join(", ")}. Set {unset.length > 1 ? "them" : "it"} under [roles] in
-          aims.toml.
+          Unset roles: {unset.join(", ")}. Set {unset.length > 1 ? "them" : "it"} under [roles] in{" "}
+          <ConfigLink />
+          {operator ? (
+            <>, or {addLink(unset.length > 1 ? "add a model with them" : "add a model with it")}.</>
+          ) : (
+            "."
+          )}
         </p>
       )}
       {problem && <p className="text-flag">{problem}</p>}
-      <table className="w-full">
-        <thead className="text-muted-foreground text-left">
-          <tr className="border-b">
-            <th className="py-1 pr-4 font-normal">Profile</th>
-            <th className="py-1 pr-4 font-normal max-sm:hidden">Model</th>
-            <th className="py-1 pr-4 font-normal max-sm:hidden">Price per million tokens</th>
-            <th className="py-1 pr-4 font-normal max-md:hidden">Keys</th>
-            <th className="py-1 pr-4 font-normal whitespace-nowrap">Last check</th>
-            {operator && (
-              <th className="py-1 font-normal">
-                <span className="sr-only">Actions</span>
-              </th>
-            )}
-          </tr>
-        </thead>
-        <tbody>
-          {profiles.map((p) => (
-            <Row
-              key={p.name}
-              p={p}
-              prices={prices}
-              checking={checking?.includes(p.name) ?? false}
-              busy={checking !== null}
-              operator={operator}
-              onCheck={() => void check([p.name])}
-            />
-          ))}
-        </tbody>
-      </table>
+      {profiles.length === 0 ? (
+        <p className="text-muted-foreground">
+          No profiles yet. Write one under [profiles] in <ConfigLink />
+          {operator ? <>, or {addLink("add one from OpenRouter")}.</> : "."}
+        </p>
+      ) : (
+        <table className="w-full">
+          <thead className="text-muted-foreground text-left">
+            <tr className="border-b">
+              <th className="py-1 pr-4 font-normal">Profile</th>
+              <th className="py-1 pr-4 font-normal max-sm:hidden">Model</th>
+              <th className="py-1 pr-4 font-normal max-sm:hidden">Price per million tokens</th>
+              <th className="py-1 pr-4 font-normal max-md:hidden">Keys</th>
+              <th className="py-1 pr-4 font-normal whitespace-nowrap">Last check</th>
+              {operator && (
+                <th className="py-1 font-normal">
+                  <span className="sr-only">Actions</span>
+                </th>
+              )}
+            </tr>
+          </thead>
+          <tbody>
+            {profiles.map((p) => (
+              <Row
+                key={p.name}
+                p={p}
+                prices={prices}
+                checking={checking?.includes(p.name) ?? false}
+                busy={checking !== null}
+                operator={operator}
+                onCheck={() => void check([p.name])}
+              />
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
+  );
+}
+
+function ConfigLink() {
+  return (
+    <Link to="/settings/config" search={{ view: "project" }} className="text-foreground underline">
+      aims.toml
+    </Link>
   );
 }
 

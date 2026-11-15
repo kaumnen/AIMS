@@ -189,8 +189,9 @@ export interface paths {
         /**
          * Add Model
          * @description Add a profile for model `slug` to the project file, as `aims models add --write` does:
-         *     the profile `GET /models/lookup` shows, after what the file holds. A name that a profile
-         *     has already is refused. The merged layers must load first.
+         *     the profile `GET /models/lookup` shows, after what the file holds, with `roles` set to it
+         *     under [roles]. A name that a profile has already is refused, as is a role the model does
+         *     not fit. The merged layers must load first.
          */
         post: operations["add_model"];
         delete?: never;
@@ -4375,7 +4376,10 @@ export interface components {
             /** Text */
             text: string;
         };
-        /** ModelAdd */
+        /**
+         * ModelAdd
+         * @description `roles` the profile also takes under [roles], as `--role` does.
+         */
         ModelAdd: {
             /**
              * Alias
@@ -4384,6 +4388,8 @@ export interface components {
             alias?: boolean;
             /** Name */
             name?: string | null;
+            /** Roles */
+            roles?: ("agent" | "sweep" | "judge")[];
             /** Slug */
             slug: string;
             /**
@@ -5793,10 +5799,14 @@ export interface components {
          * ProfileDraft
          * @description A profile for a model a provider lists, as config file text to add under a layer.
          *     `notes` say what its reader should know. `exists` when a profile has the name already.
+         *     `fits` are the roles it can take: agent with tool calls, sweep and judge with structured
+         *     output.
          */
         ProfileDraft: {
             /** Exists */
             exists: boolean;
+            /** Fits */
+            fits: ("agent" | "sweep" | "judge")[];
             /** Name */
             name: string;
             /** Notes */
@@ -15380,6 +15390,7 @@ export const latencyLayerValues: ReadonlyArray<FlattenedDeepRequired<components>
 export const layerInfoLayerValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["LayerInfo"]["layer"]> = ["user", "project"];
 export const layerRatesLayerValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["LayerRates"]["layer"]> = ["signal", "sweep", "judge", "llm", "any"];
 export const memExecKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["MemExec"]["kind"]> = ["exec", "mmap"];
+export const modelAddRolesValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelAdd"]["roles"]> = ["agent", "sweep", "judge"];
 export const modelCheckedVerdictValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelChecked"]["verdict"]> = ["ok", "warn", "fail"];
 export const modelRequestBackendValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelRequest"]["backend"]> = ["responses", "chat"];
 export const modelRequestRoleAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelRequest"]["role"]> = ["sweep", "judge", "review", "score"];
@@ -15417,6 +15428,7 @@ export const profileBackendValues: ReadonlyArray<FlattenedDeepRequired<component
 export const profileEffortAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Profile"]["effort"]> = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 export const profileReasoningValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Profile"]["reasoning"]> = ["none", "summary", "full"];
 export const profileSummaryAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Profile"]["summary"]> = ["auto", "concise", "detailed"];
+export const profileDraftFitsValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ProfileDraft"]["fits"]> = ["agent", "sweep", "judge"];
 export const replayDivergenceKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ReplayDivergence"]["kind"]> = ["output", "channel"];
 export const resumeBodyThenValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ResumeBody"]["then"]> = ["continue", "kill", "inject", "deny"];
 export const reviewEstimateModeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ReviewEstimate"]["mode"]> = ["full", "signals_only", "judge_only"];

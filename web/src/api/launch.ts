@@ -9,6 +9,7 @@ export type Estimate = Schemas["Estimate"];
 export type ProfileInfo = Schemas["ProfileInfo"];
 export type ProfileCheck = Schemas["ProfileCheck"];
 export type ProfileDraft = Schemas["ProfileDraft"];
+export type ModelRole = ProfileDraft["fits"][number];
 export type ModelPrices = Schemas["ModelPrices"];
 export type PriceRow = Schemas["PriceRow"];
 export type Preset = NonNullable<StartRun["monitor"]>;
@@ -112,11 +113,22 @@ export async function lookupModel(
   return data;
 }
 
-// Add the profile a lookup with the same arguments shows to the project's config file. Returns
-// the file's path.
-export async function addModel(slug: string, name: string, alias: boolean): Promise<string> {
+// Add the profile a lookup with the same arguments shows to the project's config file, with
+// `roles` set to it under [roles]. Returns the file's path.
+export async function addModel(
+  slug: string,
+  name: string,
+  alias: boolean,
+  roles: readonly ModelRole[] = [],
+): Promise<string> {
   const { data, error } = await client.POST("/api/models/add", {
-    body: { slug, source: "openrouter", ...(name ? { name } : {}), ...(alias ? { alias } : {}) },
+    body: {
+      slug,
+      source: "openrouter",
+      ...(name ? { name } : {}),
+      ...(alias ? { alias } : {}),
+      ...(roles.length > 0 ? { roles: [...roles] } : {}),
+    },
   });
   if (error) throw error;
   return data.path;

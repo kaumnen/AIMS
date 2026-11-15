@@ -7179,6 +7179,7 @@
         "type": "object"
       },
       "ModelAdd": {
+        "description": "`roles` the profile also takes under [roles], as `--role` does.",
         "properties": {
           "alias": {
             "default": false,
@@ -7197,6 +7198,19 @@
               }
             ],
             "title": "Name"
+          },
+          "roles": {
+            "items": {
+              "enum": [
+                "agent",
+                "sweep",
+                "judge"
+              ],
+              "type": "string"
+            },
+            "maxItems": 3,
+            "title": "Roles",
+            "type": "array"
           },
           "slug": {
             "maxLength": 200,
@@ -10604,11 +10618,23 @@
         "type": "object"
       },
       "ProfileDraft": {
-        "description": "A profile for a model a provider lists, as config file text to add under a layer.\n`notes` say what its reader should know. `exists` when a profile has the name already.",
+        "description": "A profile for a model a provider lists, as config file text to add under a layer.\n`notes` say what its reader should know. `exists` when a profile has the name already.\n`fits` are the roles it can take: agent with tool calls, sweep and judge with structured\noutput.",
         "properties": {
           "exists": {
             "title": "Exists",
             "type": "boolean"
+          },
+          "fits": {
+            "items": {
+              "enum": [
+                "agent",
+                "sweep",
+                "judge"
+              ],
+              "type": "string"
+            },
+            "title": "Fits",
+            "type": "array"
           },
           "name": {
             "title": "Name",
@@ -10635,7 +10661,8 @@
           "slug",
           "toml",
           "notes",
-          "exists"
+          "exists",
+          "fits"
         ],
         "title": "ProfileDraft",
         "type": "object"
@@ -18406,7 +18433,7 @@
     },
     "/api/models/add": {
       "post": {
-        "description": "Add a profile for model `slug` to the project file, as `aims models add --write` does:\nthe profile `GET /models/lookup` shows, after what the file holds. A name that a profile\nhas already is refused. The merged layers must load first.",
+        "description": "Add a profile for model `slug` to the project file, as `aims models add --write` does:\nthe profile `GET /models/lookup` shows, after what the file holds, with `roles` set to it\nunder [roles]. A name that a profile has already is refused, as is a role the model does\nnot fit. The merged layers must load first.",
         "operationId": "add_model",
         "requestBody": {
           "content": {

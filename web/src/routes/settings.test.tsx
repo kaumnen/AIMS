@@ -91,6 +91,7 @@ const draft = (over: Partial<ProfileDraft> = {}): ProfileDraft => ({
   toml: TOML,
   notes: ["OpenRouter lists no context size for it, so context_tokens is unset."],
   exists: false,
+  fits: ["agent", "sweep", "judge"],
   ...over,
 });
 
@@ -457,16 +458,55 @@ test("quick clicks start one model check, and one that did not start can be trie
   expect(posts()).toHaveLength(2);
 });
 
-test("the models page names the roles no profile has", async () => {
+test("the models page names the roles no profile has and how to set them", async () => {
   renderAt("/settings/models");
   await screen.findByRole("table");
   expect(screen.queryByText(/Unset roles/)).toBeNull();
   cleanup();
   modelRoles = { agent: "spark", sweep: null, judge: null };
   renderAt("/settings/models");
-  expect(
-    await screen.findByText("Unset roles: sweep, judge. Set them under [roles] in aims.toml."),
-  ).toBeTruthy();
+  const line = (await screen.findByText(/^Unset roles/)) as HTMLElement;
+  expect(line.textContent).toBe(
+    "Unset roles: sweep, judge. Set them under [roles] in aims.toml, or add a model with them.",
+  );
+  expect(within(line).getByRole("link", { name: "aims.toml" }).getAttribute("href")).toBe(
+    "/settings/config?view=project",
+  );
+  fireEvent.click(within(line).getByRole("button", { name: "add a model with them" }));
+  expect(await screen.findByRole("dialog", { name: "Add from OpenRouter" })).toBeTruthy();
+  cleanup();
+  role = "viewer";
+  renderAt("/settings/models");
+  expect((await screen.findByText(/^Unset roles/)).textContent).toBe(
+    "Unset roles: sweep, judge. Set them under [roles] in aims.toml.",
+  );
+});
+
+test("a models page with no profiles says how to add one", async () => {
+  const real = fetch.getMockImplementation();
+  fetch.mockImplementation(async (request) =>
+    new URL(request.url).pathname === "/api/models"
+      ? Response.json({ profiles: [], roles: { agent: null, sweep: null, judge: null } })
+      : real!(request),
+  );
+  renderAt("/settings/models");
+  const line = (await screen.findByText(/^No profiles yet/)) as HTMLElement;
+  expect(line.textContent).toBe(
+    "No profiles yet. Write one under [profiles] in aims.toml, or add one from OpenRouter.",
+  );
+  // no role can name a profile yet, so the line about them waits
+  expect(screen.queryByText(/Unset roles/)).toBeNull();
+  expect(screen.queryByRole("table")).toBeNull();
+  fireEvent.click(within(line).getByRole("button", { name: "add one from OpenRouter" }));
+  expect(await screen.findByRole("dialog", { name: "Add from OpenRouter" })).toBeTruthy();
+});
+
+test("a link to the models page can open the lookup", async () => {
+  const router = renderAt("/settings/models?add=true");
+  const dialog = within(await screen.findByRole("dialog", { name: "Add from OpenRouter" }));
+  fireEvent.click(dialog.getByRole("button", { name: "Close" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(router.state.location.search).toEqual({});
 });
 
 test("viewers see the profiles without checks or a lookup", async () => {
@@ -1289,4 +1329,48 @@ test("viewers read the files and the settings in use, without checks", async () 
   expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
   await act(() => new Promise((r) => setTimeout(r, 500)));
   expect(posts()).toHaveLength(0);
+});
+
+test("a looked-up profile can take the roles it fits", async () => {
+  modelRoles = { agent: "spark", sweep: null, judge: "spark" };
+  lookup = () => Response.json(draft({ fits: ["agent"] }));
+  const { dialog, id } = await openLookup();
+  fireEvent.change(id, { target: { value: "acme/gem-9" } });
+  fireEvent.submit(id);
+  const agent = await dialog.findByRole("checkbox", { name: /^agent/ });
+  expect(agent.closest("label")?.textContent).toBe("agent runs a scenario's agents · now spark");
+  const sweep = dialog.getByRole("checkbox", { name: /^sweep/ });
+  expect(sweep).toHaveProperty("disabled", true);
+  expect(sweep.closest("label")?.textContent).toBe(
+    "sweep reads a run as it goes · OpenRouter lists no structured output for it",
+  );
+  fireEvent.click(agent);
+  expect(
+    dialog.getByText("aims models add openrouter acme/gem-9 --write --role agent"),
+  ).toBeTruthy();
+  fireEvent.click(dialog.getByRole("button", { name: "Add to project config" }));
+  expect(await dialog.findByText("/work/aims.toml")).toBeTruthy();
+  expect(await calls("POST", "/api/models/add")[0]?.json()).toEqual({
+    slug: "acme/gem-9",
+    source: "openrouter",
+    roles: ["agent"],
+  });
+  expect(agent).toHaveProperty("disabled", true);
+  cleanup();
+
+  modelRoles = { agent: null, sweep: null, judge: null };
+  lookup = () => Response.json(draft());
+  const again = await openLookup();
+  fireEvent.change(again.id, { target: { value: "acme/gem-9" } });
+  fireEvent.submit(again.id);
+  const judge = await again.dialog.findByRole("checkbox", { name: /^judge/ });
+  expect(judge.closest("label")?.textContent).toBe("judge gives the verdict after a run · unset");
+  fireEvent.click(judge);
+  fireEvent.click(again.dialog.getByRole("checkbox", { name: /^agent/ }));
+  // the flags keep the roles' order, whatever the order they were ticked in
+  expect(
+    again.dialog.getByText(
+      "aims models add openrouter acme/gem-9 --write --role agent --role judge",
+    ),
+  ).toBeTruthy();
 });
