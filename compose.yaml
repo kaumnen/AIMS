@@ -36,6 +36,8 @@ services:
     environment:
       # Config the UI saves goes to the volume.
       AIMS_CONFIG_DIR: /data/config
+      # So does the copy of LiteLLM's price map.
+      AIMS_CACHE_DIR: /data/cache
       # Large temp files, such as SQLite sorts, go to the volume too. The server makes this folder.
       SQLITE_TMPDIR: /data/aims/server/tmp
       TMPDIR: /data/aims/server/tmp
