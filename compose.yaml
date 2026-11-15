@@ -33,6 +33,8 @@ services:
       - --behind-proxy=${AIMS_SUBNET:-172.30.84.0/24}
       - --allow-host=server
       - --public-url=${AIMS_SITE:-http://localhost:8484}
+    # The project's aims.toml, where Settings > Models adds a model, is /data/aims.toml on the volume.
+    working_dir: /data
     environment:
       # Config the UI saves goes to the volume.
       AIMS_CONFIG_DIR: /data/config

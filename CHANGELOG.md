@@ -19,6 +19,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 ### Changed
 
+- Compose runs the server in `/data`, so the project's `aims.toml` is `/data/aims.toml` on the server's volume. Saving the project layer under Settings > Config failed with 403, since the server's root is read-only. Add from OpenRouter under Settings > Models saves to the same file.
 - `aims scenario check` passes a scenario when a role it needs is unset. It prints a note with the fix for each agent and monitor that needs the role. The estimate waits until the roles are set. A profile that the scenario or `[monitor]` names and that does not exist is still an error. The new `--monitor` takes the presets of `aims run`, so `--monitor signals --profile p` checks the run you mean to make.
 - The self-test needs no model. Each of its runs records the profile `scripted` for every agent, which names no model and is never called. It recorded the agent role's profile, or the one `--profile` named, though it never called it either. A fork of a self-test run needs a profile. `POST /api/scenarios/{source}/{name}/selftest` no longer takes `profile`.
 - A score run records the checks it was asked for and why they did not run under `checks` in its `run.started` config. The Score tab shows the reason under the plants. `aims score --json` gives it as `checks_off`. A score job carries it in `checks_off`. A score whose checks were off by choice records no reason.
