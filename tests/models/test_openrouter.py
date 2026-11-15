@@ -13,8 +13,9 @@ from typer.testing import CliRunner
 
 from aims.cli import app
 from aims.config import ConfigError, add_table, layers, load
-from aims.models import ProfileError, load_models
+from aims.models import Message, ProfileError, Prompt, load_models
 from aims.models import openrouter as router
+from aims.models.backends import BACKENDS
 from aims.models.openrouter import Catalog, CatalogError, default_name, draft, fetch
 
 CHAT = ["/api/v1/chat/completions", "/api/v1/responses"]
@@ -97,6 +98,7 @@ def test_a_profile_carries_the_openrouter_defaults_and_what_the_list_says() -> N
     # unset, so `require_parameters` does not cut the route to the endpoints that take it
     assert profile.parallel_tool_calls is None
     assert profile.routing.body() == {"sort": "price", "require_parameters": True}
+    assert "extra" not in found.table
     assert [n.split(".")[0] for n in found.notes] == [
         'reasoning = "full" is a guess',
         "The price is the lowest among its providers and is used for estimates",
@@ -155,6 +157,27 @@ def test_an_alias_is_refused_unless_asked_for() -> None:
     # the model it points at today, so a monitor on that model is still refused
     assert found.table["weights"] == "anthropic/claude-haiku-5.5-20261007"
     assert found.notes[0].startswith("~anthropic/claude-haiku-latest is an alias, which now")
+
+
+def test_a_model_with_a_cache_write_price_asks_for_its_prompt_cache(tmp_path: Path) -> None:
+    pricing = FLASH["pricing"] | {"input_cache_write": "0.000000063"}
+    found = draft(changed(FLASH, pricing=pricing), FLASH["id"])
+    assert found.table["extra"] == {"cache_control": {"type": "ephemeral"}}
+    assert any(n.startswith("OpenRouter lists a price for a cache write") for n in found.notes)
+    text = found.toml()
+    assert 'extra = {cache_control = {type = "ephemeral"}}\n' in text
+    path = tmp_path / "aims.toml"
+    path.write_text(text)
+    profile = load_models(path).get(found.name)
+    assert profile == found.profile
+    body = BACKENDS["chat"].body(profile, Prompt(items=[Message(role="user", content="hi")]))
+    assert body["cache_control"] == {"type": "ephemeral"}
+    # a write price that is no amount says nothing
+    for price in (None, "free", "-1", 0.5):
+        listed = changed(FLASH, pricing=FLASH["pricing"] | {"input_cache_write": price})
+        assert "extra" not in draft(listed, FLASH["id"]).table
+    # the model's author plays no part
+    assert "extra" not in draft(MODELS, "anthropic/claude-haiku-5.5").table
 
 
 def test_a_model_not_served_on_chat_completions_is_refused() -> None:

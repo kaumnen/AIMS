@@ -220,10 +220,18 @@ def draft(
             " it cannot be the sweep or judge model."
         )
     table["cache_key"] = True
+    pricing = _dict(model.get("pricing"))
+    if _per_million(pricing.get("input_cache_write")) is not None:
+        # The key only routes. Some models that bill a cache write cache a prompt only when
+        # the request asks, and the others take the field without effect.
+        table["extra"] = {"cache_control": {"type": "ephemeral"}}
+        notes.append(
+            "OpenRouter lists a price for a cache write, so extra.cache_control asks for the"
+            " prompt cache. Some models cache only when asked."
+        )
     table["routing"] = {"sort": "price", "require_parameters": True}
     table["headers"] = {"X-OpenRouter-Metadata": "enabled"}
 
-    pricing = _dict(model.get("pricing"))
     cost_in, cost_out = _per_million(pricing.get("prompt")), _per_million(pricing.get("completion"))
     if cost_in is None or cost_out is None:
         notes.append(

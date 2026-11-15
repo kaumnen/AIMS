@@ -114,6 +114,7 @@ What the profile sets:
 | `routing.sort = "price"` | The cheapest provider that can serve the request comes first. |
 | `routing.require_parameters = true` | Only providers that support every parameter of a request serve it. Without it a provider may drop tools, structured output or the effort without an error. |
 | `cache_key = true` | A run's calls share one prompt cache. |
+| `extra.cache_control` | Only when OpenRouter lists a price for a cache write. Some such models cache a prompt only when the request asks. The others take the field without effect. |
 | `X-OpenRouter-Metadata` | The answer names the provider that served it. |
 | No `parallel_tool_calls` | Few providers support the field. With `require_parameters` it would cut the route to those few. |
 | `effort` | The model's default. The comment below it lists the levels OpenRouter names. |
