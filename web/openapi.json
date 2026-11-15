@@ -2548,8 +2548,13 @@
         "type": "object"
       },
       "CostFigures": {
-        "description": "One run's cost in USD at list prices. `ceiling_usd` is what the caps allow, None when no\ncap applies; `stepped` says it counts one last step past a cost cap, which is checked before\neach step. `typical_usd` is the median of `runs` matching past runs, matched by `tier`: the\nsame scenario, or the same models and effort scaled by step budget. `high_usd` is their\n90th percentile, or twice the median when `doubled` (under 10 runs). `capped` of those runs\nhit a cap; a past monitor that stopped at its cap counts at this one's, since it would have\ngone on. `excluded` matched but recorded no cost. `priced` is false when no profile of this\nside has a price, so its cost is not counted.",
+        "description": "One run's cost in USD at list prices. `ceiling_usd` is what the caps allow, None when no\ncap applies; `stepped` says it counts one last step past a cost cap, which is checked before\neach step. `typical_usd` is the median of `runs` matching past runs, matched by `tier`: the\nsame scenario, or the same models and effort scaled by step budget. `high_usd` is their\n90th percentile, or twice the median when `doubled` (under 10 runs). `capped` of those runs\nhit a cap; a past monitor that stopped at its cap counts at this one's, since it would have\ngone on. `excluded` matched but recorded no cost. `priced` is false when no profile of this\nside has a price, so its cost is not counted. `cap_holds` is false when a cost cap is set but\nleaves the ceiling, since a model it bounds has only a list price, which the run does not\ncount.",
         "properties": {
+          "cap_holds": {
+            "default": true,
+            "title": "Cap Holds",
+            "type": "boolean"
+          },
           "capped": {
             "default": 0,
             "title": "Capped",
@@ -2634,7 +2639,8 @@
           "capped",
           "excluded",
           "doubled",
-          "priced"
+          "priced",
+          "cap_holds"
         ],
         "title": "CostFigures",
         "type": "object"
@@ -2931,7 +2937,7 @@
         "type": "object"
       },
       "Estimate": {
-        "description": "The cost of `samples` runs of each variant in `parts`. `confirm` says `aims run` asks\nbefore it starts: no cap bounds the cost, whatever past runs cost, or the high figure, or\nwithout one the ceiling, is above `confirm_above_usd`. `lines` is the estimate in words.",
+        "description": "The cost of `samples` runs of each variant in `parts`. `confirm` says `aims run` asks\nbefore it starts: no cap bounds the cost, whatever past runs cost, or the high figure, or\nwithout one the ceiling, is above `confirm_above_usd`. `listed` holds the list prices laid\non profiles with no price of their own, and `unlisted` says by profile why one that names a\nkey got none. `lines` is the estimate in words.",
         "properties": {
           "confirm": {
             "default": false,
@@ -2955,6 +2961,13 @@
               "type": "string"
             },
             "title": "Lines",
+            "type": "array"
+          },
+          "listed": {
+            "items": {
+              "$ref": "#/components/schemas/ListedPrice"
+            },
+            "title": "Listed",
             "type": "array"
           },
           "parts": {
@@ -2982,6 +2995,13 @@
           "total": {
             "$ref": "#/components/schemas/CostTotal"
           },
+          "unlisted": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Unlisted",
+            "type": "object"
+          },
           "unpriced": {
             "items": {
               "type": "string"
@@ -3005,6 +3025,8 @@
           "rates",
           "credits",
           "unpriced",
+          "listed",
+          "unlisted",
           "warnings",
           "confirm_above_usd",
           "confirm",
@@ -6801,6 +6823,85 @@
           }
         },
         "title": "Limits",
+        "type": "object"
+      },
+      "ListedPrice": {
+        "description": "The list price an estimate laid on profile `profile`, which sets no `price` of its own:\nrow `key` of `source`'s price map, from a copy last confirmed current at `checked`, in\nUSD per million tokens. `cached_listed` is false when the row lists no cached input price,\nso cached input counts at the input price. `tier_from` is the prompt size in tokens from\nwhich the row lists a higher price, which the estimate leaves out. `problem` says why the\ncopy could not be confirmed current, None when it was. A cost cap on the profile's calls\nholds only if the provider reports each call's cost. `text` says where the price comes\nfrom.",
+        "properties": {
+          "cached_listed": {
+            "title": "Cached Listed",
+            "type": "boolean"
+          },
+          "cached_usd": {
+            "title": "Cached Usd",
+            "type": "number"
+          },
+          "checked": {
+            "format": "date-time",
+            "title": "Checked",
+            "type": "string"
+          },
+          "input_usd": {
+            "title": "Input Usd",
+            "type": "number"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "output_usd": {
+            "title": "Output Usd",
+            "type": "number"
+          },
+          "problem": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Problem"
+          },
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "tier_from": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tier From"
+          }
+        },
+        "required": [
+          "profile",
+          "source",
+          "key",
+          "checked",
+          "input_usd",
+          "cached_usd",
+          "output_usd",
+          "cached_listed",
+          "tier_from",
+          "problem",
+          "text"
+        ],
+        "title": "ListedPrice",
         "type": "object"
       },
       "LogTruncated": {
@@ -11492,7 +11593,7 @@
         "type": "object"
       },
       "ReviewEstimate": {
-        "description": "What `samples` offline monitor runs over run `run_id` cost at list prices. Each stops at\n`ceiling_usd`, its spend cap. `typical_usd` is the median of `runs` past monitor runs with\nthe same preset, models and mode, each scaled from its run's agent steps to this run's\n`steps`, of the same scenario when `same_scenario`, else of any. One that stopped at its\ncap counts as if its sweeps had covered every step. `high_usd` is their 90th\npercentile, or twice the median when `doubled` (under 10 runs); neither passes the cap.\n`priced` is false when no model of the monitor has a price, so its cost is not counted;\nwith no model at all every figure is 0. `covers` is how many of the `steps` the sweeps pay\nfor before the cap, from past reviews' sweep cost per step or else the sweep prices; None\nwhen they cover them all. `total` is every sample together, and `confirm` says they start\nonly with a person's yes, as runs do.",
+        "description": "What `samples` offline monitor runs over run `run_id` cost at list prices. Each stops at\n`ceiling_usd`, its spend cap. `typical_usd` is the median of `runs` past monitor runs with\nthe same preset, models and mode, each scaled from its run's agent steps to this run's\n`steps`, of the same scenario when `same_scenario`, else of any. One that stopped at its\ncap counts as if its sweeps had covered every step. `high_usd` is their 90th\npercentile, or twice the median when `doubled` (under 10 runs); neither passes the cap.\n`priced` is false when no model of the monitor has a price, so its cost is not counted;\nwith no model at all every figure is 0. `covers` is how many of the `steps` the sweeps pay\nfor before the cap, from past reviews' sweep cost per step or else the sweep prices; None\nwhen they cover them all. `total` is every sample together, and `confirm` says they start\nonly with a person's yes, as runs do. `listed` and `unlisted` are as in an Estimate; the\ncap does not hold on a model priced only for the estimate, so `ceiling_usd` is None then.",
         "properties": {
           "ceiling_usd": {
             "anyOf": [
@@ -11547,6 +11648,13 @@
               "type": "string"
             },
             "title": "Lines",
+            "type": "array"
+          },
+          "listed": {
+            "items": {
+              "$ref": "#/components/schemas/ListedPrice"
+            },
+            "title": "Listed",
             "type": "array"
           },
           "mode": {
@@ -11608,6 +11716,13 @@
               }
             ],
             "title": "Typical Usd"
+          },
+          "unlisted": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Unlisted",
+            "type": "object"
           }
         },
         "required": [
@@ -11627,6 +11742,8 @@
           "doubled",
           "confirm_above_usd",
           "confirm",
+          "listed",
+          "unlisted",
           "lines"
         ],
         "title": "ReviewEstimate",
@@ -13955,7 +14072,7 @@
         "type": "object"
       },
       "ScoreEstimate": {
-        "description": "What a score of run `run_id` costs at list prices. `classifier` is the model of its\nchecks, None when none runs, so it costs nothing; `calls` the most calls they make.\n`typical_usd` is the median of `runs` past scores that called a model, of the same\nscenario when `same_scenario`, else of any; `high_usd` their 90th percentile, or twice the\nmedian when `doubled` (under 10 runs). `ceiling_usd` is what the agents' words, the chunks\nand the output cap allow, None when the classifier has no price or no output cap.",
+        "description": "What a score of run `run_id` costs at list prices. `classifier` is the model of its\nchecks, None when none runs, so it costs nothing; `calls` the most calls they make.\n`typical_usd` is the median of `runs` past scores that called a model, of the same\nscenario when `same_scenario`, else of any; `high_usd` their 90th percentile, or twice the\nmedian when `doubled` (under 10 runs). `ceiling_usd` is what the agents' words, the chunks\nand the output cap allow, None when the classifier has no price or no output cap. `listed`\nholds the list price it counts at when its profile sets none, and `unlisted` says why one\nthat names a key got none.",
         "properties": {
           "calls": {
             "default": 0,
@@ -14007,6 +14124,13 @@
             "title": "Lines",
             "type": "array"
           },
+          "listed": {
+            "items": {
+              "$ref": "#/components/schemas/ListedPrice"
+            },
+            "title": "Listed",
+            "type": "array"
+          },
           "run_id": {
             "title": "Run Id",
             "type": "string"
@@ -14031,6 +14155,13 @@
               }
             ],
             "title": "Typical Usd"
+          },
+          "unlisted": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Unlisted",
+            "type": "object"
           }
         },
         "required": [
@@ -14043,6 +14174,8 @@
           "runs",
           "same_scenario",
           "doubled",
+          "listed",
+          "unlisted",
           "lines"
         ],
         "title": "ScoreEstimate",

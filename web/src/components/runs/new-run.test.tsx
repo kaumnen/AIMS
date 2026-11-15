@@ -94,6 +94,8 @@ function estimate(samples: number, budget: string | null = null): Estimate {
     rates: [],
     total: { typical_usd: null, high_usd: null, ceiling_usd: ceiling },
     unpriced: [],
+    listed: [],
+    unlisted: {},
   };
 }
 

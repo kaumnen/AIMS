@@ -12,6 +12,7 @@ from pathlib import Path
 from aims.config import ConfigError, Layers, Settings, layers, load
 from aims.events import Event, LocalEventStore
 from aims.models import Delta, DeltaBus, ProfileError
+from aims.models.listprice import PriceLists
 from aims.models.openrouter import Catalog
 from aims.monitor.config import MonitorConfigError
 from aims.prompts import TextError
@@ -304,6 +305,8 @@ class ServerState:
     check_runs: dict[str, tuple[str, list[str], list[Event]]] = field(default_factory=dict)
     # OpenRouter's list of models, for the profile lookup
     catalog: Catalog = field(default_factory=Catalog)
+    # LiteLLM's price map, for the estimates of profiles that name a key and set no price
+    prices: PriceLists = field(default_factory=PriceLists)
 
     def spool(self) -> Path:
         """A private folder in the data directory for request bodies too large for memory, made

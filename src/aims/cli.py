@@ -735,23 +735,27 @@ def _echo_estimate(
     import asyncio
 
     from aims.models import ProfileError
+    from aims.models.listprice import PriceLists
     from aims.monitor.config import MonitorConfigError
     from aims.prompts import TextError
-    from aims.run.estimate import estimate_runs, load_history
+    from aims.run.estimate import Estimate, estimate_runs, load_history
     from aims.scenario.budget import BudgetError
     from aims.terminal import json_text
 
-    try:
-        found = asyncio.run(load_history(runs_dir))
-        cost = estimate_runs(
-            found,
+    async def main() -> Estimate:
+        return await estimate_runs(
+            await load_history(runs_dir),
             settings,
             bundles,
             profile=profile,
             preset=preset,
             samples=samples,
             budget=budget,
+            lists=PriceLists(),
         )
+
+    try:
+        cost = asyncio.run(main())
     except (MonitorConfigError, ProfileError, TextError, BudgetError) as e:
         _echo(f"no cost estimate: {e}", err=True)
         raise typer.Exit(EXIT_FAILED) from None
@@ -1081,6 +1085,7 @@ async def _run(**o: Any) -> int:
     from aims.channels import archives
     from aims.events import LocalEventStore, Series
     from aims.models import ProfileError
+    from aims.models.listprice import PriceLists
     from aims.monitor.config import MonitorConfigError
     from aims.node.client import ControlClient
     from aims.node.link import Link
@@ -1222,7 +1227,7 @@ async def _run(**o: Any) -> int:
         cost = None
         try:
             if origin is not None and fork_base is not None:
-                cost = estimate_fork(
+                cost = await estimate_fork(
                     await history(store),
                     settings,
                     origin,
@@ -1230,9 +1235,10 @@ async def _run(**o: Any) -> int:
                     preset=o["monitor"],
                     samples=o["samples"],
                     budget=o["budget"],
+                    lists=PriceLists(),
                 )
             else:
-                cost = estimate_runs(
+                cost = await estimate_runs(
                     await history(store),
                     settings,
                     [bundle],
@@ -1240,6 +1246,7 @@ async def _run(**o: Any) -> int:
                     preset=o["monitor"],
                     samples=o["samples"] * o.get("runs", 1),
                     budget=budget,
+                    lists=PriceLists(),
                 )
         except (MonitorConfigError, ProfileError, TextError, RunError, KeyError) as e:
             err.print("[yellow]no cost estimate:[/]", shown(e))
@@ -2162,6 +2169,7 @@ async def _monitor_runs(**o: Any) -> int:
     from aims.config import load as load_settings
     from aims.events import LocalEventStore
     from aims.models import ProfileError
+    from aims.models.listprice import PriceLists
     from aims.monitor.config import MonitorConfigError
     from aims.monitor.offline import (
         OfflineResult,
@@ -2209,6 +2217,7 @@ async def _monitor_runs(**o: Any) -> int:
         await _seal_left(store, lambda text: err.print(shown(text, "yellow")))
         planned = []
         costs = []
+        lists = PriceLists()
         for run_id in dict.fromkeys(o["runs"]):
             try:
                 origin, _ = await monitored(store, run_id)
@@ -2240,6 +2249,7 @@ async def _monitor_runs(**o: Any) -> int:
                     mode,
                     samples=o["samples"],
                     confirm_above_usd=settings.confirm_above_usd,
+                    lists=lists,
                 )
             )
             group = uuid.uuid4().hex[:12] if o["samples"] > 1 else None
@@ -3135,6 +3145,7 @@ def score_cmd(
     import uuid
 
     from aims.events import LocalEventStore
+    from aims.models.listprice import PriceLists
     from aims.run.runner import RunError
     from aims.run.scoring import (
         ScoreError,
@@ -3156,7 +3167,12 @@ def score_cmd(
                 with _stoppable():
                     await _seal_left(store, lambda text: typer.echo(text, err=True))
                     cost = await estimate_sealed(
-                        store, settings, run, awareness=awareness, answer=answer
+                        store,
+                        settings,
+                        run,
+                        awareness=awareness,
+                        answer=answer,
+                        lists=PriceLists(),
                     )
                     if not json_out:
                         for line in cost.lines:

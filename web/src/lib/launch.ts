@@ -33,6 +33,9 @@ export function confirmWhy(
 ): string | null {
   if (!e.confirm) return null;
   const limit = usd(e.confirm_above_usd);
+  if (e.total.ceiling_usd == null && e.total.high_usd != null) {
+    return `No cap bounds the cost. The high estimate is ${usd(e.total.high_usd)}.`;
+  }
   if (e.total.high_usd != null) {
     return `The high estimate ${usd(e.total.high_usd)} is above the ${limit} limit.`;
   }

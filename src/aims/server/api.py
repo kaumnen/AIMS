@@ -52,6 +52,7 @@ from aims.events.schema import blob_refs
 from aims.events.store import is_run_id
 from aims.models import Profile, ProfileError
 from aims.models.check import Verdict
+from aims.models.listprice import PriceLists
 from aims.models.openrouter import CatalogError, Draft, draft
 from aims.monitor import sweep_texts
 from aims.monitor import texts as monitor_texts
@@ -985,7 +986,7 @@ async def start_runs(
             jobs = await _place_series(state, body.series, body.restart, jobs)
         if not body.confirm:
             try:
-                cost = estimate_runs(
+                cost = await estimate_runs(
                     await state.history(),
                     settings,
                     [bundle],
@@ -993,6 +994,7 @@ async def start_runs(
                     preset=body.monitor,
                     samples=body.samples * body.runs,
                     budget=body.budget,
+                    lists=state.prices,
                 )
             except ProfileError, MonitorConfigError, TextError:
                 cost = None
@@ -1068,10 +1070,16 @@ async def fork_point(state: ServerState, run_id: str, body: StartFork) -> ForkPo
     return ForkPoint(origin, step)
 
 
-def fork_estimate(settings: Settings, history: History, at: ForkPoint, body: StartFork) -> Estimate:
-    """What the forks `body` asks for cost. Raises RunError, ProfileError, KeyError,
-    MonitorConfigError or TextError."""
-    return estimate_fork(
+async def fork_estimate(
+    settings: Settings,
+    history: History,
+    at: ForkPoint,
+    body: StartFork,
+    lists: PriceLists | None = None,
+) -> Estimate:
+    """What the forks `body` asks for cost, with list prices from `lists`. Raises RunError,
+    ProfileError, KeyError, MonitorConfigError or TextError."""
+    return await estimate_fork(
         history,
         settings,
         at.origin,
@@ -1079,6 +1087,7 @@ def fork_estimate(settings: Settings, history: History, at: ForkPoint, body: Sta
         preset=body.monitor,
         samples=body.samples,
         budget=body.budget,
+        lists=lists,
     )
 
 
@@ -1124,7 +1133,7 @@ async def fork_run(
         raise ProblemException(422, "Cannot fork", str(e), code="fork") from None
     if not body.confirm:
         try:
-            cost = fork_estimate(settings, await state.history(), at, body)
+            cost = await fork_estimate(settings, await state.history(), at, body, state.prices)
         except RunError, ProfileError, KeyError, MonitorConfigError, TextError:
             cost = None
         _confirm(cost)

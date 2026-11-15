@@ -14,8 +14,8 @@ import os
 import re
 import secrets
 import time
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -23,7 +23,7 @@ from typing import Any
 
 import httpx2
 
-from aims.models.profiles import Price
+from aims.models.profiles import Price, Profile
 from aims.net import Outbound
 
 log = logging.getLogger(__name__)
@@ -326,3 +326,59 @@ class PriceLists:
 
 def _list(copy: _Copy) -> PriceList:
     return PriceList(copy.rows, datetime.fromtimestamp(copy.checked, UTC))
+
+
+@dataclass(frozen=True, slots=True)
+class Listing:
+    """The list prices an estimate lays on profiles that name a `price_key` and set no
+    `price`: `prices` by key, `missing` why the map gave a key none, and `problem` why the
+    copy at hand could not be confirmed current."""
+
+    prices: Mapping[str, ListPrice] = field(default_factory=dict)
+    missing: Mapping[str, str] = field(default_factory=dict)
+    problem: str | None = None
+
+    def find(self, p: Profile) -> ListPrice | None:
+        """The list price of profile `p`. None when it sets its own price, names no key, or
+        the map gave its key none."""
+        if p.price is not None or p.price_key is None:
+            return None
+        return self.prices.get(p.price_key)
+
+    def why(self, p: Profile) -> str | None:
+        """Why profile `p`, which names a key and sets no price, got no list price. None when
+        it got one or no lookup was made for it."""
+        if p.price is not None or p.price_key is None:
+            return None
+        return self.missing.get(p.price_key)
+
+    def lay(self, p: Profile) -> Profile:
+        """A copy of `p` with its list price as its price; `p` itself without one."""
+        found = self.find(p)
+        return p if found is None else p.model_copy(update={"price": found.price})
+
+
+async def listing(profiles: Iterable[Profile], lists: PriceLists | None) -> Listing:
+    """The list prices of those `profiles` that name a key and set no price. The map is read
+    only for such a profile. A map that cannot be read leaves them unpriced, with the reason;
+    nothing here fails an estimate."""
+    keys = sorted({p.price_key for p in profiles if p.price is None and p.price_key is not None})
+    if not keys or lists is None:
+        return Listing()
+    try:
+        found = await lists.get()
+    except Exception as e:
+        # A list price only adds to an estimate, which goes on without it.
+        log.warning("the %s price map could not be read", SOURCE, exc_info=True)
+        found = Found(None, f"{type(e).__name__}: {e}")
+    if found.prices is None:
+        why = f"no copy of the {SOURCE} price map is at hand ({found.problem or 'none kept'})"
+        return Listing(missing=dict.fromkeys(keys, why), problem=found.problem)
+    prices: dict[str, ListPrice] = {}
+    missing: dict[str, str] = {}
+    for key in keys:
+        try:
+            prices[key] = found.prices.get(key)
+        except NoPrice as e:
+            missing[key] = str(e)
+    return Listing(prices, missing, found.problem)

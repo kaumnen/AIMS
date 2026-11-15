@@ -66,13 +66,22 @@ from aims.models import (
     Prompt,
     ReplayError,
 )
+from aims.models.listprice import PriceLists, listing
 from aims.monitor.offline import origin_agents
 from aims.monitor.render import cut, escape, frame, tokens
 from aims.monitor.setup import extractor_for
 from aims.monitor.sweep import verify
 from aims.monitor.texts import MonitorTexts, resolve
 from aims.run import truth
-from aims.run.estimate import MIN_RUNS, spread, usd
+from aims.run.estimate import (
+    MIN_RUNS,
+    ListedPrice,
+    listed_line,
+    listed_price,
+    spread,
+    unpriced_line,
+    usd,
+)
 from aims.run.fork import load_origin
 from aims.run.runner import RunError
 from aims.run.score import Added, CheckError, Taken, check_run, rule_plants
@@ -903,7 +912,9 @@ class ScoreEstimate(BaseModel):
     `typical_usd` is the median of `runs` past scores that called a model, of the same
     scenario when `same_scenario`, else of any; `high_usd` their 90th percentile, or twice the
     median when `doubled` (under 10 runs). `ceiling_usd` is what the agents' words, the chunks
-    and the output cap allow, None when the classifier has no price or no output cap."""
+    and the output cap allow, None when the classifier has no price or no output cap. `listed`
+    holds the list price it counts at when its profile sets none, and `unlisted` says why one
+    that names a key got none."""
 
     model_config = ConfigDict(json_schema_serialization_defaults_required=True)
 
@@ -916,6 +927,8 @@ class ScoreEstimate(BaseModel):
     runs: int = 0
     same_scenario: bool = False
     doubled: bool = False
+    listed: list[ListedPrice] = Field(default_factory=list)
+    unlisted: dict[str, str] = Field(default_factory=dict)
     lines: list[str] = Field(default_factory=list)
 
 
@@ -931,8 +944,11 @@ async def estimate_sealed(
     *,
     awareness: bool = True,
     answer: bool = True,
+    lists: PriceLists | None = None,
 ) -> ScoreEstimate:
-    """What `score_sealed` would cost on run `run` with these settings. Raises ScoreError."""
+    """What `score_sealed` would cost on run `run` with these settings. `lists` gives a list
+    price to a classifier that names a key and sets no price; None looks up none. Raises
+    ScoreError."""
     profile = None
     if awareness or answer:
         try:
@@ -941,7 +957,13 @@ async def estimate_sealed(
             raise ScoreError(str(e)) from None
         profile = extractor_for(settings.models, CLASSIFIERS, origin_agents(origin))
     return await estimate_score(
-        store, run, profile, resolve(settings.prompts), awareness=awareness, answer=answer
+        store,
+        run,
+        profile,
+        resolve(settings.prompts),
+        awareness=awareness,
+        answer=answer,
+        lists=lists,
     )
 
 
@@ -953,9 +975,11 @@ async def estimate_score(
     *,
     awareness: bool = True,
     answer: bool = True,
+    lists: PriceLists | None = None,
 ) -> ScoreEstimate:
     """What a score of run `run` costs with the classifier `profile`, None for no checks: the
-    calls its words take, and the past scores' costs. Raises ScoreError."""
+    calls its words take, and the past scores' costs. `lists` is as for `estimate_sealed`.
+    Raises ScoreError."""
     info = await store.run(run)
     if info is None:
         raise ScoreError(f"no run {run}")
@@ -996,7 +1020,12 @@ async def estimate_score(
             if roles.get(agent, "subject") == "subject":
                 out.calls += 1
                 tokens_in += n + system + findings
-    price, cap = profile.price, profile.max_output_tokens
+    prices = await listing([profile], lists)
+    if (found := prices.find(profile)) is not None:
+        out.listed.append(listed_price(profile.name, found, prices.problem))
+    elif (why := prices.why(profile)) is not None:
+        out.unlisted[profile.name] = why
+    price, cap = prices.lay(profile).price, profile.max_output_tokens
     if price is not None and cap is not None:
         out.ceiling_usd = (tokens_in * price.input + out.calls * cap * price.output) / 1_000_000
     same: list[float] = []
@@ -1075,4 +1104,8 @@ def describe_score(e: ScoreEstimate) -> list[str]:
         words.append("No ceiling: the classifier has no price or no output cap.")
     else:
         words.append(f"Cannot exceed {usd(e.ceiling_usd)}.")
-    return [" ".join(words)]
+    return [
+        " ".join(words),
+        *(listed_line(entry) for entry in e.listed),
+        *(unpriced_line(n, why) for n, why in e.unlisted.items()),
+    ]

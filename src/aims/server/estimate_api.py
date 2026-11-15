@@ -87,7 +87,7 @@ async def estimate_scenario(
             422, "Scenario does not load", code="scenario", errors=scenario_problems(e)
         ) from None
     try:
-        return estimate_runs(
+        return await estimate_runs(
             await state.history(),
             settings,
             bundles,
@@ -95,6 +95,7 @@ async def estimate_scenario(
             preset=monitor,
             samples=samples,
             budget=caps,
+            lists=state.prices,
         )
     except BudgetError as e:
         raise ProblemException(422, "Invalid budget", str(e), code="budget") from None
@@ -130,7 +131,9 @@ async def estimate_forks(
     await _shown(state, principal, _run_id(run_id))
     point = await fork_point(state, run_id, body)
     try:
-        return fork_estimate(state.config.settings(), await state.history(), point, body)
+        return await fork_estimate(
+            state.config.settings(), await state.history(), point, body, state.prices
+        )
     except (RunError, ProfileError, KeyError, MonitorConfigError, TextError) as e:
         raise ProblemException(422, "Cannot estimate", str(e), code="estimate") from None
 

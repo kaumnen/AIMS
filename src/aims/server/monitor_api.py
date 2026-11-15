@@ -197,6 +197,7 @@ async def monitor_run(
                 mode_of(body),
                 samples=body.samples,
                 confirm_above_usd=settings.confirm_above_usd,
+                lists=state.prices,
             )
     except (RunError, ProfileError, MonitorConfigError, TextError) as e:
         raise ProblemException(422, "Cannot monitor", str(e), code="monitor") from None
@@ -265,6 +266,7 @@ async def estimate_monitor(
             mode_of(body),
             samples=samples,
             confirm_above_usd=settings.confirm_above_usd,
+            lists=state.prices,
         )
     except (RunError, ProfileError, MonitorConfigError, TextError) as e:
         raise ProblemException(422, "Cannot estimate", str(e), code="estimate") from None

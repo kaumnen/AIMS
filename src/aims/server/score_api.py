@@ -246,7 +246,12 @@ async def estimate_score(
         raise _no_run(state, run_id)
     try:
         return await estimate_sealed(
-            state.store, state.config.settings(), run_id, awareness=awareness, answer=answer
+            state.store,
+            state.config.settings(),
+            run_id,
+            awareness=awareness,
+            answer=answer,
+            lists=state.prices,
         )
     except (ScoreError, ProfileError, TextError) as e:
         raise ProblemException(422, "Cannot estimate", str(e), code="estimate") from None

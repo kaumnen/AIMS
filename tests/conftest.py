@@ -40,6 +40,7 @@ def user_config(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.Mo
     path = tmp_path_factory.mktemp("config")
     monkeypatch.setenv("AIMS_CONFIG_DIR", str(path))
     monkeypatch.setenv("AIMS_SERVER_DIR", str(tmp_path_factory.mktemp("server")))
+    monkeypatch.setenv("AIMS_CACHE_DIR", str(tmp_path_factory.mktemp("cache")))
     return path
 
 

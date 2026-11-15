@@ -22,7 +22,8 @@ import sqlite3
 import statistics
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
@@ -33,6 +34,7 @@ from aims.config import CONFIRM_ABOVE_USD, Settings
 from aims.events import LocalEventStore, RunInfo
 from aims.events.store import TRUTH
 from aims.models import Profile, ProfileError
+from aims.models.listprice import SOURCE, Listing, ListPrice, PriceLists, listing
 from aims.models.profiles import Price
 from aims.monitor.config import Preset
 from aims.monitor.setup import ResolvedMonitor, planned_steps
@@ -85,7 +87,9 @@ class CostFigures(_Out):
     90th percentile, or twice the median when `doubled` (under 10 runs). `capped` of those runs
     hit a cap; a past monitor that stopped at its cap counts at this one's, since it would have
     gone on. `excluded` matched but recorded no cost. `priced` is false when no profile of this
-    side has a price, so its cost is not counted."""
+    side has a price, so its cost is not counted. `cap_holds` is false when a cost cap is set but
+    leaves the ceiling, since a model it bounds has only a list price, which the run does not
+    count."""
 
     typical_usd: float | None = None
     high_usd: float | None = None
@@ -97,6 +101,7 @@ class CostFigures(_Out):
     excluded: int = 0
     doubled: bool = False
     priced: bool = True
+    cap_holds: bool = True
 
 
 class CapsInForce(_Out):
@@ -153,6 +158,47 @@ class CachedRate(_Out):
     input_usd: float
 
 
+class ListedPrice(_Out):
+    """The list price an estimate laid on profile `profile`, which sets no `price` of its own:
+    row `key` of `source`'s price map, from a copy last confirmed current at `checked`, in
+    USD per million tokens. `cached_listed` is false when the row lists no cached input price,
+    so cached input counts at the input price. `tier_from` is the prompt size in tokens from
+    which the row lists a higher price, which the estimate leaves out. `problem` says why the
+    copy could not be confirmed current, None when it was. A cost cap on the profile's calls
+    holds only if the provider reports each call's cost. `text` says where the price comes
+    from."""
+
+    profile: str
+    source: str
+    key: str
+    checked: datetime
+    input_usd: float
+    cached_usd: float
+    output_usd: float
+    cached_listed: bool
+    tier_from: int | None = None
+    problem: str | None = None
+    text: str
+
+
+def listed_price(name: str, found: ListPrice, problem: str | None = None) -> ListedPrice:
+    """How an estimate shows the list price `found` of profile `name`, from a copy that could
+    not be confirmed current for `problem`."""
+    return ListedPrice(
+        profile=name,
+        source=SOURCE,
+        key=found.key,
+        checked=found.checked,
+        input_usd=found.price.input,
+        cached_usd=found.price.cached,
+        output_usd=found.price.output,
+        cached_listed=found.cached_listed,
+        tier_from=found.tier_from,
+        problem=problem,
+        text=found.describe(),
+    )
+
+
 class ProviderCredit(_Out):
     """What `provider` was paid in the runs on record, and with `[credits]` set for it, what is
     left now and after the estimate's typical and high figures."""
@@ -168,7 +214,9 @@ class ProviderCredit(_Out):
 class Estimate(_Out):
     """The cost of `samples` runs of each variant in `parts`. `confirm` says `aims run` asks
     before it starts: no cap bounds the cost, whatever past runs cost, or the high figure, or
-    without one the ceiling, is above `confirm_above_usd`. `lines` is the estimate in words."""
+    without one the ceiling, is above `confirm_above_usd`. `listed` holds the list prices laid
+    on profiles with no price of their own, and `unlisted` says by profile why one that names a
+    key got none. `lines` is the estimate in words."""
 
     scenario: str
     samples: int
@@ -177,6 +225,8 @@ class Estimate(_Out):
     rates: list[CachedRate] = Field(default_factory=list)
     credits: list[ProviderCredit] = Field(default_factory=list)
     unpriced: list[str] = Field(default_factory=list)
+    listed: list[ListedPrice] = Field(default_factory=list)
+    unlisted: dict[str, str] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
     confirm_above_usd: float = CONFIRM_ABOVE_USD
     confirm: bool = False
@@ -515,7 +565,7 @@ def plan_fork(
     return Plan(scenario, profiles, monitor, bundle.variant, done)
 
 
-def estimate_runs(
+async def estimate_runs(
     found: History,
     settings: Settings,
     bundles: Sequence[Bundle],
@@ -524,9 +574,12 @@ def estimate_runs(
     preset: Preset | None = None,
     samples: int = 1,
     budget: BudgetOverride | None = None,
+    lists: PriceLists | None = None,
 ) -> Estimate:
     """The estimate of `samples` runs of each bundle, one bundle per variant, under `budget`:
-    what `aims run`, `aims estimate`, `aims scenario check` and the UI's run launcher show."""
+    what `aims run`, `aims estimate`, `aims scenario check` and the UI's run launcher show.
+    `lists` gives a list price to a profile that names a key and sets no price; None looks up
+    none."""
     plans = [plan(settings, b, profile=profile, preset=preset, budget=budget) for b in bundles]
     return estimate(
         found,
@@ -534,10 +587,11 @@ def estimate_runs(
         samples=samples,
         credits=settings.credits,
         confirm_above_usd=settings.confirm_above_usd,
+        listing=await listing([q for p in plans for q in _called(p)], lists),
     )
 
 
-def estimate_fork(
+async def estimate_fork(
     found: History,
     settings: Settings,
     origin: Origin,
@@ -546,16 +600,20 @@ def estimate_fork(
     preset: Preset | None = None,
     samples: int = 1,
     budget: BudgetOverride | None = None,
+    lists: PriceLists | None = None,
 ) -> Estimate:
     """The estimate of `samples` forks like `fork` of `origin`, `budget` over the origin's:
-    what `aims run --replay` and the UI's fork dialog show. Raises RunError, ProfileError,
-    MonitorConfigError, TextError or BudgetError."""
+    what `aims run --replay` and the UI's fork dialog show. `lists` is as for
+    `estimate_runs`. Raises RunError, ProfileError, MonitorConfigError, TextError or
+    BudgetError."""
+    p = plan_fork(settings, origin, fork, preset=preset, budget=budget)
     return estimate(
         found,
-        [plan_fork(settings, origin, fork, preset=preset, budget=budget)],
+        [p],
         samples=samples,
         credits=settings.credits,
         confirm_above_usd=settings.confirm_above_usd,
+        listing=await listing(_called(p), lists),
     )
 
 
@@ -566,10 +624,17 @@ def estimate(
     samples: int = 1,
     credits: Mapping[str, float] | None = None,
     confirm_above_usd: float = CONFIRM_ABOVE_USD,
+    listing: Listing | None = None,
 ) -> Estimate:
-    """The estimate of `samples` runs of each plan from the runs in `found`."""
+    """The estimate of `samples` runs of each plan from the runs in `found`. A profile that
+    sets no price counts at its price in `listing`, for the estimate only: the run's own
+    profiles keep none, so a cost cap holds on its calls only if the provider reports their
+    cost, and the ceilings leave such caps out."""
     if not plans:
         raise ValueError("nothing to estimate")
+    listing = listing or Listing()
+    listed: dict[str, ListedPrice] = {}
+    unlisted: dict[str, str] = {}
     parts: list[VariantCost] = []
     typical: dict[str, float] = defaultdict(float)
     high: dict[str, float] = defaultdict(float)
@@ -578,8 +643,9 @@ def estimate(
     warnings: list[str] = []
     rates: dict[str, CachedRate] = {}
     priced = False
-    for p in plans:
-        part, shares = _part(found, p)
+    for own in plans:
+        p = _lay(own, listing)
+        part, shares = _part(found, p, own)
         parts.append(part)
         sides = [(part.agents, shares[0])]
         if part.monitor is not None:
@@ -614,7 +680,13 @@ def estimate(
                 assumed=prof.model not in found.shares,
                 input_usd=blended,
             )
-        warnings += [w for w in [*_uncapped(p), *_coverage(found, p)] if w not in warnings]
+        for prof in _called(own):
+            if (found_price := listing.find(prof)) is not None:
+                entry = listed_price(prof.name, found_price, listing.problem)
+                listed.setdefault(prof.name, entry)
+            elif (why := listing.why(prof)) is not None:
+                unlisted[prof.name] = why
+        warnings += [w for w in [*_uncapped(p, own), *_coverage(found, own)] if w not in warnings]
     total = CostTotal(
         typical_usd=sums["typical"], high_usd=sums["high"], ceiling_usd=sums["ceiling"]
     )
@@ -637,6 +709,8 @@ def estimate(
             for name in providers
         ],
         unpriced=sorted(unpriced),
+        listed=[listed[n] for n in sorted(listed)],
+        unlisted={n: unlisted[n] for n in sorted(unlisted) if n in unpriced},
         warnings=warnings,
         confirm_above_usd=confirm_above_usd,
         confirm=priced
@@ -695,7 +769,12 @@ def _plan_providers(plans: Iterable[Plan]) -> set[str]:
     return out
 
 
-def _part(found: History, p: Plan) -> tuple[VariantCost, tuple[dict[str, float], dict[str, float]]]:
+def _part(
+    found: History, p: Plan, own: Plan | None = None
+) -> tuple[VariantCost, tuple[dict[str, float], dict[str, float]]]:
+    """The cost of plan `p`, its profiles priced. `own` is the plan with the profiles the run
+    keeps, which say which cost caps hold; `p` itself when it is the same."""
+    own = own or p
     s = p.scenario
     models = _models((prof.model, prof.effort) for prof in p.profiles.values())
     budget = _step_budget(s.model_dump(mode="json"), {a.id for a in s.agents if a.scripted})
@@ -716,13 +795,14 @@ def _part(found: History, p: Plan) -> tuple[VariantCost, tuple[dict[str, float],
         return set(past.models) == set(models)
 
     tiers: list[tuple[Tier, Callable[[Past], bool]]] = [("scenario", first), ("models", second)]
-    ceiling, stepped = _ceiling(p)
+    ceiling, stepped = _ceiling(p, own)
     if agent_profiles and all(q.price is None for q in agent_profiles):
         agents, agent_shares = CostFigures(priced=False), {}
     else:
         agents, agent_shares = _side(
             found, tiers, budget, prices, names, "agents", ceiling, stepped, p.done
         )
+        agents.cap_holds = ceiling is not None or _ceiling(p)[0] is None
     steps: dict[str, float] = {}
     same = [past for past in found.runs if first(past)]
     for agent in s.agents:
@@ -745,9 +825,11 @@ def _part(found: History, p: Plan) -> tuple[VariantCost, tuple[dict[str, float],
                 (tier, lambda past, test=test: test(past) and past.monitor == key)
                 for tier, test in tiers
             ]
+            cap = p.monitor.budget_usd if _cap_holds(p.monitor, own.monitor) else None
             monitor, watch_shares = _side(
-                found, wtiers, budget, wprices, wnames, "watch", p.monitor.budget_usd, False
+                found, wtiers, budget, wprices, wnames, "watch", cap, False
             )
+            monitor.cap_holds = cap is not None
     part = VariantCost(
         variant=p.variant,
         agents=agents,
@@ -923,15 +1005,18 @@ def _step_cost(agent: AgentConfig, p: Profile, done: int = 0) -> float | None:
     return step * (2 if summary else 1)
 
 
-def _agent_ceiling(agent: AgentConfig, p: Profile, done: int = 0) -> tuple[float | None, bool]:
+def _agent_ceiling(
+    agent: AgentConfig, p: Profile, done: int = 0, *, cost_cap: bool = True
+) -> tuple[float | None, bool]:
     """What the agent's caps let it spend, and whether that counts one last step past its cost
     cap. The step cap bounds the cost only when a call's cost is bounded; a fork's agent has
-    the steps it did not replay left, at least one."""
+    the steps it did not replay left, at least one. The cost cap counts only with `cost_cap`,
+    since it does not hold on a profile priced only for the estimate."""
     step = step_usd(p)
     last = _step_cost(agent, p, done)
     live = _live(agent, done)
     caps: list[tuple[float, bool]] = []
-    if agent.budget.cost_usd is not None:
+    if cost_cap and agent.budget.cost_usd is not None:
         caps.append((agent.budget.cost_usd + (last or 0.0), last is not None))
     if live is not None and step is not None:
         caps.append((_calls(agent, live, done) * step, False))
@@ -941,20 +1026,27 @@ def _agent_ceiling(agent: AgentConfig, p: Profile, done: int = 0) -> tuple[float
     return value, stepped
 
 
-def _ceiling(p: Plan) -> tuple[float | None, bool]:
+def _ceiling(p: Plan, own: Plan | None = None) -> tuple[float | None, bool]:
     """What the caps let the priced agents spend in one run: the sum of their own ceilings,
-    lowered by the run's cost and step caps. None when an agent has no cap and the run none."""
+    lowered by the run's cost and step caps. None when an agent has no cap and the run none.
+    A cost cap counts only on an agent whose profile in `own`, the run's, has a price; the
+    run's only when every priced agent's does."""
+    own = own or p
     priced = [a for a in p.scenario.agents if not a.scripted and p.profiles[a.id].price is not None]
     if not priced:
         return 0.0, False
+    held = {a.id for a in priced if own.profiles[a.id].price is not None}
     options: list[tuple[float, bool]] = []
-    each = [_agent_ceiling(a, p.profiles[a.id], p.done.get(a.id, 0)) for a in priced]
+    each = [
+        _agent_ceiling(a, p.profiles[a.id], p.done.get(a.id, 0), cost_cap=a.id in held)
+        for a in priced
+    ]
     if all(value is not None for value, _ in each):
         options.append((sum(v for v, _ in each if v is not None), any(s for _, s in each)))
     steps = [_step_cost(a, p.profiles[a.id], p.done.get(a.id, 0)) for a in priced]
     known = [s for s in steps if s is not None]
     limits = p.scenario.limits
-    if limits.cost_usd is not None:
+    if limits.cost_usd is not None and len(held) == len(priced):
         options.append((limits.cost_usd + sum(known), bool(known)))
     if limits.steps is not None and len(known) == len(priced):
         live = max(limits.steps - sum(p.done.values()), 1) + len(priced) - 1
@@ -973,17 +1065,30 @@ def _run_steps(agent: AgentConfig, p: Plan, steps: int) -> float:
     return _calls(agent, steps, p.done.get(agent.id, 0)) * step
 
 
-def _uncapped(p: Plan) -> list[str]:
-    if _ceiling(p)[0] is not None:
+def _uncapped(p: Plan, own: Plan | None = None) -> list[str]:
+    own = own or p
+    if _ceiling(p, own)[0] is not None:
         return []
-    return [
-        f"no cap bounds the cost of agent {a.id}; set its budget.cost_usd or the scenario's"
-        " limits.cost_usd"
-        for a in p.scenario.agents
-        if not a.scripted
-        and p.profiles[a.id].price is not None
-        and _agent_ceiling(a, p.profiles[a.id])[0] is None
-    ]
+    out: list[str] = []
+    for a in p.scenario.agents:
+        q = p.profiles[a.id]
+        if a.scripted or q.price is None:
+            continue
+        held = own.profiles[a.id].price is not None
+        if _agent_ceiling(a, q, cost_cap=held)[0] is not None:
+            continue
+        if held:
+            out.append(
+                f"no cap bounds the cost of agent {a.id}; set its budget.cost_usd or the"
+                " scenario's limits.cost_usd"
+            )
+        else:
+            out.append(
+                f"no cap bounds the cost of agent {a.id}: its profile {q.name} has only a list"
+                " price, so a cost cap holds only if the provider reports each call's cost; set"
+                " a price in the profile, or a step cap"
+            )
+    return out
 
 
 def _coverage(found: History, p: Plan) -> list[str]:
@@ -1008,6 +1113,49 @@ def _coverage(found: History, p: Plan) -> list[str]:
 
 def _model_agents(p: Plan) -> list[Profile]:
     return [p.profiles[a.id] for a in p.scenario.agents if not a.scripted]
+
+
+def _called(p: Plan) -> list[Profile]:
+    """The profiles whose prices the estimate of `p` counts: its agents' and those of the
+    monitor's sweeps, review and judge."""
+    return [*_model_agents(p), *_watch_profiles(p.monitor)]
+
+
+def _lay(p: Plan, listing: Listing) -> Plan:
+    """`p` with its list prices laid on copies of its profiles and its monitor's."""
+    if not listing.prices:
+        return p
+    profiles = {a: listing.lay(q) for a, q in p.profiles.items()}
+    return replace(p, profiles=profiles, monitor=_lay_monitor(p.monitor, listing))
+
+
+def _lay_monitor(m: ResolvedMonitor | None, listing: Listing) -> ResolvedMonitor | None:
+    if m is None or not listing.prices:
+        return m
+
+    def lay(q: Profile | None) -> Profile | None:
+        return None if q is None else listing.lay(q)
+
+    return replace(
+        m,
+        sweeps={n: listing.lay(q) for n, q in m.sweeps.items()},
+        review=lay(m.review),
+        judge=lay(m.judge),
+        extract=lay(m.extract),
+        channels=lay(m.channels),
+    )
+
+
+def _cap_holds(m: ResolvedMonitor | None, own: ResolvedMonitor | None) -> bool:
+    """Whether the monitor's cost cap bounds what the estimate counts: no model whose price it
+    counts has one that only the estimate gave it. `own` is the run's monitor, `m` the priced
+    copy."""
+    if m is None or own is None:
+        return True
+    return all(
+        q.price is None or r.price is not None
+        for q, r in zip(_watch_profiles(m), _watch_profiles(own), strict=True)
+    )
 
 
 def _watch_profiles(m: ResolvedMonitor | None) -> list[Profile]:
@@ -1082,12 +1230,40 @@ def describe(e: Estimate) -> list[str]:
             for r in e.rates
         )
         lines.append(f"Blended input per million tokens: {rates}.")
+    lines += [listed_line(entry, caps=True) for entry in e.listed]
     lines += [_credit_line(c) for c in e.credits]
-    lines += [
-        f"warning: profile {n} has no price, so its calls are not counted" for n in e.unpriced
-    ]
+    lines += [unpriced_line(n, e.unlisted.get(n)) for n in e.unpriced]
     lines += [f"warning: {w}" for w in e.warnings]
     return lines
+
+
+def listed_line(entry: ListedPrice, *, caps: bool = False) -> str:
+    """A list price an estimate used, in words; with `caps`, what it means for a cost cap."""
+    words = [
+        f"Profile {entry.profile}: {entry.text}: {usd(entry.input_usd)} input,"
+        f" {usd(entry.cached_usd)} cached, {usd(entry.output_usd)} output per million tokens."
+    ]
+    if not entry.cached_listed:
+        words.append("It lists no cached input price, so cached input counts at the input price.")
+    if entry.tier_from is not None:
+        words.append(
+            f"It lists a higher price past {entry.tier_from:,} prompt tokens, which the estimate"
+            " leaves out."
+        )
+    if entry.problem is not None:
+        words.append(
+            f"The map could not be read again ({entry.problem}), so this is its copy fetched"
+            f" {entry.checked:%Y-%m-%d}."
+        )
+    if caps:
+        words.append("A cost cap holds on its calls only if the provider reports each call's cost.")
+    return " ".join(words)
+
+
+def unpriced_line(name: str, why: str | None = None) -> str:
+    """The warning for profile `name`, which has no price; `why` it got no list price."""
+    reason = "" if why is None else f" and {why}"
+    return f"warning: profile {name} has no price{reason}, so its calls are not counted"
 
 
 def _replayed_line(part: VariantCost) -> str:
@@ -1126,7 +1302,11 @@ def _side_line(name: str, f: CostFigures) -> str:
         words.append("no past runs to go by.")
     if f.excluded:
         words.append(f"{f.excluded} past runs without a cost left out.")
-    if f.ceiling_usd is None:
+    if f.ceiling_usd is None and not f.cap_holds:
+        words.append(
+            "No ceiling: its cost cap holds only if the provider reports each call's cost."
+        )
+    elif f.ceiling_usd is None:
         words.append("Cannot exceed: no cap set.")
     else:
         last = " (the caps plus a last step per agent)" if f.stepped else ""
@@ -1147,6 +1327,10 @@ def _total_line(e: Estimate, count: int) -> str:
         if known:
             typical, high = usd(t.typical_usd or 0), usd(t.high_usd or 0)
             words.append(f"typically {typical}, {high} if every run is high.")
+    held = all(s.cap_holds for p in e.parts for s in (p.agents, p.monitor) if s is not None)
+    if t.ceiling_usd is None and not held:
+        words.append("No ceiling." if known else "no ceiling.")
+        return " ".join(words)
     cap = "exceed: no cap set." if t.ceiling_usd is None else f"exceed {usd(t.ceiling_usd)}."
     words.append(("Cannot " if known else "cannot ") + cap)
     return " ".join(words)
@@ -1221,7 +1405,8 @@ class ReviewEstimate(_Out):
     with no model at all every figure is 0. `covers` is how many of the `steps` the sweeps pay
     for before the cap, from past reviews' sweep cost per step or else the sweep prices; None
     when they cover them all. `total` is every sample together, and `confirm` says they start
-    only with a person's yes, as runs do."""
+    only with a person's yes, as runs do. `listed` and `unlisted` are as in an Estimate; the
+    cap does not hold on a model priced only for the estimate, so `ceiling_usd` is None then."""
 
     run_id: str
     preset: Preset
@@ -1239,6 +1424,8 @@ class ReviewEstimate(_Out):
     doubled: bool = False
     confirm_above_usd: float = CONFIRM_ABOVE_USD
     confirm: bool = False
+    listed: list[ListedPrice] = Field(default_factory=list)
+    unlisted: dict[str, str] = Field(default_factory=dict)
     lines: list[str] = Field(default_factory=list)
 
 
@@ -1250,9 +1437,10 @@ async def estimate_review(
     *,
     samples: int = 1,
     confirm_above_usd: float = CONFIRM_ABOVE_USD,
+    lists: PriceLists | None = None,
 ) -> ReviewEstimate:
     """What `samples` runs of `monitor` over run `run` cost, from the monitor runs in `store`.
-    Raises KeyError for an unknown run."""
+    `lists` is as for `estimate_runs`. Raises KeyError for an unknown run."""
     info = await store.run(run)
     if info is None:
         raise KeyError(run)
@@ -1265,13 +1453,23 @@ async def estimate_review(
         total=CostTotal(),
         confirm_above_usd=confirm_above_usd,
     )
+    own = monitor
+    prices = await listing(_watch_profiles(own), lists)
+    for prof in _watch_profiles(own):
+        if any(entry.profile == prof.name for entry in out.listed):
+            continue
+        if (found := prices.find(prof)) is not None:
+            out.listed.append(listed_price(prof.name, found, prices.problem))
+        elif (why := prices.why(prof)) is not None:
+            out.unlisted[prof.name] = why
+    monitor = _lay_monitor(own, prices) or own
     called = _review_profiles(monitor)
     if not called:
         out.typical_usd = out.high_usd = out.ceiling_usd = 0.0
     elif all(p.price is None for p in called):
         out.priced = False
     else:
-        ceiling = out.ceiling_usd = monitor.budget_usd
+        ceiling = out.ceiling_usd = monitor.budget_usd if _cap_holds(monitor, own) else None
         key = _monitor_key(monitor)
         same: list[float] = []
         every: list[float] = []
@@ -1306,9 +1504,11 @@ async def estimate_review(
         costs = same or every
         if costs:
             typical, high, out.doubled = spread(costs)
-            out.typical_usd, out.high_usd = min(typical, ceiling), min(high, ceiling)
+            if ceiling is not None:
+                typical, high = min(typical, ceiling), min(high, ceiling)
+            out.typical_usd, out.high_usd = typical, high
             out.runs, out.same_scenario = len(costs), bool(same)
-        covers = monitor.covers(statistics.median(per_step) if per_step else None)
+        covers = own.covers(statistics.median(per_step) if per_step else None)
         if covers is not None and covers < info.steps:
             out.covers = covers
     if out.priced:
@@ -1360,6 +1560,11 @@ def reviews_confirm(found: Sequence[ReviewEstimate]) -> str | None:
     if not priced:
         return None
     limit = priced[0].confirm_above_usd
+    if any(e.total.ceiling_usd is None for e in priced):
+        if any(e.total.high_usd is None for e in priced):
+            return "no cap bounds the cost and no past reviews give an estimate"
+        high = sum(e.total.high_usd or 0.0 for e in priced)
+        return f"no cap bounds the cost; the high estimate is {usd(high)}"
     capped = any(e.total.high_usd is None for e in priced)
     figure = sum(
         e.total.high_usd if e.total.high_usd is not None else e.total.ceiling_usd or 0.0
@@ -1386,7 +1591,10 @@ def describe_review(e: ReviewEstimate) -> list[str]:
     if e.preset not in MODEL_PRESETS:
         return [f"{head}; no layer calls a model, so it costs nothing."]
     if not e.priced:
-        return [f"{head}; its models have no price, so its cost is not counted."]
+        return [
+            f"{head}; its models have no price, so its cost is not counted.",
+            *(unpriced_line(n, why) for n, why in e.unlisted.items()),
+        ]
     steps = "1 agent step" if e.steps == 1 else f"{e.steps} agent steps"
     words = [f"{head}, over {steps}."]
     if e.typical_usd is not None and e.high_usd is not None:
@@ -1407,6 +1615,8 @@ def describe_review(e: ReviewEstimate) -> list[str]:
         words.append("No past reviews to go by.")
     if e.ceiling_usd is not None:
         words.append(f"Stops at {usd(e.ceiling_usd)}, its spend cap.")
+    else:
+        words.append("Its spend cap holds only if the provider reports each call's cost.")
     if e.covers is not None:
         words.append(
             f"Its sweeps cover about {e.covers} of the {e.steps} steps, then only signals;"
@@ -1421,6 +1631,8 @@ def describe_review(e: ReviewEstimate) -> list[str]:
         if t.ceiling_usd is not None:
             parts.append(f"at most {usd(t.ceiling_usd)}.")
         lines.append(" ".join(parts).rstrip(","))
+    lines += [listed_line(entry) for entry in e.listed]
+    lines += [unpriced_line(n, why) for n, why in e.unlisted.items()]
     return lines
 
 

@@ -2601,9 +2601,16 @@ export interface components {
          *     90th percentile, or twice the median when `doubled` (under 10 runs). `capped` of those runs
          *     hit a cap; a past monitor that stopped at its cap counts at this one's, since it would have
          *     gone on. `excluded` matched but recorded no cost. `priced` is false when no profile of this
-         *     side has a price, so its cost is not counted.
+         *     side has a price, so its cost is not counted. `cap_holds` is false when a cost cap is set but
+         *     leaves the ceiling, since a model it bounds has only a list price, which the run does not
+         *     count.
          */
         CostFigures: {
+            /**
+             * Cap Holds
+             * @default true
+             */
+            cap_holds: boolean;
             /**
              * Capped
              * @default 0
@@ -2775,7 +2782,9 @@ export interface components {
          * Estimate
          * @description The cost of `samples` runs of each variant in `parts`. `confirm` says `aims run` asks
          *     before it starts: no cap bounds the cost, whatever past runs cost, or the high figure, or
-         *     without one the ceiling, is above `confirm_above_usd`. `lines` is the estimate in words.
+         *     without one the ceiling, is above `confirm_above_usd`. `listed` holds the list prices laid
+         *     on profiles with no price of their own, and `unlisted` says by profile why one that names a
+         *     key got none. `lines` is the estimate in words.
          */
         Estimate: {
             /**
@@ -2792,6 +2801,8 @@ export interface components {
             credits: components["schemas"]["ProviderCredit"][];
             /** Lines */
             lines: string[];
+            /** Listed */
+            listed: components["schemas"]["ListedPrice"][];
             /** Parts */
             parts: components["schemas"]["VariantCost"][];
             /** Rates */
@@ -2801,6 +2812,10 @@ export interface components {
             /** Scenario */
             scenario: string;
             total: components["schemas"]["CostTotal"];
+            /** Unlisted */
+            unlisted: {
+                [key: string]: string;
+            };
             /** Unpriced */
             unpriced: string[];
             /** Warnings */
@@ -4192,6 +4207,44 @@ export interface components {
             rpm?: number | null;
             /** Tpm */
             tpm?: number | null;
+        };
+        /**
+         * ListedPrice
+         * @description The list price an estimate laid on profile `profile`, which sets no `price` of its own:
+         *     row `key` of `source`'s price map, from a copy last confirmed current at `checked`, in
+         *     USD per million tokens. `cached_listed` is false when the row lists no cached input price,
+         *     so cached input counts at the input price. `tier_from` is the prompt size in tokens from
+         *     which the row lists a higher price, which the estimate leaves out. `problem` says why the
+         *     copy could not be confirmed current, None when it was. A cost cap on the profile's calls
+         *     holds only if the provider reports each call's cost. `text` says where the price comes
+         *     from.
+         */
+        ListedPrice: {
+            /** Cached Listed */
+            cached_listed: boolean;
+            /** Cached Usd */
+            cached_usd: number;
+            /**
+             * Checked
+             * Format: date-time
+             */
+            checked: string;
+            /** Input Usd */
+            input_usd: number;
+            /** Key */
+            key: string;
+            /** Output Usd */
+            output_usd: number;
+            /** Problem */
+            problem: string | null;
+            /** Profile */
+            profile: string;
+            /** Source */
+            source: string;
+            /** Text */
+            text: string;
+            /** Tier From */
+            tier_from: number | null;
         };
         /**
          * LogTruncated
@@ -6071,7 +6124,8 @@ export interface components {
          *     with no model at all every figure is 0. `covers` is how many of the `steps` the sweeps pay
          *     for before the cap, from past reviews' sweep cost per step or else the sweep prices; None
          *     when they cover them all. `total` is every sample together, and `confirm` says they start
-         *     only with a person's yes, as runs do.
+         *     only with a person's yes, as runs do. `listed` and `unlisted` are as in an Estimate; the
+         *     cap does not hold on a model priced only for the estimate, so `ceiling_usd` is None then.
          */
         ReviewEstimate: {
             /** Ceiling Usd */
@@ -6097,6 +6151,8 @@ export interface components {
             high_usd: number | null;
             /** Lines */
             lines: string[];
+            /** Listed */
+            listed: components["schemas"]["ListedPrice"][];
             /**
              * Mode
              * @enum {string}
@@ -6131,6 +6187,10 @@ export interface components {
             total: components["schemas"]["CostTotal"];
             /** Typical Usd */
             typical_usd: number | null;
+            /** Unlisted */
+            unlisted: {
+                [key: string]: string;
+            };
         };
         /**
          * Routing
@@ -6911,7 +6971,9 @@ export interface components {
          *     `typical_usd` is the median of `runs` past scores that called a model, of the same
          *     scenario when `same_scenario`, else of any; `high_usd` their 90th percentile, or twice the
          *     median when `doubled` (under 10 runs). `ceiling_usd` is what the agents' words, the chunks
-         *     and the output cap allow, None when the classifier has no price or no output cap.
+         *     and the output cap allow, None when the classifier has no price or no output cap. `listed`
+         *     holds the list price it counts at when its profile sets none, and `unlisted` says why one
+         *     that names a key got none.
          */
         ScoreEstimate: {
             /**
@@ -6932,6 +6994,8 @@ export interface components {
             high_usd: number | null;
             /** Lines */
             lines: string[];
+            /** Listed */
+            listed: components["schemas"]["ListedPrice"][];
             /** Run Id */
             run_id: string;
             /**
@@ -6946,6 +7010,10 @@ export interface components {
             same_scenario: boolean;
             /** Typical Usd */
             typical_usd: number | null;
+            /** Unlisted */
+            unlisted: {
+                [key: string]: string;
+            };
         };
         /**
          * ScoreJob
