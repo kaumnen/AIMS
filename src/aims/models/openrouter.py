@@ -246,8 +246,9 @@ def draft(
             "output": cost_out,
         }
         notes.append(
-            "The price is the lowest among its providers and is used for estimates. A run"
-            " records what each call cost."
+            "The price is the lowest among its providers. Estimates and the monitor's budget"
+            " use it. A run records what OpenRouter reports each call cost, or the cost at this"
+            " price when it reports none."
         )
         if cached is None and cost_in > 0:
             notes.append(

@@ -106,10 +106,10 @@ function Keys({ profile }: { profile: ProfileInfo }) {
       <DialogHeader>
         <DialogTitle>Price key for {profile.name}</DialogTitle>
         <DialogDescription>
-          Estimates count a profile&apos;s calls only when it has a price. Name a row of
-          LiteLLM&apos;s price map in its price_key, under [profiles.{profile.name}] in a config
-          file. Rows of one model differ by provider and region, so pick the provider that serves
-          it.
+          Without a price, estimates leave out a profile&apos;s calls and caps count only the costs
+          its provider reports. Name a row of LiteLLM&apos;s price map in its price_key, under
+          [profiles.{profile.name}] in a config file. Rows of one model differ by provider and
+          region, so pick the provider that serves it.
         </DialogDescription>
       </DialogHeader>
       <section aria-live="polite" className="flex flex-col gap-1">

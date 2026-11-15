@@ -173,7 +173,7 @@ What the profile sets:
 | `X-OpenRouter-Metadata` | The answer names the provider that served it. |
 | No `parallel_tool_calls` | Few providers support the field. With `require_parameters` it would cut the route to those few. |
 | `effort` | The model's default. The comment below it lists the levels OpenRouter names. |
-| `price` | The list price, which is the lowest among the model's providers. Only estimates use it. |
+| `price` | The list price, which is the lowest among the model's providers. Estimates and the monitor's budget use it. A run records what OpenRouter reports each call cost, or the cost at this price when it reports none. |
 
 > [!NOTE]
 > The notes say what the list cannot tell. `reasoning = "full"` is a guess, for one. `aims models check` warns when the model sends a summary instead.

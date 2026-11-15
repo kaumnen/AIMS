@@ -410,7 +410,7 @@ def _price_lines(p: Any, found: Any) -> list[str]:
     why = found.listing.why(p)
     lines = [
         f"Profile {p.name}: no price{'' if why is None else f': {why}'}, so estimates leave"
-        " out its calls."
+        " out its calls and caps count only the costs its provider reports."
     ]
     rows = found.candidates.get(p.name)
     if rows:

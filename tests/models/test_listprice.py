@@ -652,16 +652,18 @@ def test_aims_models_prices_shows_each_price_and_the_rows_for_the_rest(tmp_path:
     out = cli(tmp_path, "prices", "own", "listed", "missed", "bare", "lost", "--search", "model-d")
     assert out.exit_code == 0, out.output
     assert out.stdout.splitlines() == [
-        "Profile bare: no price, so estimates leave out its calls.",
+        "Profile bare: no price, so estimates leave out its calls and caps count only the costs"
+        " its provider reports.",
         "  Rows that may price it; name one as its price_key:",
         "  host/accounts/host/models/model-b  $0.15 input, $0.0020 cached, $4.25 output",
         f"Profile listed: LiteLLM list price for cloud/eu/model-a, fetched {day}: $2.75 input,"
         " $2.75 cached, $11.00 output per million tokens. It lists no cached input price, so"
         " cached input counts at the input price.",
-        "Profile lost: no price, so estimates leave out its calls.",
+        "Profile lost: no price, so estimates leave out its calls and caps count only the costs"
+        " its provider reports.",
         "  No row's key ends in nothing-like-it; try --search.",
         "Profile missed: no price: LiteLLM lists no key vendor-c/nope, so estimates leave out"
-        " its calls.",
+        " its calls and caps count only the costs its provider reports.",
         "  Rows that may price it; name one as its price_key:",
         "  vendor-c/model-c  $0.30 input, $0.0300 cached, $2.50 output (more past 200,000 prompt"
         " tokens)",
@@ -696,9 +698,10 @@ def test_aims_models_prices_without_a_map_says_why(
     out = cli(tmp_path, "prices", "listed", "bare", "--search", "model")
     assert out.exit_code == 0, out.output
     assert out.stdout.splitlines() == [
-        "Profile bare: no price, so estimates leave out its calls.",
+        "Profile bare: no price, so estimates leave out its calls and caps count only the costs"
+        " its provider reports.",
         "Profile listed: no price: no copy of the LiteLLM price map is at hand (down), so"
-        " estimates leave out its calls.",
+        " estimates leave out its calls and caps count only the costs its provider reports.",
     ]
     assert "warning: no copy of LiteLLM's price map is at hand: down" in out.stderr
 

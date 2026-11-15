@@ -215,7 +215,9 @@ function Price({ p, prices }: { p: ProfileInfo; prices: Prices }) {
     return (
       <>
         <span>none</span>
-        <span className="text-muted-foreground block">estimates leave out its calls</span>
+        <span className="text-muted-foreground block">
+          estimates leave out its calls; caps count only reported costs
+        </span>
         <PriceKeys profile={p} />
       </>
     );

@@ -101,7 +101,7 @@ def test_a_profile_carries_the_openrouter_defaults_and_what_the_list_says() -> N
     assert "extra" not in found.table
     assert [n.split(".")[0] for n in found.notes] == [
         'reasoning = "full" is a guess',
-        "The price is the lowest among its providers and is used for estimates",
+        "The price is the lowest among its providers",
     ]
 
 

@@ -528,7 +528,9 @@ test("the models page shows each price and where it comes from", async () => {
   expect(missed.getByText("LiteLLM lists no key vendor-c/nope")).toBeTruthy();
   expect(missed.getByRole("button", { name: "Find a price key for missed" })).toBeTruthy();
   const glimmer = priceCell(table, "glimmer");
-  expect(glimmer.getByText("estimates leave out its calls")).toBeTruthy();
+  expect(
+    glimmer.getByText("estimates leave out its calls; caps count only reported costs"),
+  ).toBeTruthy();
   expect(glimmer.getByRole("button", { name: "Find a price key for glimmer" })).toBeTruthy();
   // a narrow screen shows the price and the button under the profile's name
   const narrow = within(profileRow(table, "glimmer").cells[0] as HTMLElement);
