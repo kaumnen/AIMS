@@ -86,6 +86,13 @@ test.each([
   ["no answer", () => vi.advanceTimersByTime(ACK_MS)],
   ["an error", (w: FakeWorker) => w.fail()],
   ["no EventSource in the worker", (w: FakeWorker) => w.port.reply({ t: "unsupported" })],
+  [
+    "a stream stuck in the worker",
+    (w: FakeWorker) => {
+      w.port.reply(ack());
+      w.port.reply({ t: "unsupported" });
+    },
+  ],
   ["another protocol", (w: FakeWorker) => w.port.reply({ ...ack(), v: PROTOCOL + 1 } as FromHub)],
 ])("%s falls back for good", (_, fail) => {
   const worker = fakeWorker();

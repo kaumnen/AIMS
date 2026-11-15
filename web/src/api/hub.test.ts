@@ -4,7 +4,15 @@ import { runnerInfo } from "@/test/event-source";
 import { run as summary } from "@/test/runs";
 
 import type { Event } from "./events";
-import { COALESCE_MS, type FromHub, Hub, type Open, PROTOCOL, type SourceEvents } from "./hub";
+import {
+  COALESCE_MS,
+  type FromHub,
+  Hub,
+  type Open,
+  PROTOCOL,
+  type SourceEvents,
+  STUCK_MS,
+} from "./hub";
 import type { StreamMessage } from "./stream";
 
 interface Source {
@@ -310,4 +318,93 @@ test("a deleted run reaches list subscribers and those that follow it", () => {
   expect(list.take()).toEqual([{ kind: "deleted", run_id: "r1" }]);
   expect(page.take()).toEqual([{ kind: "deleted", run_id: "r1" }]);
   expect(other.take()).toEqual([]);
+});
+
+const list = { runs: true, run: [], deltas: [] };
+
+test("a stream that never answers sends every tab, and each later one, to its own", () => {
+  const hub = new Hub(open);
+  const a = new Tab();
+  const b = new Tab();
+  join(hub, a);
+  join(hub, b);
+  hub.receive(a, { t: "sub", id: 1, wanted: list });
+  hub.receive(b, { t: "sub", id: 1, wanted: list });
+  settle();
+  vi.advanceTimersByTime(STUCK_MS - 1);
+  expect(a.last()?.t).not.toBe("unsupported");
+  vi.advanceTimersByTime(1);
+  expect([a.last(), b.last()]).toEqual([{ t: "unsupported" }, { t: "unsupported" }]);
+  expect(sources.map((s) => s.closed)).toEqual([true]);
+  // nothing of the stuck stream goes out if it wakes
+  push(sources[0], { kind: "runner", runner: runnerInfo() });
+  expect(a.take()).toEqual([]);
+  const c = new Tab();
+  join(hub, c);
+  hub.receive(a, { t: "pong" });
+  expect([c.got, a.last()]).toEqual([[{ t: "unsupported" }], { t: "unsupported" }]);
+  vi.advanceTimersByTime(STUCK_MS);
+  expect(sources).toHaveLength(1);
+});
+
+test.each([
+  ["opens", (s?: Source) => s?.on.open()],
+  ["fails, as with the server down", (s?: Source) => s?.on.error(false)],
+  ["is refused", (s?: Source) => s?.on.error(true)],
+  ["sends", (s?: Source) => push(s, { kind: "runner", runner: runnerInfo() })],
+])("a stream that %s has answered", (_, answer) => {
+  const hub = new Hub(open);
+  const tab = new Tab();
+  join(hub, tab);
+  hub.receive(tab, { t: "sub", id: 1, wanted: list });
+  settle();
+  answer(sources[0]);
+  vi.advanceTimersByTime(STUCK_MS * 3);
+  expect(tab.got.some((m) => m.t === "unsupported")).toBe(false);
+});
+
+test("once a stream has opened, a later one may wait on the server for as long as it takes", () => {
+  const hub = new Hub(open);
+  const tab = new Tab();
+  join(hub, tab);
+  hub.receive(tab, { t: "sub", id: 1, wanted: list });
+  settle();
+  sources[0]?.on.open();
+  hub.receive(tab, {
+    t: "sub",
+    id: 2,
+    wanted: { runs: false, run: [{ id: "r1", after: -1 }], deltas: [] },
+  });
+  settle();
+  expect(sources.map((s) => s.closed)).toEqual([true, false]);
+  vi.advanceTimersByTime(STUCK_MS * 3);
+  expect(tab.got.some((m) => m.t === "unsupported")).toBe(false);
+});
+
+test("each stream gets its own time: one replaced before it answers is not held against the next", () => {
+  const hub = new Hub(open);
+  const tab = new Tab();
+  join(hub, tab);
+  hub.receive(tab, { t: "sub", id: 1, wanted: list });
+  settle();
+  vi.advanceTimersByTime(STUCK_MS / 2);
+  hub.receive(tab, {
+    t: "sub",
+    id: 2,
+    wanted: { runs: false, run: [{ id: "r1", after: -1 }], deltas: [] },
+  });
+  settle();
+  sources[1]?.on.open();
+  vi.advanceTimersByTime(STUCK_MS * 2);
+  expect(tab.got.some((m) => m.t === "unsupported")).toBe(false);
+  // a stream that goes because nobody wants it leaves no clock behind
+  hub.receive(tab, { t: "unsub", id: 1 });
+  hub.receive(tab, { t: "unsub", id: 2 });
+  settle();
+  hub.receive(tab, { t: "sub", id: 3, wanted: list });
+  settle();
+  hub.receive(tab, { t: "unsub", id: 3 });
+  settle();
+  vi.advanceTimersByTime(STUCK_MS * 2);
+  expect(tab.got.some((m) => m.t === "unsupported")).toBe(false);
 });

@@ -8,6 +8,10 @@ export const PROTOCOL = 1;
 export const COALESCE_MS = 50;
 export const PING_MS = 5000;
 export const SILENT_MS = 15_000;
+// The worker's first stream that neither opens nor fails in this time is stuck, as in a browser
+// that lets the worker ask but never answers it. Every tab then opens a connection of its own.
+// Once a stream has opened the browser is known to answer, so a later silence is the server's.
+export const STUCK_MS = 10_000;
 
 // What one subscriber wants: `after` is the last seq it holds of each run.
 export interface Wanted {
@@ -72,10 +76,18 @@ export class Hub {
   #runners = new Map<string, RunnerInfo>();
   #state: LiveState = "connecting";
   #timer: ReturnType<typeof setTimeout> | null = null;
+  // runs while the open stream has not answered
+  #wait: ReturnType<typeof setTimeout> | null = null;
+  #stuck = false;
+  #opened = false;
 
   constructor(readonly open: Open) {}
 
   receive(peer: Peer, m: FromTab): void {
+    if (this.#stuck) {
+      peer.send({ t: "unsupported" });
+      return;
+    }
     if (m.t === "hello") {
       this.#hello(peer, m.v);
       return;
@@ -95,6 +107,7 @@ export class Hub {
       // The open stream holds the session that ended, so nothing more of it goes out.
       this.#source?.close();
       this.#source = null;
+      this.#answered();
       this.#generation++;
       this.#stale = true;
       this.#schedule();
@@ -181,6 +194,7 @@ export class Hub {
     if (this.#source !== null && key === this.#key && !this.#stale) return;
     this.#source?.close();
     this.#source = null;
+    this.#answered();
     this.#stale = false;
     if (!wanted.runs && wanted.run.length === 0 && wanted.deltas.length === 0) {
       this.#key = null;
@@ -192,13 +206,20 @@ export class Hub {
     const current = () => generation === this.#generation;
     this.#source = this.open(streamUrl(wanted, this.#version ?? undefined), {
       open: () => {
-        if (current()) this.#set("open");
+        if (!current()) return;
+        this.#opened = true;
+        this.#answered();
+        this.#set("open");
       },
       message: (data, id) => {
-        if (current()) this.#message(data, id);
+        if (!current()) return;
+        this.#answered();
+        this.#message(data, id);
       },
       error: (closed) => {
         if (!current()) return;
+        // an error is an answer: the browser reached the server or knows it cannot
+        this.#answered();
         if (closed) {
           this.#source = null;
           this.#key = null;
@@ -207,6 +228,22 @@ export class Hub {
         } else if (this.#state === "open") this.#set("retrying");
       },
     });
+    if (!this.#opened) this.#wait = setTimeout(() => this.#giveUp(), STUCK_MS);
+  }
+
+  #answered(): void {
+    if (this.#wait !== null) clearTimeout(this.#wait);
+    this.#wait = null;
+  }
+
+  #giveUp(): void {
+    this.#wait = null;
+    this.#stuck = true;
+    this.#source?.close();
+    this.#source = null;
+    this.#generation++;
+    for (const peer of this.#tabs.keys()) peer.send({ t: "unsupported" });
+    this.#tabs.clear();
   }
 
   #message(data: string, lastEventId: string): void {

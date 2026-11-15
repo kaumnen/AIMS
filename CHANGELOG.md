@@ -32,6 +32,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - An error that a provider sends after HTTP 200 is a provider error with its code, such as `provider error 402: Insufficient credits`. A router answers 200 first when the provider behind it fails later. An unstreamed answer of this kind was reported as "the stream ended before the answer did". An answer that finished with `error` counted as an incomplete answer and went to the agent.
 - A provider error with code 400, 401, 402, 403 or 404 is not retried, as an HTTP status of the same number is not. Every provider error was retried, so a key with no credits took every attempt of a call.
 - A profile sends `parallel_tool_calls` only when it sets the field. The default was `false`, which went with every request that offered tools. A profile that leaves it out now lets the provider decide. The built-in profiles set `false`, so their requests stay the same. A profile of your own that left it out sends no such field now, unless it extends a built-in. Set `parallel_tool_calls = false` in it to keep the old request. `aims models check` warns of several calls in one turn only when the profile sets `false`.
+- A tab opens a live connection of its own when the one its tabs share neither opens nor fails within 10 seconds. A browser can let the shared worker ask for the stream and never answer it, so the run page stayed on Starting with 0 steps.
 
 ## [0.2.3] - 2026-11-14
 
