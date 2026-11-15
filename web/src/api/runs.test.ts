@@ -131,6 +131,7 @@ test("an open run takes its update and refetches when it ends, its last steps to
     budget: [],
     series_previous: null,
     replayable: {},
+    listed: [],
   });
   const refetch = vi.spyOn(qc, "invalidateQueries");
   applyRuns(qc, [run("b", { flags: 2 })]);
@@ -143,6 +144,29 @@ test("an open run takes its update and refetches when it ends, its last steps to
     ["runs", "steps", "b"],
     ["runs", "step", "b"],
   ]);
+});
+
+test("an open run's first cost at a list price refetches it once, for the profiles it names", () => {
+  const qc = new QueryClient();
+  const detail = runQuery("b");
+  qc.setQueryData(detail.queryKey, {
+    run: run("b", { cost_usd: 0.1 }),
+    started: null,
+    finished: null,
+    verdict: null,
+    monitor_runs: [],
+    score_runs: [],
+    budget: [],
+    series_previous: null,
+    replayable: {},
+    listed: [],
+  });
+  const refetch = vi.spyOn(qc, "invalidateQueries");
+  applyRuns(qc, [run("b", { cost_usd: 0.2, listed_usd: 0.1 })]);
+  expect(refetch.mock.calls.map(([f]) => f?.queryKey)).toEqual([detail.queryKey]);
+  applyRuns(qc, [run("b", { cost_usd: 0.3, listed_usd: 0.2 })]);
+  expect(qc.getQueryData(detail.queryKey)?.run.listed_usd).toBe(0.2);
+  expect(refetch).toHaveBeenCalledTimes(1);
 });
 
 test("stream updates are applied once a frame, the last one per run winning", () => {
@@ -300,6 +324,7 @@ test("a run deleted elsewhere leaves every list and is noted as deleted", () => 
     budget: [],
     series_previous: null,
     replayable: {},
+    listed: [],
   });
   const live = new Live({ runs: true });
   const stop = syncRuns(live, qc, () => undefined);

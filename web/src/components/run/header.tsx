@@ -6,6 +6,7 @@ import { useTabTitle } from "@/components/crumbs";
 import { Duration, Flags, Started, statusLabel, Verdict } from "@/components/runs/cells";
 import { changesText } from "@/lib/budget";
 import { shortId, usd } from "@/lib/format";
+import { listedNote } from "@/lib/listed";
 import { useNow } from "@/lib/use-now";
 import { cn } from "@/lib/utils";
 
@@ -13,6 +14,7 @@ import { RunCommands } from "./commands";
 import { agentsOf, RunControls } from "./controls";
 import { DeleteRun } from "./delete";
 import { useSource } from "./monitor";
+import { visible } from "./report/parts";
 import { SeriesPrevious, SeriesStrip } from "./series";
 
 function Fact({ label, children }: { label: string; children: React.ReactNode }) {
@@ -164,6 +166,11 @@ export function RunHeader({
         <RunCommands run={run} />
         <DeleteRun run={run} title={title} />
       </div>
+      {run.listed_usd !== null && (
+        <p className="text-muted-foreground basis-full text-xs tabular-nums">
+          {visible(listedNote(run.listed_usd, detail.listed))}
+        </p>
+      )}
       {run.series !== null && <SeriesStrip name={run.series} current={run.run_id} />}
     </header>
   );

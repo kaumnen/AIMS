@@ -28,6 +28,7 @@ const detail = (over: Parameters<typeof run>[1]): RunDetail =>
     budget: [],
     series_previous: null,
     replayable: {},
+    listed: [],
   }) as unknown as RunDetail;
 
 beforeEach(() => {

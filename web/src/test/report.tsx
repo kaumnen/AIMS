@@ -279,6 +279,8 @@ export function fullReport(over: Partial<RunReport> = {}): RunReport {
           output_tokens: 10_887,
         },
       ],
+      listed: [],
+      review_listed: [],
       served: [],
       kernel: { "file.access": 1490, "proc.exec": 307 },
       flags: 2,
@@ -409,6 +411,7 @@ export function reportDetail(over: Partial<RunSummary> = {}): RunDetail {
     budget: [],
     series_previous: null,
     replayable: {},
+    listed: [],
   };
 }
 

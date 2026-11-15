@@ -222,3 +222,43 @@ async def test_aims_ui_hands_its_public_url_to_the_state(
     with pytest.raises(RuntimeError, match="stop here"):
         await serve(UiOptions(data=tmp_path / "c", runner=False))
     assert seen["public_url"] is None
+
+
+async def test_a_run_names_the_list_price_of_its_calls(
+    cp: CP, local: LocalEventStore, fake: FakeRunner, run_id: str
+) -> None:
+    from test_report_listed import attempt, snap
+
+    first = RunStarted(
+        scenario="control",
+        oversight="observe",
+        agents=["a"],
+        config={"agents": {"a": {"profile": snap("scripted")}}},
+    )
+    listed = await local.create_run(first, blobs=[b"{}"])
+    drafts = [
+        *attempt("c1", "scripted", 0.004, "list"),
+        *attempt("c2", "scripted", 0.002, "provider"),
+        Draft(RunFinished(status="completed")),
+    ]
+    await local.append(listed, drafts)
+    await ship(local, fake.client, listed)
+    async with cp.client(cp.viewer) as c:
+        detail = (await c.get(f"/api/runs/{listed}")).json()
+        plain = (await c.get(f"/api/runs/{run_id}")).json()
+        md = (await c.get(url(listed), params={"format": "md"})).text
+    assert detail["run"]["cost_usd"] == pytest.approx(0.006)
+    assert detail["run"]["listed_usd"] == pytest.approx(0.004)
+    assert detail["listed"] == [
+        {
+            "profile": "scripted",
+            "calls": 1,
+            "cost_usd": 0.004,
+            "prices": [{"key": "vendor-x/listed-model", "checked": "2026-11-15T09:30:00Z"}],
+        }
+    ]
+    assert (plain["run"]["listed_usd"], plain["listed"]) == (None, [])
+    assert (
+        "List prices: 1 call of profile scripted (<$0.01) counts at row `vendor-x/listed-model`"
+        " of LiteLLM's price map, copy checked 2026-11-15." in md
+    )

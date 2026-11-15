@@ -1,7 +1,7 @@
 import { useInfiniteQuery, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
-import { flagsQuery, type RunDetail, type StepInfo, stepsQuery } from "@/api/run";
+import { flagsQuery, type RunDetail, runQuery, type StepInfo, stepsQuery } from "@/api/run";
 import { reviewsQuery, type RunSummary } from "@/api/runs";
 import { scenariosQuery } from "@/api/scenarios";
 import {
@@ -26,6 +26,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { started, usd } from "@/lib/format";
+import { listedNote } from "@/lib/listed";
 import { presetText, reaches } from "@/lib/monitor";
 import {
   awareText,
@@ -49,6 +50,7 @@ import {
 import { stepOf } from "@/lib/timeline";
 
 import { LIVE } from "./monitor";
+import { visible } from "./report/parts";
 import { TextOf } from "./text-of";
 
 // Where a link in the tab takes the Steps tab: a monitor, one of its flags, or an event.
@@ -382,6 +384,8 @@ function ScoreView({
   const more = stepsQ.hasNextPage;
   const holder = score.monitor ?? runId;
   const flags = useQuery(flagsQuery(holder));
+  // the rows its calls at a list price came from, in the score run's own start
+  const own = useQuery({ ...runQuery(run.run_id), enabled: run.listed_usd !== null });
   const known = new Set((flags.data ?? []).map((f) => f.seq));
   const source = score.monitor ?? LIVE;
   const onSeq = (seq: number) => onSteps({ seq });
@@ -425,6 +429,11 @@ function ScoreView({
         </Fact>
         {run.cost_usd !== null && <Fact label="Score cost">{usd(run.cost_usd)}</Fact>}
       </dl>
+      {run.listed_usd !== null && (
+        <p className="text-muted-foreground -mt-3 text-xs tabular-nums">
+          {visible(listedNote(run.listed_usd, own.data?.listed ?? []))}
+        </p>
+      )}
       <PlantTable
         score={score}
         multi={multi}

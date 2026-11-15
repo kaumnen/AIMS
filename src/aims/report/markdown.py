@@ -5,8 +5,10 @@ from datetime import UTC, datetime, timedelta
 from urllib.parse import quote as urlquote
 
 from aims.events import ScoreMatch
+from aims.models.listprice import SOURCE
 from aims.report import texts
 from aims.report.escape import cell, code, quote, text
+from aims.report.listed import ListedCost
 from aims.report.model import (
     CATCH_IMPORTANCE,
     LIVE,
@@ -476,6 +478,9 @@ def _facts(r: RunReport) -> str:
     if r.header.pins.source != LIVE:
         costs += " " + texts.REVIEW_COST.format(review=_usd(f.review_cost_usd))
     out.append(f"{counts} {costs}")
+    for head, listed in ((texts.LISTED, f.listed), (texts.REVIEW_LISTED, f.review_listed)):
+        if listed:
+            out.append(" ".join([head, *(_listed(c) for c in listed)]))
     if f.costs:
         head = ["Caller", "Schema", "Calls", "Cost", "Input tokens", "Output tokens"]
         rows = [
@@ -497,6 +502,32 @@ def _facts(r: RunReport) -> str:
     else:
         out.append(texts.NO_KERNEL)
     return "\n\n".join(out)
+
+
+def _listed(c: ListedCost) -> str:
+    """One profile's calls at a list price, with the row and the copy that priced them."""
+    if not c.prices:
+        where = texts.LISTED_UNRECORDED.format(source=SOURCE)
+    elif len(c.prices) == 1:
+        p = c.prices[0]
+        where = texts.LISTED_ROW.format(key=code(p.key), source=SOURCE, date=_day(p.checked))
+    else:
+        rows = " or ".join(
+            texts.LISTED_ROW_OF_SEVERAL.format(key=code(p.key), date=_day(p.checked))
+            for p in c.prices
+        )
+        where = texts.LISTED_ROWS.format(rows=rows, source=SOURCE)
+    return texts.LISTED_ONE.format(
+        calls=_n(c.calls, "call"),
+        profile=text(c.profile),
+        cost=_usd(c.cost_usd),
+        verb="counts" if c.calls == 1 else "count",
+        where=where,
+    )
+
+
+def _day(value: datetime) -> str:
+    return f"{value.astimezone(UTC):%Y-%m-%d}"
 
 
 def _sources(r: RunReport) -> str:

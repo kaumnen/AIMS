@@ -49,7 +49,7 @@ from aims.text import encodable
 
 log = logging.getLogger("aims.events")
 
-VERSION = 12
+VERSION = 13
 MAX_TEXT = 32 * 1024
 MAX_PAGE = 1000
 # Events a remove deletes in one transaction: about 0.3 ms each with 8 KB of text.
@@ -90,6 +90,7 @@ create table runs (
     run_group text,
     steps integer not null default 0,
     nano_usd integer,
+    listed_nano_usd integer,
     reward real,
     preset text,
     monitor_mode text,
@@ -296,7 +297,8 @@ class RunInfo(BaseModel):
     category, whatever their status. `max_importance` is the highest importance of a flag not
     cleared or rejected, `verdict_severity` the judge's `max_severity`, and `severity` the
     higher of the two, 0 when there is neither. `steps` counts its agents' model calls,
-    `cost_usd` sums the priced live model responses of every caller (None when there is none),
+    `cost_usd` sums the priced live model responses of every caller (None when there is none)
+    and `listed_usd` those of them priced at a list price AIMS laid on the profile,
     `reward` is the last verifier reward and `reviews` counts the monitor runs over it.
     `preset` is the preset of the monitor that watched it, or that a monitor run ran,
     `monitor_mode` a monitor run's mode, `case` the self-test case it plays and `held` its
@@ -322,6 +324,7 @@ class RunInfo(BaseModel):
     group: str | None = None
     steps: int = 0
     cost_usd: float | None = None
+    listed_usd: float | None = None
     reward: float | None = None
     reviews: int = 0
     preset: str | None = None
@@ -468,6 +471,7 @@ RUN_KEYS = (
     "group",
     "steps",
     "cost_usd",
+    "listed_usd",
     "reward",
     "reviews",
     "preset",
@@ -601,6 +605,15 @@ class CallCost(BaseModel):
     cost_usd: float | None
     input_tokens: int
     output_tokens: int
+
+
+class ListedCalls(BaseModel):
+    """The live model calls of profile `profile` that cost a list price AIMS laid on it:
+    `calls` counts them and `cost_usd` sums those of their attempts."""
+
+    profile: str
+    calls: int
+    cost_usd: float
 
 
 class Served(BaseModel):
@@ -1011,10 +1024,12 @@ class Index:
         return bool(row and row[0])
 
     async def _totals(self, run_id: str, fresh: Sequence[Event]) -> None:
-        """Add the steps, cost and reward of events not indexed yet to the run's row. Cost adds
-        up in whole nano-dollars, none below 0, so any batching of the same events gives the
-        same total. A total past what SQLite holds stays at the most it holds."""
+        """Add the steps, cost and reward of events not indexed yet to the run's row, and the
+        part of the cost at a list price. Cost adds up in whole nano-dollars, none below 0, so
+        any batching of the same events gives the same total. A total past what SQLite holds
+        stays at the most it holds."""
         steps, nanos, priced, scored, reward = 0, 0, False, False, None
+        listed, at_list = 0, False
         for e in fresh:
             if e.type == AgentStep.type:
                 steps += 1
@@ -1023,6 +1038,9 @@ class Index:
                 if cost is not None:
                     nanos += cost
                     priced = True
+                    if e.data.get("cost_source") == "list":
+                        listed += cost
+                        at_list = True
             elif e.type == TaskScored.type:
                 value = e.data.get("reward")
                 scored = True
@@ -1033,8 +1051,23 @@ class Index:
             await self._db.execute(
                 "update runs set steps = steps + ?, nano_usd = case when ?"
                 " then max(min(coalesce(nano_usd, 0) + ?, ?), ?) else nano_usd end,"
+                " listed_nano_usd = case when ?"
+                " then max(min(coalesce(listed_nano_usd, 0) + ?, ?), ?) else listed_nano_usd end,"
                 " reward = case when ? then ? else reward end where run_id = ?",
-                (steps, priced, _int(nanos), BIND_MAX, BIND_MIN, scored, reward, run_id),
+                (
+                    steps,
+                    priced,
+                    _int(nanos),
+                    BIND_MAX,
+                    BIND_MIN,
+                    at_list,
+                    _int(listed),
+                    BIND_MAX,
+                    BIND_MIN,
+                    scored,
+                    reward,
+                    run_id,
+                ),
             )
 
     async def _hold(self, run_id: str, fresh: Sequence[Event]) -> None:
@@ -1357,8 +1390,9 @@ class Index:
         async with self._db.execute(
             "select run_id, scenario, status, started_at, ended_at, last_seq + 1, last_hash, kind,"
             " origin, flags, max_importance, verdict_severity, severity, series, series_index,"
-            " variant, run_group, steps, nano_usd / 1e9, reward, (select count(*) from runs m"
-            " where m.origin = runs.run_id and m.kind = 'monitor'), preset, monitor_mode,"
+            " variant, run_group, steps, nano_usd / 1e9, listed_nano_usd / 1e9, reward,"
+            " (select count(*) from runs m where m.origin = runs.run_id and m.kind = 'monitor'),"
+            " preset, monitor_mode,"
             f" selftest_case, categories, held from runs {clause}",
             args,
         ) as cur:
@@ -1926,6 +1960,39 @@ class Index:
                 output_tokens=made,
             )
             for (role, schema), (calls, nanos, priced, given, made) in found.items()
+        ]
+
+    async def listed_calls(self, run_id: str) -> list[ListedCalls]:
+        """The run's live model calls up to its head that cost a list price AIMS laid on their
+        profile, per profile name in the order each first called. A call counts when one of its
+        attempts did; its cost sums those attempts in whole nano-dollars."""
+        if not _held(run_id):
+            return []
+        async with self._db.execute(
+            "select type, json_extract(data, '$.call_id'), json_extract(data, '$.profile'),"
+            " json_extract(data, '$.cost_usd'), json_extract(data, '$.cost_source'),"
+            " json_extract(data, '$.source')"
+            f" from events where run_id = ? and +seq <= {HEAD} and type in (?, ?) order by seq",
+            (run_id, run_id, ModelRequest.type, ModelResponse.type),
+        ) as cur:
+            rows = await cur.fetchall()
+        profiles: dict[str, str] = {}
+        found: dict[str, list[Any]] = {}
+        for type_, call, profile, cost, cost_source, source in rows:
+            if type_ == ModelRequest.type:
+                if isinstance(profile, str):
+                    profiles.setdefault(call, profile)
+                continue
+            if (source or "live") != "live" or cost_source != "list" or call not in profiles:
+                continue
+            if (nanos := _nanos(cost)) is None:
+                continue
+            row = found.setdefault(profiles[call], [set(), 0])
+            row[0].add(call)
+            row[1] += nanos
+        return [
+            ListedCalls(profile=profile, calls=len(calls), cost_usd=min(nanos, BIND_MAX) / 1e9)
+            for profile, (calls, nanos) in found.items()
         ]
 
     async def served(self, run_id: str) -> list[Served]:

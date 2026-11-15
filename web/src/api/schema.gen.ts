@@ -3108,8 +3108,10 @@ export interface components {
          * Facts
          * @description `kernel` counts the kernel events by type. `agent_cost_usd` and `monitor_cost_usd` sum
          *     the priced live model calls of the agents and of the live monitor, its judge included.
-         *     `review_cost_usd` is what the review picked as the source cost. `served` lists the
-         *     providers that answered each model's calls, for the models whose answers named one.
+         *     `review_cost_usd` is what the review picked as the source cost. `listed` and
+         *     `review_listed` say which live calls of the run and of that review cost a list price.
+         *     `served` lists the providers that answered each model's calls, for the models whose answers
+         *     named one.
          */
         Facts: {
             /** Agent Cost Usd */
@@ -3134,10 +3136,14 @@ export interface components {
             kernel?: {
                 [key: string]: number;
             };
+            /** Listed */
+            listed?: components["schemas"]["ListedCost"][];
             /** Monitor Cost Usd */
             monitor_cost_usd?: number | null;
             /** Review Cost Usd */
             review_cost_usd?: number | null;
+            /** Review Listed */
+            review_listed?: components["schemas"]["ListedCost"][];
             /** Served */
             served?: components["schemas"]["Served"][];
             /**
@@ -4244,6 +4250,22 @@ export interface components {
             checked: string;
             /** Tier From */
             tier_from?: number | null;
+        };
+        /**
+         * ListedCost
+         * @description The live calls of profile `profile` that cost a list price: `calls` of them, `cost_usd`
+         *     in all. `prices` are the list prices the run recorded on profiles of that name, empty when
+         *     it recorded none.
+         */
+        ListedCost: {
+            /** Calls */
+            calls: number;
+            /** Cost Usd */
+            cost_usd: number;
+            /** Prices */
+            prices: components["schemas"]["RecordedPrice"][];
+            /** Profile */
+            profile: string;
         };
         /**
          * ListedPrice
@@ -6034,6 +6056,20 @@ export interface components {
             /** Runs */
             runs: string[];
         };
+        /**
+         * RecordedPrice
+         * @description A list price a run recorded on a profile: row `key` of the map, from a copy last
+         *     confirmed current at `checked`.
+         */
+        RecordedPrice: {
+            /**
+             * Checked
+             * Format: date-time
+             */
+            checked: string;
+            /** Key */
+            key: string;
+        };
         /** Release */
         Release: {
             /** Reason */
@@ -6355,12 +6391,15 @@ export interface components {
          *     caps the run's budget override changed from its scenario's. `series_previous` is the run
          *     of its series it starts from, None for the first. `replayable` is the last step of each
          *     agent a fork can replay: its last step once each of that step's tool calls has a result,
-         *     else the step before.
+         *     else the step before. `listed` says which of its live calls cost a list price, per profile,
+         *     with the rows its start recorded.
          */
         RunDetail: {
             /** Budget */
             budget: components["schemas"]["BudgetChange"][];
             finished: components["schemas"]["Event"] | null;
+            /** Listed */
+            listed: components["schemas"]["ListedCost"][];
             /** Monitor Runs */
             monitor_runs: string[];
             /** Replayable */
@@ -6522,7 +6561,8 @@ export interface components {
          *     `series` and `series_index` place a run in its series; `variant` is the scenario variant
          *     it ran, known once the run is sealed and its truth file arrived. `steps` counts its agents'
          *     model calls, `cost_usd` sums its priced live model responses, monitor calls included (None
-         *     when there is none), `reward` is the verifier's last reward and `reviews` counts the
+         *     when there is none), and `listed_usd` those of them at a list price AIMS laid on the
+         *     profile. `reward` is the verifier's last reward and `reviews` counts the
          *     monitor runs over it, queued ones too. `preset` is the preset of the monitor that watches
          *     the run, or that a monitor run runs, and `monitor_mode` a monitor run's mode. `case` names
          *     the self-test case the run plays (None for case runs made before it was kept). `held`
@@ -6579,6 +6619,8 @@ export interface components {
              * @enum {string}
              */
             kind: "scenario" | "monitor" | "models.check" | "score" | "selftest" | "selftest.case";
+            /** Listed Usd */
+            listed_usd: number | null;
             /** Max Importance */
             max_importance: number | null;
             /**

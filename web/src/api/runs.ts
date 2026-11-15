@@ -225,6 +225,9 @@ export function applyRuns(qc: QueryClient, runs: readonly RunSummary[]): void {
         void qc.invalidateQueries({ queryKey: q.queryKey, exact: true });
         void qc.invalidateQueries({ queryKey: ["runs", "steps", run.run_id], exact: true });
         refreshLastSteps(qc, run.run_id);
+      } else if (data.run.listed_usd === null && run.listed_usd !== null) {
+        // the profiles its first call at a list price names come with a fetch
+        void qc.invalidateQueries({ queryKey: q.queryKey, exact: true });
       }
     } else if (what === "series") {
       applySeries(qc, q.queryKey, runs);

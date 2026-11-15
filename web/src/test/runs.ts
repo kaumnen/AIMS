@@ -26,6 +26,7 @@ export function run(runId: string, over: Partial<RunSummary> = {}): RunSummary {
     variant: null,
     steps: 0,
     cost_usd: null,
+    listed_usd: null,
     reward: null,
     reviews: 0,
     preset: null,

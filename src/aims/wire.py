@@ -246,7 +246,8 @@ class RunSummary(_Wire):
     `series` and `series_index` place a run in its series; `variant` is the scenario variant
     it ran, known once the run is sealed and its truth file arrived. `steps` counts its agents'
     model calls, `cost_usd` sums its priced live model responses, monitor calls included (None
-    when there is none), `reward` is the verifier's last reward and `reviews` counts the
+    when there is none), and `listed_usd` those of them at a list price AIMS laid on the
+    profile. `reward` is the verifier's last reward and `reviews` counts the
     monitor runs over it, queued ones too. `preset` is the preset of the monitor that watches
     the run, or that a monitor run runs, and `monitor_mode` a monitor run's mode. `case` names
     the self-test case the run plays (None for case runs made before it was kept). `held`
@@ -279,6 +280,7 @@ class RunSummary(_Wire):
     variant: str | None = None
     steps: int = 0
     cost_usd: float | None = None
+    listed_usd: float | None = None
     reward: float | None = None
     reviews: int = 0
     preset: str | None = None

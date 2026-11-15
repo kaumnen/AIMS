@@ -356,6 +356,7 @@ beforeEach(() => {
     budget: [],
     series_previous: null,
     replayable: {},
+    listed: [],
   };
   samples = [];
   flags = [];
@@ -599,6 +600,7 @@ test("a run opens on its first step", async () => {
   expect(screen.getByText("12m 04s")).toBeTruthy();
   expect(screen.getByText("$1.12")).toBeTruthy();
   expect(screen.getByText("1.00")).toBeTruthy();
+  expect(screen.queryByText(/list price/)).toBeNull();
 
   const list = await screen.findByRole("listbox", { name: "Steps" });
   const first = within(list).getByRole("option", { selected: true });
@@ -629,6 +631,44 @@ test("a run opens on its first step", async () => {
   expect(query?.get("agent")).toBe("agent");
   expect(query?.getAll("types")).toContain("tool.call");
   expect(query?.getAll("types")).not.toContain("file.access");
+});
+
+test("the header says how much of the cost is at a list price, and from which row", async () => {
+  detail = {
+    ...detail,
+    run: { ...detail.run, listed_usd: 0.25 },
+    listed: [
+      {
+        profile: "agent",
+        calls: 40,
+        cost_usd: 0.2,
+        prices: [{ key: "vendor-x/agent", checked: "2026-11-15T09:30:00Z" }],
+      },
+      {
+        profile: "watch",
+        calls: 3,
+        cost_usd: 0.05,
+        prices: [
+          { key: "vendor-x/old", checked: "2026-11-02T23:00:00Z" },
+          { key: "vendor-x/new", checked: "2026-11-15T09:30:00Z" },
+        ],
+      },
+    ],
+  };
+  renderAt(`/runs/${BEE5}`);
+  expect(
+    await screen.findByText(
+      "$0.25 of it at LiteLLM list price: agent, row vendor-x/agent, copy checked 2026-11-15; " +
+        "watch, row vendor-x/old (copy checked 2026-11-02) or row vendor-x/new (copy checked " +
+        "2026-11-15).",
+    ),
+  ).toBeTruthy();
+});
+
+test("a cost at a list price the run did not record says so plainly", async () => {
+  detail = { ...detail, run: { ...detail.run, listed_usd: 0.25 } };
+  renderAt(`/runs/${BEE5}`);
+  expect(await screen.findByText("$0.25 of it at LiteLLM list price.")).toBeTruthy();
 });
 
 test("the timeline pages the samples and draws the agent's activity", async () => {
@@ -1002,6 +1042,7 @@ function withReview() {
         budget: [],
         series_previous: null,
         replayable: {},
+        listed: [],
       },
       flags: [],
       sweeps: [],
@@ -1431,6 +1472,34 @@ function withScore() {
   scores = [score(SCORE), score(OLD_SCORE, { started_at: "2026-10-30T01:05:00+00:00" })];
   scoreEvents = { [SCORE]: scoreLog(SCORE), [OLD_SCORE]: scoreLog(OLD_SCORE, false) };
 }
+
+test("a score's cost at a list price names the classifier's row and copy", async () => {
+  withScore();
+  const own = score(SCORE, { listed_usd: 0.0055 });
+  scores = [own];
+  others[SCORE] = {
+    detail: {
+      ...detail,
+      run: own,
+      listed: [
+        {
+          profile: "cheap",
+          calls: 2,
+          cost_usd: 0.0055,
+          prices: [{ key: "vendor-x/cheap", checked: "2026-11-15T09:30:00Z" }],
+        },
+      ],
+    },
+    flags: [],
+    sweeps: [],
+  };
+  renderAt(`/runs/${BEE5}?tab=score`);
+  expect(
+    await screen.findByText(
+      "<$0.01 of it at LiteLLM list price: cheap, row vendor-x/cheap, copy checked 2026-11-15.",
+    ),
+  ).toBeTruthy();
+});
 
 test("a score shows each plant taken and what each monitor layer caught of it", async () => {
   withScore();

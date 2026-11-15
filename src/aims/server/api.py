@@ -60,6 +60,7 @@ from aims.monitor import texts as monitor_texts
 from aims.monitor.config import MonitorConfigError, Preset
 from aims.monitor.setup import ResolvedMonitor
 from aims.prompts import PLACEHOLDERS, AgentTexts, Prompts, TextError, load_prompts
+from aims.report.listed import ListedCost, listed_costs
 from aims.run import selftest
 from aims.run.estimate import (
     Estimate,
@@ -385,6 +386,7 @@ def summary(
         variant=None if info is None else info.variant,
         steps=0 if info is None else info.steps,
         cost_usd=None if info is None else info.cost_usd,
+        listed_usd=None if info is None else info.listed_usd,
         reward=None if info is None else info.reward,
         reviews=0 if info is None else info.reviews,
         preset=info.preset if info is not None else planned[0],
@@ -610,7 +612,8 @@ class RunDetail(Out):
     caps the run's budget override changed from its scenario's. `series_previous` is the run
     of its series it starts from, None for the first. `replayable` is the last step of each
     agent a fork can replay: its last step once each of that step's tool calls has a result,
-    else the step before."""
+    else the step before. `listed` says which of its live calls cost a list price, per profile,
+    with the rows its start recorded."""
 
     run: RunSummary
     started: Event | None = None
@@ -621,6 +624,7 @@ class RunDetail(Out):
     budget: list[budgets.BudgetChange] = Field(default_factory=list)
     series_previous: str | None = None
     replayable: dict[str, int] = Field(default_factory=dict)
+    listed: list[ListedCost] = Field(default_factory=list)
 
 
 def budget_changes(started: dict[str, JsonValue]) -> list[budgets.BudgetChange]:
@@ -655,6 +659,9 @@ async def get_run(run_id: str, principal: Viewer, state: State) -> RunDetail:
         series_previous=await _series_previous(state, run_id, started),
         budget=[] if started is None else budget_changes(started.data),
         replayable=await replayable_steps(state.store, run_id, agents),
+        listed=[]
+        if started is None or found.listed_usd is None
+        else await listed_costs(state.store, run_id, started.data.get("config")),
         started=first[0] if first else None,
         finished=next(iter(last), None),
         verdict=next(iter(verdict), None),

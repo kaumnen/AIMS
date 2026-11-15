@@ -204,7 +204,8 @@ async def score_run(
     """Score the sealed run `origin` against the flags of the monitor run `monitor`, or its own
     live flags, into a new run of kind score in `store`. `source` and `monitor_source` hold the
     run and the monitor run when another store does. `classifier` builds the classifier for the
-    new run's id, None to skip its checks: `awareness` and the `answer` check. `labels` are the
+    new run's id, None to skip its checks: `awareness` and the `answer` check. The new run's
+    `run.started` records the profile it calls as `classifier`. `labels` are the
     latest labels of the flags, by seq. `plants_from`, a scenario file, adds its rule plants
     and the plant facts the truth file lacks; `added` is what such a file adds, read already.
     Raises ScoreError."""
@@ -232,6 +233,7 @@ async def score_run(
     raised = await flags(monitor_source or store, origin, events, monitor)
     head = events[-1]
     run_id = run_id or str(uuid.uuid7())
+    check = classifier(run_id) if classifier is not None and (awareness or answer) else None
     out = ScoreResult(run_id=run_id)
     out.taken = taken
     out.added = sorted(added.plants) if added else []
@@ -246,6 +248,7 @@ async def score_run(
         series=started.series,
         config={
             "monitor": monitor,
+            "classifier": None if check is None else check.profile.snapshot(),
             "variant": record.get("variant"),
             "plants": len(plants),
             "added": None
@@ -276,7 +279,6 @@ async def score_run(
                 found = found.model_copy(update={"matches": matches})
             out.triggered.append(found)
             drafts.append(Draft(found, t.agent))
-        check = classifier(run_id) if classifier is not None else None
         config = started.config.get("agents")
         for agent, role in roles.items():
             mine = [t for t in taken if t.agent == agent]

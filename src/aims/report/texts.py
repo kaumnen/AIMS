@@ -118,6 +118,13 @@ MOMENT = {
 
 COSTS = "Cost: agents {agents}. Live monitor {monitor}, judge included."
 REVIEW_COST = "This review {review}, judge included."
+LISTED = "List prices:"
+REVIEW_LISTED = "List prices in this review:"
+LISTED_ONE = "{calls} of profile {profile} ({cost}) {verb} at {where}."
+LISTED_ROW = "row {key} of {source}'s price map, copy checked {date}"
+LISTED_ROW_OF_SEVERAL = "row {key} (copy checked {date})"
+LISTED_ROWS = "{rows} of {source}'s price map"
+LISTED_UNRECORDED = "a list price from {source}'s price map that the run did not record"
 AT_LEAST = "at least {usd}"
 UNKNOWN = "unknown"
 COUNTS = "{events}, {steps}, {flags}."

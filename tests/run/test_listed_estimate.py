@@ -34,6 +34,7 @@ from aims.monitor.offline import monitor_offline, monitored, offline_monitor, or
 from aims.monitor.setup import ResolvedMonitor
 from aims.monitor.texts import resolve
 from aims.prompts import Prompts
+from aims.report.listed import RecordedPrice, listed_costs, recorded_prices
 from aims.run import scoring
 from aims.run.estimate import (
     History,
@@ -442,6 +443,11 @@ async def test_a_fork_job_carries_the_list_price_to_its_runner(tmp_path: Path) -
     live = runner.given_profiles["a"]
     assert (live.price, live.price_key) == (PRICE, KEY)
     assert live.listed is not None
+    # the fork's start records it as a run's does, so its costs name the row and the copy
+    config = {"agents": {"a": {"profile": live.snapshot()}}}
+    assert recorded_prices(json.loads(json.dumps(config))) == {
+        "listed": [RecordedPrice(key=KEY, checked=live.listed.checked)]
+    }
 
 
 async def test_a_review_by_a_listed_monitor_is_sized_and_capped_at_its_list_price(
@@ -518,6 +524,7 @@ async def test_a_review_counts_its_calls_at_the_list_price(tmp_path: Path) -> No
         assert result.status == "completed", result.reason
         replies = await store.events(result.run_id, types=["model.response"], limit=1000)
         (began,) = await store.events(result.run_id, types=["run.started"], limit=1)
+        labels = await listed_costs(store, result.run_id, began.data["config"])
     assert replies
     assert {e.data["cost_source"] for e in replies} == {"list"}
     assert result.cost_usd == pytest.approx(sum(cast(float, e.data["cost_usd"]) for e in replies))
@@ -526,6 +533,8 @@ async def test_a_review_counts_its_calls_at_the_list_price(tmp_path: Path) -> No
     assert {(q["price_key"], q["listed"] is not None) for q in recorded.values()} == {
         ("vendor-x/watch-model", True)
     }
+    assert sum(x.cost_usd for x in labels) == pytest.approx(result.cost_usd)
+    assert {p.key for x in labels for p in x.prices} == {"vendor-x/watch-model"}
 
 
 async def test_a_score_counts_its_ceiling_at_the_classifier_s_list_price(tmp_path: Path) -> None:
@@ -567,7 +576,13 @@ async def test_a_score_counts_its_calls_at_the_classifier_s_list_price(
         assert build is not None
         result = await scoring.score_run(store, run_id, classifier=build)
         replies = await store.events(result.run_id, types=["model.response"], limit=10)
+        (began,) = await store.events(result.run_id, types=["run.started"], limit=1)
+        (label,) = await listed_costs(store, result.run_id, began.data["config"])
     assert [e.data["cost_source"] for e in replies] == ["list"]
+    # the score's start records the classifier, so its cost names the row and the copy
+    recorded = cast(dict[str, Any], began.data["config"])["classifier"]
+    assert (recorded["name"], recorded["price_key"]) == ("cheap", KEY)
+    assert (label.profile, [p.key for p in label.prices]) == ("cheap", [KEY])
     # the scripted call reads 100 tokens and writes 10, at $1 and $2 per million
     assert result.cost_usd == pytest.approx(120 / 1_000_000)
 

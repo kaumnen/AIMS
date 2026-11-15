@@ -1,10 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
+import { Fragment } from "react";
 
 import { type AgentText, type Moment, REPORT_REFRESH_MS, type ReportSource } from "@/api/report";
 import { flagsQuery, sweepsQuery } from "@/api/run";
 import { ended } from "@/api/runs";
 import { Button } from "@/components/ui/button";
 import { duration, fullTime, shortId, usd } from "@/lib/format";
+import { day, LIST_SOURCE, type ListedCost } from "@/lib/listed";
 
 import { useHarm } from "../harm";
 import { LIVE } from "../monitor";
@@ -43,6 +45,8 @@ const MOMENT: Record<Moment["kind"], string> = {
   evidence: "Judge evidence",
 };
 const COSTS_TITLE = "Model calls by caller";
+const LISTED = "List prices:";
+const REVIEW_LISTED = "List prices in this review:";
 const KERNEL_TITLE = "Kernel events";
 const NO_KERNEL = "No kernel events.";
 const NONE = "None.";
@@ -135,6 +139,46 @@ export function TimelineSection(props: SectionProps) {
   );
 }
 
+// Where one profile's list price came from: its row of the map and the day of the copy.
+function ListedWhere({ cost }: { cost: ListedCost }) {
+  const map = `${LIST_SOURCE}'s price map`;
+  const [only] = cost.prices;
+  if (only === undefined) return <>a list price from {map} that the run did not record</>;
+  if (cost.prices.length === 1) {
+    return (
+      <>
+        row {mono(only.key)} of {map}, copy checked {day(only.checked)}
+      </>
+    );
+  }
+  return (
+    <>
+      {cost.prices.map((p, i) => (
+        <Fragment key={`${p.key} ${p.checked}`}>
+          {i > 0 && " or "}row {mono(p.key)} (copy checked {day(p.checked)})
+        </Fragment>
+      ))}{" "}
+      of {map}
+    </>
+  );
+}
+
+// Which calls cost a list price, one sentence per profile, as the Markdown writes them.
+function Listed({ head, listed }: { head: string; listed: readonly ListedCost[] }) {
+  return (
+    <p className="tabular-nums">
+      {head}
+      {listed.map((c) => (
+        <Fragment key={c.profile}>
+          {" "}
+          {count(c.calls, "call")} of profile {visible(c.profile)} ({usd(c.cost_usd)}){" "}
+          {c.calls === 1 ? "counts" : "count"} at <ListedWhere cost={c} />.
+        </Fragment>
+      ))}
+    </p>
+  );
+}
+
 export function FactsSection({ report }: SectionProps) {
   const f = report.facts;
   const review = report.header.pins.source !== LIVE;
@@ -172,6 +216,10 @@ export function FactsSection({ report }: SectionProps) {
       <p className="tabular-nums">
         {counts} {costs}
       </p>
+      {(f.listed ?? []).length > 0 && <Listed head={LISTED} listed={f.listed ?? []} />}
+      {(f.review_listed ?? []).length > 0 && (
+        <Listed head={REVIEW_LISTED} listed={f.review_listed ?? []} />
+      )}
       {f.served.map((s) => {
         const names = Object.entries(s.providers);
         return (

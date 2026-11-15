@@ -35,6 +35,7 @@ from aims.events import (
     Verification,
 )
 from aims.events.schema import BlobRef, Content, Payload, payload_types
+from aims.report.listed import listed_costs
 from aims.report.model import (
     LIVE,
     AgentFacts,
@@ -196,7 +197,16 @@ async def build(
     flag_rows = [f.model_copy(update={"label": labels.get(f.seq)}) for f in flags]
     timeline = await _timeline(store, run_id, marks, flag_rows, review, verdict, plants, steps)
     chosen = next((r for r in reviews if r.run_id == picked), None)
-    facts = await _facts(store, run_id, info, marks, chosen, flag_rows)
+    facts = await _facts(
+        store,
+        run_id,
+        info,
+        marks,
+        chosen,
+        flag_rows,
+        started.config,
+        held_started.config if review and isinstance(held_started, RunStarted) else None,
+    )
     sources = await _sources(store, run_id, info, started, reviews, picked, facts, marks)
     appendix = Appendix(
         answers=[
@@ -689,6 +699,8 @@ async def _facts(
     marks: Sequence[Event],
     review: RunInfo | None,
     flags: Sequence[Flag],
+    config: object,
+    review_config: object,
 ) -> Facts:
     started = {e.agent_id: s for e, s in _of(marks, AgentStarted)}
     finished = {e.agent_id: f for e, f in _of(marks, AgentFinished)}
@@ -719,6 +731,10 @@ async def _facts(
         monitor_cost_usd=_sum(c.cost_usd for c in costs if c.role is not None),
         review_cost_usd=None if review is None else review.cost_usd,
         costs=costs,
+        listed=await listed_costs(store, run_id, config),
+        review_listed=[]
+        if review is None
+        else await listed_costs(store, review.run_id, review_config),
         served=await store.served(run_id),
         kernel={k: n for k, n in sorted(counts.items()) if k in KERNEL_TYPES},
         flags=len(flags),

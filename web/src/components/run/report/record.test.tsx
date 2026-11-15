@@ -340,3 +340,42 @@ test("run facts name the providers that served each model", async () => {
     "vendor/b was served by Cohere.",
   ]);
 });
+
+test("run facts name the row and copy of each list price, as the Markdown does", async () => {
+  const r = fullReport();
+  const day = "2026-11-15T09:30:00Z";
+  state.report = {
+    ...r,
+    facts: {
+      ...r.facts,
+      listed: [
+        {
+          profile: "agent",
+          calls: 2,
+          cost_usd: 0.006,
+          prices: [{ key: "vendor-x/agent", checked: day }],
+        },
+        {
+          profile: "watch",
+          calls: 1,
+          cost_usd: 0.03,
+          prices: [
+            { key: "vendor-x/old", checked: "2026-11-02T23:00:00Z" },
+            { key: "vendor-x/new", checked: day },
+          ],
+        },
+      ],
+      review_listed: [{ profile: "judge", calls: 1, cost_usd: 0.02, prices: [] }],
+    },
+  };
+  const facts = await section("Run facts");
+  const said = facts.getAllByText(/^List prices/).map((p) => p.textContent);
+  expect(said).toEqual([
+    "List prices: 2 calls of profile agent (<$0.01) count at row vendor-x/agent of LiteLLM's " +
+      "price map, copy checked 2026-11-15. 1 call of profile watch ($0.03) counts at row " +
+      "vendor-x/old (copy checked 2026-11-02) or row vendor-x/new (copy checked 2026-11-15) of " +
+      "LiteLLM's price map.",
+    "List prices in this review: 1 call of profile judge ($0.02) counts at a list price from " +
+      "LiteLLM's price map that the run did not record.",
+  ]);
+});

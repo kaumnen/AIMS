@@ -69,6 +69,7 @@ beforeEach(() => {
         budget: [],
         series_previous: null,
         replayable: {},
+        listed: [],
       };
       return Response.json(detail);
     }

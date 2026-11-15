@@ -3847,7 +3847,7 @@
       },
       "Facts": {
         "additionalProperties": false,
-        "description": "`kernel` counts the kernel events by type. `agent_cost_usd` and `monitor_cost_usd` sum\nthe priced live model calls of the agents and of the live monitor, its judge included.\n`review_cost_usd` is what the review picked as the source cost. `served` lists the\nproviders that answered each model's calls, for the models whose answers named one.",
+        "description": "`kernel` counts the kernel events by type. `agent_cost_usd` and `monitor_cost_usd` sum\nthe priced live model calls of the agents and of the live monitor, its judge included.\n`review_cost_usd` is what the review picked as the source cost. `listed` and\n`review_listed` say which live calls of the run and of that review cost a list price.\n`served` lists the providers that answered each model's calls, for the models whose answers\nnamed one.",
         "properties": {
           "agent_cost_usd": {
             "anyOf": [
@@ -3902,6 +3902,13 @@
             "title": "Kernel",
             "type": "object"
           },
+          "listed": {
+            "items": {
+              "$ref": "#/components/schemas/ListedCost"
+            },
+            "title": "Listed",
+            "type": "array"
+          },
           "monitor_cost_usd": {
             "anyOf": [
               {
@@ -3923,6 +3930,13 @@
               }
             ],
             "title": "Review Cost Usd"
+          },
+          "review_listed": {
+            "items": {
+              "$ref": "#/components/schemas/ListedCost"
+            },
+            "title": "Review Listed",
+            "type": "array"
           },
           "served": {
             "items": {
@@ -6850,6 +6864,39 @@
           "checked"
         ],
         "title": "Listed",
+        "type": "object"
+      },
+      "ListedCost": {
+        "additionalProperties": false,
+        "description": "The live calls of profile `profile` that cost a list price: `calls` of them, `cost_usd`\nin all. `prices` are the list prices the run recorded on profiles of that name, empty when\nit recorded none.",
+        "properties": {
+          "calls": {
+            "title": "Calls",
+            "type": "integer"
+          },
+          "cost_usd": {
+            "title": "Cost Usd",
+            "type": "number"
+          },
+          "prices": {
+            "items": {
+              "$ref": "#/components/schemas/RecordedPrice"
+            },
+            "title": "Prices",
+            "type": "array"
+          },
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile",
+          "calls",
+          "cost_usd",
+          "prices"
+        ],
+        "title": "ListedCost",
         "type": "object"
       },
       "ListedPrice": {
@@ -11259,6 +11306,27 @@
         "title": "Rates",
         "type": "object"
       },
+      "RecordedPrice": {
+        "additionalProperties": false,
+        "description": "A list price a run recorded on a profile: row `key` of the map, from a copy last\nconfirmed current at `checked`.",
+        "properties": {
+          "checked": {
+            "format": "date-time",
+            "title": "Checked",
+            "type": "string"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "checked"
+        ],
+        "title": "RecordedPrice",
+        "type": "object"
+      },
       "Release": {
         "additionalProperties": false,
         "properties": {
@@ -12210,7 +12278,7 @@
         "type": "object"
       },
       "RunDetail": {
-        "description": "`verdict` is the judge's `monitor.verdict`; `monitor_runs` are the monitor runs over this\nrun and `score_runs` the scores of it, queued ones too, newest first. `budget` lists the\ncaps the run's budget override changed from its scenario's. `series_previous` is the run\nof its series it starts from, None for the first. `replayable` is the last step of each\nagent a fork can replay: its last step once each of that step's tool calls has a result,\nelse the step before.",
+        "description": "`verdict` is the judge's `monitor.verdict`; `monitor_runs` are the monitor runs over this\nrun and `score_runs` the scores of it, queued ones too, newest first. `budget` lists the\ncaps the run's budget override changed from its scenario's. `series_previous` is the run\nof its series it starts from, None for the first. `replayable` is the last step of each\nagent a fork can replay: its last step once each of that step's tool calls has a result,\nelse the step before. `listed` says which of its live calls cost a list price, per profile,\nwith the rows its start recorded.",
         "properties": {
           "budget": {
             "items": {
@@ -12228,6 +12296,13 @@
                 "type": "null"
               }
             ]
+          },
+          "listed": {
+            "items": {
+              "$ref": "#/components/schemas/ListedCost"
+            },
+            "title": "Listed",
+            "type": "array"
           },
           "monitor_runs": {
             "items": {
@@ -12294,7 +12369,8 @@
           "score_runs",
           "budget",
           "series_previous",
-          "replayable"
+          "replayable",
+          "listed"
         ],
         "title": "RunDetail",
         "type": "object"
@@ -12698,7 +12774,7 @@
       },
       "RunSummary": {
         "additionalProperties": false,
-        "description": "`kind` says what the run is and `origin` names the run a monitor run watched. `flags`\ncounts its logical flags and `categories` them per category, whatever their status;\n`max_importance` is the highest importance of a flag not cleared or rejected,\n`verdict_severity` the judge's, and `max_severity` the higher of the two, 0 for neither.\n`series` and `series_index` place a run in its series; `variant` is the scenario variant\nit ran, known once the run is sealed and its truth file arrived. `steps` counts its agents'\nmodel calls, `cost_usd` sums its priced live model responses, monitor calls included (None\nwhen there is none), `reward` is the verifier's last reward and `reviews` counts the\nmonitor runs over it, queued ones too. `preset` is the preset of the monitor that watches\nthe run, or that a monitor run runs, and `monitor_mode` a monitor run's mode. `case` names\nthe self-test case the run plays (None for case runs made before it was kept). `held`\nlists its agents paused now, by the monitor or an operator, one entry per pause.\n`commands` counts the commands sent to it through the control plane, `commands_waiting`\nthose the runner has not answered yet and `commands_dropped` those settled without its\nanswer.",
+        "description": "`kind` says what the run is and `origin` names the run a monitor run watched. `flags`\ncounts its logical flags and `categories` them per category, whatever their status;\n`max_importance` is the highest importance of a flag not cleared or rejected,\n`verdict_severity` the judge's, and `max_severity` the higher of the two, 0 for neither.\n`series` and `series_index` place a run in its series; `variant` is the scenario variant\nit ran, known once the run is sealed and its truth file arrived. `steps` counts its agents'\nmodel calls, `cost_usd` sums its priced live model responses, monitor calls included (None\nwhen there is none), and `listed_usd` those of them at a list price AIMS laid on the\nprofile. `reward` is the verifier's last reward and `reviews` counts the\nmonitor runs over it, queued ones too. `preset` is the preset of the monitor that watches\nthe run, or that a monitor run runs, and `monitor_mode` a monitor run's mode. `case` names\nthe self-test case the run plays (None for case runs made before it was kept). `held`\nlists its agents paused now, by the monitor or an operator, one entry per pause.\n`commands` counts the commands sent to it through the control plane, `commands_waiting`\nthose the runner has not answered yet and `commands_dropped` those settled without its\nanswer.",
         "properties": {
           "case": {
             "anyOf": [
@@ -12806,6 +12882,17 @@
             ],
             "title": "Kind",
             "type": "string"
+          },
+          "listed_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Listed Usd"
           },
           "max_importance": {
             "anyOf": [
@@ -13008,6 +13095,7 @@
           "variant",
           "steps",
           "cost_usd",
+          "listed_usd",
           "reward",
           "reviews",
           "preset",

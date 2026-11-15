@@ -251,7 +251,8 @@ async def test_the_text_index_passes_its_check_while_runs_hold_resource_windows(
 
 async def test_the_text_index_rows_are_named_by_one_condition(tmp_path: Path) -> None:
     """The view, the insert trigger and a remove all say HAS_TEXT, and the schema is the one
-    index version 12 wrote, so no index is rebuilt for it."""
+    index version 12 wrote, so no index was rebuilt for it. Version 13 added the runs' list
+    price totals."""
     root = tmp_path / "runs"
     said: list[str] = []
     async with await LocalEventStore.open(root) as store:
@@ -262,7 +263,7 @@ async def test_the_text_index_rows_are_named_by_one_condition(tmp_path: Path) ->
         run_id = await long_run(store)
         await store._index._db.set_trace_callback(said.append)
         await store.remove(run_id)
-    assert index_module.VERSION == 12
+    assert index_module.VERSION == 13
     assert made == {
         "events_text": "CREATE VIEW events_text as select id, text from events where text != ''",
         "events_fts_insert": "CREATE TRIGGER events_fts_insert after insert on events when"

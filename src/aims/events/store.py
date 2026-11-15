@@ -30,6 +30,7 @@ from aims.events.index import (
     IndexDiverged,
     Label,
     LabelKind,
+    ListedCalls,
     RunInfo,
     SampleWindow,
     Served,
@@ -1326,6 +1327,10 @@ class LocalEventStore:
     async def call_costs(self, run_id: str) -> list[CallCost]:
         """What the run's live model calls cost, per role and output schema."""
         return await self._index.call_costs(run_id)
+
+    async def listed_calls(self, run_id: str) -> list[ListedCalls]:
+        """What the run's live model calls cost at a list price, per profile."""
+        return await self._index.listed_calls(run_id)
 
     async def served(self, run_id: str) -> list[Served]:
         """Which providers answered the run's model calls, per requested model."""
