@@ -1,6 +1,18 @@
 # Contributing
 
-Setup is in the [Development](https://github.com/kaumnen/AIMS/blob/main/README.md#development) section of the README. Report a vulnerability as [SECURITY.md](https://github.com/kaumnen/AIMS/blob/main/SECURITY.md) says.
+Report a vulnerability as [SECURITY.md](https://github.com/kaumnen/AIMS/blob/main/SECURITY.md) says.
+
+## Setup
+
+Needs uv, Bun and Docker.
+
+```sh
+uv sync
+cd web && bun install && bun run build && cd ..   # writes the UI into src/aims/ui/dist
+uv run aims ui                                    # serves that build; restart it after a new build
+```
+
+The repository has no `aims.toml`, so a checkout has no models until you add some.
 
 ## Before a push
 
