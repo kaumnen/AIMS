@@ -2623,16 +2623,9 @@ export interface components {
          *     90th percentile, or twice the median when `doubled` (under 10 runs). `capped` of those runs
          *     hit a cap; a past monitor that stopped at its cap counts at this one's, since it would have
          *     gone on. `excluded` matched but recorded no cost. `priced` is false when no profile of this
-         *     side has a price, so its cost is not counted. `cap_holds` is false when a cost cap is set but
-         *     leaves the ceiling, since a model it bounds has only a list price, which the run does not
-         *     count.
+         *     side has a price, so its cost is not counted.
          */
         CostFigures: {
-            /**
-             * Cap Holds
-             * @default true
-             */
-            cap_holds: boolean;
             /**
              * Capped
              * @default 0
@@ -4254,13 +4247,13 @@ export interface components {
         };
         /**
          * ListedPrice
-         * @description The list price an estimate laid on profile `profile`, which sets no `price` of its own:
-         *     row `key` of `source`'s price map, from a copy last confirmed current at `checked`, in
-         *     USD per million tokens. `cached_listed` is false when the row lists no cached input price,
+         * @description The list price laid on profile `profile`, which sets no `price` of its own: row `key`
+         *     of `source`'s price map, from a copy last confirmed current at `checked`, in USD per
+         *     million tokens. A run or fork counts a call at it when the provider reports no cost, and its
+         *     caps hold on that count. `cached_listed` is false when the row lists no cached input price,
          *     so cached input counts at the input price. `tier_from` is the prompt size in tokens from
          *     which the row lists a higher price, which the estimate leaves out. `problem` says why the
-         *     copy could not be confirmed current, None when it was. A cost cap on the profile's calls
-         *     holds only if the provider reports each call's cost. `text` says where the price comes
+         *     copy could not be confirmed current, None when it was. `text` says where the price comes
          *     from.
          */
         ListedPrice: {

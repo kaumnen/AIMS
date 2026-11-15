@@ -53,7 +53,7 @@ from aims.events.schema import blob_refs
 from aims.events.store import is_run_id
 from aims.models import Price, Profile, ProfileError
 from aims.models.check import Verdict
-from aims.models.listprice import SOURCE, ListPrice, PriceLists, survey
+from aims.models.listprice import SOURCE, Listing, ListPrice, PriceLists, survey
 from aims.models.openrouter import CatalogError, Draft, draft
 from aims.monitor import sweep_texts
 from aims.monitor import texts as monitor_texts
@@ -69,6 +69,8 @@ from aims.run.estimate import (
     estimate_runs,
     listed_price,
     needs_confirm,
+    priced_fork,
+    priced_runs,
 )
 from aims.run.fork import (
     CutAt,
@@ -965,6 +967,21 @@ async def start_runs(
             body.budget.check(a.id for a in bundle.scenario.agents)
         except BudgetError as e:
             raise ProblemException(422, "Invalid budget", str(e), code="budget") from None
+    # the list prices go on the profiles before the jobs are made, confirmed or not, so the
+    # runner gets them and never reads the map
+    try:
+        settings, listing = await priced_runs(
+            settings,
+            [bundle],
+            profile=body.profile,
+            preset=body.monitor,
+            budget=body.budget,
+            lists=state.prices,
+        )
+    except BudgetError as e:
+        raise ProblemException(422, "Invalid budget", str(e), code="budget") from None
+    except (MonitorConfigError, ProfileError, TextError) as e:
+        raise ProblemException(422, "Monitor cannot run", str(e), code="monitor") from None
     agents = [agent_profile(settings.models, a, body.profile) for a in bundle.scenario.agents]
     monitor = _monitor(settings, bundle.scenario, agents, body.monitor, body.budget)
     try:
@@ -1003,7 +1020,7 @@ async def start_runs(
                     preset=body.monitor,
                     samples=body.samples * body.runs,
                     budget=body.budget,
-                    lists=state.prices,
+                    listing=listing,
                 )
             except ProfileError, MonitorConfigError, TextError:
                 cost = None
@@ -1079,15 +1096,26 @@ async def fork_point(state: ServerState, run_id: str, body: StartFork) -> ForkPo
     return ForkPoint(origin, step)
 
 
+async def fork_prices(
+    settings: Settings, at: ForkPoint, body: StartFork, lists: PriceLists | None
+) -> tuple[Settings, Listing]:
+    """`settings` with the list prices from `lists` laid for the forks `body` asks for, as they
+    run. Raises RunError, ProfileError, KeyError, MonitorConfigError, TextError or
+    BudgetError."""
+    return await priced_fork(
+        settings, at.origin, at.fork(body), preset=body.monitor, budget=body.budget, lists=lists
+    )
+
+
 async def fork_estimate(
     settings: Settings,
     history: History,
     at: ForkPoint,
     body: StartFork,
-    lists: PriceLists | None = None,
+    listing: Listing | None = None,
 ) -> Estimate:
-    """What the forks `body` asks for cost, with list prices from `lists`. Raises RunError,
-    ProfileError, KeyError, MonitorConfigError or TextError."""
+    """What the forks `body` asks for cost, with `settings` and `listing` from `fork_prices`.
+    Raises RunError, ProfileError, KeyError, MonitorConfigError or TextError."""
     return await estimate_fork(
         history,
         settings,
@@ -1096,7 +1124,7 @@ async def fork_estimate(
         preset=body.monitor,
         samples=body.samples,
         budget=body.budget,
-        lists=lists,
+        listing=listing,
     )
 
 
@@ -1114,9 +1142,17 @@ async def fork_run(
     at = await fork_point(state, run_id, body)
     origin, step = at.origin, at.step
     try:
-        agents = fork_agents(settings.models, origin, at.fork(body))
+        fork_agents(settings.models, origin, at.fork(body))
     except (RunError, ProfileError, KeyError) as e:
         raise ProblemException(422, "Cannot fork", str(e), code="fork") from None
+    # laid before the jobs are made, as for new runs; what fails here is the monitor's
+    try:
+        settings, listing = await fork_prices(settings, at, body, state.prices)
+    except BudgetError as e:
+        raise ProblemException(422, "Invalid budget", str(e), code="budget") from None
+    except (MonitorConfigError, ProfileError, TextError) as e:
+        raise ProblemException(422, "Monitor cannot run", str(e), code="monitor") from None
+    agents = fork_agents(settings.models, origin, at.fork(body))
     # the scenario and caps the fork runs under, as its estimate prices them
     scenario = (origin.full_bundle or origin.bundle).scenario
     monitor = _monitor(settings, scenario, agents, body.monitor, origin.fork_budget(body.budget))
@@ -1142,7 +1178,7 @@ async def fork_run(
         raise ProblemException(422, "Cannot fork", str(e), code="fork") from None
     if not body.confirm:
         try:
-            cost = await fork_estimate(settings, await state.history(), at, body, state.prices)
+            cost = await fork_estimate(settings, await state.history(), at, body, listing)
         except RunError, ProfileError, KeyError, MonitorConfigError, TextError:
             cost = None
         _confirm(cost)

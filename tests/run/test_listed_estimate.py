@@ -1,11 +1,11 @@
-"""Estimates of profiles that name a row of LiteLLM's price map and set no price: the list
-price serves the estimate only, a cost cap it cannot hold leaves the ceiling, and a lookup that
-fails leaves the profile unpriced with the reason."""
+"""Runs, forks and their estimates of profiles that name a row of LiteLLM's price map and set
+no price: the list price goes on the profiles the run gets, so its caps hold and the estimate
+counts them; a lookup that fails leaves the profile unpriced with the reason."""
 
 import asyncio
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx2
 import pytest
@@ -20,12 +20,14 @@ from test_estimate import (
     watcher,
     write,
 )
+from test_server import FakeRunner
 from typer.testing import CliRunner
 
 from aims.cli import app
 from aims.events import AgentFinished, Draft, LocalEventStore, ModelUsage
 from aims.models import listprice as lp
 from aims.models.listprice import PriceLists
+from aims.models.profiles import Price, Profile
 from aims.monitor.texts import resolve
 from aims.prompts import Prompts
 from aims.run import scoring
@@ -36,10 +38,13 @@ from aims.run.estimate import (
     estimate_review,
     estimate_runs,
     history,
-    needs_confirm,
+    priced_fork,
+    priced_runs,
     reviews_confirm,
 )
-from aims.run.fork import Origin, fork_of
+from aims.run.fork import Origin, fork_of, fork_profiles
+from aims.run.job import Job, fork_jobs, runner_for
+from aims.run.runner import Bench
 from aims.scenario import load as load_scenario
 
 pytestmark = pytest.mark.anyio
@@ -113,6 +118,15 @@ weights = "open-weights"
 reasoning = "full"
 price_key = "vendor-x/listed-model"
 """
+EXTRACT = """
+[profiles.extract-only]
+backend = "chat"
+base_url = "https://api.vendor-x.test/v1"
+model = "extract-model"
+weights = "extract-weights"
+reasoning = "full"
+price_key = "vendor-x/tiered"
+"""
 WATCHED = CONFIG_LISTED.replace(
     'sweep = "watcher"\njudge = "watcher"', 'sweep = "listed-watch"\njudge = "listed-watch"'
 )
@@ -120,7 +134,7 @@ LINE = (
     "Profile listed: LiteLLM list price for vendor-x/listed-model, fetched {day}: $1.00 input,"
     " $0.10 cached, $2.00 output per million tokens."
 )
-CAP = " A cost cap holds on its calls only if the provider reports each call's cost."
+PRICE = Price(input=1.0, cached=0.1, output=2.0)
 
 
 class Source:
@@ -150,7 +164,9 @@ async def run(tmp_path: Path, lists: PriceLists | None, *, config: str = CONFIG_
     preset = kw.pop("preset", "signals")
     settings, path = write(tmp_path, budget=budget, config=config, extra=extra, preset=preset)
     found = kw.pop("found", History())
-    return settings, await estimate_runs(found, settings, [load_scenario(path)], lists=lists, **kw)
+    bundles = [load_scenario(path)]
+    laid, listing = await priced_runs(settings, bundles, profile=kw.get("profile"), lists=lists)
+    return laid, await estimate_runs(found, laid, bundles, listing=listing, **kw)
 
 
 async def test_a_profile_with_a_key_and_no_price_counts_at_its_list_price(tmp_path: Path) -> None:
@@ -177,9 +193,12 @@ async def test_a_profile_with_a_key_and_no_price_counts_at_its_list_price(tmp_pa
         problem=None,
         text=f"LiteLLM list price for {KEY}, fetched {day}",
     )
-    assert LINE.format(day=day) + CAP in e.lines
-    # the run keeps the profile as it is
-    assert settings.models.get("listed").price is None
+    assert LINE.format(day=day) in e.lines
+    # the run gets the list price, marked as one
+    laid = settings.models.get("listed")
+    assert laid.price == PRICE
+    assert laid.listed is not None
+    assert (laid.listed.checked, laid.listed.cached_listed) == (entry.checked, True)
 
 
 async def test_past_runs_of_a_listed_profile_are_priced_at_the_list(tmp_path: Path) -> None:
@@ -195,34 +214,24 @@ async def test_past_runs_of_a_listed_profile_are_priced_at_the_list(tmp_path: Pa
         tokens = ModelUsage(input_tokens=0, cached_tokens=0, output_tokens=output_for(0.3))
         await record(store, settings, bundle, 0.0, profile="listed", usage=tokens)
         found = await history(store)
-    e = await estimate_runs(
-        found, settings, [bundle], profile="listed", lists=Source().lists(tmp_path)
+    laid, listing = await priced_runs(
+        settings, [bundle], profile="listed", lists=Source().lists(tmp_path)
     )
+    e = await estimate_runs(found, laid, [bundle], profile="listed", listing=listing)
     assert e.parts[0].agents.typical_usd == pytest.approx(0.3)
     assert e.parts[0].agents.runs == 1
 
 
-async def test_a_cost_cap_on_a_listed_profile_is_left_out_of_the_ceiling(tmp_path: Path) -> None:
+async def test_a_cost_cap_on_a_listed_profile_holds_as_on_its_own_price(tmp_path: Path) -> None:
     lists = Source().lists(tmp_path)
     _, own = await run(tmp_path, lists, budget_text="{steps: null, cost_usd: 5}", profile="agent")
     assert own.parts[0].agents.ceiling_usd == pytest.approx(5 + STEP)
-    assert not own.confirm
     _, e = await run(tmp_path, lists, budget_text="{steps: null, cost_usd: 5}", profile="listed")
-    assert e.parts[0].agents.ceiling_usd is None
-    assert not e.parts[0].agents.cap_holds
-    assert e.lines[1:3] == [
-        "Agents: no past runs to go by. No ceiling: its cost cap holds only if the provider"
-        " reports each call's cost.",
-        "Monitor: signals only, no model calls.",
-    ]
-    assert "Total: no ceiling." in e.lines
-    assert e.confirm
-    assert needs_confirm(e) == "no cap bounds the cost and no past runs give an estimate"
-    assert e.warnings == [
-        "no cap bounds the cost of agent a: its profile listed has only a list price, so a cost"
-        " cap holds only if the provider reports each call's cost; set a price in the profile,"
-        " or a step cap"
-    ]
+    # the run counts each call at the list price when the provider reports no cost
+    assert e.parts[0].agents == own.parts[0].agents
+    assert e.total.ceiling_usd == pytest.approx(5 + STEP)
+    assert not e.confirm
+    assert e.warnings == []
     _, run_cap = await run(
         tmp_path,
         lists,
@@ -230,37 +239,42 @@ async def test_a_cost_cap_on_a_listed_profile_is_left_out_of_the_ceiling(tmp_pat
         extra="limits: {cost_usd: 3}\n",
         profile="listed",
     )
-    assert run_cap.parts[0].agents.ceiling_usd is None
-    _, stepped_cap = await run(
-        tmp_path, lists, budget_text="{steps: 4, cost_usd: 5}", profile="listed"
-    )
-    assert stepped_cap.parts[0].agents.ceiling_usd == pytest.approx(4 * STEP)
-    assert not stepped_cap.warnings
+    assert run_cap.parts[0].agents.ceiling_usd == pytest.approx(3 + STEP)
 
 
-async def test_a_listed_monitor_has_no_ceiling_and_asks(tmp_path: Path) -> None:
+async def test_a_listed_monitor_is_sized_and_capped_at_its_list_price(tmp_path: Path) -> None:
     lists = Source().lists(tmp_path)
-    _, plain = await run(tmp_path, None, config=WATCHED, preset="standard", profile="agent")
+    kw: dict[str, Any] = {"config": WATCHED, "preset": "standard", "profile": "agent"}
+    _, plain = await run(tmp_path, None, budget_text="{steps: 400}", **kw)
     assert plain.parts[0].monitor is not None
     assert not plain.parts[0].monitor.priced
     assert plain.unpriced == ["listed-watch"]
-    _, e = await run(tmp_path, lists, config=WATCHED, preset="standard", profile="agent")
+    settings, e = await run(tmp_path, lists, budget_text="{steps: 400}", **kw)
     monitor = e.parts[0].monitor
     assert monitor is not None
     assert monitor.priced
-    assert monitor.ceiling_usd is None
-    assert not monitor.cap_holds
-    assert e.parts[0].agents.cap_holds
-    assert e.lines[2] == (
-        "Monitor: no past runs to go by. No ceiling: its cost cap holds only if the provider"
-        " reports each call's cost."
-    )
-    # the cap in force is still the one the run has
-    assert e.parts[0].caps.monitor_cost_usd == plain.parts[0].caps.monitor_cost_usd
-    assert e.total.ceiling_usd is None
-    assert e.confirm
+    cap = e.parts[0].caps.monitor_cost_usd
+    assert cap is not None
+    assert monitor.ceiling_usd == cap
+    # its budget pays for the sweeps of 400 steps at the list price, past the preset's amount
+    assert plain.parts[0].caps.monitor_cost_usd is not None
+    assert cap > plain.parts[0].caps.monitor_cost_usd
+    assert e.total.ceiling_usd is not None
     assert [x.profile for x in e.listed] == ["listed-watch"]
-    assert not any("pays for sweeps" in w for w in e.warnings)
+    assert settings.models.get("listed-watch").listed is not None
+
+
+async def test_a_key_only_the_extractor_names_is_laid(tmp_path: Path) -> None:
+    config = CONFIG + EXTRACT + '\n[monitor]\nextract = ["extract-only"]\n'
+    source = Source()
+    settings, e = await run(
+        tmp_path, source.lists(tmp_path), config=config, preset="standard", profile="agent"
+    )
+    assert len(source.seen) == 1
+    found = settings.models.get("extract-only")
+    assert found.listed is not None
+    assert found.price == Price(input=1.0, cached=1.0, output=2.0)
+    assert e.unpriced == []
 
 
 async def test_a_profile_with_its_own_price_keeps_it_and_nothing_is_read(tmp_path: Path) -> None:
@@ -323,7 +337,7 @@ async def test_a_copy_that_could_not_be_read_again_serves_with_its_date(tmp_path
     assert (
         LINE.format(day="2025-11-15")
         + f" The map could not be read again ({lp.URL} answered 503), so this is its copy"
-        " fetched 2025-11-15." + CAP
+        " fetched 2025-11-15."
     ) in e.lines
 
 
@@ -339,25 +353,89 @@ async def test_a_row_without_a_cached_price_or_with_tiers_says_so(tmp_path: Path
     )
 
 
-async def test_a_fork_counts_its_live_steps_at_the_list_price(tmp_path: Path) -> None:
-    settings, path = write(tmp_path, config=CONFIG_LISTED)
-    bundle = load_scenario(path)
-    listed = settings.models.get("listed")
-    origin = Origin(
+def origin_of(settings: Any, path: Path, recorded: Profile) -> Origin:
+    return Origin(
         run_id="origin",
-        bundle=bundle,
-        schedules={"a": [(None, listed)]},
+        bundle=load_scenario(path),
+        schedules={"a": [(None, recorded)]},
         texts={},
         steps={"a": 10},
     )
-    plain = await estimate_fork(History(), settings, origin, fork_of(origin, 5))
+
+
+async def test_a_fork_counts_its_live_steps_at_the_list_price(tmp_path: Path) -> None:
+    settings, path = write(tmp_path, config=CONFIG_LISTED)
+    origin = origin_of(settings, path, settings.models.get("listed"))
+    fork = fork_of(origin, 5)
+    plain = await estimate_fork(History(), settings, origin, fork)
     assert plain.unpriced == ["listed"]
-    e = await estimate_fork(
-        History(), settings, origin, fork_of(origin, 5), lists=Source().lists(tmp_path)
-    )
+    laid, listing = await priced_fork(settings, origin, fork, lists=Source().lists(tmp_path))
+    e = await estimate_fork(History(), laid, origin, fork, listing=listing)
     assert [x.profile for x in e.listed] == ["listed"]
     # the five steps left at the list price
     assert e.parts[0].agents.ceiling_usd == pytest.approx(5 * STEP)
+    assert fork_profiles(laid.models, origin, fork)["a"].price == PRICE
+
+
+async def test_a_fork_of_a_run_that_recorded_no_price_takes_today_s(tmp_path: Path) -> None:
+    settings, path = write(tmp_path, config=CONFIG_LISTED)
+    # as a run from before list prices recorded it: no price and no key
+    bare = settings.models.get("listed").model_copy(update={"price_key": None})
+    origin = origin_of(settings, path, bare)
+    fork = fork_of(origin, 5)
+    laid, listing = await priced_fork(settings, origin, fork, lists=Source().lists(tmp_path))
+    live = fork_profiles(laid.models, origin, fork)["a"]
+    assert (live.price, live.price_key) == (PRICE, KEY)
+    assert live.listed is not None
+    e = await estimate_fork(History(), laid, origin, fork, listing=listing)
+    assert e.parts[0].agents.ceiling_usd == pytest.approx(5 * STEP)
+    assert [x.profile for x in e.listed] == ["listed"]
+
+
+async def test_a_fork_takes_no_price_from_a_profile_that_now_names_another_model(
+    tmp_path: Path,
+) -> None:
+    settings, path = write(tmp_path, config=CONFIG_LISTED)
+    bare = settings.models.get("listed").model_copy(update={"price_key": None, "model": "old"})
+    origin = origin_of(settings, path, bare)
+    fork = fork_of(origin, 5)
+    source = Source()
+    laid, _ = await priced_fork(settings, origin, fork, lists=source.lists(tmp_path))
+    live = fork_profiles(laid.models, origin, fork)["a"]
+    assert (live.model, live.price, live.price_key, live.listed) == ("old", None, None, None)
+    assert source.seen == []
+
+
+async def test_a_fork_keeps_the_price_its_origin_recorded(tmp_path: Path) -> None:
+    settings, path = write(tmp_path, config=CONFIG_LISTED)
+    dear = Price(input=3.0, cached=0.3, output=6.0)
+    recorded = settings.models.get("listed").model_copy(update={"price": dear})
+    origin = origin_of(settings, path, recorded)
+    fork = fork_of(origin, 5)
+    source = Source()
+    laid, listing = await priced_fork(settings, origin, fork, lists=source.lists(tmp_path))
+    assert source.seen == []
+    assert listing.prices == {}
+    live = fork_profiles(laid.models, origin, fork)["a"]
+    assert (live.price, live.listed) == (dear, None)
+
+
+async def test_a_fork_job_carries_the_list_price_to_its_runner(tmp_path: Path) -> None:
+    settings, path = write(tmp_path, config=CONFIG_LISTED)
+    bare = settings.models.get("listed").model_copy(update={"price_key": None})
+    origin = origin_of(settings, path, bare)
+    fork = fork_of(origin, 5)
+    laid, _ = await priced_fork(settings, origin, fork, lists=Source().lists(tmp_path))
+    (job,) = fork_jobs(origin, laid.models, step=5)
+    job = Job.model_validate_json(job.model_dump_json())
+    # the runner has only the job, and rebuilds the live profile from it as the plane did
+    runner = runner_for(
+        Bench(cast(Any, None), cast(Any, None), settings.models), job, origin.bundle, origin=origin
+    )
+    assert runner.given_profiles is not None
+    live = runner.given_profiles["a"]
+    assert (live.price, live.price_key) == (PRICE, KEY)
+    assert live.listed is not None
 
 
 async def test_a_review_by_a_listed_monitor_has_no_cap_and_asks(tmp_path: Path) -> None:
@@ -419,6 +497,20 @@ def test_aims_estimate_prints_the_list_price_from_the_kept_copy(tmp_path: Path) 
     assert "has no price" not in out.stdout
 
 
+def test_aims_run_lays_the_list_price_before_it_estimates(tmp_path: Path) -> None:
+    lists = PriceLists(transport=Source().transport())
+    asyncio.run(lists.get())
+    _, path = write(tmp_path, config=CONFIG_LISTED + "\n[estimate]\nconfirm_above_usd = 0.01\n")
+    config = ["--config", str(tmp_path / "aims.toml"), "--runs-dir", str(tmp_path / "runs")]
+    out = CliRunner().invoke(app, ["run", str(path), *config, "--profile", "listed", "--json"])
+    # the caps bound the run at the list price, past the threshold, so it asks and stops
+    assert out.exit_code != 0
+    assert "the caps allow $1.02, above confirm_above_usd" in out.output
+    [line] = [json.loads(x) for x in out.stdout.splitlines() if '"estimate"' in x]
+    assert [x["key"] for x in line["listed"]] == [KEY]
+    assert line["total"]["ceiling_usd"] == pytest.approx(10 * STEP)
+
+
 async def test_the_api_estimate_carries_the_list_price(tmp_path: Path) -> None:
     async with control_plane(tmp_path) as cp:
         await _api(cp, tmp_path)
@@ -430,15 +522,28 @@ async def _api(cp: CP, tmp_path: Path) -> None:
     )
     cp.project.write_text(cp.project.read_text() + OPEN)
     cp.state.prices = Source().lists(tmp_path)
-    async with cp.client(cp.operator) as c:
-        # only the agent's cost cap bounds a profile with no context size, and it cannot hold
-        scenario = {"source": "project", "name": "control"}
-        start = {"scenario": scenario, "monitor": "signals", "profile": "open"}
-        r = await c.post("/api/runs", json=start)
-        assert (r.status_code, r.json()["code"]) == (409, "confirm"), r.text
-        assert r.json()["detail"] == (
-            "no cap bounds the cost and no past runs give an estimate; set confirm to start anyway"
-        )
+    runner = FakeRunner(cp)
+    await runner.connect()
+    try:
+        async with cp.client(cp.operator) as c:
+            # only the agent's cost cap bounds a profile with no context size, and it holds on
+            # the list price, so the run starts without a yes
+            scenario = {"source": "project", "name": "control"}
+            start = {"scenario": scenario, "monitor": "signals", "profile": "open"}
+            ids = []
+            # a run started with a yes skips the estimate, and gets the list price all the same
+            for body in (start, {**start, "confirm": True}):
+                r = await c.post("/api/runs", json=body)
+                assert r.status_code == 202, r.text
+                ids += r.json()["run_ids"]
+        for run_id in ids:
+            job = await runner.client.claim(run_id)
+            assert isinstance(job, Job)
+            [live] = job.profiles.values()
+            assert (live.name, live.price, live.price_key) == ("open", PRICE, KEY)
+            assert live.listed is not None
+    finally:
+        await runner.close()
     async with cp.client(cp.viewer) as c:
         r = await c.get("/api/scenarios/project/control/estimate", params={"profile": "listed"})
         assert r.status_code == 200, r.text

@@ -261,9 +261,9 @@ class Profile(_Strict):
     # secrets.
     headers: Headers = Field(default_factory=dict)
     price: Price | None = None
-    # The profile's row in LiteLLM's public price map, as the map writes its key. An estimate
-    # takes the list price from that row when the profile has no `price`. The key is never
-    # guessed: one model sits under several keys there, at different prices.
+    # The profile's row in LiteLLM's public price map, as the map writes its key. A run, a fork
+    # and their estimates take the list price from that row when the profile has no `price`.
+    # The key is never guessed: one model sits under several keys there, at different prices.
     price_key: PriceKey | None = None
     # Set by AIMS, never in a config file: `price` is the list price of `price_key`.
     listed: Listed | None = None

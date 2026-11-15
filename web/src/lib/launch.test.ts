@@ -39,7 +39,7 @@ test("the reason to confirm says when no cap bounds the cost, whatever the high 
   expect(ask(5, 9, false)).toBeNull();
   expect(ask(25, 30)).toBe("The high estimate $25.00 is above the $20.00 limit.");
   expect(ask(null, 30)).toBe("The caps allow $30.00, above the $20.00 limit.");
-  // a cost cap that cannot hold, as on a profile priced only by a list, leaves no ceiling
+  // a priced agent with no cost or step cap leaves no ceiling
   expect(ask(5, null)).toBe("No cap bounds the cost. The high estimate is $5.00.");
   expect(ask(null, null)).toBe("No cap bounds the cost and no past runs give an estimate.");
 });

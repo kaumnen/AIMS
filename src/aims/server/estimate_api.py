@@ -14,6 +14,7 @@ from aims.run.estimate import (
     Projection,
     ProviderCredit,
     estimate_runs,
+    priced_runs,
     projection,
     spend,
 )
@@ -33,6 +34,7 @@ from aims.server.api import (
     _shown,
     fork_estimate,
     fork_point,
+    fork_prices,
     scenario_problems,
 )
 from aims.server.problems import ProblemException, responses
@@ -87,6 +89,9 @@ async def estimate_scenario(
             422, "Scenario does not load", code="scenario", errors=scenario_problems(e)
         ) from None
     try:
+        settings, listing = await priced_runs(
+            settings, bundles, profile=profile, preset=monitor, budget=caps, lists=state.prices
+        )
         return await estimate_runs(
             await state.history(),
             settings,
@@ -95,7 +100,7 @@ async def estimate_scenario(
             preset=monitor,
             samples=samples,
             budget=caps,
-            lists=state.prices,
+            listing=listing,
         )
     except BudgetError as e:
         raise ProblemException(422, "Invalid budget", str(e), code="budget") from None
@@ -131,9 +136,10 @@ async def estimate_forks(
     await _shown(state, principal, _run_id(run_id))
     point = await fork_point(state, run_id, body)
     try:
-        return await fork_estimate(
-            state.config.settings(), await state.history(), point, body, state.prices
-        )
+        settings, listing = await fork_prices(state.config.settings(), point, body, state.prices)
+        return await fork_estimate(settings, await state.history(), point, body, listing)
+    except BudgetError as e:
+        raise ProblemException(422, "Invalid budget", str(e), code="budget") from None
     except (RunError, ProfileError, KeyError, MonitorConfigError, TextError) as e:
         raise ProblemException(422, "Cannot estimate", str(e), code="estimate") from None
 

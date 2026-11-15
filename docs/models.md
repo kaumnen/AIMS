@@ -213,7 +213,7 @@ A config layer or `extends` merges both tables key by key. A header's name ignor
 | Field of a `model.response` event | Meaning |
 | --- | --- |
 | `cost_usd` | The cost the provider reported in the answer's usage. The profile's price times the tokens when it reported none. |
-| `cost_source` | `provider` or `price`, after where the cost came from |
+| `cost_source` | `provider`, `price` or `list`, after where the cost came from. `list` is a list price AIMS laid on the profile |
 | `provider` | The provider a router picked |
 | `model` | The model the answer names |
 | `service_tier` | The tier the answer names |

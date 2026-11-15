@@ -1,8 +1,9 @@
 """A list price from LiteLLM's public price map, for a profile that names its row there.
 
 The map is outside text. A key matches exactly or not at all, and only finite numbers of zero
-or more reach a price. The price serves estimates. What a call cost is still what the provider
-reported or the profile's own `price` says.
+or more reach a price. AIMS lays the price on a run's or fork's profiles where it resolves them,
+before the job is made, so a runner never reads the map. A call then costs what the provider
+reported, else that price, and the caps count it.
 """
 
 import asyncio
@@ -353,9 +354,9 @@ def _list(copy: _Copy) -> PriceList:
 
 @dataclass(frozen=True, slots=True)
 class Listing:
-    """The list prices an estimate lays on profiles that name a `price_key` and set no
-    `price`: `prices` by key, `missing` why the map gave a key none, and `problem` why the
-    copy at hand could not be confirmed current."""
+    """The list prices AIMS lays on profiles that name a `price_key` and set no `price`:
+    `prices` by key, `missing` why the map gave a key none, and `problem` why the copy at hand
+    could not be confirmed current."""
 
     prices: Mapping[str, ListPrice] = field(default_factory=dict)
     missing: Mapping[str, str] = field(default_factory=dict)
@@ -394,10 +395,24 @@ class Listing:
         return models.model_copy(update={"profiles": profiles})
 
 
+def laid(p: Profile) -> ListPrice | None:
+    """The list price laid on profile `p`, as its `listed` mark records it. None when its price
+    is its own or it has none."""
+    if p.listed is None or p.price is None or p.price_key is None:
+        return None
+    return ListPrice(
+        key=p.price_key,
+        price=p.price,
+        checked=p.listed.checked,
+        cached_listed=p.listed.cached_listed,
+        tier_from=p.listed.tier_from,
+    )
+
+
 async def listing(profiles: Iterable[Profile], lists: PriceLists | None) -> Listing:
     """The list prices of those `profiles` that name a key and set no price. The map is read
     only for such a profile. A map that cannot be read leaves them unpriced, with the reason;
-    nothing here fails an estimate."""
+    nothing here fails an estimate or a run."""
     keys = _wanted(profiles)
     if not keys or lists is None:
         return Listing()

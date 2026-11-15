@@ -833,20 +833,23 @@ def _echo_estimate(
     from aims.models.listprice import PriceLists
     from aims.monitor.config import MonitorConfigError
     from aims.prompts import TextError
-    from aims.run.estimate import Estimate, estimate_runs, load_history
+    from aims.run.estimate import Estimate, estimate_runs, load_history, priced_runs
     from aims.scenario.budget import BudgetError
     from aims.terminal import json_text
 
     async def main() -> Estimate:
+        laid, listing = await priced_runs(
+            settings, bundles, profile=profile, preset=preset, budget=budget, lists=PriceLists()
+        )
         return await estimate_runs(
             await load_history(runs_dir),
-            settings,
+            laid,
             bundles,
             profile=profile,
             preset=preset,
             samples=samples,
             budget=budget,
-            lists=PriceLists(),
+            listing=listing,
         )
 
     try:
@@ -1185,7 +1188,14 @@ async def _run(**o: Any) -> int:
     from aims.node.client import ControlClient
     from aims.node.link import Link
     from aims.run import truth
-    from aims.run.estimate import estimate_fork, estimate_runs, guard, history
+    from aims.run.estimate import (
+        estimate_fork,
+        estimate_runs,
+        guard,
+        history,
+        priced_fork,
+        priced_runs,
+    )
     from aims.run.fork import (
         CutAt,
         check_fork,
@@ -1290,10 +1300,31 @@ async def _run(**o: Any) -> int:
             return fail(f"--budget: {e}")
         if (line := _budget_line(base, budget)) is not None:
             err.print(shown(line))
+        # the list prices go on the profiles before anything resolves them, so the caps, the
+        # monitor's budget and the estimate count them as the run does
+        lists = PriceLists()
         try:
             if origin is not None and fork_base is not None:
+                settings, listing = await priced_fork(
+                    settings,
+                    origin,
+                    fork_base,
+                    preset=o["monitor"],
+                    budget=o["budget"],
+                    lists=lists,
+                )
+                models = settings.models
                 agents = fork_agents(models, origin, fork_base)
             else:
+                settings, listing = await priced_runs(
+                    settings,
+                    [bundle],
+                    profile=o["profile"],
+                    preset=o["monitor"],
+                    budget=budget,
+                    lists=lists,
+                )
+                models = settings.models
                 agents = [agent_profile(models, a, o["profile"]) for a in bundle.scenario.agents]
             monitor = monitor_for(
                 models,
@@ -1306,6 +1337,8 @@ async def _run(**o: Any) -> int:
             )
         except (MonitorConfigError, ProfileError, TextError, RunError) as e:
             return fail(f"monitor: {e}")
+        except BudgetError as e:
+            return fail(f"--budget: {e}")
         if monitor is not None and o["oversight"] is not None:
             monitor = replace(monitor, oversight=o["oversight"])
         if monitor is not None:
@@ -1330,7 +1363,7 @@ async def _run(**o: Any) -> int:
                     preset=o["monitor"],
                     samples=o["samples"],
                     budget=o["budget"],
-                    lists=PriceLists(),
+                    listing=listing,
                 )
             else:
                 cost = await estimate_runs(
@@ -1341,7 +1374,7 @@ async def _run(**o: Any) -> int:
                     preset=o["monitor"],
                     samples=o["samples"] * o.get("runs", 1),
                     budget=budget,
-                    lists=PriceLists(),
+                    listing=listing,
                 )
         except (MonitorConfigError, ProfileError, TextError, RunError, KeyError) as e:
             err.print("[yellow]no cost estimate:[/]", shown(e))

@@ -457,9 +457,15 @@ def _schedule(value: object) -> list[tuple[int | None, Profile]]:
 CONNECTION = ("backend", "base_url", "base_url_env", "api_key_env")
 
 
+PRICED = ("price", "price_key", "listed")
+
+
 def configured(models: ModelsConfig, recorded: Profile) -> Profile:
     """`recorded`, once this config has a profile of the same name that reaches the same
-    endpoint with the same key variable. A run's log never decides where a key is sent."""
+    endpoint with the same key variable. A run's log never decides where a key is sent. A
+    recorded profile with no price takes this config's price, its key and its list price mark
+    when the config's profile names the same model, so a fork of a run that recorded none counts
+    its calls at today's price; a recorded price stays."""
     try:
         mine = models.get(recorded.name)
     except ProfileError:
@@ -472,6 +478,8 @@ def configured(models: ModelsConfig, recorded: Profile) -> Profile:
             f"profile {recorded.name} reaches another endpoint or key here than in the run;"
             " fork with a profile"
         )
+    if recorded.price is None and mine.model == recorded.model:
+        return recorded.model_copy(update={f: getattr(mine, f) for f in PRICED})
     return recorded
 
 
