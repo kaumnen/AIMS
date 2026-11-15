@@ -6825,6 +6825,39 @@
         "title": "Limits",
         "type": "object"
       },
+      "Listed": {
+        "additionalProperties": false,
+        "description": "Says a profile's `price` is the list price of its `price_key` in LiteLLM's public price\nmap, which AIMS laid on it for a run. `checked` is when the copy it came from was last\nconfirmed current. `cached_listed` is false when the row lists no price for cached input,\nwhich then costs the input price. `tier_from` is the prompt size in tokens from which the\nrow lists a higher price, None when it lists one price.",
+        "properties": {
+          "cached_listed": {
+            "default": true,
+            "title": "Cached Listed",
+            "type": "boolean"
+          },
+          "checked": {
+            "format": "date-time",
+            "title": "Checked",
+            "type": "string"
+          },
+          "tier_from": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tier From"
+          }
+        },
+        "required": [
+          "checked"
+        ],
+        "title": "Listed",
+        "type": "object"
+      },
       "ListedPrice": {
         "description": "The list price an estimate laid on profile `profile`, which sets no `price` of its own:\nrow `key` of `source`'s price map, from a copy last confirmed current at `checked`, in\nUSD per million tokens. `cached_listed` is false when the row lists no cached input price,\nso cached input counts at the input price. `tier_from` is the prompt size in tokens from\nwhich the row lists a higher price, which the estimate leaves out. `problem` says why the\ncopy could not be confirmed current, None when it was. A cost cap on the profile's calls\nholds only if the provider reports each call's cost. `text` says where the price comes\nfrom.",
         "properties": {
@@ -7475,7 +7508,7 @@
       },
       "ModelResponse": {
         "additionalProperties": false,
-        "description": "How one attempt ended, failures included. Every attempt has one.\n\n`body` is the raw response body, or for a stream the final response object as the provider\nsent it, None when the stream ended early. `stream` holds the raw response bytes in the\nchunks they arrived in, as JSON lines `{\"ms\": .., \"text\": ..}` (or `\"b64\"` for bytes that are\nnot UTF-8), `ms` counted from the request. `text` and `reasoning` are assembled from what\narrived, so a cancelled or stalled attempt keeps its partial content. `reasoning_kind` is what\nthe provider exposed: a summary, the full chain, or nothing. `source` is replay when the\nanswer was served from the run `origin_run`, from its event `origin_seq`. `cost_source` says\nwhere `cost_usd` comes from: `provider` when the answer's usage carried the cost, `price`\nwhen it is the token counts at the profile's price, None for a replay or an unpriced call.\n`provider` names who served the answer when a router says so, `model` is the model the\nanswer says it came from and `service_tier` its tier, each None when the answer does not\nsay. `provider_id` is the answer's own id.",
+        "description": "How one attempt ended, failures included. Every attempt has one.\n\n`body` is the raw response body, or for a stream the final response object as the provider\nsent it, None when the stream ended early. `stream` holds the raw response bytes in the\nchunks they arrived in, as JSON lines `{\"ms\": .., \"text\": ..}` (or `\"b64\"` for bytes that are\nnot UTF-8), `ms` counted from the request. `text` and `reasoning` are assembled from what\narrived, so a cancelled or stalled attempt keeps its partial content. `reasoning_kind` is what\nthe provider exposed: a summary, the full chain, or nothing. `source` is replay when the\nanswer was served from the run `origin_run`, from its event `origin_seq`. `cost_source` says\nwhere `cost_usd` comes from: `provider` when the answer's usage carried the cost, `price`\nwhen it is the token counts at the profile's price, `list` when that price is the list\nprice AIMS laid on the profile, None for a replay or an unpriced call.\n`provider` names who served the answer when a router says so, `model` is the model the\nanswer says it came from and `service_tier` its tier, each None when the answer does not\nsay. `provider_id` is the answer's own id.",
         "properties": {
           "attempt": {
             "minimum": 1,
@@ -7502,7 +7535,8 @@
               {
                 "enum": [
                   "provider",
-                  "price"
+                  "price",
+                  "list"
                 ],
                 "type": "string"
               },
@@ -10356,6 +10390,16 @@
           },
           "limits": {
             "$ref": "#/components/schemas/Limits"
+          },
+          "listed": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Listed"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "max_output_tokens": {
             "anyOf": [

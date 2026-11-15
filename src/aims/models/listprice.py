@@ -23,7 +23,7 @@ from typing import Any
 
 import httpx2
 
-from aims.models.profiles import PRICE_KEY, Price, Profile
+from aims.models.profiles import PRICE_KEY, Listed, ModelsConfig, Price, Profile
 from aims.net import Outbound
 
 log = logging.getLogger(__name__)
@@ -376,9 +376,22 @@ class Listing:
         return self.missing.get(p.price_key)
 
     def lay(self, p: Profile) -> Profile:
-        """A copy of `p` with its list price as its price; `p` itself without one."""
+        """A copy of `p` with its list price as its price, marked `listed`; `p` itself without
+        one."""
         found = self.find(p)
-        return p if found is None else p.model_copy(update={"price": found.price})
+        if found is None:
+            return p
+        listed = Listed(
+            checked=found.checked, cached_listed=found.cached_listed, tier_from=found.tier_from
+        )
+        return p.model_copy(update={"price": found.price, "listed": listed})
+
+    def lay_models(self, models: ModelsConfig) -> ModelsConfig:
+        """`models` with the list prices laid on each of its profiles that has one."""
+        if not self.prices:
+            return models
+        profiles = {name: self.lay(p) for name, p in models.profiles.items()}
+        return models.model_copy(update={"profiles": profiles})
 
 
 async def listing(profiles: Iterable[Profile], lists: PriceLists | None) -> Listing:
@@ -389,6 +402,16 @@ async def listing(profiles: Iterable[Profile], lists: PriceLists | None) -> List
     if not keys or lists is None:
         return Listing()
     return _listing(keys, await _at_hand(lists))
+
+
+async def priced(
+    models: ModelsConfig, called: Iterable[Profile], lists: PriceLists | None
+) -> tuple[ModelsConfig, Listing]:
+    """`models` with list prices laid on its profiles, and the listing they came from. The map
+    is read only when one of the `called` profiles, those the work at hand calls, names a key
+    and sets no price; every profile in `models` with such a key then gets the price."""
+    found = await listing(called, lists)
+    return found.lay_models(models), found
 
 
 def _wanted(profiles: Iterable[Profile]) -> list[str]:

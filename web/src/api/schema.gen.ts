@@ -4231,6 +4231,28 @@ export interface components {
             tpm?: number | null;
         };
         /**
+         * Listed
+         * @description Says a profile's `price` is the list price of its `price_key` in LiteLLM's public price
+         *     map, which AIMS laid on it for a run. `checked` is when the copy it came from was last
+         *     confirmed current. `cached_listed` is false when the row lists no price for cached input,
+         *     which then costs the input price. `tier_from` is the prompt size in tokens from which the
+         *     row lists a higher price, None when it lists one price.
+         */
+        Listed: {
+            /**
+             * Cached Listed
+             * @default true
+             */
+            cached_listed?: boolean;
+            /**
+             * Checked
+             * Format: date-time
+             */
+            checked: string;
+            /** Tier From */
+            tier_from?: number | null;
+        };
+        /**
          * ListedPrice
          * @description The list price an estimate laid on profile `profile`, which sets no `price` of its own:
          *     row `key` of `source`'s price map, from a copy last confirmed current at `checked`, in
@@ -4521,7 +4543,8 @@ export interface components {
          *     the provider exposed: a summary, the full chain, or nothing. `source` is replay when the
          *     answer was served from the run `origin_run`, from its event `origin_seq`. `cost_source` says
          *     where `cost_usd` comes from: `provider` when the answer's usage carried the cost, `price`
-         *     when it is the token counts at the profile's price, None for a replay or an unpriced call.
+         *     when it is the token counts at the profile's price, `list` when that price is the list
+         *     price AIMS laid on the profile, None for a replay or an unpriced call.
          *     `provider` names who served the answer when a router says so, `model` is the model the
          *     answer says it came from and `service_tier` its tier, each None when the answer does not
          *     say. `provider_id` is the answer's own id.
@@ -4537,7 +4560,7 @@ export interface components {
              * Cost Source
              * @default null
              */
-            cost_source: ("provider" | "price") | null;
+            cost_source: ("provider" | "price" | "list") | null;
             /**
              * Cost Usd
              * @default null
@@ -5696,6 +5719,7 @@ export interface components {
                 [key: string]: string;
             };
             limits?: components["schemas"]["Limits"];
+            listed?: components["schemas"]["Listed"] | null;
             /** Max Output Tokens */
             max_output_tokens?: number | null;
             /** Model */
@@ -15312,7 +15336,7 @@ export const memExecKindValues: ReadonlyArray<FlattenedDeepRequired<components>[
 export const modelCheckedVerdictValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelChecked"]["verdict"]> = ["ok", "warn", "fail"];
 export const modelRequestBackendValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelRequest"]["backend"]> = ["responses", "chat"];
 export const modelRequestRoleAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelRequest"]["role"]> = ["sweep", "judge", "review", "score"];
-export const modelResponseCost_sourceAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelResponse"]["cost_source"]> = ["provider", "price"];
+export const modelResponseCost_sourceAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelResponse"]["cost_source"]> = ["provider", "price", "list"];
 export const modelResponseError_kindAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelResponse"]["error_kind"]> = ["http", "redirect", "connect", "timeout", "stall", "wall", "read", "protocol", "provider", "replay"];
 export const modelResponseReasoning_kindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelResponse"]["reasoning_kind"]> = ["none", "summary", "full"];
 export const modelResponseSourceValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelResponse"]["source"]> = ["live", "replay"];

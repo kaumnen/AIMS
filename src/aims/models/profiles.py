@@ -9,6 +9,7 @@ from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
     AfterValidator,
+    AwareDatetime,
     ConfigDict,
     Field,
     JsonValue,
@@ -174,6 +175,18 @@ class Price(_Strict):
     output: float = Field(ge=0)
 
 
+class Listed(_Strict):
+    """Says a profile's `price` is the list price of its `price_key` in LiteLLM's public price
+    map, which AIMS laid on it for a run. `checked` is when the copy it came from was last
+    confirmed current. `cached_listed` is false when the row lists no price for cached input,
+    which then costs the input price. `tier_from` is the prompt size in tokens from which the
+    row lists a higher price, None when it lists one price."""
+
+    checked: AwareDatetime
+    cached_listed: bool = True
+    tier_from: int | None = Field(default=None, ge=1)
+
+
 class Limits(_Strict):
     """Client-side caps shared by every profile in the same `group`, which defaults to the
     profile's name. The provider's rate-limit headers lower them when they say less is left."""
@@ -252,6 +265,8 @@ class Profile(_Strict):
     # takes the list price from that row when the profile has no `price`. The key is never
     # guessed: one model sits under several keys there, at different prices.
     price_key: PriceKey | None = None
+    # Set by AIMS, never in a config file: `price` is the list price of `price_key`.
+    listed: Listed | None = None
     limits: Limits = Field(default_factory=Limits)
     timeouts: Timeouts = Field(default_factory=Timeouts)
     retries: Retries = Field(default_factory=Retries)
@@ -266,6 +281,8 @@ class Profile(_Strict):
             raise ValueError("effort_kwarg is only sent by the chat backend")
         if "provider" in self.extra and self.routing.body():
             raise ValueError("routing and extra.provider both set the provider object; keep one")
+        if self.listed is not None and (self.price is None or self.price_key is None):
+            raise ValueError("listed marks a list price, so it needs price and price_key")
         return self
 
     @property
@@ -376,6 +393,11 @@ def load_models(*paths: Path | None) -> ModelsConfig:
         except ValidationError as e:
             raise ProfileError(f"{path}: {e}") from None
         for name, table in layer.profiles.items():
+            if "listed" in table:
+                raise ProfileError(
+                    f"{path}: profile {name!r} sets listed, which AIMS sets itself when it"
+                    " takes a list price; name the row in price_key instead"
+                )
             tables[name] = _layer(tables[name], table) if name in tables else table
         roles |= layer.roles
     try:

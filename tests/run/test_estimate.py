@@ -799,14 +799,16 @@ async def test_a_past_call_counts_at_the_cost_its_provider_reported(
     assert found.shares == {"agent-model": 0.0}
     assert sum(found.spend.values()) == pytest.approx(9 * at_list)
 
-    # A cost the price table made is priced again at today's price, as before.
+    # A cost a price made, the profile's own or a list price, is priced again at today's
+    # price, as before.
     await record(store, settings, bundle, 3 * at_list, usage=usage, source="price")
+    await record(store, settings, bundle, 3 * at_list, usage=usage, source="list")
     await record(store, settings, bundle, 3 * at_list, usage=usage)
     costs = [
         t.priced(settings.models.get("agent").price, 0.9)
         for t in _agent_tokens(await history(store))
     ]
-    assert sorted(costs) == pytest.approx([at_list, at_list, 3 * at_list, 3 * at_list, 3 * at_list])
+    assert sorted(costs) == pytest.approx([at_list] * 3 + [3 * at_list] * 3)
 
 
 def test_tokens_add_billed_calls_to_the_priced_ones() -> None:

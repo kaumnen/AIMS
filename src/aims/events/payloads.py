@@ -16,7 +16,7 @@ FdKind = Literal["pipe", "fifo", "file", "char", "sock", "dir", "other"]
 LossScope = Literal["sandbox", "tracer"]
 ModelBackend = Literal["responses", "chat"]
 ModelStatus = Literal["completed", "incomplete", "error", "cancelled"]
-CostSource = Literal["provider", "price"]
+CostSource = Literal["provider", "price", "list"]
 ModelError = Literal[
     "http",
     "redirect",
@@ -279,7 +279,8 @@ class ModelResponse(Payload):
     the provider exposed: a summary, the full chain, or nothing. `source` is replay when the
     answer was served from the run `origin_run`, from its event `origin_seq`. `cost_source` says
     where `cost_usd` comes from: `provider` when the answer's usage carried the cost, `price`
-    when it is the token counts at the profile's price, None for a replay or an unpriced call.
+    when it is the token counts at the profile's price, `list` when that price is the list
+    price AIMS laid on the profile, None for a replay or an unpriced call.
     `provider` names who served the answer when a router says so, `model` is the model the
     answer says it came from and `service_tier` its tier, each None when the answer does not
     say. `provider_id` is the answer's own id.

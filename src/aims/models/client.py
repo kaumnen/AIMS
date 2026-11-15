@@ -429,7 +429,9 @@ class ModelClient:
             cost, cost_source = a.cost_usd, "provider"
             if cost is None:
                 cost = _cost(profile.price, a.usage)
-                cost_source = None if cost is None else "price"
+                cost_source = None
+                if cost is not None:
+                    cost_source = "list" if profile.listed is not None else "price"
         response = ModelResponse(
             call_id=call_id,
             attempt=attempt,

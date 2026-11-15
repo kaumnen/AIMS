@@ -1504,6 +1504,24 @@ async def test_a_cost_comes_from_the_price_when_the_provider_reports_none(
     assert "cost" not in body["usage"]
 
 
+async def test_a_cost_at_a_list_price_says_so(store: LocalEventStore) -> None:
+    run_id = await new_run(store)
+    handler, _ = scripted(*[lambda: stream(sse(CHAT_EVENTS))] * 2)
+    listed = profile(
+        name="listed", price_key="vendor/m", listed={"checked": "2026-11-15T01:46:00Z"}
+    )
+    async with client(store, run_id, listed, handler) as mc:
+        await mc.call("listed", PROMPT)
+    (response,) = await store.events(run_id, types=["model.response"])
+    assert response.data["cost_usd"] == pytest.approx(PRICED)
+    assert response.data["cost_source"] == "list"
+    handler, _ = scripted(lambda: billed("chat", True, BILL))
+    async with client(store, run_id, listed, handler) as mc:
+        await mc.call("listed", PROMPT)
+    _, reported = await store.events(run_id, types=["model.response"])
+    assert (reported.data["cost_usd"], reported.data["cost_source"]) == (0.00042, "provider")
+
+
 async def test_a_reported_cost_prices_a_profile_with_no_price(store: LocalEventStore) -> None:
     run_id = await new_run(store)
     handler, _ = scripted(lambda: billed("chat", True, BILL))

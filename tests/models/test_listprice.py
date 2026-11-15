@@ -14,7 +14,7 @@ import pytest
 from typer.testing import CliRunner
 
 from aims.cli import app
-from aims.models import Price, Profile, ProfileError, load_models
+from aims.models import ModelsConfig, Price, Profile, ProfileError, Roles, load_models
 from aims.models import listprice as lp
 from aims.models.listprice import ListError, NoPrice, PriceList, PriceLists, cache_dir, fetch, parse
 
@@ -523,6 +523,30 @@ def test_a_layer_sets_the_price_key_of_a_profile_below_it(tmp_path: Path) -> Non
         load_models(user, project)
 
 
+def test_a_config_file_may_not_mark_a_list_price(tmp_path: Path) -> None:
+    path = tmp_path / "aims.toml"
+    head = 'backend = "chat"\nbase_url = "https://example.com/v1"\nmodel = "m"\nweights = "w"\n'
+    path.write_text(
+        f'[profiles.p]\n{head}reasoning = "none"\nprice_key = "model-a"\n'
+        "price = { input = 1, cached = 1, output = 1 }\n"
+        '[profiles.p.listed]\nchecked = "2026-11-15T01:46:00Z"\n'
+    )
+    with pytest.raises(ProfileError, match="profile 'p' sets listed, which AIMS sets itself"):
+        load_models(path)
+
+
+def test_a_list_price_mark_needs_a_price_and_a_key() -> None:
+    mark = {"checked": "2026-11-15T01:46:00Z"}
+    price = {"input": 1, "cached": 1, "output": 1}
+    for table in ({"price": price}, {"price_key": "model-a"}):
+        with pytest.raises(ValueError, match="listed marks a list price"):
+            Profile.model_validate({**TABLE, **table, "listed": mark})
+    with pytest.raises(ValueError, match="timezone"):
+        Profile.model_validate(
+            {**TABLE, "price": price, "price_key": "model-a", "listed": {"checked": "2026-11-15"}}
+        )
+
+
 def profile(name: str, model: str, **kw: Any) -> Profile:
     return Profile.model_validate({**TABLE, "name": name, "model": model, **kw})
 
@@ -677,3 +701,75 @@ def test_aims_models_prices_without_a_map_says_why(
         " estimates leave out its calls.",
     ]
     assert "warning: no copy of LiteLLM's price map is at hand: down" in out.stderr
+
+
+TIERED = profile("tiered", "vendor-c/model-c", price_key="vendor-c/model-c")
+TWIN = profile("twin", "model-a", price_key="cloud/eu/model-a")
+
+
+def config(*profiles: Profile) -> ModelsConfig:
+    first = profiles[0].name
+    by_name = {p.name: p for p in profiles}
+    return ModelsConfig(profiles=by_name, roles=Roles(agent=first, sweep=first, judge=first))
+
+
+async def test_a_laid_list_price_is_marked_with_its_row_and_date(tmp_path: Path) -> None:
+    held = lists(tmp_path / lp.FILE, [START], [], ok())
+    found = await lp.listing([KEYED, TIERED, OWN, MISSED, BARE], held)
+    keyed = found.lay(KEYED)
+    assert keyed.price == PRICES.get("cloud/eu/model-a").price
+    assert keyed.listed is not None
+    assert (keyed.listed.checked, keyed.listed.cached_listed) == (WHEN, False)
+    assert keyed.listed.tier_from is None
+    tiered = found.lay(TIERED).listed
+    assert tiered is not None
+    assert (tiered.cached_listed, tiered.tier_from) == (True, 200_000)
+    assert Profile.model_validate(json.loads(json.dumps(keyed.snapshot()))) == keyed
+    for p in (OWN, MISSED, BARE):
+        assert found.lay(p) is p
+    assert found.lay(keyed) is keyed
+
+
+async def test_priced_lays_a_list_price_on_each_profile_with_a_key_called(tmp_path: Path) -> None:
+    models = config(OWN, KEYED, TWIN, TIERED, BARE)
+    seen: list[httpx2.Request] = []
+    laid, found = await lp.priced(
+        models, [KEYED, BARE], lists(tmp_path / lp.FILE, [START], seen, ok())
+    )
+    assert sorted(found.prices) == ["cloud/eu/model-a"]
+    assert laid.get("keyed") == found.lay(KEYED)
+    assert laid.get("twin").listed is not None
+    for name in ("own", "tiered", "bare"):
+        assert laid.get(name) is models.get(name)
+    assert laid.roles == models.roles
+    assert len(seen) == 1
+
+
+async def test_priced_reads_no_map_when_no_profile_called_needs_one(tmp_path: Path) -> None:
+    models = config(OWN, KEYED)
+    seen: list[httpx2.Request] = []
+    held = lists(tmp_path / lp.FILE, [START], seen)
+    assert await lp.priced(models, [OWN, BARE], held) == (models, lp.Listing())
+    laid = models.model_copy(
+        update={
+            "profiles": {
+                "own": OWN,
+                "keyed": lp.Listing({"cloud/eu/model-a": PRICES.get("cloud/eu/model-a")}).lay(
+                    KEYED
+                ),
+            }
+        }
+    )
+    assert await lp.priced(laid, list(laid.profiles.values()), held) == (laid, lp.Listing())
+    assert await lp.priced(models, [KEYED], None) == (models, lp.Listing())
+    assert seen == []
+
+
+async def test_priced_without_a_map_leaves_the_profiles_and_says_why(tmp_path: Path) -> None:
+    models = config(OWN, KEYED)
+    held = lists(tmp_path / lp.FILE, [START], [], httpx2.Response(503))
+    laid, found = await lp.priced(models, [KEYED], held)
+    assert laid is models
+    assert (
+        found.why(KEYED) == f"no copy of the LiteLLM price map is at hand ({lp.URL} answered 503)"
+    )
