@@ -2,6 +2,7 @@
 
 - [Profiles](#profiles)
 - [Profile fields](#profile-fields)
+- [List prices](#list-prices)
 - [OpenRouter](#openrouter)
 - [Routing and headers](#routing-and-headers)
 - [What a run records](#what-a-run-records)
@@ -31,7 +32,7 @@ agent = "my-agent"
 - `extends = "<profile>"` starts a profile from another one.
 - A table with the name of a profile from a lower config layer merges into it key by key.
 - Keys come from the environment only. A profile names the variable, never the key.
-- `aims models list` shows every profile, the roles and which keys are set.
+- `aims models list` shows every profile, the roles, where each price comes from and which keys are set.
 
 ## Profile fields
 
@@ -56,12 +57,58 @@ agent = "my-agent"
 | `routing` | Where a router sends the request. See [Routing and headers](#routing-and-headers). |
 | `headers` | HTTP headers for every request of the profile |
 | `extra` | Any other fields of the request body |
-| `price` | USD per million tokens: `input`, `cached`, `output` |
+| `price` | USD per million tokens: `input`, `cached`, `output`. Wins over `price_key`. |
+| `price_key` | A row of LiteLLM's price map. Estimates count the profile's calls at its list price. See [List prices](#list-prices). |
 | `limits` | `rpm`, `tpm`, `concurrency` and a `group` that profiles can share |
 | `timeouts` | Seconds: `connect`, `stall`, `wall` |
 | `retries` | `attempts`, `backoff`, `max` |
 
 A scenario may change `effort`, `max_output_tokens` and `sampling` on the profile it names for an agent.
+
+## List prices
+
+An estimate leaves out the calls of a profile with no price. Such a profile can name a row of [LiteLLM's price map](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json) in `price_key` instead. Estimates then count its calls at that row's list price.
+
+```toml
+[profiles.my-agent]
+price_key = "provider/model-name"
+```
+
+`aims models prices` finds the key:
+
+```sh
+aims models prices my-agent
+aims models prices my-agent --search model-name
+```
+
+For a profile with no price, it lists the rows that may price it, with their prices. A row fits when its key is the profile's model id, ends in `/` and the id, or ends in the id's last part. So `openai/gpt-4o` finds `gpt-4o` and `azure/gpt-4o`. `--search` lists the rows whose key holds the text. One model's rows differ by provider and region. Pick the row of the provider the profile calls.
+
+In the app, **Settings** > **Models** shows each profile's price and where it comes from. **Find a price key** lists the same rows and copies the `price_key` line.
+
+What a row gives:
+
+- The input, cached input and output price. Only rows of chat models give a price.
+- A row with no cached input price counts cached input at the input price.
+- A row with a higher price past some prompt size gives its base price. The estimate says from which size.
+- Batch, flex and priority prices are left out.
+
+When AIMS reads the map:
+
+- Only when it needs a row: for an estimate with a profile that names a `price_key` and sets no `price`, for `aims models prices` and for the Models page.
+- From `raw.githubusercontent.com` with no key, through the [proxy settings](deploy.md#proxies). It waits 5 seconds at most.
+- It keeps a copy, `litellm-prices.json.gz`, in the cache folder. That is `$AIMS_CACHE_DIR` when set. Otherwise it is `%LOCALAPPDATA%\aims\cache` on Windows, else `$XDG_CACHE_HOME/aims` or `~/.cache/aims`.
+- A copy older than 24 hours is checked with GitHub again.
+- When GitHub does not answer, the copy serves at any age, with its date. The next try comes 10 minutes later.
+- With no copy, or a key the map lacks, the profile stays unpriced. The estimate says why.
+
+Each list price names its source, key and date. The date is when GitHub last confirmed the copy current. From `aims estimate`, with placeholder figures:
+
+```text
+Profile my-agent: LiteLLM list price for provider/model-name, fetched 2026-11-15: $1.00 input, $0.10 cached, $4.00 output per million tokens. A cost cap holds on its calls only if the provider reports each call's cost.
+```
+
+> [!IMPORTANT]
+> A list price serves estimates only. A run records the cost its provider reported, or the profile's own `price` times the tokens. So a cost cap on a list-priced profile holds only when its provider reports each call's cost. The estimate's ceiling leaves out such a cap. It also leaves out the monitor's budget when a monitor model has only a list price. A run that only such a cap bounds asks before it starts.
 
 ## OpenRouter
 
@@ -172,7 +219,7 @@ A config layer or `extends` merges both tables key by key. A header's name ignor
 | `service_tier` | The tier the answer names |
 
 - Budgets and `aims spend` count the recorded cost.
-- The estimate counts a past call at the cost its provider reported. It prices other past calls and the calls to come at the profile's price. A router can bill above the list price. Four test calls through OpenRouter cost 2.8 to 3.4 times the list price.
+- The estimate counts a past call at the cost its provider reported. It prices other past calls and the calls to come at the profile's price or list price. A router can bill above the list price. Four test calls through OpenRouter cost 2.8 to 3.4 times the list price.
 - A step in the app names its provider. The report lists the providers of each model with their answers. The live view notes it when a second provider answers a model.
 - A `chat` answer's `reasoning_details` go back unchanged with the turn in the next request. OpenRouter returns a model's signed or encrypted reasoning there. The model keeps its reasoning between a tool call and the tool's result that way.
 

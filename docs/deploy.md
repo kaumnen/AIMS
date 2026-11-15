@@ -93,7 +93,14 @@ A runner stops when the control plane answers 401 or 403 five times in a row, as
 
 Runners, the CLI and model calls go through the proxy in `HTTPS_PROXY`, `HTTP_PROXY` or `ALL_PROXY`, except to hosts, domains and networks in `NO_PROXY`. Loopback always goes direct. A private CA can come from `SSL_CERT_FILE`, or from the runner's `--tls-ca`, which wins over it.
 
-The control plane itself calls one outside host. **Add from OpenRouter** under **Settings** > **Models** reads the public list of models at `openrouter.ai`, with no key and through the same proxy settings. On a host that cannot reach it, the lookup fails and nothing else changes. [Models](models.md#openrouter) has the command that does the same on another machine.
+The control plane itself calls two outside hosts, with no key and through the same proxy settings:
+
+| Host | What reads it | When the host cannot reach it |
+| --- | --- | --- |
+| `openrouter.ai` | **Add from OpenRouter** under **Settings** > **Models** reads the public list of models. | The lookup fails. [Models](models.md#openrouter) has the command that does the same on another machine. |
+| `raw.githubusercontent.com` | Estimates and **Settings** > **Models** read [LiteLLM's price map](models.md#list-prices) for a profile that names a `price_key`. | A kept copy serves with its date. Without one such a profile stays unpriced. Give it a `price` instead. |
+
+Nothing else changes when a lookup fails. A read of the price map waits 5 seconds at most. After a failed one the next try comes 10 minutes later. Compose keeps the copy on the server's volume, in `/data/cache`.
 
 ## Helper images and offline hosts
 

@@ -274,6 +274,10 @@ STARTER = """\
 
 # `aims models add openrouter <model id> --write` adds a profile for a model on OpenRouter.
 
+# A profile with no price can take a LiteLLM list price for estimates.
+# `aims models prices <profile>` lists the keys that may fit.
+# price_key = "provider/model-name"
+
 # [prompts]
 # system = "..."
 

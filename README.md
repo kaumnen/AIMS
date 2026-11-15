@@ -243,7 +243,7 @@ The roles `agent`, `sweep` and `judge` each use a model profile. The built-in pr
 
 The `agent` role uses `meta-spark-1.3-contributor`. The `sweep` and `judge` roles use `meta-wonder-1.0`. Keys come from the environment only. `aims models list` shows which keys are set. `aims models check` sends each provider a few small requests.
 
-A config file can add a profile for another provider and change the roles. `backend` is `chat` for the Chat Completions API or `responses` for the Responses API. `weights` names the trained model. The monitor refuses to watch an agent on its own weights. Prices are USD per million tokens. A `responses` profile sends a `prompt_cache_key` with each call, so a provider that routes by it answers a run from one prompt cache. `cache_key = true` does the same on a `chat` profile.
+A config file can add a profile for another provider and change the roles. `backend` is `chat` for the Chat Completions API or `responses` for the Responses API. `weights` names the trained model. The monitor refuses to watch an agent on its own weights. Prices are USD per million tokens. An estimate leaves out the calls of a profile with no price. Its `price_key` can name a row of LiteLLM's public price map instead. `aims models prices` finds the key. A `responses` profile sends a `prompt_cache_key` with each call, so a provider that routes by it answers a run from one prompt cache. `cache_key = true` does the same on a `chat` profile.
 
 ```toml
 # aims.toml
@@ -267,7 +267,7 @@ aims models add openrouter author/model-name --write
 aims models check openrouter-model-name
 ```
 
-A profile can also steer a router with a `routing` table and send its own `headers`. A run records the provider that served each call and the cost that provider reported. [Models](https://github.com/kaumnen/AIMS/blob/main/docs/models.md) covers every profile field, OpenRouter and routing.
+A profile can also steer a router with a `routing` table and send its own `headers`. A run records the provider that served each call and the cost that provider reported. [Models](https://github.com/kaumnen/AIMS/blob/main/docs/models.md) covers every profile field, list prices, OpenRouter and routing.
 
 Config files also override every text the agent or the monitor reads. Layers, lowest first:
 
@@ -320,6 +320,7 @@ The last command prints a sign-in link for http://localhost:8484. [Deploy](https
 | `aims verify` | Check a run's hash chain and blobs |
 | `aims spend` | Show what each provider was paid |
 | `aims models list`, `check` | Show model profiles and test providers |
+| `aims models prices` | Show where each profile's price comes from and find a LiteLLM price key |
 | `aims models add` | Print or save a profile for a model on OpenRouter |
 | `aims images prune` | Remove images AIMS no longer needs |
 | `aims prompts show` | Print every text agents and the monitor read |
@@ -338,7 +339,7 @@ The last command prints a sign-in link for http://localhost:8484. [Deploy](https
 | [Scenario reference](https://github.com/kaumnen/AIMS/blob/main/skills/aims/references/scenario.md) | Every field of the scenario format |
 | [The monitor](https://github.com/kaumnen/AIMS/blob/main/docs/monitor.md) | Layers, budgets, oversight rules and the 15 categories |
 | [Runs and reports](https://github.com/kaumnen/AIMS/blob/main/docs/runs.md) | Run logs, forks, scoring, deletion and reports |
-| [Models](https://github.com/kaumnen/AIMS/blob/main/docs/models.md) | Profile fields, OpenRouter, routing and what a run records of a call |
+| [Models](https://github.com/kaumnen/AIMS/blob/main/docs/models.md) | Profile fields, list prices, OpenRouter, routing and what a run records of a call |
 | [Deploy](https://github.com/kaumnen/AIMS/blob/main/docs/deploy.md) | Compose, a public address, more runners, proxies, offline hosts and the audit log |
 | [Model organism](https://github.com/kaumnen/AIMS/tree/main/organism) | The scripts that made the organism |
 | [SECURITY.md](https://github.com/kaumnen/AIMS/blob/main/SECURITY.md) | The security model and how to report a vulnerability |
