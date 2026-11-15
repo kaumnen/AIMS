@@ -331,6 +331,9 @@ class Roles(_Strict):
 
 
 class ModelsConfig(_Strict):
+    """Profiles by name and the profile of each role. `load_models` also holds the roles of a
+    config file to what the monitor asks of them; a config a job builds has roles no one reads."""
+
     profiles: dict[str, Profile]
     roles: Roles
 
@@ -339,8 +342,6 @@ class ModelsConfig(_Strict):
         for role, name in self.roles.model_dump().items():
             if name not in self.profiles:
                 raise ValueError(f"role {role} names unknown profile {name!r}")
-            if role != "agent" and not self.profiles[name].structured_output:
-                raise ValueError(f"role {role} needs structured output, which {name} lacks")
         return self
 
     def get(self, name: str) -> Profile:
@@ -373,7 +374,8 @@ def load_models(*paths: Path | None) -> ModelsConfig:
     exists.
 
     A table whose name matches an earlier one is merged into it key by key. `extends = "name"`
-    starts a profile from another one.
+    starts a profile from another one. The sweep and judge roles must name profiles with
+    structured output, since the monitor asks them for answers to a schema.
     """
     base = _File.model_validate(builtin_tables())
     tables = copy.deepcopy(base.profiles)
@@ -402,9 +404,14 @@ def load_models(*paths: Path | None) -> ModelsConfig:
         roles |= layer.roles
     try:
         profiles = {name: _resolve(name, tables, ()) for name in tables}
-        return ModelsConfig(profiles=profiles, roles=Roles.model_validate(roles))
+        models = ModelsConfig(profiles=profiles, roles=Roles.model_validate(roles))
     except ValidationError as e:
         raise ProfileError(str(e)) from None
+    for role in ("sweep", "judge"):
+        profile = models.role(role)
+        if not profile.structured_output:
+            raise ProfileError(f"role {role} needs structured output, which {profile.name} lacks")
+    return models
 
 
 def _resolve(name: str, tables: Mapping[str, Mapping[str, Any]], seen: tuple[str, ...]) -> Profile:

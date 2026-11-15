@@ -492,8 +492,6 @@ async def test_a_profile_without_structured_output_refuses_a_schema(
             await mc.call(p, Prompt(items=PROMPT.items, output_schema=schema))
     assert sent == []
     assert await model_events(store, run_id) == []
-    with pytest.raises(ValidationError, match="role sweep needs structured output"):
-        ModelsConfig(profiles={"test": p}, roles=Roles(agent="test", sweep="test", judge="test"))
 
 
 async def test_client_errors_are_not_retried(store: LocalEventStore) -> None:

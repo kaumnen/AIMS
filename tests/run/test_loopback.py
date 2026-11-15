@@ -160,6 +160,34 @@ async def test_a_run_started_from_the_api_runs_on_the_runner_and_ships(
         assert scored["items"][0]["data"]["reward"] == 1.0
 
 
+async def test_a_run_from_the_api_may_use_a_profile_without_structured_output(
+    cp: CP, backend: DockerBackend, tmp_path: Path
+) -> None:
+    """The runner looks up each profile of the job by name, so a profile that cannot answer to
+    a schema runs the agent though it fills no role of the monitor."""
+    with cp.project.open("a", encoding="utf-8") as f:
+        f.write('\n[profiles.plain]\nextends = "scripted"\nstructured_output = false\n')
+    script = Script(call("submit", answer="done"))
+    async with running_node(cp, backend, tmp_path / "node", script):
+        body = {
+            "scenario": {"source": "project", "name": "control"},
+            "profile": "plain",
+            "monitor": "signals",
+        }
+        (run_id,) = (await post(cp, "/api/runs", body))["run_ids"]
+
+        async def done() -> bool:
+            job = await cp.state.db.job(run_id)
+            return job is not None and job.state == "done"
+
+        # a runner that cannot start the job ends it with no run behind it
+        await until(done, 120)
+    job = await cp.state.db.job(run_id)
+    assert job is not None
+    assert job.reason == "completed"
+    assert (await run_status(cp, run_id))["status"] == "completed"
+
+
 PLANTED = """\
 version: 1
 name: planted
