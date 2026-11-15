@@ -286,7 +286,7 @@
       "path": "/settings/models",
       "dialog": true,
       "ready": "[role=dialog]",
-      "steps": [{ "wait": "#main table", "click": "Find a price key for modal-glimmer" }]
+      "steps": [{ "wait": "#main table", "click": "Find a price key for example-local" }]
     },
     { "name": "runners", "path": "/settings/runners", "ready": "#main table" },
     { "name": "tokens", "path": "/settings/tokens", "ready": "#main table" },

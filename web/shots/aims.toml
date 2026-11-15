@@ -1,0 +1,41 @@
+# Profiles for the screenshot pass: scripts/pass.ts copies this file into its scratch project.
+# The names are placeholders. scripts/seed.py records runs of example-agent.
+
+[profiles."example-agent"]
+backend = "chat"
+base_url = "https://api.example.com/v1"
+model = "example/agent-model"
+weights = "example/agent"
+api_key_env = "EXAMPLE_API_KEY"
+reasoning = "full"
+effort = "medium"
+max_output_tokens = 16384
+context_tokens = 131072
+price = { input = 1.25, cached = 0.15, output = 4.25 }
+
+[profiles."example-monitor"]
+backend = "responses"
+base_url = "https://api.example.com/v1"
+model = "example/monitor-model"
+weights = "example/monitor"
+api_key_env = "EXAMPLE_API_KEY"
+reasoning = "summary"
+effort = "high"
+summary = "auto"
+max_output_tokens = 32768
+context_tokens = 1048576
+price = { input = 4.00, cached = 0.20, output = 20.00 }
+
+# No price, for the Find a price key dialog.
+[profiles."example-local"]
+backend = "chat"
+base_url = "http://localhost:8000/v1"
+model = "example/local-model"
+weights = "example/local"
+api_key_env = "EXAMPLE_LOCAL_KEY"
+reasoning = "full"
+
+[roles]
+agent = "example-agent"
+sweep = "example-monitor"
+judge = "example-monitor"

@@ -108,13 +108,13 @@ try {
   await rm(config, { recursive: true, force: true });
   await mkdir(project, { recursive: true });
   await mkdir(config, { recursive: true });
-  await copy(join(ROOT, "docs", "pilot.toml"), join(project, "aims.toml"));
+  await copy(join(import.meta.dir, "../shots/aims.toml"), join(project, "aims.toml"));
   await copy(join(ROOT, "src", "aims", "scenarios"), join(project, "scenarios"), {
     recursive: true,
   });
   await Bun.write(
     join(config, "config.toml"),
-    "# Settings for every project on this machine.\n\n[credits]\nbaseten = 30\n",
+    "# Settings for every project on this machine.\n\n[credits]\nexample = 30\n",
   );
   await mkdir(out, { recursive: true });
 

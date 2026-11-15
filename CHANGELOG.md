@@ -19,6 +19,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 ### Changed
 
+- For contributors: the screenshot pass reads its profiles from `web/shots/aims.toml`. It copied `docs/pilot.toml`. `scripts/seed.py` records runs of placeholder models.
 - A score's awareness and answer checks run on the first profile in `[monitor] extract` whose weights no agent of the run runs, else on the sweep role. They ran on one of two built-in Meta models. A cheap model in `[monitor] extract` keeps a score cheaper than the sweep model does. When no profile fits, the score runs without those checks. Its estimate says why and how to fix it, in `aims score`, in the app and in the new `checks_off` field of the estimate API. A profile in `[monitor] extract` must have structured output. A config that names one without it no longer loads. A scenario's `monitor: extract` is checked the same way before its run starts.
 - A role under `[roles]` may be unset. What needs an unset role stops before any container starts and says how to fix it: set the role in `aims.toml`, give the run a profile for the agent role, or use a signals-only monitor for the sweep and judge roles. A set sweep or judge role must still name a profile with structured output. `aims models list`, `aims config --merged` and Settings > Models name the unset roles. The New run form asks for a profile when an agent names none and no profile has the agent role. `GET /api/models` gives an unset role as null. In a scenario's overview an agent with no profile to run has a null `profile`. The scenario list's new `needs_profile` says that a run must pick a profile. `aims scenario check` names an agent's missing profile once. It also named it as a monitor problem.
 - The index moves to version 13. Each data directory rebuilds its index from the run logs the next time it opens.
@@ -37,6 +38,10 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - A profile sends `parallel_tool_calls` only when it sets the field. The default was `false`, which went with every request that offered tools. A profile that leaves it out now lets the provider decide. The built-in profiles set `false`, so their requests stay the same. A profile of your own that left it out sends no such field now, unless it extends a built-in. Set `parallel_tool_calls = false` in it to keep the old request. `aims models check` warns of several calls in one turn only when the profile sets `false`.
 - A run, fork, self-test or check that a runner takes may use a profile with `structured_output = false`. The runner failed such a job before it started when that profile came first in the job, with the error that role sweep needs structured output. A config file's sweep and judge roles still need structured output. The error for one that lacks it now names only that rule.
 - A tab opens a live connection of its own when the one its tabs share neither opens nor fails within 10 seconds. A browser can let the shared worker ask for the stream and never answer it, so the run page stayed on Starting with 0 steps.
+
+### Removed
+
+- The example results: `docs/results.md`, the README's results section, the `organism/` folder, `docs/pilot.toml`, `deploy/modal/glimmer.py` and the `deploy` dependency group. They were experiments run with AIMS. Earlier releases keep them.
 
 ## [0.2.3] - 2026-11-14
 

@@ -21,9 +21,3 @@ src/aims/ui/dist/
 /web/bench-results.json
 /web/pass-shots/
 /src/aims/sandbox/published.json
-
-/organism/build/
-/organism/data/
-/organism/runs/
-/organism/eval*/
-/organism/*.log

@@ -123,9 +123,6 @@ Changelog = "https://github.com/kaumnen/AIMS/blob/main/CHANGELOG.md"
 Security = "https://github.com/kaumnen/AIMS/blob/main/SECURITY.md"
 
 [dependency-groups]
-deploy = [
-    "modal>=1.6.3",
-]
 dev = [
     "anyio>=4.15.1",
     "hypothesis>=6.170.15",
@@ -194,8 +191,7 @@ branch = true
 skip_covered = true
 
 [tool.ty.src]
-# train_organism.py is a uv script with its own dependencies.
-exclude = ["src/aims/scenarios", "skills/aims/assets", "organism/train_organism.py"]
+exclude = ["src/aims/scenarios", "skills/aims/assets"]
 
 [tool.ty.environment]
 # As pytest's pythonpath: test modules import those of other areas by bare name.
@@ -212,7 +208,3 @@ extra-paths = [
     "tests/scenario",
     "tests/server",
 ]
-
-[tool.ty.analysis]
-# modal is in the deploy group, which a plain uv sync leaves out.
-replace-imports-with-any = ["modal"]

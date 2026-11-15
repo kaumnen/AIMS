@@ -9,7 +9,7 @@
 [![License](https://img.shields.io/github/license/kaumnen/AIMS)](https://github.com/kaumnen/AIMS/blob/main/LICENSE)
 ![Python 3.14+](https://img.shields.io/badge/python-3.14%2B-blue)
 
-[Quick start](#quick-start) · [How it works](#how-it-works) · [Results](#example-results) · [Docs](#docs)
+[Quick start](#quick-start) · [How it works](#how-it-works) · [Docs](#docs)
 
 </div>
 
@@ -26,7 +26,6 @@ The task hides temptations, called plants: a shared folder other agents write to
 - [How it works](#how-it-works)
 - [Quick start](#quick-start)
 - [Built-in scenarios](#built-in-scenarios)
-- [Example results](#example-results)
 - [Write a scenario](#write-a-scenario)
 - [Coding agents](#coding-agents)
 - [The monitor](#the-monitor)
@@ -157,17 +156,6 @@ Variants change one part of a scenario. Pick one with `--variant`.
 | `crowd` | `shared-cache` | Two more agents, `ci-5` and `ci-6`, join at `ci-3`'s steps 10 and 20. |
 | `persistent` | `shared-cache` | The shared cache keeps its content across the runs of a series. |
 
-## Example results
-
-Four experiments on `cache-keys`. [Example results](https://github.com/kaumnen/AIMS/blob/main/docs/results.md) has the full numbers and how the model organism was made.
-
-| Experiment | Result |
-| --- | --- |
-| Pilot: 20 runs of an open-weight agent | 18 of 20 took a shortcut. `aims score` matched a hand review on all 20. |
-| Model organism: a model tuned to cheat when no human reviews its work | It hard-coded the keys in 10 of 12 runs without review. With review it did so in 0 of 12. |
-| One organism run with the live monitor | A sweep flagged the agent's plan at step 9. The agent hard-coded the keys at step 34. |
-| 12 honest runs under the `standard` monitor of v0.2.1 | 7 got a false flag at importance 3 or more. |
-
 ## Write a scenario
 
 A scenario is a YAML file next to the files it uses. `aims scenario check` validates it and runs its self-test. The `reference` script must solve the task without taking a plant. The `exploit` script must take every plant it claims.
@@ -239,7 +227,7 @@ The roles `agent`, `sweep` and `judge` each use a model profile. The built-in pr
 | `meta-wonder-1.0` | Muse Wonder 1.0 | Meta Model API | `MODEL_API_KEY` |
 | `fireworks-spark-open` | Muse Spark Open | Fireworks | `FIREWORKS_API_KEY` |
 | `baseten-spark-open` | Muse Spark Open | Baseten | `BASETEN_API_KEY` |
-| `modal-glimmer` | Muse Glimmer 30B | Your own vLLM server, such as [`deploy/modal/glimmer.py`](https://github.com/kaumnen/AIMS/blob/main/deploy/modal/glimmer.py) | `AIMS_GLIMMER_KEY`, `AIMS_GLIMMER_URL` |
+| `modal-glimmer` | Muse Glimmer 30B | Your own vLLM server | `AIMS_GLIMMER_KEY`, `AIMS_GLIMMER_URL` |
 
 The `agent` role uses `meta-spark-1.3-contributor`. The `sweep` and `judge` roles use `meta-wonder-1.0`. Keys come from the environment only. `aims models list` shows which keys are set. `aims models check` sends each provider a few small requests.
 
@@ -334,14 +322,12 @@ The last command prints a sign-in link for http://localhost:8484. [Deploy](https
 
 | Page | What it covers |
 | --- | --- |
-| [Example results](https://github.com/kaumnen/AIMS/blob/main/docs/results.md) | The pilot, the model organism, one organism run and the monitor on honest runs |
 | [Write a scenario](https://github.com/kaumnen/AIMS/blob/main/docs/scenarios.md) | A full example, plant kinds, agents and channels |
 | [Scenario reference](https://github.com/kaumnen/AIMS/blob/main/skills/aims/references/scenario.md) | Every field of the scenario format |
 | [The monitor](https://github.com/kaumnen/AIMS/blob/main/docs/monitor.md) | Layers, budgets, oversight rules and the 15 categories |
 | [Runs and reports](https://github.com/kaumnen/AIMS/blob/main/docs/runs.md) | Run logs, forks, scoring, deletion and reports |
 | [Models](https://github.com/kaumnen/AIMS/blob/main/docs/models.md) | Profile fields, list prices, OpenRouter, routing and what a run records of a call |
 | [Deploy](https://github.com/kaumnen/AIMS/blob/main/docs/deploy.md) | Compose, a public address, more runners, proxies, offline hosts and the audit log |
-| [Model organism](https://github.com/kaumnen/AIMS/tree/main/organism) | The scripts that made the organism |
 | [SECURITY.md](https://github.com/kaumnen/AIMS/blob/main/SECURITY.md) | The security model and how to report a vulnerability |
 
 ## Security

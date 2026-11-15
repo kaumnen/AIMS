@@ -50,7 +50,7 @@ def tree(tmp_path: Path) -> Path:
     ("paths", "on"),
     [
         (["README.md", "docs/monitor.md", "docs/images/run-dark.png", "LICENSE"], NOTHING),
-        (["organism/README.md", "CHANGELOG.md", ".gitignore"], NOTHING),
+        (["scripts/README.md", "CHANGELOG.md", ".gitignore"], NOTHING),
         (["web/src/routes/index.tsx", "web/package.json"], WEB),
         (["web/README.md"], WEB),
         (["web/openapi.json"], WEB | PYTHON),
@@ -145,8 +145,6 @@ def test_the_real_tree_has_a_rule_for_every_area(changes: ModuleType) -> None:
         "Dockerfile",
         "compose.public.yaml",
         "compose.yaml",
-        "deploy",
-        "organism",
         "scripts",
     }
     side = changes.container_side(ROOT)
