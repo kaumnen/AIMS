@@ -10,11 +10,12 @@ from aims.config import Settings
 from aims.events import Category, FlagLayer, Head
 from aims.events.index import FlagInfo, FlagStatus
 from aims.models import ProfileError
+from aims.models.listprice import Listing, PriceLists
 from aims.monitor.config import MonitorConfig, MonitorConfigError
 from aims.monitor.offline import offline_config, offline_monitor, origin_agents
 from aims.monitor.setup import ResolvedMonitor
 from aims.prompts import TextError
-from aims.run.estimate import ReviewEstimate, estimate_review, reviews_confirm
+from aims.run.estimate import ReviewEstimate, estimate_review, priced_review, reviews_confirm
 from aims.run.fork import Origin, load_origin
 from aims.run.job import JobOptions
 from aims.run.runner import RunError
@@ -138,6 +139,16 @@ def resolve(origin: Origin, settings: Settings, body: StartMonitor) -> ResolvedM
     )
 
 
+async def review_prices(
+    origin: Origin, settings: Settings, body: StartMonitor, lists: PriceLists | None
+) -> tuple[Settings, Listing]:
+    """`settings` with the list prices from `lists` laid for the monitor `body` asks for, as its
+    runs count them. Raises MonitorConfigError, ProfileError or TextError."""
+    # one sample is enough to find the profiles, and logs no extra warning of a fixed seed
+    once = body.model_copy(update={"samples": 1})
+    return await priced_review(settings, resolve(origin, settings, once), lists)
+
+
 def mode_of(body: StartMonitor) -> MonitorMode:
     return "signals_only" if body.signals_only else "judge_only" if body.judge_only else "full"
 
@@ -187,6 +198,9 @@ async def monitor_run(
     settings = state.config.settings()
     try:
         origin = await load_origin(state.store, run_id, full=False)
+        # the list prices go on the profiles before the jobs are made, confirmed or not, so the
+        # runner gets them and never reads the map
+        settings, listing = await review_prices(origin, settings, body, state.prices)
         jobs = monitor_jobs(origin, settings, head, body)
         cost = None
         if not body.confirm:
@@ -197,7 +211,7 @@ async def monitor_run(
                 mode_of(body),
                 samples=body.samples,
                 confirm_above_usd=settings.confirm_above_usd,
-                lists=state.prices,
+                listing=listing,
             )
     except (RunError, ProfileError, MonitorConfigError, TextError) as e:
         raise ProblemException(422, "Cannot monitor", str(e), code="monitor") from None
@@ -259,6 +273,7 @@ async def estimate_monitor(
     settings = state.config.settings()
     try:
         origin = await load_origin(state.store, run_id, full=False)
+        settings, listing = await review_prices(origin, settings, body, state.prices)
         return await estimate_review(
             state.store,
             run_id,
@@ -266,7 +281,7 @@ async def estimate_monitor(
             mode_of(body),
             samples=samples,
             confirm_above_usd=settings.confirm_above_usd,
-            lists=state.prices,
+            listing=listing,
         )
     except (RunError, ProfileError, MonitorConfigError, TextError) as e:
         raise ProblemException(422, "Cannot estimate", str(e), code="estimate") from None

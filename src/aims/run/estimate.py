@@ -34,7 +34,7 @@ from aims.config import CONFIRM_ABOVE_USD, Settings
 from aims.events import LocalEventStore, RunInfo
 from aims.events.store import TRUTH
 from aims.models import Profile, ProfileError
-from aims.models.listprice import SOURCE, Listing, ListPrice, PriceLists, laid, listing, priced
+from aims.models.listprice import SOURCE, Listing, ListPrice, PriceLists, laid, priced
 from aims.models.profiles import Price
 from aims.monitor.config import Preset
 from aims.monitor.setup import ResolvedMonitor, planned_steps
@@ -194,6 +194,18 @@ def listed_price(name: str, found: ListPrice, problem: str | None = None) -> Lis
         problem=problem,
         text=found.describe(),
     )
+
+
+def listed_entry(p: Profile, listing: Listing) -> ListedPrice | None:
+    """How an estimate shows the list price laid on profile `p`, None when it has none. The
+    copy's problem shows only when that copy laid it: a fork keeps the list price its origin
+    recorded, from a copy of its own."""
+    found = laid(p)
+    if found is None:
+        return None
+    now = listing.prices.get(found.key)
+    same = now is not None and now.checked == found.checked
+    return listed_price(p.name, found, listing.problem if same else None)
 
 
 class ProviderCredit(_Out):
@@ -619,6 +631,16 @@ async def priced_fork(
     return await _priced(settings, [p], lists)
 
 
+async def priced_review(
+    settings: Settings, monitor: ResolvedMonitor, lists: PriceLists | None = None
+) -> tuple[Settings, Listing]:
+    """`priced_runs` for offline monitor runs of `monitor`, resolved from `settings`. Resolve
+    the monitor again from the settings this gives, so its budget, its job and its run count
+    the list prices."""
+    models, found = await priced(settings.models, _monitor_profiles(monitor), lists)
+    return replace(settings, models=models), found
+
+
 async def _priced(
     settings: Settings, plans: Sequence[Plan], lists: PriceLists | None
 ) -> tuple[Settings, Listing]:
@@ -715,11 +737,7 @@ def estimate(
                 input_usd=blended,
             )
         for prof in _called(p):
-            if (found_price := laid(prof)) is not None:
-                # a fork keeps the list price its origin recorded, from a copy of its own
-                now = listing.prices.get(found_price.key)
-                same = now is not None and now.checked == found_price.checked
-                entry = listed_price(prof.name, found_price, listing.problem if same else None)
+            if (entry := listed_entry(prof, listing)) is not None:
                 listed.setdefault(prof.name, entry)
             elif (why := listing.why(prof)) is not None:
                 unlisted[prof.name] = why
@@ -1128,35 +1146,6 @@ def _called(p: Plan) -> list[Profile]:
     return [*_model_agents(p), *_watch_profiles(p.monitor)]
 
 
-def _lay_monitor(m: ResolvedMonitor | None, listing: Listing) -> ResolvedMonitor | None:
-    if m is None or not listing.prices:
-        return m
-
-    def lay(q: Profile | None) -> Profile | None:
-        return None if q is None else listing.lay(q)
-
-    return replace(
-        m,
-        sweeps={n: listing.lay(q) for n, q in m.sweeps.items()},
-        review=lay(m.review),
-        judge=lay(m.judge),
-        extract=lay(m.extract),
-        channels=lay(m.channels),
-    )
-
-
-def _cap_holds(m: ResolvedMonitor | None, own: ResolvedMonitor | None) -> bool:
-    """Whether the monitor's cost cap bounds what the estimate counts: no model whose price it
-    counts has one that only the estimate gave it. `own` is the run's monitor, `m` the priced
-    copy."""
-    if m is None or own is None:
-        return True
-    return all(
-        q.price is None or r.price is not None
-        for q, r in zip(_watch_profiles(m), _watch_profiles(own), strict=True)
-    )
-
-
 def _watch_profiles(m: ResolvedMonitor | None) -> list[Profile]:
     if m is None or not m.config.models_on:
         return []
@@ -1401,8 +1390,7 @@ class ReviewEstimate(_Out):
     with no model at all every figure is 0. `covers` is how many of the `steps` the sweeps pay
     for before the cap, from past reviews' sweep cost per step or else the sweep prices; None
     when they cover them all. `total` is every sample together, and `confirm` says they start
-    only with a person's yes, as runs do. `listed` and `unlisted` are as in an Estimate; the
-    cap does not hold on a model priced only for the estimate, so `ceiling_usd` is None then."""
+    only with a person's yes, as runs do. `listed` and `unlisted` are as in an Estimate."""
 
     run_id: str
     preset: Preset
@@ -1433,10 +1421,11 @@ async def estimate_review(
     *,
     samples: int = 1,
     confirm_above_usd: float = CONFIRM_ABOVE_USD,
-    lists: PriceLists | None = None,
+    listing: Listing | None = None,
 ) -> ReviewEstimate:
     """What `samples` runs of `monitor` over run `run` cost, from the monitor runs in `store`.
-    `lists` is as for `estimate_runs`. Raises KeyError for an unknown run."""
+    `monitor` is resolved from the settings `priced_review` gave, which gave `listing` too.
+    Raises KeyError for an unknown run."""
     info = await store.run(run)
     if info is None:
         raise KeyError(run)
@@ -1449,23 +1438,21 @@ async def estimate_review(
         total=CostTotal(),
         confirm_above_usd=confirm_above_usd,
     )
-    own = monitor
-    prices = await listing(_watch_profiles(own), lists)
-    for prof in _watch_profiles(own):
+    listing = listing or Listing()
+    for prof in _watch_profiles(monitor):
         if any(entry.profile == prof.name for entry in out.listed):
             continue
-        if (found := prices.find(prof)) is not None:
-            out.listed.append(listed_price(prof.name, found, prices.problem))
-        elif (why := prices.why(prof)) is not None:
+        if (entry := listed_entry(prof, listing)) is not None:
+            out.listed.append(entry)
+        elif (why := listing.why(prof)) is not None:
             out.unlisted[prof.name] = why
-    monitor = _lay_monitor(own, prices) or own
     called = _review_profiles(monitor)
     if not called:
         out.typical_usd = out.high_usd = out.ceiling_usd = 0.0
     elif all(p.price is None for p in called):
         out.priced = False
     else:
-        ceiling = out.ceiling_usd = monitor.budget_usd if _cap_holds(monitor, own) else None
+        ceiling = out.ceiling_usd = monitor.budget_usd
         key = _monitor_key(monitor)
         same: list[float] = []
         every: list[float] = []
@@ -1500,11 +1487,9 @@ async def estimate_review(
         costs = same or every
         if costs:
             typical, high, out.doubled = spread(costs)
-            if ceiling is not None:
-                typical, high = min(typical, ceiling), min(high, ceiling)
-            out.typical_usd, out.high_usd = typical, high
+            out.typical_usd, out.high_usd = min(typical, ceiling), min(high, ceiling)
             out.runs, out.same_scenario = len(costs), bool(same)
-        covers = own.covers(statistics.median(per_step) if per_step else None)
+        covers = monitor.covers(statistics.median(per_step) if per_step else None)
         if covers is not None and covers < info.steps:
             out.covers = covers
     if out.priced:
@@ -1556,11 +1541,6 @@ def reviews_confirm(found: Sequence[ReviewEstimate]) -> str | None:
     if not priced:
         return None
     limit = priced[0].confirm_above_usd
-    if any(e.total.ceiling_usd is None for e in priced):
-        if any(e.total.high_usd is None for e in priced):
-            return "no cap bounds the cost and no past reviews give an estimate"
-        high = sum(e.total.high_usd or 0.0 for e in priced)
-        return f"no cap bounds the cost; the high estimate is {usd(high)}"
     capped = any(e.total.high_usd is None for e in priced)
     figure = sum(
         e.total.high_usd if e.total.high_usd is not None else e.total.ceiling_usd or 0.0
@@ -1611,8 +1591,6 @@ def describe_review(e: ReviewEstimate) -> list[str]:
         words.append("No past reviews to go by.")
     if e.ceiling_usd is not None:
         words.append(f"Stops at {usd(e.ceiling_usd)}, its spend cap.")
-    else:
-        words.append("Its spend cap holds only if the provider reports each call's cost.")
     if e.covers is not None:
         words.append(
             f"Its sweeps cover about {e.covers} of the {e.steps} steps, then only signals;"

@@ -26,6 +26,7 @@ from aims.run.scoring import (
     ScoreError,
     ScoreEstimate,
     estimate_sealed,
+    priced_score,
     unfinished,
 )
 from aims.server import audit
@@ -207,12 +208,21 @@ async def queue_score(
         added = dataclasses.replace(found, path=f"{ref.source}/{ref.name}")
     settings = state.config.settings()
     try:
+        # the classifier's list price goes on it before the job is made, so the runner gets it
+        settings, _ = await priced_score(
+            state.store,
+            settings,
+            run_id,
+            awareness=body.awareness,
+            answer=body.answer,
+            lists=state.prices,
+        )
         origin = await load_origin(state.store, run_id, full=False)
         classifier = None
         if body.awareness or body.answer:
             classifier = extractor_for(settings.models, CLASSIFIERS, origin_agents(origin))
         texts = resolve(settings.prompts)
-    except (RunError, ProfileError, TextError) as e:
+    except (ScoreError, RunError, ProfileError, TextError) as e:
         raise ProblemException(422, "Cannot score", str(e), code="score") from None
     job = ScoreJob(
         run_id=str(uuid.uuid7()),
@@ -245,13 +255,16 @@ async def estimate_score(
     if await state.store.run(run_id) is None:
         raise _no_run(state, run_id)
     try:
-        return await estimate_sealed(
+        settings, listing = await priced_score(
             state.store,
             state.config.settings(),
             run_id,
             awareness=awareness,
             answer=answer,
             lists=state.prices,
+        )
+        return await estimate_sealed(
+            state.store, settings, run_id, awareness=awareness, answer=answer, listing=listing
         )
     except (ScoreError, ProfileError, TextError) as e:
         raise ProblemException(422, "Cannot estimate", str(e), code="estimate") from None

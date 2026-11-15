@@ -1,16 +1,17 @@
-"""Runs, forks and their estimates of profiles that name a row of LiteLLM's price map and set
-no price: the list price goes on the profiles the run gets, so its caps hold and the estimate
-counts them; a lookup that fails leaves the profile unpriced with the reason."""
+"""Runs, forks, reviews, scores and their estimates of profiles that name a row of LiteLLM's
+price map and set no price: the list price goes on the profiles the work gets, so its caps hold
+and the estimate counts them; a lookup that fails leaves the profile unpriced with the reason."""
 
 import asyncio
 import json
+import shutil
 from pathlib import Path
 from typing import Any, cast
 
 import httpx2
 import pytest
 from cp import CP, control_plane
-from scripted import profile
+from scripted import models, profile
 from test_estimate import (
     CONFIG,
     STEP,
@@ -24,10 +25,13 @@ from test_server import FakeRunner
 from typer.testing import CliRunner
 
 from aims.cli import app
+from aims.config import Settings
 from aims.events import AgentFinished, Draft, LocalEventStore, ModelUsage
 from aims.models import listprice as lp
 from aims.models.listprice import PriceLists
 from aims.models.profiles import Price, Profile
+from aims.monitor.offline import monitor_offline, monitored, offline_monitor, origin_agents
+from aims.monitor.setup import ResolvedMonitor
 from aims.monitor.texts import resolve
 from aims.prompts import Prompts
 from aims.run import scoring
@@ -39,6 +43,7 @@ from aims.run.estimate import (
     estimate_runs,
     history,
     priced_fork,
+    priced_review,
     priced_runs,
     reviews_confirm,
 )
@@ -135,6 +140,7 @@ LINE = (
     " $0.10 cached, $2.00 output per million tokens."
 )
 PRICE = Price(input=1.0, cached=0.1, output=2.0)
+WATCH_PRICE = Price(input=2.0, cached=0.2, output=4.0)
 
 
 class Source:
@@ -438,29 +444,88 @@ async def test_a_fork_job_carries_the_list_price_to_its_runner(tmp_path: Path) -
     assert live.listed is not None
 
 
-async def test_a_review_by_a_listed_monitor_has_no_cap_and_asks(tmp_path: Path) -> None:
+async def test_a_review_by_a_listed_monitor_is_sized_and_capped_at_its_list_price(
+    tmp_path: Path,
+) -> None:
     settings, path = write(tmp_path, preset="standard", config=WATCHED)
     bundle = load_scenario(path)
-    m = watcher(settings, bundle, preset="standard")
+    m = watcher(settings, bundle, preset="standard", steps=400)
+    source = Source()
+    laid, listing = await priced_review(settings, m, source.lists(tmp_path))
+    assert len(source.seen) == 1
+    live = watcher(laid, bundle, preset="standard", steps=400)
+    assert live.judge is not None
+    for q in [*live.sweeps.values(), live.judge]:
+        assert q.price == WATCH_PRICE
+        assert q.listed is not None
+    # its budget pays for the sweeps of 400 steps at the list price, past the preset's amount
+    assert live.budget_usd > m.budget_usd
     async with await LocalEventStore.open(tmp_path / "runs") as store:
         origin = await stepped(store, "s", 10)
         plain = await estimate_review(store, origin, m, "full")
-        e = await estimate_review(store, origin, m, "full", lists=Source().lists(tmp_path))
+        e = await estimate_review(store, origin, live, "full", listing=listing)
     assert not plain.priced
     assert plain.lines == [
         "Review: standard monitor; its models have no price, so its cost is not counted."
     ]
-    assert (e.priced, e.ceiling_usd, e.covers) == (True, None, None)
-    assert e.confirm
-    assert reviews_confirm([e]) == "no cap bounds the cost and no past reviews give an estimate"
+    assert (e.priced, e.ceiling_usd, e.covers) == (True, live.budget_usd, None)
+    assert e.confirm == (live.budget_usd > e.confirm_above_usd)
     assert e.lines[0] == (
-        "Review: standard monitor, over 10 agent steps. No past reviews to go by. Its spend cap"
-        " holds only if the provider reports each call's cost."
+        "Review: standard monitor, over 10 agent steps. No past reviews to go by. Stops at"
+        f" ${live.budget_usd:,.2f}, its spend cap."
     )
     assert [x.profile for x in e.listed] == ["listed-watch"]
     assert e.lines[1].startswith(
         "Profile listed-watch: LiteLLM list price for vendor-x/watch-model"
     )
+
+
+async def test_a_review_under_the_threshold_starts_without_a_yes(tmp_path: Path) -> None:
+    settings, path = write(tmp_path, preset="standard", config=WATCHED)
+    bundle = load_scenario(path)
+    laid, listing = await priced_review(
+        settings, watcher(settings, bundle, preset="standard"), Source().lists(tmp_path)
+    )
+    live = watcher(laid, bundle, preset="standard", budget_usd=1.0)
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        origin = await stepped(store, "s", 10)
+        e = await estimate_review(store, origin, live, "full", listing=listing)
+    # the cap holds on the list price, so a small one needs no yes
+    assert (e.priced, e.ceiling_usd, e.confirm) == (True, 1.0, False)
+    assert reviews_confirm([e]) is None
+
+
+async def test_a_review_counts_its_calls_at_the_list_price(tmp_path: Path) -> None:
+    from test_offline import FIXTURE, WATCHER, monitor_model
+
+    (origin_dir,) = FIXTURE.iterdir()
+    root = tmp_path / "runs"
+    shutil.copytree(origin_dir, root / origin_dir.name)
+    bare = WATCHER.model_copy(update={"price": None, "price_key": "vendor-x/watch-model"})
+    settings = Settings(models=models(bare), prompts=Prompts(), layers=cast(Any, None))
+    async with await LocalEventStore.open(root) as store:
+        origin, _ = await monitored(store, origin_dir.name)
+        agents = origin_agents(origin)
+        scenario = origin.bundle.scenario
+        unlaid = offline_monitor(settings.models, settings.prompts, scenario, agents)
+        laid, _ = await priced_review(settings, unlaid, Source().lists(tmp_path))
+        resolved = offline_monitor(laid.models, laid.prompts, scenario, agents)
+        # the job carries the monitor to the runner as JSON
+        resolved = ResolvedMonitor.restore(json.loads(json.dumps(resolved.snapshot())))
+        result = await monitor_offline(
+            store, origin, resolved, models=settings.models, transport=monitor_model().transport()
+        )
+        assert result.status == "completed", result.reason
+        replies = await store.events(result.run_id, types=["model.response"], limit=1000)
+        (began,) = await store.events(result.run_id, types=["run.started"], limit=1)
+    assert replies
+    assert {e.data["cost_source"] for e in replies} == {"list"}
+    assert result.cost_usd == pytest.approx(sum(cast(float, e.data["cost_usd"]) for e in replies))
+    assert result.cost_usd > 0
+    recorded = cast(dict[str, Any], began.data["config"])["monitor"]["sweeps"]
+    assert {(q["price_key"], q["listed"] is not None) for q in recorded.values()} == {
+        ("vendor-x/watch-model", True)
+    }
 
 
 async def test_a_score_counts_its_ceiling_at_the_classifier_s_list_price(tmp_path: Path) -> None:
@@ -472,17 +537,39 @@ async def test_a_score_counts_its_ceiling_at_the_classifier_s_list_price(tmp_pat
         run_id = await sealed(store, drafts, facts=FACTS)
         priced = profile(name="cheap", max_output_tokens=1000)
         listed = profile(name="cheap", max_output_tokens=1000, price=None, price_key=KEY)
+        found = await lp.listing([listed], Source().lists(tmp_path))
         own = await scoring.estimate_score(store, run_id, priced, texts)
         bare = await scoring.estimate_score(store, run_id, listed, texts)
-        e = await scoring.estimate_score(
-            store, run_id, listed, texts, lists=Source().lists(tmp_path)
-        )
+        e = await scoring.estimate_score(store, run_id, found.lay(listed), texts, listing=found)
     assert bare.ceiling_usd is None
     assert e.ceiling_usd == pytest.approx(own.ceiling_usd)
     assert [x.key for x in e.listed] == [KEY]
     assert e.lines[1].startswith(f"Profile cheap: LiteLLM list price for {KEY}")
     assert own.listed == []
-    assert listed.price is None
+
+
+async def test_a_score_counts_its_calls_at_the_classifier_s_list_price(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripted import Script, say
+    from test_scoring import TEXTS, oracle, sealed, words
+
+    listed = profile(name="cheap", model="cheap", price=None, price_key=KEY)
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        run_id = await sealed(store, await words(store, 2))
+        oracle(monkeypatch, [])
+        found = await lp.listing([listed], Source().lists(tmp_path))
+        laid = found.lay_models(models(listed))
+        no = say(json.dumps({"finding": "no", "quote": "", "frames": []}))
+        build = scoring.classifier_for(
+            store, laid, TEXTS, ["cheap"], [], transport=Script(no).transport(), env={}
+        )
+        assert build is not None
+        result = await scoring.score_run(store, run_id, classifier=build)
+        replies = await store.events(result.run_id, types=["model.response"], limit=10)
+    assert [e.data["cost_source"] for e in replies] == ["list"]
+    # the scripted call reads 100 tokens and writes 10, at $1 and $2 per million
+    assert result.cost_usd == pytest.approx(120 / 1_000_000)
 
 
 def test_aims_estimate_prints_the_list_price_from_the_kept_copy(tmp_path: Path) -> None:
@@ -550,3 +637,78 @@ async def _api(cp: CP, tmp_path: Path) -> None:
         data = r.json()
     assert [x["key"] for x in data["listed"]] == [KEY]
     assert data["unlisted"] == {}
+
+
+WATCH = """
+[profiles.listed-watch]
+backend = "chat"
+base_url = "https://api.vendor-y.test/v1"
+model = "watch-listed"
+weights = "watch-listed-weights"
+reasoning = "full"
+max_output_tokens = 1000
+price_key = "vendor-x/watch-model"
+"""
+
+
+async def test_review_and_score_jobs_carry_the_list_price_to_their_runner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from test_monitor_api import MonitorRunner, flagged, pushed
+    from test_score_api import ScoreRunner, planted
+
+    from aims.server import score_api
+    from aims.wire import MonitorJob, ScoreJob
+
+    # the score's classifier is the first candidate the run's agents do not run
+    monkeypatch.setattr(scoring, "CLASSIFIERS", ("listed-watch",))
+    monkeypatch.setattr(score_api, "CLASSIFIERS", ("listed-watch",))
+    async with (
+        control_plane(tmp_path) as cp,
+        await LocalEventStore.open(tmp_path / "local") as local,
+    ):
+        cp.project.write_text(cp.project.read_text() + WATCH)
+        cp.state.prices = Source().lists(tmp_path)
+        fake, mon, scorer = FakeRunner(cp), MonitorRunner(cp, "mon"), ScoreRunner(cp, "scorer")
+        for runner in (fake, mon, scorer):
+            await runner.connect()
+        try:
+            origin = await pushed(cp, local, fake, flagged())
+            scored = await planted(cp, local, fake)
+            review = {"preset": "standard", "profile": "listed-watch"}
+            async with cp.client(cp.operator) as c:
+                r = await c.get(f"/api/runs/{origin}/monitor/estimate", params=review)
+                assert r.status_code == 200, r.text
+                e = r.json()
+                r = await c.post(f"/api/runs/{origin}/monitor", json={**review, "confirm": True})
+                assert r.status_code == 202, r.text
+                (watched,) = r.json()["run_ids"]
+                r = await c.get(f"/api/runs/{scored}/score/estimate")
+                assert r.status_code == 200, r.text
+                score = r.json()
+                r = await c.post(f"/api/runs/{scored}/score", json={})
+                assert r.status_code == 202, r.text
+                (scoring_run,) = r.json()["run_ids"]
+            mjob = await mon.client.claim(watched)
+            sjob = await scorer.client.claim(scoring_run)
+        finally:
+            for runner in (fake, mon, scorer):
+                await runner.close()
+    # the estimate counts the cap the run keeps to
+    assert [x["profile"] for x in e["listed"]] == ["listed-watch"]
+    assert e["priced"]
+    assert e["ceiling_usd"] is not None
+    assert isinstance(mjob, MonitorJob)
+    m = mjob.resolved()
+    assert e["ceiling_usd"] == m.budget_usd
+    for q in [*m.sweeps.values(), m.review, m.judge]:
+        assert q is not None
+        assert (q.price, q.price_key) == (WATCH_PRICE, "vendor-x/watch-model")
+        assert q.listed is not None
+    assert isinstance(sjob, ScoreJob)
+    classifier = sjob.profile()
+    assert classifier is not None
+    assert (classifier.name, classifier.price) == ("listed-watch", WATCH_PRICE)
+    assert classifier.listed is not None
+    assert [x["key"] for x in score["listed"]] == ["vendor-x/watch-model"]
+    assert score["ceiling_usd"] is not None

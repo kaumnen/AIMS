@@ -25,7 +25,7 @@ import secrets
 import uuid
 from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, cast, get_args
@@ -66,7 +66,7 @@ from aims.models import (
     Prompt,
     ReplayError,
 )
-from aims.models.listprice import PriceLists, listing
+from aims.models.listprice import Listing, PriceLists, priced
 from aims.monitor.offline import origin_agents
 from aims.monitor.render import cut, escape, frame, tokens
 from aims.monitor.setup import extractor_for
@@ -76,8 +76,8 @@ from aims.run import truth
 from aims.run.estimate import (
     MIN_RUNS,
     ListedPrice,
+    listed_entry,
     listed_line,
-    listed_price,
     spread,
     unpriced_line,
     usd,
@@ -944,11 +944,10 @@ async def estimate_sealed(
     *,
     awareness: bool = True,
     answer: bool = True,
-    lists: PriceLists | None = None,
+    listing: Listing | None = None,
 ) -> ScoreEstimate:
-    """What `score_sealed` would cost on run `run` with these settings. `lists` gives a list
-    price to a classifier that names a key and sets no price; None looks up none. Raises
-    ScoreError."""
+    """What `score_sealed` would cost on run `run` with these settings, those `priced_score`
+    gave with `listing`. Raises ScoreError."""
     profile = None
     if awareness or answer:
         try:
@@ -963,8 +962,34 @@ async def estimate_sealed(
         resolve(settings.prompts),
         awareness=awareness,
         answer=answer,
-        lists=lists,
+        listing=listing,
     )
+
+
+async def priced_score(
+    store: LocalEventStore,
+    settings: Settings,
+    run: str,
+    *,
+    awareness: bool = True,
+    answer: bool = True,
+    lists: PriceLists | None = None,
+) -> tuple[Settings, Listing]:
+    """`settings` with the list price from `lists` laid on the classifier a score of run `run`
+    calls, and the listing it came from, as `priced_runs` does for runs. The map is read only
+    when that classifier names a key and sets no price. The score and its estimate both pick
+    the classifier from these. Raises ScoreError."""
+    if not (awareness or answer):
+        return settings, Listing()
+    try:
+        origin = await load_origin(store, run, full=False)
+    except RunError as e:
+        raise ScoreError(str(e)) from None
+    profile = extractor_for(settings.models, CLASSIFIERS, origin_agents(origin))
+    if profile is None:
+        return settings, Listing()
+    models, found = await priced(settings.models, [profile], lists)
+    return replace(settings, models=models), found
 
 
 async def estimate_score(
@@ -975,11 +1000,11 @@ async def estimate_score(
     *,
     awareness: bool = True,
     answer: bool = True,
-    lists: PriceLists | None = None,
+    listing: Listing | None = None,
 ) -> ScoreEstimate:
     """What a score of run `run` costs with the classifier `profile`, None for no checks: the
-    calls its words take, and the past scores' costs. `lists` is as for `estimate_sealed`.
-    Raises ScoreError."""
+    calls its words take, and the past scores' costs. `profile` carries the list price
+    `listing` laid, which the score counts too. Raises ScoreError."""
     info = await store.run(run)
     if info is None:
         raise ScoreError(f"no run {run}")
@@ -1020,12 +1045,12 @@ async def estimate_score(
             if roles.get(agent, "subject") == "subject":
                 out.calls += 1
                 tokens_in += n + system + findings
-    prices = await listing([profile], lists)
-    if (found := prices.find(profile)) is not None:
-        out.listed.append(listed_price(profile.name, found, prices.problem))
-    elif (why := prices.why(profile)) is not None:
+    listing = listing or Listing()
+    if (entry := listed_entry(profile, listing)) is not None:
+        out.listed.append(entry)
+    elif (why := listing.why(profile)) is not None:
         out.unlisted[profile.name] = why
-    price, cap = prices.lay(profile).price, profile.max_output_tokens
+    price, cap = profile.price, profile.max_output_tokens
     if price is not None and cap is not None:
         out.ceiling_usd = (tokens_in * price.input + out.calls * cap * price.output) / 1_000_000
     same: list[float] = []

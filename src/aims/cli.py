@@ -2308,7 +2308,7 @@ async def _monitor_runs(**o: Any) -> int:
     )
     from aims.node.client import ApiError
     from aims.prompts import TextError
-    from aims.run.estimate import ask_why, estimate_review, reviews_confirm
+    from aims.run.estimate import ask_why, estimate_review, priced_review, reviews_confirm
     from aims.run.job import JobOptions, monitor_profiles
     from aims.run.runner import RunError
     from aims.run.view import JsonLines, digest, monitor_table
@@ -2349,21 +2349,28 @@ async def _monitor_runs(**o: Any) -> int:
         for run_id in dict.fromkeys(o["runs"]):
             try:
                 origin, _ = await monitored(store, run_id)
-                resolved = offline_monitor(
-                    settings.models,
-                    settings.prompts,
-                    origin.bundle.scenario,
-                    origin_agents(origin),
-                    layers=settings.monitor,
-                    config=extra,
-                    preset=o["preset"],
-                    signals_only=o["signals_only"],
-                    judge_only=o["judge_only"],
-                    profile=o["profile"],
-                    samples=o["samples"],
-                    budget_usd=o["budget_usd"],
-                    steps=sum(origin.steps.values()),
-                )
+
+                def monitor_of(models: Any, samples: int, origin: Any = origin) -> Any:
+                    return offline_monitor(
+                        models,
+                        settings.prompts,
+                        origin.bundle.scenario,
+                        origin_agents(origin),
+                        layers=settings.monitor,
+                        config=extra,
+                        preset=o["preset"],
+                        signals_only=o["signals_only"],
+                        judge_only=o["judge_only"],
+                        profile=o["profile"],
+                        samples=samples,
+                        budget_usd=o["budget_usd"],
+                        steps=sum(origin.steps.values()),
+                    )
+
+                # the list prices go on the profiles before the monitor resolves for good, so
+                # its budget and its run count them; one sample is enough to find the profiles
+                laid, listing = await priced_review(settings, monitor_of(settings.models, 1), lists)
+                resolved = monitor_of(laid.models, o["samples"])
                 for p in monitor_profiles(resolved).values():
                     p.url()
                     p.api_key()
@@ -2377,7 +2384,7 @@ async def _monitor_runs(**o: Any) -> int:
                     mode,
                     samples=o["samples"],
                     confirm_above_usd=settings.confirm_above_usd,
-                    lists=lists,
+                    listing=listing,
                 )
             )
             group = uuid.uuid4().hex[:12] if o["samples"] > 1 else None
@@ -3280,6 +3287,7 @@ def score_cmd(
         ScoreEstimate,
         ScoreResult,
         estimate_sealed,
+        priced_score,
         score_sealed,
     )
     from aims.terminal import json_text
@@ -3294,7 +3302,9 @@ def score_cmd(
             try:
                 with _stoppable():
                     await _seal_left(store, lambda text: typer.echo(text, err=True))
-                    cost = await estimate_sealed(
+                    # the classifier's list price goes on it before the score picks it, so the
+                    # score run counts its calls at that price
+                    laid, listing = await priced_score(
                         store,
                         settings,
                         run,
@@ -3302,12 +3312,20 @@ def score_cmd(
                         answer=answer,
                         lists=PriceLists(),
                     )
+                    cost = await estimate_sealed(
+                        store,
+                        laid,
+                        run,
+                        awareness=awareness,
+                        answer=answer,
+                        listing=listing,
+                    )
                     if not json_out:
                         for line in cost.lines:
                             _echo(line, err=True)
                     return await score_sealed(
                         store,
-                        settings,
+                        laid,
                         run,
                         monitor=monitor,
                         awareness=awareness,
