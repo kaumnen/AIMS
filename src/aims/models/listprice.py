@@ -23,7 +23,7 @@ from typing import Any
 
 import httpx2
 
-from aims.models.profiles import Price, Profile
+from aims.models.profiles import PRICE_KEY, Price, Profile
 from aims.net import Outbound
 
 log = logging.getLogger(__name__)
@@ -147,18 +147,41 @@ class PriceList:
         )
 
     def candidates(self, model: str) -> list[str]:
-        """The keys of priced chat rows that are `model` or end in `/model`, shortest first,
-        at most MAX_CANDIDATES. They are for a person to pick from: rows of one model differ in
-        price by provider and region."""
-        if not model:
+        """The keys of priced chat rows that name model id `model`, at most MAX_CANDIDATES: those
+        that are the id or end in `/` and the id, then those that are or end in its last part
+        after a `/`, case ignored, shortest first within each. They are for a person to pick
+        from: rows of one model differ in price by provider and region."""
+        model = model.lower()
+        last = model.rpartition("/")[2]
+        if not last:
             return []
-        end = f"/{model}"
-        found = [
+        whole: list[str] = []
+        part: list[str] = []
+        for key in self._keys(lambda k: k == last or k.endswith(f"/{last}")):
+            low = key.lower()
+            (whole if low == model or low.endswith(f"/{model}") else part).append(key)
+        return (_shortest(whole) + _shortest(part))[:MAX_CANDIDATES]
+
+    def search(self, text: str) -> list[str]:
+        """The keys of priced chat rows that hold `text`, case ignored, shortest first, at most
+        MAX_CANDIDATES."""
+        text = text.strip().lower()
+        if not text:
+            return []
+        return _shortest(self._keys(lambda k: text in k))[:MAX_CANDIDATES]
+
+    def _keys(self, match: Callable[[str], bool]) -> list[str]:
+        """The keys of priced chat rows whose lower case form `match` takes, and that a
+        profile's `price_key` can name."""
+        return [
             key
             for key, row in self.rows.items()
-            if (key == model or key.endswith(end)) and _read(row) is not None
+            if match(key.lower()) and PRICE_KEY.fullmatch(key) and _read(row) is not None
         ]
-        return sorted(found, key=lambda key: (len(key), key))[:MAX_CANDIDATES]
+
+
+def _shortest(keys: list[str]) -> list[str]:
+    return sorted(keys, key=lambda key: (len(key), key))
 
 
 def parse(body: bytes | bytearray) -> dict[str, Any]:
@@ -362,15 +385,26 @@ async def listing(profiles: Iterable[Profile], lists: PriceLists | None) -> List
     """The list prices of those `profiles` that name a key and set no price. The map is read
     only for such a profile. A map that cannot be read leaves them unpriced, with the reason;
     nothing here fails an estimate."""
-    keys = sorted({p.price_key for p in profiles if p.price is None and p.price_key is not None})
+    keys = _wanted(profiles)
     if not keys or lists is None:
         return Listing()
+    return _listing(keys, await _at_hand(lists))
+
+
+def _wanted(profiles: Iterable[Profile]) -> list[str]:
+    return sorted({p.price_key for p in profiles if p.price is None and p.price_key is not None})
+
+
+async def _at_hand(lists: PriceLists) -> Found:
     try:
-        found = await lists.get()
+        return await lists.get()
     except Exception as e:
-        # A list price only adds to an estimate, which goes on without it.
+        # A list price only adds to what it serves, which goes on without it.
         log.warning("the %s price map could not be read", SOURCE, exc_info=True)
-        found = Found(None, f"{type(e).__name__}: {e}")
+        return Found(None, f"{type(e).__name__}: {e}")
+
+
+def _listing(keys: list[str], found: Found) -> Listing:
     if found.prices is None:
         why = f"no copy of the {SOURCE} price map is at hand ({found.problem or 'none kept'})"
         return Listing(missing=dict.fromkeys(keys, why), problem=found.problem)
@@ -382,3 +416,37 @@ async def listing(profiles: Iterable[Profile], lists: PriceLists | None) -> List
         except NoPrice as e:
             missing[key] = str(e)
     return Listing(prices, missing, found.problem)
+
+
+@dataclass(frozen=True, slots=True)
+class Survey:
+    """What the map says of profiles that set no price. `listing` holds the list prices of
+    those that name a key. `candidates` holds, by profile name, the rows that may price each
+    one that got none, for a person to name one in its `price_key`. `found` holds the rows a
+    search matched. `checked` is when the copy at hand was last confirmed current, None when
+    the map was not read or no copy is at hand."""
+
+    listing: Listing = field(default_factory=Listing)
+    candidates: Mapping[str, list[ListPrice]] = field(default_factory=dict)
+    found: list[ListPrice] = field(default_factory=list)
+    checked: datetime | None = None
+
+
+async def survey(profiles: Iterable[Profile], lists: PriceLists, search: str = "") -> Survey:
+    """What the map says of those `profiles` that set no price, and its rows that hold
+    `search`. The map is read only for such a profile or a search."""
+    unpriced = [p for p in profiles if p.price is None]
+    if not unpriced and not search.strip():
+        return Survey()
+    found = await _at_hand(lists)
+    listed = _listing(_wanted(unpriced), found)
+    prices = found.prices
+    if prices is None:
+        return Survey(listed)
+    candidates = {
+        p.name: [prices.get(key) for key in prices.candidates(p.model)]
+        for p in unpriced
+        if listed.find(p) is None
+    }
+    rows = [prices.get(key) for key in prices.search(search)]
+    return Survey(listed, candidates, rows, prices.checked)

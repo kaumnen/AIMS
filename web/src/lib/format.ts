@@ -35,6 +35,12 @@ export function usd(value: number): string {
   return `$${value.toFixed(2)}`;
 }
 
+// A price per million tokens: cents, or four places below ten cents without trailing zeros.
+export function rate(value: number): string {
+  if (value === 0 || value >= 0.1) return `$${value.toFixed(2)}`;
+  return `$${value.toFixed(4).replace(/0{1,2}$/, "")}`;
+}
+
 export function shortId(runId: string): string {
   return runId.slice(0, 13);
 }

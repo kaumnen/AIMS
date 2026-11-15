@@ -4,7 +4,7 @@ import { createBrowserHistory, createMemoryHistory, RouterProvider } from "@tans
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 
-import type { ProfileDraft, ProfileInfo } from "@/api/launch";
+import type { ModelPrices, PriceRow, ProfileDraft, ProfileInfo } from "@/api/launch";
 import type { PromptText } from "@/api/scenario-files";
 import type { AuditEntry, ProviderCredit, TokenInfo } from "@/api/settings";
 import { makeRouter } from "@/router";
@@ -40,6 +40,10 @@ let saves: { layer: string; text: string; ifMatch: string | null; ifNoneMatch: s
 let lookup: (url: URL) => Response | Promise<Response>;
 // the answer to adding a looked-up profile to the project's config
 let added: () => Response;
+// profiles the models list holds after spark and glimmer
+let more: ProfileInfo[];
+// the answer to a read of the price map, by the search text
+let prices: (search: string) => ModelPrices;
 
 const profile = (over: Partial<ProfileInfo>): ProfileInfo => ({
   name: "spark",
@@ -51,6 +55,29 @@ const profile = (over: Partial<ProfileInfo>): ProfileInfo => ({
   envs: ["META_API_KEY"],
   runners: ["local"],
   check: null,
+  price: { input: 1.25, cached: 0.15, output: 4.25 },
+  price_key: null,
+  ...over,
+});
+
+const priceRow = (key: string, over: Partial<PriceRow> = {}): PriceRow => ({
+  key,
+  input_usd: 0.35,
+  cached_usd: 0.04,
+  output_usd: 1.5,
+  cached_listed: true,
+  tier_from: null,
+  ...over,
+});
+
+const DAY = "2026-11-15T11:59:06+00:00";
+
+const mapSays = (over: Partial<ModelPrices> = {}): ModelPrices => ({
+  source: "LiteLLM",
+  checked: DAY,
+  problem: null,
+  profiles: [],
+  found: [],
   ...over,
 });
 
@@ -253,6 +280,8 @@ beforeEach(() => {
   saves = [];
   lookup = () => Response.json(draft());
   added = () => Response.json({ name: "openrouter-gem-9", path: "/work/aims.toml" });
+  more = [];
+  prices = () => mapSays();
   FakeEventSource.all = [];
   vi.stubGlobal("EventSource", FakeEventSource);
   vi.stubGlobal("fetch", fetch);
@@ -263,10 +292,14 @@ beforeEach(() => {
       return Response.json({
         profiles: [
           profile({ check: checked }),
-          profile({ name: "glimmer", roles: [], envs: ["MODAL_KEY"], runners: [] }),
+          profile({ name: "glimmer", roles: [], envs: ["MODAL_KEY"], runners: [], price: null }),
+          ...more,
         ],
         roles: { agent: "spark" },
       });
+    if (url.pathname === "/api/models/prices") {
+      return Response.json(prices(url.searchParams.get("search") ?? ""));
+    }
     if (url.pathname === "/api/models/check") {
       checked = {
         run_id: CHECK,
@@ -427,6 +460,160 @@ test("viewers see the profiles without checks or a lookup", async () => {
   await screen.findByRole("table");
   expect(screen.queryByRole("button", { name: /Check/ })).toBeNull();
   expect(screen.queryByRole("button", { name: "Add from OpenRouter" })).toBeNull();
+});
+
+const priceReads = () => calls("GET", "/api/models/prices").map((r) => new URL(r.url));
+
+const LISTED = {
+  profile: "listed",
+  source: "LiteLLM",
+  key: "cloud/eu/model-a",
+  checked: DAY,
+  input_usd: 2.75,
+  cached_usd: 2.75,
+  output_usd: 11,
+  cached_listed: false,
+  tier_from: 200_000,
+  problem: "the map did not answer in 5 s",
+  text: "LiteLLM list price for cloud/eu/model-a, fetched 2026-11-15",
+};
+
+function keyedProfiles() {
+  more = [
+    profile({ name: "listed", roles: [], price: null, price_key: "cloud/eu/model-a" }),
+    profile({ name: "missed", roles: [], price: null, price_key: "vendor-c/nope" }),
+    profile({ name: "bare", model: "router/muse-glimmer", roles: [], price: null }),
+  ];
+  prices = (search) =>
+    mapSays({
+      profiles: [
+        { name: "bare", listed: null, unlisted: null, candidates: [] },
+        { name: "listed", listed: LISTED, unlisted: null, candidates: [] },
+        {
+          name: "missed",
+          listed: null,
+          unlisted: "LiteLLM lists no key vendor-c/nope",
+          candidates: [priceRow("vendor-c/model-c", { cached_usd: 0.002 })],
+        },
+      ],
+      found: search === "glimmer" ? [priceRow("fireworks_ai/muse-glimmer-30b")] : [],
+    });
+}
+
+const profileRow = (table: HTMLElement, name: string) =>
+  within(table).getByText(name).closest("tr") as HTMLTableRowElement;
+
+// The Price column's cell. A narrow screen shows the same in the profile's cell instead, which
+// jsdom renders too.
+const priceCell = (table: HTMLElement, name: string) =>
+  within(profileRow(table, name).cells[2] as HTMLElement);
+
+test("the models page shows each price and where it comes from", async () => {
+  keyedProfiles();
+  renderAt("/settings/models");
+  const table = await screen.findByRole("table");
+  const spark = priceCell(table, "spark");
+  expect(spark.getByText("$1.25 in · $0.15 cached · $4.25 out")).toBeTruthy();
+  expect(spark.getByText("own price")).toBeTruthy();
+  const listed = priceCell(table, "listed");
+  expect(listed.getByText("Reading the price map")).toBeTruthy();
+  expect(await listed.findByText("$2.75 in · $2.75 cached · $11.00 out")).toBeTruthy();
+  expect(listed.getByText("cloud/eu/model-a")).toBeTruthy();
+  expect(
+    listed.getByText(
+      "fetched 2026-11-15 · no cached price listed, so cached input counts as input · more past 200,000 tokens · could not be read again",
+    ),
+  ).toBeTruthy();
+  const missed = priceCell(table, "missed");
+  expect(missed.getByText("LiteLLM lists no key vendor-c/nope")).toBeTruthy();
+  expect(missed.getByRole("button", { name: "Find a price key for missed" })).toBeTruthy();
+  const glimmer = priceCell(table, "glimmer");
+  expect(glimmer.getByText("estimates leave out its calls")).toBeTruthy();
+  expect(glimmer.getByRole("button", { name: "Find a price key for glimmer" })).toBeTruthy();
+  // a narrow screen shows the price and the button under the profile's name
+  const narrow = within(profileRow(table, "glimmer").cells[0] as HTMLElement);
+  expect(narrow.getByRole("button", { name: "Find a price key for glimmer" })).toBeTruthy();
+  expect(priceReads()).toHaveLength(1);
+});
+
+test("a page with no profile that names a key reads no price map", async () => {
+  renderAt("/settings/models");
+  const table = await screen.findByRole("table");
+  expect(priceCell(table, "glimmer").getByText("none")).toBeTruthy();
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 20));
+  });
+  expect(priceReads()).toHaveLength(0);
+});
+
+test("a viewer finds a price key, copies its line and searches the map", async () => {
+  role = "viewer";
+  keyedProfiles();
+  const writeText = vi.fn<(text: string) => Promise<void>>(async () => undefined);
+  vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+  renderAt("/settings/models");
+  const table = await screen.findByRole("table");
+  fireEvent.click(
+    await priceCell(table, "missed").findByRole("button", { name: "Find a price key for missed" }),
+  );
+  const dialog = within(await screen.findByRole("dialog"));
+  expect(dialog.getByText("vendor-c/model-c")).toBeTruthy();
+  expect(dialog.getByText("$0.35 in · $0.002 cached · $1.50 out")).toBeTruthy();
+  expect(
+    dialog.getByText("From LiteLLM's price map, fetched 2026-11-15, in USD per million tokens."),
+  ).toBeTruthy();
+  fireEvent.click(
+    dialog.getByRole("button", { name: "Copy the price_key line for vendor-c/model-c" }),
+  );
+  await waitFor(() => expect(writeText).toHaveBeenCalledWith('price_key = "vendor-c/model-c"'));
+  expect(await dialog.findByText("Copied")).toBeTruthy();
+
+  const search = dialog.getByRole("textbox", { name: "Search keys" });
+  fireEvent.change(search, { target: { value: " glimmer " } });
+  fireEvent.click(dialog.getByRole("button", { name: "Search" }));
+  expect(await dialog.findByText("fireworks_ai/muse-glimmer-30b")).toBeTruthy();
+  expect(priceReads().map((u) => u.searchParams.get("search"))).toEqual([null, "glimmer"]);
+  fireEvent.change(search, { target: { value: "nothing" } });
+  fireEvent.click(dialog.getByRole("button", { name: "Search" }));
+  expect(await dialog.findByText("No row's key holds nothing.")).toBeTruthy();
+});
+
+test("a profile with no candidate rows asks for a search, and a missing map says why", async () => {
+  keyedProfiles();
+  renderAt("/settings/models");
+  const table = await screen.findByRole("table");
+  fireEvent.click(
+    priceCell(table, "bare").getByRole("button", { name: "Find a price key for bare" }),
+  );
+  let dialog = within(await screen.findByRole("dialog"));
+  expect(
+    await dialog.findByText("No row's key ends in muse-glimmer. Search instead."),
+  ).toBeTruthy();
+  cleanup();
+
+  const why = "no copy of the LiteLLM price map is at hand (the map did not answer in 5 s)";
+  prices = () =>
+    mapSays({
+      checked: null,
+      problem: "the map did not answer in 5 s",
+      profiles: [
+        { name: "bare", listed: null, unlisted: null, candidates: [] },
+        { name: "listed", listed: null, unlisted: why, candidates: [] },
+      ],
+    });
+  renderAt("/settings/models");
+  const again = await screen.findByRole("table");
+  expect(await priceCell(again, "listed").findByText(why)).toBeTruthy();
+  fireEvent.click(
+    priceCell(again, "bare").getByRole("button", { name: "Find a price key for bare" }),
+  );
+  dialog = within(await screen.findByRole("dialog"));
+  expect(
+    await dialog.findByText(
+      "No copy of LiteLLM's price map is at hand: the map did not answer in 5 s",
+    ),
+  ).toBeTruthy();
+  expect(dialog.queryByText(/Search instead/)).toBeNull();
 });
 
 const lookups = () => calls("GET", "/api/models/lookup").map((r) => new URL(r.url));

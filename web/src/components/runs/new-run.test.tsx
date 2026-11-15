@@ -128,6 +128,8 @@ beforeEach(() => {
             roles: ["agent"],
             envs: ["MODEL_API_KEY"],
             runners: ["local"],
+            price: { input: 1.25, cached: 0.15, output: 4.25 },
+            price_key: null,
             check: {
               run_id: "c1",
               started_at: "2026-10-31T09:00:00+00:00",
@@ -145,6 +147,8 @@ beforeEach(() => {
             envs: ["OTHER_KEY"],
             runners: [],
             check: null,
+            price: null,
+            price_key: null,
           },
         ],
       });

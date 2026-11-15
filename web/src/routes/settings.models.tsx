@@ -1,9 +1,10 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 
-import { modelsQuery, type ProfileInfo } from "@/api/launch";
+import { type ModelPrices, modelPricesQuery, modelsQuery, type ProfileInfo } from "@/api/launch";
 import { CHECK_TEXT, useModelCheck } from "@/components/model-check";
 import { ModelLookup } from "@/components/settings/model-lookup";
+import { figures, PriceKeys, rowNotes, Slashed } from "@/components/settings/price-keys";
 import { Button } from "@/components/ui/button";
 import { started } from "@/lib/format";
 import { checkProblem, checkState } from "@/lib/launch";
@@ -18,10 +19,20 @@ export const Route = createFileRoute("/settings/models")({
 const running = (profiles: readonly ProfileInfo[]) =>
   profiles.some((p) => p.check?.status === "running");
 
+// A profile that names a row of LiteLLM's price map and sets no price of its own.
+const keyed = (p: ProfileInfo) => p.price === null && p.price_key !== null;
+
+type Prices = UseQueryResult<ModelPrices>;
+
 function Models() {
   const models = useQuery({
     ...modelsQuery,
     refetchInterval: (q) => (q.state.data && running(q.state.data.profiles) ? 3000 : false),
+  });
+  // the map is read only when a profile names a key in it
+  const prices = useQuery({
+    ...modelPricesQuery(),
+    enabled: models.data?.profiles.some(keyed) ?? false,
   });
   const operator = useOperator();
   const { checking, problem, check } = useModelCheck();
@@ -68,6 +79,7 @@ function Models() {
           <tr className="border-b">
             <th className="py-1 pr-4 font-normal">Profile</th>
             <th className="py-1 pr-4 font-normal max-sm:hidden">Model</th>
+            <th className="py-1 pr-4 font-normal max-sm:hidden">Price per million tokens</th>
             <th className="py-1 pr-4 font-normal max-md:hidden">Keys</th>
             <th className="py-1 pr-4 font-normal whitespace-nowrap">Last check</th>
             {operator && (
@@ -82,6 +94,7 @@ function Models() {
             <Row
               key={p.name}
               p={p}
+              prices={prices}
               checking={checking?.includes(p.name) ?? false}
               busy={checking !== null}
               operator={operator}
@@ -96,12 +109,14 @@ function Models() {
 
 function Row({
   p,
+  prices,
   checking,
   busy,
   operator,
   onCheck,
 }: {
   p: ProfileInfo;
+  prices: Prices;
   checking: boolean;
   busy: boolean;
   operator: boolean;
@@ -117,12 +132,19 @@ function Row({
           <span className="text-muted-foreground ml-2">{p.roles.join(", ")}</span>
         )}
         <span className="text-muted-foreground block sm:hidden">{p.model}</span>
+        {/* the Price column is hidden on a narrow screen */}
+        <div className="mt-1 sm:hidden">
+          <Price p={p} prices={prices} />
+        </div>
       </td>
       <td className="py-1.5 pr-4 max-sm:hidden">
         <span className="font-mono">{p.model}</span>
         <span className="text-muted-foreground block">
           {p.backend} · weights {p.weights} · reasoning {p.reasoning}
         </span>
+      </td>
+      <td className="py-1.5 pr-4 max-sm:hidden">
+        <Price p={p} prices={prices} />
       </td>
       <td className="py-1.5 pr-4 max-md:hidden">
         {p.envs.length === 0 ? (
@@ -172,5 +194,71 @@ function Row({
         </td>
       )}
     </tr>
+  );
+}
+
+const listedOf = (p: ProfileInfo, prices: Prices) =>
+  prices.data?.profiles.find((x) => x.name === p.name)?.listed ?? null;
+
+// The price a profile has and where it comes from: its own, LiteLLM's list price for the key it
+// names, or none, with rows of the map to name in its price_key.
+function Price({ p, prices }: { p: ProfileInfo; prices: Prices }) {
+  if (p.price) {
+    return (
+      <>
+        <span className="lg:whitespace-nowrap">{figures(p.price)}</span>
+        <span className="text-muted-foreground block">own price</span>
+      </>
+    );
+  }
+  if (p.price_key === null) {
+    return (
+      <>
+        <span>none</span>
+        <span className="text-muted-foreground block">estimates leave out its calls</span>
+        <PriceKeys profile={p} />
+      </>
+    );
+  }
+  const key = (
+    <span className="text-muted-foreground block wrap-anywhere">
+      LiteLLM{" "}
+      <span className="font-mono">
+        <Slashed text={p.price_key} />
+      </span>
+    </span>
+  );
+  const l = listedOf(p, prices);
+  if (l) {
+    const notes = [`fetched ${l.checked.slice(0, 10)}`, ...rowNotes(l)];
+    if (l.problem) notes.push("could not be read again");
+    return (
+      <>
+        <span className="lg:whitespace-nowrap">
+          {figures({ input: l.input_usd, cached: l.cached_usd, output: l.output_usd })}
+        </span>
+        {key}
+        <span className="text-muted-foreground block">{notes.join(" · ")}</span>
+      </>
+    );
+  }
+  if (prices.isPending) {
+    return (
+      <>
+        {key}
+        <span className="text-muted-foreground block">Reading the price map</span>
+      </>
+    );
+  }
+  const why = prices.isError
+    ? "The price map did not load."
+    : (prices.data?.profiles.find((x) => x.name === p.name)?.unlisted ?? "No list price.");
+  return (
+    <>
+      <span>none</span>
+      {key}
+      <span className="text-muted-foreground block">{why}</span>
+      <PriceKeys profile={p} />
+    </>
   );
 }

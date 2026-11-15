@@ -241,6 +241,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/models/prices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Model Prices
+         * @description The list price of each profile that names a key in LiteLLM's price map and sets no
+         *     price, the rows that may price each one that has none, and the rows whose key holds
+         *     `search`. The map is read only for a profile with no price or a search.
+         */
+        get: operations["model_prices"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/prompts": {
         parameters: {
             query?: never;
@@ -4420,6 +4442,25 @@ export interface components {
             top_p?: number | null;
         };
         /**
+         * ModelPrices
+         * @description What `source`'s price map says of the profiles that set no price, and its rows that
+         *     hold the search text in `found`. `checked` is when the copy at hand was last confirmed
+         *     current, None when the map was not read or no copy is at hand. `problem` says why the copy
+         *     could not be confirmed current, or why there is none.
+         */
+        ModelPrices: {
+            /** Checked */
+            checked: string | null;
+            /** Found */
+            found: components["schemas"]["PriceRow"][];
+            /** Problem */
+            problem: string | null;
+            /** Profiles */
+            profiles: components["schemas"]["ProfilePrice"][];
+            /** Source */
+            source: string;
+        };
+        /**
          * ModelRequest
          * @description Written before the HTTP request of one attempt is sent.
          *
@@ -5334,6 +5375,27 @@ export interface components {
             /** Output */
             output: number;
         };
+        /**
+         * PriceRow
+         * @description A row of a price map: its key and its price in USD per million tokens.
+         *     `cached_listed` is false when the row lists no cached input price, so cached input counts
+         *     at the input price. `tier_from` is the prompt size in tokens from which the row lists a
+         *     higher price.
+         */
+        PriceRow: {
+            /** Cached Listed */
+            cached_listed: boolean;
+            /** Cached Usd */
+            cached_usd: number;
+            /** Input Usd */
+            input_usd: number;
+            /** Key */
+            key: string;
+            /** Output Usd */
+            output_usd: number;
+            /** Tier From */
+            tier_from: number | null;
+        };
         /** Problem */
         Problem: {
             /**
@@ -5712,6 +5774,9 @@ export interface components {
             model: string;
             /** Name */
             name: string;
+            price: components["schemas"]["Price"] | null;
+            /** Price Key */
+            price_key: string | null;
             /** Reasoning */
             reasoning: string;
             /** Roles */
@@ -5720,6 +5785,21 @@ export interface components {
             runners: string[];
             /** Weights */
             weights: string;
+        };
+        /**
+         * ProfilePrice
+         * @description What the price map says of profile `name`, which sets no price: `listed` the list
+         *     price of the key it names, `unlisted` why that key got none, and `candidates` the rows that
+         *     may price it when it got none, for its `price_key`.
+         */
+        ProfilePrice: {
+            /** Candidates */
+            candidates: components["schemas"]["PriceRow"][];
+            listed: components["schemas"]["ListedPrice"] | null;
+            /** Name */
+            name: string;
+            /** Unlisted */
+            unlisted: string | null;
         };
         /**
          * Projection
@@ -9108,6 +9188,55 @@ export interface operations {
             };
             /** @description Bad gateway */
             502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    model_prices: {
+        parameters: {
+            query?: {
+                search?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelPrices"];
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid request */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

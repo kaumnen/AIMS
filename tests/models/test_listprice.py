@@ -1,6 +1,7 @@
 """A list price from LiteLLM's price map: the rows it reads, the exact key it matches, the
 candidates it offers, the read from the source and the copy it keeps."""
 
+import asyncio
 import gzip
 import json
 from datetime import UTC, datetime
@@ -10,7 +11,9 @@ from typing import Any
 import anyio
 import httpx2
 import pytest
+from typer.testing import CliRunner
 
+from aims.cli import app
 from aims.models import Price, Profile, ProfileError, load_models
 from aims.models import listprice as lp
 from aims.models.listprice import ListError, NoPrice, PriceList, PriceLists, cache_dir, fetch, parse
@@ -185,10 +188,38 @@ def test_candidates_are_the_priced_rows_of_a_model_shortest_first() -> None:
         "host/accounts/host/models/model-b"
     ]
     assert PRICES.candidates("model-b") == ["host/accounts/host/models/model-b"]
+    assert PRICES.candidates("Model-A") == ["model-a", "cloud/eu/model-a"]
     assert PRICES.candidates("odel-a") == []
-    assert PRICES.candidates("Model-A") == []
     assert PRICES.candidates("image") == []
     assert PRICES.candidates("") == []
+    assert PRICES.candidates("vendor-a/") == []
+
+
+def test_candidates_for_a_routed_id_add_the_rows_of_its_last_part() -> None:
+    assert PRICES.candidates("router/vendor-c/model-c") == ["vendor-c/model-c"]
+    assert PRICES.candidates("vendor-a/model-a") == ["model-a", "cloud/eu/model-a"]
+    # the rows that name the whole id come first, however long
+    assert PRICES.candidates("eu/model-a") == ["cloud/eu/model-a", "model-a"]
+
+
+def test_candidates_and_a_search_leave_out_a_key_no_profile_can_name() -> None:
+    row = {"mode": "chat", "input_cost_per_token": 1e-6, "output_cost_per_token": 1e-6}
+    odd = PriceList({"a b/m": row, "caf\u00e9/m": row, "ok/m": row}, WHEN)
+    assert odd.candidates("m") == ["ok/m"]
+    assert odd.search("/m") == ["ok/m"]
+
+
+def test_a_search_finds_the_priced_rows_whose_key_holds_the_text() -> None:
+    assert PRICES.search(" MODEL-A ") == ["model-a", "cloud/eu/model-a"]
+    assert PRICES.search("model-") == [
+        "model-a",
+        "cloud/eu/model-a",
+        "vendor-c/model-c",
+        "vendor-d/model-d",
+        "host/accounts/host/models/model-b",
+    ]
+    assert PRICES.search("unpriced") == []
+    assert PRICES.search("  ") == []
 
 
 def test_candidates_stop_at_a_count() -> None:
@@ -197,6 +228,7 @@ def test_candidates_stop_at_a_count() -> None:
     found = many.candidates("m")
     assert len(found) == lp.MAX_CANDIDATES
     assert found[0] == "p000/m"
+    assert many.search("/m") == found
 
 
 def test_parse_takes_only_a_map_of_enough_rows() -> None:
@@ -489,3 +521,159 @@ def test_a_layer_sets_the_price_key_of_a_profile_below_it(tmp_path: Path) -> Non
     project.write_text('[profiles.p]\nprice_key = "a b"\n')
     with pytest.raises(ProfileError, match="price_key"):
         load_models(user, project)
+
+
+def profile(name: str, model: str, **kw: Any) -> Profile:
+    return Profile.model_validate({**TABLE, "name": name, "model": model, **kw})
+
+
+OWN = profile("own", "model-a", price={"input": 1, "cached": 1, "output": 1})
+KEYED = profile("keyed", "model-a", price_key="cloud/eu/model-a")
+MISSED = profile("missed", "vendor-c/model-c", price_key="vendor-c/nope")
+BARE = profile("bare", "router/model-b")
+
+
+async def test_a_survey_prices_the_keys_and_offers_rows_for_the_rest(tmp_path: Path) -> None:
+    seen: list[httpx2.Request] = []
+    held = lists(tmp_path / lp.FILE, [START], seen, ok())
+    found = await lp.survey([OWN, KEYED, MISSED, BARE], held, "model-d")
+    assert found.checked == WHEN
+    assert found.listing.find(KEYED) == PRICES.get("cloud/eu/model-a")
+    assert found.listing.why(MISSED) == "LiteLLM lists no key vendor-c/nope"
+    assert found.listing.problem is None
+    assert {name: [r.key for r in rows] for name, rows in found.candidates.items()} == {
+        "missed": ["vendor-c/model-c"],
+        "bare": ["host/accounts/host/models/model-b"],
+    }
+    assert found.candidates["bare"][0] == PRICES.get("host/accounts/host/models/model-b")
+    assert [r.key for r in found.found] == ["vendor-d/model-d"]
+    assert len(seen) == 1
+
+
+async def test_a_survey_reads_no_map_for_priced_profiles_and_no_search(tmp_path: Path) -> None:
+    seen: list[httpx2.Request] = []
+    held = lists(tmp_path / lp.FILE, [START], seen)
+    assert await lp.survey([OWN], held, "  ") == lp.Survey()
+    assert seen == []
+    found = await lp.survey([OWN], lists(tmp_path / lp.FILE, [START], seen, ok()), "model-c")
+    assert [r.key for r in found.found] == ["vendor-c/model-c"]
+    assert found.candidates == {}
+    assert len(seen) == 1
+
+
+async def test_a_survey_without_a_map_says_why(tmp_path: Path) -> None:
+    seen: list[httpx2.Request] = []
+    held = lists(tmp_path / lp.FILE, [START], seen, httpx2.Response(503))
+    found = await lp.survey([KEYED, BARE], held, "model")
+    assert found.checked is None
+    assert (found.candidates, found.found) == ({}, [])
+    assert found.listing.problem == f"{lp.URL} answered 503"
+    assert found.listing.why(KEYED) == (
+        f"no copy of the LiteLLM price map is at hand ({lp.URL} answered 503)"
+    )
+
+
+CONFIG = """
+[profiles.listed]
+backend = "chat"
+base_url = "https://example.com/v1"
+model = "model-a"
+weights = "listed-weights"
+reasoning = "none"
+price_key = "cloud/eu/model-a"
+
+[profiles.missed]
+extends = "listed"
+model = "vendor-c/model-c"
+price_key = "vendor-c/nope"
+
+[profiles.bare]
+backend = "chat"
+base_url = "https://example.com/v1"
+model = "router/model-b"
+weights = "bare-weights"
+reasoning = "none"
+
+[profiles.lost]
+extends = "bare"
+model = "nothing-like-it"
+
+[profiles.own]
+extends = "bare"
+price = { input = 1.0, cached = 0.1, output = 2.0 }
+"""
+
+
+def cli(tmp_path: Path, *args: str) -> Any:
+    path = tmp_path / "aims.toml"
+    path.write_text(CONFIG)
+    return CliRunner().invoke(app, ["models", *args, "--config", str(path)])
+
+
+def test_aims_models_list_says_where_each_price_comes_from(tmp_path: Path) -> None:
+    out = cli(tmp_path, "list")
+    assert out.exit_code == 0, out.output
+    lines = {line.split("  ")[0]: line for line in out.stdout.splitlines()}
+    assert "  price LiteLLM cloud/eu/model-a  " in lines["listed"]
+    assert "  no price  " in lines["bare"]
+    assert "  price own  " in lines["own"]
+    assert not PriceLists().path.exists()
+
+
+def test_aims_models_prices_shows_each_price_and_the_rows_for_the_rest(tmp_path: Path) -> None:
+    seen: list[httpx2.Request] = []
+    kept = asyncio.run(PriceLists(transport=served(seen, ok())).get()).prices
+    assert kept is not None
+    day = f"{kept.checked:%Y-%m-%d}"
+    out = cli(tmp_path, "prices", "own", "listed", "missed", "bare", "lost", "--search", "model-d")
+    assert out.exit_code == 0, out.output
+    assert out.stdout.splitlines() == [
+        "Profile bare: no price, so estimates leave out its calls.",
+        "  Rows that may price it; name one as its price_key:",
+        "  host/accounts/host/models/model-b  $0.15 input, $0.0020 cached, $4.25 output",
+        f"Profile listed: LiteLLM list price for cloud/eu/model-a, fetched {day}: $2.75 input,"
+        " $2.75 cached, $11.00 output per million tokens. It lists no cached input price, so"
+        " cached input counts at the input price.",
+        "Profile lost: no price, so estimates leave out its calls.",
+        "  No row's key ends in nothing-like-it; try --search.",
+        "Profile missed: no price: LiteLLM lists no key vendor-c/nope, so estimates leave out"
+        " its calls.",
+        "  Rows that may price it; name one as its price_key:",
+        "  vendor-c/model-c  $0.30 input, $0.0300 cached, $2.50 output (more past 200,000 prompt"
+        " tokens)",
+        "Profile own: own price: $1.00 input, $0.10 cached, $2.00 output per million tokens.",
+        "Rows whose key holds model-d:",
+        "  vendor-d/model-d  $0.0500 input, $0.0500 cached, $0.40 output (no cached price"
+        " listed; more past 256,000 prompt tokens)",
+        f"From LiteLLM's price map, fetched {day}.",
+    ]
+    assert len(seen) == 1
+
+
+def test_aims_models_prices_reads_no_map_for_priced_profiles(tmp_path: Path) -> None:
+    out = cli(tmp_path, "prices", "own")
+    assert out.exit_code == 0, out.output
+    assert out.stdout.splitlines() == [
+        "Profile own: own price: $1.00 input, $0.10 cached, $2.00 output per million tokens."
+    ]
+    assert not PriceLists().path.exists()
+    out = cli(tmp_path, "prices", "nope")
+    assert out.exit_code == 1
+    assert "unknown profile" in out.output
+
+
+def test_aims_models_prices_without_a_map_says_why(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def down(*_: object) -> Any:
+        raise ListError("down")
+
+    monkeypatch.setattr(lp, "fetch", down)
+    out = cli(tmp_path, "prices", "listed", "bare", "--search", "model")
+    assert out.exit_code == 0, out.output
+    assert out.stdout.splitlines() == [
+        "Profile bare: no price, so estimates leave out its calls.",
+        "Profile listed: no price: no copy of the LiteLLM price map is at hand (down), so"
+        " estimates leave out its calls.",
+    ]
+    assert "warning: no copy of LiteLLM's price map is at hand: down" in out.stderr

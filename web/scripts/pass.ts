@@ -123,7 +123,8 @@ try {
     serverDir: opts["server-dir"],
     auth: true,
     cwd: project,
-    env: { AIMS_CONFIG_DIR: config },
+    // a scratch cache, so a read of LiteLLM's price map lands outside this machine's own
+    env: { AIMS_CONFIG_DIR: config, AIMS_CACHE_DIR: join(dir, "cache") },
     prefix: "aims-pass-",
   });
   const { url, seeded, env, operator } = server;

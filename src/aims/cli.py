@@ -339,7 +339,102 @@ def models_list(config: ConfigOption = None) -> None:
         unset = [e for e in envs if not os.environ.get(e)]
         state = f"unset {', '.join(unset)}" if unset else "ready"
         role = f"  [{', '.join(roles[name])}]" if name in roles else ""
-        _echo(f"{name}  {p.backend}  {p.model}  reasoning {p.reasoning}  {state}{role}")
+        price = _price_source(p)
+        _echo(f"{name}  {p.backend}  {p.model}  reasoning {p.reasoning}  {price}  {state}{role}")
+
+
+def _price_source(p: Any) -> str:
+    """Where profile `p`'s price comes from, as its config says, without reading a map."""
+    from aims.models.listprice import SOURCE
+
+    if p.price is not None:
+        return "price own"
+    return "no price" if p.price_key is None else f"price {SOURCE} {p.price_key}"
+
+
+@models_app.command("prices")
+def models_prices(
+    profiles: Annotated[
+        list[str] | None, typer.Argument(help="Profiles to show. By default all of them.")
+    ] = None,
+    search: Annotated[
+        str | None,
+        typer.Option(help="Also list the price map's rows whose key holds this text."),
+    ] = None,
+    config: ConfigOption = None,
+) -> None:
+    """Show each profile's price and where it comes from. For a profile with no price, list the
+    rows of LiteLLM's price map that may price it, to name one in its price_key."""
+    import asyncio
+
+    from aims.models import ProfileError
+    from aims.models.listprice import SOURCE, PriceLists, survey
+
+    models = _settings(config).models
+    try:
+        chosen = [models.get(n) for n in profiles] if profiles else list(models.profiles.values())
+    except ProfileError as e:
+        _echo(f"error: {e}", err=True)
+        raise typer.Exit(1) from None
+    chosen = sorted(chosen, key=lambda p: p.name)
+    found = asyncio.run(survey(chosen, PriceLists(), search or ""))
+    for p in chosen:
+        for line in _price_lines(p, found):
+            _echo(line)
+    text = (search or "").strip()
+    if text and found.checked is not None:
+        _echo(f"Rows whose key holds {text}:" if found.found else f"No row's key holds {text}.")
+        for line in _row_lines(found.found):
+            _echo(line)
+    if found.checked is not None:
+        _echo(f"From {SOURCE}'s price map, fetched {found.checked:%Y-%m-%d}.")
+    if (problem := found.listing.problem) is not None:
+        if found.checked is None:
+            _echo(f"warning: no copy of {SOURCE}'s price map is at hand: {problem}", err=True)
+        else:
+            _echo(f"warning: {SOURCE}'s price map could not be read again: {problem}", err=True)
+
+
+def _price_lines(p: Any, found: Any) -> list[str]:
+    from aims.run.estimate import listed_line, listed_price, usd
+
+    if p.price is not None:
+        x = p.price
+        return [
+            f"Profile {p.name}: own price: {usd(x.input)} input, {usd(x.cached)} cached,"
+            f" {usd(x.output)} output per million tokens."
+        ]
+    listed = found.listing.find(p)
+    if listed is not None:
+        return [listed_line(listed_price(p.name, listed))]
+    why = found.listing.why(p)
+    lines = [
+        f"Profile {p.name}: no price{'' if why is None else f': {why}'}, so estimates leave"
+        " out its calls."
+    ]
+    rows = found.candidates.get(p.name)
+    if rows:
+        lines.append("  Rows that may price it; name one as its price_key:")
+        lines += _row_lines(rows)
+    elif rows is not None:
+        lines.append(f"  No row's key ends in {p.model.rpartition('/')[2]}; try --search.")
+    return lines
+
+
+def _row_lines(rows: list[Any]) -> list[str]:
+    from aims.run.estimate import usd
+
+    lines = []
+    for r in rows:
+        x = r.price
+        notes = [] if r.cached_listed else ["no cached price listed"]
+        if r.tier_from is not None:
+            notes.append(f"more past {r.tier_from:,} prompt tokens")
+        note = f" ({'; '.join(notes)})" if notes else ""
+        lines.append(
+            f"  {r.key}  {usd(x.input)} input, {usd(x.cached)} cached, {usd(x.output)} output{note}"
+        )
+    return lines
 
 
 @models_app.command("check")

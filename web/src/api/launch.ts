@@ -9,6 +9,8 @@ export type Estimate = Schemas["Estimate"];
 export type ProfileInfo = Schemas["ProfileInfo"];
 export type ProfileCheck = Schemas["ProfileCheck"];
 export type ProfileDraft = Schemas["ProfileDraft"];
+export type ModelPrices = Schemas["ModelPrices"];
+export type PriceRow = Schemas["PriceRow"];
 export type Preset = NonNullable<StartRun["monitor"]>;
 export type Started = Schemas["Started"];
 
@@ -23,6 +25,24 @@ export const modelsQuery = queryOptions({
   },
   staleTime: 30_000,
 });
+
+// What LiteLLM's price map says of the profiles that set no price, and its rows whose key holds
+// `search`. The server reads the map only for such a profile or a search, and keeps its copy a
+// day.
+export function modelPricesQuery(search = "") {
+  return queryOptions({
+    queryKey: ["models", "prices", search] as const,
+    queryFn: async ({ signal }) => {
+      const { data, error } = await client.GET("/api/models/prices", {
+        params: { query: search ? { search } : {} },
+        signal,
+      });
+      if (error) throw error;
+      return data;
+    },
+    staleTime: 5 * 60_000,
+  });
+}
 
 export interface EstimateAsk {
   source: string;

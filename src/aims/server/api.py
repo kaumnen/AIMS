@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator, Iterator, Sequence
 from compression import zstd
 from contextlib import nullcontext
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import IO, Annotated, Literal, Self, cast, get_args
 
@@ -50,9 +51,9 @@ from aims.events.blobs import ZSTD_MAGIC, BlobError, BlobStore
 from aims.events.index import BIND_MAX, monitor_of
 from aims.events.schema import blob_refs
 from aims.events.store import is_run_id
-from aims.models import Profile, ProfileError
+from aims.models import Price, Profile, ProfileError
 from aims.models.check import Verdict
-from aims.models.listprice import PriceLists
+from aims.models.listprice import SOURCE, ListPrice, PriceLists, survey
 from aims.models.openrouter import CatalogError, Draft, draft
 from aims.monitor import sweep_texts
 from aims.monitor import texts as monitor_texts
@@ -60,7 +61,15 @@ from aims.monitor.config import MonitorConfigError, Preset
 from aims.monitor.setup import ResolvedMonitor
 from aims.prompts import PLACEHOLDERS, AgentTexts, Prompts, TextError, load_prompts
 from aims.run import selftest
-from aims.run.estimate import Estimate, History, estimate_fork, estimate_runs, needs_confirm
+from aims.run.estimate import (
+    Estimate,
+    History,
+    ListedPrice,
+    estimate_fork,
+    estimate_runs,
+    listed_price,
+    needs_confirm,
+)
 from aims.run.fork import (
     CutAt,
     Origin,
@@ -1811,6 +1820,8 @@ class ProfileInfo(Out):
     envs: list[str]
     runners: list[str]
     check: ProfileCheck | None = None
+    price: Price | None = None
+    price_key: str | None = None
 
 
 class ModelsInfo(Out):
@@ -1842,9 +1853,93 @@ async def list_models(principal: Viewer, state: State) -> ModelsInfo:
                 envs=envs,
                 runners=sorted(ready),
                 check=checks.get(name),
+                price=p.price,
+                price_key=p.price_key,
             )
         )
     return ModelsInfo(profiles=out, roles=models.roles.model_dump())
+
+
+class PriceRow(Out):
+    """A row of a price map: its key and its price in USD per million tokens.
+    `cached_listed` is false when the row lists no cached input price, so cached input counts
+    at the input price. `tier_from` is the prompt size in tokens from which the row lists a
+    higher price."""
+
+    key: str
+    input_usd: float
+    cached_usd: float
+    output_usd: float
+    cached_listed: bool
+    tier_from: int | None = None
+
+
+def _row(r: ListPrice) -> PriceRow:
+    return PriceRow(
+        key=r.key,
+        input_usd=r.price.input,
+        cached_usd=r.price.cached,
+        output_usd=r.price.output,
+        cached_listed=r.cached_listed,
+        tier_from=r.tier_from,
+    )
+
+
+class ProfilePrice(Out):
+    """What the price map says of profile `name`, which sets no price: `listed` the list
+    price of the key it names, `unlisted` why that key got none, and `candidates` the rows that
+    may price it when it got none, for its `price_key`."""
+
+    name: str
+    listed: ListedPrice | None = None
+    unlisted: str | None = None
+    candidates: list[PriceRow]
+
+
+class ModelPrices(Out):
+    """What `source`'s price map says of the profiles that set no price, and its rows that
+    hold the search text in `found`. `checked` is when the copy at hand was last confirmed
+    current, None when the map was not read or no copy is at hand. `problem` says why the copy
+    could not be confirmed current, or why there is none."""
+
+    source: str
+    checked: datetime | None = None
+    problem: str | None = None
+    profiles: list[ProfilePrice]
+    found: list[PriceRow]
+
+
+@router.get("/models/prices", tags=["models"])
+async def model_prices(
+    principal: Viewer,
+    state: State,
+    search: Annotated[Utf8 | None, Query(max_length=200)] = None,
+) -> ModelPrices:
+    """The list price of each profile that names a key in LiteLLM's price map and sets no
+    price, the rows that may price each one that has none, and the rows whose key holds
+    `search`. The map is read only for a profile with no price or a search."""
+    models = state.config.settings().models
+    unpriced = [p for _, p in sorted(models.profiles.items()) if p.price is None]
+    found = await survey(unpriced, state.prices, search or "")
+    listing = found.listing
+    out = []
+    for p in unpriced:
+        listed = listing.find(p)
+        out.append(
+            ProfilePrice(
+                name=p.name,
+                listed=None if listed is None else listed_price(p.name, listed, listing.problem),
+                unlisted=listing.why(p),
+                candidates=[_row(r) for r in found.candidates.get(p.name, [])],
+            )
+        )
+    return ModelPrices(
+        source=SOURCE,
+        checked=found.checked,
+        problem=listing.problem,
+        profiles=out,
+        found=[_row(r) for r in found.found],
+    )
 
 
 CHECK_RUNS = 100

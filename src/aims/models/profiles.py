@@ -92,11 +92,11 @@ def _headers(value: dict[str, str]) -> dict[str, str]:
 
 Headers = Annotated[dict[str, str], AfterValidator(_headers)]
 
-_PRICE_KEY = re.compile(r"[\x21-\x7e]{1,200}")
+PRICE_KEY = re.compile(r"[\x21-\x7e]{1,200}")
 
 
 def _price_key(value: str) -> str:
-    if not _PRICE_KEY.fullmatch(value):
+    if not PRICE_KEY.fullmatch(value):
         raise ValueError("price_key takes 1 to 200 printable ASCII characters and no space")
     return value
 

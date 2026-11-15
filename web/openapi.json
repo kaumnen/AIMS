@@ -7321,6 +7321,61 @@
         "title": "ModelParams",
         "type": "object"
       },
+      "ModelPrices": {
+        "description": "What `source`'s price map says of the profiles that set no price, and its rows that\nhold the search text in `found`. `checked` is when the copy at hand was last confirmed\ncurrent, None when the map was not read or no copy is at hand. `problem` says why the copy\ncould not be confirmed current, or why there is none.",
+        "properties": {
+          "checked": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checked"
+          },
+          "found": {
+            "items": {
+              "$ref": "#/components/schemas/PriceRow"
+            },
+            "title": "Found",
+            "type": "array"
+          },
+          "problem": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Problem"
+          },
+          "profiles": {
+            "items": {
+              "$ref": "#/components/schemas/ProfilePrice"
+            },
+            "title": "Profiles",
+            "type": "array"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "checked",
+          "problem",
+          "profiles",
+          "found"
+        ],
+        "title": "ModelPrices",
+        "type": "object"
+      },
       "ModelRequest": {
         "additionalProperties": false,
         "description": "Written before the HTTP request of one attempt is sent.\n\n`body` holds the bytes sent, less `cache_key`, RFC 8785 canonical JSON, so `key`, the sha256\nof the canonical body, is also the blob's hash. Headers and keys are never recorded.\n`queued_ms` is the wait for the rate limiter and the concurrency cap before the request went\nout. `role` marks a call the monitor made: a sweep, the judge, or a review; None is an\nagent's call.\n`cache_key` is the request's `prompt_cache_key`, which only routes it to a prompt cache,\nNone when none went with it. It names the run, so a replay could not match a body that\nheld it.",
@@ -9527,6 +9582,52 @@
         "title": "Price",
         "type": "object"
       },
+      "PriceRow": {
+        "description": "A row of a price map: its key and its price in USD per million tokens.\n`cached_listed` is false when the row lists no cached input price, so cached input counts\nat the input price. `tier_from` is the prompt size in tokens from which the row lists a\nhigher price.",
+        "properties": {
+          "cached_listed": {
+            "title": "Cached Listed",
+            "type": "boolean"
+          },
+          "cached_usd": {
+            "title": "Cached Usd",
+            "type": "number"
+          },
+          "input_usd": {
+            "title": "Input Usd",
+            "type": "number"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "output_usd": {
+            "title": "Output Usd",
+            "type": "number"
+          },
+          "tier_from": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tier From"
+          }
+        },
+        "required": [
+          "key",
+          "input_usd",
+          "cached_usd",
+          "output_usd",
+          "cached_listed",
+          "tier_from"
+        ],
+        "title": "PriceRow",
+        "type": "object"
+      },
       "Problem": {
         "additionalProperties": true,
         "properties": {
@@ -10470,6 +10571,27 @@
             "title": "Name",
             "type": "string"
           },
+          "price": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Price"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "price_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Key"
+          },
           "reasoning": {
             "title": "Reasoning",
             "type": "string"
@@ -10502,9 +10624,56 @@
           "roles",
           "envs",
           "runners",
-          "check"
+          "check",
+          "price",
+          "price_key"
         ],
         "title": "ProfileInfo",
+        "type": "object"
+      },
+      "ProfilePrice": {
+        "description": "What the price map says of profile `name`, which sets no price: `listed` the list\nprice of the key it names, `unlisted` why that key got none, and `candidates` the rows that\nmay price it when it got none, for its `price_key`.",
+        "properties": {
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/PriceRow"
+            },
+            "title": "Candidates",
+            "type": "array"
+          },
+          "listed": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ListedPrice"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "unlisted": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unlisted"
+          }
+        },
+        "required": [
+          "name",
+          "listed",
+          "unlisted",
+          "candidates"
+        ],
+        "title": "ProfilePrice",
         "type": "object"
       },
       "Projection": {
@@ -18419,6 +18588,77 @@
           }
         },
         "summary": "Lookup Model",
+        "tags": [
+          "models"
+        ]
+      }
+    },
+    "/api/models/prices": {
+      "get": {
+        "description": "The list price of each profile that names a key in LiteLLM's price map and sets no\nprice, the rows that may price each one that has none, and the rows whose key holds\n`search`. The map is read only for a profile with no price or a search.",
+        "operationId": "model_prices",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Search"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelPrices"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not signed in"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Invalid request"
+          }
+        },
+        "summary": "Model Prices",
         "tags": [
           "models"
         ]
