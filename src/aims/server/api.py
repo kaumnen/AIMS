@@ -52,7 +52,7 @@ from aims.events.index import BIND_MAX, monitor_of
 from aims.events.schema import blob_refs
 from aims.events.store import is_run_id
 from aims.models import Price, Profile, ProfileError
-from aims.models.check import Verdict
+from aims.models.check import Verdict, to_check
 from aims.models.listprice import SOURCE, Listing, ListPrice, PriceLists, survey
 from aims.models.openrouter import CatalogError, Draft, draft
 from aims.models.profiles import Role as ModelRole
@@ -2055,11 +2055,12 @@ class ModelsCheck(BaseModel):
 async def check_models(
     body: ModelsCheck, principal: Operator, state: State, note: audit.Note
 ) -> Started:
-    """Small requests to each profile's provider, run on a runner and recorded as a run."""
+    """Small requests to each profile's provider, run on a runner and recorded as a run. With
+    no profiles it checks those the roles name."""
     note.target = ", ".join(body.profiles) or None
     models = state.config.settings().models
     try:
-        chosen = [models.get(n) for n in body.profiles] or [models.role("agent")]
+        chosen = to_check(models, body.profiles)
     except ProfileError as e:
         raise ProblemException(422, "Invalid request", str(e), code="profile") from None
     note.target = ", ".join(p.name for p in chosen)

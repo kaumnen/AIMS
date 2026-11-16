@@ -446,7 +446,10 @@ def _row_lines(rows: list[Any]) -> list[str]:
 
 @models_app.command("check")
 def models_check(
-    profiles: Annotated[list[str] | None, typer.Argument(help="Profiles to check.")] = None,
+    profiles: Annotated[
+        list[str] | None,
+        typer.Argument(help="Profiles to check. By default those the roles name."),
+    ] = None,
     config: ConfigOption = None,
     runs_dir: RunsDirOption = Path("runs"),
 ) -> None:
@@ -455,16 +458,20 @@ def models_check(
     import uuid
 
     from aims.models import ProfileError
+    from aims.models.check import to_check
 
     models = _settings(config).models
     try:
-        chosen = [models.get(n) for n in profiles] if profiles else [models.role("agent")]
+        chosen = to_check(models, profiles or [])
         for p in chosen:
             p.url()
             p.api_key()
     except ProfileError as e:
         _echo(f"error: {e}", err=True)
         raise typer.Exit(1) from None
+    if not profiles and (unset := models.roles.unset()):
+        its = "them" if len(unset) > 1 else "it"
+        _echo(f"note: unset roles: {', '.join(unset)}; no profile is checked for {its}", err=True)
     run_id = str(uuid.uuid7())
     try:
         failed = asyncio.run(_check(models, chosen, runs_dir, run_id))

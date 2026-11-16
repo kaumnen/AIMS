@@ -19,6 +19,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 ### Changed
 
+- `aims models check` with no names checks the profiles the roles name, each once. It checked only the agent role's profile. It notes the roles that are unset. With no role set it stops and says to name the profiles or set the roles. `POST /api/models/check` with no `profiles` checks the same profiles.
 - Compose runs the server in `/data`, so the project's `aims.toml` is `/data/aims.toml` on the server's volume. Saving the project layer under Settings > Config failed with 403, since the server's root is read-only. Add from OpenRouter under Settings > Models saves to the same file.
 - `aims scenario check` passes a scenario when a role it needs is unset. It prints a note with the fix for each agent and monitor that needs the role. The estimate waits until the roles are set. A profile that the scenario or `[monitor]` names and that does not exist is still an error. The new `--monitor` takes the presets of `aims run`, so `--monitor signals --profile p` checks the run you mean to make.
 - The scenario editor's check gives an unset role as a note, as `aims scenario check` does. It also checks the monitor. `POST /api/scenarios/check` returns the notes in a new `notes` field. Its new `monitor` takes the presets of `aims run`. The check warned of the unset agent role at each edit and never checked the monitor. Saving a scenario's texts no longer warns of an unset role.

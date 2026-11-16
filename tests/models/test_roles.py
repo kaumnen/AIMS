@@ -168,6 +168,49 @@ def test_models_list_and_the_merged_config_show_unset_roles(tmp_path: Path) -> N
     assert "[roles]\n# unset: sweep, judge\nagent = " in merged.stdout
 
 
+def test_models_check_with_no_names_checks_each_profile_a_role_names_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checked: list[str] = []
+
+    async def record(client: object, p: Any) -> list[Any]:
+        checked.append(p.name)
+        return []
+
+    monkeypatch.setattr("aims.models.check.check_profile", record)
+    toml, _ = project(tmp_path, PLAIN + WATCH)
+    check = ["models", "check", "--config", str(toml), "--runs-dir", str(tmp_path / "runs")]
+
+    def run(roles: str, *names: str) -> Any:
+        checked.clear()
+        toml.write_text(PLAIN + WATCH + roles)
+        return invoke(*check, *names)
+
+    both = run('[roles]\nagent = "plain"\nsweep = "watch"\njudge = "watch"\n')
+    assert both.exit_code == 0, both.output
+    assert checked == ["plain", "watch"]
+    assert "note:" not in both.output
+    agent = run('[roles]\nagent = "plain"\n')
+    assert agent.exit_code == 0, agent.output
+    assert checked == ["plain"]
+    assert "note: unset roles: sweep, judge; no profile is checked for them" in flat(agent.stderr)
+    judge = run('[roles]\njudge = "watch"\n')
+    assert judge.exit_code == 0, judge.output
+    assert checked == ["watch"]
+    assert "note: unset roles: agent, sweep; no profile is checked for them" in flat(judge.stderr)
+    named = run('[roles]\nagent = "plain"\n', "watch", "plain", "watch")
+    assert named.exit_code == 0, named.output
+    assert checked == ["watch", "plain"]
+    assert "note:" not in named.output
+    none = run("")
+    assert none.exit_code == 1
+    assert checked == []
+    assert (
+        "error: no profile has a role; name the profiles to check, or set roles under [roles]"
+        " in aims.toml"
+    ) in flat(none.stderr)
+
+
 ROLES = '[roles]\nagent = "scripted"\n'
 
 
@@ -223,7 +266,7 @@ async def test_the_api_shows_unset_roles_and_refuses_runs_that_need_them(cp: CP)
         assert "no profile has the sweep role" in r.json()["detail"]
         r = await c.post("/api/models/check", json={})
         assert (r.status_code, r.json()["code"]) == (422, "profile")
-        assert "set agent under [roles]" in r.json()["detail"]
+        assert "no profile has a role; name the profiles to check" in r.json()["detail"]
         # a run that names its profile and watches by signals needs no role: it passes every
         # check and waits only for a runner
         named = {"scenario": ref, "profile": "scripted", "monitor": "signals", "confirm": True}
@@ -235,3 +278,22 @@ async def test_the_api_shows_unset_roles_and_refuses_runs_that_need_them(cp: CP)
         listed = (await c.get("/api/scenarios")).json()
         control = next(s for s in listed if s["name"] == "control")
         assert (control["profiles"], control["needs_profile"]) == (["scripted"], False)
+
+
+@pytest.mark.anyio
+async def test_the_api_checks_each_profile_a_role_names_once_when_none_is_named(cp: CP) -> None:
+    runner = FakeRunner(cp)
+    await runner.client.hello(runner.hello_body())
+    cp.project.write_text(cp.project.read_text() + ROLES)
+
+    async def checked(body: dict[str, Any]) -> list[str]:
+        async with cp.client(cp.operator) as c:
+            r = await c.post("/api/models/check", json=body)
+            assert r.status_code == 202, r.text
+            (run_id,) = r.json()["run_ids"]
+        job = await cp.state.db.job(run_id)
+        assert job is not None
+        return Job.model_validate(job.payload).check
+
+    assert await checked({}) == ["scripted"]
+    assert await checked({"profiles": ["scripted", "scripted"]}) == ["scripted"]

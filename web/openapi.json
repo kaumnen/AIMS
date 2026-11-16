@@ -18686,7 +18686,7 @@
     },
     "/api/models/check": {
       "post": {
-        "description": "Small requests to each profile's provider, run on a runner and recorded as a run.",
+        "description": "Small requests to each profile's provider, run on a runner and recorded as a run. With\nno profiles it checks those the roles name.",
         "operationId": "check_models",
         "requestBody": {
           "content": {

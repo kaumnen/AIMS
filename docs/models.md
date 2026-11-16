@@ -257,7 +257,7 @@ Errors:
 aims models check <profile> [<profile> ...]
 ```
 
-It sends four small requests to each profile and records them as a run. Without a name it checks the agent's profile.
+It sends four small requests to each profile and records them as a run. Without a name it checks the profiles the roles name, each once.
 
 | Check | What it asks for |
 | --- | --- |

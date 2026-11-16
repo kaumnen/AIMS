@@ -67,13 +67,13 @@ Check a scenario. Scripted agents prove each plant works, at no model cost.
 aims scenario check builtin/cache-keys
 ```
 
-Add one model for the agents and another for the monitor, which refuses to watch its own weights. The monitor's model needs structured output. Take ids from [OpenRouter's list](https://openrouter.ai/models).
+Add one model for the agents and another for the monitor, which refuses to watch its own weights. The monitor's model needs structured output. Take ids from [OpenRouter's list](https://openrouter.ai/models). `aims models check` then sends each a few small requests.
 
 ```sh
 export OPENROUTER_API_KEY=<your key>
 aims models add openrouter author/agent-model --write --role agent
 aims models add openrouter author/monitor-model --write --role sweep --role judge
-aims models check openrouter-agent-model openrouter-monitor-model
+aims models check
 ```
 
 Start the UI. It opens a sign-in link and runs jobs on a local runner.

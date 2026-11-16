@@ -9,7 +9,7 @@ import httpx2
 from aims.aio import settle
 from aims.events import Draft, EventStore, ModelChecked, RunFinished, RunStarted, RunStatus
 from aims.models.client import ModelCallError, ModelClient
-from aims.models.profiles import ModelsConfig, Overrides, Profile
+from aims.models.profiles import ModelsConfig, Overrides, Profile, ProfileError
 from aims.models.types import Message, OutputSchema, Prompt, Reply, ToolOutput, ToolSpec
 
 Verdict = Literal["ok", "warn", "fail"]
@@ -34,6 +34,20 @@ VERDICT = OutputSchema(
     },
 )
 SMALL = Overrides(effort="low", max_output_tokens=2048)
+
+
+def to_check(models: ModelsConfig, names: Sequence[str]) -> list[Profile]:
+    """The profiles a check of `names` covers, each once: with no names, the profiles the
+    roles name. Raises ProfileError for an unknown name, or when no name is given and no
+    profile has a role."""
+    if not names:
+        names = [n for n in models.roles.model_dump().values() if n is not None]
+        if not names:
+            raise ProfileError(
+                "no profile has a role; name the profiles to check, or set roles under [roles]"
+                " in aims.toml"
+            )
+    return [models.get(n) for n in dict.fromkeys(names)]
 
 
 @dataclass(frozen=True, slots=True)

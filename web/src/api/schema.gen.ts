@@ -211,7 +211,8 @@ export interface paths {
         put?: never;
         /**
          * Check Models
-         * @description Small requests to each profile's provider, run on a runner and recorded as a run.
+         * @description Small requests to each profile's provider, run on a runner and recorded as a run. With
+         *     no profiles it checks those the roles name.
          */
         post: operations["check_models"];
         delete?: never;
