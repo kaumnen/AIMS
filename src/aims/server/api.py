@@ -62,7 +62,7 @@ from aims.monitor.config import MonitorConfigError, Preset
 from aims.monitor.setup import ResolvedMonitor
 from aims.prompts import PLACEHOLDERS, AgentTexts, Prompts, TextError, load_prompts
 from aims.report.listed import ListedCost, listed_costs
-from aims.run import selftest
+from aims.run import selftest, truth
 from aims.run.estimate import (
     Estimate,
     History,
@@ -94,7 +94,7 @@ from aims.run.job import (
     selftest_job,
 )
 from aims.run.runner import Fork, RunError, agent_profile, check, text_problems
-from aims.scenario import Bundle, Scenario, ScenarioError, folder_tar, load, parse
+from aims.scenario import Bundle, Scenario, ScenarioError, folder_tar, load, missing, parse
 from aims.scenario import budget as budgets
 from aims.scenario.budget import BudgetError, BudgetOverride
 from aims.server import audit, retention
@@ -2307,11 +2307,15 @@ async def scenario_schema(principal: Viewer) -> dict[str, object]:
 
 
 class ScenarioCheck(BaseModel):
-    """`profile` and `monitor` as `aims scenario check` takes them."""
+    """`profile` and `monitor` as `aims scenario check` takes them. `source` and `name` name
+    the scenario `text` is an edit of: the check then reads its folder and needs the operator
+    role."""
 
     text: Utf8 = Field(max_length=1024 * 1024)
     profile: Utf8 | None = None
     monitor: Preset | None = None
+    source: Utf8 | None = None
+    name: Utf8 | None = None
 
 
 class CheckResult(Out):
@@ -2328,22 +2332,45 @@ class ScenarioCheckResult(CheckResult):
     )
 
 
-@router.post("/scenarios/check", tags=["scenarios"])
+@router.post("/scenarios/check", tags=["scenarios"], responses=responses(404))
 async def check_scenario(
-    body: ScenarioCheck, principal: Viewer, state: State
+    body: ScenarioCheck, principal: Viewer, state: State, sources: SourcesDep
 ) -> ScenarioCheckResult:
     """Validate scenario YAML: the schema with YAML lines, then as warnings the profiles,
-    tools and texts it names and its monitor, as `aims scenario check` does."""
+    tools and texts it names and its monitor, as `aims scenario check` does. With `source`
+    and `name`, also the files it names that its folder lacks and what would give its plants
+    away, read from that folder."""
+    if (body.source is None) != (body.name is None):
+        raise ProblemException(422, "Invalid request", "source and name go together")
+    folder = None
+    if body.source is not None and body.name is not None:
+        if principal.role == "viewer":
+            raise ProblemException(
+                403,
+                "Forbidden",
+                "checking over the scenario's files needs the operator role",
+                code="role",
+            )
+        _, folder = sources.scenario(body.source, body.name)
     try:
         scenario = parse(body.text, source="scenario.yaml")
     except ScenarioError as e:
         return ScenarioCheckResult(ok=False, errors=scenario_problems(e), warnings=[])
     settings = state.config.settings()
-    bundle = Bundle(scenario, body.text.encode())
     notes: list[str] = []
 
     def problems() -> list[str]:
-        found = check(bundle, settings.models, body.profile, settings.prompts, unset=notes)
+        # The files on disk are not tarred or rendered as a run's are: that reads all of them,
+        # seconds and gigabytes for a large scenario, each time the editor settles.
+        bundle = Bundle(scenario, body.text.encode(), base=folder)
+        found: list[str] = []
+        if folder is not None:
+            files = missing(scenario, folder) + truth.lint(bundle)
+            # the server's own paths stay on the server
+            found += [
+                p.replace(f"{folder.resolve()}/", "").replace(f"{folder}/", "") for p in files
+            ]
+        found += check(bundle, settings.models, body.profile, settings.prompts, unset=notes)
         return found + monitor_problems(
             settings.models,
             settings.prompts,

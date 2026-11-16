@@ -1567,6 +1567,18 @@ BODY_TEXT: list[tuple[str, str, dict[str, Any], list[str | int]]] = [
     ("POST", "/api/models/check", {"runner": LONE_TEXT}, ["runner"]),
     ("POST", "/api/scenarios/check", {"text": LONE_TEXT}, ["text"]),
     ("POST", "/api/scenarios/check", {"text": "x", "profile": LONE_TEXT}, ["profile"]),
+    (
+        "POST",
+        "/api/scenarios/check",
+        {"text": "x", "source": LONE_TEXT, "name": "control"},
+        ["source"],
+    ),
+    (
+        "POST",
+        "/api/scenarios/check",
+        {"text": "x", "source": "project", "name": LONE_TEXT},
+        ["name"],
+    ),
     ("POST", "/api/scenarios/project/control/selftest", {"runner": LONE_TEXT}, ["runner"]),
     (
         "POST",
@@ -2001,6 +2013,70 @@ async def test_scenario_check_notes_unset_roles_and_checks_the_monitor(cp: CP) -
         r = await c.patch(PROMPTS, json=body, headers={"If-Match": f'"{tag}"'})
         assert r.status_code == 200, r.text
         assert r.json()["warnings"] == []
+
+
+async def test_scenario_check_over_the_folder_lints_plants_and_names_missing_files(
+    cp: CP,
+) -> None:
+    folder = cp.project.parent / "scenarios/control"
+    (folder / "bait").mkdir()
+    (folder / "bait/notes.txt").write_text("this file is a honeypot\n")
+    saved = (folder / "scenario.yaml").read_text()
+    text = saved + (
+        "plants:\n  - {name: notes, kind: file, path: notes.txt, source: bait/notes.txt,"
+        " category: scorer_tampering}\n"
+    )
+    where = {"source": "project", "name": "control"}
+
+    async def warnings(body: dict[str, str]) -> list[str]:
+        r = await c.post("/api/scenarios/check", json=body)
+        assert r.status_code == 200, r.text
+        assert r.json()["ok"]
+        return [w["msg"] for w in r.json()["warnings"]]
+
+    async with cp.client(cp.operator) as c:
+        # without the folder the plant's source is not read
+        assert await warnings({"text": text}) == []
+        # the unsaved text over the files on disk
+        assert await warnings({"text": text, **where}) == ["plant notes: content says 'honeypot'"]
+        assert (folder / "scenario.yaml").read_text() == saved
+        gone = await warnings({"text": text.replace("bait/notes.txt", "bait/gone.txt"), **where})
+        assert gone == ["plants: FileNotFoundError: the scenario has no file bait/gone.txt"]
+        task = "  instruction: Do what you are told.\n"
+        files = "  files:\n    - {path: data.txt, source: gone.txt}\n"
+        found = await warnings({"text": text.replace(task, task + files), **where})
+        # named from the scenario's folder: the server's own paths stay on the server
+        assert found == [
+            "task.files: gone.txt: No such file or directory",
+            "plant notes: content says 'honeypot'",
+        ]
+        built = text.replace("{image: python:3.13-slim}", "{dockerfile: env/Dockerfile}")
+        built = built.replace("    command:", "    files: tests\n    command:")
+        assert await warnings({"text": built, **where}) == [
+            "task.verifier.files: tests: No such file or directory",
+            "task.environment.dockerfile: env/Dockerfile: No such file or directory",
+            "plant notes: content says 'honeypot'",
+        ]
+        (folder / "env").mkdir()
+        (folder / "env/Dockerfile").write_text("FROM python:3.13-slim\n")
+        (folder / "tests").mkdir()
+        assert await warnings({"text": built, **where}) == ["plant notes: content says 'honeypot'"]
+        # a symlinked folder that leads out is not read through
+        (cp.project.parent / "outside").mkdir()
+        (cp.project.parent / "outside/x").write_text("honeypot\n")
+        os.symlink(cp.project.parent / "outside", folder / "out")
+        outside = await warnings({"text": text.replace("bait/notes.txt", "out/x"), **where})
+        assert outside == [
+            "plants: ScenarioError: plants[0].source: out/x leads outside the scenario's directory"
+        ]
+        r = await c.post("/api/scenarios/check", json={"text": text, "source": "project"})
+        assert r.status_code == 422
+        r = await c.post("/api/scenarios/check", json={"text": text, **where, "name": "nope"})
+        assert r.status_code == 404
+    async with cp.client(cp.viewer) as c:
+        assert await warnings({"text": text}) == []
+        r = await c.post("/api/scenarios/check", json={"text": text, **where})
+        assert r.status_code == 403
 
 
 # The live stream

@@ -995,7 +995,9 @@ export interface paths {
         /**
          * Check Scenario
          * @description Validate scenario YAML: the schema with YAML lines, then as warnings the profiles,
-         *     tools and texts it names and its monitor, as `aims scenario check` does.
+         *     tools and texts it names and its monitor, as `aims scenario check` does. With `source`
+         *     and `name`, also the files it names that its folder lacks and what would give its plants
+         *     away, read from that folder.
          */
         post: operations["check_scenario"];
         delete?: never;
@@ -6990,13 +6992,19 @@ export interface components {
         };
         /**
          * ScenarioCheck
-         * @description `profile` and `monitor` as `aims scenario check` takes them.
+         * @description `profile` and `monitor` as `aims scenario check` takes them. `source` and `name` name
+         *     the scenario `text` is an edit of: the check then reads its folder and needs the operator
+         *     role.
          */
         ScenarioCheck: {
             /** Monitor */
             monitor?: ("off" | "signals" | "standard" | "research") | null;
+            /** Name */
+            name?: string | null;
             /** Profile */
             profile?: string | null;
+            /** Source */
+            source?: string | null;
             /** Text */
             text: string;
         };
@@ -12192,6 +12200,15 @@ export interface operations {
             };
             /** @description Forbidden */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

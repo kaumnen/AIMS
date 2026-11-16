@@ -82,9 +82,15 @@ export const schemaQuery = queryOptions({
   staleTime: Infinity,
 });
 
-export async function checkScenario(text: string, signal?: AbortSignal): Promise<CheckResult> {
+// `text` as an unsaved edit of the scenario `source`/`name`: the server reads its other files
+// from the scenario's folder, as `aims scenario check` does.
+export async function checkScenario(
+  text: string,
+  where: { source: string; name: string },
+  signal?: AbortSignal,
+): Promise<CheckResult> {
   const { data, error } = await client.POST("/api/scenarios/check", {
-    body: { text },
+    body: { text, ...where },
     ...(signal ? { signal } : {}),
   });
   if (error) throw error;

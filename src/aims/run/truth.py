@@ -91,6 +91,23 @@ def prepare(
     return _prepare(bundle, variant, seed, inherited, None)
 
 
+def lint(bundle: Bundle) -> list[str]:
+    """What would give the plants of `bundle` away, or why they cannot be built. Only the
+    plants are built, each read from its own source, so it stays quick on a scenario whose
+    other files are large: the editor runs it each time the text settles."""
+    scenario = bundle.scenario
+    if not scenario.plants:
+        return []
+    seed = b"scenario-check"
+    base = bundle.base or (bundle.path.parent if bundle.path is not None else None)
+    try:
+        sources = _Sources(scenario, bundle, base, bundle.sources)
+        plants = _plants(scenario, sources, _canaries(scenario, seed, {}), seed)
+    except Exception as e:
+        return [f"plants: {type(e).__name__}: {e}"]
+    return [problem for plant in plants.values() for problem in plant.lint()]
+
+
 def restore(
     snapshot: Mapping[str, Any], blobs: Mapping[str, bytes], record: Mapping[str, Any]
 ) -> Prepared:
@@ -178,31 +195,8 @@ def _prepare(
     seed = secrets.token_bytes(32) if seed is None else seed
     base = bundle.base or (bundle.path.parent if bundle.path is not None else None)
     sources = _Sources(full, bundle, base, recorded if recorded is not None else bundle.sources)
-    carried = _carried(inherited or [])
-    canaries: dict[str, Canary] = {}
-    for config in full.plants:
-        if config.canary is not None:
-            canaries[config.name] = make(config.canary, seed, config.name)
-    for name, canary in carried.items():
-        canaries.setdefault(name, canary)
-
-    plants: dict[str, Plant] = {}
-    for config in full.plants:
-        rel = _plant_source(config)
-        source = None
-        if rel is not None:
-            found = sources.entries(rel)
-            single = len(found) == 1 and found[0].kind == "file"
-            if isinstance(config, FilePlant) and not single:
-                what = "symlink" if found[0].kind == "link" else "directory"
-                raise ScenarioError(
-                    [f"plant {config.name}: its source {rel} is a {what}, not a regular file"]
-                )
-            source = found[0].data if single else None
-        setup = PlantSetup(
-            config=config, scenario=full, canaries=canaries, source=source, seed=seed
-        )
-        plants[config.name] = build(setup)
+    canaries = _canaries(full, seed, _carried(inherited or []))
+    plants = _plants(full, sources, canaries, seed)
     for channel in full.channels:
         if isinstance(channel, FolderChannel):
             for entry in channel.files:
@@ -276,6 +270,40 @@ def _prepare(
         "sources": sources.record(),
     }
     return out
+
+
+def _canaries(scenario: Scenario, seed: bytes, carried: Mapping[str, Canary]) -> dict[str, Canary]:
+    """The canary of each plant that has one, then the ones carried over from the series."""
+    canaries: dict[str, Canary] = {}
+    for config in scenario.plants:
+        if config.canary is not None:
+            canaries[config.name] = make(config.canary, seed, config.name)
+    for name, canary in carried.items():
+        canaries.setdefault(name, canary)
+    return canaries
+
+
+def _plants(
+    scenario: Scenario, sources: _Sources, canaries: Mapping[str, Canary], seed: bytes
+) -> dict[str, Plant]:
+    plants: dict[str, Plant] = {}
+    for config in scenario.plants:
+        rel = _plant_source(config)
+        source = None
+        if rel is not None:
+            found = sources.entries(rel)
+            single = len(found) == 1 and found[0].kind == "file"
+            if isinstance(config, FilePlant) and not single:
+                what = "symlink" if found[0].kind == "link" else "directory"
+                raise ScenarioError(
+                    [f"plant {config.name}: its source {rel} is a {what}, not a regular file"]
+                )
+            source = found[0].data if single else None
+        setup = PlantSetup(
+            config=config, scenario=scenario, canaries=canaries, source=source, seed=seed
+        )
+        plants[config.name] = build(setup)
+    return plants
 
 
 def _full(bundle: Bundle, variant: str | None) -> tuple[Scenario, str]:

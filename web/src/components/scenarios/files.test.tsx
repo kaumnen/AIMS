@@ -67,7 +67,20 @@ beforeEach(() => {
     }
     if (url.pathname === "/api/scenarios/schema") return Response.json({ properties: {} });
     if (url.pathname === "/api/scenarios/check") {
-      const { text } = (await request.json()) as { text: string };
+      const { text, source, name } = (await request.json()) as {
+        text: string;
+        source?: string;
+        name?: string;
+      };
+      // a plant's source file is read only from the scenario's own folder
+      if (text.includes("bait") && source === "project" && name === "demo") {
+        return Response.json({
+          ok: true,
+          errors: [],
+          warnings: [{ msg: "plant notes: content says 'honeypot'", line: null, loc: [] }],
+          notes: [],
+        });
+      }
       if (text.includes("nope")) {
         return Response.json({
           ok: false,
@@ -151,6 +164,15 @@ test("an unset role shows as a note, apart from the warnings", async () => {
   const problems = screen.getByRole("list", { name: "Problems" });
   expect(problems.textContent).toContain("warningmonitor: unknown profile 'gone'");
   expect(problems.textContent).toContain("noteagent a: no profile has the agent role");
+});
+
+test("the check reads the scenario's other files from its folder", async () => {
+  renderTab();
+  const view = await editor();
+  type(view, "observe", "observe # bait");
+  expect(await screen.findByText("1 warning", {}, { timeout: 3000 })).toBeTruthy();
+  const problems = screen.getByRole("list", { name: "Problems" });
+  expect(problems.textContent).toContain("warningplant notes: content says 'honeypot'");
 });
 
 test("a save names the version it replaces", async () => {

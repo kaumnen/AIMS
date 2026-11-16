@@ -1,3 +1,4 @@
+import errno
 import hashlib
 import io
 import os
@@ -314,6 +315,34 @@ def load(path: Path, variant: str | None = None, *, stored: bool = False) -> Bun
         path=path,
         full_text=decoded.encode(),
     )
+
+
+def missing(scenario: Scenario, base: Path) -> list[str]:
+    """The files `scenario` names that `load` would not find in `base`, found without reading
+    them: the editor checks this each time the text settles."""
+    # (the field `inside` names, the one a missing file is named under, the path, follow)
+    named = [
+        (f"task.files[{i}].source", "task.files", e.source, False)
+        for i, e in enumerate(scenario.task.files)
+        if e.source is not None
+    ]
+    v = scenario.task.verifier
+    if v is not None and v.files is not None:
+        named.append(("task.verifier.files", "task.verifier.files", v.files, True))
+    dockerfile = scenario.task.environment.dockerfile
+    if dockerfile is not None:
+        field = "task.environment.dockerfile"
+        named.append((field, field, dockerfile, True))
+    problems: list[str] = []
+    for field, label, rel, follow in named:
+        try:
+            path = inside(base, rel, field, follow=follow)
+        except ScenarioError as e:
+            problems += e.problems
+            continue
+        if not (path.exists() if follow else os.path.lexists(path)):
+            problems.append(f"{label}: {rel}: {os.strerror(errno.ENOENT)}")
+    return problems
 
 
 def from_snapshot(snapshot: dict[str, Any], blobs: dict[str, bytes]) -> Bundle:

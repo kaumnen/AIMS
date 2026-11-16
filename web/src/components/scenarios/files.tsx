@@ -84,7 +84,7 @@ export default function FilesTab({
   useEffect(() => {
     if (settled === null || base === undefined || settled !== text) return;
     const ask = new AbortController();
-    checkScenario(settled, ask.signal)
+    checkScenario(settled, { source, name }, ask.signal)
       .then((r) => {
         setProblems([
           ...r.errors.map((e) => ({ line: lineOf(e), msg: e.msg, severity: "error" as const })),
@@ -94,7 +94,7 @@ export default function FilesTab({
       })
       .catch(() => undefined);
     return () => ask.abort();
-  }, [settled, base, text]);
+  }, [settled, base, text, source, name]);
 
   useEffect(() => {
     onDirty?.(dirty);

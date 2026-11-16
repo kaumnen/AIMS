@@ -7,6 +7,7 @@ from aims.scenario.load import (
     folder_tar,
     from_snapshot,
     load,
+    missing,
     parse,
 )
 from aims.scenario.model import (
@@ -45,5 +46,6 @@ __all__ = [
     "folder_tar",
     "from_snapshot",
     "load",
+    "missing",
     "parse",
 ]

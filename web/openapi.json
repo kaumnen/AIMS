@@ -14024,7 +14024,7 @@
         "type": "object"
       },
       "ScenarioCheck": {
-        "description": "`profile` and `monitor` as `aims scenario check` takes them.",
+        "description": "`profile` and `monitor` as `aims scenario check` takes them. `source` and `name` name\nthe scenario `text` is an edit of: the check then reads its folder and needs the operator\nrole.",
         "properties": {
           "monitor": {
             "anyOf": [
@@ -14043,6 +14043,17 @@
             ],
             "title": "Monitor"
           },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
           "profile": {
             "anyOf": [
               {
@@ -14053,6 +14064,17 @@
               }
             ],
             "title": "Profile"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
           },
           "text": {
             "maxLength": 1048576,
@@ -23260,7 +23282,7 @@
     },
     "/api/scenarios/check": {
       "post": {
-        "description": "Validate scenario YAML: the schema with YAML lines, then as warnings the profiles,\ntools and texts it names and its monitor, as `aims scenario check` does.",
+        "description": "Validate scenario YAML: the schema with YAML lines, then as warnings the profiles,\ntools and texts it names and its monitor, as `aims scenario check` does. With `source`\nand `name`, also the files it names that its folder lacks and what would give its plants\naway, read from that folder.",
         "operationId": "check_scenario",
         "requestBody": {
           "content": {
@@ -23302,6 +23324,16 @@
               }
             },
             "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not found"
           },
           "413": {
             "content": {
