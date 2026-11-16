@@ -31,6 +31,7 @@ flowchart LR
   browser -->|token| caddy
   server <-->|runner token| runner
   runner -->|API keys| models
+  server -.->|lists of models, no key| models
 ```
 
 Docker Compose runs both on one host.
@@ -101,6 +102,10 @@ The control plane keeps an audit log in `server.sqlite`. It records each change 
 - The control plane refuses a request body over 8 MiB, or 16 MiB on the runner API, before it checks the token. Uploads have their own limits: 64 MiB per scenario file, 2 GiB per blob, 4 GiB per run import.
 - Sandboxes have no network. Model calls go out from the runner.
 - Runners, the CLI and model calls use `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY` and `NO_PROXY`. Loopback never goes through a proxy.
+- **Add a model** in the app reads a model server's list of models from the control plane, with no key. `aims models add` does the same from its own machine. The read may go to any http or https URL, loopback and private ones too, for local model servers. It follows no redirects.
+- That read refuses a host when any address it resolves to is link-local or a cloud metadata service, such as `169.254.169.254`. The check runs as each connection opens. The connection then goes only to the addresses it checked. Through a proxy, the proxy resolves the host again. A name that the control plane or the CLI's machine cannot resolve goes to the proxy unchecked.
+- An operator sees the HTTP status or the error. From a list of models they see the count and up to 20 ids like the one they typed. They never see the body.
+- The guard covers only this read. The model check and every run call a profile's URL with its key, from a runner or the CLI's machine.
 
 ## Secrets and data
 

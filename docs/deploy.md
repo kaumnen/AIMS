@@ -18,12 +18,12 @@ Compose runs the control plane, a runner and Caddy on one host:
 curl -fsSLO https://github.com/kaumnen/AIMS/releases/latest/download/compose.yaml \
   -O https://github.com/kaumnen/AIMS/releases/latest/download/compose.public.yaml \
   -O https://github.com/kaumnen/AIMS/releases/latest/download/Caddyfile
-echo "OPENROUTER_API_KEY=<your key>" > .env
+echo "EXAMPLE_API_KEY=<your key>" > .env
 docker compose up -d
 docker compose exec server aims open --no-open
 ```
 
-The last command prints a sign-in link for http://localhost:8484. AIMS ships no models. Add them under **Settings** > **Models**, or set them and their roles in the project config under **Settings** > **Config**. [Models](models.md) has the fields. The runner reads the keys from `.env`.
+The last command prints a sign-in link for http://localhost:8484. AIMS ships no models. Add them under **Settings** > **Models** > **Add a model**, or write them in the project config under **Settings** > **Config**. [Models](models.md) has the fields. The runner reads the keys from `.env`.
 
 | Service | Role |
 | --- | --- |
@@ -41,7 +41,7 @@ The last command prints a sign-in link for http://localhost:8484. AIMS ships no 
 
 | `.env` variable | Default | Meaning |
 | --- | --- | --- |
-| `OPENROUTER_API_KEY` and other keys | | The model API keys the profiles name, for the runner |
+| The variables the profiles name in `api_key_env` | | The model API keys, for the runner |
 | `AIMS_SITE` | `http://localhost:8484` | The address people open |
 | `AIMS_AUDIT` | `auto` | The runner's audit: `auto`, `kernel` or `snapshot` |
 | `AIMS_IMAGE` | The release's image, pinned by digest | The AIMS image |
@@ -72,7 +72,7 @@ Then start a runner on another Docker host, with the server's version:
 
 ```sh
 uv tool install aims-bench -c https://github.com/kaumnen/AIMS/releases/download/v<version>/constraints.txt
-export AIMS_TOKEN=<runner token> OPENROUTER_API_KEY=<your key>
+export AIMS_TOKEN=<runner token> EXAMPLE_API_KEY=<your key>
 aims runner --server https://<your AIMS_SITE>
 ```
 
@@ -93,11 +93,11 @@ A runner stops when the control plane answers 401 or 403 five times in a row, as
 
 Runners, the CLI and model calls go through the proxy in `HTTPS_PROXY`, `HTTP_PROXY` or `ALL_PROXY`, except to hosts, domains and networks in `NO_PROXY`. Loopback always goes direct. A private CA can come from `SSL_CERT_FILE`, or from the runner's `--tls-ca`, which wins over it.
 
-The control plane itself calls two outside hosts, with no key and through the same proxy settings:
+The control plane itself calls these hosts, with no key and through the same proxy settings:
 
 | Host | What reads it | When the host cannot reach it |
 | --- | --- | --- |
-| The base URL of a model you look up | `GET /api/models/lookup` reads the server's list of models with no key. | The lookup goes on with a note. [Models](models.md#add-a-model) has the command that adds a model on another machine. |
+| The server of a model you add | **Add a model** under **Settings** > **Models** reads the server's list of models. A host on a link-local or cloud metadata address is refused. See [SECURITY.md](../SECURITY.md#network). | The draft goes on with a note. [`aims models add`](models.md#add-a-model) does the same from the CLI. |
 | `raw.githubusercontent.com` | A run, fork, review or score reads [LiteLLM's price map](models.md#list-prices) when it calls a profile that names a `price_key` and sets no `price`. So do estimates and **Settings** > **Models**. A runner never reads it. | A kept copy serves with its date. Without one such a profile stays unpriced. Give it a `price` instead. |
 
 Nothing else changes when a lookup fails. A read of the price map waits 5 seconds at most. After a failed one the next try comes 10 minutes later. Compose keeps the copy on the server's volume, in `/data/cache`.

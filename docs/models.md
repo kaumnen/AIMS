@@ -135,7 +135,7 @@ One command drafts a profile for a model on any server, checks it and adds it:
 aims models add example/model-name --base-url https://api.example.com/v1 --key-env EXAMPLE_API_KEY --write --role agent
 ```
 
-It reads the server's list of models without a key, when the server has one, to check the id. A row of LiteLLM's price map picked with `--litellm` gives the price key, the context size and the output cap. Then it sends the model a few small requests, as `aims models check` does. It sets `reasoning` to what the model sent. It prints the profile to stdout and its notes to stderr. The values here are placeholders:
+It reads the server's list of models without a key, when the server has one, to check the id. It does not read a host on a link-local or cloud metadata address. A note says so. A row of LiteLLM's price map picked with `--litellm` gives the price key, the context size and the output cap. Then it sends the model a few small requests, as `aims models check` does. It sets `reasoning` to what the model sent. It prints the profile to stdout and its notes to stderr. The values here are placeholders:
 
 ```toml
 [profiles.model-name]
@@ -150,6 +150,8 @@ context_tokens = 128000
 max_output_tokens = 16384
 ```
 
+`weights` is the model id. When the model also runs under another id, give both profiles one `weights`, so the monitor refuses to watch it with itself.
+
 | Option | Effect |
 | --- | --- |
 | `--base-url <url>` | The server's API URL |
@@ -157,18 +159,19 @@ max_output_tokens = 16384
 | `--from <profile>` | Reaches the server as that profile does: its backend, URL, key env, headers, `extra` and other connection fields. Instead of `--base-url` and `--key-env`. |
 | `--name <name>` | The profile's name instead of the id's last part |
 | `--litellm <key>` | The model's row in LiteLLM's price map. Without it the notes name the rows that may fit. |
-| `--backend <backend>` | `chat`, the default, or `responses` |
+| `--backend <backend>` | `chat` or `responses`. By default `chat`, or the `--from` profile's. |
 | `--set <key>=<value>` | Sets a field to a TOML value, such as `effort=low` or `extra.a.b=1`. Repeat it for more. |
 | `--unset <key>` | Removes a field the draft sets. Repeat it for more. |
 | `--write` | Adds the profile to the project's `aims.toml`. Makes the file when there is none. Refuses a name that is taken. |
 | `--role <role>` | Also gives the profile a role under `[roles]`: `agent`, `sweep` or `judge`. Repeat it for more. Needs `--write`. The sweep and judge roles need structured output. Says which profile had the role before. |
 | `--no-check` | Skips the check. `reasoning` stays a guess. |
 | `--config <path>` | An `aims.toml` to use instead of the project's |
+| `--runs-dir <dir>` | Where the check is recorded as a run. `runs` by default. |
 
 > [!NOTE]
-> The check makes a few small calls, which the server may bill. When a test fails, the command writes nothing and exits 1. Change the profile with `--set`, or pass `--no-check`.
+> The check makes a few small calls, which the server may bill. When a test fails, the command writes nothing and exits 1. Change the profile with `--set`, or pass `--no-check`. A model without tool calls fails the `tools` test, so add it with `--no-check`.
 
-In the app, **Settings** > **Models** > **Add a model** does the same for operators. The profile text can be edited before the add. The app saves the profile first. The roles you tick wait until its check passes. A profile whose check failed can be removed from its row.
+In the app, **Settings** > **Models** > **Add a model** does the same for operators. The profile text can be edited before the add. The app saves the profile first. The roles you tick wait until its check passes. A later check does not set them. A profile whose check failed can be removed from its row.
 
 Then run with it:
 
@@ -183,14 +186,14 @@ aims run cache-keys --profile model-name --monitor signals
 `extra` adds fields to the request body as they are written. A router's own options go there. This one keeps a run on one provider of a router that reads a `provider` object, so the price, the quantization and the prompt cache stay the same:
 
 ```toml
-[profiles."openrouter-model-name"]
+[profiles.my-agent]
 extra = { provider = { only = ["provider-a"], allow_fallbacks = false, require_parameters = true } }
 ```
 
 `headers` adds HTTP headers to each request of the profile:
 
 ```toml
-[profiles."openrouter-model-name"]
+[profiles.my-agent]
 headers = { X-Title = "my-bench" }
 ```
 
@@ -211,9 +214,9 @@ A config layer or `extends` merges `headers` key by key. A header's name ignores
 
 - Budgets and `aims spend` count the recorded cost.
 - The run page and the report say how much of a run's cost is at a list price, with the key and the date of each. The run API gives the amount in `listed_usd`. The run detail lists it by profile in `listed`.
-- The estimate counts a past call at the cost its provider reported. It prices other past calls and the calls to come at the profile's price or list price. A router can bill above the list price. Four test calls through OpenRouter cost 2.8 to 3.4 times the list price.
+- The estimate counts a past call at the cost its provider reported. It prices other past calls and the calls to come at the profile's price or list price. A router can bill above the list price. Four test calls through one router cost 2.8 to 3.4 times the list price.
 - A step in the app names its provider. The report lists the providers of each model with their answers. The live view notes it when a second provider answers a model.
-- A `chat` answer's `reasoning_details` go back unchanged with the turn in the next request. OpenRouter returns a model's signed or encrypted reasoning there. The model keeps its reasoning between a tool call and the tool's result that way.
+- A `chat` answer's `reasoning_details` go back unchanged with the turn in the next request. A router can return a model's signed or encrypted reasoning there. The model keeps its reasoning between a tool call and the tool's result that way.
 
 Errors:
 

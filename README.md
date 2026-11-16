@@ -149,12 +149,12 @@ Docker Compose runs the control plane, a runner and Caddy on one host:
 curl -fsSLO https://github.com/kaumnen/AIMS/releases/latest/download/compose.yaml \
   -O https://github.com/kaumnen/AIMS/releases/latest/download/compose.public.yaml \
   -O https://github.com/kaumnen/AIMS/releases/latest/download/Caddyfile
-echo "OPENROUTER_API_KEY=<your key>" > .env
+echo "EXAMPLE_API_KEY=<your key>" > .env
 docker compose up -d
 docker compose exec server aims open --no-open
 ```
 
-Open the printed sign-in link. Add your models under **Settings** > **Models**, or set them and their roles under **Settings** > **Config**. More in [Deploy](https://github.com/kaumnen/AIMS/blob/main/docs/deploy.md).
+Open the printed sign-in link. Add your models under **Settings** > **Models** > **Add a model**. More in [Deploy](https://github.com/kaumnen/AIMS/blob/main/docs/deploy.md).
 
 ## Docs
 
