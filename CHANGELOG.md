@@ -63,6 +63,10 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - A runner reports the key of a profile added while it runs. The control plane told a runner which key names to report only when it connected. So after an added profile or a config save, each run, model check, score and review was refused with `no runner has EXAMPLE_API_KEY set` until the runner connected again. The control plane now sends the names on the runner's stream as soon as it saves the config. A config edited by hand reaches each runner at its next heartbeat, within 10 seconds.
 - `aims` starts with typer 0.29, which removed a name the CLI imported. An install without the release's constraints file got typer 0.29 and `aims` failed to start. AIMS now needs typer 0.29.1 or later.
 
+### Security
+
+- The image ships opentelemetry-api 1.45.2, a dependency of FastAPI. It fixes CVE-2026-126360, a denial of service through slow `traceparent` parsing.
+
 ## [0.2.3] - 2026-11-14
 
 ### Added
