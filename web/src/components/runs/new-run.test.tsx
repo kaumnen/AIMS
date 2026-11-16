@@ -352,15 +352,13 @@ test("the model list cannot be checked until the estimate of the new picks is in
   const form = await openForm();
   const button = form.getByRole("button", { name: "Check" }) as HTMLButtonElement;
   expect(button.disabled).toBe(false);
-  let open = () => {};
-  estimateGate = new Promise((resolve) => {
-    open = resolve;
-  });
+  const gate = Promise.withResolvers<void>();
+  estimateGate = gate.promise;
   await pick(form, "Monitor", "off");
   await waitFor(() => expect(button.disabled).toBe(true));
   // the list is still that of the picks before
   expect(form.getByText("beta (sweep main, judge): never checked")).toBeTruthy();
-  open();
+  gate.resolve();
   await waitFor(() => expect(form.queryByText(/^beta/)).toBeNull());
   expect(button.disabled).toBe(false);
 });
