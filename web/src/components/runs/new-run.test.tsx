@@ -72,14 +72,20 @@ const scenarios: ScenarioInfo[] = [
   },
 ];
 
+const WARNING = "the monitor's cap pays for sweeps over about 3 of 4 agent steps";
+
 function estimate(samples: number, budget: string | null = null): Estimate {
   const ceiling = 9 * samples;
   const every = budget ? (JSON.parse(budget) as { every?: { steps?: number } }).every : undefined;
   return {
     scenario: "cache-keys",
     samples,
-    lines: ["Cost estimate for cache-keys.", `Total: cannot exceed $${ceiling.toFixed(2)}.`],
-    warnings: [],
+    lines: [
+      "Cost estimate for cache-keys.",
+      `Total: cannot exceed $${ceiling.toFixed(2)}.`,
+      `warning: ${WARNING}`,
+    ],
+    warnings: [WARNING],
     confirm: ceiling > 20,
     confirm_above_usd: 20,
     credits: [],
@@ -257,6 +263,14 @@ test("the form shows the scenario, its oversight, profile checks and the estimat
   await pick(form, "Profile", /beta/);
   expect(form.getByText("beta: never checked")).toBeTruthy();
   expect(form.getByText("No connected runner has OTHER_KEY.")).toBeTruthy();
+});
+
+test("the estimate shows each warning once and in bold, as the CLI prints it", async () => {
+  renderAt("/runs");
+  const form = await openForm();
+  const shown = form.getAllByText(/cap pays for sweeps/);
+  expect(shown.map((e) => e.textContent)).toEqual([`warning: ${WARNING}`]);
+  expect(shown[0]!.className).toContain("font-medium");
 });
 
 test("a scenario whose agent names no profile asks for one while no profile has the agent role", async () => {

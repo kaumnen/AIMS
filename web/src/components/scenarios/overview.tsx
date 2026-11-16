@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { runEstimateQuery } from "@/api/launch";
 import type { ScenarioDetail } from "@/api/scenarios";
 import { isProblem } from "@/api/session";
+import { EstimateLines } from "@/components/estimate-lines";
 import { problemText } from "@/components/form";
 import { capsText, overrideKeys, reflow } from "@/lib/scenario";
 import { cn } from "@/lib/utils";
@@ -243,20 +244,7 @@ function Estimate({ source, name }: { source: string; name: string }) {
           No estimate: {isProblem(estimate.error) ? problemText(estimate.error) : "it failed."}
         </p>
       ) : (
-        <>
-          <ul className="flex flex-col gap-0.5">
-            {estimate.data.lines.slice(1).map((line) => (
-              <li key={line} className={cn(line.startsWith("Total") && "font-medium")}>
-                {line}
-              </li>
-            ))}
-          </ul>
-          {estimate.data.warnings.map((w) => (
-            <p key={w} className="font-medium">
-              {w}
-            </p>
-          ))}
-        </>
+        <EstimateLines lines={estimate.data.lines.slice(1)} />
       )}
     </Section>
   );

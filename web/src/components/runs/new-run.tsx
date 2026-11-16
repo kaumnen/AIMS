@@ -15,6 +15,7 @@ import { type ScenarioInfo, scenariosQuery } from "@/api/scenarios";
 import { seriesQuery } from "@/api/series";
 import { isProblem, whoami } from "@/api/session";
 import { BudgetSection } from "@/components/budget";
+import { EstimateLines } from "@/components/estimate-lines";
 import { CountInput, DEFAULT, Field, Pick, problemText } from "@/components/form";
 import { up, useRunners } from "@/components/health";
 import { CHECK_TEXT, useModelCheck } from "@/components/model-check";
@@ -360,20 +361,7 @@ function NewRunForm({ onDone, initial }: { onDone: () => void; initial: string }
             No estimate: {isProblem(estimate.error) ? problemText(estimate.error) : "it failed."}
           </p>
         ) : (
-          <>
-            <ul className={cn("flex flex-col gap-0.5", estimate.isPlaceholderData && "opacity-60")}>
-              {estimate.data.lines.slice(1).map((line) => (
-                <li key={line} className={cn(line.startsWith("Total") && "font-medium")}>
-                  {line}
-                </li>
-              ))}
-            </ul>
-            {estimate.data.warnings.map((w) => (
-              <p key={w} className="font-medium">
-                {w}
-              </p>
-            ))}
-          </>
+          <EstimateLines lines={estimate.data.lines.slice(1)} stale={estimate.isPlaceholderData} />
         )}
         {why && (
           <label className="flex items-start gap-2 font-medium">

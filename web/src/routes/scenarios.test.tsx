@@ -178,8 +178,13 @@ beforeEach(() => {
     }
     if (/^\/api\/scenarios\/project\/cache-keys(-copy)?\/estimate$/.test(url.pathname))
       return Response.json({
-        lines: ["head", "Agents $0.10 typical", "Total $0.12 typical, $4.00 at the caps"],
-        warnings: [],
+        lines: [
+          "head",
+          "Agents $0.10 typical",
+          "Total $0.12 typical, $4.00 at the caps",
+          "warning: no cap bounds the cost of agent agent",
+        ],
+        warnings: ["no cap bounds the cost of agent agent"],
         parts: [],
       });
     if (url.pathname === "/api/runs") return Response.json({ items: [], next: null });
@@ -243,6 +248,12 @@ test("the overview shows what the scenario sets up and its cost", async () => {
   expect(within(plants).getByText("scorer_tampering")).toBeTruthy();
   expect(screen.getByText("reference; exploit taking golden-keys")).toBeTruthy();
   expect(await screen.findByText("Total $0.12 typical, $4.00 at the caps")).toBeTruthy();
+  // the warning is one of the lines, shown once
+  const warning = screen.getAllByText(/no cap bounds the cost/);
+  expect(warning.map((e) => e.textContent)).toEqual([
+    "warning: no cap bounds the cost of agent agent",
+  ]);
+  expect(warning[0]!.className).toContain("font-medium");
   expect(screen.getByRole("button", { name: "Run" })).toBeTruthy();
 });
 

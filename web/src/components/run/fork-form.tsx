@@ -14,6 +14,7 @@ import { modelsQuery, type Preset, presets } from "@/api/launch";
 import type { RunDetail, StepInfo } from "@/api/run";
 import { isProblem } from "@/api/session";
 import { BudgetSection } from "@/components/budget";
+import { EstimateLines } from "@/components/estimate-lines";
 import { CountInput, DEFAULT, Field, Pick, problemText } from "@/components/form";
 import { up, useRunners } from "@/components/health";
 import { OversightNote } from "@/components/oversight-note";
@@ -23,7 +24,6 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { changesText, draftText, EMPTY_DRAFT, readDraft } from "@/lib/budget";
 import { confirmWhy, oversightNote } from "@/lib/launch";
-import { cn } from "@/lib/utils";
 
 const MAX_SAMPLES = 100;
 
@@ -282,20 +282,7 @@ export default function ForkForm({
             No estimate: {isProblem(estimate.error) ? problemText(estimate.error) : "it failed."}
           </p>
         ) : (
-          <>
-            <ul className={cn("flex flex-col gap-0.5", estimate.isPlaceholderData && "opacity-60")}>
-              {estimate.data.lines.slice(1).map((line) => (
-                <li key={line} className={cn(line.startsWith("Total") && "font-medium")}>
-                  {line}
-                </li>
-              ))}
-            </ul>
-            {estimate.data.warnings.map((w) => (
-              <p key={w} className="font-medium">
-                {w}
-              </p>
-            ))}
-          </>
+          <EstimateLines lines={estimate.data.lines.slice(1)} stale={estimate.isPlaceholderData} />
         )}
         {why && (
           <label className="flex items-start gap-2 font-medium">

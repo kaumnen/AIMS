@@ -248,13 +248,14 @@ const forkEstimate = (q: URLSearchParams) => {
     rates: [],
     credits: [],
     unpriced: [],
-    warnings: [],
+    warnings: ["no cap bounds the cost of agent agent"],
     confirm_above_usd: 20,
     confirm: ceiling > 20,
     lines: [
       "Cost estimate for cache-keys, one run, at list prices.",
       `A fork after ${at ? at.replace(":", " step ") : `step ${q.get("step")}`}: the agents pay only for the steps after it.`,
       `Total: cannot exceed $${ceiling}.00.`,
+      "warning: no cap bounds the cost of agent agent",
     ],
   };
 };
@@ -2385,6 +2386,10 @@ test("a fork from a step is estimated first and starts with what was asked", asy
   const router = renderAt(`/runs/${BEE5}`);
   const form = await forkForm();
   expect(await form.findByText(/A fork after step 1: the agents pay only/)).toBeTruthy();
+  // the warning is one of the lines, shown once
+  expect(form.getAllByText(/no cap bounds the cost/).map((e) => e.textContent)).toEqual([
+    "warning: no cap bounds the cost of agent agent",
+  ]);
   expect(form.getByRole("combobox", { name: "Oversight" }).textContent).toContain(
     "As recorded (observe)",
   );
