@@ -67,6 +67,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - A rate-limit answer (HTTP 429), or an answer that says how long to wait, pauses every profile with the same base URL and key env until the retry. Only an answer that said how long to wait paused anything, and then only the profile's group, so the other profiles of the account kept sending into the limit. A wait the provider asks for is capped at `retries.max`. It had no cap. To stay under an account's limit, give its profiles one `group` with an `rpm`. In a test run on an account that allows 20 requests a minute, the agent and the monitor sent 20 in under a minute and the next call got a 429.
 - A replay retries a call where the recorded call did. It followed the retry rules of the profile it ran with. A recording made under other rules then stopped early with an error the run never had, or asked for an attempt the run never made.
 - The cost estimate in a scenario's overview, the New run form and the fork form shows its lines as the CLI prints them, with each warning once and in bold. Each warning came twice: as a line and again below the lines. The warning for a profile with no price was not bold.
+- A spend past a provider's credit says `over by $10.47` in `aims spend` and in the cost estimate. It said `$-10.4689 left`. A negative amount elsewhere reads `-$1.23`.
 - In the UI the crumbs scroll away with the page. They stayed in place, so a scrolled page was cut off right under them and seemed to slide beneath them.
 
 ### Security

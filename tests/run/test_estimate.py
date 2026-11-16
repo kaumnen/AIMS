@@ -46,6 +46,7 @@ from aims.run.estimate import (
     Estimate,
     History,
     Progress,
+    ProviderCredit,
     Tokens,
     estimate,
     estimate_fork,
@@ -1190,6 +1191,30 @@ async def test_the_estimate_shows_the_credit_left_after_typical_and_high(
         "Total for 2 runs: typically $1.00, $2.00 if every run is high. Cannot exceed $2.04."
         in (e.lines)
     )
+
+
+def test_a_spend_past_the_credit_says_over_by_how_much() -> None:
+    assert usd(-10.4689) == "-$10.47"
+    assert usd(-0.05) == "-$0.0500"
+    over = ProviderCredit(provider="example", spent_usd=40.4689, credit_usd=30, left_usd=-10.4689)
+    assert spend_lines([over]) == ["Example: $40.47 of $30.00 spent, over by $10.47."]
+    high = ProviderCredit(
+        provider="example",
+        spent_usd=29,
+        credit_usd=30,
+        left_usd=1,
+        left_after_typical_usd=0.5,
+        left_after_high_usd=-1.5,
+    )
+    assert spend_lines([high]) == [
+        "Example: $29.00 of $30.00 spent, $0.50 left after the typical cost, over by $1.50 after"
+        " the high one."
+    ]
+    both = high.model_copy(update={"left_after_typical_usd": -0.5})
+    assert spend_lines([both]) == [
+        "Example: $29.00 of $30.00 spent, over by $0.50 after the typical cost, over by $1.50"
+        " after the high one."
+    ]
 
 
 def test_providers_are_named_by_their_domain() -> None:

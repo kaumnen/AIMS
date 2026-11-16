@@ -1191,6 +1191,8 @@ def _model(snapshot: Mapping[str, Any]) -> tuple[str, str | None]:
 
 
 def usd(value: float) -> str:
+    if value < 0:
+        return f"-{usd(-value)}"
     return f"${value:,.2f}" if value >= 0.1 or value == 0 else f"${value:.4f}"
 
 
@@ -1335,12 +1337,19 @@ def _credit_line(c: ProviderCredit) -> str:
         return f"{name}: {usd(c.spent_usd)} spent."
     line = f"{name}: {usd(c.spent_usd)} of {usd(c.credit_usd)} spent"
     if c.left_after_typical_usd is not None and c.left_after_high_usd is not None:
+        high = c.left_after_high_usd
+        after_high = f"over by {usd(-high)}" if high < 0 else usd(high)
         return (
-            f"{line}, {usd(c.left_after_typical_usd)} left after the typical cost,"
-            f" {usd(c.left_after_high_usd)} after the high one."
+            f"{line}, {_credit_left(c.left_after_typical_usd)} after the typical cost,"
+            f" {after_high} after the high one."
         )
     assert c.left_usd is not None
-    return f"{line}, {usd(c.left_usd)} left."
+    return f"{line}, {_credit_left(c.left_usd)}."
+
+
+def _credit_left(value: float) -> str:
+    """What is left of a credit, or how far past it the spend goes."""
+    return f"over by {usd(-value)}" if value < 0 else f"{usd(value)} left"
 
 
 def spend_lines(credits: Sequence[ProviderCredit]) -> list[str]:
