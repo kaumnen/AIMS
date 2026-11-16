@@ -46,6 +46,7 @@ class Recorded:
     latency_ms: int
     error: str | None
     error_kind: ModelError | None
+    retry: bool
 
 
 def canonical_key(body: bytes) -> str:
@@ -100,6 +101,7 @@ class Recording:
             latency_ms=r.latency_ms,
             error=r.error,
             error_kind=r.error_kind,
+            retry=r.retry,
         )
 
     def remaining(self) -> int:
@@ -170,6 +172,7 @@ class Replayer(httpx2.AsyncBaseTransport):
         exchange = current.get()
         if exchange is not None:
             exchange.origin = (rec.run_id, rec.seq)
+            exchange.retry = rec.retry
         if rec.http_status is None:
             if self.pace == "recorded":
                 await asyncio.sleep(rec.latency_ms / 1000)

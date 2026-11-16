@@ -74,6 +74,7 @@ class _Outcome:
     retryable: bool = False
     reraise: BaseException | None = None
     ratelimit: RateLimit = field(default_factory=RateLimit)
+    code: int | None = None
 
 
 def _dump(body: Mapping[str, Any]) -> bytes:
@@ -160,13 +161,17 @@ class ModelClient:
         url = self._url(profile)
         client = self._client(profile, url)
         group = None if self.replay else self.limiters.group(profile.group, profile.limits)
+        account = None if group is None else self.limiters.account(url, profile.api_key_env)
         estimate = len(content) // 4 + (profile.max_output_tokens or 0)
         call_id = str(uuid.uuid7())
         request_params = params(profile, prompt)
-        attempts = profile.retries.attempts
+        retries = profile.retries
         spent: float | None = None
-        for attempt in range(1, attempts + 1):
-            lease = None if group is None else await group.acquire(estimate)
+        attempt = counted = 0
+        limited_since: float | None = None
+        while True:
+            attempt += 1
+            lease = None if group is None else await group.acquire(estimate, account)
             outcome: _Outcome | None = None
             try:
                 request = ModelRequest(
@@ -199,20 +204,37 @@ class ModelClient:
                         group.observe(outcome.ratelimit)
                     lease.release(used)
             assert outcome is not None
-            last = attempt == attempts
-            retry = outcome.retryable and not last and outcome.reraise is None
+            wait = self._wait(profile, attempt, outcome.ratelimit)
+            limited = outcome.code == 429
+            if limited and limited_since is None:
+                limited_since = time.monotonic()
+            # A rate limit lifts when its window ends, so 429 retries are bounded by time. One
+            # with no wait counts toward `attempts`, so a profile with no backoff cannot spin.
+            free = (
+                limited
+                and limited_since is not None
+                and wait > 0
+                and time.monotonic() - limited_since + wait <= retries.rate_limited
+            )
+            counted += not free
+            retry = outcome.retryable and counted < retries.attempts and outcome.reraise is None
+            if outcome.exchange.retry is not None:
+                # A replay retries where the recorded call did, whatever the rule says now.
+                retry = outcome.exchange.retry and outcome.reraise is None
             reply = await settle(
                 self._finish(profile, backend, call_id, attempt, agent_id, outcome, retry, spent)
             )
             spent = reply.cost_usd
+            asked = limited or outcome.ratelimit.retry_after_ms is not None
+            if account is not None and outcome.status == "error" and asked:
+                account.pause(wait)
             if outcome.reraise is not None:
                 raise outcome.reraise
             if outcome.status in ("completed", "incomplete"):
                 return reply
             if not retry:
                 raise ModelCallError(reply)
-            await self._backoff(profile, attempt, outcome.ratelimit)
-        raise AssertionError("unreachable")
+            await self._sleep(wait)
 
     def _cache_key(
         self, profile: Profile, prompt: Prompt, agent_id: str | None, role: ModelRole | None
@@ -303,6 +325,7 @@ class ModelClient:
         kind: ModelError | None = None
         retryable = False
         reraise: BaseException | None = None
+        code: int | None = None
         try:
             async with asyncio.timeout(profile.timeouts.wall):
                 await self._send(client, backend, profile, content, acc, publish)
@@ -322,7 +345,7 @@ class ModelClient:
         except TimeoutError:
             error, kind = f"no answer within the {profile.timeouts.wall:g} s wall timeout", "wall"
         except Exception as e:
-            error, kind, retryable, reraise = _classify(e)
+            error, kind, retryable, reraise, code = _classify(e)
         finally:
             current.reset(token)
         assembled = acc.result()
@@ -343,6 +366,7 @@ class ModelClient:
             retryable=retryable,
             reraise=reraise,
             ratelimit=parse_ratelimit(exchange.headers),
+            code=code,
         )
         self._delta(call_id, attempt, agent_id, "end", status)
         return outcome
@@ -486,14 +510,18 @@ class ModelClient:
             error=o.error,
         )
 
-    async def _backoff(self, profile: Profile, attempt: int, limit: RateLimit) -> None:
+    def _wait(self, profile: Profile, attempt: int, limit: RateLimit) -> float:
+        """Seconds before the attempt after `attempt`: the wait the provider asks for, else the
+        backoff, never above `retries.max`."""
+        r = profile.retries
+        if limit.retry_after_ms is not None:
+            return min(limit.retry_after_ms / 1000 * random.uniform(1.0, 1.1), r.max)
+        cap = min(r.max, r.backoff * 2 ** min(attempt - 1, 32))
+        return cap / 2 + random.uniform(0, cap / 2)
+
+    async def _sleep(self, wait: float) -> None:
         if self.replay is not None and self.pace == "instant":
             return
-        if limit.retry_after_ms is not None:
-            wait = limit.retry_after_ms / 1000 * random.uniform(1.0, 1.1)
-        else:
-            cap = min(profile.retries.max, profile.retries.backoff * 2 ** (attempt - 1))
-            wait = cap / 2 + random.uniform(0, cap / 2)
         await asyncio.sleep(wait)
 
     def _delta(
@@ -528,38 +556,40 @@ async def _within[T](seconds: float, step: Awaitable[T]) -> T:
 
 def _classify(
     exc: Exception,
-) -> tuple[str, ModelError, bool, BaseException | None]:
+) -> tuple[str, ModelError, bool, BaseException | None, int | None]:
+    """The error text, kind, whether a retry may pass, what to raise and the HTTP status or
+    the provider's error code."""
     for e in cause_chain(exc):
         if isinstance(e, ReplayWall):
-            return str(e), "wall", False, None
+            return str(e), "wall", False, None, None
         if isinstance(e, ReplayError):
-            return str(e), "replay", False, e
+            return str(e), "replay", False, e, None
     if isinstance(exc, _Stalled):
-        return f"stalled: {exc}", "stall", True, None
+        return f"stalled: {exc}", "stall", True, None, None
     if isinstance(exc, openai.APIStatusError):
         code = exc.status_code
         kind: ModelError = "redirect" if 300 <= code < 400 else "http"
-        return f"HTTP {code}: {scrub(exc.message)}", kind, _retry_code(code), None
+        return f"HTTP {code}: {scrub(exc.message)}", kind, _retry_code(code), None, code
     for e in cause_chain(exc):
         match e:
             case httpx2.ReadTimeout():
-                return f"no bytes for the stall timeout: {e}", "stall", True, None
+                return f"no bytes for the stall timeout: {e}", "stall", True, None, None
             case httpx2.TimeoutException():
-                return f"{type(e).__name__}: {e}", "timeout", True, None
+                return f"{type(e).__name__}: {e}", "timeout", True, None, None
             case httpx2.ConnectError():
-                return f"cannot connect: {e}", "connect", True, None
+                return f"cannot connect: {e}", "connect", True, None, None
             case httpx2.ProtocolError():
-                return f"{type(e).__name__}: {e}", "protocol", True, None
+                return f"{type(e).__name__}: {e}", "protocol", True, None, None
             case httpx2.TransportError():
-                return f"{type(e).__name__}: {e}", "read", True, None
+                return f"{type(e).__name__}: {e}", "read", True, None, None
     if isinstance(exc, openai.APIError) and not isinstance(exc, openai.APIConnectionError):
         # An error chunk in a stream that began with HTTP 200; its body is the error object.
         body = exc.body
         code = body.get("code") if isinstance(body, dict) else None
         code = code if isinstance(code, int) and not isinstance(code, bool) else None
         label = "provider error" if code is None else f"provider error {code}"
-        return f"{label}: {scrub(exc.message)}", "provider", _retry_code(code), None
-    return f"{type(exc).__name__}: {exc}", "protocol", False, None
+        return f"{label}: {scrub(exc.message)}", "provider", _retry_code(code), None, code
+    return f"{type(exc).__name__}: {exc}", "protocol", False, None, None
 
 
 def _retry_code(code: int | None) -> bool:

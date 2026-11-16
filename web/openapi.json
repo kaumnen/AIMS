@@ -7001,7 +7001,7 @@
       },
       "Limits": {
         "additionalProperties": false,
-        "description": "Client-side caps shared by every profile in the same `group`, which defaults to the\nprofile's name. The provider's rate-limit headers lower them when they say less is left.",
+        "description": "Client-side caps shared by every profile in the same `group`, which defaults to the\nprofile's name. `rpm` caps the requests in any 60 s, so a burst never passes it. `tpm`\nrefills a minute's tokens over the minute. The provider's rate-limit headers lower them\nwhen they say less is left.",
         "properties": {
           "concurrency": {
             "default": 8,
@@ -12029,7 +12029,7 @@
       },
       "Retries": {
         "additionalProperties": false,
-        "description": "`attempts` counts the first try. Waits double from `backoff` up to `max` seconds, with\njitter, unless the provider says how long to wait.",
+        "description": "`attempts` counts the first try. Waits double from `backoff` up to `max` seconds, with\njitter. A wait the provider asks for is used instead, up to `max`. Retries of a rate-limit\nanswer (429) do not count toward `attempts` while their wait is above 0 and ends within\n`rate_limited` seconds of the call's first one.",
         "properties": {
           "attempts": {
             "default": 4,
@@ -12047,6 +12047,12 @@
             "default": 60,
             "minimum": 0.0,
             "title": "Max",
+            "type": "number"
+          },
+          "rate_limited": {
+            "default": 120,
+            "minimum": 0.0,
+            "title": "Rate Limited",
             "type": "number"
           }
         },

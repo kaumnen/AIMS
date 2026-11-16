@@ -133,7 +133,9 @@ class Listed(_Strict):
 
 class Limits(_Strict):
     """Client-side caps shared by every profile in the same `group`, which defaults to the
-    profile's name. The provider's rate-limit headers lower them when they say less is left."""
+    profile's name. `rpm` caps the requests in any 60 s, so a burst never passes it. `tpm`
+    refills a minute's tokens over the minute. The provider's rate-limit headers lower them
+    when they say less is left."""
 
     rpm: int | None = Field(default=None, ge=1)
     tpm: int | None = Field(default=None, ge=1)
@@ -155,11 +157,14 @@ class Timeouts(_Strict):
 
 class Retries(_Strict):
     """`attempts` counts the first try. Waits double from `backoff` up to `max` seconds, with
-    jitter, unless the provider says how long to wait."""
+    jitter. A wait the provider asks for is used instead, up to `max`. Retries of a rate-limit
+    answer (429) do not count toward `attempts` while their wait is above 0 and ends within
+    `rate_limited` seconds of the call's first one."""
 
     attempts: int = Field(default=4, ge=1)
     backoff: float = Field(default=1.0, ge=0)
     max: float = Field(default=60, ge=0)
+    rate_limited: float = Field(default=120, ge=0)
 
 
 class Overrides(_Strict):

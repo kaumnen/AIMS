@@ -5,6 +5,7 @@
 - [List prices](#list-prices)
 - [Add a model](#add-a-model)
 - [Headers and extra fields](#headers-and-extra-fields)
+- [Rate limits](#rate-limits)
 - [What a run records](#what-a-run-records)
 - [Check a profile](#check-a-profile)
 
@@ -68,9 +69,9 @@ judge = "my-monitor"
 | `extra` | Any other fields of the request body, such as a router's options. See [Headers and extra fields](#headers-and-extra-fields). |
 | `price` | USD per million tokens: `input`, `cached`, `output`. Wins over `price_key`. |
 | `price_key` | A row of LiteLLM's price map. Runs and estimates count the profile's calls at its list price. See [List prices](#list-prices). |
-| `limits` | `rpm`, `tpm`, `concurrency` and a `group` that profiles can share |
+| `limits` | `rpm`, `tpm`, `concurrency` and a `group` that profiles can share. See [Rate limits](#rate-limits). |
 | `timeouts` | Seconds: `connect`, `stall`, `wall` |
-| `retries` | `attempts`, `backoff`, `max` |
+| `retries` | `attempts`, `backoff`, `max`, `rate_limited`. See [Rate limits](#rate-limits). |
 
 A scenario may change `effort`, `max_output_tokens` and `sampling` on the profile it names for an agent.
 
@@ -201,6 +202,43 @@ headers = { X-Title = "my-bench" }
 > A run records its profiles with their headers. Keep secrets out of them. AIMS refuses a header that it sets itself or that carries a key, such as `Authorization` or `Cookie`.
 
 A config layer or `extends` merges `headers` key by key. A header's name ignores case, so `x-title` in a layer replaces `X-Title` from the layer below. A layer's `extra` replaces the whole `extra` below it, so give it every field the profile needs, such as `cache_control`.
+
+## Rate limits
+
+`limits` holds caps on the client side. The profiles with the same `group` share them. A profile with no group is a group of its own.
+
+| Field | What it caps |
+| --- | --- |
+| `rpm` | The requests in any 60 s |
+| `tpm` | The tokens a minute. The count refills over the minute. |
+| `concurrency` | The calls in flight, 8 by default |
+
+A provider's limit often covers every model of one account. Give the profiles that use one account one group, with an `rpm` at or under the account's limit:
+
+```toml
+[profiles.my-agent.limits]
+group = "my-account"
+rpm = 20
+
+[profiles.my-monitor.limits]
+group = "my-account"
+rpm = 20
+```
+
+Give each profile of a group the same caps. The group takes them from the first profile that calls. When the provider's `x-ratelimit-remaining-requests` or `x-ratelimit-remaining-tokens` header says less is left, the caps hold that much less.
+
+A rate-limit answer (HTTP 429) pauses every profile with the same base URL and key env until the retry. So does an answer that says how long to wait. The wait is the one the provider asks for, up to `retries.max`. Without one it is the backoff.
+
+`retries` sets how a failed call is tried again:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `attempts` | 4 | Tries of one call, the first one included |
+| `backoff` | 1 | The first wait in seconds. Each wait doubles, with jitter. |
+| `max` | 60 | The longest wait in seconds, also when the provider asks for more |
+| `rate_limited` | 120 | Seconds from a call's first 429 in which its 429 retries do not count toward `attempts` |
+
+A 429 retry with no wait counts toward `attempts`, so a profile with `backoff = 0` still stops.
 
 ## What a run records
 

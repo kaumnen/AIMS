@@ -431,7 +431,8 @@ async def test_rate_limit_is_retried_after_the_wait(store: LocalEventStore) -> N
         lambda: stream([error], 429, retry_after="0.05", content_type="application/json"),
         lambda: stream(sse(CHAT_EVENTS)),
     )
-    async with client(store, run_id, profile(), handler) as mc:
+    p = profile(retries=Retries(attempts=3, backoff=0, max=1))
+    async with client(store, run_id, p, handler) as mc:
         start = time.monotonic()
         reply = await mc.call("test", PROMPT)
     assert time.monotonic() - start >= 0.05
@@ -993,10 +994,187 @@ async def test_limiter_waits_for_the_headers_and_slots() -> None:
     assert time.monotonic() - start >= 0.04
     assert second.queued_ms >= 50
     second.release()
-    group.observe(RateLimit(retry_after_ms=100))
+    limiters = Limiters()
+    account = limiters.account("http://model.invalid/v1", None)
+    account.pause(0.1)
+    free = limiters.group("free", Limits(concurrency=1))
     start = time.monotonic()
-    (await group.acquire(0)).release()
+    (await free.acquire(0)).release()
+    assert time.monotonic() - start < 0.05
+    (await free.acquire(0, account)).release()
     assert time.monotonic() - start >= 0.09
+
+
+class Clock:
+    def __init__(self) -> None:
+        self.t = 1000.0
+
+    def __call__(self) -> float:
+        return self.t
+
+
+def test_rpm_holds_any_60_s_to_its_count() -> None:
+    from aims.models.limiter import _Window
+
+    clock = Clock()
+    window = _Window(3, clock)
+    for at in (0, 10, 20):
+        clock.t = 1000 + at
+        assert window.wait() == 0
+        window.take()
+    clock.t = 1030
+    assert window.wait() == pytest.approx(30)
+    clock.t = 1059.9
+    assert window.wait() == pytest.approx(0.1)
+    clock.t = 1060
+    assert window.wait() == 0
+    window.take()
+    assert window.wait() == pytest.approx(10)
+
+
+def test_a_window_holds_what_the_provider_says_is_gone() -> None:
+    from aims.models.limiter import _Window
+
+    clock = Clock()
+    window = _Window(5, clock)
+    window.take()
+    window.cap(0, 2000)
+    assert window.wait() == pytest.approx(2)
+    clock.t += 2
+    assert window.wait() == 0
+    later = _Window(5, Clock())
+    later.cap(3, None)
+    assert later.wait() == 0
+    for _ in range(3):
+        later.take()
+    assert later.wait() == pytest.approx(12)
+    late = _Window(5, Clock())
+    late.cap(-1, None)
+    assert late.wait() == pytest.approx(12)
+    far = _Window(5, Clock())
+    far.cap(0, 3_600_000)
+    assert far.wait() == pytest.approx(60)
+
+
+async def test_a_rate_limit_pauses_every_profile_on_the_account(store: LocalEventStore) -> None:
+    run_id = await new_run(store)
+    error = json.dumps({"error": {"message": "slow down"}}).encode()
+    handler, sent = scripted(
+        lambda: stream([error], 429, retry_after="0.5", content_type="application/json"),
+        lambda: stream(sse(CHAT_EVENTS)),
+        lambda: stream(sse(CHAT_EVENTS)),
+    )
+    once = Retries(attempts=1, backoff=0, max=1, rate_limited=0)
+    first = profile(name="first", api_key_env="KEY_A", retries=once)
+    other = profile(name="other", api_key_env="KEY_B")
+    same = profile(name="same", api_key_env="KEY_A")
+    models = ModelsConfig(
+        profiles={p.name: p for p in (first, other, same)},
+        roles=Roles(agent="first", sweep="first", judge="first"),
+    )
+    env = {"KEY_A": "a", "KEY_B": "b"}
+    transport = httpx2.MockTransport(handler)
+    limiters = Limiters()
+    agent = ModelClient(store, run_id, models, transport=transport, env=env, limiters=limiters)
+    monitor = ModelClient(store, run_id, models, transport=transport, env=env, limiters=limiters)
+    async with agent, monitor:
+        with pytest.raises(ModelCallError):
+            await agent.call("first", PROMPT)
+        await monitor.call("other", PROMPT)
+        await monitor.call("same", PROMPT)
+    requests = payloads(await store.events(run_id, types=["model.request"]))
+    queued = {r.profile: r.queued_ms for r in requests}
+    assert queued["first"] < 250
+    assert queued["other"] < 250
+    assert queued["same"] >= 250
+    assert len(sent) == 3
+
+
+async def test_rate_limit_retries_do_not_count_toward_attempts(store: LocalEventStore) -> None:
+    run_id = await new_run(store)
+    error = json.dumps({"error": {"message": "slow down"}}).encode()
+    limited = lambda: stream([error], 429, content_type="application/json")  # noqa: E731
+    handler, sent = scripted(limited, limited, limited, lambda: stream(sse(CHAT_EVENTS)))
+    p = profile(retries=Retries(attempts=1, backoff=0.01, max=0.02, rate_limited=10))
+    async with client(store, run_id, p, handler) as mc:
+        reply = await mc.call("test", PROMPT)
+    assert (reply.status, reply.attempts, len(sent)) == ("completed", 4, 4)
+    responses = payloads(await store.events(run_id, types=["model.response"]))
+    assert [r.retry for r in responses] == [True, True, True, False]
+
+
+async def test_rate_limit_retries_count_once_their_time_is_spent(store: LocalEventStore) -> None:
+    run_id = await new_run(store)
+    error = json.dumps({"error": {"message": "slow down"}}).encode()
+
+    def limited() -> httpx2.Response:
+        return stream([error], 429, retry_after="0.05", content_type="application/json")
+
+    handler, sent = scripted(limited, limited, limited, limited)
+    p = profile(retries=Retries(attempts=2, backoff=0, max=1, rate_limited=0.08))
+    async with client(store, run_id, p, handler) as mc:
+        with pytest.raises(ModelCallError) as info:
+            await mc.call("test", PROMPT)
+    assert info.value.reply.attempts == 3
+    assert len(sent) == 3
+    responses = payloads(await store.events(run_id, types=["model.response"]))
+    assert [r.retry for r in responses] == [True, True, False]
+
+
+@pytest.mark.parametrize("where", ["body", "stream"])
+async def test_a_429_code_behind_http_200_is_a_rate_limit(
+    store: LocalEventStore, where: str
+) -> None:
+    def answer(code: int) -> Callable[[], httpx2.Response]:
+        if where == "body":
+            raw = json.dumps(failing(code)).encode()
+            return lambda: stream([raw], content_type="application/json")
+        cut = [*CHAT_EVENTS[:4], chunk({"content": ""}, "error", error={"code": code})]
+        return lambda: stream(sse(cut))
+
+    run_id = await new_run(store)
+    handler, sent = scripted(answer(429), answer(502))
+    retries = Retries(attempts=1, backoff=0.01, max=0.02, rate_limited=10)
+    p = profile(stream=where == "stream", retries=retries)
+    async with client(store, run_id, p, handler) as mc:
+        with pytest.raises(ModelCallError):
+            await mc.call("test", PROMPT)
+    assert len(sent) == 2
+    responses = payloads(await store.events(run_id, types=["model.response"]))
+    assert [r.retry for r in responses] == [True, False]
+
+
+async def test_a_provider_wait_is_capped_at_retries_max(store: LocalEventStore) -> None:
+    run_id = await new_run(store)
+    error = json.dumps({"error": {"message": "busy"}}).encode()
+    handler, _ = scripted(
+        lambda: stream([error], 503, retry_after="5", content_type="application/json"),
+        lambda: stream(sse(CHAT_EVENTS)),
+    )
+    p = profile(retries=Retries(attempts=2, backoff=0, max=0.05))
+    async with client(store, run_id, p, handler) as mc:
+        start = time.monotonic()
+        reply = await mc.call("test", PROMPT)
+    assert time.monotonic() - start < 1
+    assert reply.attempts == 2
+
+
+async def test_replay_retries_where_the_recorded_call_did(store: LocalEventStore) -> None:
+    source = await new_run(store)
+    error = json.dumps({"error": {"message": "slow down"}}).encode()
+    limited = lambda: stream([error], 429, content_type="application/json")  # noqa: E731
+    handler, _ = scripted(limited, limited, lambda: stream(sse(CHAT_EVENTS)))
+    recorded = profile(retries=Retries(attempts=3, backoff=0, max=0, rate_limited=0))
+    async with client(store, source, recorded, handler) as mc:
+        first = await mc.call("test", PROMPT)
+    assert first.attempts == 3
+    recording = await Recording.load(store, source)
+    run_id = await new_run(store)
+    fewer = recorded.model_copy(update={"retries": Retries(attempts=2, backoff=0, max=0)})
+    async with client(store, run_id, fewer, handler, replay=recording) as mc:
+        again = await mc.call("test", PROMPT)
+    assert (again.status, again.attempts, again.turn) == ("completed", 3, first.turn)
+    assert recording.remaining() == 0
 
 
 async def test_the_bus_drops_for_slow_readers() -> None:

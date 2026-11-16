@@ -1,5 +1,7 @@
 import asyncio
+import bisect
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from aims.events import RateLimit
@@ -34,6 +36,41 @@ class _Bucket:
         self.level = min(self.level, float(remaining))
 
 
+class _Window:
+    """At most `per_minute` requests in any 60 s: each request holds its place for a minute.
+    A bucket that refills over the minute lets close to twice that through in the first one,
+    which a provider's per-minute limit refuses."""
+
+    def __init__(self, per_minute: int, clock: Callable[[], float] = time.monotonic) -> None:
+        self.capacity = per_minute
+        self.clock = clock
+        self.starts: list[float] = []
+
+    def _expire(self, now: float) -> None:
+        del self.starts[: bisect.bisect_right(self.starts, now - 60)]
+
+    def wait(self) -> float:
+        now = self.clock()
+        self._expire(now)
+        if len(self.starts) < self.capacity:
+            return 0.0
+        return self.starts[len(self.starts) - self.capacity] + 60 - now
+
+    def take(self) -> None:
+        now = self.clock()
+        self._expire(now)
+        bisect.insort(self.starts, now)
+
+    def cap(self, remaining: int, reset_ms: int | None) -> None:
+        """Hold the places the provider says are gone until its `reset_ms`, at most a minute.
+        Without one they free one by one over the minute, as the bucket refilled."""
+        now = self.clock()
+        self._expire(now)
+        for i in range(1, self.capacity - len(self.starts) - max(remaining, 0) + 1):
+            free = min(reset_ms / 1000, 60) if reset_ms is not None else i * 60 / self.capacity
+            bisect.insort(self.starts, now + free - 60)
+
+
 @dataclass(slots=True)
 class Lease:
     group: Group
@@ -50,33 +87,44 @@ class Lease:
         self.group.slots.release()
 
 
+class Account:
+    """The profiles that reach one base URL with one key env. A provider's limit often
+    covers all of an account's models, so a rate-limit answer to one pauses them all."""
+
+    def __init__(self) -> None:
+        self.paused_until = 0.0
+
+    def pause(self, seconds: float) -> None:
+        self.paused_until = max(self.paused_until, time.monotonic() + seconds)
+
+
 class Group:
     """The limits shared by the profiles of one group. Waiters are served in arrival order."""
 
     def __init__(self, limits: Limits) -> None:
         self.limits = limits
         self.slots = asyncio.Semaphore(limits.concurrency)
-        self.requests = _Bucket(limits.rpm) if limits.rpm else None
+        self.requests = _Window(limits.rpm) if limits.rpm else None
         self.tokens = _Bucket(limits.tpm) if limits.tpm else None
-        self.paused_until = 0.0
         self.turn = asyncio.Lock()
 
-    async def acquire(self, tokens: int) -> Lease:
+    async def acquire(self, tokens: int, account: Account | None = None) -> Lease:
+        """A slot once the caps have room and `account` is not paused."""
         start = time.monotonic()
         await self.slots.acquire()
         try:
             async with self.turn:
                 while True:
                     wait = max(
-                        self.paused_until - time.monotonic(),
-                        self.requests.wait(1) if self.requests else 0.0,
+                        account.paused_until - time.monotonic() if account else 0.0,
+                        self.requests.wait() if self.requests else 0.0,
                         self.tokens.wait(tokens) if self.tokens else 0.0,
                     )
                     if wait <= 0:
                         break
                     await asyncio.sleep(wait)
                 if self.requests:
-                    self.requests.take(1)
+                    self.requests.take()
                 if self.tokens:
                     self.tokens.take(tokens)
         except BaseException:
@@ -85,24 +133,29 @@ class Group:
         return Lease(self, tokens, int((time.monotonic() - start) * 1000))
 
     def observe(self, limit: RateLimit) -> None:
-        """Lower the buckets to what the provider says is left, and pause on a retry-after."""
+        """Lower the caps to what the provider says is left."""
         if self.requests and limit.remaining_requests is not None:
-            self.requests.cap(limit.remaining_requests)
+            self.requests.cap(limit.remaining_requests, limit.reset_requests_ms)
         if self.tokens and limit.remaining_tokens is not None:
             self.tokens.cap(limit.remaining_tokens)
-        if limit.retry_after_ms:
-            until = time.monotonic() + limit.retry_after_ms / 1000
-            self.paused_until = max(self.paused_until, until)
 
 
 class Limiters:
-    """Groups by name. Share one between clients that use the same provider accounts."""
+    """Groups by name and accounts by base URL and key env. Share one between clients that
+    use the same provider accounts."""
 
     def __init__(self) -> None:
         self.groups: dict[str, Group] = {}
+        self.accounts: dict[tuple[str, str | None], Account] = {}
 
     def group(self, name: str, limits: Limits) -> Group:
         group = self.groups.get(name)
         if group is None:
             group = self.groups[name] = Group(limits)
         return group
+
+    def account(self, url: str, key_env: str | None) -> Account:
+        account = self.accounts.get((url, key_env))
+        if account is None:
+            account = self.accounts[url, key_env] = Account()
+        return account

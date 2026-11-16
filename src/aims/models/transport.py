@@ -14,7 +14,8 @@ UNRECORDED_HEADERS = frozenset({"set-cookie"})
 @dataclass(slots=True)
 class Exchange:
     """What went over the wire for one attempt. `chunks` are raw body bytes with the ms since
-    the request was sent at which each arrived."""
+    the request was sent at which each arrived. A replayed attempt sets `origin` to the run
+    and event it came from, and `retry` to whether that call retried it."""
 
     sent: float | None = None
     status: int | None = None
@@ -22,6 +23,7 @@ class Exchange:
     chunks: list[tuple[int, bytes]] = field(default_factory=list)
     eof: bool = False
     origin: tuple[str, int] | None = None
+    retry: bool | None = None
 
     def ms(self) -> int:
         return 0 if self.sent is None else int((time.monotonic() - self.sent) * 1000)
