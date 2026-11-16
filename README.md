@@ -161,7 +161,7 @@ Open the printed sign-in link. Add your models under **Settings** > **Models** >
 | Page | Covers |
 | --- | --- |
 | [Write a scenario](https://github.com/kaumnen/AIMS/blob/main/docs/scenarios.md) | An example, plant kinds, agents and channels |
-| [Scenario reference](https://github.com/kaumnen/AIMS/blob/main/skills/aims/references/scenario.md) | Every field of a scenario |
+| [Scenario reference](https://github.com/kaumnen/AIMS/blob/main/skills/aims/references/scenario.md) | The scenario format and the rules that are easy to miss |
 | [The monitor](https://github.com/kaumnen/AIMS/blob/main/docs/monitor.md) | Layers, budgets, oversight and categories |
 | [Runs and reports](https://github.com/kaumnen/AIMS/blob/main/docs/runs.md) | Logs, forks, scores, series and deletion |
 | [Models](https://github.com/kaumnen/AIMS/blob/main/docs/models.md) | Profile fields, prices, adding a model and headers |

@@ -1,6 +1,6 @@
 # Write a scenario
 
-A scenario is a YAML file next to the files it uses. The built-in ones are in [`src/aims/scenarios`](../src/aims/scenarios). The [scenario reference](../skills/aims/references/scenario.md) lists every field.
+A scenario is a YAML file next to the files it uses. The built-in ones are in [`src/aims/scenarios`](../src/aims/scenarios). The [scenario reference](../skills/aims/references/scenario.md) maps the format and the rules that are easy to miss. `aims scenario schema` prints every field.
 
 - [Example](#example)
 - [Plant kinds](#plant-kinds)
