@@ -304,11 +304,11 @@ class ModelAdded(Out):
 async def add_model(
     body: ModelAdd, principal: Operator, state: State, note: audit.Note
 ) -> ModelAdded:
-    """Add a profile to the project file, as `aims models add --write` does, after what the
-    file holds. A name that a profile has already is refused, as is a role the profile does not
-    fit. The merged layers must load first. Runners are told the env vars it reads. With
-    `check` a runner must have said hello. The check is recorded as a run; `GET /models` says
-    how the add went once it ends."""
+    """Add a profile to the project file, as `aims models add --write` does: at its end, or
+    above [roles] when that table ends it. A name that a profile has already is refused, as is
+    a role the profile does not fit. The merged layers must load first. Runners are told the
+    env vars it reads. With `check` a runner must have said hello. The check is recorded as a
+    run; `GET /models` says how the add went once it ends."""
     roles = [r for r in ROLES if r in body.roles]
     try:
         name, table = one_profile(body.toml)
@@ -368,7 +368,7 @@ async def add_model(
     except Exception as e:
         log.exception("the check of added profile %s was not queued", name)
         why = str(e) if isinstance(e, ProblemException) else type(e).__name__
-        wait = f" The roles {', '.join(roles)} are not set." if roles else ""
+        wait = f" {_roles(roles).capitalize()} {_be(roles)} not set." if roles else ""
         return ModelAdded(
             name=name,
             path=str(path),
@@ -445,10 +445,10 @@ async def _finish_add(
         left = [r for r in wanted if r not in given]
         if given:
             text = with_roles(text, dict.fromkeys(given, name))
-            done.append(f"roles {', '.join(given)}")
+            done.append(_roles(given))
         what = f"set {' and '.join(done)}" if done else "nothing to set"
         if left:
-            what += f"; left {', '.join(left)}, which changed while the check ran"
+            what += f"; left {_roles(left)}, which changed while the check ran"
         if done:
             try:
                 await asyncio.to_thread(_validate, state, "project", text)
@@ -457,6 +457,15 @@ async def _finish_add(
             with writing(path):
                 await asyncio.to_thread(write_atomic, path, text.encode())
     return "done", f"the check passed; {what}"
+
+
+def _roles(roles: list[ModelRole]) -> str:
+    """'the role agent' or 'the roles sweep, judge'."""
+    return f"the role{'s' * (len(roles) > 1)} {', '.join(roles)}"
+
+
+def _be(roles: list[ModelRole]) -> str:
+    return "are" if len(roles) > 1 else "is"
 
 
 def _held(text: str) -> tuple[dict[str, Any], dict[str, Any]]:

@@ -6325,7 +6325,7 @@
       },
       "JobAdd": {
         "additionalProperties": false,
-        "description": "What the control plane does once the check of a profile the app added ends; a runner\nignores it. When no test failed it gives the profile `roles` and, with `measure`, the\nreasoning kind the plain test saw, in one write of the project file. It writes only while\nthe profile's fields there still have fingerprint `table`, the one the add wrote. It sets a\nrole only while the role still names what it named at the add, in `was`. `outcome` and\n`note` say how that went: `done` it wrote what there was to write, `failed` the check did\nnot pass, `changed` the profile changed first, `refused` the write would not load or could\nnot be made. Both are null until then.",
+        "description": "What the control plane does once the check of a profile the app added ends. A runner\nreads only `measure`, so the plain test does not warn of the kind it measures. When no\ntest failed it gives the profile `roles` and, with `measure`, the reasoning kind the plain\ntest saw, in one write of the project file. It writes only while the profile's fields there\nstill have fingerprint `table`, the one the add wrote. It sets a role only while the role\nstill names what it named at the add, in `was`. `outcome` and `note` say how that went:\n`done` it wrote what there was to write, `failed` the check did not pass, `changed` the\nprofile changed first, `refused` the write would not load or could not be made. Both are\nnull until then.",
         "properties": {
           "measure": {
             "default": true,
@@ -18453,7 +18453,7 @@
     },
     "/api/models/add": {
       "post": {
-        "description": "Add a profile to the project file, as `aims models add --write` does, after what the\nfile holds. A name that a profile has already is refused, as is a role the profile does not\nfit. The merged layers must load first. Runners are told the env vars it reads. With\n`check` a runner must have said hello. The check is recorded as a run; `GET /models` says\nhow the add went once it ends.",
+        "description": "Add a profile to the project file, as `aims models add --write` does: at its end, or\nabove [roles] when that table ends it. A name that a profile has already is refused, as is\na role the profile does not fit. The merged layers must load first. Runners are told the\nenv vars it reads. With `check` a runner must have said hello. The check is recorded as a\nrun; `GET /models` says how the add went once it ends.",
         "operationId": "add_model",
         "requestBody": {
           "content": {

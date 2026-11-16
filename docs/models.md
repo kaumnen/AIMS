@@ -233,7 +233,7 @@ It sends four small requests to each profile and records them as a run. Without 
 
 | Check | What it asks for |
 | --- | --- |
-| `plain` | A short answer with full usage counts. It warns when the reasoning is not of the kind the profile names. |
+| `plain` | A short answer with full usage counts. It warns when the reasoning is not of the kind the profile names. An add that takes the reasoning from the check does not warn. |
 | `unstreamed` | The same without streaming, or with it when the profile turns it off |
 | `tools` | A tool call and the answer after its result. It warns of several calls in one turn when the profile sets `parallel_tool_calls = false`. |
 | `structured` | An answer that matches a JSON schema |

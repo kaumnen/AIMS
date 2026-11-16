@@ -21,7 +21,7 @@ from typer.testing import CliRunner
 
 from aims import net
 from aims.cli import app
-from aims.config import ConfigError, add_table, layers, load, with_roles
+from aims.config import ConfigError, add_table, appended, layers, load, with_roles
 from aims.models import Profile, ProfileError, load_models
 from aims.models import add as adding
 from aims.models import check as checking
@@ -947,14 +947,15 @@ async def test_a_cancelled_race_cancels_every_attempt() -> None:
 @dataclass
 class Fakes:
     """What `aims models add` read and called in a test: the server lists it read by URL,
-    and the profiles the check got. `checks` gives each test's verdict and the plain test's
-    reasoning kind. `prices` is the map at hand, None for none."""
+    and the profiles the check got with whether it measured. `checks` gives each test's
+    verdict and the plain test's reasoning kind. `prices` is the map at hand, None for none."""
 
     reads: list[str] = field(default_factory=list)
     ids: tuple[str, ...] = ("org/big-model", "org/small-model")
     list_problem: Exception | None = None
     prices: PriceList | None = PRICES
     checked: list[Profile] = field(default_factory=list)
+    measured: list[bool] = field(default_factory=list)
     verdicts: dict[str, str] = field(default_factory=dict)
     reasoning: str | None = "full"
 
@@ -976,8 +977,9 @@ def fakes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Fakes:
     async def at_hand(lists: object) -> Found:
         return Found(found.prices, None if found.prices is not None else "down")
 
-    async def check(client: object, p: Profile) -> list[Check]:
+    async def check(client: object, p: Profile, *, measure: bool = False) -> list[Check]:
         found.checked.append(p)
+        found.measured.append(measure)
         out = []
         for name in ("plain", "unstreamed", "tools", "structured"):
             verdict: Any = found.verdicts.get(name, "ok")
@@ -1011,6 +1013,7 @@ def test_add_checks_the_draft_and_prints_it_with_the_reasoning_it_measured(
     assert out.stdout == drafted.measured("full").toml()
     assert 'reasoning = "full"' in out.stdout
     assert [p.reasoning for p in fakes.checked] == ["none"]
+    assert fakes.measured == [True]
     assert fakes.reads == [URL]
     lines = out.stderr.splitlines()
     assert lines[0] == "checking big-model with a few small requests"
@@ -1024,6 +1027,7 @@ def test_add_checks_the_draft_and_prints_it_with_the_reasoning_it_measured(
 def test_reasoning_that_is_given_stays_and_none_is_said_softly(fakes: Fakes) -> None:
     given = add(*BIG, "--set", "reasoning=summary")
     assert given.exit_code == 0, given.output
+    assert fakes.measured == [False]
     assert 'reasoning = "summary"' in given.stdout
     assert "as the check" not in given.stderr
     fakes.reasoning = "none"
@@ -1292,6 +1296,58 @@ def test_a_table_is_added_after_a_last_line_with_no_newline(tmp_path: Path) -> N
     add_table(layers(path), draft("second", base_url=URL).toml())
     assert path.read_bytes().startswith(b"[credits]\nexample = 1\n\n[profiles.")
     assert json.dumps(sorted(load(path).credits.items())) == '[["example", 1.0]]'
+
+
+NEW_TABLE = '[profiles.new]\nmodel = "m"\n'
+OLD_TABLE = '[profiles.a]\nmodel = "a"\n'
+
+
+@pytest.mark.parametrize(
+    ("old", "want"),
+    [
+        ("", NEW_TABLE),
+        (OLD_TABLE, OLD_TABLE + "\n" + NEW_TABLE),
+        (
+            OLD_TABLE + '\n[roles]\nagent = "a"\n',
+            OLD_TABLE + "\n" + NEW_TABLE + '\n[roles]\nagent = "a"\n',
+        ),
+        (
+            OLD_TABLE + '[roles]  # who runs what\nagent = "a"',
+            OLD_TABLE + "\n" + NEW_TABLE + '\n[roles]  # who runs what\nagent = "a"',
+        ),
+        # the comment right over [roles] stays with it; one a blank line apart stays put
+        (
+            OLD_TABLE + "\n# about a\n\n# the roles\n[roles]\n",
+            OLD_TABLE + "\n# about a\n\n" + NEW_TABLE + "\n# the roles\n[roles]\n",
+        ),
+        (
+            '[roles]\nagent = "a"\n\n' + OLD_TABLE,
+            '[roles]\nagent = "a"\n\n' + OLD_TABLE + "\n" + NEW_TABLE,
+        ),
+        ('[roles]\nagent = "a"\n', NEW_TABLE + '\n[roles]\nagent = "a"\n'),
+        # [roles] ends the file only inside a string, so the values would change
+        (
+            '[prompts]\nsystem = """\n[roles]\n"""\n',
+            '[prompts]\nsystem = """\n[roles]\n"""\n\n' + NEW_TABLE,
+        ),
+        ("[roles]\n[[runs]]\nx = 1\n", "[roles]\n[[runs]]\nx = 1\n\n" + NEW_TABLE),
+        ("[roles\n", "[roles\n\n" + NEW_TABLE),
+    ],
+    ids=[
+        "empty",
+        "no roles",
+        "roles last",
+        "roles with a comment, no newline",
+        "comments",
+        "roles first",
+        "only roles",
+        "roles in a string",
+        "array of tables after",
+        "not TOML",
+    ],
+)
+def test_a_new_profile_goes_above_roles_when_they_end_the_file(old: str, want: str) -> None:
+    assert appended(old.encode(), NEW_TABLE).decode() == want
 
 
 def test_roles_are_set_in_the_table_the_file_has() -> None:

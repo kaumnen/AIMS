@@ -173,7 +173,7 @@ def test_models_check_with_no_names_checks_each_profile_a_role_names_once(
 ) -> None:
     checked: list[str] = []
 
-    async def record(client: object, p: Any) -> list[Any]:
+    async def record(client: object, p: Any, *, measure: bool = False) -> list[Any]:
         checked.append(p.name)
         return []
 

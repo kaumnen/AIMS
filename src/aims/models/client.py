@@ -88,7 +88,8 @@ class ModelClient:
     Each attempt writes `model.request` before the request is sent and `model.response` after,
     however it ends, then one `tool.call` per function call of a completed answer. With a
     `replay` recording, answers come from that run instead of the provider; a request it has no
-    answer for fails the call.
+    answer for fails the call. It logs a warning the first time a profile's answer carries
+    another reasoning kind than the profile says, unless `warn_reasoning` is false.
     """
 
     def __init__(
@@ -103,6 +104,7 @@ class ModelClient:
         pace: Pace = "instant",
         env: Mapping[str, str] | None = None,
         transport: httpx2.AsyncBaseTransport | None = None,
+        warn_reasoning: bool = True,
     ) -> None:
         self.store = store
         self.run_id = run_id
@@ -115,6 +117,7 @@ class ModelClient:
         self._transport = transport
         self._clients: dict[tuple[Any, ...], AsyncOpenAI] = {}
         self._warned: set[str] = set()
+        self._warn_reasoning = warn_reasoning
 
     async def __aenter__(self) -> ModelClient:
         return self
@@ -323,9 +326,10 @@ class ModelClient:
         finally:
             current.reset(token)
         assembled = acc.result()
-        if status in ("completed", "incomplete") and assembled.reasoning_kind not in (
-            "none",
-            profile.reasoning,
+        if (
+            self._warn_reasoning
+            and status in ("completed", "incomplete")
+            and assembled.reasoning_kind not in ("none", profile.reasoning)
         ):
             self._warn(profile, assembled.reasoning_kind)
         outcome = _Outcome(

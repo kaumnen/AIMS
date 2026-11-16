@@ -330,6 +330,7 @@ class Node:
                     [models.get(n) for n in job.check],
                     run_id=job.run_id,
                     transport=self.options.model_transport,
+                    measure=job.add is not None and job.add.measure,
                 )
                 return
             with job_bundle(job, blobs) as bundle:

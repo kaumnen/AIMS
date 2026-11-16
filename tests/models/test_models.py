@@ -1,6 +1,7 @@
 import asyncio
 import itertools
 import json
+import logging
 import os
 import signal
 import time
@@ -58,7 +59,7 @@ from aims.models import (
     parse_ratelimit,
 )
 from aims.models.backends import BACKENDS, Chat, Responses, _reported_cost, params
-from aims.models.check import check_profile
+from aims.models.check import check_profile, record_check
 from aims.models.client import _cost
 from aims.models.replay import canonical_key
 from aims.models.transport import decode_chunks
@@ -185,6 +186,38 @@ def client(store: LocalEventStore, run_id: str, p: Profile, handler: Handler, **
     return ModelClient(
         store, run_id, config(p), transport=httpx2.MockTransport(handler), env={}, **kw
     )
+
+
+@pytest.mark.parametrize("warn", [True, False])
+async def test_another_reasoning_kind_is_warned_of_once_unless_turned_off(
+    store: LocalEventStore, caplog: pytest.LogCaptureFixture, warn: bool
+) -> None:
+    run_id = await new_run(store)
+    handler, _ = scripted(lambda: stream(sse(CHAT_EVENTS)), lambda: stream(sse(CHAT_EVENTS)))
+    with caplog.at_level(logging.WARNING, logger="aims.models"):
+        async with client(
+            store, run_id, profile(reasoning="none"), handler, warn_reasoning=warn
+        ) as mc:
+            for _ in range(2):
+                assert (await mc.call("test", PROMPT)).reasoning_kind == "full"
+    said = [r.getMessage() for r in caplog.records if "reasoning" in r.getMessage()]
+    assert said == (["profile test says reasoning none but the provider returned full"] * warn)
+
+
+@pytest.mark.parametrize("measure", [False, True])
+async def test_a_check_that_measures_the_reasoning_does_not_warn_of_it(
+    store: LocalEventStore, caplog: pytest.LogCaptureFixture, measure: bool
+) -> None:
+    def answer(request: httpx2.Request) -> httpx2.Response:
+        return stream(sse(CHAT_EVENTS))
+
+    p = profile(reasoning="none")
+    with caplog.at_level(logging.WARNING, logger="aims.models"):
+        await record_check(
+            store, config(p), [p], transport=httpx2.MockTransport(answer), measure=measure
+        )
+    said = [r.getMessage() for r in caplog.records if "provider returned" in r.getMessage()]
+    assert len(said) == (not measure)
 
 
 async def model_events(store: LocalEventStore, run_id: str) -> list[Event]:
@@ -1279,7 +1312,7 @@ def test_a_second_signal_while_aims_models_check_seals_leaves_the_seal_whole(
     root = tmp_path / "runs"
     append = LocalEventStore.append
 
-    async def hang(client: object, p: Profile) -> list[Any]:
+    async def hang(client: object, p: Profile, *, measure: bool = False) -> list[Any]:
         os.kill(os.getpid(), sig)
         await asyncio.sleep(5)
         raise AssertionError("the signal did not stop the check")
@@ -1334,7 +1367,7 @@ def test_a_ctrl_c_while_aims_models_check_makes_its_run_is_told_as_it_lands(
                     await asyncio.sleep(0.01)
         return await writer(self, run_id)
 
-    async def never(client: object, p: Profile) -> list[Any]:
+    async def never(client: object, p: Profile, *, measure: bool = False) -> list[Any]:
         raise AssertionError("the check began after the Ctrl-C")
 
     settings = SimpleNamespace(models=config(profile()))
@@ -1367,7 +1400,7 @@ def test_aims_models_check_seals_the_runs_an_earlier_process_left_running(
         async with await LocalEventStore.open(root) as store:
             return await store.create_run(RunStarted(scenario="left", oversight="observe"))
 
-    async def nothing(client: object, p: Profile) -> list[Any]:
+    async def nothing(client: object, p: Profile, *, measure: bool = False) -> list[Any]:
         return []
 
     run_id = asyncio.run(left())
@@ -1997,6 +2030,31 @@ async def test_the_check_never_raises_the_effort_it_measures_at(
     await check_profile(fake, profile(effort=effort))
     assert {o.effort if o else None for o in seen} == {sent}
     assert {o.max_output_tokens if o else None for o in seen} == {2048}
+
+
+@pytest.mark.parametrize(
+    ("kind", "measure", "verdict", "end"),
+    [
+        ("full", False, "warn", "reasoning full, profile says none"),
+        ("full", True, "ok", "reasoning full, set once the check passes"),
+        ("none", True, "ok", "reasoning none"),
+        ("none", False, "ok", "reasoning none"),
+    ],
+)
+async def test_the_plain_check_warns_of_another_reasoning_kind_unless_it_measures(
+    kind: str, measure: bool, verdict: str, end: str
+) -> None:
+    fake, _ = _answers(kind)
+    plain = (await check_profile(fake, profile(reasoning="none"), measure=measure))[0]
+    assert (plain.name, plain.verdict, plain.reasoning) == ("plain", verdict, kind)
+    assert plain.detail == f"usage 9/0/1/0, {end}"
+
+
+async def test_a_measuring_check_still_warns_of_missing_usage() -> None:
+    fake, _ = _answers("full", usage=False)
+    plain = (await check_profile(fake, profile(reasoning="none"), measure=True))[0]
+    assert (plain.verdict, plain.reasoning) == ("warn", "full")
+    assert plain.detail.startswith("usage lacks ")
 
 
 @pytest.mark.parametrize("usage", [True, False])

@@ -365,7 +365,7 @@ async def test_a_model_check_records_each_smoke_test(
 ) -> None:
     models = cp.state.config.settings().models
 
-    async def fake(client: object, profile: Profile) -> list[Check]:
+    async def fake(client: object, profile: Profile, *, measure: bool = False) -> list[Check]:
         return [
             Check(profile.name, "plain", "ok", "42", "summary"),
             Check(profile.name, "tools", "fail", "x"),
@@ -394,7 +394,7 @@ async def test_a_cancelled_model_check_is_sealed_as_cancelled(
     asked, sealing = asyncio.Event(), asyncio.Event()
     append = local.append
 
-    async def hang(client: object, profile: Profile) -> list[Check]:
+    async def hang(client: object, profile: Profile, *, measure: bool = False) -> list[Check]:
         asked.set()
         await asyncio.sleep(5)
         raise AssertionError("the cancel did not reach the check")
@@ -431,7 +431,7 @@ async def test_a_model_check_an_error_ends_is_sealed_as_failed_with_the_error(
 ) -> None:
     models = cp.state.config.settings().models
 
-    async def broken(client: object, profile: Profile) -> list[Check]:
+    async def broken(client: object, profile: Profile, *, measure: bool = False) -> list[Check]:
         raise OSError("disk full")
 
     monkeypatch.setattr(check, "check_profile", broken)

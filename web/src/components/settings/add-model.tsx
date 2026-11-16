@@ -475,9 +475,9 @@ function Draft({
       </fieldset>
       <div className="text-muted-foreground flex flex-col gap-1">
         <p>
-          Add puts it at the end of this project&apos;s aims.toml. With a check it gets the roles
-          only once the check passes
-          {measure ? ", and its reasoning becomes what the model sent" : ""}.
+          Add saves it in this project&apos;s aims.toml. With a check it gets the roles only once
+          the check passes.
+          {measure && " The check also sets its reasoning to what the model sent."}
           {draft.guessed && !measure && " The reasoning stays as you set it."}
         </p>
         {!edited && sameAsk(form.ask, ask) && (
@@ -576,7 +576,7 @@ function Added({ added, roles }: { added: ModelAdded; roles: readonly ModelRole[
         <DialogTitle>Added {added.name}</DialogTitle>
         <DialogDescription>
           It is in <span className="font-mono break-all">{added.path}</span>.
-          {run === null && roles.length > 0 && ` It has the roles ${roles.join(", ")}.`}
+          {run === null && roles.length > 0 && ` It has ${theRoles(roles)}.`}
         </DialogDescription>
       </DialogHeader>
       {added.notes.length > 0 && (
@@ -622,10 +622,18 @@ function Added({ added, roles }: { added: ModelAdded; roles: readonly ModelRole[
   );
 }
 
+// "the role agent" or "the roles sweep, judge"
+function theRoles(roles: readonly string[], the = "the"): string {
+  return `${the} role${roles.length > 1 ? "s" : ""} ${roles.join(", ")}`;
+}
+
 // How an add stands: waiting for a runner, checking, or how it went.
 export function AddLine({ info }: { info: AddInfo }) {
   if (info.outcome === null) {
-    const roles = info.roles.length > 0 ? ` The roles ${info.roles.join(", ")} follow a pass.` : "";
+    const roles =
+      info.roles.length > 0
+        ? ` ${theRoles(info.roles, "The")} ${info.roles.length > 1 ? "are" : "is"} set once the check passes.`
+        : "";
     return info.waiting !== null ? (
       <>
         The check waits: {info.waiting}.{roles}

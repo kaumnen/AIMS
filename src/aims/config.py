@@ -18,6 +18,7 @@ A scenario overrides all of them for its agents. A missing file adds nothing; no
 import hashlib
 import math
 import os
+import re
 import secrets
 import stat
 import tomllib
@@ -340,11 +341,32 @@ def init(path: Path, *, force: bool = False) -> Path:
     return path
 
 
+# a [roles] header line, which may end in a comment
+_ROLES_HEADER = re.compile(rb"^[ \t]*\[[ \t]*roles[ \t]*\][ \t]*(?:#.*)?$", re.MULTILINE)
+_HEADER = re.compile(rb"^[ \t]*\[", re.MULTILINE)
+
+
 def appended(old: bytes, table: str) -> bytes:
     """The bytes of a config file, `old`, with `table`, the TOML text of one, after a blank
-    line at its end."""
+    line at its end. When [roles] is the last table, `table` goes above it and the comment
+    lines right over it, so the profiles stay together; only when the file holds the same
+    values that way."""
     gap = b"" if not old else b"\n" if old.endswith(b"\n") else b"\n\n"
-    return old + gap + table.encode()
+    at_end = old + gap + table.encode()
+    found = list(_ROLES_HEADER.finditer(old))
+    if not found or _HEADER.search(old, found[-1].end()):
+        return at_end
+    lines = old[: found[-1].start()].splitlines(keepends=True)
+    while lines and lines[-1].lstrip().startswith(b"#"):
+        lines.pop()
+    head = b"".join(lines)
+    pad = b"" if not head or head.endswith(b"\n\n") else b"\n"
+    placed = head + pad + table.encode() + b"\n" + old[len(head) :]
+    try:
+        same = tomllib.loads(placed.decode()) == tomllib.loads(at_end.decode())
+    except UnicodeDecodeError, tomllib.TOMLDecodeError:
+        return at_end
+    return placed if same else at_end
 
 
 def with_roles(text: str, roles: Mapping[Role, str]) -> str:
@@ -374,8 +396,9 @@ def with_roles(text: str, roles: Mapping[Role, str]) -> str:
 def add_table(
     found: Layers, table: str, roles: Mapping[Role, str] | None = None, *, trial: bool = False
 ) -> Path:
-    """Append `table`, the TOML text of one, to the project file of `found`, or to a new
-    aims.toml in the working directory when there is none, and set `roles` under its [roles].
+    """Add `table`, the TOML text of one, to the project file of `found` as `appended` does,
+    or to a new aims.toml in the working directory when there is none, and set `roles` under
+    its [roles].
     The layers must load with it first: a ConfigError, ProfileError or TextError leaves the
     file as it was. With `trial` only the load is tried. The file is left as it was."""
     path = found.project if found.project is not None else Path.cwd() / PROJECT

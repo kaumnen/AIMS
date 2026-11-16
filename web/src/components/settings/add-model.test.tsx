@@ -269,7 +269,9 @@ test("an edited profile is kept until you draft again, and a reasoning you set s
   expect(dialog.getByRole("checkbox", { name: /^agent/ }).closest("label")?.textContent).toBe(
     "agent runs a scenario's agents · now alpha",
   );
-  expect(dialog.getByText(/its reasoning becomes what the model sent/)).toBeTruthy();
+  expect(
+    dialog.getByText(/The check also sets its reasoning to what the model sent\./),
+  ).toBeTruthy();
 
   fireEvent.change(text, { target: { value: TOML.replace('"none"', '"full"') } });
   const edited = dialog.getByRole("textbox", { name: "Profile (edited)" });
@@ -356,7 +358,7 @@ test("an add with a check is sent once and follows the check to its end", async 
   expect(done.getByText("/work/aims.toml")).toBeTruthy();
   expect(
     await done.findByText(
-      "The check waits: no runner is connected. The roles agent follow a pass.",
+      "The check waits: no runner is connected. The role agent is set once the check passes.",
     ),
   ).toBeTruthy();
   expect(done.getByRole("link", { name: "check run" }).getAttribute("href")).toBe(`/runs/${CHECK}`);
@@ -377,7 +379,7 @@ test("an add with a check is sent once and follows the check to its end", async 
       },
       add: addInfo({
         outcome: "done",
-        note: "the check passed; set reasoning full and roles agent",
+        note: "the check passed; set reasoning full and the role agent",
       }),
     }),
   ];
@@ -389,7 +391,7 @@ test("an add with a check is sent once and follows the check to its end", async 
     });
   });
   expect(
-    await done.findByText("The check passed; set reasoning full and roles agent."),
+    await done.findByText("The check passed; set reasoning full and the role agent."),
   ).toBeTruthy();
   expect(done.getByText("plain")).toBeTruthy();
   expect(done.getByText(": slow")).toBeTruthy();
@@ -439,7 +441,7 @@ test("an add without a check sets the roles at once", async () => {
   fireEvent.click(dialog.getByRole("checkbox", { name: /^judge/ }));
   fireEvent.click(dialog.getByRole("button", { name: "Add without checking" }));
   const done = within(await screen.findByRole("dialog", { name: "Added gem-9" }));
-  expect(done.getByText(/It has the roles judge\./)).toBeTruthy();
+  expect(done.getByText(/It has the role judge\./)).toBeTruthy();
   expect(done.queryByRole("link", { name: "check run" })).toBeNull();
   expect(await adds()).toEqual([{ toml: TOML, roles: ["judge"], check: false, measure: true }]);
 });
@@ -464,7 +466,11 @@ test("a refused add saves nothing, and a check that was not queued says so", asy
 test("a profile's row says how its add stands, and one that failed can be removed", async () => {
   profiles = [
     profile({}),
-    profile({ name: "waits", roles: [], add: addInfo({ waiting: "every runner is busy" }) }),
+    profile({
+      name: "waits",
+      roles: [],
+      add: addInfo({ roles: ["agent", "judge"], waiting: "every runner is busy" }),
+    }),
     profile({
       name: "broke",
       roles: [],
@@ -493,7 +499,7 @@ test("a profile's row says how its add stands, and one that failed can be remove
   const row = (name: string) => within(table).getByText(name).closest("tr") as HTMLElement;
   expect(
     within(row("waits")).getByText(
-      "The check waits: every runner is busy. The roles agent follow a pass.",
+      "The check waits: every runner is busy. The roles agent, judge are set once the check passes.",
     ),
   ).toBeTruthy();
   expect(within(row("waits")).queryByRole("button", { name: "Remove waits" })).toBeNull();

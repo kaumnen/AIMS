@@ -7,7 +7,8 @@ import contextlib
 import tomllib
 from collections.abc import AsyncGenerator, AsyncIterator
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import httpx2
 import pytest
@@ -28,6 +29,8 @@ from aims.events.store import LOG
 from aims.models.add import ServerList, ServerLists, draft, fingerprint
 from aims.models.check import Verdict
 from aims.models.listprice import PriceLists
+from aims.node import service
+from aims.node.service import Node, NodeOptions
 from aims.run.job import Job
 from aims.server import edit_api
 from aims.server.app import create_app
@@ -285,8 +288,9 @@ async def test_an_unchecked_add_saves_the_profile_with_its_roles(cp: CP) -> None
         assert r.json() == {"name": NAME, "path": str(cp.project), "run_id": None, "notes": []}
         again = await c.post(ADD, json={"toml": text, "check": False})
         assert (again.status_code, again.json()["code"]) == (409, "exists")
-    assert cp.project.read_text() == (
-        before.replace('agent = "scripted"', f'agent = "{NAME}"\njudge = "{NAME}"') + "\n" + text
+    # it goes above the [roles] that ends the file
+    assert cp.project.read_text() == before.replace(
+        '[roles]\nagent = "scripted"\n', f'{text}\n[roles]\nagent = "{NAME}"\njudge = "{NAME}"\n'
     )
     roles = (await profiles(cp))["roles"]
     assert (roles["agent"], roles["judge"]) == (NAME, NAME)
@@ -298,7 +302,7 @@ async def test_an_unchecked_add_saves_the_profile_with_its_roles(cp: CP) -> None
 
 
 async def test_a_profile_given_as_root_keys_still_lands_in_its_own_table(cp: CP) -> None:
-    # appended as written, root keys would join the [roles] table that ends the file
+    # as written, root keys would join the table above them
     text = "".join(
         f"profiles.loose.{k} = {v}\n"
         for k, v in (
@@ -314,7 +318,7 @@ async def test_a_profile_given_as_root_keys_still_lands_in_its_own_table(cp: CP)
     assert r.status_code == 200, r.text
     assert cp.project.read_text().endswith(
         '\n[profiles.loose]\nbackend = "chat"\nbase_url = "http://m.invalid/v1"\nmodel = "m"\n'
-        'weights = "lw"\nreasoning = "none"\n'
+        'weights = "lw"\nreasoning = "none"\n\n[roles]\nagent = "scripted"\n'
     )
     assert cp.state.config.settings().models.get("loose").weights == "lw"
 
@@ -431,7 +435,7 @@ async def test_a_checked_add_sets_the_roles_and_reasoning_once_the_check_passes(
         before = cp.project.read_text()
         run_id = await add(cp, text, roles=["agent"])
         # the profile is saved at once, without its role
-        assert cp.project.read_text() == before + "\n" + text
+        assert cp.project.read_text() == before.replace("[roles]\n", f"{text}\n[roles]\n")
         assert (await profiles(cp))["roles"]["agent"] == "scripted"
         job = await play_check(fake, local)
         assert job.run_id == run_id
@@ -441,10 +445,9 @@ async def test_a_checked_add_sets_the_roles_and_reasoning_once_the_check_passes(
         assert job.add.was == {"agent": "scripted"}
     finally:
         await fake.close()
-    assert cp.project.read_text() == (
-        before.replace('agent = "scripted"', f'agent = "{NAME}"')
-        + "\n"
-        + text.replace('reasoning = "none"', 'reasoning = "full"')
+    full = text.replace('reasoning = "none"', 'reasoning = "full"')
+    assert cp.project.read_text() == before.replace(
+        '[roles]\nagent = "scripted"\n', f'{full}\n[roles]\nagent = "{NAME}"\n'
     )
     assert cp.state.config.settings().models.get(NAME).reasoning == "full"
     assert await outcome(cp) == {
@@ -453,7 +456,7 @@ async def test_a_checked_add_sets_the_roles_and_reasoning_once_the_check_passes(
         "measure": True,
         "waiting": None,
         "outcome": "done",
-        "note": "the check passed; set reasoning full and roles agent",
+        "note": "the check passed; set reasoning full and the role agent",
     }
     lines = (await profiles(cp))["profiles"]
     plain = next(p for p in lines if p["name"] == NAME)["check"]["checks"][0]
@@ -464,7 +467,7 @@ async def test_a_checked_add_sets_the_roles_and_reasoning_once_the_check_passes(
             NAME,
             "ok",
             None,
-            f"after check run {run_id}: the check passed; set reasoning full and roles agent",
+            f"after check run {run_id}: the check passed; set reasoning full and the role agent",
         ),
     ]
 
@@ -517,8 +520,9 @@ async def test_a_profile_that_changed_during_the_check_is_left_as_it_is(
     fake = await runner(cp)
     try:
         await add(cp, await toml(cp), roles=["agent"])
-        # the profile is last in the file, so this key lands in its table
-        cp.project.write_text(cp.project.read_text() + "context_tokens = 1000\n")
+        # the profile is right above [roles], so this key lands in its table
+        text = cp.project.read_text()
+        cp.project.write_text(text.replace("\n[roles]\n", "context_tokens = 1000\n\n[roles]\n"))
         edited = cp.project.read_bytes()
         await play_check(fake, local)
     finally:
@@ -555,9 +559,35 @@ async def test_edits_elsewhere_and_a_role_set_meanwhile_are_kept(
     assert found is not None
     assert (found["outcome"], found["note"]) == (
         "done",
-        "the check passed; set reasoning full and roles agent; left judge, which changed while"
-        " the check ran",
+        "the check passed; set reasoning full and the role agent; left the role judge, which"
+        " changed while the check ran",
     )
+
+
+@pytest.mark.parametrize("measure", [True, False, None], ids=["measure", "keep", "no add"])
+async def test_a_runner_checks_with_measure_only_for_an_add_that_measures(
+    cp: CP, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, measure: bool | None
+) -> None:
+    fake = await runner(cp)
+    try:
+        await add(cp, await toml(cp), roles=["agent"], measure=bool(measure))
+        offer = await fake.next(OfferMessage)
+        job = await fake.client.claim(offer.run_id)
+    finally:
+        await fake.close()
+    assert isinstance(job, Job)
+    if measure is None:
+        job = job.model_copy(update={"add": None})
+    seen: list[object] = []
+
+    async def record(*args: object, **kw: object) -> None:
+        seen.append(kw.get("measure"))
+
+    monkeypatch.setattr(service, "record_check", record)
+    node = Node(NodeOptions(url="http://cp", token="t", name="n", data=tmp_path))
+    node._open = cast(Any, SimpleNamespace(store=None, link=SimpleNamespace(ship=lambda _: None)))
+    await node._execute(job)
+    assert seen == [measure is True]
 
 
 async def test_measure_off_keeps_the_reasoning_the_profile_sets(
@@ -573,7 +603,7 @@ async def test_measure_off_keeps_the_reasoning_the_profile_sets(
     assert cp.state.config.settings().models.roles.agent == NAME
     found = await outcome(cp)
     assert found is not None
-    assert (found["outcome"], found["note"]) == ("done", "the check passed; set roles agent")
+    assert (found["outcome"], found["note"]) == ("done", "the check passed; set the role agent")
 
 
 async def test_a_passing_check_with_nothing_to_set_writes_nothing(
@@ -657,8 +687,15 @@ async def test_a_check_waits_for_a_runner_with_the_new_key_then_sets_the_roles(
     assert cp.state.config.settings().models.roles.agent == NAME
 
 
+@pytest.mark.parametrize(
+    ("roles", "unset"),
+    [
+        (["agent"], "The role agent is not set."),
+        (["agent", "judge"], "The roles agent, judge are not set."),
+    ],
+)
 async def test_a_check_that_was_not_queued_answers_with_a_note(
-    cp: CP, monkeypatch: pytest.MonkeyPatch
+    cp: CP, monkeypatch: pytest.MonkeyPatch, roles: list[str], unset: str
 ) -> None:
     async def refused(*args: object, **kw: object) -> None:
         raise RuntimeError("down")
@@ -668,14 +705,13 @@ async def test_a_check_that_was_not_queued_answers_with_a_note(
     try:
         text = await toml(cp)
         async with cp.client(cp.operator) as c:
-            r = await c.post(ADD, json={"toml": text, "roles": ["agent"]})
+            r = await c.post(ADD, json={"toml": text, "roles": roles})
     finally:
         await fake.close()
     assert r.status_code == 200, r.text
     assert (r.json()["name"], r.json()["run_id"]) == (NAME, None)
     assert r.json()["notes"] == [
-        "Its check was not queued: RuntimeError. The roles agent are not set. Check it under"
-        " Settings > Models."
+        f"Its check was not queued: RuntimeError. {unset} Check it under Settings > Models."
     ]
     assert NAME in cp.state.config.settings().models.profiles
 

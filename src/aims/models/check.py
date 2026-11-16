@@ -77,8 +77,12 @@ def _prompt(text: str, **kw: object) -> Prompt:
     return Prompt.model_validate({"items": items, **kw})
 
 
-async def check_profile(client: ModelClient, profile: Profile) -> list[Check]:
-    """Smoke tests of one provider: plain, non-streamed, tool round trip, structured output."""
+async def check_profile(
+    client: ModelClient, profile: Profile, *, measure: bool = False
+) -> list[Check]:
+    """Smoke tests of one provider: plain, non-streamed, tool round trip, structured output.
+    With `measure` the profile takes the reasoning kind the plain test sees once the check
+    passes, so a kind other than the profile's is no warning."""
     keep = profile.effort is None or profile.effort in LOW
     small = Overrides(max_output_tokens=2048) if keep else SMALL
     out: list[Check] = []
@@ -104,7 +108,7 @@ async def check_profile(client: ModelClient, profile: Profile) -> list[Check]:
         if missing:
             return "warn", f"usage lacks {', '.join(missing)}"
         detail = f"usage {u.input_tokens}/{u.cached_tokens}/{u.output_tokens}/{u.reasoning_tokens}"
-        return _reasoning(profile, r, detail)
+        return _reasoning(profile, r, detail, measure)
 
     async def unstreamed() -> tuple[Verdict, str]:
         p = profile.model_copy(update={"stream": not profile.stream})
@@ -155,10 +159,12 @@ async def check_profile(client: ModelClient, profile: Profile) -> list[Check]:
     return out
 
 
-def _reasoning(profile: Profile, r: Reply, detail: str) -> tuple[Verdict, str]:
+def _reasoning(profile: Profile, r: Reply, detail: str, measure: bool) -> tuple[Verdict, str]:
     got = r.reasoning_kind
     if got == profile.reasoning:
         return "ok", f"{detail}, reasoning {got}"
+    if measure:
+        return "ok", f"{detail}, reasoning {got}, set once the check passes"
     if got == "none" and profile.reasoning == "summary":
         return "ok", f"{detail}, no summary for a short answer"
     return "warn", f"{detail}, reasoning {got}, profile says {profile.reasoning}"
@@ -172,8 +178,10 @@ async def record_check(
     run_id: str | None = None,
     on_check: Callable[[Check], None] | None = None,
     transport: httpx2.AsyncBaseTransport | None = None,
+    measure: bool = False,
 ) -> tuple[str, list[Check]]:
-    """Check each profile in `chosen`, recorded as a `models.check` run."""
+    """Check each profile in `chosen`, recorded as a `models.check` run. `measure` is as for
+    check_profile."""
     config = {"models": models.snapshot(p.name for p in chosen)}
     started = RunStarted(
         scenario="models.check", oversight="observe", config=config, kind="models.check"
@@ -183,9 +191,12 @@ async def record_check(
     status: RunStatus = "failed"
     reason = None
     try:
-        async with ModelClient(store, run_id, models, transport=transport) as client:
+        # a measured reasoning kind is what the check is for, so the client does not warn of it
+        async with ModelClient(
+            store, run_id, models, transport=transport, warn_reasoning=not measure
+        ) as client:
             for profile in chosen:
-                found = await check_profile(client, profile)
+                found = await check_profile(client, profile, measure=measure)
                 await store.append(
                     run_id,
                     [

@@ -188,11 +188,11 @@ export interface paths {
         put?: never;
         /**
          * Add Model
-         * @description Add a profile to the project file, as `aims models add --write` does, after what the
-         *     file holds. A name that a profile has already is refused, as is a role the profile does not
-         *     fit. The merged layers must load first. Runners are told the env vars it reads. With
-         *     `check` a runner must have said hello. The check is recorded as a run; `GET /models` says
-         *     how the add went once it ends.
+         * @description Add a profile to the project file, as `aims models add --write` does: at its end, or
+         *     above [roles] when that table ends it. A name that a profile has already is refused, as is
+         *     a role the profile does not fit. The merged layers must load first. Runners are told the
+         *     env vars it reads. With `check` a runner must have said hello. The check is recorded as a
+         *     run; `GET /models` says how the add went once it ends.
          */
         post: operations["add_model"];
         delete?: never;
@@ -4023,14 +4023,15 @@ export interface components {
         };
         /**
          * JobAdd
-         * @description What the control plane does once the check of a profile the app added ends; a runner
-         *     ignores it. When no test failed it gives the profile `roles` and, with `measure`, the
-         *     reasoning kind the plain test saw, in one write of the project file. It writes only while
-         *     the profile's fields there still have fingerprint `table`, the one the add wrote. It sets a
-         *     role only while the role still names what it named at the add, in `was`. `outcome` and
-         *     `note` say how that went: `done` it wrote what there was to write, `failed` the check did
-         *     not pass, `changed` the profile changed first, `refused` the write would not load or could
-         *     not be made. Both are null until then.
+         * @description What the control plane does once the check of a profile the app added ends. A runner
+         *     reads only `measure`, so the plain test does not warn of the kind it measures. When no
+         *     test failed it gives the profile `roles` and, with `measure`, the reasoning kind the plain
+         *     test saw, in one write of the project file. It writes only while the profile's fields there
+         *     still have fingerprint `table`, the one the add wrote. It sets a role only while the role
+         *     still names what it named at the add, in `was`. `outcome` and `note` say how that went:
+         *     `done` it wrote what there was to write, `failed` the check did not pass, `changed` the
+         *     profile changed first, `refused` the write would not load or could not be made. Both are
+         *     null until then.
          */
         JobAdd: {
             /**

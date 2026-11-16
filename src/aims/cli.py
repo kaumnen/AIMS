@@ -642,7 +642,11 @@ def models_add(
         typer.echo(f"checking {found.name} with a few small requests", err=True)
         models = ModelsConfig(profiles={found.name: profile})
         try:
-            checks = asyncio.run(_check(models, [profile], runs_dir, str(uuid.uuid7()), err=True))
+            checks = asyncio.run(
+                _check(
+                    models, [profile], runs_dir, str(uuid.uuid7()), err=True, measure=found.guessed
+                )
+            )
         except asyncio.CancelledError:
             raise typer.Exit(EXIT_CANCELLED) from None
         kind = next((c.reasoning for c in checks if c.name == "plain"), None)
@@ -744,10 +748,17 @@ async def _stopped(store: Any, run_id: str, kind: str) -> None:
 
 
 async def _check(
-    models: Any, chosen: list[Any], runs_dir: Path, run_id: str, *, err: bool = False
+    models: Any,
+    chosen: list[Any],
+    runs_dir: Path,
+    run_id: str,
+    *,
+    err: bool = False,
+    measure: bool = False,
 ) -> list[Any]:
     """Check the profiles `chosen`, recorded as run `run_id`. Print a line for each test and
-    the run's id, to stderr when `err`. Returns the checks."""
+    the run's id, to stderr when `err`. `measure` is as for check_profile. Returns the
+    checks."""
     import asyncio
 
     from aims.events import LocalEventStore
@@ -760,7 +771,9 @@ async def _check(
         try:
             with _stoppable():
                 await _seal_left(store, lambda text: typer.echo(text, err=True))
-                _, checks = await record_check(store, models, chosen, run_id=run_id, on_check=show)
+                _, checks = await record_check(
+                    store, models, chosen, run_id=run_id, on_check=show, measure=measure
+                )
         except asyncio.CancelledError:
             await _stopped(store, run_id, "run")
             raise
