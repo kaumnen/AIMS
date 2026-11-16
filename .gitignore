@@ -14,6 +14,7 @@ __pycache__/
 .coverage.*
 
 node_modules/
+*.tsbuildinfo
 src/aims/ui/dist/
 
 /runs/
