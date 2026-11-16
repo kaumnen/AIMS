@@ -21,6 +21,8 @@ let budgets: (string | null)[];
 let samplesAsked: number[];
 let seriesFound: Record<string, SeriesInfo>;
 let seriesPost: Response | null;
+// an estimate answers only once this settles
+let estimateGate: Promise<void> | null;
 
 const CAPS = { steps: 80, output_tokens: null, cost_usd: 4, wall_s: 1800 };
 const NO_CAPS = { steps: null, output_tokens: null, cost_usd: null, wall_s: null };
@@ -74,7 +76,14 @@ const scenarios: ScenarioInfo[] = [
 
 const WARNING = "the monitor's cap pays for sweeps over about 3 of 4 agent steps";
 
-function estimate(samples: number, budget: string | null = null): Estimate {
+// The run calls the agent's profile, and with the monitor's models on, beta for its sweep and
+// its judge.
+function estimate(
+  samples: number,
+  budget: string | null = null,
+  profile = "alpha",
+  monitor: string | null = null,
+): Estimate {
   const ceiling = 9 * samples;
   const every = budget ? (JSON.parse(budget) as { every?: { steps?: number } }).every : undefined;
   return {
@@ -98,6 +107,9 @@ function estimate(samples: number, budget: string | null = null): Estimate {
         steps: {},
         replayed: {},
         caps: { agents: { agent: { ...CAPS, ...every } }, run: NO_CAPS, monitor_cost_usd: 9.45 },
+        agent_profiles: { agent: profile },
+        monitor_profiles:
+          monitor === "off" || monitor === "signals" ? {} : { "sweep:main": "beta", judge: "beta" },
       },
     ],
     rates: [],
@@ -117,6 +129,7 @@ beforeEach(() => {
   samplesAsked = [];
   seriesFound = {};
   seriesPost = null;
+  estimateGate = null;
   vi.stubGlobal("EventSource", FakeEventSource);
   vi.stubGlobal("fetch", fetch);
   fetch.mockImplementation(async (request) => {
@@ -165,10 +178,19 @@ beforeEach(() => {
       });
     }
     if (path.endsWith("/estimate")) {
+      if (estimateGate) await estimateGate;
       const budget = url.searchParams.get("budget");
       budgets.push(budget);
       samplesAsked.push(Number(url.searchParams.get("samples") ?? 1));
-      return Response.json(estimate(Number(url.searchParams.get("samples") ?? 1), budget));
+      const q = url.searchParams;
+      return Response.json(
+        estimate(
+          Number(q.get("samples") ?? 1),
+          budget,
+          q.get("profile") ?? "alpha",
+          q.get("monitor"),
+        ),
+      );
     }
     if (path === "/api/models/check" && request.method === "POST") {
       checks.push(((await request.json()) as { profiles: string[] }).profiles);
@@ -240,15 +262,16 @@ test("viewers get no new run button", async () => {
   expect(screen.queryByRole("button", { name: "New run" })).toBeNull();
 });
 
-test("the form shows the scenario, its oversight, profile checks and the estimate", async () => {
+test("the form shows the scenario, its oversight, model checks and the estimate", async () => {
   renderAt("/runs");
   const form = await openForm();
   expect(form.getByRole("combobox", { name: "Scenario" }).textContent).toContain("cache-keys");
   expect(form.queryByText(/broken/)).toBeNull();
   expect(form.getByText(/Human oversight: when the monitor pauses an agent/)).toBeTruthy();
   expect(form.queryByRole("alert")).toBeNull();
-  expect(form.getByText("alpha: works with warnings")).toBeTruthy();
+  expect(form.getByText("alpha (agent): works with warnings")).toBeTruthy();
   expect(form.getByText("tools: usage lacks cached")).toBeTruthy();
+  expect(form.getByText("beta (sweep main, judge): never checked")).toBeTruthy();
   expect(form.getByRole("combobox", { name: "Monitor" }).textContent).toContain(
     "From config (standard)",
   );
@@ -259,9 +282,11 @@ test("the form shows the scenario, its oversight, profile checks and the estimat
 
   await pick(form, "Monitor", "off");
   expect(form.getByRole("alert").textContent).toContain("No monitor");
+  await waitFor(() => expect(form.queryByText(/^beta/)).toBeNull());
 
   await pick(form, "Profile", /beta/);
-  expect(form.getByText("beta: never checked")).toBeTruthy();
+  expect(await form.findByText("beta (agent): never checked")).toBeTruthy();
+  expect(form.queryByText(/^alpha/)).toBeNull();
   expect(form.getByText("No connected runner has OTHER_KEY.")).toBeTruthy();
 });
 
@@ -308,17 +333,36 @@ test("a model check runs on demand and reads the result once it ends", async () 
   const form = await openForm();
   const before = models().length;
   fireEvent.click(form.getByRole("button", { name: "Check" }));
-  await waitFor(() => expect(checks).toEqual([["alpha"]]));
-  expect(await form.findByText("alpha: checking")).toBeTruthy();
+  await waitFor(() => expect(checks).toEqual([["alpha", "beta"]]));
+  expect(await form.findByText("alpha (agent): checking")).toBeTruthy();
+  expect(form.getByText("beta (sweep main, judge): checking")).toBeTruthy();
   const source = FakeEventSource.all[0];
   if (!source) throw new Error("no stream");
   act(() => source.send({ kind: "run", run: run("c2", { status: "queued", state: "claimed" }) }));
   act(() => source.send({ kind: "run", run: run("c2", { status: "running", state: "running" }) }));
-  expect(form.getByText("alpha: checking")).toBeTruthy();
+  expect(form.getByText("alpha (agent): checking")).toBeTruthy();
   expect(models().length).toBe(before);
   act(() => source.send({ kind: "run", run: run("c2", { status: "completed", state: "done" }) }));
   await waitFor(() => expect(models().length).toBe(before + 1));
-  expect(await form.findByText("alpha: works with warnings")).toBeTruthy();
+  expect(await form.findByText("alpha (agent): works with warnings")).toBeTruthy();
+});
+
+test("the model list cannot be checked until the estimate of the new picks is in", async () => {
+  renderAt("/runs");
+  const form = await openForm();
+  const button = form.getByRole("button", { name: "Check" }) as HTMLButtonElement;
+  expect(button.disabled).toBe(false);
+  let open = () => {};
+  estimateGate = new Promise((resolve) => {
+    open = resolve;
+  });
+  await pick(form, "Monitor", "off");
+  await waitFor(() => expect(button.disabled).toBe(true));
+  // the list is still that of the picks before
+  expect(form.getByText("beta (sweep main, judge): never checked")).toBeTruthy();
+  open();
+  await waitFor(() => expect(form.queryByText(/^beta/)).toBeNull());
+  expect(button.disabled).toBe(false);
 });
 
 test("a run starts with the chosen options and opens", async () => {

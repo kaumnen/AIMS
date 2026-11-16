@@ -903,6 +903,30 @@ async def test_the_monitor_estimate_matches_the_same_monitor(
 
 
 @pytest.mark.anyio
+async def test_each_part_names_the_profiles_its_run_calls(tmp_path: Path) -> None:
+    # a scripted agent calls no model; the channel sweep, the review and the extractor are
+    # named here, the sweeps and the judge come from the roles
+    extra = (
+        "  - id: c\n    role: confederate\n    script: [{post: {channel: chat, text: hi}}]\n"
+        "channels:\n  - {name: chat, kind: board, members: [a, c]}\n"
+    )
+    monitor = "standard, review: {profile: other}, extract: [free], channels: {profile: other}"
+    settings, path = write(tmp_path, preset=monitor, extra=extra)
+    bundle = load_scenario(path)
+    part = (await one(settings, History(), bundle)).parts[0]
+    assert part.agent_profiles == {"a": "agent"}
+    assert part.monitor_profiles == {
+        "sweep:main": "watcher",
+        "review": "other",
+        "judge": "watcher",
+        "extract": "free",
+        "channels": "other",
+    }
+    picked = (await one(settings, History(), bundle, profile="served", preset="signals")).parts[0]
+    assert (picked.agent_profiles, picked.monitor_profiles) == ({"a": "served"}, {})
+
+
+@pytest.mark.anyio
 async def test_a_past_monitor_that_stopped_at_a_lower_cap_counts_at_the_cap_now(
     tmp_path: Path, store: LocalEventStore
 ) -> None:

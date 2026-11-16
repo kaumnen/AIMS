@@ -26,6 +26,38 @@ export function checkProblem(check: ProfileCheck | null | undefined): string | n
   return bad ? `${bad.name}: ${bad.detail}` : null;
 }
 
+const MONITOR_USES: Record<string, string> = { channels: "channel sweep" };
+
+// What each profile the estimated runs call does in them, in order: the agents' first, then the
+// monitor's, across every variant. Without an estimate, the agents' `fallback` profiles.
+export function profileUses(
+  e: Pick<Estimate, "parts"> | undefined,
+  fallback: readonly string[],
+): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  const add = (name: string, use: string) => {
+    const uses = out.get(name) ?? [];
+    if (use && !uses.includes(use)) uses.push(use);
+    out.set(name, uses);
+  };
+  if (e === undefined) {
+    for (const name of fallback) add(name, "");
+    return out;
+  }
+  const agents = new Set(e.parts.flatMap((p) => Object.keys(p.agent_profiles)));
+  for (const p of e.parts) {
+    for (const [id, name] of Object.entries(p.agent_profiles)) {
+      add(name, agents.size > 1 ? `agent ${id}` : "agent");
+    }
+  }
+  for (const p of e.parts) {
+    for (const [part, name] of Object.entries(p.monitor_profiles)) {
+      add(name, MONITOR_USES[part] ?? part.replace(":", " "));
+    }
+  }
+  return out;
+}
+
 // Mirrors the server's guard: why runs or reviews need a yes before they start, null when they
 // do not.
 export function confirmWhy(

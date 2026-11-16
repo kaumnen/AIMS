@@ -1,8 +1,8 @@
 import { expect, test } from "vitest";
 
-import type { ProfileCheck } from "@/api/launch";
+import type { Estimate, ProfileCheck } from "@/api/launch";
 
-import { checkProblem, checkState, confirmWhy } from "./launch";
+import { checkProblem, checkState, confirmWhy, profileUses } from "./launch";
 
 const check = (status: string, verdicts: ("ok" | "warn" | "fail")[]): ProfileCheck => ({
   run_id: "c",
@@ -47,4 +47,33 @@ test("the reason to confirm says when no cap bounds the cost, whatever the high 
   // a priced agent with no cost or step cap leaves no ceiling
   expect(ask(5, null)).toBe("No cap bounds the cost. The high estimate is $5.00.");
   expect(ask(null, null)).toBe("No cap bounds the cost and no past runs give an estimate.");
+});
+
+const part = (
+  agent_profiles: Record<string, string>,
+  monitor_profiles: Record<string, string>,
+): Estimate["parts"][number] => ({ agent_profiles, monitor_profiles }) as Estimate["parts"][number];
+
+test("each profile a run calls is named once with what it does, agents first", () => {
+  const uses = profileUses(
+    {
+      parts: [
+        part({ a: "big" }, { "sweep:main": "small", judge: "big", channels: "small" }),
+        part({ a: "big", b: "other" }, { "sweep:main": "small", extract: "tiny" }),
+      ],
+    },
+    ["fallback"],
+  );
+  expect([...uses]).toEqual([
+    ["big", ["agent a", "judge"]],
+    ["other", ["agent b"]],
+    ["small", ["sweep main", "channel sweep"]],
+    ["tiny", ["extract"]],
+  ]);
+  expect([...profileUses({ parts: [part({ agent: "big" }, {})] }, [])]).toEqual([
+    ["big", ["agent"]],
+  ]);
+  // without an estimate, the agents' profiles; with one that calls no model, none
+  expect([...profileUses(undefined, ["big"])]).toEqual([["big", []]]);
+  expect(profileUses({ parts: [part({}, {})] }, ["big"]).size).toBe(0);
 });

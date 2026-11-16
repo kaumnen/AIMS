@@ -8259,13 +8259,24 @@ export interface components {
          *     number of steps each agent took in past runs of the same scenario under the same step
          *     caps. `replayed` is the steps each agent of a fork replays before it goes live: the
          *     agents' figures count only the steps after them. `caps` are the caps the run would have.
+         *     `agent_profiles` names the profile of each agent that calls a model, by agent id, and
+         *     `monitor_profiles` the profile each part of the monitor calls, by part: `sweep:<name>`,
+         *     `review`, `judge`, `extract` and `channels`.
          */
         VariantCost: {
+            /** Agent Profiles */
+            agent_profiles: {
+                [key: string]: string;
+            };
             agents: components["schemas"]["CostFigures"];
             caps: components["schemas"]["RunCaps"];
             monitor: components["schemas"]["CostFigures"] | null;
             /** Monitor Preset */
             monitor_preset: ("off" | "signals" | "standard" | "research") | null;
+            /** Monitor Profiles */
+            monitor_profiles: {
+                [key: string]: string;
+            };
             /** Replayed */
             replayed: {
                 [key: string]: number;

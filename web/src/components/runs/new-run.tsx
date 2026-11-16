@@ -3,14 +3,7 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
 import { type Oversight, oversights } from "@/api/fork";
-import {
-  modelsQuery,
-  type Preset,
-  presets,
-  type ProfileInfo,
-  runEstimateQuery,
-  startRuns,
-} from "@/api/launch";
+import { modelsQuery, type Preset, presets, runEstimateQuery, startRuns } from "@/api/launch";
 import { type ScenarioInfo, scenariosQuery } from "@/api/scenarios";
 import { seriesQuery } from "@/api/series";
 import { isProblem, whoami } from "@/api/session";
@@ -34,7 +27,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { draftText, EMPTY_DRAFT, readDraft } from "@/lib/budget";
 import { started } from "@/lib/format";
-import { checkProblem, checkState, confirmWhy, oversightNote } from "@/lib/launch";
+import { checkProblem, checkState, confirmWhy, oversightNote, profileUses } from "@/lib/launch";
 import { mayDiscard } from "@/lib/unsaved";
 import { useDebounced } from "@/lib/use-debounced";
 import { cn } from "@/lib/utils";
@@ -147,6 +140,7 @@ function NewRunForm({ onDone, initial }: { onDone: () => void; initial: string }
   const why = estimate.data ? confirmWhy(estimate.data) : null;
   const needsYes = why !== null && !confirm;
   const caps = estimate.data?.parts[0]?.caps;
+  const uses = profileUses(estimate.data, profile ? [profile] : scenario.profiles);
   const several = Object.keys(caps?.agents ?? {}).length > 1;
   const unread = Object.keys(problems).length > 0;
   // a series that cannot be read is left to the server to check at start
@@ -352,6 +346,7 @@ function NewRunForm({ onDone, initial }: { onDone: () => void; initial: string }
           </label>
         </div>
       </div>
+      <ProfileChecks uses={uses} stale={estimate.isPending || estimate.isPlaceholderData} />
       <section aria-label="Cost estimate" aria-live="polite" className="flex flex-col gap-1">
         <h3 className="font-medium">Cost</h3>
         {estimate.isPending ? (
@@ -413,8 +408,6 @@ function ProfileField({
 }) {
   const models = useQuery(modelsQuery);
   const profiles = models.data?.profiles ?? [];
-  const using = value ? [value] : scenario.profiles;
-  const shown = profiles.filter((p) => using.includes(p.name));
   return (
     <div className="flex flex-col gap-1">
       <Field label="Profile">
@@ -437,43 +430,53 @@ function ProfileField({
           .
         </p>
       )}
-      <ProfileChecks profiles={shown} />
     </div>
   );
 }
 
-function ProfileChecks({ profiles }: { profiles: ProfileInfo[] }) {
+// The profiles the run calls with what each does in it, `uses`, and their checks. While `stale`
+// the list may be of other picks, so it cannot be checked.
+function ProfileChecks({ uses, stale }: { uses: Map<string, string[]>; stale: boolean }) {
+  const models = useQuery(modelsQuery);
   const { checking, problem, check } = useModelCheck();
+  const known = new Map((models.data?.profiles ?? []).map((p) => [p.name, p]));
+  const profiles = [...uses.keys()].flatMap((name) => known.get(name) ?? []);
   if (profiles.length === 0) return null;
   return (
-    <div className="text-muted-foreground flex flex-col gap-0.5">
-      {profiles.map((p) => {
-        const state = checking ? "running" : checkState(p.check);
-        const bad = checking ? null : checkProblem(p.check);
-        return (
-          <p key={p.name}>
-            <span className={cn(state === "fail" && "text-foreground font-medium")}>
-              {p.name}: {CHECK_TEXT[state]}
-            </span>
-            {p.check && !checking && ` · ${started(p.check.started_at)}`}
-            {bad && (
-              <span className="block truncate" title={bad}>
-                {bad}
+    <section aria-label="Model checks" className="text-muted-foreground flex flex-col gap-0.5">
+      <h3 className="text-foreground font-medium">Models</h3>
+      <div className={cn("flex flex-col gap-0.5", stale && "opacity-60")}>
+        {profiles.map((p) => {
+          const busy = checking?.includes(p.name) ?? false;
+          const state = busy ? "running" : checkState(p.check);
+          const bad = busy ? null : checkProblem(p.check);
+          const doing = uses.get(p.name) ?? [];
+          return (
+            <p key={p.name}>
+              <span className={cn(state === "fail" && "text-foreground font-medium")}>
+                {p.name}
+                {doing.length > 0 && ` (${doing.join(", ")})`}: {CHECK_TEXT[state]}
               </span>
-            )}
-            {p.runners.length === 0 && p.envs.length > 0 && (
-              <span className="text-foreground block">
-                No connected runner has {p.envs.join(" and ")}.
-              </span>
-            )}
-          </p>
-        );
-      })}
+              {p.check && !busy && ` · ${started(p.check.started_at)}`}
+              {bad && (
+                <span className="block truncate" title={bad}>
+                  {bad}
+                </span>
+              )}
+              {p.runners.length === 0 && p.envs.length > 0 && (
+                <span className="text-foreground block">
+                  No connected runner has {p.envs.join(" and ")}.
+                </span>
+              )}
+            </p>
+          );
+        })}
+      </div>
       <span className="flex items-center gap-2">
         <Button
           variant="outline"
           size="xs"
-          disabled={checking !== null}
+          disabled={checking !== null || stale}
           onClick={() => void check(profiles.map((p) => p.name))}
         >
           Check
@@ -481,6 +484,6 @@ function ProfileChecks({ profiles }: { profiles: ProfileInfo[] }) {
         <span>a few small paid calls per profile</span>
       </span>
       {problem && <span className="text-flag">{problem}</span>}
-    </div>
+    </section>
   );
 }

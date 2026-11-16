@@ -124,7 +124,10 @@ class VariantCost(_Out):
     """One run of one variant. `monitor` is None when the monitor is off; `steps` is the median
     number of steps each agent took in past runs of the same scenario under the same step
     caps. `replayed` is the steps each agent of a fork replays before it goes live: the
-    agents' figures count only the steps after them. `caps` are the caps the run would have."""
+    agents' figures count only the steps after them. `caps` are the caps the run would have.
+    `agent_profiles` names the profile of each agent that calls a model, by agent id, and
+    `monitor_profiles` the profile each part of the monitor calls, by part: `sweep:<name>`,
+    `review`, `judge`, `extract` and `channels`."""
 
     variant: str | None = None
     agents: CostFigures
@@ -133,6 +136,8 @@ class VariantCost(_Out):
     steps: dict[str, float] = Field(default_factory=dict)
     replayed: dict[str, int] = Field(default_factory=dict)
     caps: RunCaps = Field(default_factory=RunCaps)
+    agent_profiles: dict[str, str] = Field(default_factory=dict)
+    monitor_profiles: dict[str, str] = Field(default_factory=dict)
 
 
 class CostTotal(_Out):
@@ -886,6 +891,8 @@ def _part(found: History, p: Plan) -> tuple[VariantCost, tuple[dict[str, float],
         steps=steps,
         replayed=dict(p.done),
         caps=_caps(s, None if p.monitor is None else p.monitor.budget_usd),
+        agent_profiles={a.id: p.profiles[a.id].name for a in s.agents if not a.scripted},
+        monitor_profiles=_monitor_uses(p.monitor),
     )
     return part, (agent_shares, watch_shares)
 
@@ -1160,6 +1167,16 @@ def _monitor_profiles(m: ResolvedMonitor | None) -> list[Profile]:
     return [
         q for q in (*m.sweeps.values(), m.review, m.judge, m.extract, m.channels) if q is not None
     ]
+
+
+def _monitor_uses(m: ResolvedMonitor | None) -> dict[str, str]:
+    """The name of the profile each part of the monitor calls, by part, the parts
+    `_monitor_profiles` counts."""
+    if m is None:
+        return {}
+    parts: dict[str, Profile | None] = {f"sweep:{n}": q for n, q in m.sweeps.items()}
+    parts |= {"review": m.review, "judge": m.judge, "extract": m.extract, "channels": m.channels}
+    return {k: q.name for k, q in parts.items() if q is not None}
 
 
 def _monitor_key(m: ResolvedMonitor | None) -> MonitorKey | None:

@@ -17020,8 +17020,15 @@
         "type": "object"
       },
       "VariantCost": {
-        "description": "One run of one variant. `monitor` is None when the monitor is off; `steps` is the median\nnumber of steps each agent took in past runs of the same scenario under the same step\ncaps. `replayed` is the steps each agent of a fork replays before it goes live: the\nagents' figures count only the steps after them. `caps` are the caps the run would have.",
+        "description": "One run of one variant. `monitor` is None when the monitor is off; `steps` is the median\nnumber of steps each agent took in past runs of the same scenario under the same step\ncaps. `replayed` is the steps each agent of a fork replays before it goes live: the\nagents' figures count only the steps after them. `caps` are the caps the run would have.\n`agent_profiles` names the profile of each agent that calls a model, by agent id, and\n`monitor_profiles` the profile each part of the monitor calls, by part: `sweep:<name>`,\n`review`, `judge`, `extract` and `channels`.",
         "properties": {
+          "agent_profiles": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Agent Profiles",
+            "type": "object"
+          },
           "agents": {
             "$ref": "#/components/schemas/CostFigures"
           },
@@ -17054,6 +17061,13 @@
               }
             ],
             "title": "Monitor Preset"
+          },
+          "monitor_profiles": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Monitor Profiles",
+            "type": "object"
           },
           "replayed": {
             "additionalProperties": {
@@ -17088,7 +17102,9 @@
           "monitor_preset",
           "steps",
           "replayed",
-          "caps"
+          "caps",
+          "agent_profiles",
+          "monitor_profiles"
         ],
         "title": "VariantCost",
         "type": "object"
