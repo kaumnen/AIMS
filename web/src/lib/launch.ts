@@ -58,6 +58,22 @@ export function profileUses(
   return out;
 }
 
+// The models a fork's agents call on a profile as the run recorded it, by profile name, where
+// they differ from this config's profile of the name, which a check of the name tests.
+export function recordedModels(e: Pick<Estimate, "parts"> | undefined): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const p of e?.parts ?? []) {
+    for (const [id, model] of Object.entries(p.recorded_models)) {
+      const name = p.agent_profiles[id];
+      if (name === undefined) continue;
+      const models = out.get(name) ?? [];
+      if (!models.includes(model)) models.push(model);
+      out.set(name, models);
+    }
+  }
+  return out;
+}
+
 // Mirrors the server's guard: why runs or reviews need a yes before they start, null when they
 // do not.
 export function confirmWhy(

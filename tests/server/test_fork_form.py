@@ -90,6 +90,23 @@ async def test_forks_are_estimated_and_above_the_confirm_limit_need_confirm(
         assert (r.status_code, r.json()["detail"]) == (422, "give step or at, not both")
 
 
+async def test_a_fork_estimate_names_a_recorded_model_the_config_no_longer_holds(
+    cp: CP, local: LocalEventStore
+) -> None:
+    origin = await push_forged(cp, local, "http://model.invalid/v1")
+    estimate = f"/api/runs/{origin}/forks/estimate"
+    params = {"monitor": "signals"}
+    async with cp.client(cp.operator) as c:
+        # the profile read back from the log is this config's, so a check of it says it all
+        part = (await c.get(estimate, params=params)).json()["parts"][0]
+        assert (part["agent_profiles"], part["recorded_models"]) == ({"a": "scripted"}, {})
+        cp.project.write_text(cp.project.read_text().replace('model = "m"', 'model = "m2"', 1))
+        part = (await c.get(estimate, params=params)).json()["parts"][0]
+        assert (part["agent_profiles"], part["recorded_models"]) == ({"a": "scripted"}, {"a": "m"})
+        picked = {**params, "profile": "scripted"}
+        assert (await c.get(estimate, params=picked)).json()["parts"][0]["recorded_models"] == {}
+
+
 async def test_a_run_with_a_missing_or_damaged_blob_is_refused_with_the_reason(
     cp: CP, local: LocalEventStore
 ) -> None:

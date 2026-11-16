@@ -8261,7 +8261,10 @@ export interface components {
          *     agents' figures count only the steps after them. `caps` are the caps the run would have.
          *     `agent_profiles` names the profile of each agent that calls a model, by agent id, and
          *     `monitor_profiles` the profile each part of the monitor calls, by part: `sweep:<name>`,
-         *     `review`, `judge`, `extract` and `channels`.
+         *     `review`, `judge`, `extract` and `channels`. `recorded_models` names, by agent id, the
+         *     model of each agent of a fork that goes live on the profile its origin recorded where that
+         *     differs from this config's profile of the same name: a check of the name tests this
+         *     config's.
          */
         VariantCost: {
             /** Agent Profiles */
@@ -8275,6 +8278,10 @@ export interface components {
             monitor_preset: ("off" | "signals" | "standard" | "research") | null;
             /** Monitor Profiles */
             monitor_profiles: {
+                [key: string]: string;
+            };
+            /** Recorded Models */
+            recorded_models: {
                 [key: string]: string;
             };
             /** Replayed */

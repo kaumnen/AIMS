@@ -37,7 +37,7 @@ from aims.events import (
     split_lines,
 )
 from aims.events.store import LOG
-from aims.models import DeltaBus, Price
+from aims.models import DeltaBus, Limits, Price, Profile
 from aims.monitor.offline import offline_monitor
 from aims.monitor.setup import ResolvedMonitor
 from aims.run.estimate import (
@@ -48,6 +48,7 @@ from aims.run.estimate import (
     Progress,
     ProviderCredit,
     Tokens,
+    VariantCost,
     estimate,
     estimate_fork,
     estimate_review,
@@ -999,6 +1000,41 @@ async def test_a_fork_matches_past_runs_of_its_origin_s_variant(
     agents = e.parts[0].agents
     assert (e.parts[0].variant, agents.tier, agents.runs) == ("hinted", "scenario", 3)
     assert agents.typical_usd == pytest.approx(0.4 * 0.75)
+
+
+@pytest.mark.anyio
+async def test_a_fork_names_the_recorded_models_a_check_by_name_would_miss(
+    tmp_path: Path,
+) -> None:
+    settings, path = write(tmp_path, extra="    overrides: {effort: low}\n")
+    bundle = load_scenario(path)
+    agent = settings.models.get("agent")
+    # the run recorded the profile with the scenario's overrides on it
+    ran = agent.apply(bundle.scenario.agents[0].overrides)
+
+    async def part(recorded: Profile, profile: str | None = None) -> VariantCost:
+        origin = Origin(
+            run_id="origin",
+            bundle=bundle,
+            schedules={"a": [(None, recorded)]},
+            texts={},
+            steps={"a": 10},
+        )
+        fork = fork_of(origin, 5, profile=profile)
+        return (await estimate_fork(History(), settings, origin, fork)).parts[0]
+
+    same = await part(ran)
+    assert (same.agent_profiles, same.recorded_models) == ({"a": "agent"}, {})
+    # same endpoint and key, another model: the fork calls the recorded one
+    moved = await part(ran.model_copy(update={"model": "old-model"}))
+    assert (moved.agent_profiles, moved.recorded_models) == ({"a": "agent"}, {"a": "old-model"})
+    # other settings count; the price and the pacing do not
+    assert (await part(agent)).recorded_models == {"a": "agent-model"}
+    paced = ran.model_copy(update={"price": None, "limits": Limits(rpm=5)})
+    assert (await part(paced)).recorded_models == {}
+    # a picked profile is this config's
+    picked = await part(ran.model_copy(update={"model": "old-model"}), "other")
+    assert (picked.agent_profiles, picked.recorded_models) == ({"a": "other"}, {})
 
 
 # Offline monitor runs

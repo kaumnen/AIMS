@@ -18,12 +18,13 @@ import { EstimateLines } from "@/components/estimate-lines";
 import { CountInput, DEFAULT, Field, Pick, problemText } from "@/components/form";
 import { up, useRunners } from "@/components/health";
 import { OversightNote } from "@/components/oversight-note";
+import { ProfileChecks } from "@/components/profile-checks";
 import { Button } from "@/components/ui/button";
 import { DialogFooter } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { changesText, draftText, EMPTY_DRAFT, readDraft } from "@/lib/budget";
-import { confirmWhy, oversightNote } from "@/lib/launch";
+import { confirmWhy, oversightNote, profileUses, recordedModels } from "@/lib/launch";
 
 const MAX_SAMPLES = 100;
 
@@ -86,6 +87,9 @@ export default function ForkForm({
   const preset = estimate.data?.parts[0]?.monitor_preset;
   const before = recorded(detail);
   const caps = estimate.data?.parts[0]?.caps;
+  // the agents' live profiles and the monitor's; until estimated, only a picked profile is known
+  const uses = profileUses(estimate.data, profile ? [profile] : []);
+  const ran = recordedModels(estimate.data);
   const kept = changesText(detail.budget, multi);
   const unread = Object.keys(problems).length > 0;
   const note = oversightNote(
@@ -273,6 +277,11 @@ export default function ForkForm({
           </label>
         </div>
       </div>
+      <ProfileChecks
+        uses={uses}
+        stale={estimate.isPending || estimate.isPlaceholderData}
+        recorded={ran}
+      />
       <section aria-label="Cost estimate" aria-live="polite" className="flex flex-col gap-1">
         <h3 className="font-medium">Cost</h3>
         {estimate.isPending ? (

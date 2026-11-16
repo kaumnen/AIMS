@@ -11,8 +11,8 @@ import { BudgetSection } from "@/components/budget";
 import { EstimateLines } from "@/components/estimate-lines";
 import { CountInput, DEFAULT, Field, Pick, problemText } from "@/components/form";
 import { up, useRunners } from "@/components/health";
-import { CHECK_TEXT, useModelCheck } from "@/components/model-check";
 import { OversightNote } from "@/components/oversight-note";
+import { ProfileChecks } from "@/components/profile-checks";
 import { NO_SERIES, SeriesSection } from "@/components/runs/series-fold";
 import { Button } from "@/components/ui/button";
 import {
@@ -26,11 +26,9 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { draftText, EMPTY_DRAFT, readDraft } from "@/lib/budget";
-import { started } from "@/lib/format";
-import { checkProblem, checkState, confirmWhy, oversightNote, profileUses } from "@/lib/launch";
+import { confirmWhy, oversightNote, profileUses } from "@/lib/launch";
 import { mayDiscard } from "@/lib/unsaved";
 import { useDebounced } from "@/lib/use-debounced";
-import { cn } from "@/lib/utils";
 
 const MAX_SAMPLES = 100;
 
@@ -431,59 +429,5 @@ function ProfileField({
         </p>
       )}
     </div>
-  );
-}
-
-// The profiles the run calls with what each does in it, `uses`, and their checks. While `stale`
-// the list may be of other picks, so it cannot be checked.
-function ProfileChecks({ uses, stale }: { uses: Map<string, string[]>; stale: boolean }) {
-  const models = useQuery(modelsQuery);
-  const { checking, problem, check } = useModelCheck();
-  const known = new Map((models.data?.profiles ?? []).map((p) => [p.name, p]));
-  const profiles = [...uses.keys()].flatMap((name) => known.get(name) ?? []);
-  if (profiles.length === 0) return null;
-  return (
-    <section aria-label="Model checks" className="text-muted-foreground flex flex-col gap-0.5">
-      <h3 className="text-foreground font-medium">Models</h3>
-      <div className={cn("flex flex-col gap-0.5", stale && "opacity-60")}>
-        {profiles.map((p) => {
-          const busy = checking?.includes(p.name) ?? false;
-          const state = busy ? "running" : checkState(p.check);
-          const bad = busy ? null : checkProblem(p.check);
-          const doing = uses.get(p.name) ?? [];
-          return (
-            <p key={p.name}>
-              <span className={cn(state === "fail" && "text-foreground font-medium")}>
-                {p.name}
-                {doing.length > 0 && ` (${doing.join(", ")})`}: {CHECK_TEXT[state]}
-              </span>
-              {p.check && !busy && ` · ${started(p.check.started_at)}`}
-              {bad && (
-                <span className="block truncate" title={bad}>
-                  {bad}
-                </span>
-              )}
-              {p.runners.length === 0 && p.envs.length > 0 && (
-                <span className="text-foreground block">
-                  No connected runner has {p.envs.join(" and ")}.
-                </span>
-              )}
-            </p>
-          );
-        })}
-      </div>
-      <span className="flex items-center gap-2">
-        <Button
-          variant="outline"
-          size="xs"
-          disabled={checking !== null || stale}
-          onClick={() => void check(profiles.map((p) => p.name))}
-        >
-          Check
-        </Button>
-        <span>a few small paid calls per profile</span>
-      </span>
-      {problem && <span className="text-flag">{problem}</span>}
-    </section>
   );
 }

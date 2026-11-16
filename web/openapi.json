@@ -17020,7 +17020,7 @@
         "type": "object"
       },
       "VariantCost": {
-        "description": "One run of one variant. `monitor` is None when the monitor is off; `steps` is the median\nnumber of steps each agent took in past runs of the same scenario under the same step\ncaps. `replayed` is the steps each agent of a fork replays before it goes live: the\nagents' figures count only the steps after them. `caps` are the caps the run would have.\n`agent_profiles` names the profile of each agent that calls a model, by agent id, and\n`monitor_profiles` the profile each part of the monitor calls, by part: `sweep:<name>`,\n`review`, `judge`, `extract` and `channels`.",
+        "description": "One run of one variant. `monitor` is None when the monitor is off; `steps` is the median\nnumber of steps each agent took in past runs of the same scenario under the same step\ncaps. `replayed` is the steps each agent of a fork replays before it goes live: the\nagents' figures count only the steps after them. `caps` are the caps the run would have.\n`agent_profiles` names the profile of each agent that calls a model, by agent id, and\n`monitor_profiles` the profile each part of the monitor calls, by part: `sweep:<name>`,\n`review`, `judge`, `extract` and `channels`. `recorded_models` names, by agent id, the\nmodel of each agent of a fork that goes live on the profile its origin recorded where that\ndiffers from this config's profile of the same name: a check of the name tests this\nconfig's.",
         "properties": {
           "agent_profiles": {
             "additionalProperties": {
@@ -17069,6 +17069,13 @@
             "title": "Monitor Profiles",
             "type": "object"
           },
+          "recorded_models": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Recorded Models",
+            "type": "object"
+          },
           "replayed": {
             "additionalProperties": {
               "type": "integer"
@@ -17104,7 +17111,8 @@
           "replayed",
           "caps",
           "agent_profiles",
-          "monitor_profiles"
+          "monitor_profiles",
+          "recorded_models"
         ],
         "title": "VariantCost",
         "type": "object"

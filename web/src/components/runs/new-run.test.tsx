@@ -110,6 +110,7 @@ function estimate(
         agent_profiles: { agent: profile },
         monitor_profiles:
           monitor === "off" || monitor === "signals" ? {} : { "sweep:main": "beta", judge: "beta" },
+        recorded_models: {},
       },
     ],
     rates: [],

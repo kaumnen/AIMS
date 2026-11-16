@@ -171,6 +171,10 @@ let outcome: string;
 let seriesRuns: RunSummary[];
 let dependents: Dependents;
 let refusal: string | null;
+// the models the fork estimate says the run recorded, by agent, where the config differs
+let forkRecorded: Record<string, string>;
+// while set, the fork estimate waits for it
+let forkGate: Promise<void> | null;
 
 const review = (runId: string, over: Partial<RunSummary> = {}): RunSummary =>
   run(runId, {
@@ -218,6 +222,22 @@ const reviewEstimate = (q: URLSearchParams) => {
 
 const FORK = "01a19200-0000-7000-8000-000000000000";
 
+const profileInfo = (name: string) => ({
+  name,
+  backend: "responses",
+  model: `${name}-1`,
+  weights: "w",
+  reasoning: "summary",
+  roles: [],
+  envs: ["MODEL_API_KEY"],
+  runners: ["local"],
+  price: null,
+  price_key: null,
+  check: null,
+});
+
+const MODELS = { roles: { agent: "alpha" }, profiles: [profileInfo("alpha"), profileInfo("beta")] };
+
 // The fork estimate as the server words it, the caps past $20 asking for a yes.
 const forkEstimate = (q: URLSearchParams) => {
   const count = Number(q.get("samples") ?? 1);
@@ -242,6 +262,9 @@ const forkEstimate = (q: URLSearchParams) => {
           agents: { agent: caps },
           run: { steps: null, output_tokens: null, cost_usd: null, wall_s: null },
         },
+        agent_profiles: { agent: q.get("profile") ?? "alpha" },
+        monitor_profiles: { "sweep:main": "beta" },
+        recorded_models: q.get("profile") ? {} : forkRecorded,
       },
     ],
     total: { typical_usd: null, high_usd: null, ceiling_usd: ceiling },
@@ -373,6 +396,8 @@ beforeEach(() => {
   seriesRuns = [];
   dependents = { run_id: BEE5, runs: [], blocked: null, offline: null };
   refusal = null;
+  forkRecorded = {};
+  forkGate = null;
   vi.stubGlobal("EventSource", FakeEventSource);
   vi.stubGlobal("fetch", fetch);
   fetch.mockImplementation(async (request) => {
@@ -432,7 +457,15 @@ beforeEach(() => {
       return Response.json({ run_ids: [QUEUED], group: null }, { status: 202 });
     }
     if (path === `/api/runs/${BEE5}/monitor/estimate`) return Response.json(reviewEstimate(q));
-    if (path === `/api/runs/${BEE5}/forks/estimate`) return Response.json(forkEstimate(q));
+    if (path === `/api/runs/${BEE5}/forks/estimate`) {
+      if (forkGate) await forkGate;
+      return Response.json(forkEstimate(q));
+    }
+    if (path === "/api/models") return Response.json(MODELS);
+    if (path === "/api/models/check" && request.method === "POST") {
+      posted.push({ path, body: (await request.json()) as Record<string, unknown> });
+      return Response.json({ run_ids: ["c2"], group: null }, { status: 202 });
+    }
     if (path === `/api/runs/${BEE5}/forks` && request.method === "POST") {
       const body = (await request.json()) as Record<string, unknown>;
       posted.push({ path, body });
@@ -2428,6 +2461,57 @@ test("a fork from a step is estimated first and starts with what was asked", asy
       },
     },
   ]);
+});
+
+test("a fork checks the models it calls and says which the run recorded otherwise", async () => {
+  detail.started = ev(0, "run.started", { agents: ["agent"], oversight: "observe" });
+  forkRecorded = { agent: "alpha-0" };
+  renderAt(`/runs/${BEE5}`);
+  const form = await forkForm();
+  const checks = within(await form.findByRole("region", { name: "Model checks" }));
+  expect(await checks.findByText("alpha (agent): never checked")).toBeTruthy();
+  expect(checks.getByText("beta (sweep main): never checked")).toBeTruthy();
+  expect(
+    checks.getByText("The fork calls alpha-0 as the run recorded it; the check calls alpha-1."),
+  ).toBeTruthy();
+  // a profile picked for the fork is this config's
+  await pick(form, "Profile", /beta/);
+  expect(await checks.findByText("beta (agent, sweep main): never checked")).toBeTruthy();
+  expect(checks.queryByText(/as the run recorded it/)).toBeNull();
+  fireEvent.click(checks.getByRole("button", { name: "Check" }));
+  await waitFor(() =>
+    expect(posted).toEqual([{ path: "/api/models/check", body: { profiles: ["beta"] } }]),
+  );
+});
+
+test("a fork's models cannot be checked until the estimate of the new picks is in", async () => {
+  detail.started = ev(0, "run.started", { agents: ["agent"], oversight: "observe" });
+  renderAt(`/runs/${BEE5}`);
+  const form = await forkForm();
+  const checks = within(await form.findByRole("region", { name: "Model checks" }));
+  const button = checks.getByRole("button", { name: "Check" }) as HTMLButtonElement;
+  await waitFor(() => expect(button.disabled).toBe(false));
+  const gate = Promise.withResolvers<void>();
+  forkGate = gate.promise;
+  await pick(form, "Profile", /beta/);
+  await waitFor(() => expect(button.disabled).toBe(true));
+  // the list is still that of the picks before
+  expect(checks.getByText("alpha (agent): never checked")).toBeTruthy();
+  gate.resolve();
+  expect(await checks.findByText("beta (agent, sweep main): never checked")).toBeTruthy();
+  expect(button.disabled).toBe(false);
+});
+
+test("a fork on the recorded model with other settings says the check uses the config's", async () => {
+  detail.started = ev(0, "run.started", { agents: ["agent"], oversight: "observe" });
+  forkRecorded = { agent: "alpha-1" };
+  renderAt(`/runs/${BEE5}`);
+  const form = await forkForm();
+  expect(
+    await form.findByText(
+      "The fork uses the settings the run recorded; the check uses this config's.",
+    ),
+  ).toBeTruthy();
 });
 
 test("a run of several agents forks at the agent's step and can keep the others", async () => {

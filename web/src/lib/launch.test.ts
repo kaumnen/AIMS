@@ -2,7 +2,7 @@ import { expect, test } from "vitest";
 
 import type { Estimate, ProfileCheck } from "@/api/launch";
 
-import { checkProblem, checkState, confirmWhy, profileUses } from "./launch";
+import { checkProblem, checkState, confirmWhy, profileUses, recordedModels } from "./launch";
 
 const check = (status: string, verdicts: ("ok" | "warn" | "fail")[]): ProfileCheck => ({
   run_id: "c",
@@ -52,7 +52,9 @@ test("the reason to confirm says when no cap bounds the cost, whatever the high 
 const part = (
   agent_profiles: Record<string, string>,
   monitor_profiles: Record<string, string>,
-): Estimate["parts"][number] => ({ agent_profiles, monitor_profiles }) as Estimate["parts"][number];
+  recorded_models: Record<string, string> = {},
+): Estimate["parts"][number] =>
+  ({ agent_profiles, monitor_profiles, recorded_models }) as Estimate["parts"][number];
 
 test("each profile a run calls is named once with what it does, agents first", () => {
   const uses = profileUses(
@@ -76,4 +78,19 @@ test("each profile a run calls is named once with what it does, agents first", (
   // without an estimate, the agents' profiles; with one that calls no model, none
   expect([...profileUses(undefined, ["big"])]).toEqual([["big", []]]);
   expect(profileUses({ parts: [part({}, {})] }, ["big"]).size).toBe(0);
+});
+
+test("the models a fork's agents call as recorded are named by profile, each once", () => {
+  const ran = recordedModels({
+    parts: [
+      part({ a: "big", b: "big", c: "other" }, {}, { a: "old", b: "old", c: "older" }),
+      part({ a: "big" }, {}, { a: "oldest" }),
+    ],
+  });
+  expect([...ran]).toEqual([
+    ["big", ["old", "oldest"]],
+    ["other", ["older"]],
+  ]);
+  expect(recordedModels(undefined).size).toBe(0);
+  expect(recordedModels({ parts: [part({ a: "big" }, {})] }).size).toBe(0);
 });

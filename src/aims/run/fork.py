@@ -523,6 +523,29 @@ def fork_profiles(models: ModelsConfig, origin: Origin, fork: Fork) -> dict[str,
     return out
 
 
+# What a check of a profile by name leaves out: its price and how its calls are paced.
+UNCHECKED = (*PRICED, "limits", "timeouts", "retries")
+
+
+def recorded_models(models: ModelsConfig, origin: Origin, fork: Fork) -> dict[str, str]:
+    """The model of each agent of `fork` that goes live on the profile the origin recorded,
+    by agent id, when that profile differs from this config's of the same name, with the
+    agent's overrides, in more than its price and pacing. A check of the name tests this
+    config's profile, not the recorded one. Raises RunError or ProfileError."""
+    if fork.profile is not None:
+        return {}
+    live = fork_profiles(models, origin, fork)
+    out: dict[str, str] = {}
+    for agent in origin.bundle.scenario.agents:
+        if agent.scripted:
+            continue
+        ran = live[agent.id]
+        mine = models.get(ran.name).apply(agent.overrides)
+        if ran.model_dump(exclude=set(UNCHECKED)) != mine.model_dump(exclude=set(UNCHECKED)):
+            out[agent.id] = ran.model
+    return out
+
+
 def fork_agents(models: ModelsConfig, origin: Origin, fork: Fork) -> list[Profile]:
     """The profiles the agents of `fork` run, which its monitor is resolved with: those of the
     steps each agent replays, as recorded, then the one it goes live with. An agent that keeps

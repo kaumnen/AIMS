@@ -38,7 +38,7 @@ from aims.models.listprice import SOURCE, Listing, ListPrice, PriceLists, laid, 
 from aims.models.profiles import Price
 from aims.monitor.config import Preset
 from aims.monitor.setup import ResolvedMonitor, planned_steps
-from aims.run.fork import Origin, fork_agents, fork_profiles
+from aims.run.fork import Origin, fork_agents, fork_profiles, recorded_models
 from aims.run.job import monitor_for
 from aims.run.runner import Fork, agent_profile
 from aims.scenario import AgentConfig, Bundle, Scenario
@@ -127,7 +127,10 @@ class VariantCost(_Out):
     agents' figures count only the steps after them. `caps` are the caps the run would have.
     `agent_profiles` names the profile of each agent that calls a model, by agent id, and
     `monitor_profiles` the profile each part of the monitor calls, by part: `sweep:<name>`,
-    `review`, `judge`, `extract` and `channels`."""
+    `review`, `judge`, `extract` and `channels`. `recorded_models` names, by agent id, the
+    model of each agent of a fork that goes live on the profile its origin recorded where that
+    differs from this config's profile of the same name: a check of the name tests this
+    config's."""
 
     variant: str | None = None
     agents: CostFigures
@@ -138,6 +141,7 @@ class VariantCost(_Out):
     caps: RunCaps = Field(default_factory=RunCaps)
     agent_profiles: dict[str, str] = Field(default_factory=dict)
     monitor_profiles: dict[str, str] = Field(default_factory=dict)
+    recorded_models: dict[str, str] = Field(default_factory=dict)
 
 
 class CostTotal(_Out):
@@ -328,13 +332,16 @@ class History:
 class Plan:
     """One run to estimate: the scenario with its variant applied, each agent's profile by
     agent id and the resolved monitor, None when it is off. `done` is the steps each agent of a
-    fork replays, which cost nothing; the monitor watches them all the same."""
+    fork replays, which cost nothing; the monitor watches them all the same. `recorded` is the
+    model of each agent of a fork that goes live on a recorded profile unlike this config's of
+    the same name, by agent id."""
 
     scenario: Scenario
     profiles: Mapping[str, Profile]
     monitor: ResolvedMonitor | None = None
     variant: str | None = None
     done: Mapping[str, int] = field(default_factory=dict)
+    recorded: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -576,7 +583,8 @@ def plan_fork(
     )
     done = {a.id: fork.at(a.id) for a in scenario.agents if not a.scripted}
     profiles = fork_profiles(settings.models, origin, fork)
-    return Plan(scenario, profiles, monitor, bundle.variant, done)
+    recorded = recorded_models(settings.models, origin, fork)
+    return Plan(scenario, profiles, monitor, bundle.variant, done, recorded)
 
 
 async def estimate_runs(
@@ -893,6 +901,7 @@ def _part(found: History, p: Plan) -> tuple[VariantCost, tuple[dict[str, float],
         caps=_caps(s, None if p.monitor is None else p.monitor.budget_usd),
         agent_profiles={a.id: p.profiles[a.id].name for a in s.agents if not a.scripted},
         monitor_profiles=_monitor_uses(p.monitor),
+        recorded_models=dict(p.recorded),
     )
     return part, (agent_shares, watch_shares)
 
