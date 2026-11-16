@@ -176,28 +176,6 @@ aims run cache-keys --profile model-name --monitor signals
 
 `--monitor signals` needs no monitor model. Give a second model the sweep and judge roles for the `standard` monitor.
 
-### Add from OpenRouter in the app
-
-In the app, **Settings** > **Models** > **Add from OpenRouter** drafts a profile from OpenRouter's public list of models for operators. **Add to project config** saves it with the roles picked in the dialog.
-
-What the profile sets:
-
-| Setting | Why |
-| --- | --- |
-| `extra.provider.sort = "price"` | The cheapest provider that can serve the request comes first. |
-| `extra.provider.require_parameters = true` | Only providers that support every parameter of a request serve it. Without it a provider may drop tools, structured output or the effort without an error. |
-| `cache_key = true` | A run's calls share one prompt cache. |
-| `extra.cache_control` | Only when OpenRouter lists a price for a cache write. Some such models cache a prompt only when the request asks. The others take the field without effect. |
-| No `parallel_tool_calls` | Few providers support the field. With `require_parameters` it would cut the route to those few. |
-| `effort` | The model's default. The comment below it lists the levels OpenRouter names. |
-| `price` | The list price, which is the lowest among the model's providers. Estimates and the monitor's budget use it. A run records what OpenRouter reports each call cost, or the cost at this price when it reports none. |
-
-> [!NOTE]
-> The dialog's notes say what the list cannot tell. `reasoning = "full"` is a guess, for one. `aims models check` warns when the model sends a summary instead.
-
-> [!WARNING]
-> An alias moves to newer models over time, so a run would not say which model it used. The dialog refuses one unless **Allow an alias** is checked. It also refuses a model that OpenRouter does not serve on chat completions.
-
 ## Headers and extra fields
 
 `extra` adds fields to the request body as they are written. A router's own options go there. This one keeps a run on one provider of a router that reads a `provider` object, so the price, the quantization and the prompt cache stay the same:

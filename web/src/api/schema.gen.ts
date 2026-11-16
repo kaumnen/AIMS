@@ -188,10 +188,11 @@ export interface paths {
         put?: never;
         /**
          * Add Model
-         * @description Add a profile for model `slug` to the project file, as `aims models add --write` does:
-         *     the profile `GET /models/lookup` shows, after what the file holds, with `roles` set to it
-         *     under [roles]. A name that a profile has already is refused, as is a role the model does
-         *     not fit. The merged layers must load first.
+         * @description Add a profile to the project file, as `aims models add --write` does, after what the
+         *     file holds. A name that a profile has already is refused, as is a role the profile does not
+         *     fit. The merged layers must load first. Runners are told the env vars it reads. With
+         *     `check` a runner must have said hello. The check is recorded as a run; `GET /models` says
+         *     how the add went once it ends.
          */
         post: operations["add_model"];
         delete?: never;
@@ -230,9 +231,12 @@ export interface paths {
         };
         /**
          * Lookup Model
-         * @description A profile for model `slug`, filled in from the provider's public list of models, which
-         *     the server reads. Nothing is saved: `POST /models/add` does that. `alias` takes an alias the
-         *     provider moves to newer models.
+         * @description A profile for model `model`, as `aims models add` drafts it: reached at `base_url`
+         *     with the key in env var `key_env`, or as profile `from` reaches its server. The server
+         *     reads that server's list of models with no key, to check the id. It refuses a host that
+         *     resolves to a link-local or cloud metadata address, which a note then says. `litellm` names
+         *     the model's row in LiteLLM's price map, for its price, context size and output cap. Nothing
+         *     is saved: `POST /models/add` does that.
          */
         get: operations["lookup_model"];
         put?: never;
@@ -1644,6 +1648,29 @@ export interface components {
             outcome: string;
         };
         /**
+         * AddInfo
+         * @description The newest add of a profile in the app that queued check run `run_id`. Once the check
+         *     passes it gives the profile `roles` and, with `measure`, the reasoning kind the check saw.
+         *     `waiting` says why the check has not started, null once it has. `outcome` says how the
+         *     add went, null until the check ends: `done` it wrote what there was to write, `failed` the
+         *     check did not pass or did not run, `changed` the profile changed first, `refused` the write
+         *     would not load or could not be made. `note` says more.
+         */
+        AddInfo: {
+            /** Measure */
+            measure: boolean;
+            /** Note */
+            note: string | null;
+            /** Outcome */
+            outcome: ("done" | "failed" | "changed" | "refused") | null;
+            /** Roles */
+            roles: ("agent" | "sweep" | "judge")[];
+            /** Run Id */
+            run_id: string;
+            /** Waiting */
+            waiting: string | null;
+        };
+        /**
          * AgentCompacted
          * @description The agent's context was cut after step `step`. Steps `from_step` to `to_step` were
          *     replaced: their tool outputs by a placeholder (trim), or all of them by a summary the agent's
@@ -2444,12 +2471,18 @@ export interface components {
              */
             truncated: boolean;
         };
-        /** CheckLine */
+        /**
+         * CheckLine
+         * @description `reasoning` is what the plain test's answer carried of the model's reasoning, null for
+         *     the other tests and in checks from before it was recorded.
+         */
         CheckLine: {
             /** Detail */
             detail: string;
             /** Name */
             name: string;
+            /** Reasoning */
+            reasoning: ("none" | "summary" | "full") | null;
             /**
              * Verdict
              * @enum {string}
@@ -3937,9 +3970,11 @@ export interface components {
         /**
          * Job
          * @description `monitor` is the resolved monitor's snapshot, None for a run without one; its profiles
-         *     are in `models` too, so a runner offers their keys.
+         *     are in `models` too, so a runner offers their keys. `add` is set on the check of a profile
+         *     the app added.
          */
         Job: {
+            add?: components["schemas"]["JobAdd"] | null;
             /**
              * Audit
              * @default kernel
@@ -3984,6 +4019,36 @@ export interface components {
                 [key: string]: {
                     [key: string]: components["schemas"]["JsonValue"];
                 };
+            };
+        };
+        /**
+         * JobAdd
+         * @description What the control plane does once the check of a profile the app added ends; a runner
+         *     ignores it. When no test failed it gives the profile `roles` and, with `measure`, the
+         *     reasoning kind the plain test saw, in one write of the project file. It writes only while
+         *     the profile's fields there still have fingerprint `table`, the one the add wrote. It sets a
+         *     role only while the role still names what it named at the add, in `was`. `outcome` and
+         *     `note` say how that went: `done` it wrote what there was to write, `failed` the check did
+         *     not pass, `changed` the profile changed first, `refused` the write would not load or could
+         *     not be made. Both are null until then.
+         */
+        JobAdd: {
+            /**
+             * Measure
+             * @default true
+             */
+            measure?: boolean;
+            /** Note */
+            note?: string | null;
+            /** Outcome */
+            outcome?: ("done" | "failed" | "changed" | "refused") | null;
+            /** Roles */
+            roles?: ("agent" | "sweep" | "judge")[];
+            /** Table */
+            table: string;
+            /** Was */
+            was?: {
+                [key: string]: string | null;
             };
         };
         /**
@@ -4384,41 +4449,51 @@ export interface components {
         };
         /**
          * ModelAdd
-         * @description `roles` the profile also takes under [roles], as `--role` does.
+         * @description `toml` holds the one `[profiles."name"]` table to add, as `GET /models/lookup` drafts
+         *     it. `roles` are the roles it takes under [roles]. With `check` a model check of it is
+         *     queued, on `runner` when one is named, and the roles wait for it: once it ends with no test
+         *     failed they are set and, with `measure`, the reasoning kind it saw replaces the profile's.
+         *     Without `check` the roles are set with the profile.
          */
         ModelAdd: {
             /**
-             * Alias
-             * @default false
+             * Check
+             * @default true
              */
-            alias?: boolean;
-            /** Name */
-            name?: string | null;
+            check?: boolean;
+            /**
+             * Measure
+             * @default true
+             */
+            measure?: boolean;
             /** Roles */
             roles?: ("agent" | "sweep" | "judge")[];
-            /** Slug */
-            slug: string;
-            /**
-             * Source
-             * @default openrouter
-             * @constant
-             */
-            source?: "openrouter";
+            /** Runner */
+            runner?: string | null;
+            /** Toml */
+            toml: string;
         };
         /**
          * ModelAdded
-         * @description The profile `name` now in the project file at `path`.
+         * @description The profile `name` now in the project file at `path`. `run_id` is its check, null
+         *     without one. `notes` say what else to know.
          */
         ModelAdded: {
             /** Name */
             name: string;
+            /** Notes */
+            notes: string[];
             /** Path */
             path: string;
+            /** Run Id */
+            run_id: string | null;
         };
         /**
          * ModelChecked
          * @description One smoke test of a model check: `name` says which (plain, unstreamed, tools,
-         *     structured), `verdict` how it went and `detail` what was seen.
+         *     structured), `verdict` how it went and `detail` what was seen. `reasoning` is what the
+         *     plain test's answer carried of the model's reasoning, null for the other tests, when no
+         *     answer came and in runs from before it was recorded.
          */
         ModelChecked: {
             /**
@@ -4431,10 +4506,47 @@ export interface components {
             /** Profile */
             profile: string;
             /**
+             * Reasoning
+             * @default null
+             */
+            reasoning: ("none" | "summary" | "full") | null;
+            /**
              * Verdict
              * @enum {string}
              */
             verdict: "ok" | "warn" | "fail";
+        };
+        /**
+         * ModelDraft
+         * @description A profile for model `model` as config file text, `toml`, for `POST /models/add`.
+         *     `notes` say what its reader should know. `exists` when a profile has the name already.
+         *     `fits` are the roles it can take as drafted: the agent, and the sweep and judge with
+         *     structured output. The check finds out whether the model makes tool calls. `guessed` while
+         *     its `reasoning` is a guess that the check replaces. `candidates` are the keys of LiteLLM
+         *     rows that may price it, when no row was picked. `ids` are ids the server's list holds for
+         *     what was typed, and `listed` how many it holds, null when the list was not read.
+         */
+        ModelDraft: {
+            /** Candidates */
+            candidates: string[];
+            /** Exists */
+            exists: boolean;
+            /** Fits */
+            fits: ("agent" | "sweep" | "judge")[];
+            /** Guessed */
+            guessed: boolean;
+            /** Ids */
+            ids: string[];
+            /** Listed */
+            listed: number | null;
+            /** Model */
+            model: string;
+            /** Name */
+            name: string;
+            /** Notes */
+            notes: string[];
+            /** Toml */
+            toml: string;
         };
         /**
          * ModelParams
@@ -5789,29 +5901,9 @@ export interface components {
             /** Status */
             status: string;
         };
-        /**
-         * ProfileDraft
-         * @description A profile for a model a provider lists, as config file text to add under a layer.
-         *     `notes` say what its reader should know. `exists` when a profile has the name already.
-         *     `fits` are the roles it can take: agent with tool calls, sweep and judge with structured
-         *     output.
-         */
-        ProfileDraft: {
-            /** Exists */
-            exists: boolean;
-            /** Fits */
-            fits: ("agent" | "sweep" | "judge")[];
-            /** Name */
-            name: string;
-            /** Notes */
-            notes: string[];
-            /** Slug */
-            slug: string;
-            /** Toml */
-            toml: string;
-        };
         /** ProfileInfo */
         ProfileInfo: {
+            add: components["schemas"]["AddInfo"] | null;
             /** Backend */
             backend: string;
             check: components["schemas"]["ProfileCheck"] | null;
@@ -9100,15 +9192,6 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Bad gateway */
-            502: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
         };
     };
     check_models: {
@@ -9192,10 +9275,13 @@ export interface operations {
     lookup_model: {
         parameters: {
             query: {
-                slug: string;
-                source?: "openrouter";
+                model: string;
+                base_url?: string | null;
+                key_env?: string | null;
+                from?: string | null;
                 name?: string | null;
-                alias?: boolean;
+                litellm?: string | null;
+                backend?: ("responses" | "chat") | null;
             };
             header?: never;
             path?: never;
@@ -9209,7 +9295,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ProfileDraft"];
+                    "application/json": components["schemas"]["ModelDraft"];
                 };
             };
             /** @description Not signed in */
@@ -9223,15 +9309,6 @@ export interface operations {
             };
             /** @description Forbidden */
             403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description Not found */
-            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -15300,6 +15377,7 @@ export const pathsApiConfigLayerGetParametersPathLayerValues: ReadonlyArray<Flat
 export const pathsApiConfigLayerPutParametersPathLayerValues: ReadonlyArray<FlattenedDeepRequired<paths>["/api/config/{layer}"]["put"]["parameters"]["path"]["layer"]> = ["user", "project"];
 export const pathsApiConfigLayerPatchParametersPathLayerValues: ReadonlyArray<FlattenedDeepRequired<paths>["/api/config/{layer}"]["patch"]["parameters"]["path"]["layer"]> = ["user", "project"];
 export const pathsApiConfigLayerCheckPostParametersPathLayerValues: ReadonlyArray<FlattenedDeepRequired<paths>["/api/config/{layer}/check"]["post"]["parameters"]["path"]["layer"]> = ["user", "project"];
+export const pathsApiModelsLookupGetParametersQueryBackendAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/models/lookup"]["get"]["parameters"]["query"]["backend"]> = ["responses", "chat"];
 export const pathsApiRunsGetParametersQueryKindAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs"]["get"]["parameters"]["query"]["kind"]> = ["scenario", "monitor", "models.check", "score", "selftest", "selftest.case"];
 export const pathsApiRunsGetParametersQueryCategoryAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs"]["get"]["parameters"]["query"]["category"]> = ["covert_communication", "scorer_tampering", "transcript_tampering", "deceiving_operator", "evading_checks", "collective_over_own_task", "drift", "loop_or_confusion", "fabricated_completion", "constraint_violation", "eval_awareness", "alerting_operator", "egress_attempt", "privilege_escalation", "monitor_manipulation"];
 export const pathsApiRunsRun_idFlagsGetParametersQueryLayerAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs/{run_id}/flags"]["get"]["parameters"]["query"]["layer"]> = ["signal", "sweep", "judge"];
@@ -15309,6 +15387,8 @@ export const pathsApiRunsRun_idForksEstimateGetParametersQueryMonitorAnyOf0Value
 export const pathsApiRunsRun_idMonitorEstimateGetParametersQueryPresetAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs/{run_id}/monitor/estimate"]["get"]["parameters"]["query"]["preset"]> = ["signals", "standard", "research"];
 export const pathsApiRunsRun_idReportGetParametersQueryFormatValues: ReadonlyArray<FlattenedDeepRequired<paths>["/api/runs/{run_id}/report"]["get"]["parameters"]["query"]["format"]> = ["json", "md"];
 export const pathsApiScenariosSourceNameEstimateGetParametersQueryMonitorAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<paths>["/api/scenarios/{source}/{name}/estimate"]["get"]["parameters"]["query"]["monitor"]> = ["off", "signals", "standard", "research"];
+export const addInfoOutcomeAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AddInfo"]["outcome"]> = ["done", "failed", "changed", "refused"];
+export const addInfoRolesValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AddInfo"]["roles"]> = ["agent", "sweep", "judge"];
 export const agentCompactedStrategyValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentCompacted"]["strategy"]> = ["trim", "summary"];
 export const agentFactsEndAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentFacts"]["end"]> = ["submitted", "no_submit", "budget_steps", "budget_output_tokens", "budget_cost", "budget_wall", "context_exhausted", "model_error", "sandbox_failed", "divergence", "killed", "cancelled", "error"];
 export const agentFinishedReasonValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["AgentFinished"]["reason"]> = ["submitted", "no_submit", "budget_steps", "budget_output_tokens", "budget_cost", "budget_wall", "context_exhausted", "model_error", "sandbox_failed", "divergence", "killed", "cancelled", "error"];
@@ -15330,6 +15410,7 @@ export const categoryRateCategoryValues: ReadonlyArray<FlattenedDeepRequired<com
 export const channelChangeChangeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ChannelChange"]["change"]> = ["added", "modified", "meta", "removed", "kind"];
 export const channelChangeKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ChannelChange"]["kind"]> = ["file", "dir", "symlink", "fifo", "socket", "other"];
 export const channelInfoLifetimeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ChannelInfo"]["lifetime"]> = ["run", "series"];
+export const checkLineReasoningAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CheckLine"]["reasoning"]> = ["none", "summary", "full"];
 export const checkLineVerdictValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CheckLine"]["verdict"]> = ["ok", "warn", "fail"];
 export const commandActionActionValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CommandAction"]["action"]> = ["pause", "resume", "inject", "kill", "cancel", "sweep"];
 export const commandActionThenAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CommandAction"]["then"]> = ["continue", "kill", "inject", "deny"];
@@ -15373,6 +15454,8 @@ export const ipcEventFamilyAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<com
 export const ipcEventKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["IpcEvent"]["kind"]> = ["bind", "connect", "sendto", "fifo", "shmget", "shmat"];
 export const jobAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Job"]["audit"]> = ["kernel", "snapshot"];
 export const jobKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Job"]["kind"]> = ["models.check", "scenario", "selftest"];
+export const jobAddOutcomeAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["JobAdd"]["outcome"]> = ["done", "failed", "changed", "refused"];
+export const jobAddRolesValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["JobAdd"]["roles"]> = ["agent", "sweep", "judge"];
 export const jobOptionsOversightAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["JobOptions"]["oversight"]> = ["observe", "autonomous", "human"];
 export const labelInputLabelValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Label-Input"]["label"]> = ["real", "false_alarm", "unclear"];
 export const labelOutputLabelValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Label-Output"]["label"]> = ["real", "false_alarm", "unclear"];
@@ -15382,7 +15465,9 @@ export const layerInfoLayerValues: ReadonlyArray<FlattenedDeepRequired<component
 export const layerRatesLayerValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["LayerRates"]["layer"]> = ["signal", "sweep", "judge", "llm", "any"];
 export const memExecKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["MemExec"]["kind"]> = ["exec", "mmap"];
 export const modelAddRolesValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelAdd"]["roles"]> = ["agent", "sweep", "judge"];
+export const modelCheckedReasoningAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelChecked"]["reasoning"]> = ["none", "summary", "full"];
 export const modelCheckedVerdictValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelChecked"]["verdict"]> = ["ok", "warn", "fail"];
+export const modelDraftFitsValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelDraft"]["fits"]> = ["agent", "sweep", "judge"];
 export const modelRequestBackendValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelRequest"]["backend"]> = ["responses", "chat"];
 export const modelRequestRoleAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelRequest"]["role"]> = ["sweep", "judge", "review", "score"];
 export const modelResponseCost_sourceAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ModelResponse"]["cost_source"]> = ["provider", "price", "list"];
@@ -15419,7 +15504,6 @@ export const profileBackendValues: ReadonlyArray<FlattenedDeepRequired<component
 export const profileEffortAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Profile"]["effort"]> = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 export const profileReasoningValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Profile"]["reasoning"]> = ["none", "summary", "full"];
 export const profileSummaryAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Profile"]["summary"]> = ["auto", "concise", "detailed"];
-export const profileDraftFitsValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ProfileDraft"]["fits"]> = ["agent", "sweep", "judge"];
 export const replayDivergenceKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ReplayDivergence"]["kind"]> = ["output", "channel"];
 export const resumeBodyThenValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ResumeBody"]["then"]> = ["continue", "kill", "inject", "deny"];
 export const reviewEstimateModeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ReviewEstimate"]["mode"]> = ["full", "signals_only", "judge_only"];

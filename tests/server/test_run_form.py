@@ -285,7 +285,10 @@ async def test_each_profile_shows_its_newest_model_check(cp: CP, local: LocalEve
         profiles = {p["name"]: p for p in (await c.get("/api/models")).json()["profiles"]}
     scripted, keyed = profiles["scripted"]["check"], profiles["keyed"]["check"]
     assert scripted["run_id"] == newer
-    assert scripted["checks"] == [{"name": "plain", "verdict": "warn", "detail": "scripted warn"}]
+    assert scripted["checks"] == [
+        {"name": "plain", "verdict": "warn", "detail": "scripted warn", "reasoning": None}
+    ]
+    assert profiles["scripted"]["add"] is None
     assert keyed["run_id"] == older
     assert [c["verdict"] for c in keyed["checks"]] == ["ok"]
     assert all(p["check"] is None for n, p in profiles.items() if n not in ("scripted", "keyed"))
@@ -363,15 +366,18 @@ async def test_a_model_check_records_each_smoke_test(
     models = cp.state.config.settings().models
 
     async def fake(client: object, profile: Profile) -> list[Check]:
-        return [Check(profile.name, "plain", "ok", "42"), Check(profile.name, "tools", "fail", "x")]
+        return [
+            Check(profile.name, "plain", "ok", "42", "summary"),
+            Check(profile.name, "tools", "fail", "x"),
+        ]
 
     monkeypatch.setattr(check, "check_profile", fake)
     run_id, checks = await check.record_check(local, models, [models.get("scripted")])
     assert [c.verdict for c in checks] == ["ok", "fail"]
     events = await local.events(run_id, types=["model.checked"])
-    assert [(e.data["name"], e.data["verdict"]) for e in events] == [
-        ("plain", "ok"),
-        ("tools", "fail"),
+    assert [(e.data["name"], e.data["verdict"], e.data.get("reasoning")) for e in events] == [
+        ("plain", "ok", "summary"),
+        ("tools", "fail", None),
     ]
     info = await local.run(run_id)
     assert info is not None

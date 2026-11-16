@@ -2,14 +2,17 @@
 
 import asyncio
 import contextlib
+import logging
 import os
 import secrets
 import shutil
 import tomllib
+import uuid
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args
 
 import tomlkit
+import tomlkit.container
 import tomlkit.exceptions
 import tomlkit.items
 from fastapi import APIRouter, Header, Request
@@ -25,19 +28,23 @@ from aims.config import (
     load_layers,
     with_roles,
 )
+from aims.events import ReasoningKind
 from aims.merged import merged
-from aims.models import ProfileError
+from aims.models import Profile, ProfileError
+from aims.models.add import AddError, fingerprint, one_profile, render, unfit
 from aims.models.profiles import ROLES
 from aims.models.profiles import Role as ModelRole
 from aims.monitor.config import MonitorConfigError
 from aims.plants import PlantError, category_of, registry, taken_tier
 from aims.prompts import Prompts, TextError
 from aims.run import selftest
+from aims.run.job import AddOutcome, Job, JobAdd
 from aims.run.runner import check
 from aims.scenario import Bundle, Scenario, ScenarioError, parse
 from aims.scenario.edit import PromptChange, check_key, set_prompts
 from aims.scenario.model import ImpossiblePlant, Role
 from aims.server import audit
+from aims.server import db as sdb
 from aims.server.api import (
     CheckResult,
     Operator,
@@ -46,7 +53,9 @@ from aims.server.api import (
     State,
     Uploader,
     Viewer,
-    drafted,
+    _check_runner,
+    _queue,
+    add_problem,
     scenario_problems,
 )
 from aims.server.files import (
@@ -70,6 +79,7 @@ from aims.server.state import ServerState
 from aims.text import NoLoneSurrogate, Utf8
 
 router = APIRouter(prefix="/api", responses=responses(401, 403, 404, 412, 422, 428))
+log = logging.getLogger("aims.server")
 Layer = Literal["user", "project"]
 IfMatch = Annotated[str | None, Header(alias="If-Match")]
 IfNoneMatch = Annotated[str | None, Header(alias="If-None-Match")]
@@ -266,58 +276,219 @@ async def write_config(
 
 
 class ModelAdd(BaseModel):
-    """`roles` the profile also takes under [roles], as `--role` does."""
+    """`toml` holds the one `[profiles."name"]` table to add, as `GET /models/lookup` drafts
+    it. `roles` are the roles it takes under [roles]. With `check` a model check of it is
+    queued, on `runner` when one is named, and the roles wait for it: once it ends with no test
+    failed they are set and, with `measure`, the reasoning kind it saw replaces the profile's.
+    Without `check` the roles are set with the profile."""
 
-    slug: Utf8 = Field(min_length=1, max_length=200)
-    source: Literal["openrouter"] = "openrouter"
-    name: Utf8 | None = Field(default=None, min_length=1, max_length=200)
-    alias: bool = False
+    toml: Utf8 = Field(min_length=1, max_length=64 * 1024)
     roles: list[ModelRole] = Field(default_factory=list, max_length=len(ROLES))
+    check: bool = True
+    measure: bool = True
+    runner: Utf8 | None = Field(default=None, min_length=1, max_length=200)
 
 
 class ModelAdded(Out):
-    """The profile `name` now in the project file at `path`."""
+    """The profile `name` now in the project file at `path`. `run_id` is its check, null
+    without one. `notes` say what else to know."""
 
     name: str
     path: str
+    run_id: str | None = None
+    notes: list[str] = Field(default_factory=list)
 
 
-@router.post("/models/add", tags=["models"], responses=responses(409, 502))
+@router.post("/models/add", tags=["models"], responses=responses(409))
 @audit.audited("models.add")
 async def add_model(
     body: ModelAdd, principal: Operator, state: State, note: audit.Note
 ) -> ModelAdded:
-    """Add a profile for model `slug` to the project file, as `aims models add --write` does:
-    the profile `GET /models/lookup` shows, after what the file holds, with `roles` set to it
-    under [roles]. A name that a profile has already is refused, as is a role the model does
-    not fit. The merged layers must load first."""
+    """Add a profile to the project file, as `aims models add --write` does, after what the
+    file holds. A name that a profile has already is refused, as is a role the profile does not
+    fit. The merged layers must load first. Runners are told the env vars it reads. With
+    `check` a runner must have said hello. The check is recorded as a run; `GET /models` says
+    how the add went once it ends."""
     roles = [r for r in ROLES if r in body.roles]
-    note.detail = body.slug + (f"; roles {', '.join(roles)}" if roles else "")
-    found = await drafted(state, body.slug, body.name, body.alias)
-    note.target = found.name
-    if why := found.unfit(roles):
+    try:
+        name, table = one_profile(body.toml)
+    except AddError as e:
+        raise add_problem(e) from None
+    note.target = name
+    note.detail = "; ".join(
+        [f"roles {', '.join(roles)}"] * bool(roles) + ["checked" if body.check else "unchecked"]
+    )
+    profile = Profile.model_validate({**table, "name": name})
+    if why := unfit(profile, roles):
         raise ProblemException(422, "Invalid request", why, code="role")
+    taken = ProblemException(409, "Conflict", f"a profile named {name} exists", code="exists")
+    if name in state.config.settings().models.profiles:
+        raise taken
+    if body.check:
+        _check_runner(state, body.runner, [])
     path = _path(state, "project")
     async with _lock(path):
-        if found.name in state.config.settings().models.profiles:
-            raise ProblemException(
-                409, "Conflict", f"a profile named {found.name} exists", code="exists"
-            )
+        if name in state.config.settings().models.profiles:
+            raise taken
         current = await asyncio.to_thread(read_or_none, path)
         try:
-            text = appended(current or b"", found.toml()).decode()
+            text = appended(current or b"", render(name, table)).decode()
         except UnicodeDecodeError:
             raise ProblemException(422, "Invalid request", f"{path} is not UTF-8") from None
-        if roles:
+        if roles and not body.check:
             try:
-                text = with_roles(text, dict.fromkeys(roles, found.name))
+                text = with_roles(text, dict.fromkeys(roles, name))
             except ConfigError as e:
                 raise ProblemException(422, "Invalid request", f"{path}: {e}") from None
         await asyncio.to_thread(_validate, state, "project", text)
+        # it loads, so it is TOML: what the profile and the roles hold as written
+        profiles, set_roles = _held(text)
         with writing(path):
             await asyncio.to_thread(write_atomic, path, text.encode())
     tell_envs(state)
-    return ModelAdded(name=found.name, path=str(path))
+    if not body.check:
+        return ModelAdded(name=name, path=str(path))
+    # The file holds the profile now, so what follows answers 200 whatever happens.
+    job = Job(
+        kind="models.check",
+        run_id=str(uuid.uuid7()),
+        check=[name],
+        add=JobAdd(
+            roles=roles,
+            table=fingerprint(profiles.get(name, {})),
+            was={r: set_roles.get(r) for r in roles},
+            measure=body.measure,
+        ),
+    )
+    try:
+        job = job.model_copy(update={"models": {name: state.config.settings().models.get(name)}})
+        started = await _queue(
+            state, principal.name, [job], runner=body.runner, parallel=None, checked=True
+        )
+    except Exception as e:
+        log.exception("the check of added profile %s was not queued", name)
+        why = str(e) if isinstance(e, ProblemException) else type(e).__name__
+        wait = f" The roles {', '.join(roles)} are not set." if roles else ""
+        return ModelAdded(
+            name=name,
+            path=str(path),
+            notes=[f"Its check was not queued: {why}.{wait} Check it under Settings > Models."],
+        )
+    note.detail += f"; check run {started.run_ids[0]}"
+    return ModelAdded(name=name, path=str(path), run_id=started.run_ids[0])
+
+
+async def after_check(state: ServerState, job: sdb.Job, status: str | None) -> None:
+    """Once the run of check job `job` ended with `status`: when an add queued it, give the
+    profile the roles the add asked for and the reasoning the check saw, keep how that went on
+    the job and in the audit log. It never raises: the run's end must not fail on it."""
+    add = job.payload.get("add")
+    if job.payload.get("kind") != "models.check" or not isinstance(add, dict):
+        return
+    checked = job.payload.get("check")
+    name = checked[0] if isinstance(checked, list) and checked else "?"
+    try:
+        outcome, why = await _finish_add(
+            state, job.run_id, str(name), JobAdd.model_validate(add), status
+        )
+    except Exception as e:
+        log.exception("the write after check %s failed", job.run_id)
+        outcome, why = "refused", f"the write failed: {type(e).__name__}"
+    try:
+        await state.db.note_add(job.run_id, outcome, why)
+    except Exception:
+        log.exception("how the add of %s went was not kept", name)
+    await audit.record(
+        state.db,
+        "models.add",
+        outcome="ok" if outcome == "done" else "refused",
+        target=str(name),
+        detail=f"after check run {job.run_id}: {why}",
+    )
+    state.changes.touch(job.run_id)
+
+
+async def _finish_add(
+    state: ServerState, run_id: str, name: str, add: JobAdd, status: str | None
+) -> tuple[AddOutcome, str]:
+    if status != "completed":
+        failed = await _failed_tests(state, run_id, name)
+        what = f"it failed {', '.join(failed)}" if failed else f"the run is {status or 'gone'}"
+        return "failed", f"the check did not pass: {what}. The profile has no role"
+    kind = await _measured(state, run_id, name) if add.measure else None
+    path = _path(state, "project")
+    async with _lock(path):
+        current = await asyncio.to_thread(read_or_none, path)
+        try:
+            text = (current or b"").decode()
+            profiles, roles = _held(text)
+        except UnicodeDecodeError, tomllib.TOMLDecodeError:
+            return "refused", "the project file is not UTF-8 TOML now"
+        found = profiles.get(name)
+        if not isinstance(found, dict) or fingerprint(found) != add.table:
+            return "changed", (
+                f"profile {name} changed or went while the check ran, so its roles and"
+                " reasoning are not set"
+            )
+        doc = tomlkit.parse(text)
+        table = _table(doc, ["profiles", name], create=False)
+        if table is None:
+            return "changed", f"profile {name} is not a table in the project file"
+        done: list[str] = []
+        if kind is not None and table.get("reasoning") != kind:
+            table["reasoning"] = kind
+            done.append(f"reasoning {kind}")
+        text = tomlkit.dumps(doc)
+        # a role is set only while it names what it named at the add
+        wanted = [r for r in add.roles if roles.get(r) != name]
+        given = [r for r in wanted if roles.get(r) == add.was.get(r)]
+        left = [r for r in wanted if r not in given]
+        if given:
+            text = with_roles(text, dict.fromkeys(given, name))
+            done.append(f"roles {', '.join(given)}")
+        what = f"set {' and '.join(done)}" if done else "nothing to set"
+        if left:
+            what += f"; left {', '.join(left)}, which changed while the check ran"
+        if done:
+            try:
+                await asyncio.to_thread(_validate, state, "project", text)
+            except ProblemException as e:
+                return "refused", f"the config would not load: {e}"
+            with writing(path):
+                await asyncio.to_thread(write_atomic, path, text.encode())
+    return "done", f"the check passed; {what}"
+
+
+def _held(text: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The profiles and the roles project file `text` holds. Raises TOMLDecodeError."""
+    doc = tomllib.loads(text)
+    profiles, roles = doc.get("profiles"), doc.get("roles")
+    return (
+        profiles if isinstance(profiles, dict) else {},
+        roles if isinstance(roles, dict) else {},
+    )
+
+
+async def _checked_events(state: ServerState, run_id: str, name: str) -> list[dict[str, Any]]:
+    events = await state.store.events(run_id, types=["model.checked"], limit=100)
+    return [e.data for e in events if e.data.get("profile") == name]
+
+
+async def _failed_tests(state: ServerState, run_id: str, name: str) -> list[str]:
+    return [
+        str(e.get("name"))
+        for e in await _checked_events(state, run_id, name)
+        if e.get("verdict") == "fail"
+    ]
+
+
+async def _measured(state: ServerState, run_id: str, name: str) -> ReasoningKind | None:
+    """What the plain test of profile `name` in check run `run_id` saw of its reasoning."""
+    for e in await _checked_events(state, run_id, name):
+        kind = e.get("reasoning")
+        if e.get("name") == "plain" and kind in get_args(ReasoningKind):
+            return kind
+    return None
 
 
 def _value(value: JsonValue) -> object:
@@ -376,6 +547,11 @@ def _keys(set_: list[list[str]], unset: list[list[str]]) -> str | None:
     return "; ".join(parts) or None
 
 
+# What tomlkit gives for a table: a table whose parts are apart in the file, such as
+# [profiles.a] and [profiles.b] with [roles] between them, comes as a proxy over its parts.
+TABLES = (tomlkit.items.Table, tomlkit.items.InlineTable, tomlkit.container.OutOfOrderTableProxy)
+
+
 def _table(doc: tomlkit.TOMLDocument, parts: list[str], *, create: bool) -> Any:
     """The table at `parts`, made when `create` and missing; None if a part is not a table."""
     table: Any = doc
@@ -384,7 +560,7 @@ def _table(doc: tomlkit.TOMLDocument, parts: list[str], *, create: bool) -> Any:
         if nxt is None and create:
             nxt = tomlkit.table()
             table[part] = nxt
-        if not isinstance(nxt, tomlkit.items.Table | tomlkit.items.InlineTable):
+        if not isinstance(nxt, TABLES):
             return None
         table = nxt
     return table

@@ -702,6 +702,20 @@ class ServerDB:
         )
         return [self._job(r) for r in rows]
 
+    async def added_checks(self) -> dict[str, Job]:
+        """The newest check job an add in the app queued, by the profile it checks."""
+        rows = await self._all(
+            f"{self._JOB} where json_extract(payload, '$.kind') = 'models.check'"
+            " and json_type(payload, '$.add') = 'object' order by created, run_id"
+        )
+        out: dict[str, Job] = {}
+        for row in rows:
+            job = self._job(row)
+            checked = job.payload.get("check")
+            if isinstance(checked, list) and checked and isinstance(checked[0], str):
+                out[checked[0]] = job
+        return out
+
     async def review_jobs(self, origins: Sequence[str]) -> dict[str, list[str]]:
         """The run ids of the monitor jobs over each of `origins`, whatever their state."""
         if not origins:
@@ -851,6 +865,18 @@ class ServerDB:
                 "update jobs set state = ?, reason = coalesce(?, reason), updated = ?"
                 " where run_id = ? and state not in ('done', 'cancelled')",
                 (state, reason, time.time(), run_id),
+            )
+            > 0
+        )
+
+    async def note_add(self, run_id: str, outcome: str, note: str | None) -> bool:
+        """Keep how the write after the check of an added profile went on its job. False when
+        the job is gone or was no such check."""
+        return (
+            await self._write(
+                "update jobs set payload = json_set(payload, '$.add.outcome', ?, '$.add.note', ?)"
+                " where run_id = ? and json_type(payload, '$.add') = 'object'",
+                (outcome, note, run_id),
             )
             > 0
         )

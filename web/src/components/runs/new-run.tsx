@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Link, useNavigate } from "@tanstack/react-router";
+import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
 import { type Oversight, oversights } from "@/api/fork";
@@ -442,11 +442,7 @@ function ProfileField({
       </Field>
       {value === DEFAULT && scenario.needs_profile && (
         <p className="text-flag">
-          No profile has the agent role. Pick one here, set agent under [roles] in aims.toml, or{" "}
-          <Link to="/settings/models" search={{ add: true }} className="underline">
-            add a model with the role
-          </Link>
-          .
+          No profile has the agent role. Pick one here, or set agent under [roles] in aims.toml.
         </p>
       )}
       <ProfileChecks profiles={shown} />

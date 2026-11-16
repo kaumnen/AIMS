@@ -331,7 +331,9 @@ class ModelResponse(Payload):
 
 class ModelChecked(Payload):
     """One smoke test of a model check: `name` says which (plain, unstreamed, tools,
-    structured), `verdict` how it went and `detail` what was seen."""
+    structured), `verdict` how it went and `detail` what was seen. `reasoning` is what the
+    plain test's answer carried of the model's reasoning, null for the other tests, when no
+    answer came and in runs from before it was recorded."""
 
     type = "model.checked"
 
@@ -339,6 +341,7 @@ class ModelChecked(Payload):
     name: str
     verdict: Literal["ok", "warn", "fail"]
     detail: str = ""
+    reasoning: ReasoningKind | None = None
 
 
 class SelfTestCase(Payload):

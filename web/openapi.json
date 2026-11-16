@@ -26,6 +26,80 @@
         "title": "Ack",
         "type": "object"
       },
+      "AddInfo": {
+        "description": "The newest add of a profile in the app that queued check run `run_id`. Once the check\npasses it gives the profile `roles` and, with `measure`, the reasoning kind the check saw.\n`waiting` says why the check has not started, null once it has. `outcome` says how the\nadd went, null until the check ends: `done` it wrote what there was to write, `failed` the\ncheck did not pass or did not run, `changed` the profile changed first, `refused` the write\nwould not load or could not be made. `note` says more.",
+        "properties": {
+          "measure": {
+            "title": "Measure",
+            "type": "boolean"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "enum": [
+                  "done",
+                  "failed",
+                  "changed",
+                  "refused"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "roles": {
+            "items": {
+              "enum": [
+                "agent",
+                "sweep",
+                "judge"
+              ],
+              "type": "string"
+            },
+            "title": "Roles",
+            "type": "array"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "waiting": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Waiting"
+          }
+        },
+        "required": [
+          "run_id",
+          "roles",
+          "measure",
+          "waiting",
+          "outcome",
+          "note"
+        ],
+        "title": "AddInfo",
+        "type": "object"
+      },
       "AgentCompacted": {
         "additionalProperties": false,
         "description": "The agent's context was cut after step `step`. Steps `from_step` to `to_step` were\nreplaced: their tool outputs by a placeholder (trim), or all of them by a summary the agent's\nown model wrote in model call `call_id`. `tokens_after_est` scales `tokens_before` by the\nchange in prompt bytes.",
@@ -2049,6 +2123,7 @@
         "type": "object"
       },
       "CheckLine": {
+        "description": "`reasoning` is what the plain test's answer carried of the model's reasoning, null for\nthe other tests and in checks from before it was recorded.",
         "properties": {
           "detail": {
             "title": "Detail",
@@ -2057,6 +2132,22 @@
           "name": {
             "title": "Name",
             "type": "string"
+          },
+          "reasoning": {
+            "anyOf": [
+              {
+                "enum": [
+                  "none",
+                  "summary",
+                  "full"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning"
           },
           "verdict": {
             "enum": [
@@ -2071,7 +2162,8 @@
         "required": [
           "name",
           "verdict",
-          "detail"
+          "detail",
+          "reasoning"
         ],
         "title": "CheckLine",
         "type": "object"
@@ -6092,8 +6184,18 @@
       },
       "Job": {
         "additionalProperties": false,
-        "description": "`monitor` is the resolved monitor's snapshot, None for a run without one; its profiles\nare in `models` too, so a runner offers their keys.",
+        "description": "`monitor` is the resolved monitor's snapshot, None for a run without one; its profiles\nare in `models` too, so a runner offers their keys. `add` is set on the check of a profile\nthe app added.",
         "properties": {
+          "add": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JobAdd"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "audit": {
             "default": "kernel",
             "enum": [
@@ -6219,6 +6321,87 @@
           "run_id"
         ],
         "title": "Job",
+        "type": "object"
+      },
+      "JobAdd": {
+        "additionalProperties": false,
+        "description": "What the control plane does once the check of a profile the app added ends; a runner\nignores it. When no test failed it gives the profile `roles` and, with `measure`, the\nreasoning kind the plain test saw, in one write of the project file. It writes only while\nthe profile's fields there still have fingerprint `table`, the one the add wrote. It sets a\nrole only while the role still names what it named at the add, in `was`. `outcome` and\n`note` say how that went: `done` it wrote what there was to write, `failed` the check did\nnot pass, `changed` the profile changed first, `refused` the write would not load or could\nnot be made. Both are null until then.",
+        "properties": {
+          "measure": {
+            "default": true,
+            "title": "Measure",
+            "type": "boolean"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "enum": [
+                  "done",
+                  "failed",
+                  "changed",
+                  "refused"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "roles": {
+            "items": {
+              "enum": [
+                "agent",
+                "sweep",
+                "judge"
+              ],
+              "type": "string"
+            },
+            "title": "Roles",
+            "type": "array"
+          },
+          "table": {
+            "title": "Table",
+            "type": "string"
+          },
+          "was": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "propertyNames": {
+              "enum": [
+                "agent",
+                "sweep",
+                "judge"
+              ]
+            },
+            "title": "Was",
+            "type": "object"
+          }
+        },
+        "required": [
+          "table"
+        ],
+        "title": "JobAdd",
         "type": "object"
       },
       "JobFork": {
@@ -7133,25 +7316,17 @@
         "type": "object"
       },
       "ModelAdd": {
-        "description": "`roles` the profile also takes under [roles], as `--role` does.",
+        "description": "`toml` holds the one `[profiles.\"name\"]` table to add, as `GET /models/lookup` drafts\nit. `roles` are the roles it takes under [roles]. With `check` a model check of it is\nqueued, on `runner` when one is named, and the roles wait for it: once it ends with no test\nfailed they are set and, with `measure`, the reasoning kind it saw replaces the profile's.\nWithout `check` the roles are set with the profile.",
         "properties": {
-          "alias": {
-            "default": false,
-            "title": "Alias",
+          "check": {
+            "default": true,
+            "title": "Check",
             "type": "boolean"
           },
-          "name": {
-            "anyOf": [
-              {
-                "maxLength": 200,
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Name"
+          "measure": {
+            "default": true,
+            "title": "Measure",
+            "type": "boolean"
           },
           "roles": {
             "items": {
@@ -7166,47 +7341,74 @@
             "title": "Roles",
             "type": "array"
           },
-          "slug": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Slug",
-            "type": "string"
+          "runner": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Runner"
           },
-          "source": {
-            "const": "openrouter",
-            "default": "openrouter",
-            "title": "Source",
+          "toml": {
+            "maxLength": 65536,
+            "minLength": 1,
+            "title": "Toml",
             "type": "string"
           }
         },
         "required": [
-          "slug"
+          "toml"
         ],
         "title": "ModelAdd",
         "type": "object"
       },
       "ModelAdded": {
-        "description": "The profile `name` now in the project file at `path`.",
+        "description": "The profile `name` now in the project file at `path`. `run_id` is its check, null\nwithout one. `notes` say what else to know.",
         "properties": {
           "name": {
             "title": "Name",
             "type": "string"
           },
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Notes",
+            "type": "array"
+          },
           "path": {
             "title": "Path",
             "type": "string"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
           }
         },
         "required": [
           "name",
-          "path"
+          "path",
+          "run_id",
+          "notes"
         ],
         "title": "ModelAdded",
         "type": "object"
       },
       "ModelChecked": {
         "additionalProperties": false,
-        "description": "One smoke test of a model check: `name` says which (plain, unstreamed, tools,\nstructured), `verdict` how it went and `detail` what was seen.",
+        "description": "One smoke test of a model check: `name` says which (plain, unstreamed, tools,\nstructured), `verdict` how it went and `detail` what was seen. `reasoning` is what the\nplain test's answer carried of the model's reasoning, null for the other tests, when no\nanswer came and in runs from before it was recorded.",
         "properties": {
           "detail": {
             "default": "",
@@ -7220,6 +7422,23 @@
           "profile": {
             "title": "Profile",
             "type": "string"
+          },
+          "reasoning": {
+            "anyOf": [
+              {
+                "enum": [
+                  "none",
+                  "summary",
+                  "full"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reasoning"
           },
           "verdict": {
             "enum": [
@@ -7235,9 +7454,93 @@
           "profile",
           "name",
           "verdict",
-          "detail"
+          "detail",
+          "reasoning"
         ],
         "title": "ModelChecked",
+        "type": "object"
+      },
+      "ModelDraft": {
+        "description": "A profile for model `model` as config file text, `toml`, for `POST /models/add`.\n`notes` say what its reader should know. `exists` when a profile has the name already.\n`fits` are the roles it can take as drafted: the agent, and the sweep and judge with\nstructured output. The check finds out whether the model makes tool calls. `guessed` while\nits `reasoning` is a guess that the check replaces. `candidates` are the keys of LiteLLM\nrows that may price it, when no row was picked. `ids` are ids the server's list holds for\nwhat was typed, and `listed` how many it holds, null when the list was not read.",
+        "properties": {
+          "candidates": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Candidates",
+            "type": "array"
+          },
+          "exists": {
+            "title": "Exists",
+            "type": "boolean"
+          },
+          "fits": {
+            "items": {
+              "enum": [
+                "agent",
+                "sweep",
+                "judge"
+              ],
+              "type": "string"
+            },
+            "title": "Fits",
+            "type": "array"
+          },
+          "guessed": {
+            "title": "Guessed",
+            "type": "boolean"
+          },
+          "ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Ids",
+            "type": "array"
+          },
+          "listed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Listed"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Notes",
+            "type": "array"
+          },
+          "toml": {
+            "title": "Toml",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "model",
+          "toml",
+          "notes",
+          "exists",
+          "fits",
+          "guessed",
+          "candidates",
+          "ids",
+          "listed"
+        ],
+        "title": "ModelDraft",
         "type": "object"
       },
       "ModelParams": {
@@ -10497,58 +10800,18 @@
         "title": "ProfileCheck",
         "type": "object"
       },
-      "ProfileDraft": {
-        "description": "A profile for a model a provider lists, as config file text to add under a layer.\n`notes` say what its reader should know. `exists` when a profile has the name already.\n`fits` are the roles it can take: agent with tool calls, sweep and judge with structured\noutput.",
-        "properties": {
-          "exists": {
-            "title": "Exists",
-            "type": "boolean"
-          },
-          "fits": {
-            "items": {
-              "enum": [
-                "agent",
-                "sweep",
-                "judge"
-              ],
-              "type": "string"
-            },
-            "title": "Fits",
-            "type": "array"
-          },
-          "name": {
-            "title": "Name",
-            "type": "string"
-          },
-          "notes": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Notes",
-            "type": "array"
-          },
-          "slug": {
-            "title": "Slug",
-            "type": "string"
-          },
-          "toml": {
-            "title": "Toml",
-            "type": "string"
-          }
-        },
-        "required": [
-          "name",
-          "slug",
-          "toml",
-          "notes",
-          "exists",
-          "fits"
-        ],
-        "title": "ProfileDraft",
-        "type": "object"
-      },
       "ProfileInfo": {
         "properties": {
+          "add": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AddInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "backend": {
             "title": "Backend",
             "type": "string"
@@ -10633,7 +10896,8 @@
           "runners",
           "check",
           "price",
-          "price_key"
+          "price_key",
+          "add"
         ],
         "title": "ProfileInfo",
         "type": "object"
@@ -18177,7 +18441,7 @@
     },
     "/api/models/add": {
       "post": {
-        "description": "Add a profile for model `slug` to the project file, as `aims models add --write` does:\nthe profile `GET /models/lookup` shows, after what the file holds, with `roles` set to it\nunder [roles]. A name that a profile has already is refused, as is a role the model does\nnot fit. The merged layers must load first.",
+        "description": "Add a profile to the project file, as `aims models add --write` does, after what the\nfile holds. A name that a profile has already is refused, as is a role the profile does not\nfit. The merged layers must load first. Runners are told the env vars it reads. With\n`check` a runner must have said hello. The check is recorded as a run; `GET /models` says\nhow the add went once it ends.",
         "operationId": "add_model",
         "requestBody": {
           "content": {
@@ -18289,16 +18553,6 @@
               }
             },
             "description": "Precondition required"
-          },
-          "502": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Bad gateway"
           }
         },
         "summary": "Add Model",
@@ -18401,29 +18655,72 @@
     },
     "/api/models/lookup": {
       "get": {
-        "description": "A profile for model `slug`, filled in from the provider's public list of models, which\nthe server reads. Nothing is saved: `POST /models/add` does that. `alias` takes an alias the\nprovider moves to newer models.",
+        "description": "A profile for model `model`, as `aims models add` drafts it: reached at `base_url`\nwith the key in env var `key_env`, or as profile `from` reaches its server. The server\nreads that server's list of models with no key, to check the id. It refuses a host that\nresolves to a link-local or cloud metadata address, which a note then says. `litellm` names\nthe model's row in LiteLLM's price map, for its price, context size and output cap. Nothing\nis saved: `POST /models/add` does that.",
         "operationId": "lookup_model",
         "parameters": [
           {
             "in": "query",
-            "name": "slug",
+            "name": "model",
             "required": true,
             "schema": {
               "maxLength": 200,
               "minLength": 1,
-              "title": "Slug",
+              "title": "Model",
               "type": "string"
             }
           },
           {
             "in": "query",
-            "name": "source",
+            "name": "base_url",
             "required": false,
             "schema": {
-              "const": "openrouter",
-              "default": "openrouter",
-              "title": "Source",
-              "type": "string"
+              "anyOf": [
+                {
+                  "maxLength": 2000,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Base Url"
+            }
+          },
+          {
+            "in": "query",
+            "name": "key_env",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Key Env"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
             }
           },
           {
@@ -18446,12 +18743,40 @@
           },
           {
             "in": "query",
-            "name": "alias",
+            "name": "litellm",
             "required": false,
             "schema": {
-              "default": false,
-              "title": "Alias",
-              "type": "boolean"
+              "anyOf": [
+                {
+                  "maxLength": 300,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Litellm"
+            }
+          },
+          {
+            "in": "query",
+            "name": "backend",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "responses",
+                    "chat"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Backend"
             }
           }
         ],
@@ -18460,7 +18785,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProfileDraft"
+                  "$ref": "#/components/schemas/ModelDraft"
                 }
               }
             },
@@ -18485,16 +18810,6 @@
               }
             },
             "description": "Forbidden"
-          },
-          "404": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Not found"
           },
           "422": {
             "content": {

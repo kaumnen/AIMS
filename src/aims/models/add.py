@@ -9,12 +9,13 @@ only values of a checked shape reach the profile and its notes.
 
 import asyncio
 import difflib
+import hashlib
 import json
 import math
 import re
 import time
 import tomllib
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal, get_args
 
@@ -23,9 +24,9 @@ import tomlkit
 from pydantic import ValidationError
 
 from aims.events import ModelBackend, ReasoningKind
-from aims.models.listprice import SOURCE, NoPrice, PriceList
-from aims.models.profiles import ROLES, Profile, Role
-from aims.net import Guarded
+from aims.models.listprice import SOURCE, Found, NoPrice, PriceList, PriceLists, at_hand
+from aims.models.profiles import ROLES, Profile, ProfileError, Role
+from aims.net import Guarded, Refused
 
 # A starting value to tune.
 OUTPUT_TOKENS = 16384
@@ -37,6 +38,8 @@ FETCH_SECONDS = 15.0
 # How long a read list serves. How many servers' lists are kept.
 FRESH_SECONDS = 120.0
 MAX_LISTS = 32
+# How many of a server's ids a lookup offers.
+MAX_SUGGESTIONS = 20
 # The fields a profile copies from the one it is based on: how to reach the server, not what
 # the model is. `extra` holds a router's request object.
 CONNECTION = (
@@ -117,28 +120,86 @@ class Draft:
 
     @property
     def fits(self) -> tuple[Role, ...]:
-        """The roles it can take as drafted. The sweep and judge need structured output. The
-        check finds out whether the model makes tool calls, which an agent needs."""
-        structured = self.profile.structured_output
-        return tuple(r for r in ROLES if r == "agent" or structured)
+        """The roles it can take as drafted."""
+        return fits(self.profile)
 
     def unfit(self, roles: Iterable[Role]) -> str | None:
         """Why it cannot take one of `roles`, or None when it can take them all."""
-        for role in roles:
-            if role not in self.fits:
-                return f"{self.name} cannot take the {role} role: structured_output is false"
-        return None
+        return unfit(self.profile, roles)
 
     def toml(self) -> str:
         """The `[profiles."name"]` table as config file text."""
-        table = tomlkit.table()
-        for key, value in self.table.items():
-            table.add(key, _item(value))
-        profiles = tomlkit.table(is_super_table=True)
-        profiles.add(self.name, table)
-        doc = tomlkit.document()
-        doc.add("profiles", profiles)
-        return tomlkit.dumps(doc)
+        return render(self.name, self.table)
+
+
+def fits(profile: Profile) -> tuple[Role, ...]:
+    """The roles `profile` can take. The sweep and judge need structured output. The check
+    finds out whether the model makes tool calls, which an agent needs."""
+    return tuple(r for r in ROLES if r == "agent" or profile.structured_output)
+
+
+def unfit(profile: Profile, roles: Iterable[Role]) -> str | None:
+    """Why `profile` cannot take one of `roles`, or None when it can take them all."""
+    for role in roles:
+        if role not in fits(profile):
+            return f"{profile.name} cannot take the {role} role: structured_output is false"
+    return None
+
+
+def render(name: str, table: Mapping[str, Any]) -> str:
+    """Profile `name` with fields `table` as a `[profiles."name"]` table of config file text.
+    It starts with its header, so no key of it joins a table that comes before it."""
+    out = tomlkit.table()
+    for key, value in table.items():
+        out.add(key, _item(value))
+    profiles = tomlkit.table(is_super_table=True)
+    profiles.add(name, out)
+    doc = tomlkit.document()
+    doc.add("profiles", profiles)
+    return tomlkit.dumps(doc)
+
+
+def fingerprint(table: Mapping[str, Any]) -> str:
+    """A hash of a profile's fields as a config file holds them, to tell whether they
+    changed."""
+    text = json.dumps(table, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def one_profile(text: str) -> tuple[str, dict[str, Any]]:
+    """The name and fields of the one profile config text `text` holds, as `render` writes
+    it. Raises AddError for text that is not TOML, that holds anything but one
+    `[profiles."name"]` table, whose name breaks the name rule, that sets a field this way
+    cannot set, or whose fields make no profile."""
+    try:
+        doc = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as e:
+        raise AddError("profile", f"not TOML: {e}") from None
+    except RecursionError:
+        raise AddError("profile", "not TOML: it nests too deep") from None
+    profiles = doc.get("profiles")
+    if doc.keys() != {"profiles"} or not isinstance(profiles, dict) or len(profiles) != 1:
+        raise AddError("profile", 'give one [profiles."name"] table and nothing else')
+    ((name, table),) = profiles.items()
+    if not isinstance(table, dict):
+        raise AddError("profile", f"profiles.{name} is not a table")
+    check_name(name)
+    if barred := [k for k in UNSET if k in table]:
+        raise AddError("profile", f"{', '.join(barred)} cannot be set this way")
+    try:
+        Profile.model_validate({**table, "name": name})
+    except ValidationError as e:
+        raise AddError("profile", _problems(e)) from None
+    return name, table
+
+
+def suggest(text: str, ids: Sequence[str], most: int = MAX_SUGGESTIONS) -> list[str]:
+    """At most `most` of `ids` for a person typing `text`: those that hold it, case ignored,
+    shortest first, then the close ones."""
+    low = text.lower()
+    held = sorted((i for i in ids if low in i.lower()), key=lambda i: (len(i), i))[:most]
+    seen = set(held)
+    return held + [i for i in _close(text, ids) if i not in seen][: most - len(held)]
 
 
 def _item(value: Any) -> Any:
@@ -177,6 +238,11 @@ def _name(model: str, name: str | None) -> str:
         name = default_name(model)
         if name is None:
             raise AddError("name", f"no profile name follows from {model!r}; give one")
+    return check_name(name)
+
+
+def check_name(name: str) -> str:
+    """`name`. Raises AddError unless it keeps to the name rule."""
     if not _NAME.fullmatch(name) or len(name) > MAX_NAME:
         raise AddError(
             "name",
@@ -489,3 +555,28 @@ class ServerLists:
             while len(self._held) > MAX_LISTS:
                 del self._held[next(iter(self._held))]
         return found
+
+
+async def gather(
+    prices: PriceLists,
+    *,
+    base_url: str | None = None,
+    base: Profile | None = None,
+    lists: ServerLists | None = None,
+) -> tuple[ServerList, Found]:
+    """The list of models of the server at `base_url`, or of the one profile `base` reaches,
+    with LiteLLM's price map, read side by side. `lists` keeps lists read before; without it
+    the list is read now. A list that cannot be read comes back with the problem."""
+
+    async def server() -> ServerList:
+        url = base_url
+        try:
+            if url is None:
+                if base is None:
+                    return ServerList("", problem="no server is given")
+                url = base.url()
+            return await (read_list(url) if lists is None else lists.get(url))
+        except (AddError, ProfileError, Refused) as e:
+            return ServerList(url or "", problem=str(e))
+
+    return await asyncio.gather(server(), at_hand(prices))

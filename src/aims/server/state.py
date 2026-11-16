@@ -12,8 +12,8 @@ from pathlib import Path
 from aims.config import ConfigError, Layers, Settings, layers, load
 from aims.events import Event, LocalEventStore
 from aims.models import Delta, DeltaBus, ProfileError
+from aims.models.add import ServerLists
 from aims.models.listprice import PriceLists
-from aims.models.openrouter import Catalog
 from aims.monitor.config import MonitorConfigError
 from aims.prompts import TextError
 from aims.run.estimate import History, history
@@ -287,6 +287,8 @@ class ServerState:
     _history: tuple[int, History] | None = None
     # called with a run's id once its truth file is kept here
     on_truth: Callable[[str], Awaitable[None]] | None = None
+    # called once with a job as the end of its run moves it to done, and the run's status
+    on_job_done: Callable[[Job, str | None], Awaitable[None]] | None = None
     # held from placing a series' runs to queueing them, so two starts never take one index
     series_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # held from checking that no job uses a run to keeping it as deleted; a queue holds it
@@ -306,8 +308,8 @@ class ServerState:
     # each model check run the models list read, by run id: the head it was read at, the
     # profiles it checks and its model.checked events
     check_runs: dict[str, tuple[str, list[str], list[Event]]] = field(default_factory=dict)
-    # OpenRouter's list of models, for the profile lookup
-    catalog: Catalog = field(default_factory=Catalog)
+    # servers' lists of models, for the profile lookup
+    server_lists: ServerLists = field(default_factory=ServerLists)
     # LiteLLM's price map, for the estimates of profiles that name a key and set no price
     prices: PriceLists = field(default_factory=PriceLists)
 

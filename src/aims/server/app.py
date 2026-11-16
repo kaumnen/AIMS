@@ -37,6 +37,7 @@ from aims.server import (
 from aims.server.audit import AuditLog
 from aims.server.auth import HEADERS, SAFE, SecurityHeaders
 from aims.server.codings import allowed
+from aims.server.db import Job
 from aims.server.files import Sources
 from aims.server.limits import BodyLimit
 from aims.server.problems import Problem
@@ -93,7 +94,11 @@ def create_app(
         await score_api.score_after(state, run_id)
         state.poke()
 
+    async def on_job_done(job: Job, status: str | None) -> None:
+        await edit_api.after_check(state, job, status)
+
     state.on_truth = on_truth
+    state.on_job_done = on_job_done
     app.state.auth = state.auth
     app.state.sources = Sources(state.data, state.config)
     problems.install(app, HEADERS)

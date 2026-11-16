@@ -4,7 +4,7 @@ import { createBrowserHistory, createMemoryHistory, RouterProvider } from "@tans
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 
-import type { ModelPrices, PriceRow, ProfileDraft, ProfileInfo } from "@/api/launch";
+import type { ModelPrices, PriceRow, ProfileInfo } from "@/api/launch";
 import type { PromptText } from "@/api/scenario-files";
 import type { AuditEntry, ProviderCredit, TokenInfo } from "@/api/settings";
 import { makeRouter } from "@/router";
@@ -36,10 +36,6 @@ const CHECK = "01a19200-0000-7000-8000-000000000001";
 let texts: Record<"user" | "project", string>;
 let projectExists: boolean;
 let saves: { layer: string; text: string; ifMatch: string | null; ifNoneMatch: string | null }[];
-// the answer to a lookup of an OpenRouter model
-let lookup: (url: URL) => Response | Promise<Response>;
-// the answer to adding a looked-up profile to the project's config
-let added: () => Response;
 // profiles the models list holds after alpha and gamma
 let more: ProfileInfo[];
 // the profile of each role, null when the role is unset
@@ -59,6 +55,7 @@ const profile = (over: Partial<ProfileInfo>): ProfileInfo => ({
   check: null,
   price: { input: 1.25, cached: 0.15, output: 4.25 },
   price_key: null,
+  add: null,
   ...over,
 });
 
@@ -80,18 +77,6 @@ const mapSays = (over: Partial<ModelPrices> = {}): ModelPrices => ({
   problem: null,
   profiles: [],
   found: [],
-  ...over,
-});
-
-const TOML = '[profiles."openrouter-gem-9"]\nbackend = "chat"\nmodel = "acme/gem-9"\n';
-
-const draft = (over: Partial<ProfileDraft> = {}): ProfileDraft => ({
-  name: "openrouter-gem-9",
-  slug: "acme/gem-9",
-  toml: TOML,
-  notes: ["OpenRouter lists no context size for it, so context_tokens is unset."],
-  exists: false,
-  fits: ["agent", "sweep", "judge"],
   ...over,
 });
 
@@ -281,8 +266,6 @@ beforeEach(() => {
   texts = { user: "", project: "[credits]\nacme = 150\n" };
   projectExists = true;
   saves = [];
-  lookup = () => Response.json(draft());
-  added = () => Response.json({ name: "openrouter-gem-9", path: "/work/aims.toml" });
   more = [];
   modelRoles = { agent: "alpha", sweep: "alpha", judge: "alpha" };
   prices = () => mapSays();
@@ -309,17 +292,9 @@ beforeEach(() => {
         run_id: CHECK,
         started_at: "2026-10-31T10:00:00+00:00",
         status: "completed",
-        checks: [{ name: "tools", verdict: "warn", detail: "slow" }],
+        checks: [{ name: "tools", verdict: "warn", detail: "slow", reasoning: null }],
       };
       return Response.json({ run_ids: [CHECK] }, { status: 202 });
-    }
-    if (url.pathname === "/api/models/add") {
-      if (role !== "operator") return problem(403, "operators only");
-      return added();
-    }
-    if (url.pathname === "/api/models/lookup") {
-      if (role !== "operator") return problem(403, "operators only");
-      return lookup(url);
     }
     if (url.pathname === "/api/runners")
       return Response.json([
@@ -466,14 +441,10 @@ test("the models page names the roles no profile has and how to set them", async
   modelRoles = { agent: "alpha", sweep: null, judge: null };
   renderAt("/settings/models");
   const line = (await screen.findByText(/^Unset roles/)) as HTMLElement;
-  expect(line.textContent).toBe(
-    "Unset roles: sweep, judge. Set them under [roles] in aims.toml, or add a model with them.",
-  );
+  expect(line.textContent).toBe("Unset roles: sweep, judge. Set them under [roles] in aims.toml.");
   expect(within(line).getByRole("link", { name: "aims.toml" }).getAttribute("href")).toBe(
     "/settings/config?view=project",
   );
-  fireEvent.click(within(line).getByRole("button", { name: "add a model with them" }));
-  expect(await screen.findByRole("dialog", { name: "Add from OpenRouter" })).toBeTruthy();
   cleanup();
   role = "viewer";
   renderAt("/settings/models");
@@ -491,30 +462,17 @@ test("a models page with no profiles says how to add one", async () => {
   );
   renderAt("/settings/models");
   const line = (await screen.findByText(/^No profiles yet/)) as HTMLElement;
-  expect(line.textContent).toBe(
-    "No profiles yet. Write one under [profiles] in aims.toml, or add one from OpenRouter.",
-  );
+  expect(line.textContent).toBe("No profiles yet. Write one under [profiles] in aims.toml.");
   // no role can name a profile yet, so the line about them waits
   expect(screen.queryByText(/Unset roles/)).toBeNull();
   expect(screen.queryByRole("table")).toBeNull();
-  fireEvent.click(within(line).getByRole("button", { name: "add one from OpenRouter" }));
-  expect(await screen.findByRole("dialog", { name: "Add from OpenRouter" })).toBeTruthy();
 });
 
-test("a link to the models page can open the lookup", async () => {
-  const router = renderAt("/settings/models?add=true");
-  const dialog = within(await screen.findByRole("dialog", { name: "Add from OpenRouter" }));
-  fireEvent.click(dialog.getByRole("button", { name: "Close" }));
-  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-  expect(router.state.location.search).toEqual({});
-});
-
-test("viewers see the profiles without checks or a lookup", async () => {
+test("viewers see the profiles without checks", async () => {
   role = "viewer";
   renderAt("/settings/models");
   await screen.findByRole("table");
   expect(screen.queryByRole("button", { name: /Check/ })).toBeNull();
-  expect(screen.queryByRole("button", { name: "Add from OpenRouter" })).toBeNull();
 });
 
 const priceReads = () => calls("GET", "/api/models/prices").map((r) => new URL(r.url));
@@ -669,163 +627,6 @@ test("a profile with no candidate rows asks for a search, and a missing map says
     ),
   ).toBeTruthy();
   expect(dialog.queryByText(/Search instead/)).toBeNull();
-});
-
-const lookups = () => calls("GET", "/api/models/lookup").map((r) => new URL(r.url));
-
-async function openLookup() {
-  renderAt("/settings/models");
-  await screen.findByRole("table");
-  fireEvent.click(screen.getByRole("button", { name: "Add from OpenRouter" }));
-  const dialog = within(await screen.findByRole("dialog"));
-  return { dialog, id: dialog.getByRole("textbox", { name: "Model id" }) };
-}
-
-test("a lookup asks only on submit and shows the profile to copy and where it goes", async () => {
-  const writeText = vi.fn<(text: string) => Promise<void>>(async () => undefined);
-  vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
-  const { dialog, id } = await openLookup();
-  const button = dialog.getByRole("button", { name: "Look up" });
-  expect(button).toHaveProperty("disabled", true);
-
-  fireEvent.change(id, { target: { value: " acme/gem-9 " } });
-  expect(lookups()).toHaveLength(0);
-  // what Enter in the field does
-  fireEvent.submit(id);
-  expect(await dialog.findByText(/^OpenRouter lists no context size/)).toBeTruthy();
-  expect(lookups().map((u) => Object.fromEntries(u.searchParams))).toEqual([
-    { slug: "acme/gem-9", source: "openrouter" },
-  ]);
-  expect(dialog.getByLabelText("Profile openrouter-gem-9").textContent).toBe(TOML);
-  expect(dialog.queryByText(/exists already/)).toBeNull();
-  expect(dialog.getByText("aims models add openrouter acme/gem-9 --write")).toBeTruthy();
-  expect(dialog.getByRole("link", { name: "Config" }).getAttribute("href")).toBe(
-    "/settings/config?view=project",
-  );
-  expect(calls("POST", "/api/models/add")).toHaveLength(0);
-
-  fireEvent.click(dialog.getByRole("button", { name: "Copy" }));
-  expect(await dialog.findByRole("button", { name: "Copied" })).toBeTruthy();
-  expect(writeText).toHaveBeenCalledWith(TOML);
-  expect(lookups()).toHaveLength(1);
-});
-
-test("a lookup sends the name and alias it is given and warns of a name in use", async () => {
-  // plain http on a LAN address has no clipboard
-  vi.stubGlobal("navigator", { ...navigator, clipboard: undefined });
-  lookup = (url) =>
-    Response.json(
-      draft({
-        slug: url.searchParams.get("slug") ?? "",
-        name: url.searchParams.get("name") ?? "",
-        notes: [],
-        exists: true,
-      }),
-    );
-  const { dialog, id } = await openLookup();
-  fireEvent.change(id, { target: { value: "~acme/gem-latest" } });
-  fireEvent.change(dialog.getByRole("textbox", { name: "Profile name (optional)" }), {
-    target: { value: "alpha" },
-  });
-  fireEvent.click(
-    dialog.getByRole("checkbox", { name: "Allow an alias that OpenRouter moves to newer models" }),
-  );
-  fireEvent.click(dialog.getByRole("button", { name: "Look up" }));
-  expect(await dialog.findByText(/^A profile named alpha exists already\./)).toBeTruthy();
-  expect(Object.fromEntries(lookups()[0]?.searchParams ?? [])).toEqual({
-    slug: "~acme/gem-latest",
-    source: "openrouter",
-    name: "alpha",
-    alias: "true",
-  });
-  expect(
-    dialog.getByText("aims models add openrouter '~acme/gem-latest' --name alpha --alias --write"),
-  ).toBeTruthy();
-  expect(dialog.getByLabelText("Profile alpha")).toBeTruthy();
-  expect(dialog.queryByRole("button", { name: "Copy" })).toBeNull();
-  // the server would refuse a name in use
-  expect(dialog.getByRole("button", { name: "Add to project config" })).toHaveProperty(
-    "disabled",
-    true,
-  );
-});
-
-test("a looked-up profile is added to the project config on request", async () => {
-  added = () =>
-    Response.json(
-      { status: 422, title: "Config does not load", detail: "aims.toml: unknown table(s) nope" },
-      { status: 422 },
-    );
-  lookup = (url) => Response.json(draft({ slug: url.searchParams.get("slug") ?? "", name: "gem" }));
-  const { dialog, id } = await openLookup();
-  fireEvent.change(id, { target: { value: "~acme/gem-latest" } });
-  fireEvent.change(dialog.getByRole("textbox", { name: "Profile name (optional)" }), {
-    target: { value: "gem" },
-  });
-  fireEvent.click(dialog.getByRole("checkbox", { name: /^Allow an alias/ }));
-  fireEvent.submit(id);
-  const add = await dialog.findByRole("button", { name: "Add to project config" });
-  fireEvent.click(add);
-  expect(await dialog.findByText("aims.toml: unknown table(s) nope")).toBeTruthy();
-  expect(await calls("POST", "/api/models/add")[0]?.json()).toEqual({
-    slug: "~acme/gem-latest",
-    source: "openrouter",
-    name: "gem",
-    alias: true,
-  });
-
-  added = () => Response.json({ name: "gem", path: "/work/aims.toml" });
-  const lists = calls("GET", "/api/models").filter(
-    (r) => new URL(r.url).pathname === "/api/models",
-  );
-  fireEvent.click(add);
-  expect(await dialog.findByText("/work/aims.toml")).toBeTruthy();
-  expect(dialog.queryByText("aims.toml: unknown table(s) nope")).toBeNull();
-  expect(dialog.queryByRole("button", { name: "Add to project config" })).toBeNull();
-  // the profile list is read again
-  await waitFor(() =>
-    expect(
-      calls("GET", "/api/models").filter((r) => new URL(r.url).pathname === "/api/models").length,
-    ).toBeGreaterThan(lists.length),
-  );
-});
-
-test("a lookup shows it is under way and why the server refused it", async () => {
-  const answer = Promise.withResolvers<Response>();
-  lookup = () => answer.promise;
-  const { dialog, id } = await openLookup();
-  const button = dialog.getByRole("button", { name: "Look up" });
-  fireEvent.change(id, { target: { value: "acme/gem-0" } });
-  act(() => {
-    fireEvent.submit(id);
-    fireEvent.submit(id);
-  });
-  expect(await dialog.findByText("Looking up acme/gem-0")).toBeTruthy();
-  expect(button).toHaveProperty("disabled", true);
-  expect(lookups()).toHaveLength(1);
-  answer.resolve(
-    Response.json(
-      {
-        status: 404,
-        title: "Not Found",
-        detail: "no model acme/gem-0 on OpenRouter; close ids: acme/gem-9",
-        code: "missing",
-      },
-      { status: 404 },
-    ),
-  );
-  expect(
-    await dialog.findByText("no model acme/gem-0 on OpenRouter; close ids: acme/gem-9"),
-  ).toBeTruthy();
-  expect(dialog.queryByText(/^Looking up/)).toBeNull();
-  expect(document.querySelector("[role=dialog] pre")).toBeNull();
-
-  // a problem with no detail says its title
-  lookup = () =>
-    Response.json({ status: 502, title: "Bad Gateway", detail: null }, { status: 502 });
-  fireEvent.click(button);
-  expect(await dialog.findByText("Bad Gateway")).toBeTruthy();
-  expect(lookups()).toHaveLength(2);
 });
 
 test("runners join the list with the live stream", async () => {
@@ -1327,48 +1128,4 @@ test("viewers read the files and the settings in use, without checks", async () 
   expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
   await act(() => new Promise((r) => setTimeout(r, 500)));
   expect(posts()).toHaveLength(0);
-});
-
-test("a looked-up profile can take the roles it fits", async () => {
-  modelRoles = { agent: "alpha", sweep: null, judge: "alpha" };
-  lookup = () => Response.json(draft({ fits: ["agent"] }));
-  const { dialog, id } = await openLookup();
-  fireEvent.change(id, { target: { value: "acme/gem-9" } });
-  fireEvent.submit(id);
-  const agent = await dialog.findByRole("checkbox", { name: /^agent/ });
-  expect(agent.closest("label")?.textContent).toBe("agent runs a scenario's agents · now alpha");
-  const sweep = dialog.getByRole("checkbox", { name: /^sweep/ });
-  expect(sweep).toHaveProperty("disabled", true);
-  expect(sweep.closest("label")?.textContent).toBe(
-    "sweep reads a run as it goes · OpenRouter lists no structured output for it",
-  );
-  fireEvent.click(agent);
-  expect(
-    dialog.getByText("aims models add openrouter acme/gem-9 --write --role agent"),
-  ).toBeTruthy();
-  fireEvent.click(dialog.getByRole("button", { name: "Add to project config" }));
-  expect(await dialog.findByText("/work/aims.toml")).toBeTruthy();
-  expect(await calls("POST", "/api/models/add")[0]?.json()).toEqual({
-    slug: "acme/gem-9",
-    source: "openrouter",
-    roles: ["agent"],
-  });
-  expect(agent).toHaveProperty("disabled", true);
-  cleanup();
-
-  modelRoles = { agent: null, sweep: null, judge: null };
-  lookup = () => Response.json(draft());
-  const again = await openLookup();
-  fireEvent.change(again.id, { target: { value: "acme/gem-9" } });
-  fireEvent.submit(again.id);
-  const judge = await again.dialog.findByRole("checkbox", { name: /^judge/ });
-  expect(judge.closest("label")?.textContent).toBe("judge gives the verdict after a run · unset");
-  fireEvent.click(judge);
-  fireEvent.click(again.dialog.getByRole("checkbox", { name: /^agent/ }));
-  // the flags keep the roles' order, whatever the order they were ticked in
-  expect(
-    again.dialog.getByText(
-      "aims models add openrouter acme/gem-9 --write --role agent --role judge",
-    ),
-  ).toBeTruthy();
 });

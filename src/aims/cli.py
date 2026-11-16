@@ -564,8 +564,8 @@ def models_add(
 
     from aims.events import ModelBackend
     from aims.models import ModelsConfig, ProfileError
-    from aims.models.add import AddError, draft
-    from aims.models.listprice import SOURCE
+    from aims.models.add import AddError, draft, gather
+    from aims.models.listprice import SOURCE, PriceLists
     from aims.models.profiles import ROLES
 
     roles = [r for r in ROLES if r in (role or [])]
@@ -591,7 +591,7 @@ def models_add(
             reached = settings.models.get(base)
         except ProfileError as e:
             _fail(str(e))
-    listed, prices = asyncio.run(_add_sources(base_url, reached))
+    listed, prices = asyncio.run(gather(PriceLists(), base_url=base_url, base=reached))
     if litellm is not None and prices.prices is None:
         _fail(f"no copy of {SOURCE}'s price map is at hand to read {litellm}: {prices.problem}")
     try:
@@ -703,29 +703,6 @@ def _add_table(settings: Any, found: Any, roles: list[Any], *, trial: bool = Fal
     except OSError as e:
         _echo(f"error: cannot write {e.filename or 'the config file'}: {e.strerror}", err=True)
     raise typer.Exit(1)
-
-
-async def _add_sources(base_url: str | None, reached: Any) -> tuple[Any, Any]:
-    """For `aims models add`: the list of models of the server at `base_url` or of the one
-    profile `reached` reaches, with LiteLLM's price map, read side by side. A list that cannot
-    be read comes back with the problem."""
-    import asyncio
-
-    from aims.models import ProfileError
-    from aims.models.add import AddError, ServerList, read_list
-    from aims.models.listprice import PriceLists, at_hand
-    from aims.net import Refused
-
-    async def server() -> ServerList:
-        url = base_url
-        try:
-            if url is None:
-                url = reached.url()
-            return await read_list(url)
-        except (AddError, ProfileError, Refused) as e:
-            return ServerList(url or "", problem=str(e))
-
-    return await asyncio.gather(server(), at_hand(PriceLists()))
 
 
 async def _stop_lines(store: Any, kind: str, run_ids: list[str]) -> list[str]:

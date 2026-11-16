@@ -191,7 +191,11 @@ async def record_check(
                     [
                         Draft(
                             ModelChecked(
-                                profile=c.profile, name=c.name, verdict=c.verdict, detail=c.detail
+                                profile=c.profile,
+                                name=c.name,
+                                verdict=c.verdict,
+                                detail=c.detail,
+                                reasoning=c.reasoning,
                             )
                         )
                         for c in found

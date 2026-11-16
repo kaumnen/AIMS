@@ -137,7 +137,9 @@ beforeEach(() => {
               run_id: "c1",
               started_at: "2026-10-31T09:00:00+00:00",
               status: "completed",
-              checks: [{ name: "tools", verdict: "warn", detail: "usage lacks cached" }],
+              checks: [
+                { name: "tools", verdict: "warn", detail: "usage lacks cached", reasoning: null },
+              ],
             },
           },
           {
@@ -263,10 +265,11 @@ test("a scenario whose agent names no profile asks for one while no profile has 
   try {
     renderAt("/runs");
     const form = await openForm();
-    expect(form.getByText(/^No profile has the agent role\. Pick one here/)).toBeTruthy();
-    expect(form.getByRole("link", { name: "add a model with the role" }).getAttribute("href")).toBe(
-      "/settings/models?add=true",
-    );
+    expect(
+      form.getByText(
+        "No profile has the agent role. Pick one here, or set agent under [roles] in aims.toml.",
+      ),
+    ).toBeTruthy();
     await pick(form, "Profile", /alpha/);
     expect(form.queryByText(/No profile has the agent role/)).toBeNull();
   } finally {

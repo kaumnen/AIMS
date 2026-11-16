@@ -8,7 +8,12 @@ const check = (status: string, verdicts: ("ok" | "warn" | "fail")[]): ProfileChe
   run_id: "c",
   started_at: "2026-10-31T09:00:00+00:00",
   status,
-  checks: verdicts.map((verdict, i) => ({ name: `t${i}`, verdict, detail: verdict })),
+  checks: verdicts.map((verdict, i) => ({
+    name: `t${i}`,
+    verdict,
+    detail: verdict,
+    reasoning: null,
+  })),
 });
 
 test("the worst smoke test decides a check, and old checks fall back on the run status", () => {

@@ -275,13 +275,6 @@
     { "name": "prompts", "path": "/settings/prompts", "ready": "#main section ul" },
     { "name": "models", "path": "/settings/models", "ready": "#main table" },
     {
-      "name": "model-lookup",
-      "path": "/settings/models",
-      "dialog": true,
-      "ready": "[role=dialog]",
-      "steps": [{ "wait": "#main table", "click": "Add from OpenRouter" }]
-    },
-    {
       "name": "price-keys",
       "path": "/settings/models",
       "dialog": true,

@@ -37,7 +37,9 @@ from aims.events import (
     ExecActivity,
     IngestError,
     MissingBlobs,
+    ModelBackend,
     Oversight,
+    ReasoningKind,
     ResumeThen,
     RunCorrupt,
     RunInfo,
@@ -52,9 +54,9 @@ from aims.events.index import BIND_MAX, monitor_of
 from aims.events.schema import blob_refs
 from aims.events.store import is_run_id
 from aims.models import Price, Profile, ProfileError
+from aims.models.add import AddError, draft, gather, suggest
 from aims.models.check import Verdict, to_check
 from aims.models.listprice import SOURCE, Listing, ListPrice, PriceLists, survey
-from aims.models.openrouter import CatalogError, Draft, draft
 from aims.models.profiles import Role as ModelRole
 from aims.monitor import sweep_texts
 from aims.monitor import texts as monitor_texts
@@ -86,7 +88,9 @@ from aims.run.fork import (
     replayable_steps,
 )
 from aims.run.job import (
+    AddOutcome,
     Job,
+    JobAdd,
     fork_jobs,
     monitor_for,
     monitor_problems,
@@ -892,9 +896,12 @@ async def _queue(
     blobs: dict[str, bytes] | None = None,
     copy_from: str | None = None,
     waiting: Sequence[str] = (),
+    checked: bool = False,
 ) -> Started:
-    """Queue `jobs`; the ones named in `waiting` wait for the series run before them."""
-    _check_runner(state, runner, jobs)
+    """Queue `jobs`; the ones named in `waiting` wait for the series run before them. Unless
+    `checked`, some runner must be able to run them."""
+    if not checked:
+        _check_runner(state, runner, jobs)
     now = time.time()
     for job in jobs:
         state.store.prepare_run(job.run_id)
@@ -1846,9 +1853,29 @@ def _tar_blobs(file: IO[bytes], blobs: BlobStore, wanted: set[str]) -> None:
 
 
 class CheckLine(Out):
+    """`reasoning` is what the plain test's answer carried of the model's reasoning, null for
+    the other tests and in checks from before it was recorded."""
+
     name: str
     verdict: Verdict
     detail: str
+    reasoning: ReasoningKind | None = None
+
+
+class AddInfo(Out):
+    """The newest add of a profile in the app that queued check run `run_id`. Once the check
+    passes it gives the profile `roles` and, with `measure`, the reasoning kind the check saw.
+    `waiting` says why the check has not started, null once it has. `outcome` says how the
+    add went, null until the check ends: `done` it wrote what there was to write, `failed` the
+    check did not pass or did not run, `changed` the profile changed first, `refused` the write
+    would not load or could not be made. `note` says more."""
+
+    run_id: str
+    roles: list[ModelRole]
+    measure: bool
+    waiting: str | None = None
+    outcome: AddOutcome | None = None
+    note: str | None = None
 
 
 class ProfileCheck(Out):
@@ -1873,6 +1900,7 @@ class ProfileInfo(Out):
     check: ProfileCheck | None = None
     price: Price | None = None
     price_key: str | None = None
+    add: AddInfo | None = None
 
 
 class ModelsInfo(Out):
@@ -1891,6 +1919,7 @@ async def list_models(principal: Viewer, state: State) -> ModelsInfo:
     for role, name in models.roles.model_dump(exclude_none=True).items():
         roles.setdefault(name, []).append(role)
     checks = await _checks(state, set(models.profiles))
+    adds = await state.db.added_checks()
     out = []
     for name, p in sorted(models.profiles.items()):
         envs = [e for e in (p.api_key_env, p.base_url_env) if e]
@@ -1908,6 +1937,7 @@ async def list_models(principal: Viewer, state: State) -> ModelsInfo:
                 check=checks.get(name),
                 price=p.price,
                 price_key=p.price_key,
+                add=add_info(adds.get(name), state),
             )
         )
     return ModelsInfo(profiles=out, roles=models.roles.model_dump())
@@ -2026,12 +2056,45 @@ async def _checks(state: ServerState, wanted: set[str]) -> dict[str, ProfileChec
                         name=str(e.data["name"]),
                         verdict=cast(Verdict, e.data["verdict"]),
                         detail=str(e.data.get("detail", "")),
+                        reasoning=_reasoning(e.data.get("reasoning")),
                     )
                     for e in events
                     if e.data.get("profile") == name
                 ],
             )
     return found
+
+
+def _reasoning(value: object) -> ReasoningKind | None:
+    return cast(ReasoningKind, value) if value in get_args(ReasoningKind) else None
+
+
+NOT_STARTED = ("waiting", "queued", "offered")
+
+
+def add_info(job: sdb.Job | None, state: ServerState) -> AddInfo | None:
+    """What the add that queued check `job` does, None for a check no add queued. A job that
+    ended before its run did, such as one no runner could start, failed."""
+    add = None if job is None else job.payload.get("add")
+    if job is None or not isinstance(add, dict):
+        return None
+    try:
+        found = JobAdd.model_validate(add)
+        waiting = queue_reason(state, job) if job.state in NOT_STARTED else None
+    except ValidationError:
+        return None
+    outcome, note = found.outcome, found.note
+    # a run that ended passing has its write on the way
+    if outcome is None and job.state in ("done", "cancelled") and job.reason != "completed":
+        outcome, note = "failed", f"the check did not pass: {job.reason or 'it ended'}"
+    return AddInfo(
+        run_id=job.run_id,
+        roles=found.roles,
+        measure=found.measure,
+        waiting=waiting,
+        outcome=outcome,
+        note=note,
+    )
 
 
 async def _check_run(state: ServerState, run_id: str) -> tuple[list[str], list[Event]]:
@@ -2077,49 +2140,101 @@ async def check_models(
     return started
 
 
-class ProfileDraft(Out):
-    """A profile for a model a provider lists, as config file text to add under a layer.
+class ModelDraft(Out):
+    """A profile for model `model` as config file text, `toml`, for `POST /models/add`.
     `notes` say what its reader should know. `exists` when a profile has the name already.
-    `fits` are the roles it can take: agent with tool calls, sweep and judge with structured
-    output."""
+    `fits` are the roles it can take as drafted: the agent, and the sweep and judge with
+    structured output. The check finds out whether the model makes tool calls. `guessed` while
+    its `reasoning` is a guess that the check replaces. `candidates` are the keys of LiteLLM
+    rows that may price it, when no row was picked. `ids` are ids the server's list holds for
+    what was typed, and `listed` how many it holds, null when the list was not read."""
 
     name: str
-    slug: str
+    model: str
     toml: str
     notes: list[str]
     exists: bool
     fits: list[ModelRole]
+    guessed: bool
+    candidates: list[str]
+    ids: list[str]
+    listed: int | None = None
 
 
-async def drafted(state: ServerState, slug: str, name: str | None, alias: bool) -> Draft:
-    """The profile for OpenRouter model `slug`, or the problem that says why there is none."""
-    try:
-        return draft(await state.catalog.models(), slug, name=name, alias=alias)
-    except CatalogError as e:
-        status = {"missing": 404, "unreachable": 502}.get(e.kind, 422)
-        raise ProblemException(status, TITLES[status], str(e), code=e.kind) from None
+ADD_ERRORS: dict[str, str] = {"profile": "profile", "set": "profile"}
 
 
-@router.get("/models/lookup", tags=["models"], responses=responses(404, 502))
+def add_problem(e: AddError) -> ProblemException:
+    return ProblemException(422, "Invalid request", str(e), code=ADD_ERRORS.get(e.kind, e.kind))
+
+
+@router.get("/models/lookup", tags=["models"], responses=responses(502))
 async def lookup_model(
     principal: Operator,
     state: State,
-    slug: Annotated[Utf8, Query(min_length=1, max_length=200)],
-    source: Literal["openrouter"] = "openrouter",
+    model: Annotated[Utf8, Query(min_length=1, max_length=200)],
+    base_url: Annotated[Utf8 | None, Query(min_length=1, max_length=2000)] = None,
+    key_env: Annotated[Utf8 | None, Query(min_length=1, max_length=100)] = None,
+    base: Annotated[Utf8 | None, Query(alias="from", min_length=1, max_length=200)] = None,
     name: Annotated[Utf8 | None, Query(min_length=1, max_length=200)] = None,
-    alias: bool = False,
-) -> ProfileDraft:
-    """A profile for model `slug`, filled in from the provider's public list of models, which
-    the server reads. Nothing is saved: `POST /models/add` does that. `alias` takes an alias the
-    provider moves to newer models."""
-    found = await drafted(state, slug, name, alias)
-    return ProfileDraft(
+    litellm: Annotated[Utf8 | None, Query(min_length=1, max_length=300)] = None,
+    backend: ModelBackend | None = None,
+) -> ModelDraft:
+    """A profile for model `model`, as `aims models add` drafts it: reached at `base_url`
+    with the key in env var `key_env`, or as profile `from` reaches its server. The server
+    reads that server's list of models with no key, to check the id. It refuses a host that
+    resolves to a link-local or cloud metadata address, which a note then says. `litellm` names
+    the model's row in LiteLLM's price map, for its price, context size and output cap. Nothing
+    is saved: `POST /models/add` does that."""
+    models = state.config.settings().models
+    reached = None
+    if base is not None:
+        try:
+            reached = models.get(base)
+        except ProfileError as e:
+            raise ProblemException(422, "Invalid request", str(e), code="connection") from None
+    if reached is None and base_url is None:
+        raise ProblemException(
+            422,
+            "Invalid request",
+            "give a base URL, or a profile to take the server from",
+            code="connection",
+        )
+    listed, prices = await gather(
+        state.prices, base_url=base_url, base=reached, lists=state.server_lists
+    )
+    if litellm is not None and prices.prices is None:
+        raise ProblemException(
+            502,
+            TITLES[502],
+            f"no copy of {SOURCE}'s price map is at hand to read {litellm}: {prices.problem}",
+            code="unreachable",
+        )
+    try:
+        found = draft(
+            model,
+            name=name,
+            base_url=base_url,
+            key_env=key_env,
+            base=reached,
+            backend=backend,
+            listed=listed,
+            prices=prices.prices,
+            row=litellm,
+        )
+    except AddError as e:
+        raise add_problem(e) from None
+    return ModelDraft(
         name=found.name,
-        slug=found.slug,
+        model=found.model,
         toml=found.toml(),
         notes=list(found.notes),
-        exists=found.name in state.config.settings().models.profiles,
+        exists=found.name in models.profiles,
         fits=list(found.fits),
+        guessed=found.guessed,
+        candidates=list(found.candidates),
+        ids=suggest(found.model, listed.ids) if listed.problem is None else [],
+        listed=None if listed.problem is not None else len(listed.ids),
     )
 
 

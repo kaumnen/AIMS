@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from aims.events import AuditLevel, EventStore, Oversight, Series
 from aims.models import ModelsConfig, Profile, ProfileError, UnsetRole
+from aims.models.profiles import Role
 from aims.monitor.config import MonitorConfigError, Preset
 from aims.monitor.setup import ResolvedMonitor, resolve_config, resolve_monitor
 from aims.monitor.signals import signal_versions
@@ -72,9 +73,31 @@ class JobOptions(_Strict):
     series: Series | None = None
 
 
+AddOutcome = Literal["done", "failed", "changed", "refused"]
+
+
+class JobAdd(_Strict):
+    """What the control plane does once the check of a profile the app added ends; a runner
+    ignores it. When no test failed it gives the profile `roles` and, with `measure`, the
+    reasoning kind the plain test saw, in one write of the project file. It writes only while
+    the profile's fields there still have fingerprint `table`, the one the add wrote. It sets a
+    role only while the role still names what it named at the add, in `was`. `outcome` and
+    `note` say how that went: `done` it wrote what there was to write, `failed` the check did
+    not pass, `changed` the profile changed first, `refused` the write would not load or could
+    not be made. Both are null until then."""
+
+    roles: list[Role] = Field(default_factory=list)
+    table: str
+    was: dict[Role, str | None] = Field(default_factory=dict)
+    measure: bool = True
+    outcome: AddOutcome | None = None
+    note: str | None = None
+
+
 class Job(_Strict):
     """`monitor` is the resolved monitor's snapshot, None for a run without one; its profiles
-    are in `models` too, so a runner offers their keys."""
+    are in `models` too, so a runner offers their keys. `add` is set on the check of a profile
+    the app added."""
 
     kind: JobKind = "scenario"
     run_id: str
@@ -90,6 +113,7 @@ class Job(_Strict):
     monitor: dict[str, JsonValue] | None = None
     # sha256 of the scenario's folder as a tar, which the runner loads the scenario from
     folder: str | None = None
+    add: JobAdd | None = None
 
     def blobs(self) -> list[str]:
         """The sha256 of each scenario input the runner must hold before it starts."""

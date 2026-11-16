@@ -595,7 +595,10 @@ async def ingest_events(
         info = await store.run(run_id)
         if job is not None:
             status = None if info is None else info.status
-            moved = await state.db.set_job(run_id, "done", status) or moved
+            if await state.db.set_job(run_id, "done", status):
+                moved = True
+                if state.on_job_done is not None:
+                    await state.on_job_done(job, status)
         moved = await state.db.drop_commands(run_id) > 0 or moved
         state.poke()
     if moved:

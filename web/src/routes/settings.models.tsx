@@ -3,7 +3,6 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 
 import { type ModelPrices, modelPricesQuery, modelsQuery, type ProfileInfo } from "@/api/launch";
 import { CHECK_TEXT, useModelCheck } from "@/components/model-check";
-import { ModelLookup } from "@/components/settings/model-lookup";
 import { figures, PriceKeys, rowNotes, Slashed } from "@/components/settings/price-keys";
 import { Button } from "@/components/ui/button";
 import { started } from "@/lib/format";
@@ -11,15 +10,8 @@ import { checkProblem, checkState } from "@/lib/launch";
 import { useOperator } from "@/lib/use-operator";
 import { cn } from "@/lib/utils";
 
-// `add` opens the dialog that adds a model from OpenRouter.
-interface ModelsSearch {
-  add?: true;
-}
-
 export const Route = createFileRoute("/settings/models")({
   staticData: { crumb: "Models" },
-  validateSearch: (raw: Record<string, unknown>): ModelsSearch =>
-    raw["add"] === true ? { add: true } : {},
   component: Models,
 });
 
@@ -43,16 +35,6 @@ function Models() {
   });
   const operator = useOperator();
   const { checking, problem, check } = useModelCheck();
-  const adding = Route.useSearch().add === true;
-  const navigate = Route.useNavigate();
-  const setAdding = (open: boolean) =>
-    void navigate({ search: open ? { add: true } : {}, replace: true });
-  // a link that opens the dialog
-  const addLink = (text: string) => (
-    <button type="button" className="text-foreground underline" onClick={() => setAdding(true)}>
-      {text}
-    </button>
-  );
   if (models.isPending) return <p className="text-muted-foreground">Loading profiles</p>;
   if (models.isError) {
     return (
@@ -75,38 +57,29 @@ function Models() {
             ? "Set in the config files; a check makes a few small paid calls per profile."
             : "Set in the config files."}
         </span>
-        {operator && (
+        {operator && profiles.length > 0 && (
           <div className="ml-auto flex gap-2">
-            <ModelLookup open={adding} onOpenChange={setAdding} />
-            {profiles.length > 0 && (
-              <Button
-                variant="outline"
-                size="xs"
-                disabled={checking !== null}
-                onClick={() => void check(profiles.map((p) => p.name))}
-              >
-                Check all
-              </Button>
-            )}
+            <Button
+              variant="outline"
+              size="xs"
+              disabled={checking !== null}
+              onClick={() => void check(profiles.map((p) => p.name))}
+            >
+              Check all
+            </Button>
           </div>
         )}
       </div>
       {unset.length > 0 && profiles.length > 0 && (
         <p className="text-muted-foreground">
           Unset roles: {unset.join(", ")}. Set {unset.length > 1 ? "them" : "it"} under [roles] in{" "}
-          <ConfigLink />
-          {operator ? (
-            <>, or {addLink(unset.length > 1 ? "add a model with them" : "add a model with it")}.</>
-          ) : (
-            "."
-          )}
+          <ConfigLink />.
         </p>
       )}
       {problem && <p className="text-flag">{problem}</p>}
       {profiles.length === 0 ? (
         <p className="text-muted-foreground">
-          No profiles yet. Write one under [profiles] in <ConfigLink />
-          {operator ? <>, or {addLink("add one from OpenRouter")}.</> : "."}
+          No profiles yet. Write one under [profiles] in <ConfigLink />.
         </p>
       ) : (
         <table className="w-full">

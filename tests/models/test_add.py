@@ -22,7 +22,7 @@ from typer.testing import CliRunner
 from aims import net
 from aims.cli import app
 from aims.config import ConfigError, add_table, layers, load, with_roles
-from aims.models import Profile, ProfileError, listprice, load_models
+from aims.models import Profile, ProfileError, load_models
 from aims.models import add as adding
 from aims.models import check as checking
 from aims.models.add import (
@@ -986,7 +986,7 @@ def fakes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Fakes:
         return out
 
     monkeypatch.setattr(adding, "read_list", read)
-    monkeypatch.setattr(listprice, "at_hand", at_hand)
+    monkeypatch.setattr(adding, "at_hand", at_hand)
     monkeypatch.setattr(checking, "check_profile", check)
     return found
 
