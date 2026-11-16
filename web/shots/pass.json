@@ -275,6 +275,48 @@
     { "name": "prompts", "path": "/settings/prompts", "ready": "#main section ul" },
     { "name": "models", "path": "/settings/models", "ready": "#main table" },
     {
+      "name": "add-model",
+      "path": "/settings/models?add=true",
+      "dialog": true,
+      "ready": "[role=dialog] input[inputmode=url]"
+    },
+    {
+      "name": "add-model-draft",
+      "path": "/settings/models",
+      "dialog": true,
+      "ready": "[role=dialog] textarea",
+      "steps": [
+        { "wait": "#main table", "click": "Add a model" },
+        {
+          "wait": "[role=dialog] input[inputmode=url]",
+          "css": "[role=dialog] input[inputmode=url]"
+        },
+        { "type": "http://127.0.0.1:9/v1" },
+        { "css": "[role=dialog] input[list=add-model-ids]" },
+        { "type": "example/agent-model" },
+        { "click": "Draft" }
+      ]
+    },
+    {
+      "name": "add-model-roles",
+      "path": "/settings/models",
+      "dialog": true,
+      "ready": "[role=dialog] button:focus",
+      "steps": [
+        { "wait": "#main table", "click": "Add a model" },
+        {
+          "wait": "[role=dialog] input[inputmode=url]",
+          "css": "[role=dialog] input[inputmode=url]"
+        },
+        { "type": "http://127.0.0.1:9/v1" },
+        { "css": "[role=dialog] input[list=add-model-ids]" },
+        { "type": "example/agent-model" },
+        { "click": "Draft" },
+        { "wait": "[role=dialog] textarea", "css": "[role=dialog] fieldset label:nth-of-type(3)" },
+        { "press": "Tab" }
+      ]
+    },
+    {
       "name": "price-keys",
       "path": "/settings/models",
       "dialog": true,
@@ -319,6 +361,24 @@
           "wait": "#main table button[aria-label^=Revoke]",
           "css": "#main table button[aria-label^=Revoke]"
         }
+      ]
+    },
+    {
+      "name": "add-model-added",
+      "path": "/settings/models",
+      "dialog": true,
+      "ready": "[role=dialog]:not(:has(textarea)) h2",
+      "steps": [
+        { "wait": "#main table", "click": "Add a model" },
+        {
+          "wait": "[role=dialog] input[inputmode=url]",
+          "css": "[role=dialog] input[inputmode=url]"
+        },
+        { "type": "http://127.0.0.1:9/v1" },
+        { "css": "[role=dialog] input[list=add-model-ids]" },
+        { "type": "example/added-model" },
+        { "click": "Draft" },
+        { "wait": "[role=dialog] textarea", "click": "Add without checking" }
       ]
     }
   ]

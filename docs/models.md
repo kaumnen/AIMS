@@ -168,6 +168,8 @@ max_output_tokens = 16384
 > [!NOTE]
 > The check makes a few small calls, which the server may bill. When a test fails, the command writes nothing and exits 1. Change the profile with `--set`, or pass `--no-check`.
 
+In the app, **Settings** > **Models** > **Add a model** does the same for operators. The profile text can be edited before the add. The app saves the profile first. The roles you tick wait until its check passes. A profile whose check failed can be removed from its row.
+
 Then run with it:
 
 ```sh

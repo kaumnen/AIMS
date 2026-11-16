@@ -766,6 +766,22 @@ async def test_a_profile_added_after_the_roles_can_be_patched(cp: CP) -> None:
     assert "max_output_tokens" not in cp.project.read_text().split(f"[profiles.{NAME}]")[1]
 
 
+async def test_an_added_profile_can_be_removed_with_a_patch(cp: CP) -> None:
+    # Settings > Models removes a profile whose add failed this way
+    before = cp.project.read_text()
+    text = await toml(cp)
+    async with cp.client(cp.operator) as c:
+        assert (await c.post(ADD, json={"toml": text, "check": False})).status_code == 200
+        tag = (await c.get("/api/config/project")).json()["etag"]
+        body = {"unset": [["profiles", NAME]]}
+        r = await c.patch("/api/config/project", json=body, headers={"If-Match": f'"{tag}"'})
+        assert r.status_code == 200, r.text
+        names = [p["name"] for p in (await c.get("/api/models")).json()["profiles"]]
+    assert NAME not in names
+    assert NAME not in cp.state.config.settings().models.profiles
+    assert tomllib.loads(cp.project.read_text()) == tomllib.loads(before)
+
+
 async def test_two_checked_adds_in_a_row_both_get_their_roles(
     cp: CP, local: LocalEventStore
 ) -> None:

@@ -1,8 +1,19 @@
-import { useQuery, type UseQueryResult } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { useState } from "react";
 
-import { type ModelPrices, modelPricesQuery, modelsQuery, type ProfileInfo } from "@/api/launch";
+import {
+  type AddInfo,
+  type ModelPrices,
+  modelPricesQuery,
+  modelsQuery,
+  type ProfileInfo,
+} from "@/api/launch";
+import { isProblem } from "@/api/session";
+import { CONFIG_DEPENDENT, layerQuery, patchConfig } from "@/api/settings";
+import { problemText } from "@/components/form";
 import { CHECK_TEXT, useModelCheck } from "@/components/model-check";
+import { AddLine, AddModel } from "@/components/settings/add-model";
 import { figures, PriceKeys, rowNotes, Slashed } from "@/components/settings/price-keys";
 import { Button } from "@/components/ui/button";
 import { started } from "@/lib/format";
@@ -10,13 +21,23 @@ import { checkProblem, checkState } from "@/lib/launch";
 import { useOperator } from "@/lib/use-operator";
 import { cn } from "@/lib/utils";
 
+// `add` opens the dialog that adds a model.
+interface ModelsSearch {
+  add?: true;
+}
+
 export const Route = createFileRoute("/settings/models")({
   staticData: { crumb: "Models" },
+  validateSearch: (raw: Record<string, unknown>): ModelsSearch =>
+    raw["add"] === true ? { add: true } : {},
   component: Models,
 });
 
+// A check runs, or an add waits for its check to set what it asked for.
 const running = (profiles: readonly ProfileInfo[]) =>
-  profiles.some((p) => p.check?.status === "running");
+  profiles.some(
+    (p) => p.check?.status === "running" || (p.add !== null && p.add?.outcome === null),
+  );
 
 // A profile that names a row of LiteLLM's price map and sets no price of its own.
 const keyed = (p: ProfileInfo) => p.price === null && p.price_key !== null;
@@ -35,6 +56,16 @@ function Models() {
   });
   const operator = useOperator();
   const { checking, problem, check } = useModelCheck();
+  const adding = Route.useSearch().add === true;
+  const navigate = Route.useNavigate();
+  const setAdding = (open: boolean) =>
+    void navigate({ search: open ? { add: true } : {}, replace: true });
+  // a link that opens the dialog
+  const addLink = (text: string) => (
+    <button type="button" className="text-foreground underline" onClick={() => setAdding(true)}>
+      {text}
+    </button>
+  );
   if (models.isPending) return <p className="text-muted-foreground">Loading profiles</p>;
   if (models.isError) {
     return (
@@ -57,29 +88,38 @@ function Models() {
             ? "Set in the config files; a check makes a few small paid calls per profile."
             : "Set in the config files."}
         </span>
-        {operator && profiles.length > 0 && (
+        {operator && (
           <div className="ml-auto flex gap-2">
-            <Button
-              variant="outline"
-              size="xs"
-              disabled={checking !== null}
-              onClick={() => void check(profiles.map((p) => p.name))}
-            >
-              Check all
-            </Button>
+            <AddModel open={adding} onOpenChange={setAdding} profiles={profiles} />
+            {profiles.length > 0 && (
+              <Button
+                variant="outline"
+                size="xs"
+                disabled={checking !== null}
+                onClick={() => void check(profiles.map((p) => p.name))}
+              >
+                Check all
+              </Button>
+            )}
           </div>
         )}
       </div>
       {unset.length > 0 && profiles.length > 0 && (
         <p className="text-muted-foreground">
           Unset roles: {unset.join(", ")}. Set {unset.length > 1 ? "them" : "it"} under [roles] in{" "}
-          <ConfigLink />.
+          <ConfigLink />
+          {operator ? (
+            <>, or {addLink(unset.length > 1 ? "add a model with them" : "add a model with it")}.</>
+          ) : (
+            "."
+          )}
         </p>
       )}
       {problem && <p className="text-flag">{problem}</p>}
       {profiles.length === 0 ? (
         <p className="text-muted-foreground">
-          No profiles yet. Write one under [profiles] in <ConfigLink />.
+          No profiles yet. Write one under [profiles] in <ConfigLink />
+          {operator ? <>, or {addLink("add a model")}.</> : "."}
         </p>
       ) : (
         <table className="w-full">
@@ -116,6 +156,60 @@ function Models() {
   );
 }
 
+// How a profile's newest add stands, until it is done or something newer says more: a role
+// given since, or a check after the add's own.
+const addShown = (p: ProfileInfo, add: AddInfo) =>
+  add.outcome === null ||
+  (add.outcome !== "done" &&
+    p.roles.length === 0 &&
+    (p.check?.run_id ?? add.run_id) === add.run_id);
+
+// Removes a profile whose add failed from the project's config file.
+function Remove({ name }: { name: string }) {
+  const qc = useQueryClient();
+  const [sure, setSure] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const remove = async () => {
+    setBusy(true);
+    setProblem(null);
+    try {
+      const file = await qc.fetchQuery(layerQuery("project"));
+      await patchConfig("project", { unset: [["profiles", name]] }, file.exists ? file.etag : null);
+      for (const queryKey of CONFIG_DEPENDENT) void qc.invalidateQueries({ queryKey });
+    } catch (e) {
+      setProblem(isProblem(e) ? problemText(e) : "The request failed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <span className="mt-0.5 flex flex-wrap items-center gap-2">
+      {sure ? (
+        <>
+          <Button variant="outline" size="xs" disabled={busy} onClick={() => void remove()}>
+            Remove {name} from aims.toml
+          </Button>
+          <Button variant="ghost" size="xs" disabled={busy} onClick={() => setSure(false)}>
+            Keep
+          </Button>
+        </>
+      ) : (
+        <Button
+          variant="link"
+          size="xs"
+          className="h-auto p-0"
+          aria-label={`Remove ${name}`}
+          onClick={() => setSure(true)}
+        >
+          Remove
+        </Button>
+      )}
+      {problem && <span className="text-foreground">{problem}</span>}
+    </span>
+  );
+}
+
 function ConfigLink() {
   return (
     <Link to="/settings/config" search={{ view: "project" }} className="text-foreground underline">
@@ -149,6 +243,12 @@ function Row({
           <span className="text-muted-foreground ml-2">{p.roles.join(", ")}</span>
         )}
         <span className="text-muted-foreground block sm:hidden">{p.model}</span>
+        {p.add && addShown(p, p.add) && (
+          <span className="text-muted-foreground block max-w-md">
+            <AddLine info={p.add} />
+            {operator && p.add.outcome === "failed" && <Remove name={p.name} />}
+          </span>
+        )}
         {/* the Price column is hidden on a narrow screen */}
         <div className="mt-1 sm:hidden">
           <Price p={p} prices={prices} />

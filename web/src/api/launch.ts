@@ -3,11 +3,17 @@ import { keepPreviousData, queryOptions } from "@tanstack/react-query";
 import type { BudgetOverride } from "@/lib/budget";
 
 import { client, type Schemas } from "./client";
+import type { operations } from "./schema.gen";
 
 export type StartRun = Schemas["StartRun"];
 export type Estimate = Schemas["Estimate"];
 export type ProfileInfo = Schemas["ProfileInfo"];
 export type ProfileCheck = Schemas["ProfileCheck"];
+export type AddInfo = Schemas["AddInfo"];
+export type ModelDraft = Schemas["ModelDraft"];
+export type ModelAdded = Schemas["ModelAdded"];
+export type ModelRole = ModelDraft["fits"][number];
+export type Backend = NonNullable<LookupAsk["backend"]>;
 export type ModelPrices = Schemas["ModelPrices"];
 export type PriceRow = Schemas["PriceRow"];
 export type Preset = NonNullable<StartRun["monitor"]>;
@@ -93,4 +99,29 @@ export async function checkModels(profiles: string[]): Promise<string> {
   const [id] = data.run_ids;
   if (id === undefined) throw new Error("no check run");
   return id;
+}
+
+// What a lookup asks: the model id, and the server as a base URL with an optional key env or as
+// profile `from` reaches it.
+export type LookupAsk = operations["lookup_model"]["parameters"]["query"];
+
+// A profile for a model as config file text. The control plane reads the server's list of models
+// with no key and saves nothing.
+export async function lookupModel(ask: LookupAsk, signal?: AbortSignal): Promise<ModelDraft> {
+  const { data, error } = await client.GET("/api/models/lookup", {
+    params: { query: ask },
+    ...(signal ? { signal } : {}),
+  });
+  if (error) throw error;
+  return data;
+}
+
+export type AddAsk = Schemas["ModelAdd"];
+
+// Add one profile's TOML to the project's config file. With `check` the roles wait for a model
+// check to pass; `GET /api/models` says how the add went.
+export async function addModel(body: AddAsk): Promise<ModelAdded> {
+  const { data, error } = await client.POST("/api/models/add", { body });
+  if (error) throw error;
+  return data;
 }

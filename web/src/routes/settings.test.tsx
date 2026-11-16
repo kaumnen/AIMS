@@ -441,10 +441,14 @@ test("the models page names the roles no profile has and how to set them", async
   modelRoles = { agent: "alpha", sweep: null, judge: null };
   renderAt("/settings/models");
   const line = (await screen.findByText(/^Unset roles/)) as HTMLElement;
-  expect(line.textContent).toBe("Unset roles: sweep, judge. Set them under [roles] in aims.toml.");
+  expect(line.textContent).toBe(
+    "Unset roles: sweep, judge. Set them under [roles] in aims.toml, or add a model with them.",
+  );
   expect(within(line).getByRole("link", { name: "aims.toml" }).getAttribute("href")).toBe(
     "/settings/config?view=project",
   );
+  fireEvent.click(within(line).getByRole("button", { name: "add a model with them" }));
+  expect(await screen.findByRole("dialog", { name: "Add a model" })).toBeTruthy();
   cleanup();
   role = "viewer";
   renderAt("/settings/models");
@@ -462,17 +466,33 @@ test("a models page with no profiles says how to add one", async () => {
   );
   renderAt("/settings/models");
   const line = (await screen.findByText(/^No profiles yet/)) as HTMLElement;
-  expect(line.textContent).toBe("No profiles yet. Write one under [profiles] in aims.toml.");
+  expect(line.textContent).toBe(
+    "No profiles yet. Write one under [profiles] in aims.toml, or add a model.",
+  );
   // no role can name a profile yet, so the line about them waits
   expect(screen.queryByText(/Unset roles/)).toBeNull();
   expect(screen.queryByRole("table")).toBeNull();
+  fireEvent.click(within(line).getByRole("button", { name: "add a model" }));
+  const dialog = within(await screen.findByRole("dialog", { name: "Add a model" }));
+  // with no profile to take a server from, a base URL is the only way
+  expect(dialog.queryByRole("combobox", { name: "Server" })).toBeNull();
+  expect(dialog.getByRole("textbox", { name: "Base URL" })).toBeTruthy();
 });
 
-test("viewers see the profiles without checks", async () => {
+test("a link to the models page can open the add dialog", async () => {
+  const router = renderAt("/settings/models?add=true");
+  const dialog = within(await screen.findByRole("dialog", { name: "Add a model" }));
+  fireEvent.click(dialog.getByRole("button", { name: "Close" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(router.state.location.search).toEqual({});
+});
+
+test("viewers see the profiles without checks or an add", async () => {
   role = "viewer";
   renderAt("/settings/models");
   await screen.findByRole("table");
   expect(screen.queryByRole("button", { name: /Check/ })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Add a model" })).toBeNull();
 });
 
 const priceReads = () => calls("GET", "/api/models/prices").map((r) => new URL(r.url));

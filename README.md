@@ -154,7 +154,7 @@ docker compose up -d
 docker compose exec server aims open --no-open
 ```
 
-Open the printed sign-in link. Set your models and their roles in the project config under **Settings** > **Config**. More in [Deploy](https://github.com/kaumnen/AIMS/blob/main/docs/deploy.md).
+Open the printed sign-in link. Add your models under **Settings** > **Models**, or set them and their roles under **Settings** > **Config**. More in [Deploy](https://github.com/kaumnen/AIMS/blob/main/docs/deploy.md).
 
 ## Docs
 

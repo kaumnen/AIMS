@@ -23,7 +23,7 @@ docker compose up -d
 docker compose exec server aims open --no-open
 ```
 
-The last command prints a sign-in link for http://localhost:8484. AIMS ships no models. Set them and their roles in the project config under **Settings** > **Config**. [Models](models.md) has the fields. The runner reads the keys from `.env`.
+The last command prints a sign-in link for http://localhost:8484. AIMS ships no models. Add them under **Settings** > **Models**, or set them and their roles in the project config under **Settings** > **Config**. [Models](models.md) has the fields. The runner reads the keys from `.env`.
 
 | Service | Role |
 | --- | --- |
