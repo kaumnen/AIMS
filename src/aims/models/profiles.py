@@ -11,29 +11,18 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
-    StrictFloat,
-    StrictInt,
     ValidationError,
+    ValidationInfo,
     model_validator,
 )
 
 from aims.events import ModelBackend, ReasoningKind
 from aims.models.transport import DROPPED_HEADERS
-from aims.stored import Known
+from aims.stored import STORED, Known
 
 Effort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 Summary = Literal["auto", "concise", "detailed"]
 Role = Literal["agent", "sweep", "judge"]
-SortKey = Literal["price", "throughput", "latency"]
-
-# A number kept as written, so 50 goes out as 50. Strict, so `true` is not 1.
-Positive = (
-    Annotated[StrictInt, Field(gt=0)] | Annotated[StrictFloat, Field(gt=0, allow_inf_nan=False)]
-)
-NonNegative = (
-    Annotated[StrictInt, Field(ge=0)] | Annotated[StrictFloat, Field(ge=0, allow_inf_nan=False)]
-)
-Names = Annotated[list[Annotated[str, Field(min_length=1)]], Field(min_length=1)]
 
 
 class ProfileError(Exception):
@@ -47,6 +36,14 @@ def _url(value: str) -> str:
 
 
 Url = Annotated[str, AfterValidator(_url)]
+
+
+def _set(value: Any) -> Any:
+    """`value` without the null values of its tables, at every depth."""
+    if isinstance(value, dict):
+        return {k: _set(v) for k, v in value.items() if v is not None}
+    return value
+
 
 _TOKEN = re.compile(r"[-!#$%&'*+.^_`|~0-9A-Za-z]+")
 _FIELD = re.compile(r"[\x21-\x7e]+(?:[ \t]+[\x21-\x7e]+)*")
@@ -105,57 +102,6 @@ PriceKey = Annotated[str, AfterValidator(_price_key)]
 
 class _Strict(Known):
     model_config = ConfigDict(frozen=True, extra="forbid")
-
-
-class _SomeSet(_Strict):
-    @model_validator(mode="after")
-    def _some(self) -> Self:
-        if all(getattr(self, k) is None for k in type(self).model_fields):
-            raise ValueError(f"set at least one of {', '.join(type(self).model_fields)}")
-        return self
-
-
-class SortBy(_Strict):
-    by: SortKey
-    partition: Literal["model", "none"] | None = None
-
-
-class Percentiles(_SomeSet):
-    p50: Positive | None = None
-    p75: Positive | None = None
-    p90: Positive | None = None
-    p99: Positive | None = None
-
-
-class MaxPrice(_SomeSet):
-    prompt: NonNegative | None = None
-    completion: NonNegative | None = None
-    request: NonNegative | None = None
-    image: NonNegative | None = None
-
-
-class Routing(_Strict):
-    """Where a router such as OpenRouter sends a request, sent as its `provider` object.
-    Providers go by their slugs."""
-
-    order: Names | None = None
-    only: Names | None = None
-    ignore: Names | None = None
-    allow_fallbacks: bool | None = None
-    require_parameters: bool | None = None
-    data_collection: Literal["allow", "deny"] | None = None
-    zdr: bool | None = None
-    enforce_distillable_text: bool | None = None
-    # Free text: providers add new ones.
-    quantizations: Names | None = None
-    sort: SortKey | SortBy | None = None
-    preferred_min_throughput: Positive | Percentiles | None = None
-    preferred_max_latency: Positive | Percentiles | None = None
-    max_price: MaxPrice | None = None
-
-    def body(self) -> dict[str, JsonValue]:
-        """The `provider` object: what is set, at every depth. Empty when nothing is."""
-        return self.model_dump(mode="json", exclude_none=True)
 
 
 class Sampling(_Strict):
@@ -254,7 +200,6 @@ class Profile(_Strict):
     cache_key: bool | None = None
     sampling: Sampling = Field(default_factory=Sampling)
     extra: dict[str, JsonValue] = Field(default_factory=dict)
-    routing: Routing = Field(default_factory=Routing)
     # Sent with every request. The run's profile snapshot records them, so they are not for
     # secrets.
     headers: Headers = Field(default_factory=dict)
@@ -269,6 +214,21 @@ class Profile(_Strict):
     timeouts: Timeouts = Field(default_factory=Timeouts)
     retries: Retries = Field(default_factory=Retries)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _stored_routing(cls, value: Any, info: ValidationInfo) -> Any:
+        """A run recorded between 0.2.3 and 0.3.0 kept a `routing` table, which went out as
+        the request's `provider` object. Read back, its set fields move there in `extra`, so a
+        replay of that run sends the body it recorded."""
+        if info.context != STORED or not isinstance(value, dict) or "routing" not in value:
+            return value
+        value = dict(value)
+        provider = _set(value.pop("routing"))
+        extra = value.get("extra") or {}
+        if provider and isinstance(extra, dict) and "provider" not in extra:
+            value["extra"] = {**extra, "provider": provider}
+        return value
+
     @model_validator(mode="after")
     def _check(self) -> Self:
         if (self.base_url is None) == (self.base_url_env is None):
@@ -277,8 +237,6 @@ class Profile(_Strict):
             raise ValueError("summary is only sent by the responses backend")
         if self.effort_kwarg is not None and self.backend != "chat":
             raise ValueError("effort_kwarg is only sent by the chat backend")
-        if "provider" in self.extra and self.routing.body():
-            raise ValueError("routing and extra.provider both set the provider object; keep one")
         if self.listed is not None and (self.price is None or self.price_key is None):
             raise ValueError("listed marks a list price, so it needs price and price_key")
         return self

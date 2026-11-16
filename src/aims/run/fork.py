@@ -30,6 +30,7 @@ from aims.run.runner import Bench, Fork, RunError, Texts, resolve_texts
 from aims.scenario import Bundle, Scenario, ScenarioError, from_snapshot
 from aims.scenario import budget as budgets
 from aims.scenario.budget import BudgetError, BudgetOverride
+from aims.stored import STORED
 
 PAGE = 1000
 
@@ -450,7 +451,12 @@ def _schedule(value: object) -> list[tuple[int | None, Profile]]:
         if not isinstance(pair, list) or len(pair) != 2:
             raise RunError(f"bad profile schedule entry {pair!r}")
         until, profile = pair
-        out.append((until if isinstance(until, int) else None, Profile.model_validate(profile)))
+        out.append(
+            (
+                until if isinstance(until, int) else None,
+                Profile.model_validate(profile, context=STORED),
+            )
+        )
     return out
 
 

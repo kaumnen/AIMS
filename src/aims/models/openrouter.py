@@ -17,6 +17,7 @@ from typing import Any, Literal, get_args
 
 import httpx2
 import tomlkit
+from tomlkit.items import InlineTable
 
 from aims.models.profiles import ROLES, Effort, Profile, Role
 from aims.net import Outbound
@@ -86,12 +87,7 @@ class Draft:
         """The `[profiles."name"]` table as config file text."""
         table = tomlkit.table()
         for key, value in self.table.items():
-            if isinstance(value, dict):
-                inline = tomlkit.inline_table()
-                inline.update(value)
-                table.add(key, inline)
-            else:
-                table.add(key, value)
+            table.add(key, _inline(value) if isinstance(value, dict) else value)
             if key == "effort" and self.efforts:
                 table.add(tomlkit.comment(f"OpenRouter lists: {', '.join(self.efforts)}"))
         profiles = tomlkit.table(is_super_table=True)
@@ -99,6 +95,14 @@ class Draft:
         doc = tomlkit.document()
         doc.add("profiles", profiles)
         return tomlkit.dumps(doc)
+
+
+def _inline(value: dict[str, Any]) -> InlineTable:
+    """`value` as an inline table, with each table in it inline too."""
+    inline = tomlkit.inline_table()
+    for key, item in value.items():
+        inline.append(key, _inline(item) if isinstance(item, dict) else item)
+    return inline
 
 
 def default_name(slug: str) -> str:
@@ -247,8 +251,7 @@ def draft(
             "OpenRouter lists a price for a cache write, so extra.cache_control asks for the"
             " prompt cache. Some models cache only when asked."
         )
-    table["routing"] = {"sort": "price", "require_parameters": True}
-    table["headers"] = {"X-OpenRouter-Metadata": "enabled"}
+    table.setdefault("extra", {})["provider"] = {"sort": "price", "require_parameters": True}
 
     cost_in, cost_out = _per_million(pricing.get("prompt")), _per_million(pricing.get("completion"))
     if cost_in is None or cost_out is None:

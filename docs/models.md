@@ -4,7 +4,7 @@
 - [Profile fields](#profile-fields)
 - [List prices](#list-prices)
 - [OpenRouter](#openrouter)
-- [Routing and headers](#routing-and-headers)
+- [Headers and extra fields](#headers-and-extra-fields)
 - [What a run records](#what-a-run-records)
 - [Check a profile](#check-a-profile)
 
@@ -64,9 +64,8 @@ judge = "my-monitor"
 | `structured_output` | `false` when the server cannot hold an answer to a schema. Such a model cannot be the sweep or judge model. |
 | `cache_key` | Sends `prompt_cache_key`, so a run's calls share one prompt cache. On by default for `responses`, off for `chat`. |
 | `sampling` | `temperature`, `top_p`, `top_k`, `seed` |
-| `routing` | Where a router sends the request. See [Routing and headers](#routing-and-headers). |
 | `headers` | HTTP headers for every request of the profile |
-| `extra` | Any other fields of the request body |
+| `extra` | Any other fields of the request body, such as a router's options. See [Headers and extra fields](#headers-and-extra-fields). |
 | `price` | USD per million tokens: `input`, `cached`, `output`. Wins over `price_key`. |
 | `price_key` | A row of LiteLLM's price map. Runs and estimates count the profile's calls at its list price. See [List prices](#list-prices). |
 | `limits` | `rpm`, `tpm`, `concurrency` and a `group` that profiles can share |
@@ -151,8 +150,7 @@ effort = "high"
 max_output_tokens = 16384
 context_tokens = 123456
 cache_key = true
-routing = {sort = "price", require_parameters = true}
-headers = {X-OpenRouter-Metadata = "enabled"}
+extra = {provider = {sort = "price", require_parameters = true}}
 price = {input = 1.23, cached = 0.123, output = 4.56}
 ```
 
@@ -180,11 +178,10 @@ What the profile sets:
 
 | Setting | Why |
 | --- | --- |
-| `routing.sort = "price"` | The cheapest provider that can serve the request comes first. |
-| `routing.require_parameters = true` | Only providers that support every parameter of a request serve it. Without it a provider may drop tools, structured output or the effort without an error. |
+| `extra.provider.sort = "price"` | The cheapest provider that can serve the request comes first. |
+| `extra.provider.require_parameters = true` | Only providers that support every parameter of a request serve it. Without it a provider may drop tools, structured output or the effort without an error. |
 | `cache_key = true` | A run's calls share one prompt cache. |
 | `extra.cache_control` | Only when OpenRouter lists a price for a cache write. Some such models cache a prompt only when the request asks. The others take the field without effect. |
-| `X-OpenRouter-Metadata` | The answer names the provider that served it. |
 | No `parallel_tool_calls` | Few providers support the field. With `require_parameters` it would cut the route to those few. |
 | `effort` | The model's default. The comment below it lists the levels OpenRouter names. |
 | `price` | The list price, which is the lowest among the model's providers. Estimates and the monitor's budget use it. A run records what OpenRouter reports each call cost, or the cost at this price when it reports none. |
@@ -195,40 +192,26 @@ What the profile sets:
 > [!WARNING]
 > An alias moves to newer models over time, so a run would not say which model it used. The command refuses one without `--alias`. It also refuses a model that OpenRouter does not serve on chat completions.
 
-## Routing and headers
+## Headers and extra fields
 
-`routing` goes out as the request's `provider` object. It works on any router that reads that object. Providers go by their slugs.
+`extra` adds fields to the request body as they are written. A router's own options go there. This one keeps a run on one provider of a router that reads a `provider` object, so the price, the quantization and the prompt cache stay the same:
 
 ```toml
 [profiles."openrouter-model-name"]
-routing = { only = ["provider-a", "provider-b"], allow_fallbacks = false, quantizations = ["fp8"] }
+extra = { provider = { only = ["provider-a"], allow_fallbacks = false, require_parameters = true } }
 ```
-
-| Key | Value |
-| --- | --- |
-| `order`, `only`, `ignore` | Lists of provider slugs |
-| `allow_fallbacks`, `require_parameters`, `zdr`, `enforce_distillable_text` | `true` or `false` |
-| `data_collection` | `allow` or `deny` |
-| `quantizations` | A list such as `["fp8", "bf16"]` |
-| `sort` | `price`, `throughput` or `latency`, or `{ by = "price", partition = "model" }` |
-| `preferred_min_throughput`, `preferred_max_latency` | A number, or `{ p50 = 50, p90 = 20 }` |
-| `max_price` | `{ prompt = 1, completion = 2 }`, also `request` and `image` |
-
-A profile may not set both `routing` and `provider` in `extra`.
-
-> [!TIP]
-> One provider for a whole run keeps the price, the quantization and the prompt cache the same. Set `only` to one slug and `allow_fallbacks = false` for that.
 
 `headers` adds HTTP headers to each request of the profile:
 
 ```toml
-headers = { X-OpenRouter-Metadata = "enabled", X-Title = "my-bench" }
+[profiles."openrouter-model-name"]
+headers = { X-Title = "my-bench" }
 ```
 
 > [!WARNING]
 > A run records its profiles with their headers. Keep secrets out of them. AIMS refuses a header that it sets itself or that carries a key, such as `Authorization` or `Cookie`.
 
-A config layer or `extends` merges both tables key by key. A header's name ignores case, so `x-title` in a layer replaces `X-Title` from the layer below.
+A config layer or `extends` merges `headers` key by key. A header's name ignores case, so `x-title` in a layer replaces `X-Title` from the layer below. A layer's `extra` replaces the whole `extra` below it, so give it every field the profile needs, such as `cache_control`.
 
 ## What a run records
 

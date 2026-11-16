@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import hashlib
 import io
+import json
 import logging
 import os
 import tarfile
@@ -1871,6 +1872,22 @@ def test_what_a_verifier_expects_is_part_of_the_monitor_identity(tmp_path: Path)
     assert (again.expects, again.identity) == (set_.expects, set_.identity)
     old = {k: v for k, v in plain.snapshot().items() if k != "expects"}
     assert ResolvedMonitor.restore(old).expects == {}
+
+
+def test_a_monitor_recorded_with_routing_tables_restores() -> None:
+    plain = watched()
+    snap: dict[str, Any] = json.loads(json.dumps(plain.snapshot()))
+    # Profiles recorded between 0.2.3 and 0.3.0 had a routing table, sent as `provider`.
+    routed = {"sort": "price", "zdr": None, "max_price": {"prompt": 1, "image": None}}
+    snap["sweeps"]["main"]["routing"] = routed
+    snap["judge"]["routing"] = routed
+    snap["review"]["routing"] = dict.fromkeys(("order", "sort", "max_price"))
+    again = ResolvedMonitor.restore(snap)
+    provider = {"sort": "price", "max_price": {"prompt": 1}}
+    assert again.sweeps["main"].extra == {"provider": provider}
+    assert again.judge is not None
+    assert again.judge.extra == {"provider": provider}
+    assert again.review == plain.review
 
 
 def test_the_cli_refuses_a_monitor_whose_key_is_unset(

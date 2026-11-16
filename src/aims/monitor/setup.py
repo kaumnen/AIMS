@@ -98,9 +98,11 @@ class ResolvedMonitor:
         try:
 
             def profile(v: Any) -> Profile | None:
-                return None if v is None else Profile.model_validate(v)
+                return None if v is None else Profile.model_validate(v, context=STORED)
 
-            sweeps = {n: Profile.model_validate(p) for n, p in value["sweeps"].items()}
+            sweeps = {
+                n: Profile.model_validate(p, context=STORED) for n, p in value["sweeps"].items()
+            }
             return cls(
                 config=MonitorConfig.model_validate(value["config"], context=STORED),
                 texts=MonitorTexts.restore(value["texts"]),

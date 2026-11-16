@@ -165,7 +165,7 @@ Open the printed sign-in link. Add models with their roles under **Settings** > 
 | [Scenario reference](https://github.com/kaumnen/AIMS/blob/main/skills/aims/references/scenario.md) | Every field of a scenario |
 | [The monitor](https://github.com/kaumnen/AIMS/blob/main/docs/monitor.md) | Layers, budgets, oversight and categories |
 | [Runs and reports](https://github.com/kaumnen/AIMS/blob/main/docs/runs.md) | Logs, forks, scores, series and deletion |
-| [Models](https://github.com/kaumnen/AIMS/blob/main/docs/models.md) | Profile fields, prices, OpenRouter and routing |
+| [Models](https://github.com/kaumnen/AIMS/blob/main/docs/models.md) | Profile fields, prices, OpenRouter and headers |
 | [Deploy](https://github.com/kaumnen/AIMS/blob/main/docs/deploy.md) | TLS, more runners, proxies and offline hosts |
 | [SECURITY.md](https://github.com/kaumnen/AIMS/blob/main/SECURITY.md) | The security model and how to report a vulnerability |
 | [CONTRIBUTING.md](https://github.com/kaumnen/AIMS/blob/main/CONTRIBUTING.md) | Setup, tests and CI |

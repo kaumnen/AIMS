@@ -119,19 +119,10 @@ def _fail(out: Assembled, error: object, default: str) -> None:
 
 def _served(out: Assembled, body: dict[str, Any]) -> None:
     """Keep what `body`, a response or a chunk of one, says about who answered: the provider a
-    router picked, the model and the service tier. A router names the provider at the top, as
-    OpenRouter's chat answers do, or only in the routing metadata it was asked for."""
-    out.provider = _str(body.get("provider")) or _selected(body) or out.provider
+    router picked, the model and the service tier."""
+    out.provider = _str(body.get("provider")) or out.provider
     out.model = _str(body.get("model")) or out.model
     out.service_tier = _str(body.get("service_tier")) or out.service_tier
-
-
-def _selected(body: dict[str, Any]) -> str | None:
-    endpoints = _get(body, "openrouter_metadata", "endpoints", "available")
-    for endpoint in endpoints if isinstance(endpoints, list) else []:
-        if _get(endpoint, "selected") is True:
-            return _str(_get(endpoint, "provider"))
-    return None
 
 
 def _get(obj: object, *path: str) -> object:
@@ -189,8 +180,6 @@ class Responses:
                     "strict": o.strict,
                 }
             }
-        if provider := profile.routing.body():
-            body["provider"] = provider
         return body | profile.extra
 
     def render(self, prompt: Prompt) -> list[JsonValue]:
@@ -393,8 +382,6 @@ class Chat:
                 "type": "json_schema",
                 "json_schema": {"name": o.name, "schema": o.json_schema, "strict": o.strict},
             }
-        if provider := profile.routing.body():
-            body["provider"] = provider
         return body | profile.extra
 
     def render(self, prompt: Prompt) -> list[JsonValue]:
@@ -588,7 +575,6 @@ _HEAD = (
     "provider",
     "system_fingerprint",
     "service_tier",
-    "openrouter_metadata",
 )
 
 # The fields of a reasoning block that arrive in pieces on a stream.
