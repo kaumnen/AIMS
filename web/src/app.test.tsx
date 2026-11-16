@@ -263,6 +263,17 @@ test("the skip link moves focus to the page", async () => {
   expect(document.activeElement).toBe(screen.getByRole("main"));
 });
 
+test("the crumbs scroll away with the page and stay before main", async () => {
+  await renderAt("/settings/tokens");
+  const crumbs = await screen.findByRole("navigation", { name: "Breadcrumb" });
+  const main = screen.getByRole("main");
+  const scroller = document.querySelector("[data-scroller]");
+  expect(scroller).not.toBeNull();
+  expect(crumbs.parentElement).toBe(scroller);
+  expect(main.parentElement).toBe(scroller);
+  expect(crumbs.nextElementSibling).toBe(main);
+});
+
 test("? shows the shortcuts and Escape gives focus back", async () => {
   await renderAt("/runs");
   await screen.findByRole("heading", { name: "Runs" });

@@ -153,8 +153,8 @@
   :root[data-theme="dark"] {
     color-scheme: light;
   }
-  /* the app header, crumbs and skip link */
-  [data-shell] > :not(main) {
+  /* the app header and skip link; the crumbs hide themselves */
+  [data-shell] > :not(:has(#main)) {
     display: none;
   }
   [data-report] {

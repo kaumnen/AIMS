@@ -59,7 +59,7 @@ export function Crumbs() {
   return (
     <nav
       aria-label="Breadcrumb"
-      className="text-muted-foreground flex items-center gap-1.5 px-4 pt-3"
+      className="text-muted-foreground flex items-center gap-1.5 px-4 pt-3 print:hidden"
     >
       {crumbs.map((c, i) =>
         i === crumbs.length - 1 ? (

@@ -218,7 +218,7 @@ function Run() {
   const toSteps = (to: StepsLink) =>
     change((prev) => ({ ...without(prev, "tab", "flag", "seq", "step"), ...to }));
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex min-h-0 flex-1 flex-col">
       <RunHeader detail={detail.data} source={search.source} />
       <HoldBanner
         detail={detail.data}

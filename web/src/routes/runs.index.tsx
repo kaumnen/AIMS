@@ -69,7 +69,7 @@ function Runs() {
     ? `${runs.length}${list.hasNextPage ? "+" : ""} ${runs.length === 1 ? "run" : "runs"}`
     : "";
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex min-h-0 flex-1 flex-col">
       <h1 className="sr-only">Runs</h1>
       <RunFilterBar search={search} onChange={change} count={count}>
         <NewRun />

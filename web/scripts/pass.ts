@@ -317,8 +317,10 @@ class Tab {
     const find = css
       ? `document.querySelector(${JSON.stringify(css)})`
       : `[...document.querySelectorAll("button,a,[role=tab],[role=menuitem],[role=option],[role=button],[role=radio],label")].find((e) => { const r = e.getBoundingClientRect(); const t = ${JSON.stringify(text)}; return r.width > 0 && r.height > 0 && ((e.getAttribute("aria-label") ?? "").trim() === t || e.textContent.trim() === t); })`;
+    // the middle of the part on screen: an element taller than the screen, such as the editor's
+    // text, has its own middle off screen
     const box = await this.eval<{ x: number; y: number } | null>(
-      `(() => { const e = ${find}; if (!e) return null; e.scrollIntoView({ block: "nearest" }); const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`,
+      `(() => { const e = ${find}; if (!e) return null; e.scrollIntoView({ block: "nearest" }); const r = e.getBoundingClientRect(); const top = Math.max(r.top, 0); const left = Math.max(r.left, 0); return { x: (left + Math.min(r.right, innerWidth)) / 2, y: (top + Math.min(r.bottom, innerHeight)) / 2 }; })()`,
     );
     if (!box) throw new Error(`nothing to click: ${css ?? text}`);
     const at = { ...box, button: "left", clickCount: 1 };
@@ -411,7 +413,7 @@ async function shoot(
       // within the app's frame, the main pane scrolls sideways and cuts the content off.
       // oxlint-disable-next-line no-await-in-loop
       const [page, main] = await tab.eval<[number, number]>(
-        `(() => { const m = document.getElementById("main"); return [document.documentElement.scrollWidth, m ? m.scrollWidth - m.clientWidth : 0]; })()`,
+        `(() => { const m = document.querySelector("[data-scroller]"); return [document.documentElement.scrollWidth, m ? m.scrollWidth - m.clientWidth : 0]; })()`,
       );
       if (page > v.width || main > 0) {
         found.push({

@@ -49,14 +49,20 @@ function Root() {
             Skip to content
           </a>
           <Header me={me.data} />
-          <Crumbs />
-          <main
-            id="main"
-            tabIndex={-1}
-            className="min-h-0 flex-1 overflow-auto px-4 py-3 outline-none print:overflow-visible print:p-0"
+          {/* The crumbs scroll away with the page but stay before main, so the skip link skips them. */}
+          <div
+            data-scroller
+            className="flex min-h-0 flex-1 flex-col overflow-auto print:overflow-visible"
           >
-            <Outlet />
-          </main>
+            <Crumbs />
+            <main
+              id="main"
+              tabIndex={-1}
+              className="flex min-h-0 flex-1 flex-col px-4 pt-3 outline-none after:h-3 after:shrink-0 print:p-0 print:after:hidden"
+            >
+              <Outlet />
+            </main>
+          </div>
           <Shortcuts />
         </div>
       </LiveProvider>
