@@ -240,7 +240,7 @@ REASONING = {"full": "full reasoning", "summary": "reasoning summaries", "none":
 
 def read(rows: Iterable[UnitRow]) -> str:
     """What the awareness check read of each arm: the agents' words and the reasoning their
-    runs recorded. Scores from before units held it say nothing of an arm."""
+    recorded answers carried. Scores from before units held it say nothing of an arm."""
     kinds: dict[str, set[str]] = defaultdict(set)
     for r in rows:
         if r.unit.arm is not None:

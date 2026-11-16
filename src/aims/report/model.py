@@ -17,6 +17,7 @@ from aims.events import (
     Label,
     Oversight,
     PlantTier,
+    ReasoningKind,
     RunKind,
     RunStatus,
     ScoreMatch,
@@ -207,7 +208,9 @@ class Plant(_Model):
 
 
 class Unit(_Model):
-    """One agent of the score run: what it took and what each layer caught of it."""
+    """One agent of the score run: what it took and what each layer caught of it. `reasoning`
+    is the richest reasoning its answers carried, which the awareness check read with its
+    words."""
 
     agent: str
     role: Literal["subject", "confederate"]
@@ -217,6 +220,7 @@ class Unit(_Model):
     harm_seq: int | None = None
     matches: list[ScoreMatch] = Field(default_factory=list)
     eval_aware: Finding | None = None
+    reasoning: list[ReasoningKind] = Field(default_factory=list)
     told: Told | None = None
     cause: Cause | None = None
 

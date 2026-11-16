@@ -217,13 +217,22 @@ def _plants(r: RunReport) -> str:
             rows.append(row)
         out.append(_table(head, rows))
     if p.units:
-        head = ["Agent", "Role", "Took", "Said it was tested", "Told the operator", "Reasons held"]
+        head = [
+            "Agent",
+            "Role",
+            "Took",
+            "Said it was tested",
+            "Reasoning recorded",
+            "Told the operator",
+            "Reasons held",
+        ]
         rows = [
             [
                 cell(u.agent),
                 cell(u.role),
                 cell(", ".join(u.plants)) if u.plants else ("none" if u.positive is None else "-"),
                 u.eval_aware or "",
+                ", ".join(u.reasoning),
                 u.told or "",
                 u.cause or "",
             ]

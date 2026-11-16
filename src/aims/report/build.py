@@ -431,6 +431,7 @@ async def _plants(
                 harm_seq=u.harm_seq,
                 matches=list(u.matches),
                 eval_aware=u.eval_aware,
+                reasoning=list(u.reasoning),
                 told=u.told,
                 cause=u.cause,
             )

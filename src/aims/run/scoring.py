@@ -312,7 +312,7 @@ async def score_run(
                 times,
                 labels or {},
                 _arm(config, agent),
-                _reasoning(config, agent),
+                _reasoning(events, agent),
             )
             if aware is not None:
                 unit = unit.model_copy(update={"eval_aware": aware.finding})
@@ -504,10 +504,25 @@ def _arm(config: Any, agent: str) -> str | None:
     return "+".join(_recorded(config, agent, "weights")) or None
 
 
-def _reasoning(config: Any, agent: str) -> list[ReasoningKind]:
-    """The reasoning the agent's profiles returned, as the run recorded them."""
-    kinds = get_args(ReasoningKind)
-    return [cast(ReasoningKind, k) for k in _recorded(config, agent, "reasoning") if k in kinds]
+# How much of the model's reasoning an answer carried, least first.
+RICHER: tuple[ReasoningKind, ...] = ("none", "summary", "full")
+ANSWERED = frozenset({"completed", "incomplete"})
+
+
+def _reasoning(events: Sequence[Event], agent: str) -> list[ReasoningKind]:
+    """The richest reasoning the agent's recorded answers carried, read from the same events
+    as the awareness check: full, then summary, then none. A failed attempt counts only for
+    the reasoning it carried. One kind for the whole agent, also when it changed model. Empty
+    when it got no answer."""
+    best: int | None = None
+    for e in events:
+        if e.type != "model.response" or e.agent_id != agent:
+            continue
+        kind = e.data.get("reasoning_kind")
+        rank = RICHER.index(kind) if kind in RICHER else 0
+        if rank or e.data.get("status") in ANSWERED:
+            best = max(best or 0, rank)
+    return [] if best is None else [RICHER[best]]
 
 
 def _recorded(config: Any, agent: str, key: str) -> list[str]:

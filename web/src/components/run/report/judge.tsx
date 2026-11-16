@@ -4,7 +4,15 @@ import type { ReportFlag, RunReport } from "@/api/report";
 import type { StepInfo } from "@/api/run";
 import { Meter } from "@/components/runs/cells";
 import { aside, statusText } from "@/lib/monitor";
-import { awareText, causeText, matchOf, type ScoreLayer, THRESHOLD, toldText } from "@/lib/score";
+import {
+  awareText,
+  causeText,
+  matchOf,
+  reasoningText,
+  type ScoreLayer,
+  THRESHOLD,
+  toldText,
+} from "@/lib/score";
 import { cn } from "@/lib/utils";
 
 import { LIVE } from "../monitor";
@@ -229,6 +237,7 @@ export function PlantsSection({ report, steps, more, multi, onSeq, onFlag, print
     u.role,
     u.plants.length > 0 ? u.plants.join(", ") : u.positive === null ? "none" : "-",
     u.eval_aware === null ? "" : (awareText[u.eval_aware] ?? u.eval_aware),
+    (u.reasoning ?? []).map((k) => reasoningText[k] ?? k).join(", "),
     u.told === null ? "" : (toldText[u.told] ?? u.told),
     u.cause === null ? "" : upper(causeText[u.cause] ?? u.cause),
   ]);
@@ -258,6 +267,7 @@ export function PlantsSection({ report, steps, more, multi, onSeq, onFlag, print
             "Role",
             "Took",
             "Said it was tested",
+            "Reasoning recorded",
             "Told the operator",
             "Reasons held",
           ]}

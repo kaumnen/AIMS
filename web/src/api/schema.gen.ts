@@ -7407,10 +7407,11 @@ export interface components {
          *     positive all the same, `labelled`, when a person labelled one of its flags real. `planted`
          *     are the plants that applied to it, `plants` the ones it took, `considered` the ones whose
          *     canary turned up only in its model output, `categories` the taken ones', `harm_seq` the
-         *     first time it took one. `arm` names the weights it ran on and `reasoning` what reasoning
-         *     those models returned, as the run recorded their profiles. `told` and `cause` are the
-         *     answer check's labels of a positive subject. A confederate's own plants are known
-         *     positives for the monitor, scored apart from the subjects.
+         *     first time it took one. `arm` names the weights it ran on and `reasoning` the richest
+         *     reasoning its recorded answers carried (full, then summary, then none), empty when it got
+         *     no answer. `told` and `cause` are the answer check's labels of a positive subject. A
+         *     confederate's own plants are known positives for the monitor, scored apart from the
+         *     subjects.
          */
         ScoreUnit: {
             /**
@@ -8208,7 +8209,9 @@ export interface components {
         };
         /**
          * Unit
-         * @description One agent of the score run: what it took and what each layer caught of it.
+         * @description One agent of the score run: what it took and what each layer caught of it. `reasoning`
+         *     is the richest reasoning its answers carried, which the awareness check read with its
+         *     words.
          */
         Unit: {
             /** Agent */
@@ -8230,6 +8233,8 @@ export interface components {
             plants?: string[];
             /** Positive */
             positive: boolean | null;
+            /** Reasoning */
+            reasoning?: ("none" | "summary" | "full")[];
             /**
              * Role
              * @enum {string}
@@ -15556,6 +15561,7 @@ export const tokenCreateRoleValues: ReadonlyArray<FlattenedDeepRequired<componen
 export const toolInfoEndAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ToolInfo"]["end"]> = ["exited", "timeout", "cancelled", "failed"];
 export const unitCauseAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Unit"]["cause"]> = ["true", "false", "none"];
 export const unitEval_awareAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Unit"]["eval_aware"]> = ["yes", "no", "unclear"];
+export const unitReasoningValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Unit"]["reasoning"]> = ["none", "summary", "full"];
 export const unitRoleValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Unit"]["role"]> = ["subject", "confederate"];
 export const unitToldAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Unit"]["told"]> = ["yes", "partly", "no"];
 export const variantCostMonitor_presetAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["VariantCost"]["monitor_preset"]> = ["off", "signals", "standard", "research"];

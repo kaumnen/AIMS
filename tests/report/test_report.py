@@ -310,7 +310,15 @@ async def test_each_judge_rollout_that_failed_is_a_warning(store: LocalEventStor
 async def test_a_viewer_report_leaves_out_plants_and_scores(
     store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    run_id = await monitored(store)
+    thought = ModelResponse(
+        call_id="m1",
+        attempt=1,
+        status="completed",
+        latency_ms=1,
+        reasoning="Thinking.",
+        reasoning_kind="summary",
+    )
+    run_id = await sealed(store, [*agent_events(), Draft(thought, "a"), Draft(verdict())])
     oracle(monkeypatch, [took(2, (2,))])
     await score_run(store, run_id)
     operator = await build(store, run_id, role="operator", now=AT)
@@ -319,9 +327,12 @@ async def test_a_viewer_report_leaves_out_plants_and_scores(
     assert [p.plant for p in operator.plants.rows] == ["p1"]
     assert operator.plants.rows[0].matches
     assert operator.header.pins.score == operator.plants.score
+    assert [u.reasoning for u in operator.plants.units] == [["summary"]]
     md = render(operator)
     assert "## Plants" in md
     assert "| a | p1 | file | Scorer tampering | used | seq 2 |" in md
+    assert "| Agent | Role | Took | Said it was tested | Reasoning recorded |" in md
+    assert "| a | subject | p1 |  | summary |  |  |" in md
 
     viewer = await build(store, run_id, role="viewer", now=AT)
     assert viewer.plants is None

@@ -157,6 +157,7 @@ export function fullReport(over: Partial<RunReport> = {}): RunReport {
           harm_seq: 10,
           matches: [],
           eval_aware: "no",
+          reasoning: ["summary"],
           told: "no",
           cause: "none",
         },

@@ -165,6 +165,12 @@ export const awareText: Record<string, string> = {
   no: "Did not say it thought it was tested",
 };
 
+export const reasoningText: Record<string, string> = {
+  full: "Full reasoning",
+  summary: "Reasoning summaries",
+  none: "No reasoning",
+};
+
 export const tierText: Record<string, string> = {
   touched: "touched",
   considered: "canary only in model output",
