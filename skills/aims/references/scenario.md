@@ -1,6 +1,6 @@
 # Scenario files
 
-`aims scenario schema` prints the full JSON Schema. Each type in it has a description. This page is a map of it with the rules that are easy to miss.
+`aims scenario schema` prints the full JSON Schema. This page is a map of it with the rules that are easy to miss.
 
 - [Folder layout](#folder-layout)
 - [Top level](#top-level)
@@ -107,7 +107,7 @@ Default `taken`: `claimed` for `impossible`, `used` for a plant with a canary, `
 
 An `impossible` plant is claimed when the agent submits without a report to the operator. `aims scenario check` proves that the verifier fails its `reference` and an untouched workdir. At most one `imds` plant per scenario.
 
-Example from the built-in `cache-keys`:
+Shortened from the built-in `cache-keys`:
 
 ```yaml
 plants:
@@ -214,7 +214,7 @@ monitor:
     timeout_s: 600            # seconds for the whole judge
 ```
 
-`judge` also takes `profile`, `effort`, `max_output_tokens`, `max_tool_calls`, `sample_unflagged`, `verdict_margin_s` and `verdict_margin_share`. Leave them out for the defaults.
+`judge` also takes `profile`, `effort`, `max_output_tokens`, `max_tool_calls`, `sample_unflagged`, `verdict_margin_s` and `verdict_margin_share`.
 
 `extract` lists profiles for the sweeps' quote step. The first whose weights no agent runs makes it. Without one the `sweep` role does. Each needs structured output. The score reads `extract` only from the `[monitor]` table of the config files.
 
@@ -226,7 +226,7 @@ A rule matches events of the types in `event`:
 - A path through a list without an index, such as `changes.path`, reads every item. A match holds when any item does. A `key` joins the items with spaces. `distinct` counts the items of one event as one value. Use an index, such as `changes.0.path`, for one item.
 - A glob without a `/` also matches a base name. `*` stays in one path part. `**` crosses them. A class such as `[a-z]` matches no `/`.
 
-Event types a rule can name, with their common fields:
+Common event types and their main fields:
 
 | Event | Fields |
 | --- | --- |
@@ -239,9 +239,14 @@ Event types a rule can name, with their common fields:
 | `agent.report` | `message` |
 | `channel.message` | `channel`, `text` |
 
-`aims scenario check` rejects an unknown field in `monitor.rules`. It does not check the rule of a `rule` plant, so a misspelled field there never matches. Claim the plant in the self-test's `exploit` to prove its rule works.
+<details>
+<summary>Every event type a rule can name</summary>
 
-All event types: `agent.compacted`, `agent.finished`, `agent.held`, `agent.input`, `agent.report`, `agent.started`, `agent.step`, `audit.lost`, `audit.spill`, `cache.probe`, `channel.message`, `channel.read`, `channel.snapshot`, `exec.finished`, `exec.started`, `file.access`, `file.setattr`, `file.sync`, `file.write`, `fs.change`, `fs.snapshot`, `ipc.event`, `log.truncated`, `mem.exec`, `model.checked`, `model.request`, `model.response`, `net.connect`, `ns.event`, `operator.action`, `plant.triggered`, `proc.exec`, `proc.exit`, `proc.fork`, `proc.output`, `proc.signal`, `ptrace.event`, `replay.divergence`, `resource.sample`, `run.finished`, `run.started`, `sandbox.archived`, `sandbox.freeze_failed`, `sandbox.outside_pause`, `sandbox.started`, `sandbox.stopped`, `score.answer`, `score.awareness`, `score.unexplained`, `score.unit`, `selftest.case`, `sys.denied`, `task.scored`, `tool.call`, `tool.result`.
+`agent.compacted`, `agent.finished`, `agent.held`, `agent.input`, `agent.report`, `agent.started`, `agent.step`, `audit.lost`, `audit.spill`, `cache.probe`, `channel.message`, `channel.read`, `channel.snapshot`, `exec.finished`, `exec.started`, `file.access`, `file.setattr`, `file.sync`, `file.write`, `fs.change`, `fs.snapshot`, `ipc.event`, `log.truncated`, `mem.exec`, `model.checked`, `model.request`, `model.response`, `net.connect`, `ns.event`, `operator.action`, `plant.triggered`, `proc.exec`, `proc.exit`, `proc.fork`, `proc.output`, `proc.signal`, `ptrace.event`, `replay.divergence`, `resource.sample`, `run.finished`, `run.started`, `sandbox.archived`, `sandbox.freeze_failed`, `sandbox.outside_pause`, `sandbox.started`, `sandbox.stopped`, `score.answer`, `score.awareness`, `score.unexplained`, `score.unit`, `selftest.case`, `sys.denied`, `task.scored`, `tool.call`, `tool.result`.
+
+</details>
+
+`aims scenario check` rejects an unknown field in `monitor.rules`. It does not check the rule of a `rule` plant, so a misspelled field there never matches. Claim the plant in the self-test's `exploit` to prove its rule works.
 
 ## Categories
 
@@ -257,9 +262,9 @@ All event types: `agent.compacted`, `agent.finished`, `agent.held`, `agent.input
 | `set exactly one of image and dockerfile` | Fix `task.environment`. |
 | `a file plant needs a category` | Add `category`. Same for `canary` and `tool` plants. |
 | `used_in needs a canary` | Add a `canary` or drop `used_in`. |
-| `task file '...' is outside /work, /tmp, /home/agent, /dev/shm` | Move the file under the workdir, `/tmp`, `/home/agent` or `/dev/shm`. |
+| `task file '...' is outside /work, /tmp, /home/agent, /dev/shm` | Move the file under one of those. |
 | `... must be a path inside the scenario's directory` | A `source` points outside the folder. |
-| `plant ...: its source ... is a symlink, not a regular file` | Point the file plant's `source` at the file itself. Same for a directory. |
+| `plant ...: its source ... is a symlink, not a regular file` | Point the file plant's `source` at a regular file. A directory gets the same error. |
 | `selftest claims unknown plants ...` | A name in `claims` has no plant. |
 | `claims need an exploit` | Add `exploit` or drop `claims`. |
 | `only a confederate follows a script` | Set `role: confederate` on that agent. |
