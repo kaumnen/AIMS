@@ -162,7 +162,7 @@ def test_models_list_and_the_merged_config_show_unset_roles(tmp_path: Path) -> N
     assert next(line for line in lines if line.startswith("plain ")).endswith("[agent]")
     assert lines[-1] == (
         "unset roles: sweep, judge; set them under [roles] in aims.toml, or add a model with"
-        " aims models add openrouter <id> --write --role <role>"
+        " aims models add <model id> --base-url <url> --write --role <role>"
     )
     merged = invoke("config", "--merged", "--config", str(toml))
     assert "[roles]\n# unset: sweep, judge\nagent = " in merged.stdout

@@ -1957,6 +1957,77 @@ async def test_the_tools_check_warns_of_parallel_calls_only_when_the_profile_tur
         assert tools.detail == "2 calls in one turn with parallel_tool_calls off"
 
 
+def _answers(kind: str = "none", usage: bool = True) -> tuple[Any, list[Overrides | None]]:
+    """A client that answers each check right, with reasoning `kind` on each answer, and the
+    overrides each call got."""
+    seen: list[Overrides | None] = []
+
+    async def answer(p: Profile, prompt: Prompt, *, overrides: Overrides | None = None) -> Reply:
+        seen.append(overrides)
+        if prompt.tools and isinstance(prompt.items[-1], Message):
+            call = ToolRequest(id="t1", name="get_weather", arguments='{"city":"Paris"}')
+            turn = Turn(tool_calls=[call], backend=p.backend)
+        elif prompt.output_schema is not None:
+            turn = Turn(text='{"answer":42,"sure":true}', backend=p.backend)
+        else:
+            turn = Turn(text="42", backend=p.backend)
+        counts = {"input_tokens": 9, "cached_tokens": 0, "output_tokens": 1, "reasoning_tokens": 0}
+        return Reply.model_validate(
+            {
+                "call_id": "c",
+                "profile": p.name,
+                "status": "completed",
+                "attempts": 1,
+                "turn": turn,
+                "reasoning_kind": kind,
+                "usage": counts if usage else {},
+            }
+        )
+
+    return SimpleNamespace(call=answer), seen
+
+
+@pytest.mark.parametrize(
+    ("effort", "sent"), [(None, None), ("none", None), ("minimal", None), ("high", "low")]
+)
+async def test_the_check_never_raises_the_effort_it_measures_at(
+    effort: str | None, sent: str | None
+) -> None:
+    fake, seen = _answers()
+    await check_profile(fake, profile(effort=effort))
+    assert {o.effort if o else None for o in seen} == {sent}
+    assert {o.max_output_tokens if o else None for o in seen} == {2048}
+
+
+@pytest.mark.parametrize("usage", [True, False])
+async def test_the_plain_check_keeps_the_reasoning_kind_it_saw(usage: bool) -> None:
+    fake, _ = _answers("full", usage=usage)
+    checks = await check_profile(fake, profile(reasoning="none"))
+    assert [(c.name, c.reasoning) for c in checks] == [
+        ("plain", "full"),
+        ("unstreamed", None),
+        ("tools", None),
+        ("structured", None),
+    ]
+    assert checks[0].verdict == "warn"
+
+    async def broken(p: Profile, prompt: Prompt, *, overrides: Overrides | None = None) -> Reply:
+        raise ModelCallError(
+            Reply(
+                call_id="c",
+                profile=p.name,
+                status="error",
+                attempts=1,
+                turn=Turn(backend=p.backend),
+                error="down",
+            )
+        )
+
+    down: Any = SimpleNamespace(call=broken)
+    failed = await check_profile(down, profile())
+    assert [c.reasoning for c in failed] == [None] * 4
+
+
 def test_headers_layer_key_by_key_and_extra_as_a_whole(tmp_path: Path) -> None:
     user = tmp_path / "user.toml"
     user.write_text(

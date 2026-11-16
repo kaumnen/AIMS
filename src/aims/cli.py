@@ -1,7 +1,7 @@
 import contextlib
 from collections.abc import Callable, Generator
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, NoReturn
 
 import typer
 from typer.core import TyperCommand, TyperGroup
@@ -346,7 +346,7 @@ def models_list(config: ConfigOption = None) -> None:
         them = "them" if len(unset) > 1 else "it"
         _echo(
             f"unset roles: {', '.join(unset)}; set {them} under [roles] in aims.toml, or add a"
-            " model with aims models add openrouter <id> --write --role <role>"
+            " model with aims models add <model id> --base-url <url> --write --role <role>"
         )
 
 
@@ -474,26 +474,65 @@ def models_check(
         _echo(f"note: unset roles: {', '.join(unset)}; no profile is checked for {its}", err=True)
     run_id = str(uuid.uuid7())
     try:
-        failed = asyncio.run(_check(models, chosen, runs_dir, run_id))
+        checks = asyncio.run(_check(models, chosen, runs_dir, run_id))
     except asyncio.CancelledError:
         raise typer.Exit(EXIT_CANCELLED) from None
-    if failed:
+    if any(c.verdict == "fail" for c in checks):
         raise typer.Exit(1)
 
 
 @models_app.command("add")
 def models_add(
-    source: Annotated[str, typer.Argument(help="Where the model is served: openrouter.")],
-    slug: Annotated[str, typer.Argument(help="The model's id there, such as author/model-name.")],
-    name: Annotated[
-        str | None, typer.Option(help="The profile's name instead of openrouter-<model>.")
+    model: Annotated[str, typer.Argument(help="The model's id on its server.")],
+    base_url: Annotated[
+        str | None,
+        typer.Option(help="The server's API URL, such as https://api.example.com/v1."),
     ] = None,
-    alias: Annotated[
-        bool, typer.Option("--alias", help="Take an alias that OpenRouter moves to newer models.")
-    ] = False,
-    write: Annotated[
-        bool, typer.Option("--write", help="Add the profile to the project's aims.toml.")
-    ] = False,
+    key_env: Annotated[
+        str | None,
+        typer.Option(
+            help="The env var that holds the server's key. Leave it out for a server that takes"
+            " none."
+        ),
+    ] = None,
+    base: Annotated[
+        str | None,
+        typer.Option(
+            "--from",
+            help="A profile to reach the server as: its backend, URL, key env, headers, extra"
+            " and other connection fields. Instead of --base-url and --key-env.",
+        ),
+    ] = None,
+    name: Annotated[
+        str | None, typer.Option(help="The profile's name instead of the id's last part.")
+    ] = None,
+    litellm: Annotated[
+        str | None,
+        typer.Option(
+            "--litellm",
+            help="The key of the model's row in LiteLLM's price map, for its price, context"
+            " size and output cap. Without it the notes name the rows that may fit.",
+        ),
+    ] = None,
+    backend: Annotated[
+        str | None,
+        typer.Option(help="chat or responses. By default chat, or the --from profile's."),
+    ] = None,
+    sets: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--set",
+            help="Set a field to a TOML value: key=value, such as effort=low or extra.a.b=1."
+            " Repeat for more. Applies last.",
+        ),
+    ] = None,
+    unsets: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--unset",
+            help="Remove a field the draft sets, such as context_tokens. Repeat for more.",
+        ),
+    ] = None,
     role: Annotated[
         list[str] | None,
         typer.Option(
@@ -502,55 +541,191 @@ def models_add(
             " Needs --write.",
         ),
     ] = None,
+    no_check: Annotated[
+        bool,
+        typer.Option(
+            "--no-check",
+            help="Skip the check. By default the model gets a few small requests first, which"
+            " may cost a little. Nothing is written when one fails.",
+        ),
+    ] = False,
+    write: Annotated[
+        bool, typer.Option("--write", help="Add the profile to the project's aims.toml.")
+    ] = False,
     config: ConfigOption = None,
+    runs_dir: RunsDirOption = Path("runs"),
 ) -> None:
-    """Print a profile for a model, filled in from the provider's public list of models."""
+    """Draft a profile for a model on any server, check it with a few small requests, then
+    print it or add it. The check sets what the model sends of its reasoning. Recorded as a
+    run."""
     import asyncio
+    import uuid
+    from typing import cast, get_args
 
-    from aims.models.openrouter import CatalogError, draft, fetch
+    from aims.events import ModelBackend
+    from aims.models import ModelsConfig, ProfileError
+    from aims.models.add import AddError, draft
+    from aims.models.listprice import SOURCE
     from aims.models.profiles import ROLES
 
-    if source != "openrouter":
-        raise typer.BadParameter("the only source is openrouter", param_hint="SOURCE")
     roles = [r for r in ROLES if r in (role or [])]
     if len(roles) < len(set(role or [])):
         raise typer.BadParameter("use agent, sweep or judge", param_hint="--role")
     if roles and not write:
         raise typer.BadParameter("needs --write", param_hint="--role")
-    settings = _settings(config) if write else None
-    try:
-        found = draft(asyncio.run(fetch()), slug, name=name, alias=alias)
-    except CatalogError as e:
-        _echo(f"error: {e}", err=True)
-        raise typer.Exit(1) from None
-    if why := found.unfit(roles):
-        _echo(f"error: {why}", err=True)
-        raise typer.Exit(1)
-    text = found.toml()
-    if settings is None:
-        typer.echo(text, nl=False)
-    else:
-        from aims.config import ConfigError, add_table
-        from aims.models import ProfileError
-        from aims.prompts import TextError
+    if base is not None and (base_url is not None or key_env is not None):
+        raise typer.BadParameter("give --from or --base-url, not both", param_hint="--from")
+    if base is None and base_url is None:
+        raise typer.BadParameter(
+            "give the server's --base-url, or --from with a profile that reaches it",
+            param_hint="--base-url",
+        )
+    backends: tuple[str, ...] = get_args(ModelBackend)
+    if backend is not None and backend not in backends:
+        raise typer.BadParameter(f"use {' or '.join(backends)}", param_hint="--backend")
 
-        if found.name in settings.models.profiles:
-            _echo(f"error: a profile named {found.name} exists; pass --name for another", err=True)
-            raise typer.Exit(1)
+    settings: Any = _settings(config) if write or base is not None else None
+    reached = None
+    if base is not None:
         try:
-            path = add_table(settings.layers, text, dict.fromkeys(roles, found.name))
-        except (ConfigError, ProfileError, TextError) as e:
-            _echo(f"error: {e}", err=True)
-            raise typer.Exit(1) from None
-        except OSError as e:
-            _echo(f"error: cannot write {e.filename or 'the config file'}: {e.strerror}", err=True)
-            raise typer.Exit(1) from None
+            reached = settings.models.get(base)
+        except ProfileError as e:
+            _fail(str(e))
+    listed, prices = asyncio.run(_add_sources(base_url, reached))
+    if litellm is not None and prices.prices is None:
+        _fail(f"no copy of {SOURCE}'s price map is at hand to read {litellm}: {prices.problem}")
+    try:
+        found = draft(
+            model,
+            name=name,
+            base_url=base_url,
+            key_env=key_env,
+            base=reached,
+            backend=cast("ModelBackend | None", backend),
+            listed=listed,
+            prices=prices.prices,
+            row=litellm,
+            unset=unsets or (),
+            sets=sets or (),
+        )
+    except AddError as e:
+        _fail(str(e))
+    more: list[str] = []
+    if litellm is None and found.candidates:
+        more.append(
+            f"{SOURCE} rows that may price it: {', '.join(found.candidates)}. Pick one with"
+            " --litellm for its price, context size and output cap."
+        )
+    elif litellm is None and prices.prices is None:
+        more.append(f"No copy of {SOURCE}'s price map is at hand: {prices.problem}.")
+    elif litellm is None:
+        more.append(
+            f"No {SOURCE} row names it. aims models prices --search <text> finds rows to pick"
+            " with --litellm."
+        )
+
+    # What is refused for free is refused before the check pays for calls.
+    if why := found.unfit(roles):
+        _fail(why)
+    if write:
+        if found.name in settings.models.profiles:
+            _fail(f"a profile named {found.name} exists; pass --name for another")
+        _add_table(settings, found, roles, trial=True)
+    checks: list[Any] = []
+    if not no_check:
+        profile = found.profile
+        try:
+            profile.url()
+            profile.api_key()
+        except ProfileError as e:
+            _fail(f"{e}; set it, or pass --no-check to skip the check")
+        typer.echo(f"checking {found.name} with a few small requests", err=True)
+        models = ModelsConfig(profiles={found.name: profile})
+        try:
+            checks = asyncio.run(_check(models, [profile], runs_dir, str(uuid.uuid7()), err=True))
+        except asyncio.CancelledError:
+            raise typer.Exit(EXIT_CANCELLED) from None
+        kind = next((c.reasoning for c in checks if c.name == "plain"), None)
+        if kind is not None:
+            found = found.measured(kind)
+
+    failed = [c.name for c in checks if c.verdict == "fail"]
+    text = found.toml()
+    if failed or not write:
+        typer.echo(text, nl=False)
+    if failed:
+        if failed == ["structured"] and not {"sweep", "judge"} & set(roles):
+            more.append(
+                "--set structured_output=false adds it as a model without structured output,"
+                " which only the agent role takes."
+            )
+        _notes([*found.notes, *more])
+        what = ", so it is not added" if write else ""
+        _fail(
+            f"{found.name} failed the check: {', '.join(failed)}{what}. Change it with --set,"
+            " or pass --no-check to skip the check"
+        )
+    if write:
+        path = _add_table(settings, found, roles)
         _echo(f"added {found.name} to {path}", err=True)
         for r in roles:
             was = getattr(settings.models.roles, r)
             _echo(f"role {r}: {found.name}" + (f" (was {was})" if was else ""), err=True)
-    for note in found.notes:
-        typer.echo(f"note: {note}", err=True)
+        if no_check:
+            more.append(f"It is not checked. aims models check {found.name} checks it.")
+    _notes([*found.notes, *more])
+
+
+def _fail(text: str) -> NoReturn:
+    """Exit 1 with error `text`, which may hold outside text."""
+    _echo(f"error: {text}", err=True)
+    raise typer.Exit(1)
+
+
+def _notes(notes: list[str]) -> None:
+    for note in notes:
+        _echo(f"note: {note}", err=True)
+
+
+def _add_table(settings: Any, found: Any, roles: list[Any], *, trial: bool = False) -> Path:
+    """Add draft `found` to the project file of `settings` with `roles`, or with `trial` only
+    try to. Exit 1 with the problem."""
+    from aims.config import ConfigError, add_table
+    from aims.models import ProfileError
+    from aims.prompts import TextError
+
+    try:
+        return add_table(
+            settings.layers, found.toml(), dict.fromkeys(roles, found.name), trial=trial
+        )
+    except (ConfigError, ProfileError, TextError) as e:
+        _echo(f"error: {e}", err=True)
+    except OSError as e:
+        _echo(f"error: cannot write {e.filename or 'the config file'}: {e.strerror}", err=True)
+    raise typer.Exit(1)
+
+
+async def _add_sources(base_url: str | None, reached: Any) -> tuple[Any, Any]:
+    """For `aims models add`: the list of models of the server at `base_url` or of the one
+    profile `reached` reaches, with LiteLLM's price map, read side by side. A list that cannot
+    be read comes back with the problem."""
+    import asyncio
+
+    from aims.models import ProfileError
+    from aims.models.add import AddError, ServerList, read_list
+    from aims.models.listprice import PriceLists, at_hand
+    from aims.net import Refused
+
+    async def server() -> ServerList:
+        url = base_url
+        try:
+            if url is None:
+                url = reached.url()
+            return await read_list(url)
+        except (AddError, ProfileError, Refused) as e:
+            return ServerList(url or "", problem=str(e))
+
+    return await asyncio.gather(server(), at_hand(PriceLists()))
 
 
 async def _stop_lines(store: Any, kind: str, run_ids: list[str]) -> list[str]:
@@ -591,14 +766,18 @@ async def _stopped(store: Any, run_id: str, kind: str) -> None:
         typer.echo(line, err=True)
 
 
-async def _check(models: Any, chosen: list[Any], runs_dir: Path, run_id: str) -> bool:
+async def _check(
+    models: Any, chosen: list[Any], runs_dir: Path, run_id: str, *, err: bool = False
+) -> list[Any]:
+    """Check the profiles `chosen`, recorded as run `run_id`. Print a line for each test and
+    the run's id, to stderr when `err`. Returns the checks."""
     import asyncio
 
     from aims.events import LocalEventStore
     from aims.models.check import record_check
 
     def show(c: Any) -> None:
-        _echo(f"{c.verdict:4}  {c.profile}  {c.name}: {c.detail}")
+        _echo(f"{c.verdict:4}  {c.profile}  {c.name}: {c.detail}", err=err)
 
     async with await LocalEventStore.open(runs_dir) as store:
         try:
@@ -608,8 +787,8 @@ async def _check(models: Any, chosen: list[Any], runs_dir: Path, run_id: str) ->
         except asyncio.CancelledError:
             await _stopped(store, run_id, "run")
             raise
-    typer.echo(f"run {run_id}")
-    return any(c.verdict == "fail" for c in checks)
+    typer.echo(f"run {run_id}", err=err)
+    return checks
 
 
 images_app = typer.Typer(no_args_is_help=True, help="Docker images AIMS builds and pulls.")
@@ -3003,7 +3182,6 @@ def token_create(
 ) -> None:
     """Make a named token and print it. It is shown this once."""
     import asyncio
-    from typing import NoReturn
 
     from aims.server.audit import record
     from aims.server.db import TOKEN_NAME_RULE, new_token, token_name_ok

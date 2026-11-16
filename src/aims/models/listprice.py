@@ -416,7 +416,7 @@ async def listing(profiles: Iterable[Profile], lists: PriceLists | None) -> List
     keys = _wanted(profiles)
     if not keys or lists is None:
         return Listing()
-    return _listing(keys, await _at_hand(lists))
+    return _listing(keys, await at_hand(lists))
 
 
 async def priced(
@@ -433,7 +433,9 @@ def _wanted(profiles: Iterable[Profile]) -> list[str]:
     return sorted({p.price_key for p in profiles if p.price is None and p.price_key is not None})
 
 
-async def _at_hand(lists: PriceLists) -> Found:
+async def at_hand(lists: PriceLists) -> Found:
+    """The map `lists` holds, read again when old. Never raises: a read that fails gives
+    Found with no copy and the reason."""
     try:
         return await lists.get()
     except Exception as e:
@@ -476,7 +478,7 @@ async def survey(profiles: Iterable[Profile], lists: PriceLists, search: str = "
     unpriced = [p for p in profiles if p.price is None]
     if not unpriced and not search.strip():
         return Survey()
-    found = await _at_hand(lists)
+    found = await at_hand(lists)
     listed = _listing(_wanted(unpriced), found)
     prices = found.prices
     if prices is None:

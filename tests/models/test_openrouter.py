@@ -1,23 +1,18 @@
-"""`aims models add openrouter`: a profile filled in from OpenRouter's list of models, the
-command that prints or writes it and the file it writes."""
+"""A profile filled in from OpenRouter's list of models, as the app's Add from OpenRouter
+dialog drafts it."""
 
 import copy
-import json
 import tomllib
 from pathlib import Path
 from typing import Any
 
 import httpx2
 import pytest
-from typer.testing import CliRunner
 
-from aims.cli import app
-from aims.config import ConfigError, add_table, layers, load, with_roles
-from aims.models import Message, ProfileError, Prompt, load_models
+from aims.models import Message, Prompt, load_models
 from aims.models import openrouter as router
 from aims.models.backends import BACKENDS
 from aims.models.openrouter import Catalog, CatalogError, default_name, draft, fetch
-from aims.models.profiles import Role
 
 CHAT = ["/api/v1/chat/completions", "/api/v1/responses"]
 # The shapes of OpenRouter's list on Nov 14 2026, cut to the fields a profile reads.
@@ -368,153 +363,6 @@ async def test_a_failed_read_is_not_kept() -> None:
     assert [m["id"] for m in await catalog.models()] == [FLASH["id"]]
 
 
-# The command
-
-
-@pytest.fixture
-def listed(monkeypatch: pytest.MonkeyPatch) -> list[int]:
-    """`aims models add` reads MODELS in place of OpenRouter. Counts the reads."""
-    reads: list[int] = []
-
-    async def fake(transport: object = None) -> list[dict[str, Any]]:
-        reads.append(1)
-        return MODELS
-
-    monkeypatch.setattr(router, "fetch", fake)
-    return reads
-
-
-@pytest.fixture
-def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """An empty working directory that is its own repository root."""
-    (tmp_path / ".git").mkdir()
-    monkeypatch.chdir(tmp_path)
-    return tmp_path
-
-
-def run(*args: str) -> Any:
-    return CliRunner().invoke(app, ["models", "add", *args])
-
-
-def test_the_command_prints_the_profile_and_writes_nothing(
-    listed: list[int], project: Path
-) -> None:
-    out = run("openrouter", FLASH["id"])
-    assert out.exit_code == 0, out.output
-    assert out.stdout == draft(MODELS, FLASH["id"]).toml()
-    assert 'note: reasoning = "full" is a guess.' in out.stderr
-    assert list(project.iterdir()) == [project / ".git"]
-    named = run("openrouter", FLASH["id"], "--name", "agent")
-    assert named.stdout.startswith("[profiles.agent]\n")
-
-
-def test_the_command_says_why_no_profile_came_out(listed: list[int], project: Path) -> None:
-    for args, problem in (
-        (["openrouter", "nope"], "error: 'nope' is not an OpenRouter model id"),
-        (["openrouter", "a/b"], "error: OpenRouter lists no model a/b"),
-        (["openrouter", LATEST["id"]], "pass --alias to use the alias"),
-        (["openrouter", FLASH["id"], "--name", "a b"], "error: profile name 'a b'"),
-    ):
-        out = run(*args)
-        assert (out.exit_code, out.stdout) == (1, ""), out.output
-        assert problem in out.stderr
-    assert run("openrouter", LATEST["id"], "--alias").exit_code == 0
-    other = run("other", "a/b")
-    assert other.exit_code == 2
-    assert "the only source is openrouter" in other.stderr
-    assert len(listed) == 5
-
-
-def test_the_command_shows_hidden_characters_of_an_id_as_text(
-    listed: list[int], project: Path
-) -> None:
-    out = run("openrouter", "a/b\x1b[31m")
-    assert out.exit_code == 1
-    assert "\x1b" not in out.stderr
-
-
-def test_write_adds_the_profile_to_a_new_project_file(listed: list[int], project: Path) -> None:
-    out = run("openrouter", FLASH["id"], "--write")
-    assert out.exit_code == 0, out.output
-    path = project / "aims.toml"
-    assert out.stdout == ""
-    assert f"added openrouter-deepseek-v4.1-flash to {path}" in out.stderr.replace("\n", "")
-    assert path.read_text() == draft(MODELS, FLASH["id"]).toml()
-    assert load(path).models.get("openrouter-deepseek-v4.1-flash").model == FLASH["id"]
-
-
-@pytest.mark.usefixtures("profiles")
-def test_write_keeps_what_the_file_holds_and_refuses_a_name_in_use(
-    listed: list[int], project: Path
-) -> None:
-    path = project / "aims.toml"
-    before = '# mine\n[roles]\njudge = "monitor-model"  # kept'
-    path.write_text(before)
-    path.chmod(0o600)
-    assert run("openrouter", FLASH["id"], "--write").exit_code == 0
-    text = path.read_text()
-    assert text == before + "\n\n" + draft(MODELS, FLASH["id"]).toml()
-    assert path.stat().st_mode & 0o777 == 0o600
-    again = run("openrouter", FLASH["id"], "--write")
-    assert again.exit_code == 1
-    assert "a profile named openrouter-deepseek-v4.1-flash exists" in again.stderr
-    taken = run("openrouter", FLASH["id"], "--write", "--name", "monitor-model")
-    assert taken.exit_code == 1
-    assert path.read_text() == text
-    second = run("openrouter", HAIKU["id"], "--write", "--name", "small")
-    assert second.exit_code == 0, second.output
-    assert set(load(path).models.profiles) >= {"small", "openrouter-deepseek-v4.1-flash"}
-    assert sorted(p.name for p in project.iterdir()) == [".git", "aims.toml"]
-
-
-def test_write_goes_to_the_file_config_names(listed: list[int], project: Path) -> None:
-    other = project / "other.toml"
-    other.write_text("")
-    out = run("openrouter", FLASH["id"], "--write", "--config", str(other))
-    assert out.exit_code == 0, out.output
-    assert other.read_text() == draft(MODELS, FLASH["id"]).toml()
-    assert not (project / "aims.toml").exists()
-
-
-def test_write_stops_before_the_lookup_when_the_config_does_not_load(
-    listed: list[int], project: Path
-) -> None:
-    (project / "aims.toml").write_text("[nope]\n")
-    out = run("openrouter", FLASH["id"], "--write")
-    assert out.exit_code == 1
-    assert "unknown table(s) nope" in out.stderr
-    assert listed == []
-
-
-def test_a_table_the_layers_do_not_load_with_leaves_the_file_as_it_was(project: Path) -> None:
-    path = project / "aims.toml"
-    path.write_text("profiles = { a = { backend = 'chat' } }\n")
-    found = layers(path)
-    before = path.read_bytes()
-    # an inline `profiles` table cannot take another table
-    with pytest.raises(ConfigError, match=rf"^{path}: ") as e:
-        add_table(found, draft(MODELS, FLASH["id"]).toml())
-    assert ".aims.toml." not in str(e.value)
-    assert path.read_bytes() == before
-    path.write_text("")
-    with pytest.raises(ProfileError, match="Field required"):
-        add_table(layers(path), '[profiles.half]\nbackend = "chat"\n')
-    assert path.read_bytes() == b""
-    assert sorted(p.name for p in project.iterdir()) == [".git", "aims.toml"]
-
-
-def test_a_table_is_added_after_a_last_line_with_no_newline(project: Path) -> None:
-    path = project / "aims.toml"
-    path.write_bytes(b"[credits]\r\nexample = 1")
-    table = draft(MODELS, FLASH["id"]).toml()
-    assert add_table(layers(path), table) == path
-    assert path.read_bytes() == b"[credits]\r\nexample = 1\n\n" + table.encode()
-    path.write_bytes(b"[credits]\nexample = 1\n")
-    add_table(layers(path), table.replace("openrouter-", "second-"))
-    assert path.read_bytes().startswith(b"[credits]\nexample = 1\n\n[profiles.")
-    assert json.dumps(sorted(load(path).credits.items())) == '[["example", 1.0]]'
-
-
 # Roles
 
 
@@ -532,67 +380,3 @@ def test_a_draft_says_which_roles_it_fits() -> None:
     assert tool_less.unfit(["judge", "agent"]) == (
         "openrouter-deepseek-v4.1-flash cannot take the agent role: OpenRouter lists no tool calls"
     )
-
-
-def test_role_gives_the_written_profile_its_roles(listed: list[int], project: Path) -> None:
-    path = project / "aims.toml"
-    small = run("openrouter", HAIKU["id"], "--write", "--name", "small", "--role", "agent")
-    assert small.exit_code == 0, small.output
-    assert "role agent: small" in small.stderr
-    text = path.read_text()
-    assert text == draft(MODELS, HAIKU["id"], name="small").toml() + '\n[roles]\nagent = "small"\n'
-    path.write_text(text.replace('"small"\n', '"small"  # kept\n'))
-    out = run("openrouter", FLASH["id"], "--write", "--role", "judge", "--role", "agent")
-    assert out.exit_code == 0, out.output
-    name = "openrouter-deepseek-v4.1-flash"
-    assert f"role agent: {name} (was small)\nrole judge: {name}" in out.stderr
-    roles = load(path).models.roles
-    assert (roles.agent, roles.judge) == (name, name)
-    # the role table keeps its place and its comment
-    assert path.read_text() == (
-        draft(MODELS, HAIKU["id"], name="small").toml()
-        + f'\n[roles]\nagent = "{name}"  # kept\njudge = "{name}"\n\n'
-        + draft(MODELS, FLASH["id"]).toml()
-    )
-
-
-def test_role_is_refused_before_anything_is_written(listed: list[int], project: Path) -> None:
-    path = project / "aims.toml"
-    for args, problem in (
-        (["--role", "agent"], "needs --write"),
-        (["--write", "--role", "agent", "--role", "boss"], "use agent, sweep or judge"),
-    ):
-        out = run("openrouter", FLASH["id"], *args)
-        assert out.exit_code == 2, out.output
-        assert problem in out.stderr
-    assert listed == []
-    out = run("openrouter", HAIKU["id"], "--write", "--role", "judge")
-    assert out.exit_code == 1
-    assert "error: openrouter-claude-haiku-5.5 cannot take the judge role" in out.stderr
-    assert not path.exists()
-
-
-def test_roles_are_set_in_the_table_the_file_has() -> None:
-    roles: dict[Role, str] = {"sweep": "b", "agent": "b"}
-    for text, want in (
-        ("", '[roles]\nagent = "b"\nsweep = "b"\n'),
-        ('roles.agent = "a"\n', 'roles.agent = "b"\nroles.sweep = "b"\n'),
-        (
-            'roles = { judge = "a" }  # c\n',
-            'roles = {judge = "a", agent = "b", sweep = "b"}  # c\n',
-        ),
-    ):
-        assert with_roles(text, roles) == want
-    for text, problem in (("roles = 1\n", "roles is not a table"), ("[a", "not TOML")):
-        with pytest.raises(ConfigError, match=problem):
-            with_roles(text, roles)
-
-
-def test_a_role_table_that_cannot_take_a_role_leaves_the_file(project: Path) -> None:
-    path = project / "aims.toml"
-    path.write_text("roles = 1\n")
-    table = draft(MODELS, FLASH["id"]).toml()
-    with pytest.raises(ConfigError, match=rf"^{path}: roles is not a table"):
-        add_table(layers(path), table, {"agent": "openrouter-deepseek-v4.1-flash"})
-    assert path.read_text() == "roles = 1\n"
-    assert sorted(p.name for p in project.iterdir()) == [".git", "aims.toml"]

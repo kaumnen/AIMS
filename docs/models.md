@@ -3,7 +3,7 @@
 - [Profiles](#profiles)
 - [Profile fields](#profile-fields)
 - [List prices](#list-prices)
-- [OpenRouter](#openrouter)
+- [Add a model](#add-a-model)
 - [Headers and extra fields](#headers-and-extra-fields)
 - [What a run records](#what-a-run-records)
 - [Check a profile](#check-a-profile)
@@ -127,52 +127,58 @@ What a run does with it:
 > [!IMPORTANT]
 > A cap on a list-priced call holds on its cost at the list price. The provider's bill can be higher.
 
-## OpenRouter
+## Add a model
 
-One command makes a profile for any model on OpenRouter:
+One command drafts a profile for a model on any server, checks it and adds it:
 
 ```sh
-aims models add openrouter author/model-name
+aims models add example/model-name --base-url https://api.example.com/v1 --key-env EXAMPLE_API_KEY --write --role agent
 ```
 
-It reads OpenRouter's public list of models, which needs no key. It prints the profile to stdout and its notes to stderr. The values here are placeholders:
+It reads the server's list of models without a key, when the server has one, to check the id. A row of LiteLLM's price map picked with `--litellm` gives the price key, the context size and the output cap. Then it sends the model a few small requests, as `aims models check` does. It sets `reasoning` to what the model sent. It prints the profile to stdout and its notes to stderr. The values here are placeholders:
 
 ```toml
-[profiles."openrouter-model-name"]
+[profiles.model-name]
 backend = "chat"
-base_url = "https://openrouter.ai/api/v1"
-model = "author/model-name"
-weights = "author/model-name"
-api_key_env = "OPENROUTER_API_KEY"
+base_url = "https://api.example.com/v1"
+model = "example/model-name"
+weights = "example/model-name"
+api_key_env = "EXAMPLE_API_KEY"
 reasoning = "full"
-effort = "high"
-# OpenRouter lists: high, medium, low, none
+price_key = "example/model-name"
+context_tokens = 128000
 max_output_tokens = 16384
-context_tokens = 123456
-cache_key = true
-extra = {provider = {sort = "price", require_parameters = true}}
-price = {input = 1.23, cached = 0.123, output = 4.56}
 ```
 
 | Option | Effect |
 | --- | --- |
+| `--base-url <url>` | The server's API URL |
+| `--key-env <name>` | The env var that holds the key. Leave it out for a server that takes none. |
+| `--from <profile>` | Reaches the server as that profile does: its backend, URL, key env, headers, `extra` and other connection fields. Instead of `--base-url` and `--key-env`. |
+| `--name <name>` | The profile's name instead of the id's last part |
+| `--litellm <key>` | The model's row in LiteLLM's price map. Without it the notes name the rows that may fit. |
+| `--backend <backend>` | `chat`, the default, or `responses` |
+| `--set <key>=<value>` | Sets a field to a TOML value, such as `effort=low` or `extra.a.b=1`. Repeat it for more. |
+| `--unset <key>` | Removes a field the draft sets. Repeat it for more. |
 | `--write` | Adds the profile to the project's `aims.toml`. Makes the file when there is none. Refuses a name that is taken. |
-| `--role <role>` | Also gives the profile a role under `[roles]`: `agent`, `sweep` or `judge`. Repeat it for more. Needs `--write`. Refuses a role the model does not fit, as OpenRouter lists it: the agent role needs tool calls, the sweep and judge roles structured output. Says which profile had the role before. |
-| `--name <name>` | The profile's name instead of `openrouter-<model>` |
-| `--alias` | Takes an alias such as `~author/model-latest` |
+| `--role <role>` | Also gives the profile a role under `[roles]`: `agent`, `sweep` or `judge`. Repeat it for more. Needs `--write`. The sweep and judge roles need structured output. Says which profile had the role before. |
+| `--no-check` | Skips the check. `reasoning` stays a guess. |
 | `--config <path>` | An `aims.toml` to use instead of the project's |
 
-Then set the key, test the profile and run with it:
+> [!NOTE]
+> The check makes a few small calls, which the server may bill. When a test fails, the command writes nothing and exits 1. Change the profile with `--set`, or pass `--no-check`.
+
+Then run with it:
 
 ```sh
-export OPENROUTER_API_KEY=<your key>
-aims models check openrouter-model-name
-aims run cache-keys --profile openrouter-model-name --monitor signals
+aims run cache-keys --profile model-name --monitor signals
 ```
 
 `--monitor signals` needs no monitor model. Give a second model the sweep and judge roles for the `standard` monitor.
 
-In the app, **Settings** > **Models** > **Add from OpenRouter** does the same lookup for operators. **Add to project config** saves the profile as `--write` does, with the roles picked in the dialog.
+### Add from OpenRouter in the app
+
+In the app, **Settings** > **Models** > **Add from OpenRouter** drafts a profile from OpenRouter's public list of models for operators. **Add to project config** saves it with the roles picked in the dialog.
 
 What the profile sets:
 
@@ -187,10 +193,10 @@ What the profile sets:
 | `price` | The list price, which is the lowest among the model's providers. Estimates and the monitor's budget use it. A run records what OpenRouter reports each call cost, or the cost at this price when it reports none. |
 
 > [!NOTE]
-> The notes say what the list cannot tell. `reasoning = "full"` is a guess, for one. `aims models check` warns when the model sends a summary instead.
+> The dialog's notes say what the list cannot tell. `reasoning = "full"` is a guess, for one. `aims models check` warns when the model sends a summary instead.
 
 > [!WARNING]
-> An alias moves to newer models over time, so a run would not say which model it used. The command refuses one without `--alias`. It also refuses a model that OpenRouter does not serve on chat completions.
+> An alias moves to newer models over time, so a run would not say which model it used. The dialog refuses one unless **Allow an alias** is checked. It also refuses a model that OpenRouter does not serve on chat completions.
 
 ## Headers and extra fields
 

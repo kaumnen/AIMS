@@ -296,8 +296,9 @@ STARTER = """\
 # sweep = "my-monitor"
 # judge = "my-monitor"
 
-# `aims models add openrouter <model id> --write --role agent` adds a profile for a model on
-# OpenRouter and gives it the agent role.
+# `aims models add <model id> --base-url <url> --key-env <NAME> --write --role agent` adds a
+# profile for a model on any server, checks it with a few small requests and gives it the
+# agent role.
 
 # A profile with no price can take a LiteLLM list price for its runs and estimates.
 # `aims models prices <profile>` lists the keys that may fit.
@@ -370,11 +371,13 @@ def with_roles(text: str, roles: Mapping[Role, str]) -> str:
     return tomlkit.dumps(doc)
 
 
-def add_table(found: Layers, table: str, roles: Mapping[Role, str] | None = None) -> Path:
+def add_table(
+    found: Layers, table: str, roles: Mapping[Role, str] | None = None, *, trial: bool = False
+) -> Path:
     """Append `table`, the TOML text of one, to the project file of `found`, or to a new
     aims.toml in the working directory when there is none, and set `roles` under its [roles].
     The layers must load with it first: a ConfigError, ProfileError or TextError leaves the
-    file as it was."""
+    file as it was. With `trial` only the load is tried. The file is left as it was."""
     path = found.project if found.project is not None else Path.cwd() / PROJECT
     old = path.read_bytes() if path.is_file() else b""
     data = appended(old, table)
@@ -395,6 +398,8 @@ def add_table(found: Layers, table: str, roles: Mapping[Role, str] | None = None
             load_layers(Layers(user=found.user, project=tmp))
         except (ConfigError, ProfileError, TextError) as e:
             raise type(e)(str(e).replace(str(tmp), str(path))) from None
+        if trial:
+            return path
         if old or path.is_file():
             tmp.chmod(stat.S_IMODE(path.stat().st_mode))
         tmp.replace(path)

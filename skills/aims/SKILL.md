@@ -26,7 +26,7 @@ docker info --format '{{.ServerVersion}}'
 aims models list
 ```
 
-`aims models list` shows the profiles, the roles and which keys are set. AIMS ships no models. A model run needs a profile with the `agent` role. The `standard` monitor needs the `sweep` and `judge` roles on a model other than the agent's. `--monitor signals` needs no monitor model. Ask the user which models to use. `aims models add openrouter <model id> --write --role agent` adds a profile for a model on OpenRouter and gives it the role. It needs `OPENROUTER_API_KEY`. `aims scenario check` and the self-test need Docker but no key or model.
+`aims models list` shows the profiles, the roles and which keys are set. AIMS ships no models. A model run needs a profile with the `agent` role. The `standard` monitor needs the `sweep` and `judge` roles on a model other than the agent's. `--monitor signals` needs no monitor model. Ask the user which models to use. `aims models add <model id> --base-url <url> --key-env <NAME> --write --role agent` adds a profile for a model on any server and gives it the role. It first sends the model a few small requests, so the key's env var must be set. Ask the user for the URL and the env var. `aims scenario check` and the self-test need Docker but no key or model.
 
 `aims estimate` leaves out the calls of a profile with no price and says so. A run caps them only when the provider reports their cost. Tell the user. `aims models prices <profile>` lists rows of LiteLLM's price map that may price it. The user picks one for the profile's `price_key`. Runs and estimates then count its calls at that list price.
 

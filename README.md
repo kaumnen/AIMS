@@ -53,7 +53,7 @@ flowchart LR
 > [!WARNING]
 > Agents run shell commands in Docker on your host. The runner has root through the Docker socket and starts a privileged kernel tracer. Use a dedicated machine or VM. See [SECURITY.md](https://github.com/kaumnen/AIMS/blob/main/SECURITY.md).
 
-You need Docker, [uv](https://docs.astral.sh/uv/) and a model API key. AIMS has no built-in models. The steps below add two from [OpenRouter](https://openrouter.ai).
+You need Docker, [uv](https://docs.astral.sh/uv/) and a model API key. AIMS has no built-in models.
 
 Install. The constraints file pins the dependency versions each release was tested with.
 
@@ -67,13 +67,12 @@ Check a scenario. Scripted agents prove each plant works, at no model cost.
 aims scenario check builtin/cache-keys
 ```
 
-Add one model for the agents and another for the monitor, which refuses to watch its own weights. The monitor's model needs structured output. Take ids from [OpenRouter's list](https://openrouter.ai/models). `aims models check` then sends each a few small requests.
+Add one model for the agents and another for the monitor, which refuses to watch its own weights. The monitor's model needs structured output. Use your server's API URL and the env var that holds its key. `aims models add` sends each model a few small requests before it adds the profile.
 
 ```sh
-export OPENROUTER_API_KEY=<your key>
-aims models add openrouter author/agent-model --write --role agent
-aims models add openrouter author/monitor-model --write --role sweep --role judge
-aims models check
+export EXAMPLE_API_KEY=<your key>
+aims models add example/agent-model --base-url https://api.example.com/v1 --key-env EXAMPLE_API_KEY --write --role agent
+aims models add example/monitor-model --base-url https://api.example.com/v1 --key-env EXAMPLE_API_KEY --write --role sweep --role judge
 ```
 
 Start the UI. It opens a sign-in link and runs jobs on a local runner.
@@ -165,7 +164,7 @@ Open the printed sign-in link. Add models with their roles under **Settings** > 
 | [Scenario reference](https://github.com/kaumnen/AIMS/blob/main/skills/aims/references/scenario.md) | Every field of a scenario |
 | [The monitor](https://github.com/kaumnen/AIMS/blob/main/docs/monitor.md) | Layers, budgets, oversight and categories |
 | [Runs and reports](https://github.com/kaumnen/AIMS/blob/main/docs/runs.md) | Logs, forks, scores, series and deletion |
-| [Models](https://github.com/kaumnen/AIMS/blob/main/docs/models.md) | Profile fields, prices, OpenRouter and headers |
+| [Models](https://github.com/kaumnen/AIMS/blob/main/docs/models.md) | Profile fields, prices, adding a model and headers |
 | [Deploy](https://github.com/kaumnen/AIMS/blob/main/docs/deploy.md) | TLS, more runners, proxies and offline hosts |
 | [SECURITY.md](https://github.com/kaumnen/AIMS/blob/main/SECURITY.md) | The security model and how to report a vulnerability |
 | [CONTRIBUTING.md](https://github.com/kaumnen/AIMS/blob/main/CONTRIBUTING.md) | Setup, tests and CI |

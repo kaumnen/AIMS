@@ -17,10 +17,14 @@ from typing import Any
 import httpcore2
 import httpx2
 import pytest
+from typer.testing import CliRunner
 
 from aims import net
-from aims.models import Profile, load_models
+from aims.cli import app
+from aims.config import ConfigError, add_table, layers, load, with_roles
+from aims.models import Profile, ProfileError, listprice, load_models
 from aims.models import add as adding
+from aims.models import check as checking
 from aims.models.add import (
     AddError,
     Draft,
@@ -31,7 +35,9 @@ from aims.models.add import (
     parse_set,
     read_list,
 )
-from aims.models.listprice import PriceList
+from aims.models.check import Check
+from aims.models.listprice import Found, PriceList
+from aims.models.profiles import Role
 from aims.net import Guarded, Refused, refused
 
 URL = "https://models.example.test/v1"
@@ -933,3 +939,382 @@ async def test_a_cancelled_race_cancels_every_attempt() -> None:
     with pytest.raises(asyncio.CancelledError):
         await task
     assert sorted(attempts.cancelled) == sorted(str(a) for a in (A, B, C))
+
+
+# The command
+
+
+@dataclass
+class Fakes:
+    """What `aims models add` read and called in a test: the server lists it read by URL,
+    and the profiles the check got. `checks` gives each test's verdict and the plain test's
+    reasoning kind. `prices` is the map at hand, None for none."""
+
+    reads: list[str] = field(default_factory=list)
+    ids: tuple[str, ...] = ("org/big-model", "org/small-model")
+    list_problem: Exception | None = None
+    prices: PriceList | None = PRICES
+    checked: list[Profile] = field(default_factory=list)
+    verdicts: dict[str, str] = field(default_factory=dict)
+    reasoning: str | None = "full"
+
+
+@pytest.fixture
+def fakes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Fakes:
+    """The command's server list, price map and check, faked, in an empty project."""
+    (tmp_path / ".git").mkdir()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MODELS_KEY", "secret")
+    found = Fakes()
+
+    async def read(base_url: str, transport: object = None) -> ServerList:
+        found.reads.append(base_url)
+        if found.list_problem is not None:
+            raise found.list_problem
+        return ServerList(f"{base_url}/models", found.ids)
+
+    async def at_hand(lists: object) -> Found:
+        return Found(found.prices, None if found.prices is not None else "down")
+
+    async def check(client: object, p: Profile) -> list[Check]:
+        found.checked.append(p)
+        out = []
+        for name in ("plain", "unstreamed", "tools", "structured"):
+            verdict: Any = found.verdicts.get(name, "ok")
+            kind: Any = found.reasoning if name == "plain" else None
+            out.append(Check(p.name, name, verdict, "seen", kind))
+        return out
+
+    monkeypatch.setattr(adding, "read_list", read)
+    monkeypatch.setattr(listprice, "at_hand", at_hand)
+    monkeypatch.setattr(checking, "check_profile", check)
+    return found
+
+
+def add(*args: str) -> Any:
+    return CliRunner().invoke(app, ["models", "add", *args])
+
+
+def flat(text: str) -> str:
+    return " ".join(text.split())
+
+
+BIG = ["org/big-model", "--base-url", URL, "--key-env", "MODELS_KEY"]
+
+
+def test_add_checks_the_draft_and_prints_it_with_the_reasoning_it_measured(
+    fakes: Fakes, tmp_path: Path
+) -> None:
+    out = add(*BIG, "--litellm", "big-model")
+    assert out.exit_code == 0, out.output
+    drafted = draft(BIG[0], base_url=URL, key_env="MODELS_KEY", prices=PRICES, row="big-model")
+    assert out.stdout == drafted.measured("full").toml()
+    assert 'reasoning = "full"' in out.stdout
+    assert [p.reasoning for p in fakes.checked] == ["none"]
+    assert fakes.reads == [URL]
+    lines = out.stderr.splitlines()
+    assert lines[0] == "checking big-model with a few small requests"
+    assert lines[1] == "ok    big-model  plain: seen"
+    assert lines[5].startswith("run ")
+    assert 'note: reasoning = "full", as the check measured.' in lines
+    assert "guess" not in out.stderr
+    assert sorted(p.name for p in tmp_path.iterdir()) == [".git", "runs"]
+
+
+def test_reasoning_that_is_given_stays_and_none_is_said_softly(fakes: Fakes) -> None:
+    given = add(*BIG, "--set", "reasoning=summary")
+    assert given.exit_code == 0, given.output
+    assert 'reasoning = "summary"' in given.stdout
+    assert "as the check" not in given.stderr
+    fakes.reasoning = "none"
+    seen = add(*BIG)
+    assert 'reasoning = "none"' in seen.stdout
+    assert "as the check saw on a short answer" in flat(seen.stderr)
+    fakes.reasoning = None
+    failed = add(*BIG)
+    assert 'note: reasoning = "none" is a guess.' in flat(failed.stderr)
+
+
+def test_without_a_row_the_notes_name_the_rows_that_may_fit(fakes: Fakes) -> None:
+    out = add("org/small-model", "--base-url", URL)
+    assert out.exit_code == 0, out.output
+    assert (
+        "note: LiteLLM rows that may price it: host-a/small-model, host-b/small-model. Pick one"
+        " with --litellm" in flat(out.stderr)
+    )
+    assert "note: It sends no key" in out.stderr
+    none = add("org/other-model", "--base-url", URL)
+    assert "No LiteLLM row names it. aims models prices --search" in flat(none.stderr)
+    fakes.prices = None
+    down = add(*BIG)
+    assert down.exit_code == 0, down.output
+    assert "note: No copy of LiteLLM's price map is at hand: down." in flat(down.stderr)
+    row = add(*BIG, "--litellm", "big-model")
+    assert (row.exit_code, row.stdout) == (1, "")
+    assert "error: no copy of LiteLLM's price map is at hand to read big-model: down" in flat(
+        row.stderr
+    )
+
+
+def test_a_list_that_cannot_be_read_is_a_note(fakes: Fakes) -> None:
+    fakes.list_problem = Refused("x resolves to a link-local or cloud metadata address")
+    out = add(*BIG)
+    assert out.exit_code == 0, out.output
+    assert "The server's list of models was not read: x resolves to a link-local" in flat(
+        out.stderr
+    )
+    fakes.list_problem = None
+    missing = add("org/big-modl", "--base-url", URL)
+    assert "The server's list of models has no org/big-modl. Close: org/big-model," in flat(
+        missing.stderr
+    )
+
+
+def test_write_adds_the_checked_profile_with_its_roles(fakes: Fakes, tmp_path: Path) -> None:
+    out = add(*BIG, "--write", "--role", "agent", "--role", "judge")
+    assert out.exit_code == 0, out.output
+    path = tmp_path / "aims.toml"
+    assert out.stdout == ""
+    assert f"added big-model to {path}" in flat(out.stderr)
+    assert "role agent: big-model\nrole judge: big-model" in out.stderr
+    models = load(path).models
+    assert models.get("big-model").reasoning == "full"
+    assert (models.roles.agent, models.roles.judge) == ("big-model", "big-model")
+    again = add(*BIG, "--write")
+    assert again.exit_code == 1
+    assert "a profile named big-model exists; pass --name for another" in again.stderr
+    assert len(fakes.checked) == 1
+    second = add(*BIG, "--write", "--name", "second", "--role", "agent")
+    assert second.exit_code == 0, second.output
+    assert "role agent: second (was big-model)" in second.stderr
+
+
+def test_a_failed_check_prints_the_profile_and_writes_nothing(fakes: Fakes, tmp_path: Path) -> None:
+    fakes.verdicts = {"structured": "fail"}
+    out = add(*BIG, "--write", "--role", "agent")
+    assert out.exit_code == 1
+    assert out.stdout == draft(BIG[0], base_url=URL, key_env="MODELS_KEY").measured("full").toml()
+    err = flat(out.stderr)
+    assert "fail  big-model  structured: seen" in out.stderr
+    assert (
+        "error: big-model failed the check: structured, so it is not added. Change it with"
+        " --set, or pass --no-check to skip the check" in err
+    )
+    assert "note: --set structured_output=false adds it as a model without structured" in err
+    assert not (tmp_path / "aims.toml").exists()
+    judge = add(*BIG, "--write", "--role", "judge")
+    assert "structured_output=false" not in judge.stderr
+    fakes.verdicts = {"tools": "fail", "structured": "fail"}
+    printed = add(*BIG)
+    assert printed.exit_code == 1
+    assert "failed the check: tools, structured. Change it" in flat(printed.stderr)
+    assert "structured_output=false" not in printed.stderr
+    fixed = add(*BIG, "--write", "--no-check", "--set", "structured_output=false")
+    assert fixed.exit_code == 0, fixed.output
+    assert load(tmp_path / "aims.toml").models.get("big-model").structured_output is False
+
+
+def test_no_check_adds_the_draft_unchecked(fakes: Fakes, tmp_path: Path) -> None:
+    monkeyless = add(*BIG, "--no-check", "--write")
+    assert monkeyless.exit_code == 0, monkeyless.output
+    assert fakes.checked == []
+    err = flat(monkeyless.stderr)
+    assert 'note: reasoning = "none" is a guess.' in err
+    assert "note: It is not checked. aims models check big-model checks it." in err
+    assert load(tmp_path / "aims.toml").models.get("big-model").reasoning == "none"
+    assert not (tmp_path / "runs").exists()
+
+
+def test_what_is_refused_for_free_is_refused_before_the_check(
+    fakes: Fakes, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "aims.toml"
+    inline = (
+        "profiles = { a = { backend = 'chat', base_url = 'https://a.example/v1', model = 'a',"
+        " weights = 'a', reasoning = 'none' } }\n"
+    )
+    path.write_text(inline)
+    for args, problem in (
+        # an inline `profiles` table cannot take another table
+        ([*BIG, "--write"], f"error: {path}: "),
+        ([*BIG, "--name", "a", "--write"], "a profile named a exists"),
+        (
+            [*BIG, "--set", "structured_output=false", "--write", "--role", "sweep"],
+            "big-model cannot take the sweep role: structured_output is false",
+        ),
+        ([*BIG, "--set", "max_output_tokens=0"], "error: max_output_tokens: "),
+        (["org/big-model", "--base-url", URL, "--key-env", "NOPE"], "NOPE is not set; set it"),
+    ):
+        out = add(*args)
+        assert (out.exit_code, out.stdout) == (1, ""), (args, out.output)
+        assert problem in flat(out.stderr), (args, out.stderr)
+    assert fakes.checked == []
+    assert path.read_text() == inline
+    assert sorted(p.name for p in tmp_path.iterdir()) == [".git", "aims.toml"]
+    monkeypatch.delenv("MODELS_KEY")
+    keyless = add(*BIG)
+    assert "error: profile big-model: MODELS_KEY is not set; set it, or pass --no-check" in flat(
+        keyless.stderr
+    )
+
+
+def test_the_flags_are_checked_before_anything_is_read(fakes: Fakes, tmp_path: Path) -> None:
+    (tmp_path / "aims.toml").write_text("[nope]\n")
+    for args, problem in (
+        ([*BIG, "--role", "agent"], "needs --write"),
+        ([*BIG, "--write", "--role", "boss"], "use agent, sweep or judge"),
+        (["m", "--from", "a", "--base-url", URL], "give --from or --base-url, not both"),
+        (["m", "--from", "a", "--key-env", "K"], "give --from or --base-url, not both"),
+        (["m"], "give the server's --base-url, or --from"),
+        (["m", "--base-url", URL, "--backend", "rest"], "use responses or chat"),
+    ):
+        out = add(*args)
+        assert out.exit_code == 2, (args, out.output)
+        assert problem in flat(out.stderr), (args, out.stderr)
+    broken = add(*BIG, "--write")
+    assert broken.exit_code == 1
+    assert "unknown table(s) nope" in broken.stderr
+    assert (fakes.reads, fakes.checked) == ([], [])
+
+
+def test_from_reaches_the_server_as_a_profile_does(
+    fakes: Fakes, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "aims.toml").write_text(
+        """
+[profiles.router]
+backend = "responses"
+base_url_env = "ROUTER_URL"
+model = "org/base-model"
+weights = "org/base-model"
+api_key_env = "MODELS_KEY"
+reasoning = "full"
+headers = { "X-Title" = "AIMS" }
+"""
+    )
+    unset = add("org/big-model", "--from", "router")
+    assert (unset.exit_code, unset.stdout) == (1, "")
+    assert "error: profile big-model: ROUTER_URL is not set; set it" in flat(unset.stderr)
+    unchecked = add("org/big-model", "--from", "router", "--no-check")
+    assert unchecked.exit_code == 0, unchecked.output
+    assert "The server's list of models was not read: profile router: ROUTER_URL is not set" in (
+        flat(unchecked.stderr)
+    )
+    monkeypatch.setenv("ROUTER_URL", f"{URL}/")
+    out = add("org/big-model", "--from", "router", "--write", "--role", "agent")
+    assert out.exit_code == 0, out.output
+    assert fakes.reads == [URL]
+    made = load(tmp_path / "aims.toml").models.get("big-model")
+    assert (made.backend, made.base_url_env, made.headers) == (
+        "responses",
+        "ROUTER_URL",
+        {"X-Title": "AIMS"},
+    )
+    assert "From router it takes backend, base_url_env, api_key_env, headers." in flat(out.stderr)
+    unknown = add("m", "--from", "nope")
+    assert unknown.exit_code == 1
+    assert "unknown profile 'nope'" in unknown.stderr
+
+
+def test_add_shows_hidden_characters_of_outside_text_as_text(fakes: Fakes) -> None:
+    out = add("a/b\x1b[31m", "--base-url", URL)
+    assert out.exit_code == 1
+    assert "\x1b" not in out.stderr
+
+
+# The file it writes
+
+
+def test_a_trial_add_leaves_the_file_as_it_was(tmp_path: Path) -> None:
+    path = tmp_path / "aims.toml"
+    path.write_text("# mine\n")
+    table = draft("m", base_url=URL).toml()
+    assert add_table(layers(path), table, {"agent": "m"}, trial=True) == path
+    assert path.read_text() == "# mine\n"
+    assert [p.name for p in tmp_path.iterdir()] == ["aims.toml"]
+
+
+def test_write_keeps_the_files_text_and_mode_and_the_role_tables_place(
+    fakes: Fakes, tmp_path: Path
+) -> None:
+    path = tmp_path / "aims.toml"
+    before = '# mine\n[roles]\nagent = "old"  # kept\n'
+    path.write_text(
+        before + '\n[profiles.old]\nbackend = "chat"\nbase_url = "https://o.example/v1"\n'
+        'model = "o"\nweights = "o"\nreasoning = "none"\n'
+    )
+    path.chmod(0o600)
+    text = path.read_text()
+    out = add(*BIG, "--write", "--role", "agent")
+    assert out.exit_code == 0, out.output
+    table = draft(BIG[0], base_url=URL, key_env="MODELS_KEY").measured("full").toml()
+    assert path.read_text() == text.replace('"old"  # kept', '"big-model"  # kept') + ("\n" + table)
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert "role agent: big-model (was old)" in out.stderr
+    assert sorted(p.name for p in tmp_path.iterdir()) == [".git", "aims.toml", "runs"]
+
+
+def test_write_goes_to_the_file_config_names(fakes: Fakes, tmp_path: Path) -> None:
+    other = tmp_path / "other.toml"
+    other.write_text("")
+    out = add(*BIG, "--write", "--config", str(other))
+    assert out.exit_code == 0, out.output
+    assert other.read_text() == (
+        draft(BIG[0], base_url=URL, key_env="MODELS_KEY").measured("full").toml()
+    )
+    assert not (tmp_path / "aims.toml").exists()
+
+
+def test_a_table_the_layers_do_not_load_with_leaves_the_file_as_it_was(tmp_path: Path) -> None:
+    path = tmp_path / "aims.toml"
+    path.write_text("profiles = { a = { backend = 'chat' } }\n")
+    found = layers(path)
+    before = path.read_bytes()
+    # an inline `profiles` table cannot take another table
+    with pytest.raises(ConfigError, match=rf"^{path}: ") as e:
+        add_table(found, draft("m", base_url=URL).toml())
+    assert ".aims.toml." not in str(e.value)
+    assert path.read_bytes() == before
+    path.write_text("")
+    with pytest.raises(ProfileError, match="Field required"):
+        add_table(layers(path), '[profiles.half]\nbackend = "chat"\n')
+    assert path.read_bytes() == b""
+    assert [p.name for p in tmp_path.iterdir()] == ["aims.toml"]
+
+
+def test_a_table_is_added_after_a_last_line_with_no_newline(tmp_path: Path) -> None:
+    path = tmp_path / "aims.toml"
+    path.write_bytes(b"[credits]\r\nexample = 1")
+    table = draft("m", base_url=URL).toml()
+    assert add_table(layers(path), table) == path
+    assert path.read_bytes() == b"[credits]\r\nexample = 1\n\n" + table.encode()
+    path.write_bytes(b"[credits]\nexample = 1\n")
+    add_table(layers(path), draft("second", base_url=URL).toml())
+    assert path.read_bytes().startswith(b"[credits]\nexample = 1\n\n[profiles.")
+    assert json.dumps(sorted(load(path).credits.items())) == '[["example", 1.0]]'
+
+
+def test_roles_are_set_in_the_table_the_file_has() -> None:
+    roles: dict[Role, str] = {"sweep": "b", "agent": "b"}
+    for text, want in (
+        ("", '[roles]\nagent = "b"\nsweep = "b"\n'),
+        ('roles.agent = "a"\n', 'roles.agent = "b"\nroles.sweep = "b"\n'),
+        (
+            'roles = { judge = "a" }  # c\n',
+            'roles = {judge = "a", agent = "b", sweep = "b"}  # c\n',
+        ),
+    ):
+        assert with_roles(text, roles) == want
+    for text, problem in (("roles = 1\n", "roles is not a table"), ("[a", "not TOML")):
+        with pytest.raises(ConfigError, match=problem):
+            with_roles(text, roles)
+
+
+def test_a_role_table_that_cannot_take_a_role_leaves_the_file(tmp_path: Path) -> None:
+    path = tmp_path / "aims.toml"
+    path.write_text("roles = 1\n")
+    table = draft("m", base_url=URL).toml()
+    with pytest.raises(ConfigError, match=rf"^{path}: roles is not a table"):
+        add_table(layers(path), table, {"agent": "m"})
+    assert path.read_text() == "roles = 1\n"
+    assert [p.name for p in tmp_path.iterdir()] == ["aims.toml"]

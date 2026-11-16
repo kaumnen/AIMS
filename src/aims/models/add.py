@@ -15,14 +15,14 @@ import re
 import time
 import tomllib
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, get_args
 
 import httpx2
 import tomlkit
 from pydantic import ValidationError
 
-from aims.events import ModelBackend
+from aims.events import ModelBackend, ReasoningKind
 from aims.models.listprice import SOURCE, NoPrice, PriceList
 from aims.models.profiles import ROLES, Profile, Role
 from aims.net import Guarded
@@ -50,6 +50,7 @@ CONNECTION = (
     "headers",
     "extra",
 )
+GUESS = 'reasoning = "none" is a guess. The check measures what the model sends.'
 # Fields `--set` and `--unset` may not name: the name is given apart. AIMS sets `listed` itself.
 UNSET = ("name", "extends", "listed")
 
@@ -84,13 +85,31 @@ class ServerList:
 @dataclass(frozen=True, slots=True)
 class Draft:
     """A profile ready to add to a config file. `notes` say what its reader should know.
-    `candidates` are the LiteLLM rows that name the model, when none was picked."""
+    `candidates` are the LiteLLM rows that name the model, when none was picked. `guessed` is
+    true while `reasoning` is a guess that `measured` can replace."""
 
     name: str
     model: str
     table: dict[str, Any]
     notes: tuple[str, ...]
     candidates: tuple[str, ...] = ()
+    guessed: bool = False
+
+    def measured(self, kind: ReasoningKind) -> Draft:
+        """The draft with the reasoning kind a check saw in place of the guess. Unchanged
+        when `reasoning` was given."""
+        if not self.guessed:
+            return self
+        if kind == "none":
+            note = (
+                'reasoning = "none", as the check saw on a short answer. A model may still'
+                " reason on harder prompts; each answer of a run records what it carried."
+            )
+        else:
+            note = f'reasoning = "{kind}", as the check measured.'
+        notes = tuple(note if n == GUESS else n for n in self.notes)
+        table = {**self.table, "reasoning": kind}
+        return replace(self, table=table, notes=notes, guessed=False)
 
     @property
     def profile(self) -> Profile:
@@ -373,8 +392,9 @@ def draft(
             "weights is the model id. When this model also runs under another id, give both"
             " profiles one weights name, so the monitor refuses to watch it with itself."
         )
-    if table.get("reasoning") == "none" and "reasoning" not in changed:
-        notes.append('reasoning = "none" is a guess. The check measures what the model sends.')
+    guessed = "reasoning" not in changed
+    if guessed:
+        notes.append(GUESS)
     if "price" not in table and "price_key" not in table:
         notes.append(
             f"No {SOURCE} row is picked, so it has no price. A run records what each call"
@@ -382,7 +402,14 @@ def draft(
         )
     if "context_tokens" not in table:
         notes.append("Its context size is not known, so context_tokens is unset.")
-    return Draft(name=name, model=model, table=table, notes=tuple(notes), candidates=candidates)
+    return Draft(
+        name=name,
+        model=model,
+        table=table,
+        notes=tuple(notes),
+        candidates=candidates,
+        guessed=guessed,
+    )
 
 
 def _ids(body: bytes | bytearray) -> tuple[str, ...] | None:

@@ -1,13 +1,21 @@
 import asyncio
 import json
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 import httpx2
 
 from aims.aio import settle
-from aims.events import Draft, EventStore, ModelChecked, RunFinished, RunStarted, RunStatus
+from aims.events import (
+    Draft,
+    EventStore,
+    ModelChecked,
+    ReasoningKind,
+    RunFinished,
+    RunStarted,
+    RunStatus,
+)
 from aims.models.client import ModelCallError, ModelClient
 from aims.models.profiles import ModelsConfig, Overrides, Profile, ProfileError
 from aims.models.types import Message, OutputSchema, Prompt, Reply, ToolOutput, ToolSpec
@@ -34,6 +42,8 @@ VERDICT = OutputSchema(
     },
 )
 SMALL = Overrides(effort="low", max_output_tokens=2048)
+# Efforts the check keeps: lower than SMALL's, so it never turns reasoning up to measure it.
+LOW = ("none", "minimal")
 
 
 def to_check(models: ModelsConfig, names: Sequence[str]) -> list[Profile]:
@@ -52,10 +62,14 @@ def to_check(models: ModelsConfig, names: Sequence[str]) -> list[Profile]:
 
 @dataclass(frozen=True, slots=True)
 class Check:
+    """One test of a profile. `reasoning` is what the plain test's answer carried of the
+    model's reasoning, None for the other tests and when no answer came."""
+
     profile: str
     name: str
     verdict: Verdict
     detail: str
+    reasoning: ReasoningKind | None = None
 
 
 def _prompt(text: str, **kw: object) -> Prompt:
@@ -65,8 +79,10 @@ def _prompt(text: str, **kw: object) -> Prompt:
 
 async def check_profile(client: ModelClient, profile: Profile) -> list[Check]:
     """Smoke tests of one provider: plain, non-streamed, tool round trip, structured output."""
-    small = SMALL if profile.effort is not None else Overrides(max_output_tokens=2048)
+    keep = profile.effort is None or profile.effort in LOW
+    small = Overrides(max_output_tokens=2048) if keep else SMALL
     out: list[Check] = []
+    seen: list[ReasoningKind] = []
 
     async def run(name: str, step: Callable[[], Awaitable[tuple[Verdict, str]]]) -> None:
         try:
@@ -80,6 +96,7 @@ async def check_profile(client: ModelClient, profile: Profile) -> list[Check]:
 
     async def plain() -> tuple[Verdict, str]:
         r = await call(profile, _prompt("What is 17 + 25? Reply with the number only."))
+        seen.append(r.reasoning_kind)
         if r.status != "completed" or "42" not in r.text:
             return "fail", f"status {r.status}, text {r.text[:80]!r}"
         u = r.usage
@@ -130,6 +147,8 @@ async def check_profile(client: ModelClient, profile: Profile) -> list[Check]:
         return ("ok", r.text) if value["answer"] == 42 else ("warn", f"wrong answer {r.text}")
 
     await run("plain", plain)
+    if seen:
+        out[-1] = replace(out[-1], reasoning=seen[0])
     await run("unstreamed", unstreamed)
     await run("tools", tools)
     await run("structured", structured)
