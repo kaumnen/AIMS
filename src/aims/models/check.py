@@ -46,18 +46,32 @@ SMALL = Overrides(effort="low", max_output_tokens=2048)
 LOW = ("none", "minimal")
 
 
-def to_check(models: ModelsConfig, names: Sequence[str]) -> list[Profile]:
-    """The profiles a check of `names` covers, each once: with no names, the profiles the
-    roles name. Raises ProfileError for an unknown name, or when no name is given and no
-    profile has a role."""
-    if not names:
-        names = [n for n in models.roles.model_dump().values() if n is not None]
-        if not names:
-            raise ProfileError(
-                "no profile has a role; name the profiles to check, or set roles under [roles]"
-                " in aims.toml"
-            )
-    return [models.get(n) for n in dict.fromkeys(names)]
+def to_check(
+    models: ModelsConfig,
+    names: Sequence[str],
+    *,
+    monitor: Sequence[str] = (),
+    extract: Sequence[str] = (),
+) -> list[Profile]:
+    """The profiles a check of `names` covers, each once. With no names: the profiles the
+    roles name, then `monitor`, those the `[monitor]` table names, then the known profiles
+    of `extract`, its extract candidates, as a run skips an unknown one. Raises ProfileError
+    for an unknown name, or when no name is given and none of these names a profile."""
+    if names:
+        return [models.get(n) for n in dict.fromkeys(names)]
+    roles = [n for n in models.roles.model_dump().values() if n is not None]
+    try:
+        named = [models.get(n) for n in monitor]
+    except ProfileError as e:
+        raise ProfileError(f"[monitor]: {e}") from None
+    known = [models.get(n) for n in extract if n in models.profiles]
+    out = [models.get(n) for n in roles] + named + known
+    if not out:
+        raise ProfileError(
+            "no profile has a role or is named under [monitor]; name the profiles to check, or"
+            " set roles under [roles] in aims.toml"
+        )
+    return list({p.name: p for p in out}.values())
 
 
 @dataclass(frozen=True, slots=True)

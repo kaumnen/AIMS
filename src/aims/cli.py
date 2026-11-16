@@ -447,7 +447,9 @@ def _row_lines(rows: list[Any]) -> list[str]:
 def models_check(
     profiles: Annotated[
         list[str] | None,
-        typer.Argument(help="Profiles to check. By default those the roles name."),
+        typer.Argument(
+            help="Profiles to check. By default those the roles and the \\[monitor] table name."
+        ),
     ] = None,
     config: ConfigOption = None,
     runs_dir: RunsDirOption = Path("runs"),
@@ -458,19 +460,28 @@ def models_check(
 
     from aims.models import ProfileError
     from aims.models.check import to_check
+    from aims.monitor.config import named_profiles
 
-    models = _settings(config).models
+    settings = _settings(config)
+    models = settings.models
+    calls, extract = named_profiles(settings.monitor)
     try:
-        chosen = to_check(models, profiles or [])
+        chosen = to_check(models, profiles or [], monitor=calls, extract=extract)
         for p in chosen:
             p.url()
             p.api_key()
     except ProfileError as e:
         _echo(f"error: {e}", err=True)
         raise typer.Exit(1) from None
-    if not profiles and (unset := models.roles.unset()):
-        its = "them" if len(unset) > 1 else "it"
-        _echo(f"note: unset roles: {', '.join(unset)}; no profile is checked for {its}", err=True)
+    if not profiles:
+        if unset := models.roles.unset():
+            its = "them" if len(unset) > 1 else "it"
+            _echo(
+                f"note: unset roles: {', '.join(unset)}; no profile is checked for {its}", err=True
+            )
+        for name in extract:
+            if name not in models.profiles:
+                _echo(f"note: [monitor] extract: unknown profile {name!r} is not checked", err=True)
     run_id = str(uuid.uuid7())
     try:
         checks = asyncio.run(_check(models, chosen, runs_dir, run_id))

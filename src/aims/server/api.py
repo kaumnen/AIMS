@@ -60,7 +60,7 @@ from aims.models.listprice import SOURCE, Listing, ListPrice, PriceLists, survey
 from aims.models.profiles import Role as ModelRole
 from aims.monitor import sweep_texts
 from aims.monitor import texts as monitor_texts
-from aims.monitor.config import MonitorConfigError, Preset
+from aims.monitor.config import MonitorConfigError, Preset, named_profiles
 from aims.monitor.setup import ResolvedMonitor
 from aims.prompts import PLACEHOLDERS, AgentTexts, Prompts, TextError, load_prompts
 from aims.report.listed import ListedCost, listed_costs
@@ -2119,11 +2119,12 @@ async def check_models(
     body: ModelsCheck, principal: Operator, state: State, note: audit.Note
 ) -> Started:
     """Small requests to each profile's provider, run on a runner and recorded as a run. With
-    no profiles it checks those the roles name."""
+    no profiles it checks those the roles and the `[monitor]` table of the config files name."""
     note.target = ", ".join(body.profiles) or None
-    models = state.config.settings().models
+    settings = state.config.settings()
+    calls, extract = named_profiles(settings.monitor)
     try:
-        chosen = to_check(models, body.profiles)
+        chosen = to_check(settings.models, body.profiles, monitor=calls, extract=extract)
     except ProfileError as e:
         raise ProblemException(422, "Invalid request", str(e), code="profile") from None
     note.target = ", ".join(p.name for p in chosen)

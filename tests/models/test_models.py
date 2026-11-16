@@ -1501,7 +1501,7 @@ def test_a_second_signal_while_aims_models_check_seals_leaves_the_seal_whole(
             await asyncio.sleep(0.2)
         return await append(self, run, drafts)
 
-    settings = SimpleNamespace(models=config(profile()))
+    settings = SimpleNamespace(models=config(profile()), monitor=())
     monkeypatch.setattr("aims.cli._settings", lambda config: settings)
     monkeypatch.setattr(check, "check_profile", hang)
     monkeypatch.setattr(LocalEventStore, "append", slow)
@@ -1548,7 +1548,7 @@ def test_a_ctrl_c_while_aims_models_check_makes_its_run_is_told_as_it_lands(
     async def never(client: object, p: Profile, *, measure: bool = False) -> list[Any]:
         raise AssertionError("the check began after the Ctrl-C")
 
-    settings = SimpleNamespace(models=config(profile()))
+    settings = SimpleNamespace(models=config(profile()), monitor=())
     monkeypatch.setattr("aims.cli._settings", lambda config: settings)
     monkeypatch.setattr(check, "check_profile", never)
     monkeypatch.setattr(LocalEventStore, "_writer", opening)
@@ -1582,7 +1582,7 @@ def test_aims_models_check_seals_the_runs_an_earlier_process_left_running(
         return []
 
     run_id = asyncio.run(left())
-    settings = SimpleNamespace(models=config(profile()))
+    settings = SimpleNamespace(models=config(profile()), monitor=())
     monkeypatch.setattr("aims.cli._settings", lambda config: settings)
     monkeypatch.setattr(check, "check_profile", nothing)
     result = CliRunner().invoke(app, ["models", "check", "--runs-dir", str(root)])

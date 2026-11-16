@@ -267,7 +267,7 @@ Errors:
 aims models check <profile> [<profile> ...]
 ```
 
-It sends four small requests to each profile and records them as a run. Without a name it checks the profiles the roles name, each once.
+It sends four small requests to each profile and records them as a run. Without a name it checks the profiles the roles name and those the `[monitor]` table of the config files names, each once. The table counts whatever its preset, since `aims run --monitor` can turn the monitor's models on. A scenario's `monitor:` section is not read. An unknown profile under `[monitor]` is an error. In `extract` a run skips one, so the check notes it and goes on.
 
 | Check | What it asks for |
 | --- | --- |

@@ -7,7 +7,7 @@ comes from the highest layer that names one.
 """
 
 import hashlib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Annotated, Any, Literal, Self, get_args
 
 import rfc8785
@@ -394,6 +394,18 @@ def _merge(base: Mapping[str, Any], top: Mapping[str, Any]) -> dict[str, Any]:
         else:
             out[key] = value
     return out
+
+
+def named_profiles(layers: Sequence[Mapping[str, Any]]) -> tuple[list[str], list[str]]:
+    """The profiles validated `layers` name, each once: first those the sweeps, the review,
+    the judge and the channel sweep call, then the extract candidates. Read whatever the
+    preset, since a run's `--monitor` can turn the models on."""
+    out: dict[str, Any] = {}
+    for top in layers:
+        out = _merge(out, top)
+    calls = [s.get("profile") for s in out.get("sweeps") or []]
+    calls += [(out.get(k) or {}).get("profile") for k in ("review", "judge", "channels")]
+    return [n for n in dict.fromkeys(calls) if n], list(dict.fromkeys(out.get("extract") or []))
 
 
 def budget_usd(

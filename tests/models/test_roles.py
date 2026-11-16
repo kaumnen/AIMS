@@ -14,6 +14,7 @@ from typer.testing import CliRunner
 
 from aims.cli import app
 from aims.models import ProfileError, load_models
+from aims.monitor.config import layer, named_profiles
 from aims.run import selftest
 from aims.run.job import Job
 from aims.sandbox.docker import DockerBackend
@@ -206,9 +207,59 @@ def test_models_check_with_no_names_checks_each_profile_a_role_names_once(
     assert none.exit_code == 1
     assert checked == []
     assert (
-        "error: no profile has a role; name the profiles to check, or set roles under [roles]"
-        " in aims.toml"
+        "error: no profile has a role or is named under [monitor]; name the profiles to check,"
+        " or set roles under [roles] in aims.toml"
     ) in flat(none.stderr)
+
+
+PICK = WATCH.replace("watch", "pick").replace('model = "w"', 'model = "p"')
+
+
+def test_models_check_with_no_names_checks_the_monitor_profiles_whatever_the_preset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checked: list[str] = []
+
+    async def record(client: object, p: Any, *, measure: bool = False) -> list[Any]:
+        checked.append(p.name)
+        return []
+
+    monkeypatch.setattr("aims.models.check.check_profile", record)
+    toml, _ = project(tmp_path, "")
+    check = ["models", "check", "--config", str(toml), "--runs-dir", str(tmp_path / "runs")]
+
+    def run(text: str, *names: str) -> Any:
+        checked.clear()
+        toml.write_text(PLAIN + WATCH + PICK + '[roles]\nagent = "plain"\n' + text)
+        return invoke(*check, *names)
+
+    # the signals preset drops the monitor's models, but `aims run --monitor standard` brings
+    # them back, so the check covers them
+    both = run(NAMED + 'preset = "signals"\nextract = ["gone", "pick", "watch"]\n')
+    assert both.exit_code == 0, both.output
+    assert checked == ["plain", "watch", "pick"]
+    assert "note: [monitor] extract: unknown profile 'gone' is not checked" in flat(both.stderr)
+    assert "note: unset roles: sweep, judge" in flat(both.stderr)
+    named = run(NAMED, "plain")
+    assert named.exit_code == 0, named.output
+    assert checked == ["plain"]
+    assert "note:" not in named.output
+    typo = run('[monitor]\nreview = { profile = "typo" }\n')
+    assert typo.exit_code == 1
+    assert checked == []
+    assert "error: [monitor]: unknown profile 'typo'" in flat(typo.stderr)
+
+
+def test_the_monitor_names_its_profiles_as_its_layers_merge_whatever_the_preset() -> None:
+    user = layer({"sweeps": [{"profile": "a"}, {"name": "b", "profile": "b"}]}, "user")
+    top = {"preset": "off", "sweeps": {"profile": "c"}, "judge": {"profile": "d"}}
+    project = layer(top | {"review": {"resamples": 2}, "extract": ["e", "e"]}, "project")
+    assert named_profiles([user]) == (["a", "b"], [])
+    # lists replace, maps merge, and the off preset keeps the names
+    assert named_profiles([user, project]) == (["c", "d"], ["e"])
+    review = layer({"review": {"profile": "c"}, "channels": {"profile": "f"}}, "top")
+    assert named_profiles([user, project, review]) == (["c", "d", "f"], ["e"])
+    assert named_profiles([]) == ([], [])
 
 
 ROLES = '[roles]\nagent = "scripted"\n'
@@ -266,7 +317,7 @@ async def test_the_api_shows_unset_roles_and_refuses_runs_that_need_them(cp: CP)
         assert "no profile has the sweep role" in r.json()["detail"]
         r = await c.post("/api/models/check", json={})
         assert (r.status_code, r.json()["code"]) == (422, "profile")
-        assert "no profile has a role; name the profiles to check" in r.json()["detail"]
+        assert "no profile has a role or is named under [monitor]; name the" in r.json()["detail"]
         # a run that names its profile and watches by signals needs no role: it passes every
         # check and waits only for a runner
         named = {"scenario": ref, "profile": "scripted", "monitor": "signals", "confirm": True}
@@ -297,3 +348,12 @@ async def test_the_api_checks_each_profile_a_role_names_once_when_none_is_named(
 
     assert await checked({}) == ["scripted"]
     assert await checked({"profiles": ["scripted", "scripted"]}) == ["scripted"]
+    watch = '[profiles.watch]\nextends = "scripted"\n\n[monitor]\njudge = { profile = "watch" }\n'
+    cp.project.write_text(cp.project.read_text() + watch)
+    assert await checked({}) == ["scripted", "watch"]
+    assert await checked({"profiles": ["scripted"]}) == ["scripted"]
+    cp.project.write_text(cp.project.read_text() + 'review = { profile = "typo" }\n')
+    async with cp.client(cp.operator) as c:
+        r = await c.post("/api/models/check", json={})
+    assert (r.status_code, r.json()["code"]) == (422, "profile")
+    assert r.json()["detail"].startswith("[monitor]: unknown profile 'typo'")

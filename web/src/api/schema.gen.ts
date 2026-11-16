@@ -213,7 +213,7 @@ export interface paths {
         /**
          * Check Models
          * @description Small requests to each profile's provider, run on a runner and recorded as a run. With
-         *     no profiles it checks those the roles name.
+         *     no profiles it checks those the roles and the `[monitor]` table of the config files name.
          */
         post: operations["check_models"];
         delete?: never;
