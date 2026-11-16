@@ -100,7 +100,15 @@ class OfferMessage(_Wire):
     needs: dict[str, JsonValue] = Field(default_factory=dict)
 
 
-RunnerFeed = Annotated[CommandMessage | OfferMessage, Field(discriminator="kind")]
+class EnvsMessage(_Wire):
+    """The env names the config now wants a runner to say it has, sent when they change after
+    its hello."""
+
+    kind: Literal["envs"] = "envs"
+    envs: list[str]
+
+
+RunnerFeed = Annotated[CommandMessage | OfferMessage | EnvsMessage, Field(discriminator="kind")]
 
 
 class Ack(_Wire):

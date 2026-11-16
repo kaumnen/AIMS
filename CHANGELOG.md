@@ -50,6 +50,10 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - The built-in model profiles and roles. AIMS ships no models. Set them under `[profiles]` and `[roles]` in `aims.toml`, or add one with `aims models add openrouter <model id> --write --role agent`. A config that changed a built-in no longer loads: a profile that extends one, such as `extends = "meta-spark-1.3-contributor"`, a table that sets part of one, such as `[profiles."meta-spark-1.3-contributor".limits]`, or a role that names one. Write the whole profile from the fields it took and point the roles at it. Earlier releases hold the built-ins in `src/aims/models/builtins.toml`. A config that relied on the built-in roles needs `agent`, `sweep` and `judge` under `[roles]`, or runs with `--monitor signals` and a profile.
 - The example results: `docs/results.md`, the README's results section, the `organism/` folder, `docs/pilot.toml`, `deploy/modal/glimmer.py` and the `deploy` dependency group. They were experiments run with AIMS. Earlier releases keep them.
 
+### Fixed
+
+- A runner reports the key of a profile added while it runs. The control plane told a runner which key names to report only when it connected. So after Add from OpenRouter or a config save, each run, model check, score and review was refused with `no runner has OPENROUTER_API_KEY set` until the runner connected again. The control plane now sends the names on the runner's stream as soon as it saves the config. A config edited by hand reaches each runner at its next heartbeat, within 10 seconds.
+
 ## [0.2.3] - 2026-11-14
 
 ### Added

@@ -25,6 +25,7 @@ from aims.server.problems import ProblemException
 from aims.wire import (
     STALE_S,
     CommandMessage,
+    EnvsMessage,
     OfferMessage,
     RunnerHello,
     RunnerInfo,
@@ -146,11 +147,13 @@ class Connected:
     status: RunnerStatus | None = None
     seen: float = field(default_factory=time.time)
     streams: int = 0
-    feed: asyncio.Queue[CommandMessage | OfferMessage | None] = field(
+    feed: asyncio.Queue[CommandMessage | OfferMessage | EnvsMessage | None] = field(
         default_factory=lambda: asyncio.Queue(10_000)
     )
     offered: set[str] = field(default_factory=set)
     local: bool = False
+    # the env names it was last told to say it has
+    told: list[str] = field(default_factory=list)
 
     @property
     def stale(self) -> bool:

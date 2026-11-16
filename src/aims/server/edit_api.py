@@ -65,6 +65,7 @@ from aims.server.files import (
     writing,
 )
 from aims.server.problems import ProblemError, ProblemException, responses
+from aims.server.runner_api import tell_envs
 from aims.server.state import ServerState
 from aims.text import NoLoneSurrogate, Utf8
 
@@ -243,6 +244,7 @@ async def _save(
         await asyncio.to_thread(_validate, state, layer, text)
         with writing(path):
             await asyncio.to_thread(write_atomic, path, data)
+    tell_envs(state)
     body = _file(layer, path, data)
     return Response(
         body.model_dump_json(), media_type="application/json", headers={"ETag": quoted(etag(data))}
@@ -314,6 +316,7 @@ async def add_model(
         await asyncio.to_thread(_validate, state, "project", text)
         with writing(path):
             await asyncio.to_thread(write_atomic, path, text.encode())
+    tell_envs(state)
     return ModelAdded(name=found.name, path=str(path))
 
 

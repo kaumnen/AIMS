@@ -2796,6 +2796,20 @@ export interface components {
             run_id: string;
         };
         /**
+         * EnvsMessage
+         * @description The env names the config now wants a runner to say it has, sent when they change after
+         *     its hello.
+         */
+        EnvsMessage: {
+            /** Envs */
+            envs: string[];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "envs";
+        };
+        /**
          * Estimate
          * @description The cost of `samples` runs of each variant in `parts`. `confirm` says `aims run` asks
          *     before it starts: no cap bounds the cost, whatever past runs cost, or the high figure, or
@@ -6688,7 +6702,7 @@ export interface components {
             /** Verdict Severity */
             verdict_severity: number | null;
         };
-        RunnerFeed: components["schemas"]["CommandMessage"] | components["schemas"]["OfferMessage"];
+        RunnerFeed: components["schemas"]["CommandMessage"] | components["schemas"]["OfferMessage"] | components["schemas"]["EnvsMessage"];
         /** RunnerHealthMessage */
         RunnerHealthMessage: {
             /**
@@ -15374,6 +15388,7 @@ export const costFiguresTierValues: ReadonlyArray<FlattenedDeepRequired<componen
 export const deltaMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["DeltaMessage"]["kind"]> = ["delta"];
 export const deltasDroppedMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["DeltasDroppedMessage"]["kind"]> = ["deltas_dropped"];
 export const endMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EndMessage"]["kind"]> = ["end"];
+export const envsMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EnvsMessage"]["kind"]> = ["envs"];
 export const eventTypeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventType"]> = ["agent.compacted", "agent.finished", "agent.held", "agent.input", "agent.report", "agent.started", "agent.step", "audit.lost", "audit.spill", "cache.probe", "channel.message", "channel.read", "channel.snapshot", "exec.finished", "exec.started", "file.access", "file.setattr", "file.sync", "file.write", "fs.snapshot", "ipc.event", "log.truncated", "mem.exec", "model.checked", "model.request", "model.response", "monitor.action", "monitor.cleared", "monitor.degraded", "monitor.flag", "monitor.sweep", "monitor.verdict", "net.connect", "ns.event", "operator.action", "plant.triggered", "proc.exec", "proc.exit", "proc.fork", "proc.output", "proc.signal", "ptrace.event", "replay.divergence", "resource.sample", "run.finished", "run.started", "sandbox.archived", "sandbox.freeze_failed", "sandbox.outside_pause", "sandbox.started", "sandbox.stopped", "score.answer", "score.awareness", "score.unexplained", "score.unit", "selftest.case", "sys.denied", "task.scored", "tool.call", "tool.result"];
 export const eventsMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventsMessage"]["kind"]> = ["events"];
 export const execFinishedEndValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ExecFinished"]["end"]> = ["exited", "timeout", "cancelled", "failed"];

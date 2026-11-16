@@ -2937,6 +2937,31 @@
         "title": "EndMessage",
         "type": "object"
       },
+      "EnvsMessage": {
+        "additionalProperties": false,
+        "description": "The env names the config now wants a runner to say it has, sent when they change after\nits hello.",
+        "properties": {
+          "envs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Envs",
+            "type": "array"
+          },
+          "kind": {
+            "const": "envs",
+            "default": "envs",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "envs"
+        ],
+        "title": "EnvsMessage",
+        "type": "object"
+      },
       "Estimate": {
         "description": "The cost of `samples` runs of each variant in `parts`. `confirm` says `aims run` asks\nbefore it starts: no cap bounds the cost, whatever past runs cost, or the high figure, or\nwithout one the ceiling, is above `confirm_above_usd`. `listed` holds the list prices laid\non profiles with no price of their own, and `unlisted` says by profile why one that names a\nkey got none. `lines` is the estimate in words.",
         "properties": {
@@ -13155,6 +13180,7 @@
         "discriminator": {
           "mapping": {
             "command": "#/components/schemas/CommandMessage",
+            "envs": "#/components/schemas/EnvsMessage",
             "offer": "#/components/schemas/OfferMessage"
           },
           "propertyName": "kind"
@@ -13165,6 +13191,9 @@
           },
           {
             "$ref": "#/components/schemas/OfferMessage"
+          },
+          {
+            "$ref": "#/components/schemas/EnvsMessage"
           }
         ]
       },

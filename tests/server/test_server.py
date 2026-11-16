@@ -18,7 +18,7 @@ import threading
 import time
 import typing
 import uuid
-from collections.abc import AsyncGenerator, AsyncIterator, Generator, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Generator, Sequence
 from compression import zstd
 from pathlib import Path
 from typing import Any, Literal
@@ -2825,6 +2825,59 @@ async def test_a_server_copy_longer_than_the_local_log_is_a_divergence(
     assert shipper.diverged is not None
     assert "past the end of this log" in shipper.diverged
     await runner.client.aclose()
+
+
+def late_profile(name: str, key: str) -> str:
+    return f'\n[profiles.{name}]\nextends = "scripted"\napi_key_env = "{key}"\n'
+
+
+@contextlib.asynccontextmanager
+async def late_runner(
+    cp: CP, local: LocalEventStore
+) -> AsyncGenerator[Callable[[], Awaitable[list[str] | None]]]:
+    """A runner that said hello before the config named the keys it holds, and what it says
+    it holds once its stream is open."""
+    link = Link(ControlClient(cp.url, cp.runner, runner="late"), local, DeltaBus())
+    await link.start()
+
+    async def envs() -> list[str] | None:
+        conn = cp.state.runners.get("late")
+        return None if conn is None or not conn.streams else conn.envs
+
+    try:
+        await until(envs, [])
+        yield envs
+    finally:
+        await link.close()
+
+
+async def test_a_runner_reports_a_key_as_soon_as_the_server_saves_a_profile_naming_it(
+    cp: CP, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AIMS_TEST_KEY_ADDED", "x")
+    # no heartbeat comes in the test's time, so only the save can tell the runner
+    monkeypatch.setattr("aims.node.link.HEARTBEAT_S", 60)
+    async with late_runner(cp, local) as envs, cp.client(cp.operator) as c:
+        layer = (await c.get("/api/config/project")).json()
+        r = await c.put(
+            "/api/config/project",
+            json={"text": layer["text"] + late_profile("added", "AIMS_TEST_KEY_ADDED")},
+            headers={"If-Match": f'"{layer["etag"]}"'},
+        )
+        assert r.status_code == 200, r.text
+        await until(envs, ["AIMS_TEST_KEY_ADDED"])
+
+
+async def test_a_runner_reports_a_key_a_hand_edit_names_at_its_next_heartbeat(
+    cp: CP, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AIMS_TEST_KEY_BY_HAND", "x")
+    monkeypatch.setattr("aims.node.link.HEARTBEAT_S", 0.2)
+    async with late_runner(cp, local) as envs:
+        text = await asyncio.to_thread(cp.project.read_text)
+        added = late_profile("by-hand", "AIMS_TEST_KEY_BY_HAND")
+        await asyncio.to_thread(cp.project.write_text, text + added)
+        await until(envs, ["AIMS_TEST_KEY_BY_HAND"], within=5)
 
 
 async def test_closing_a_link_stops_its_shippers(local: LocalEventStore) -> None:

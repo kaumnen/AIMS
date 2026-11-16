@@ -23,6 +23,7 @@ from aims.wire import (
     Ack,
     CommandMessage,
     Deltas,
+    EnvsMessage,
     Head,
     JobKindName,
     OfferMessage,
@@ -266,10 +267,8 @@ class Link:
         while True:
             try:
                 reply = await self.client.hello(self.hello())
-                if sorted(reply.envs) != self.wanted:
-                    self.wanted = sorted(reply.envs)
-                    with contextlib.suppress(ApiError, httpx2.TransportError, OSError):
-                        await self.client.status(self.status())
+                if self._want(reply.envs):
+                    await self._report()
                 if reply.requeued:
                     log.info("the control plane took back jobs %s", ", ".join(reply.requeued))
                 async with self.client.stream(self._last_id) as source:
@@ -279,12 +278,15 @@ class Link:
                     refused = False
                     denied = 0
                     async for sse in source:
-                        if sse.event not in ("command", "offer"):
+                        if sse.event not in ("command", "offer", "envs"):
                             continue
                         message = FEED.validate_json(sse.data)
                         if isinstance(message, CommandMessage):
                             self._last_id = sse.id or self._last_id
                             self._spawn(self._command(message))
+                        elif isinstance(message, EnvsMessage):
+                            if self._want(message.envs):
+                                self._spawn(self._report())
                         elif self.on_offer is not None:
                             self._spawn(self.on_offer(message))
             except asyncio.CancelledError:
@@ -309,6 +311,18 @@ class Link:
             else:
                 self.connected.clear()
                 await backoff.wait()
+
+    def _want(self, envs: list[str]) -> bool:
+        """Take `envs` as the names to say it has; True when they changed."""
+        if sorted(envs) == self.wanted:
+            return False
+        self.wanted = sorted(envs)
+        return True
+
+    async def _report(self) -> None:
+        """Send the status now, so the control plane hears of the names it asked about."""
+        with contextlib.suppress(ApiError, httpx2.TransportError, OSError):
+            await self.client.status(self.status())
 
     async def _heartbeat(self) -> None:
         while True:

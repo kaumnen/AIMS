@@ -4,7 +4,7 @@ claims jobs it is offered, and ships its runs: blobs first, then exact log lines
 import asyncio
 import contextlib
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 from compression import zstd
 from pathlib import Path
 from typing import Annotated
@@ -33,6 +33,7 @@ from aims.wire import (
     CommandAction,
     CommandMessage,
     Deltas,
+    EnvsMessage,
     Head,
     Heads,
     HeadsReply,
@@ -142,6 +143,15 @@ async def reader(state: ServerState, run_id: str, conn: Connected) -> None:
     raise ProblemException(403, "Forbidden", f"run {run_id} is not yours to read", code="owner")
 
 
+def tell_envs(state: ServerState, conns: Iterable[Connected] | None = None) -> None:
+    """Send each runner of `conns`, by default every one, the env names the config wants now,
+    when they differ from what it was last told. It says which it has in its next status."""
+    wanted = wanted_envs(state)
+    for conn in state.runners.values() if conns is None else conns:
+        if conn.told != wanted and send(state, conn.name, EnvsMessage(envs=wanted)):
+            conn.told = wanted
+
+
 def wanted_envs(state: ServerState) -> list[str]:
     try:
         settings = state.config.settings()
@@ -216,7 +226,8 @@ async def runner_hello(
             state.changes.touch(job.run_id)
     state.runner_changed()
     state.poke()
-    return HelloReply(name=body.name, requeued=requeued, envs=wanted_envs(state))
+    conn.told = wanted_envs(state)
+    return HelloReply(name=body.name, requeued=requeued, envs=conn.told)
 
 
 @router.post("/status", status_code=204)
@@ -226,15 +237,20 @@ async def runner_status(
     conn = connected(state, principal, name)
     conn.status = body
     await state.db.seen(conn.name)
+    # a config edited by hand reaches each runner at its next heartbeat
+    tell_envs(state, [conn])
     state.runner_changed()
     state.poke()
 
 
-def _feed_event(message: CommandMessage | OfferMessage) -> ServerSentEvent:
+def _feed_event(message: CommandMessage | OfferMessage | EnvsMessage) -> ServerSentEvent:
     if isinstance(message, CommandMessage):
         # a lone surrogate, stored before the API refused it, would end the stream at each try
         message = CommandMessage.model_validate(scrub(message.model_dump()))
         return ServerSentEvent(data=message, event="command", id=str(message.seq))
+    # no id, so the runner's place in its commands stays where it is
+    if isinstance(message, EnvsMessage):
+        return ServerSentEvent(data=message, event="envs")
     return ServerSentEvent(data=message, event="offer")
 
 
@@ -255,6 +271,9 @@ async def runner_stream(
     stop = asyncio.create_task(state.stopping.wait())
     try:
         yield ServerSentEvent(comment="connected", retry=2000)
+        # what was sent on a stream this one replaces may never have arrived
+        conn.told = wanted_envs(state)
+        yield _feed_event(EnvsMessage(envs=conn.told))
         sent: set[str] = set()
         for c in await state.db.pending_commands(conn.name):
             sent.add(c.id)
@@ -655,7 +674,9 @@ async def run_blob(
     return _stored(state, run_id, sha256)
 
 
-def send(state: ServerState, runner: str, message: CommandMessage | OfferMessage) -> bool:
+def send(
+    state: ServerState, runner: str, message: CommandMessage | OfferMessage | EnvsMessage
+) -> bool:
     """Put a message on a runner's stream. False if it has none open."""
     conn = state.runners.get(runner)
     if conn is None or conn.streams <= 0:
