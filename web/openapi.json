@@ -13995,7 +13995,25 @@
         "type": "object"
       },
       "ScenarioCheck": {
+        "description": "`profile` and `monitor` as `aims scenario check` takes them.",
         "properties": {
+          "monitor": {
+            "anyOf": [
+              {
+                "enum": [
+                  "off",
+                  "signals",
+                  "standard",
+                  "research"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Monitor"
+          },
           "profile": {
             "anyOf": [
               {
@@ -14017,6 +14035,44 @@
           "text"
         ],
         "title": "ScenarioCheck",
+        "type": "object"
+      },
+      "ScenarioCheckResult": {
+        "properties": {
+          "errors": {
+            "items": {
+              "$ref": "#/components/schemas/ProblemError"
+            },
+            "title": "Errors",
+            "type": "array"
+          },
+          "notes": {
+            "description": "Roles the config leaves unset, each with its fix: the project's to set, not a fault of the scenario.",
+            "items": {
+              "$ref": "#/components/schemas/ProblemError"
+            },
+            "title": "Notes",
+            "type": "array"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/ProblemError"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "ok",
+          "errors",
+          "warnings",
+          "notes"
+        ],
+        "title": "ScenarioCheckResult",
         "type": "object"
       },
       "ScenarioDetail": {
@@ -23175,7 +23231,7 @@
     },
     "/api/scenarios/check": {
       "post": {
-        "description": "Validate scenario YAML: the schema with YAML lines, then the profiles, tools and texts\nit names as warnings.",
+        "description": "Validate scenario YAML: the schema with YAML lines, then as warnings the profiles,\ntools and texts it names and its monitor, as `aims scenario check` does.",
         "operationId": "check_scenario",
         "requestBody": {
           "content": {
@@ -23192,7 +23248,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CheckResult"
+                  "$ref": "#/components/schemas/ScenarioCheckResult"
                 }
               }
             },

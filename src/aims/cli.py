@@ -748,6 +748,10 @@ def scenario_check(
     plant it claims, and an impossible plant's verifier must fail its reference and an
     untouched workdir. Each is a run of scripted agents, checked as `aims check` checks a run.
     The agents follow scripts, so it needs no model."""
+    from typing import cast
+
+    from aims.monitor.config import Preset
+    from aims.run.job import monitor_problems
     from aims.run.runner import check
     from aims.scenario import ScenarioError, load
 
@@ -762,7 +766,15 @@ def scenario_check(
     except ScenarioError as e:
         problems = str(e).splitlines()
     else:
-        problems += _monitor_problems(settings, bundle, profile, monitor, notes)
+        problems += monitor_problems(
+            settings.models,
+            settings.prompts,
+            bundle.scenario,
+            layers=settings.monitor,
+            profile=profile,
+            preset=cast("Preset | None", monitor),
+            notes=notes,
+        )
         if bundle.scenario.plants:
             from aims.run import truth
 
@@ -901,59 +913,6 @@ def _echo_estimate(
         return
     for line in cost.lines:
         _echo(line)
-
-
-def _monitor_problems(
-    settings: Any, bundle: Any, profile: str | None, preset: Any, notes: list[str]
-) -> list[str]:
-    """What stops the scenario's monitor under `preset`: bad rules or signal options, and
-    monitor models that do not resolve or watch an agent's own model. A role it needs that is
-    unset goes to `notes`; a profile its config names must still exist."""
-    import contextlib
-
-    from aims.models import ProfileError, UnsetRole
-    from aims.monitor.config import MonitorConfigError
-    from aims.monitor.setup import resolve_config
-    from aims.monitor.signals.engine import check_signals
-    from aims.prompts import TextError
-    from aims.run.job import monitor_for
-    from aims.run.runner import agent_profile
-
-    scenario = bundle.scenario
-    try:
-        config = resolve_config(settings.monitor, scenario, preset)
-    except MonitorConfigError as e:
-        return [f"monitor: {e}"]
-    problems = [f"monitor: {p}" for p in check_signals(config, scenario)]
-    if problems:
-        return problems
-    agents = []
-    for a in scenario.agents:
-        # the agent's own check reports a profile that does not resolve
-        with contextlib.suppress(ProfileError):
-            agents.append(agent_profile(settings.models, a, profile))
-    try:
-        monitor_for(
-            settings.models,
-            settings.prompts,
-            scenario,
-            agents,
-            layers=settings.monitor,
-            preset=preset,
-        )
-    except UnsetRole as e:
-        notes.append(f"monitor: {e}")
-        if config.models_on:
-            named = [s.profile for s in config.sweeps] + [config.review.profile]
-            named += [c.profile for c in (config.channels, config.judge) if c is not None]
-            for name in dict.fromkeys(n for n in named if n):
-                try:
-                    settings.models.get(name)
-                except ProfileError as missing:
-                    problems.append(f"monitor: {missing}")
-    except (MonitorConfigError, ProfileError, TextError) as e:
-        problems.append(f"monitor: {e}")
-    return problems
 
 
 @scenario_app.command("delete")

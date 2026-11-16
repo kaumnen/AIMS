@@ -68,15 +68,23 @@ beforeEach(() => {
     if (url.pathname === "/api/scenarios/schema") return Response.json({ properties: {} });
     if (url.pathname === "/api/scenarios/check") {
       const { text } = (await request.json()) as { text: string };
-      return Response.json(
-        text.includes("nope")
-          ? {
-              ok: false,
-              errors: [{ msg: "Input should be 'observe'", line: 3, loc: [] }],
-              warnings: [],
-            }
-          : { ok: true, errors: [], warnings: [] },
-      );
+      if (text.includes("nope")) {
+        return Response.json({
+          ok: false,
+          errors: [{ msg: "Input should be 'observe'", line: 3, loc: [] }],
+          warnings: [],
+          notes: [],
+        });
+      }
+      if (text.includes("roles")) {
+        return Response.json({
+          ok: true,
+          errors: [],
+          warnings: [{ msg: "monitor: unknown profile 'gone'", line: null, loc: [] }],
+          notes: [{ msg: "agent a: no profile has the agent role", line: null, loc: [] }],
+        });
+      }
+      return Response.json({ ok: true, errors: [], warnings: [], notes: [] });
     }
     return Response.json({});
   });
@@ -133,6 +141,16 @@ test("scenario.yaml is checked as you type and problems point at their line", as
   expect(screen.getByText("1 error")).toBeTruthy();
   type(view, "nope", "observe");
   await waitFor(() => expect(screen.queryByText("1 error")).toBeNull(), { timeout: 3000 });
+});
+
+test("an unset role shows as a note, apart from the warnings", async () => {
+  renderTab();
+  const view = await editor();
+  type(view, "observe", "observe # roles");
+  expect(await screen.findByText("1 warning, 1 note", {}, { timeout: 3000 })).toBeTruthy();
+  const problems = screen.getByRole("list", { name: "Problems" });
+  expect(problems.textContent).toContain("warningmonitor: unknown profile 'gone'");
+  expect(problems.textContent).toContain("noteagent a: no profile has the agent role");
 });
 
 test("a save names the version it replaces", async () => {

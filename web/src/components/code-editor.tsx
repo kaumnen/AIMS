@@ -40,11 +40,12 @@ import { reflow } from "@/lib/scenario";
 import { cn } from "@/lib/utils";
 import { hoverAt, keyOptions, placeAt, type Schema, valueOptions } from "@/lib/yaml-schema";
 
-// Problems found in the text, by line (1-based); a line of null marks the whole file.
+// Problems found in the text, by line (1-based); a line of null marks the whole file. An info
+// is a note, such as a role the config leaves unset: no fault of the text.
 export interface LineProblem {
   line: number | null;
   msg: string;
-  severity: "error" | "warning";
+  severity: "error" | "warning" | "info";
 }
 
 const theme = EditorView.theme({
@@ -377,10 +378,8 @@ export function Problems({
     <ul aria-label="Problems" className="flex flex-col gap-0.5">
       {problems.map((p) => (
         <li key={`${p.severity}:${p.line}:${p.msg}`} className="flex gap-2">
-          <span
-            className={cn("w-16 shrink-0", p.severity === "warning" && "text-muted-foreground")}
-          >
-            {p.severity}
+          <span className={cn("w-16 shrink-0", p.severity !== "error" && "text-muted-foreground")}>
+            {p.severity === "info" ? "note" : p.severity}
           </span>
           {p.line !== null ? (
             <button

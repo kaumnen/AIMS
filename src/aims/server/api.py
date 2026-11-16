@@ -85,7 +85,14 @@ from aims.run.fork import (
     load_origin,
     replayable_steps,
 )
-from aims.run.job import Job, fork_jobs, monitor_for, scenario_jobs, selftest_job
+from aims.run.job import (
+    Job,
+    fork_jobs,
+    monitor_for,
+    monitor_problems,
+    scenario_jobs,
+    selftest_job,
+)
 from aims.run.runner import Fork, RunError, agent_profile, check, text_problems
 from aims.scenario import Bundle, Scenario, ScenarioError, folder_tar, load, parse
 from aims.scenario import budget as budgets
@@ -2300,8 +2307,11 @@ async def scenario_schema(principal: Viewer) -> dict[str, object]:
 
 
 class ScenarioCheck(BaseModel):
+    """`profile` and `monitor` as `aims scenario check` takes them."""
+
     text: Utf8 = Field(max_length=1024 * 1024)
     profile: Utf8 | None = None
+    monitor: Preset | None = None
 
 
 class CheckResult(Out):
@@ -2310,18 +2320,48 @@ class CheckResult(Out):
     warnings: list[ProblemError]
 
 
+class ScenarioCheckResult(CheckResult):
+    notes: list[ProblemError] = Field(
+        default_factory=list,
+        description="Roles the config leaves unset, each with its fix: the project's to set,"
+        " not a fault of the scenario.",
+    )
+
+
 @router.post("/scenarios/check", tags=["scenarios"])
-async def check_scenario(body: ScenarioCheck, principal: Viewer, state: State) -> CheckResult:
-    """Validate scenario YAML: the schema with YAML lines, then the profiles, tools and texts
-    it names as warnings."""
+async def check_scenario(
+    body: ScenarioCheck, principal: Viewer, state: State
+) -> ScenarioCheckResult:
+    """Validate scenario YAML: the schema with YAML lines, then as warnings the profiles,
+    tools and texts it names and its monitor, as `aims scenario check` does."""
     try:
         scenario = parse(body.text, source="scenario.yaml")
     except ScenarioError as e:
-        return CheckResult(ok=False, errors=scenario_problems(e), warnings=[])
+        return ScenarioCheckResult(ok=False, errors=scenario_problems(e), warnings=[])
     settings = state.config.settings()
     bundle = Bundle(scenario, body.text.encode())
-    warnings = check(bundle, settings.models, body.profile, settings.prompts)
-    return CheckResult(ok=True, errors=[], warnings=[ProblemError(msg=w) for w in warnings])
+    notes: list[str] = []
+
+    def problems() -> list[str]:
+        found = check(bundle, settings.models, body.profile, settings.prompts, unset=notes)
+        return found + monitor_problems(
+            settings.models,
+            settings.prompts,
+            scenario,
+            layers=settings.monitor,
+            profile=body.profile,
+            preset=body.monitor,
+            notes=notes,
+        )
+
+    # tens of ms each time the editor settles, so off the event loop
+    warnings = await asyncio.to_thread(problems)
+    return ScenarioCheckResult(
+        ok=True,
+        errors=[],
+        warnings=[ProblemError(msg=w) for w in warnings],
+        notes=[ProblemError(msg=n) for n in notes],
+    )
 
 
 class StartSelfTest(BaseModel):

@@ -89,6 +89,8 @@ class Agent:
         self.usage = {"input_tokens": 0, "cached_tokens": 0, "output_tokens": 0}
         self.cost = 0.0
         self.digest = sha(f"tree {name}")
+        # what a scripted agent submitted
+        self.answer: str | None = None
 
     def kernel(self, exec_id: str, pid: int) -> dict[str, Any]:
         self.cpu_seq += 1
@@ -205,6 +207,7 @@ async def step(
     needle: bool,
     last: bool = False,
 ) -> list[Event]:
+    """One agent step: a model call and the tool call it makes."""
     rng = agent.rng
     agent.n += 1
     n = agent.n
@@ -303,21 +306,80 @@ async def step(
         ],
     )
     if tool != "bash":
-        clock.wait(rng.randint(5, 40))
-        result = "submitted" if tool == "submit" else f"Edited /work/{rng.choice(FILES)}."
-        out += await store.append(
-            run_id,
-            [
-                draft(
-                    "tool.result",
-                    agent.name,
-                    call_id=tool_call,
-                    output=result,
-                    output_bytes=len(result),
-                )
-            ],
+        return out + await tool_result(store, run_id, clock, agent, tool, tool_call)
+    return out + await run_command(
+        store, run_id, clock, agent, cmd, kernel_records, call_id=tool_call, needle=needle
+    )
+
+
+async def scripted_step(
+    store: LocalEventStore,
+    run_id: str,
+    clock: Clock,
+    agent: Agent,
+    kernel_records: int,
+    *,
+    last: bool,
+) -> list[Event]:
+    """A step of a scripted agent: its last calls submit, the others run a command."""
+    rng = agent.rng
+    agent.n += 1
+    out = await store.append(run_id, [agent.sample() for _ in range(rng.randint(1, 4))])
+    clock.wait(rng.randint(5, 40))
+    if not last:
+        cmd = command(rng)
+        return out + await run_command(
+            store, run_id, clock, agent, cmd, kernel_records, call_id=None, needle=False
         )
-        return out
+    tool_call = str(uuid.uuid7())
+    answer = agent.answer = f"Fixed the {words(rng, 3)}; the test suite passes."
+    out += await store.append(
+        run_id,
+        [
+            draft(
+                "tool.call",
+                agent.name,
+                call_id=tool_call,
+                name="submit",
+                arguments=json.dumps({"answer": answer}),
+            )
+        ],
+    )
+    return out + await tool_result(store, run_id, clock, agent, "submit", tool_call)
+
+
+async def tool_result(
+    store: LocalEventStore, run_id: str, clock: Clock, agent: Agent, tool: str, call_id: str
+) -> list[Event]:
+    """What a tool other than bash answers."""
+    rng = agent.rng
+    clock.wait(rng.randint(5, 40))
+    result = "submitted" if tool == "submit" else f"Edited /work/{rng.choice(FILES)}."
+    return await store.append(
+        run_id,
+        [
+            draft(
+                "tool.result", agent.name, call_id=call_id, output=result, output_bytes=len(result)
+            )
+        ],
+    )
+
+
+async def run_command(
+    store: LocalEventStore,
+    run_id: str,
+    clock: Clock,
+    agent: Agent,
+    cmd: str,
+    kernel_records: int,
+    *,
+    call_id: str | None,
+    needle: bool,
+) -> list[Event]:
+    """A command in the agent's sandbox: the bash call `call_id`, or a scripted step's command
+    when None, which has no tool result."""
+    rng = agent.rng
+    n = agent.n
     exec_id = str(uuid.uuid7())
     text_out, code = output(rng, cmd, needle)
     shell = agent.pid = agent.pid + 1
@@ -326,7 +388,7 @@ async def step(
             "exec.started",
             agent.name,
             exec_id=exec_id,
-            call_id=tool_call,
+            call_id=call_id,
             command=cmd,
             wrapper=[
                 "/.aims/aims-exec",
@@ -459,7 +521,7 @@ async def step(
             "exec.finished",
             agent.name,
             exec_id=exec_id,
-            call_id=tool_call,
+            call_id=call_id,
             end="exited",
             exit_code=code,
             pid=shell,
@@ -471,18 +533,20 @@ async def step(
             truncated=False,
             procs=procs,
         ),
-        draft(
-            "tool.result",
-            agent.name,
-            call_id=tool_call,
-            output=stdout,
-            error=code != 0,
-            output_bytes=len(text_out),
-        ),
     ]
+    if call_id is not None:
+        records.append(
+            draft(
+                "tool.result",
+                agent.name,
+                call_id=call_id,
+                output=stdout,
+                error=code != 0,
+                output_bytes=len(text_out),
+            )
+        )
     agent.digest = sha(f"{agent.digest} {n}")
-    out += await store.append(run_id, records)
-    return out
+    return await store.append(run_id, records)
 
 
 def flag(rng: random.Random, agent: str, events: Sequence[Event]) -> Draft:
@@ -524,8 +588,15 @@ def started(scenario: str, agents: Sequence[str], rng: random.Random) -> RunStar
 
 
 async def opening(
-    store: LocalEventStore, run_id: str, agents: Sequence[Agent], instruction: str
+    store: LocalEventStore,
+    run_id: str,
+    agents: Sequence[Agent],
+    instruction: str,
+    *,
+    scripted: bool = False,
 ) -> None:
+    """Each agent's sandbox and start. A `scripted` agent records the self-test's placeholder
+    profile and gets no instruction, as it reads none."""
     drafts: list[Draft] = []
     for a in agents:
         drafts += [
@@ -542,23 +613,49 @@ async def opening(
             draft(
                 "agent.started",
                 a.name,
-                profile=PROFILE,
-                model=MODEL,
-                backend="chat",
+                profile="scripted" if scripted else PROFILE,
+                model="scripted" if scripted else MODEL,
+                backend=None if scripted else "chat",
                 tools=["bash", "edit", "submit"],
-                system="You are working in a Linux environment through the tools you are given.",
+                system=""
+                if scripted
+                else "You are working in a Linux environment through the tools you are given.",
                 budget={"steps": 250, "cost_usd": 10, "wall_s": 14400},
             ),
-            draft("agent.input", a.name, kind="instruction", step=0, text=instruction),
         ]
+        if not scripted:
+            drafts.append(
+                draft("agent.input", a.name, kind="instruction", step=0, text=instruction)
+            )
     await store.append(run_id, drafts)
 
 
 async def closing(
-    store: LocalEventStore, run_id: str, agents: Sequence[Agent], status: str, reward: float
+    store: LocalEventStore,
+    run_id: str,
+    agents: Sequence[Agent],
+    status: str,
+    reward: float,
+    *,
+    scripted: bool = False,
 ) -> None:
+    """Each agent's end, the score and the run's end. A `scripted` agent used no model, so it
+    records no usage or cost; with no submit it ran out of script."""
     drafts: list[Draft] = []
     for a in agents:
+        if scripted:
+            drafts.append(
+                draft(
+                    "agent.finished",
+                    a.name,
+                    reason="submitted" if a.answer else "no_submit",
+                    detail=None if a.answer else "the steps finished",
+                    answer=a.answer,
+                    steps=a.n,
+                    wall_ms=a.n * 40,
+                )
+            )
+            continue
         submitted = status == "completed"
         drafts.append(
             draft(
@@ -946,11 +1043,13 @@ async def selftest_run(store: LocalEventStore, clock: Clock, rng: random.Random)
                 origin=parent,
             )
         )
-        body = await store.put_blob(case, b"{}")
-        await opening(store, case, agents, "Fix the failing tests in /work without editing tests.")
-        for _ in range(rng.randint(2, 4)):
-            await step(store, case, clock, agents[0], body, rng.randint(1, 4), needle=False)
-        await closing(store, case, agents, "completed", 0.25 if kind == "empty" else 1.0)
+        await opening(store, case, agents, "", scripted=True)
+        # the untouched-workdir case runs no step
+        n = 0 if kind == "empty" else rng.randint(2, 4)
+        for i in range(n):
+            await scripted_step(store, case, clock, agents[0], rng.randint(1, 4), last=i == n - 1)
+        reward = 0.25 if kind == "empty" else 1.0
+        await closing(store, case, agents, "completed", reward, scripted=True)
         cases.append(case)
         await store.append(
             parent,

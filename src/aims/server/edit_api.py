@@ -865,5 +865,6 @@ async def patch_prompts(
             await asyncio.to_thread(write_atomic, path, data)
     settings = state.config.settings()
     bundle = Bundle(scenario, data)
-    warnings = [ProblemError(msg=w) for w in check(bundle, settings.models, None, settings.prompts)]
-    return Saved(path=SCENARIO, etag=etag(data), warnings=warnings)
+    # a role the config leaves unset is not the texts' fault; the editor shows it as a note
+    found = check(bundle, settings.models, None, settings.prompts, unset=[])
+    return Saved(path=SCENARIO, etag=etag(data), warnings=[ProblemError(msg=w) for w in found])

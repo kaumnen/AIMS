@@ -6,7 +6,7 @@ import { client, type Schemas } from "./client";
 
 export type FileInfo = Schemas["FileInfo"];
 export type Saved = Schemas["Saved"];
-export type CheckResult = Schemas["CheckResult"];
+export type CheckResult = Schemas["ScenarioCheckResult"];
 
 export const SCENARIO_FILE = "scenario.yaml";
 // Larger files open as a note, not in the editor.

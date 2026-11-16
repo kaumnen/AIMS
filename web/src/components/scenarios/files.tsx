@@ -89,6 +89,7 @@ export default function FilesTab({
         setProblems([
           ...r.errors.map((e) => ({ line: lineOf(e), msg: e.msg, severity: "error" as const })),
           ...r.warnings.map((w) => ({ line: lineOf(w), msg: w.msg, severity: "warning" as const })),
+          ...r.notes.map((n) => ({ line: lineOf(n), msg: n.msg, severity: "info" as const })),
         ]);
       })
       .catch(() => undefined);
@@ -194,7 +195,8 @@ export default function FilesTab({
   };
 
   const errors = problems.filter((p) => p.severity === "error").length;
-  const warnings = problems.length - errors;
+  const warnings = problems.filter((p) => p.severity === "warning").length;
+  const notes = problems.length - errors - warnings;
   return (
     <div className="grid min-h-0 gap-4 md:grid-cols-[14rem_minmax(0,1fr)]">
       <nav aria-label="Files" className="flex min-w-0 flex-col gap-1">
@@ -242,9 +244,13 @@ export default function FilesTab({
                     ? `${base.size.toLocaleString("en-US")} bytes`
                     : ""))}
           </span>
-          {isScenario && (errors > 0 || warnings > 0) && (
+          {isScenario && problems.length > 0 && (
             <span className={cn(errors > 0 && "font-medium")}>
-              {[errors > 0 && plural(errors, "error"), warnings > 0 && plural(warnings, "warning")]
+              {[
+                errors > 0 && plural(errors, "error"),
+                warnings > 0 && plural(warnings, "warning"),
+                notes > 0 && plural(notes, "note"),
+              ]
                 .filter(Boolean)
                 .join(", ")}
             </span>

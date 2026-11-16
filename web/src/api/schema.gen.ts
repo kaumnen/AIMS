@@ -994,8 +994,8 @@ export interface paths {
         put?: never;
         /**
          * Check Scenario
-         * @description Validate scenario YAML: the schema with YAML lines, then the profiles, tools and texts
-         *     it names as warnings.
+         * @description Validate scenario YAML: the schema with YAML lines, then as warnings the profiles,
+         *     tools and texts it names and its monitor, as `aims scenario check` does.
          */
         post: operations["check_scenario"];
         delete?: never;
@@ -6974,12 +6974,31 @@ export interface components {
             /** Warnings */
             warnings: components["schemas"]["ProblemError"][];
         };
-        /** ScenarioCheck */
+        /**
+         * ScenarioCheck
+         * @description `profile` and `monitor` as `aims scenario check` takes them.
+         */
         ScenarioCheck: {
+            /** Monitor */
+            monitor?: ("off" | "signals" | "standard" | "research") | null;
             /** Profile */
             profile?: string | null;
             /** Text */
             text: string;
+        };
+        /** ScenarioCheckResult */
+        ScenarioCheckResult: {
+            /** Errors */
+            errors: components["schemas"]["ProblemError"][];
+            /**
+             * Notes
+             * @description Roles the config leaves unset, each with its fix: the project's to set, not a fault of the scenario.
+             */
+            notes: components["schemas"]["ProblemError"][];
+            /** Ok */
+            ok: boolean;
+            /** Warnings */
+            warnings: components["schemas"]["ProblemError"][];
         };
         /**
          * ScenarioDetail
@@ -12145,7 +12164,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CheckResult"];
+                    "application/json": components["schemas"]["ScenarioCheckResult"];
                 };
             };
             /** @description Not signed in */
@@ -15453,6 +15472,7 @@ export const sandboxFreezeFailedWantedValues: ReadonlyArray<FlattenedDeepRequire
 export const sandboxOutsidePauseStateValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["SandboxOutsidePause"]["state"]> = ["paused", "running"];
 export const sandboxStartedAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["SandboxStarted"]["audit"]> = ["kernel", "snapshot"];
 export const sandboxStoppedReasonValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["SandboxStopped"]["reason"]> = ["closed", "killed", "exec_failed"];
+export const scenarioCheckMonitorAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScenarioCheck"]["monitor"]> = ["off", "signals", "standard", "research"];
 export const scenarioInfoOversightAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScenarioInfo"]["oversight"]> = ["observe", "autonomous", "human"];
 export const scoreAnswerCauseValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreAnswer"]["cause"]> = ["true", "false", "none"];
 export const scoreAnswerToldValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ScoreAnswer"]["told"]> = ["yes", "partly", "no"];

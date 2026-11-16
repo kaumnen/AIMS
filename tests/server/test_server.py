@@ -1207,7 +1207,7 @@ async def test_a_scenario_with_a_lone_surrogate_escape_is_refused_where_it_loads
         assert (r.status_code, r.json()["errors"]) == (422, [error])
         assert path.read_text() == SCENARIO
         r = await c.post("/api/scenarios/check", json={"text": escaped})
-        assert r.json() == {"ok": False, "errors": [error], "warnings": []}
+        assert r.json() == {"ok": False, "errors": [error], "warnings": [], "notes": []}
         # written by hand, it loads nowhere and lists as a scenario that does not load
         path.write_text(escaped)
         r = await c.post("/api/runs", json={"scenario": {"source": "project", "name": "control"}})
@@ -1957,6 +1957,50 @@ async def test_prompt_overrides_are_patched_in_place(cp: CP) -> None:
         r = await c.patch(url, json=undo, headers={"If-Match": f'"{new}"'})
         assert r.status_code == 200, r.text
         assert path.read_text() == original
+
+
+async def test_scenario_check_notes_unset_roles_and_checks_the_monitor(cp: CP) -> None:
+    text = (cp.project.parent / "scenarios/control/scenario.yaml").read_text()
+    odd = "    - {id: odd, title: Odd, event: no.such.event, category: drift, importance: 2}\n"
+
+    async def check(**body: str) -> dict[str, Any]:
+        r = await c.post("/api/scenarios/check", json=body)
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    def msgs(found: list[dict[str, Any]]) -> list[str]:
+        return [p["msg"] for p in found]
+
+    async with cp.client(cp.viewer) as c:
+        found = await check(text=text)
+        assert found["ok"]
+        assert found["warnings"] == []
+        assert [m.split(";")[0] for m in msgs(found["notes"])] == [
+            "monitor: no profile has the sweep role"
+        ]
+        found = await check(text=text, monitor="signals")
+        assert (found["warnings"], found["notes"]) == ([], [])
+        found = await check(text=text + f"monitor:\n  preset: signals\n  rules:\n{odd}")
+        assert found["ok"]
+        assert len(found["warnings"]) == 1
+        assert found["warnings"][0]["msg"].startswith("monitor: ")
+        assert "no.such.event" in found["warnings"][0]["msg"]
+        assert found["notes"] == []
+        r = await c.post("/api/scenarios/check", json={"text": text, "monitor": "loud"})
+        assert r.status_code == 422
+    # with no roles set, the agent's role is a note in the check and not a warning on a save
+    cp.project.write_text(cp.project.read_text().replace('[roles]\nagent = "scripted"\n', ""))
+    async with cp.client(cp.operator) as c:
+        found = await check(text=text, monitor="signals")
+        assert found["warnings"] == []
+        assert [m.split(";")[0] for m in msgs(found["notes"])] == [
+            "agent a: no profile has the agent role"
+        ]
+        tag = (await c.get("/api/scenarios/project/control")).json()["etag"]
+        body = {"set": [{"agent": "a", "key": ["nudge"], "value": "Keep going."}]}
+        r = await c.patch(PROMPTS, json=body, headers={"If-Match": f'"{tag}"'})
+        assert r.status_code == 200, r.text
+        assert r.json()["warnings"] == []
 
 
 # The live stream

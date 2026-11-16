@@ -15,12 +15,13 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from aims.events import AuditLevel, EventStore, Oversight, Series
-from aims.models import ModelsConfig, Profile
+from aims.models import ModelsConfig, Profile, ProfileError, UnsetRole
 from aims.monitor.config import MonitorConfigError, Preset
 from aims.monitor.setup import ResolvedMonitor, resolve_config, resolve_monitor
 from aims.monitor.signals import signal_versions
 from aims.monitor.signals.base import SignalError
-from aims.prompts import Prompts
+from aims.monitor.signals.engine import check_signals
+from aims.prompts import Prompts, TextError
 from aims.run import selftest
 from aims.run.fork import CutAt, Origin, fork_of, fork_profiles, fork_schedules, planner
 from aims.run.runner import Bench, Fork, Options, RunError, Runner, Texts, agent_profile
@@ -161,6 +162,48 @@ def monitor_for(
     return resolve_monitor(
         models, prompts, scenario, agents, layers=layers, preset=preset, signals=versions
     )
+
+
+def monitor_problems(
+    models: ModelsConfig,
+    prompts: Prompts,
+    scenario: Scenario,
+    *,
+    layers: Sequence[Mapping[str, Any]] = (),
+    profile: str | None = None,
+    preset: Preset | None = None,
+    notes: list[str],
+) -> list[str]:
+    """What stops the monitor of a run of `scenario` under `preset`: bad rules or signal
+    options, and monitor models that do not resolve or watch an agent's own model. A role it
+    needs that is unset goes to `notes`; a profile its config names must still exist."""
+    try:
+        config = resolve_config(layers, scenario, preset)
+    except MonitorConfigError as e:
+        return [f"monitor: {e}"]
+    problems = [f"monitor: {p}" for p in check_signals(config, scenario)]
+    if problems:
+        return problems
+    agents = []
+    for a in scenario.agents:
+        # the agent's own check reports a profile that does not resolve
+        with contextlib.suppress(ProfileError):
+            agents.append(agent_profile(models, a, profile))
+    try:
+        monitor_for(models, prompts, scenario, agents, layers=layers, preset=preset)
+    except UnsetRole as e:
+        notes.append(f"monitor: {e}")
+        if config.models_on:
+            named = [s.profile for s in config.sweeps] + [config.review.profile]
+            named += [c.profile for c in (config.channels, config.judge) if c is not None]
+            for name in dict.fromkeys(n for n in named if n):
+                try:
+                    models.get(name)
+                except ProfileError as missing:
+                    problems.append(f"monitor: {missing}")
+    except (MonitorConfigError, ProfileError, TextError) as e:
+        problems.append(f"monitor: {e}")
+    return problems
 
 
 def monitor_profiles(monitor: ResolvedMonitor | None) -> dict[str, Profile]:

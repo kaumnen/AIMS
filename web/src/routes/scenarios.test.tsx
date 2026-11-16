@@ -174,7 +174,7 @@ beforeEach(() => {
       return new Response(TEXT, { headers: { ETag: '"e1"' } });
     }
     if (url.pathname === "/api/scenarios/check") {
-      return Response.json({ ok: true, errors: [], warnings: [] });
+      return Response.json({ ok: true, errors: [], warnings: [], notes: [] });
     }
     if (/^\/api\/scenarios\/project\/cache-keys(-copy)?\/estimate$/.test(url.pathname))
       return Response.json({
