@@ -139,7 +139,7 @@ npx skills add kaumnen/AIMS -a claude-code   # or -a codex
 
 A profile in `aims.toml` says how to reach a model. The roles `agent`, `sweep` and `judge` each name one. Keys come from the environment only. `aims init` writes a commented starter file.
 
-Layers, lowest first: defaults, `~/.config/aims/config.toml`, the nearest `aims.toml`, the scenario, flags. They can change every text the agents and the monitor read. `aims prompts show` prints those texts. More in [Models](https://github.com/kaumnen/AIMS/blob/main/docs/models.md).
+Layers, lowest first: defaults, `~/.config/aims/config.toml`, the nearest `aims.toml`, the scenario, flags. `$AIMS_CONFIG_DIR` moves the user file. `aims config` shows which files are read. The layers can change every text the agents and the monitor read. `aims prompts show` prints those texts. More in [Models](https://github.com/kaumnen/AIMS/blob/main/docs/models.md).
 
 ## Deploy
 
