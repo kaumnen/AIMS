@@ -1303,19 +1303,27 @@ def _side_line(name: str, f: CostFigures) -> str:
     return " ".join(words)
 
 
+def _calls_priced(part: VariantCost) -> bool:
+    """Whether a side of `part` that calls a model has a price, so its cost is counted."""
+    watched = (
+        part.monitor is not None and part.monitor_preset in MODEL_PRESETS and part.monitor.priced
+    )
+    return part.agents.priced or watched
+
+
 def _total_line(e: Estimate, count: int) -> str:
+    head = "Total:" if count == 1 else f"Total for {count} runs:"
+    if not any(_calls_priced(p) for p in e.parts):
+        return f"{head} not counted, as no model it calls has a price."
     t = e.total
     known = t.typical_usd is not None and t.high_usd is not None
-    if count == 1:
-        words = ["Total:"]
-        if known:
-            words.append(f"typically {usd(t.typical_usd or 0)}.")
-            words.append(f"1 in 10 runs exceeds {usd(t.high_usd or 0)}.")
-    else:
-        words = [f"Total for {count} runs:"]
-        if known:
-            typical, high = usd(t.typical_usd or 0), usd(t.high_usd or 0)
-            words.append(f"typically {typical}, {high} if every run is high.")
+    words = [head]
+    if known and count == 1:
+        words.append(f"typically {usd(t.typical_usd or 0)}.")
+        words.append(f"1 in 10 runs exceeds {usd(t.high_usd or 0)}.")
+    elif known:
+        typical, high = usd(t.typical_usd or 0), usd(t.high_usd or 0)
+        words.append(f"typically {typical}, {high} if every run is high.")
     cap = "exceed: no cap set." if t.ceiling_usd is None else f"exceed {usd(t.ceiling_usd)}."
     words.append(("Cannot " if known else "cannot ") + cap)
     return " ".join(words)

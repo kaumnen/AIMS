@@ -533,6 +533,50 @@ async def test_a_profile_without_a_price_is_named_and_not_counted(tmp_path: Path
     assert not e.confirm
 
 
+UNPRICED_WATCHER = """
+[profiles.free-watch]
+backend = "chat"
+base_url = "https://api.another.ai/inference/v1"
+model = "free-watch-model"
+weights = "free-watch-weights"
+reasoning = "full"
+"""
+FREE_WATCH = CONFIG.replace(
+    'sweep = "watcher"\njudge = "watcher"', 'sweep = "free-watch"\njudge = "free-watch"'
+)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("samples", "head"), [(1, "Total:"), (2, "Total for 2 runs:")])
+@pytest.mark.parametrize("preset", ["signals", "standard"])
+async def test_with_no_priced_model_the_total_is_not_counted(
+    tmp_path: Path, samples: int, head: str, preset: str
+) -> None:
+    assert FREE_WATCH != CONFIG
+    settings, path = write(
+        tmp_path,
+        budget="{steps: 10, cost_usd: 0.05}",
+        preset=preset,
+        config=FREE_WATCH + UNPRICED_WATCHER,
+    )
+    e = await one(settings, History(), load_scenario(path), profile="served", samples=samples)
+    assert f"{head} not counted, as no model it calls has a price." in e.lines
+    assert not any("Cannot exceed $0.00" in line for line in e.lines)
+    assert not e.confirm
+
+
+@pytest.mark.anyio
+async def test_a_priced_monitor_keeps_the_total_when_the_agents_have_no_price(
+    tmp_path: Path,
+) -> None:
+    settings, path = write(tmp_path, preset="standard")
+    e = await one(settings, History(), load_scenario(path), profile="served")
+    assert "Agents: no list price, so not counted." in e.lines
+    (total,) = [line for line in e.lines if line.startswith("Total")]
+    assert total.startswith("Total: cannot exceed $")
+    assert total != "Total: cannot exceed $0.00."
+
+
 # History
 
 
