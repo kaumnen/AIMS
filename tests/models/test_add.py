@@ -1,0 +1,935 @@
+"""The drafter behind `aims models add`: a profile for a model on any server, from a base URL
+or a base profile, the server's list of ids, a LiteLLM row the person picks and `--set` pairs;
+and the guarded read of the server's list."""
+
+import asyncio
+import contextlib
+import ipaddress
+import json
+import socket
+import time
+from collections.abc import AsyncGenerator
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+import httpcore2
+import httpx2
+import pytest
+
+from aims import net
+from aims.models import Profile, load_models
+from aims.models import add as adding
+from aims.models.add import (
+    AddError,
+    Draft,
+    ServerList,
+    ServerLists,
+    default_name,
+    draft,
+    parse_set,
+    read_list,
+)
+from aims.models.listprice import PriceList
+from aims.net import Guarded, Refused, refused
+
+URL = "https://models.example.test/v1"
+ROWS: dict[str, Any] = {
+    "big-model": {
+        "mode": "chat",
+        "input_cost_per_token": 1e-06,
+        "output_cost_per_token": 2e-06,
+        "max_input_tokens": 128000,
+        "max_output_tokens": 65536,
+        "supports_function_calling": True,
+        "supports_reasoning": True,
+    },
+    "host-a/small-model": {
+        "mode": "chat",
+        "input_cost_per_token": 1e-07,
+        "output_cost_per_token": 2e-07,
+        "max_input_tokens": 32768,
+        "max_output_tokens": 4096,
+        "supports_function_calling": False,
+        "supports_response_schema": False,
+    },
+    "host-b/small-model": {
+        "mode": "chat",
+        "input_cost_per_token": 2e-07,
+        "output_cost_per_token": 3e-07,
+        "max_input_tokens": True,
+        "max_output_tokens": "lots",
+    },
+    "embed-model": {"mode": "embedding", "input_cost_per_token": 1e-07},
+}
+PRICES = PriceList(ROWS, datetime(2026, 11, 16, tzinfo=UTC))
+
+
+def base_profile(**fields: Any) -> Profile:
+    return Profile.model_validate(
+        {
+            "name": "router",
+            "backend": "chat",
+            "base_url_env": "ROUTER_URL",
+            "model": "org/base-model",
+            "weights": "org/base-model-v1",
+            "api_key_env": "ROUTER_KEY",
+            "reasoning": "full",
+            "effort": "high",
+            "max_output_tokens": 1000,
+            "context_tokens": 2000,
+            "cache_key": True,
+            "stream": False,
+            "headers": {"X-Title": "aims"},
+            "extra": {"provider": {"sort": "price"}},
+            "sampling": {"temperature": 0.5},
+            "price": {"input": 1, "cached": 1, "output": 2},
+            **fields,
+        }
+    )
+
+
+def loaded(found: Draft, tmp_path: Path) -> Profile:
+    """The profile the draft's TOML text gives when a config file holds it."""
+    path = tmp_path / "aims.toml"
+    path.write_text(found.toml(), encoding="utf-8")
+    return load_models(path).get(found.name)
+
+
+def has(found: Draft, text: str) -> bool:
+    return any(text in note for note in found.notes)
+
+
+def test_a_draft_from_a_base_url_takes_only_what_it_is_given(tmp_path: Path) -> None:
+    found = draft("Org/Model-7B", base_url=f"{URL}/", key_env="MODELS_KEY")
+    assert found.name == "Model-7B"
+    assert found.table == {
+        "backend": "chat",
+        "base_url": URL,
+        "model": "Org/Model-7B",
+        "weights": "Org/Model-7B",
+        "api_key_env": "MODELS_KEY",
+        "reasoning": "none",
+        "max_output_tokens": adding.OUTPUT_TOKENS,
+    }
+    assert loaded(found, tmp_path) == found.profile
+    for text in ("weights is the model id", '"none" is a guess', "no price", "context size"):
+        assert has(found, text), text
+    assert found.candidates == ()
+
+
+def test_a_server_without_a_key_takes_none() -> None:
+    found = draft("local-model", base_url="http://127.0.0.1:8000/v1", backend="responses")
+    assert "api_key_env" not in found.table
+    assert found.table["backend"] == "responses"
+    assert has(found, "sends no key")
+
+
+@pytest.mark.parametrize(
+    ("model", "name"),
+    [
+        ("org/Model-7B:free", "Model-7B-free"),
+        ("llama3.1:8b", "llama3.1-8b"),
+        ("@cf/meta/llama-3", "llama-3"),
+        ("accounts/x/models/m_1", "m_1"),
+        ("org/~model", "model"),
+        ("org/", None),
+        ("org/~~", None),
+    ],
+)
+def test_the_default_name_is_the_ids_last_part(model: str, name: str | None) -> None:
+    assert default_name(model) == name
+
+
+def test_an_id_with_no_name_in_it_needs_one() -> None:
+    with pytest.raises(AddError, match="give one") as e:
+        draft("org/", base_url=URL)
+    assert e.value.kind == "name"
+    assert draft("org/", base_url=URL, name="mine").name == "mine"
+
+
+@pytest.mark.parametrize("model", ["", "  ", "a b", "x" * 201, "modèle", "a\nb"])
+def test_text_that_is_no_model_id_is_refused(model: str) -> None:
+    with pytest.raises(AddError) as e:
+        draft(model, base_url=URL)
+    assert e.value.kind == "model"
+
+
+@pytest.mark.parametrize("name", ["-x", "a b", "a/b", "x" * 101, ""])
+def test_a_profile_name_holds_only_plain_characters(name: str) -> None:
+    with pytest.raises(AddError) as e:
+        draft("m", base_url=URL, name=name)
+    assert e.value.kind == "name"
+
+
+@pytest.mark.parametrize(
+    ("given", "problem"),
+    [
+        ({}, "give a base URL"),
+        ({"base_url": URL, "base": "base"}, "not both"),
+        ({"key_env": "K", "base": "base"}, "not both"),
+        ({"base_url": "ftp://h/v1"}, "not an http or https URL"),
+        ({"base_url": "models.example.test/v1"}, "not an http or https URL"),
+        ({"base_url": "https://"}, "not an http or https URL"),
+        ({"base_url": "https://user:secret@h/v1"}, "user name or password"),
+        ({"base_url": "https://h/v1?version=2"}, "no query or fragment"),
+        ({"base_url": "https://h/v1#top"}, "no query or fragment"),
+        ({"base_url": URL, "key_env": "1KEY"}, "not an env var name"),
+        ({"base_url": URL, "key_env": "MY-KEY"}, "not an env var name"),
+        ({"base_url": URL, "backend": "completions"}, "backend 'completions'"),
+    ],
+)
+def test_a_draft_needs_one_way_to_the_server(given: dict[str, Any], problem: str) -> None:
+    if given.get("base") == "base":
+        given["base"] = base_profile()
+    with pytest.raises(AddError, match=problem) as e:
+        draft("m", **given)
+    assert e.value.kind == "connection"
+
+
+def test_a_base_profile_gives_how_to_reach_the_server_and_nothing_of_its_model(
+    tmp_path: Path,
+) -> None:
+    found = draft("org/other-model", base=base_profile())
+    assert found.table == {
+        "backend": "chat",
+        "base_url_env": "ROUTER_URL",
+        "model": "org/other-model",
+        "weights": "org/other-model",
+        "api_key_env": "ROUTER_KEY",
+        "reasoning": "none",
+        "max_output_tokens": adding.OUTPUT_TOKENS,
+        "cache_key": True,
+        "stream": False,
+        "headers": {"X-Title": "aims"},
+        "extra": {"provider": {"sort": "price"}},
+    }
+    assert has(
+        found,
+        "From router it takes backend, base_url_env, api_key_env, cache_key, stream, headers,"
+        " extra.",
+    )
+    assert loaded(found, tmp_path) == found.profile
+    # The draft's tables are its own.
+    found.table["extra"]["provider"]["sort"] = "speed"
+    assert base_profile().extra == {"provider": {"sort": "price"}}
+
+
+def test_a_base_profile_leaves_out_what_it_does_not_set() -> None:
+    base = base_profile(headers={}, extra={}, cache_key=None, base_url_env=None, base_url=URL)
+    found = draft("m", base=base, backend="responses")
+    assert found.table["backend"] == "responses"
+    assert found.table["base_url"] == URL
+    assert not {"headers", "extra", "cache_key", "base_url_env"} & set(found.table)
+
+
+def test_the_servers_list_checks_the_id() -> None:
+    listed = ServerList(URL, ("org/Model-7B", "org/model-8b", "other/thing"))
+    assert not has(draft("org/Model-7B", base_url=URL, listed=listed), "list of models")
+    missing = draft("org/model-7b", base_url=URL, listed=listed)
+    assert has(missing, "has no org/model-7b. Close: org/Model-7B, org/model-8b.")
+    far = draft("zzz", base_url=URL, listed=listed)
+    assert has(far, "has no zzz.")
+    assert not has(far, "Close")
+    unread = draft("m", base_url=URL, listed=ServerList(URL, problem="it answered 401"))
+    assert has(unread, "was not read: it answered 401.")
+
+
+def test_a_picked_row_gives_the_price_key_context_and_output_cap(tmp_path: Path) -> None:
+    found = draft("big-model", base_url=URL, prices=PRICES, row="big-model")
+    assert found.table["price_key"] == "big-model"
+    assert found.table["context_tokens"] == 128000
+    assert found.table["max_output_tokens"] == adding.OUTPUT_TOKENS
+    assert has(found, "row says it can reason")
+    assert not has(found, "no price")
+    assert not has(found, "context size")
+    assert loaded(found, tmp_path) == found.profile
+
+    small = draft("small-model", base_url=URL, prices=PRICES, row="host-a/small-model")
+    assert small.table["max_output_tokens"] == 4096
+    assert has(small, "row lists no tool calls")
+    assert has(small, "row lists no structured output")
+    # Capability flags are only notes: the check measures them.
+    assert small.table.get("structured_output") is None
+
+
+def test_a_row_with_odd_numbers_gives_only_its_price_key() -> None:
+    found = draft("small-model", base_url=URL, prices=PRICES, row="host-b/small-model")
+    assert found.table["price_key"] == "host-b/small-model"
+    assert found.table["max_output_tokens"] == adding.OUTPUT_TOKENS
+    assert "context_tokens" not in found.table
+    assert has(found, "context size")
+
+
+@pytest.mark.parametrize(
+    ("row", "prices", "problem"),
+    [
+        ("nope", PRICES, "lists no key nope"),
+        ("embed-model", PRICES, "no price per token for a chat model"),
+        ("big-model", None, "no copy of the LiteLLM price map"),
+    ],
+)
+def test_a_row_that_gives_no_price_is_refused(
+    row: str, prices: PriceList | None, problem: str
+) -> None:
+    with pytest.raises(AddError, match=problem) as e:
+        draft("big-model", base_url=URL, prices=prices, row=row)
+    assert e.value.kind == "row"
+
+
+def test_without_a_row_the_rows_that_name_the_model_are_offered() -> None:
+    found = draft("org/small-model", base_url=URL, prices=PRICES)
+    assert found.candidates == ("host-a/small-model", "host-b/small-model")
+    assert "price_key" not in found.table
+    assert has(found, "no price")
+
+
+@pytest.mark.parametrize(
+    ("pair", "path", "value"),
+    [
+        ("effort=low", ("effort",), "low"),
+        ("effort = 'low'", ("effort",), "low"),
+        ("max_output_tokens=4096", ("max_output_tokens",), 4096),
+        ("stream=false", ("stream",), False),
+        ("extra.provider.sort=price", ("extra", "provider", "sort"), "price"),
+        ('headers."X-Title"=my bench', ("headers", "X-Title"), "my bench"),
+        ("extra.order=['a', 'b']", ("extra", "order"), ["a", "b"]),
+        ("extra.p={ a = 1, b = { c = true } }", ("extra", "p"), {"a": 1, "b": {"c": True}}),
+        ("extra.note=x = 1", ("extra", "note"), "x = 1"),
+        ("extra.note=1 # two", ("extra", "note"), 1),
+    ],
+)
+def test_a_pair_sets_one_field_to_a_toml_value_or_text(
+    pair: str, path: tuple[str, ...], value: Any
+) -> None:
+    assert parse_set(pair) == (path, value)
+
+
+@pytest.mark.parametrize(
+    ("pair", "problem"),
+    [
+        ("effort", "not key=value"),
+        ("=low", "not a TOML key"),
+        ("a..b=1", "not a TOML key"),
+        ("a b=1", "not a TOML key"),
+        ('headers."a=b"=1', "not a TOML key"),
+        ("effort=", "no value"),
+        ("effort=low\nmodel='x'", "one line"),
+        ("name=x", "name cannot be set"),
+        ("listed.checked=2026-11-16T00:00:00Z", "listed cannot be set"),
+        ("extends=router", "extends cannot be set"),
+    ],
+)
+def test_a_pair_that_is_no_one_field_is_refused(pair: str, problem: str) -> None:
+    with pytest.raises(AddError, match=problem) as e:
+        parse_set(pair)
+    assert e.value.kind == "set"
+
+
+def test_pairs_apply_last_and_add_up_in_a_table(tmp_path: Path) -> None:
+    found = draft(
+        "m",
+        base=base_profile(),
+        sets=[
+            "extra.provider.only=['host-a']",
+            "extra.reasoning.enabled=true",
+            'headers."X-Run"=bench',
+            "weights=shared/m",
+            "reasoning=full",
+            "context_tokens=8192",
+            "price_key=big-model",
+        ],
+    )
+    assert found.table["extra"] == {
+        "provider": {"sort": "price", "only": ["host-a"]},
+        "reasoning": {"enabled": True},
+    }
+    assert found.table["headers"] == {"X-Title": "aims", "X-Run": "bench"}
+    assert found.table["weights"] == "shared/m"
+    assert loaded(found, tmp_path) == found.profile
+    for text in ("weights is the model id", "is a guess", "no price", "context size"):
+        assert not has(found, text), text
+
+
+def test_a_list_of_tables_and_a_key_that_needs_quotes_load_back(tmp_path: Path) -> None:
+    found = draft(
+        "m",
+        base_url=URL,
+        sets=["extra.tools=[{ type = 'x', 'a b' = 1 }]", 'extra."odd key".v="y"'],
+    )
+    assert loaded(found, tmp_path) == found.profile
+    assert found.profile.extra == {"tools": [{"type": "x", "a b": 1}], "odd key": {"v": "y"}}
+
+
+@pytest.mark.parametrize(
+    ("sets", "problem"),
+    [
+        (["effort=extreme"], "effort: Input should be"),
+        (["unknown_field=1"], "unknown_field: Extra inputs are not permitted"),
+        (["base_url_env=URL_ENV"], "set exactly one of base_url and base_url_env"),
+        (["summary=auto"], "summary is only sent by the responses backend"),
+    ],
+)
+def test_pairs_that_make_no_profile_are_refused(sets: list[str], problem: str) -> None:
+    with pytest.raises(AddError, match=problem) as e:
+        draft("m", base_url=URL, sets=sets)
+    assert e.value.kind == "profile"
+
+
+def test_a_pair_inside_a_value_that_is_no_table_is_refused() -> None:
+    with pytest.raises(AddError, match="model is not a table") as e:
+        draft("m", base_url=URL, sets=["model.x=1"])
+    assert e.value.kind == "set"
+
+
+def test_unset_removes_a_field_before_the_pairs_apply(tmp_path: Path) -> None:
+    found = draft(
+        "m",
+        base=base_profile(),
+        unset=["headers.X-Title", "extra.provider", "max_output_tokens", "cache_key"],
+        sets=['headers."X-Run"=bench', "extra.provider.sort=latency"],
+    )
+    assert found.table["headers"] == {"X-Run": "bench"}
+    assert found.table["extra"] == {"provider": {"sort": "latency"}}
+    assert "max_output_tokens" not in found.table
+    assert "cache_key" not in found.table
+    assert loaded(found, tmp_path) == found.profile
+    # A note that a removed field made no longer holds is left out.
+    priced = draft("big-model", base_url=URL, prices=PRICES, row="big-model", unset=["price_key"])
+    assert has(priced, "no price")
+    named = draft("m", base_url=URL, unset=["weights"], sets=["weights=shared/m"])
+    assert not has(named, "weights is the model id")
+
+
+@pytest.mark.parametrize(
+    ("key", "kind", "problem"),
+    [
+        ("headers.X-Other", "set", "headers.X-Other is not set"),
+        ("price_key", "set", "price_key is not set"),
+        ("model.x", "set", "model.x is not set"),
+        ("a..b", "set", "not a TOML key"),
+        ("name", "set", "name cannot be set"),
+        ("model", "profile", "model: Field required"),
+    ],
+)
+def test_unset_names_a_field_that_is_set(key: str, kind: str, problem: str) -> None:
+    with pytest.raises(AddError, match=problem) as e:
+        draft("m", base=base_profile(), unset=[key])
+    assert e.value.kind == kind
+
+
+def test_a_draft_says_which_roles_it_fits() -> None:
+    found = draft("m", base_url=URL)
+    assert found.fits == ("agent", "sweep", "judge")
+    assert found.unfit(["agent", "judge"]) is None
+    plain = draft("m", base_url=URL, sets=["structured_output=false"])
+    assert plain.fits == ("agent",)
+    assert plain.unfit(["agent", "judge"]) == (
+        "m cannot take the judge role: structured_output is false"
+    )
+
+
+# The server's list of models
+
+
+def served(
+    body: object, status: int = 200, seen: list[httpx2.Request] | None = None, **headers: str
+) -> httpx2.MockTransport:
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        if seen is not None:
+            seen.append(request)
+        if isinstance(body, bytes):
+            return httpx2.Response(status, content=body, headers=headers)
+        return httpx2.Response(status, json=body, headers=headers)
+
+    return httpx2.MockTransport(handle)
+
+
+pytestmark = pytest.mark.anyio
+
+
+async def test_the_list_is_read_without_a_key_and_gives_its_ids() -> None:
+    seen: list[httpx2.Request] = []
+    body = {"data": [{"id": "a/one"}, "junk", {"id": "b two"}, {"id": 3}, {"id": "a/one"}, {}]}
+    found = await read_list(f"{URL}/", served(body, seen=seen))
+    assert found == ServerList(f"{URL}/models", ("a/one",))
+    (request,) = seen
+    assert str(request.url) == f"{URL}/models"
+    assert "authorization" not in request.headers
+
+
+async def test_a_bare_array_is_a_list_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(adding, "MAX_IDS", 2)
+    found = await read_list(URL, served([{"id": "x"}, {"id": "y"}, {"id": "z"}]))
+    assert found.ids == ("x", "y")
+
+
+@pytest.mark.parametrize(
+    ("body", "status", "problem"),
+    [
+        ({"error": "no key"}, 401, "it needs a key (401)"),
+        ({"error": "no"}, 403, "it needs a key (403)"),
+        ({"error": "none"}, 404, "it answered 404"),
+        (b"<html>secret page</html>", 200, "it sent no list of models"),
+        ({"data": {"a": 1}}, 200, "it sent no list of models"),
+        ({"models": []}, 200, "it sent no list of models"),
+    ],
+)
+async def test_an_answer_that_is_no_list_says_why(body: object, status: int, problem: str) -> None:
+    found = await read_list(URL, served(body, status))
+    assert found.ids == ()
+    assert found.problem == problem
+
+
+@pytest.mark.parametrize(
+    ("base_url", "problem"),
+    [
+        ("https://user:secret@models.example.test/v1", "user name or password"),
+        ("https://models.example.test/v1?key=1", "no query or fragment"),
+        ("http://[::1", "not an http or https URL"),
+        ("ftp://models.example.test/v1", "not an http or https URL"),
+    ],
+)
+async def test_a_base_url_the_draft_refuses_is_not_read(base_url: str, problem: str) -> None:
+    seen: list[httpx2.Request] = []
+    with pytest.raises(AddError, match=problem):
+        await read_list(base_url, served({"data": []}, seen=seen))
+    with pytest.raises(AddError, match=problem):
+        await ServerLists(served({"data": []}, seen=seen)).get(base_url)
+    assert seen == []
+
+
+async def test_a_list_nested_too_deep_is_no_list() -> None:
+    found = await read_list(URL, served(b"[" * 200_000))
+    assert found.problem == "it sent no list of models"
+
+
+async def test_a_redirect_is_not_followed() -> None:
+    seen: list[httpx2.Request] = []
+    found = await read_list(URL, served({}, 302, seen=seen, location="http://169.254.169.254/"))
+    assert found.problem == "it answered 302"
+    assert len(seen) == 1
+
+
+async def test_a_list_too_large_slow_or_unreachable_says_why(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(adding, "MAX_BYTES", 64)
+    found = await read_list(URL, served({"data": [{"id": "x" * 100}]}))
+    assert found.problem == "it sent more than 64 bytes"
+
+    def refuse(request: httpx2.Request) -> httpx2.Response:
+        raise httpx2.ConnectError("no route to 10.1.2.3", request=request)
+
+    found = await read_list(URL, httpx2.MockTransport(refuse))
+    assert found.problem == "ConnectError"
+
+    async def slow(request: httpx2.Request) -> httpx2.Response:
+        await asyncio.sleep(1)
+        return httpx2.Response(200, json=[])
+
+    monkeypatch.setattr(adding, "FETCH_SECONDS", 0.05)
+    found = await read_list(URL, httpx2.MockTransport(slow))
+    assert found.problem == "no answer in 0.05 s"
+
+
+async def test_lists_are_kept_a_while_by_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[httpx2.Request] = []
+    now = [1000.0]
+    lists = ServerLists(served({"data": [{"id": "x"}]}, seen=seen), clock=lambda: now[0])
+    first = await lists.get(URL)
+    now[0] += adding.FRESH_SECONDS
+    assert await lists.get(f"{URL}/") is first
+    assert len(seen) == 1
+    now[0] += 1
+    assert await lists.get(URL) == first
+    assert len(seen) == 2
+
+    monkeypatch.setattr(adding, "MAX_LISTS", 2)
+    for n in range(3):
+        await lists.get(f"https://h{n}.test/v1")
+    assert len(seen) == 5
+    await lists.get("https://h2.test/v1")
+    assert len(seen) == 5
+    await lists.get(URL)
+    assert len(seen) == 6
+
+
+async def test_a_list_that_was_not_read_is_not_kept() -> None:
+    answers = iter([httpx2.Response(500), httpx2.Response(200, json={"data": [{"id": "x"}]})])
+    lists = ServerLists(httpx2.MockTransport(lambda request: next(answers)))
+    assert (await lists.get(URL)).problem == "it answered 500"
+    assert (await lists.get(URL)).ids == ("x",)
+
+
+# The address guard
+
+
+@pytest.mark.parametrize(
+    ("address", "out"),
+    [
+        ("169.254.169.254", True),
+        ("169.254.1.1", True),
+        ("fe80::1", True),
+        ("::ffff:169.254.169.254", True),
+        ("2002:a9fe:a9fe::1", True),
+        ("64:ff9b::a9fe:a9fe", True),
+        # 169.254.169.254 behind a local NAT64 prefix of 96, 64, 56 and 48 bits (RFC 6052).
+        ("64:ff9b:1::a9fe:a9fe", True),
+        ("64:ff9b:1:0:a9:fea9:fe00:0", True),
+        ("64:ff9b:1:a9:fe:a9fe::", True),
+        ("64:ff9b:1:a9fe:a9:fe00::", True),
+        ("fd00:ec2::254", True),
+        ("100.100.100.200", True),
+        ("168.63.129.16", True),
+        ("127.0.0.1", False),
+        ("::1", False),
+        ("10.0.0.1", False),
+        ("192.168.1.10", False),
+        ("100.64.0.1", False),
+        ("8.8.8.8", False),
+        ("2001:db8::1", False),
+        ("64:ff9b::808:808", False),
+        ("64:ff9b:1::808:808", False),
+    ],
+)
+def test_link_local_and_metadata_addresses_are_refused(address: str, out: bool) -> None:
+    assert refused(ipaddress.ip_address(address)) is out
+
+
+@dataclass
+class Resolver:
+    """Names resolve to `names`, and after their first lookup to `then` when it has them.
+    An address resolves to itself. `asked` lists the names looked up."""
+
+    names: dict[str, list[str]] = field(default_factory=dict)
+    then: dict[str, list[str]] = field(default_factory=dict)
+    asked: list[str] = field(default_factory=list)
+
+    def lookup(self, host: str, port: int, *args: Any, **kwargs: Any) -> list[Any]:
+        try:
+            answer = [str(ipaddress.ip_address(host))]
+        except ValueError:
+            seen = host in self.asked
+            self.asked.append(host)
+            answer = self.then[host] if seen and host in self.then else self.names.get(host)
+            if answer is None:
+                raise socket.gaierror(socket.EAI_NONAME, "unknown") from None
+        family = {4: socket.AF_INET, 6: socket.AF_INET6}
+        return [
+            (family[6 if ":" in a else 4], socket.SOCK_STREAM, 6, "", (a, port)) for a in answer
+        ]
+
+
+# httpcore2's backend, which it exports behind a stand-in for when anyio is missing.
+BACKEND: Any = httpcore2.AnyIOBackend
+
+
+@pytest.fixture
+def resolver(monkeypatch: pytest.MonkeyPatch) -> Resolver:
+    found = Resolver()
+    monkeypatch.setattr(socket, "getaddrinfo", found.lookup)
+    return found
+
+
+@contextlib.asynccontextmanager
+async def serving(ids: list[str]) -> AsyncGenerator[tuple[int, list[bytes]]]:
+    """A list server on 127.0.0.1 only: its port and the request heads it heard."""
+    heard: list[bytes] = []
+
+    async def answer(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        heard.append(await reader.readuntil(b"\r\n\r\n"))
+        body = json.dumps({"data": [{"id": i} for i in ids]}).encode()
+        writer.write(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+            + f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode()
+            + body
+        )
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(answer, "127.0.0.1", 0)
+    async with server:
+        yield server.sockets[0].getsockname()[1], heard
+
+
+@pytest.fixture
+def connects(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The hosts httpcore2's backend opens a connection to, which still opens it."""
+    hosts: list[str] = []
+    real = BACKEND.connect_tcp
+
+    async def connect(self: Any, host: str, *args: Any, **kwargs: Any) -> Any:
+        hosts.append(host)
+        return await real(self, host, *args, **kwargs)
+
+    monkeypatch.setattr(BACKEND, "connect_tcp", connect)
+    return hosts
+
+
+async def test_a_name_that_resolves_to_a_refused_address_is_refused(
+    resolver: Resolver, connects: list[str]
+) -> None:
+    resolver.names["sneaky.test"] = ["127.0.0.1", "169.254.169.254"]
+    resolver.names["mapped.test"] = ["::ffff:a9fe:a9fe"]
+    resolver.names["2852039166"] = ["169.254.169.254"]
+    for url in (
+        "http://sneaky.test/v1",
+        "https://mapped.test/v1",
+        "http://2852039166/v1",
+        "http://169.254.169.254/latest",
+        "http://[fe80::1]:8080/v1",
+    ):
+        with pytest.raises(Refused, match="link-local or cloud metadata"):
+            await read_list(url)
+    assert connects == []
+
+
+async def test_a_server_on_loopback_is_read_by_name(resolver: Resolver) -> None:
+    """`localhost` gives ::1 first. The server listens on 127.0.0.1 only."""
+    async with serving(["local-model"]) as (port, heard):
+        resolver.names["localhost"] = ["::1", "127.0.0.1"]
+        found = await read_list(f"http://localhost:{port}/v1")
+    assert found.ids == ("local-model",)
+    assert heard[-1].startswith(b"GET /v1/models HTTP/1.1\r\n")
+    assert f"host: localhost:{port}\r\n".encode() in heard[-1].lower()
+
+
+async def test_the_connection_goes_to_the_address_that_was_checked(
+    resolver: Resolver, connects: list[str]
+) -> None:
+    """A name that answers a second lookup with the metadata address still reaches the
+    address of the first, which was checked."""
+    resolver.names["rebind.test"] = ["127.0.0.1"]
+    resolver.then["rebind.test"] = ["169.254.169.254"]
+    async with serving(["m"]) as (port, heard):
+        found = await read_list(f"http://rebind.test:{port}/v1")
+    assert found.ids == ("m",)
+    assert resolver.asked == ["rebind.test"]
+    assert connects == ["127.0.0.1"]
+    assert f"host: rebind.test:{port}\r\n".encode() in heard[-1].lower()
+
+
+ERROR_KINDS = (
+    "ConnectTimeout",
+    "ReadTimeout",
+    "WriteTimeout",
+    "PoolTimeout",
+    "TimeoutException",
+    "ConnectError",
+    "ReadError",
+    "WriteError",
+    "NetworkError",
+    "ProxyError",
+    "UnsupportedProtocol",
+    "LocalProtocolError",
+    "RemoteProtocolError",
+    "ProtocolError",
+)
+
+
+@pytest.mark.parametrize(
+    ("theirs", "ours"),
+    [(getattr(httpcore2, k), getattr(httpx2, k)) for k in ERROR_KINDS],
+    ids=ERROR_KINDS,
+)
+def test_each_httpcore2_error_reads_as_the_httpx2_error_of_its_kind(
+    theirs: type[Exception], ours: type[Exception]
+) -> None:
+    with pytest.raises(ours, match="boom") as e, net._as_httpx2():
+        raise theirs("boom")
+    assert type(e.value) is ours
+    with pytest.raises(KeyError), net._as_httpx2():
+        raise KeyError("other")
+
+
+async def test_a_body_cut_short_says_why(resolver: Resolver) -> None:
+    async def answer(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await reader.readuntil(b"\r\n\r\n")
+        writer.write(b'HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n{"data": [')
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(answer, "127.0.0.1", 0)
+    async with server:
+        port = server.sockets[0].getsockname()[1]
+        found = await read_list(f"http://127.0.0.1:{port}/v1")
+    assert found.problem == "RemoteProtocolError"
+
+
+async def test_a_connection_serves_the_next_request(connects: list[str]) -> None:
+    async def answer(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        for _ in range(2):
+            await reader.readuntil(b"\r\n\r\n")
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+            await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(answer, "127.0.0.1", 0)
+    async with (
+        server,
+        httpx2.AsyncClient(transport=Guarded()) as client,
+    ):
+        port = server.sockets[0].getsockname()[1]
+        for _ in range(2):
+            response = await client.get(f"http://127.0.0.1:{port}/")
+            assert response.text == "ok"
+    assert connects == ["127.0.0.1"]
+
+
+async def test_a_name_that_does_not_resolve_is_unreachable(resolver: Resolver) -> None:
+    found = await read_list("https://unknown.test/v1")
+    assert found.problem == "ConnectError"
+
+
+async def test_a_connection_that_does_not_open_in_time_is_a_connect_timeout(
+    resolver: Resolver, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def hang(self: Any, *args: Any, **kwargs: Any) -> Any:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(BACKEND, "connect_tcp", hang)
+    resolver.names["slow.test"] = ["203.0.113.7", "203.0.113.8"]
+    with pytest.raises(httpcore2.ConnectTimeout, match=r"slow\.test did not answer in 0\.05 s"):
+        await net._Checked().connect_tcp("slow.test", 443, timeout=0.05)
+
+
+async def test_through_a_proxy_the_check_runs_and_the_proxy_gets_the_name(
+    resolver: Resolver, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.test:3128")
+    resolver.names["models.example.test"] = ["203.0.113.7"]
+    resolver.names["bad.test"] = ["169.254.169.254"]
+    seen: list[httpx2.Request] = []
+
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        return httpx2.Response(200, json={"data": [{"id": "x"}]})
+
+    transport = Guarded()
+    transport._proxies["http://proxy.test:3128"] = httpx2.MockTransport(handle)  # ty: ignore[invalid-assignment]
+    assert (await read_list(URL, transport)).ids == ("x",)
+    (request,) = seen
+    assert str(request.url) == f"{URL}/models"
+    with pytest.raises(Refused):
+        await read_list("https://bad.test/v1", transport)
+    assert len(seen) == 1
+    # A host that reaches out only through its proxy may not resolve the name itself.
+    assert (await read_list("https://far.test/v1", transport)).ids == ("x",)
+    assert str(seen[-1].url) == "https://far.test/v1/models"
+
+
+# Racing the addresses (RFC 8305)
+
+
+@pytest.mark.parametrize(
+    ("given", "order"),
+    [
+        (
+            ["::1", "::2", "10.0.0.1", "10.0.0.2", "10.0.0.3"],
+            ["::1", "10.0.0.1", "::2", "10.0.0.2", "10.0.0.3"],
+        ),
+        (["10.0.0.1", "10.0.0.2", "::1"], ["10.0.0.1", "::1", "10.0.0.2"]),
+        (["10.0.0.1", "10.0.0.2"], ["10.0.0.1", "10.0.0.2"]),
+        ([], []),
+    ],
+)
+def test_the_families_take_turns_from_the_first(given: list[str], order: list[str]) -> None:
+    addresses = [ipaddress.ip_address(a) for a in given]
+    assert [str(a) for a in net.interleave(addresses)] == order
+
+
+A, B, C = (ipaddress.ip_address(a) for a in ("2001:db8::1", "2001:db8::2", "192.0.2.3"))
+
+
+class Attempts:
+    """Fake connections: each address's outcome, when each attempt started and what ended."""
+
+    def __init__(self, **outcomes: str) -> None:
+        self.outcomes = {ipaddress.ip_address(k.replace("_", ":")): v for k, v in outcomes.items()}
+        self.started: dict[str, float] = {}
+        self.cancelled: list[str] = []
+        self.closed: list[str] = []
+        self.gate = asyncio.Event()
+        self.moved = asyncio.Event()
+
+    async def until_started(self, count: int) -> None:
+        while len(self.started) < count:
+            self.moved.clear()
+            await self.moved.wait()
+
+    async def connect(self, address: Any) -> str:
+        name = str(address)
+        self.started[name] = time.monotonic()
+        self.moved.set()
+        how = self.outcomes.get(address, "hang")
+        try:
+            if how == "fail":
+                raise httpcore2.ConnectError(f"{name} refused")
+            if how == "gate":
+                await self.gate.wait()
+            elif how == "stubborn":
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.Event().wait()
+            elif how == "hang":
+                await asyncio.Event().wait()
+            return name
+        except asyncio.CancelledError:
+            self.cancelled.append(name)
+            raise
+
+    async def close(self, stream: str) -> None:
+        self.closed.append(stream)
+
+
+async def test_the_next_address_starts_after_the_delay_while_the_first_hangs() -> None:
+    attempts = Attempts(**{"2001:db8::2": "ok"})
+    begun = time.monotonic()
+    assert await net.race([A, B], attempts.connect, attempts.close, delay=0.05) == str(B)
+    assert attempts.started[str(B)] - begun >= 0.05
+    assert attempts.cancelled == [str(A)]
+    assert attempts.closed == []
+
+
+async def test_the_next_address_starts_at_once_when_the_first_fails() -> None:
+    attempts = Attempts(**{"2001:db8::1": "fail", "2001:db8::2": "ok"})
+    assert await net.race([A, B], attempts.connect, attempts.close, delay=30) == str(B)
+    assert attempts.started[str(B)] - attempts.started[str(A)] < 15
+
+
+async def test_a_second_connection_that_opened_too_is_closed() -> None:
+    attempts = Attempts(**{"2001:db8::1": "gate", "2001:db8::2": "gate"})
+
+    async def open_gate() -> None:
+        await attempts.until_started(2)
+        attempts.gate.set()
+
+    opener = asyncio.create_task(open_gate())
+    won = await net.race([A, B], attempts.connect, attempts.close, delay=0)
+    await opener
+    assert {won, *attempts.closed} == {str(A), str(B)}
+    assert len(attempts.closed) == 1
+
+    # One that opens as its cancel arrives is closed too.
+    stubborn = Attempts(**{"2001:db8::1": "stubborn", "2001:db8::2": "ok"})
+    assert await net.race([A, B], stubborn.connect, stubborn.close, delay=0) == str(B)
+    assert stubborn.closed == [str(A)]
+
+
+async def test_when_every_address_fails_the_last_failure_is_raised() -> None:
+    attempts = Attempts(**{"2001:db8::1": "fail", "2001:db8::2": "fail", "192.0.2.3": "fail"})
+    with pytest.raises(httpcore2.ConnectError, match=r"192\.0\.2\.3 refused"):
+        await net.race([A, B, C], attempts.connect, attempts.close, delay=30)
+    with pytest.raises(ValueError, match="no address"):
+        await net.race([], attempts.connect, attempts.close)
+
+
+async def test_a_cancelled_race_cancels_every_attempt() -> None:
+    attempts = Attempts()
+    task = asyncio.create_task(net.race([A, B, C], attempts.connect, attempts.close, delay=0))
+    await attempts.until_started(3)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert sorted(attempts.cancelled) == sorted(str(a) for a in (A, B, C))
