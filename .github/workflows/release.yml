@@ -16,7 +16,7 @@ concurrency:
 env:
   REGISTRY: ghcr.io/kaumnen
   PUSH: ${{ github.event_name == 'push' }}
-  BUILDKIT: moby/buildkit:v0.34.1@sha256:99368f3e46177c6405b9740e4461d91cee004128daeecca78d4ceac50ec1da5c
+  BUILDKIT: moby/buildkit:v0.35.0@sha256:aa632b921ef07411d2cb77292cd34213d4f7b384001d6fceef1e1f25bf9752bb
   SBOM: generator=docker/buildkit-syft-scanner:1.12.1@sha256:873a7458c3c8ac8e32c7b796c10e1600b07b963d2aa000a72a2d97aaaa2d6315
 
 jobs:
@@ -51,7 +51,7 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
-          version: "0.13.5"
+          version: "0.13.8"
           enable-cache: false
       - if: env.PUSH == 'true'
         run: test "${GITHUB_REF_NAME#v}" = "$(uv version --short)"
@@ -148,7 +148,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "26.12.1"
+          node-version: "26.13.1"
           package-manager-cache: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
@@ -156,7 +156,7 @@ jobs:
           no-cache: true
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
-          version: "0.13.5"
+          version: "0.13.8"
           enable-cache: false
       - if: env.PUSH == 'true'
         run: test "${GITHUB_REF_NAME#v}" = "$(uv version --short)"
@@ -302,7 +302,7 @@ jobs:
           path: dist
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
-          version: "0.13.5"
+          version: "0.13.8"
           enable-cache: false
       - uses: astral-sh/attest-action@39b6ce43875c196a579e31635b11aa2a2036384a # v0.0.7
       - run: uv publish
