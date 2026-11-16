@@ -21,6 +21,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 ### Changed
 
+- Every runtime dependency except `regex` has an upper bound below its next breaking release, such as `typer>=0.29.1,<0.30`. `regex` has none, since its version is a date. `uv tool install aims-bench` and `pip install aims-bench` take only versions inside the bounds. A bound moves once the dependency's new release passes the tests.
 - `aims models check` with no names checks the profiles the roles name, each once. It checked only the agent role's profile. It notes the roles that are unset. With no role set it stops and says to name the profiles or set the roles. `POST /api/models/check` with no `profiles` checks the same profiles.
 - Compose runs the server in `/data`, so the project's `aims.toml` is `/data/aims.toml` on the server's volume. Saving the project layer under Settings > Config failed with 403, since the server's root is read-only. `POST /api/models/add` saves to the same file.
 - `aims scenario check` passes a scenario when a role it needs is unset. It prints a note with the fix for each agent and monitor that needs the role. The estimate waits until the roles are set. A profile that the scenario or `[monitor]` names and that does not exist is still an error. The new `--monitor` takes the presets of `aims run`, so `--monitor signals --profile p` checks the run you mean to make.
@@ -52,6 +53,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 - The built-in model profiles and roles. AIMS ships no models. Set them under `[profiles]` and `[roles]` in `aims.toml`, or add one with `aims models add <model id> --base-url <url> --write --role agent`. A config that changed a built-in no longer loads: a profile that extends one, such as `extends = "meta-spark-1.3-contributor"`, a table that sets part of one, such as `[profiles."meta-spark-1.3-contributor".limits]`, or a role that names one. Write the whole profile from the fields it took and point the roles at it. Earlier releases hold the built-ins in `src/aims/models/builtins.toml`. A config that relied on the built-in roles needs `agent`, `sweep` and `judge` under `[roles]`, or runs with `--monitor signals` and a profile.
 - The example results: `docs/results.md`, the README's results section, the `organism/` folder, `docs/pilot.toml`, `deploy/modal/glimmer.py` and the `deploy` dependency group. They were experiments run with AIMS. Earlier releases keep them.
+- The `constraints.txt` release asset. Install with `uv tool install aims-bench`. The bounds in the package keep an install off the next breaking release of each dependency.
 
 ### Fixed
 

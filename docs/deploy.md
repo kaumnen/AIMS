@@ -71,7 +71,7 @@ docker compose exec server aims token create box2 --role runner
 Then start a runner on another Docker host, with the server's version:
 
 ```sh
-uv tool install aims-bench -c https://github.com/kaumnen/AIMS/releases/download/v<version>/constraints.txt
+uv tool install aims-bench==<version>
 export AIMS_TOKEN=<runner token> EXAMPLE_API_KEY=<your key>
 aims runner --server https://<your AIMS_SITE>
 ```

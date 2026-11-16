@@ -177,17 +177,12 @@ jobs:
           name: dist
           path: dist
           if-no-files-found: error
-      # The locked runtime versions, for installs that match the release's tests.
-      - run: |
-          mkdir -p "$RUNNER_TEMP/notes"
-          uv export --locked --no-default-groups --no-emit-project --no-hashes \
-            > "$RUNNER_TEMP/notes/constraints.txt"
-          echo "aims-bench==$(uv version --short)" >> "$RUNNER_TEMP/notes/constraints.txt"
       # The release notes open with the tag's section of CHANGELOG.md. A tag without one stops
       # the release here, before the PyPI upload and the aims image tags.
       - if: env.PUSH == 'true'
         run: |
           version=${GITHUB_REF_NAME#v}
+          mkdir -p "$RUNNER_TEMP/notes"
           awk -v head="## [$version]" '
             /^## \[/ { on = index($0, head) == 1; next }
             /^\[[^]]+\]: / { on = 0 }
@@ -195,7 +190,8 @@ jobs:
           ' CHANGELOG.md > "$RUNNER_TEMP/notes/changes.md"
           grep -q '[^[:space:]]' "$RUNNER_TEMP/notes/changes.md" \
             || { echo "CHANGELOG.md has no section for $version"; exit 1; }
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - if: env.PUSH == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: notes
           path: ${{ runner.temp }}/notes
@@ -335,16 +331,16 @@ jobs:
           image="$REGISTRY/aims:$version@$DIGEST"
           [[ $(grep -c "$REGISTRY/aims:latest" compose.yaml) == 2 ]] || { echo "compose.yaml changed"; exit 1; }
           mkdir out && sed "s|$REGISTRY/aims:latest|$image|" compose.yaml > out/compose.yaml
-          cp compose.public.yaml Caddyfile notes/constraints.txt out/
+          cp compose.public.yaml Caddyfile out/
           url="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME"
           { cat notes/changes.md; echo; } > notes.md
           cat >> notes.md <<EOF
           ### Install
 
-          Install the CLI with the dependency versions this release was tested with:
+          Install the CLI:
 
           \`\`\`
-          uv tool install aims-bench==$version -c $url/constraints.txt
+          uv tool install aims-bench==$version
           \`\`\`
 
           Run the control plane and a runner with Docker Compose:
@@ -364,5 +360,4 @@ jobs:
           pre=()
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || pre=(--prerelease)
           gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" \
-            --notes-file notes.md "${pre[@]}" out/compose.yaml out/compose.public.yaml out/Caddyfile \
-            out/constraints.txt
+            --notes-file notes.md "${pre[@]}" out/compose.yaml out/compose.public.yaml out/Caddyfile

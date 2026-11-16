@@ -48,10 +48,11 @@ updates:
     commit-message:
       prefix: chore
 
-  # The lock moves; the bounds in pyproject.toml stay as they are.
+  # A release past a cap in pyproject.toml raises the cap. Its PR runs every test before the
+  # wider range ships. Releases inside the caps move the lock only.
   - package-ecosystem: uv
     directory: /
-    versioning-strategy: lockfile-only
+    versioning-strategy: widen
     schedule:
       interval: weekly
     cooldown:

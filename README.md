@@ -55,10 +55,10 @@ flowchart LR
 
 You need Docker, [uv](https://docs.astral.sh/uv/) and a model API key. AIMS has no built-in models.
 
-Install. The constraints file pins the dependency versions each release was tested with.
+Install the CLI.
 
 ```sh
-uv tool install aims-bench -c https://github.com/kaumnen/AIMS/releases/latest/download/constraints.txt
+uv tool install aims-bench
 ```
 
 Check a scenario. Scripted agents prove each plant works, at no model cost.
