@@ -49,7 +49,7 @@ dependencies = [
     "rich>=15.0.0,<16",
     "ruamel-yaml>=0.19.1",
     "tomlkit>=0.15.2",
-    "typer>=0.27.3",
+    "typer>=0.29.1",
     "uvicorn>=0.54.0",
 ]
 

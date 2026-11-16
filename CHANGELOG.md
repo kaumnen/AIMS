@@ -59,6 +59,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - `aims models check` keeps a profile's effort when it is `none` or `minimal`. It turned the effort up to `low`, so a model that reasons only when asked sent its reasoning in the check but not in a run.
 - The cost estimate of runs whose models all have no price says their total is not counted. It said `typically $0.00` and `Cannot exceed $0.00`, whatever caps the runs had.
 - A runner reports the key of a profile added while it runs. The control plane told a runner which key names to report only when it connected. So after an added profile or a config save, each run, model check, score and review was refused with `no runner has EXAMPLE_API_KEY set` until the runner connected again. The control plane now sends the names on the runner's stream as soon as it saves the config. A config edited by hand reaches each runner at its next heartbeat, within 10 seconds.
+- `aims` starts with typer 0.29, which removed a name the CLI imported. An install without the release's constraints file got typer 0.29 and `aims` failed to start. AIMS now needs typer 0.29.1 or later.
 
 ## [0.2.3] - 2026-11-14
 

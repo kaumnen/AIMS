@@ -254,7 +254,10 @@ def test_a_float_option_needs_a_finite_number(
         r = CliRunner().invoke(app, [*args, value], env={"AIMS_TOKEN": "x"})
         assert (r.exit_code, type(r.exception)) == (2, SystemExit), (args, r.output)
         assert args[-1] in r.output
-        assert "give a finite number" in r.output
+        # Since typer 0.29 its own min=0 check refuses nan before the callback sees it.
+        assert "give a finite number" in r.output or (
+            value.lower() == "nan" and "greater than or equal to 0" in r.output
+        )
     assert started == []
     assert list(tmp_path.iterdir()) == []
 

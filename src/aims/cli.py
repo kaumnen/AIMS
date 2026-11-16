@@ -4,8 +4,7 @@ from pathlib import Path
 from typing import Annotated, Any, NoReturn
 
 import typer
-from typer.core import TyperCommand, TyperGroup
-from typer.models import TyperPath
+from typer.core import TyperArgument, TyperCommand, TyperGroup, TyperOption
 
 from aims import __version__
 
@@ -3859,18 +3858,20 @@ def spend_cmd(
 class _Utf8Command(TyperCommand):
     """A command that refuses a text argument UTF-8 cannot encode. A byte in argv that is not
     UTF-8 reaches Python as a lone surrogate, which the log, a model request, the control plane
-    and SQLite all refuse. A path is let through: the file system takes it back as the same
-    bytes."""
+    and SQLite all refuse. A path is let through: typer hands it over as a Path, not a str, and
+    the file system takes it back as the same bytes."""
 
     def parse_args(self, ctx: Any, args: list[str]) -> list[str]:
         from aims.text import encodable
 
         rest = super().parse_args(ctx, args)
         for param in self.get_params(ctx):
+            if not isinstance(param, TyperArgument | TyperOption):
+                continue
             value = ctx.params.get(param.name or "")
             values = value if isinstance(value, list | tuple) else [value]
             texts = [v for v in values if isinstance(v, str)]
-            if not isinstance(param.type, TyperPath) and not all(map(encodable, texts)):
+            if not all(map(encodable, texts)):
                 raise typer.BadParameter(
                     "holds a byte that is not UTF-8. AIMS stores and sends text as UTF-8 only.",
                     ctx=ctx,
