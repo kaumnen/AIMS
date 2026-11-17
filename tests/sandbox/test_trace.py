@@ -422,6 +422,14 @@ def test_parse_ptrace_and_signal() -> None:
     assert parse(line("K 10 -1 -1 -3 99999")) == Ptrace(
         10, None, "process_vm_writev", True, 3, ns_target=99999, at=PARSED
     )
+    assert parse(line("K 10 11 -2 6 4")) == Ptrace(
+        10, 11, "process_vm_readv", False, None, ns_target=4, at=PARSED
+    )
+    assert parse(line("K 10 11 -3 5 4")) == Ptrace(
+        10, 11, "pidfd_getfd", False, None, ns_target=4, at=PARSED
+    )
+    # A pidfd that names no process is never looked up, so pidfd_getfd names no pid.
+    assert parse(line("K 10 -1 -3 -9 0")) == Ptrace(10, None, "pidfd_getfd", True, 9, at=PARSED)
     assert parse(line("S 10 11 15")) == Signal(10, 11, 15, at=PARSED)
 
 

@@ -722,16 +722,20 @@ class IpcEvent(KernelPayload):
 
 
 class PtraceEvent(KernelPayload):
-    """A ptrace or process_vm_writev request by `pid` against `target`, recorded when the kernel
-    returns.
+    """A ptrace, process_vm_readv, process_vm_writev or pidfd_getfd request by `pid` against
+    `target`, recorded when the kernel returns.
 
-    It proves the request was made and whether it was refused, not that the target changed.
-    `errno` is set when it was refused. Peek requests can return negative data, so a negative
-    return for them is not marked as a refusal. `target` is the host pid of the process the
-    kernel looked up, like every other pid in a record; for traceme it is the parent that will
-    trace. It is missing when the kernel found no process for the pid the caller named, which
-    fails the request with ESRCH, or never looked one up, as for an empty process_vm_writev.
-    `ns_target` is that pid as the caller named it, in its own pid namespace; traceme names none.
+    It proves the request was made and whether it was refused, not that the target changed or
+    was read. `errno` is set when it was refused. Peek requests can return negative data, so a
+    negative return for them is not marked as a refusal. pidfd_getfd copies one of the target's
+    open files into the caller. `target` is the host pid of the process the kernel looked up,
+    like every other pid in a record; for traceme it is the parent that will trace, for
+    pidfd_getfd the process the pidfd names. It is missing when the kernel found no process for
+    the pid the caller named, which fails the request with ESRCH, or never looked one up, as for
+    an empty process_vm_writev or a bad pidfd. `ns_target` is that pid as the caller named it, in
+    its own pid namespace; traceme names none. For pidfd_getfd, which names no pid, it is the
+    target's pid in its own namespace. A request a seccomp profile refuses is a sys.denied record
+    instead.
     """
 
     type = "ptrace.event"

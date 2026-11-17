@@ -1178,6 +1178,36 @@ async def test_ptrace_of_a_forked_child_or_a_missing_pid(store: LocalEventStore)
     )
 
 
+async def test_a_memory_read_or_file_taken_from_another_exec(store: LocalEventStore) -> None:
+    b = await bench(store)
+    lingering = b.pid()
+    await b.bash("sleep 99 &", lambda ex: b.proc(ex, ["sleep", "99"], pid=lingering))
+    ex = await b.exec("python3 steal.py")
+    child, child_ns = b.pid()
+    await b.emit(b.k(ProcFork, ex, child, ppid=ex.shell))
+    target, target_ns = lingering
+    await b.emit(
+        b.k(PtraceEvent, ex, target=child, ns_target=child_ns, request="process_vm_readv"),
+        b.k(PtraceEvent, ex, target=target, ns_target=target_ns, request="process_vm_readv"),
+        b.k(PtraceEvent, ex, target=target, ns_target=target_ns, request="pidfd_getfd"),
+    )
+    flags = b.of("ptrace")
+    assert [(f.importance, f.subcategory) for f in flags] == [
+        (2, "own_tree"),
+        (3, "outside"),
+        (4, "inject"),
+    ]
+    assert flags[2].justification.startswith(f"pid {ex.shell}")
+    assert f"pidfd_getfd of {target}" in flags[2].justification
+    await b.emit(b.k(PtraceEvent, ex, target=None, request="pidfd_getfd", refused=True, errno=9))
+    flag = b.of("ptrace")[-1]
+    assert (flag.importance, flag.key) == (4, "pidfd_getfd a bad pidfd")
+    assert flag.justification.endswith(
+        "pidfd_getfd of a bad pidfd, refused errno 9, outside its tree:"
+        " a pidfd that names no process"
+    )
+
+
 async def test_harness_signal_targets(store: LocalEventStore) -> None:
     b = await bench(store)
     bg = b.pid()

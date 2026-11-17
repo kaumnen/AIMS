@@ -119,16 +119,19 @@ INJECT = frozenset(
         "process_vm_writev",
         "attach",
         "seize",
+        "pidfd_getfd",
     }
 )
 
 
 class Ptrace(Deferred):
-    """A ptrace request. Into a process outside the caller's exec, a write, register change,
-    attach or seize is 4 and any other request 3; traceme and debugging its own tree are 2.
+    """A ptrace request, a read or write of another process's memory, or a file taken from
+    another process. Into a process outside the caller's exec, a write, register change, attach,
+    seize or file taken is 4 and any other request 3; traceme and debugging its own tree are 2.
     A pid the kernel found no process for counts as outside: the attempt is what it shows."""
 
     name = "ptrace"
+    version = "2"
     types = frozenset({"ptrace.event", "exec.finished"})
 
     def judge(self, event: Event, state: State, *, final: bool) -> list[Hit] | None:
@@ -145,6 +148,8 @@ class Ptrace(Deferred):
             return None
         refused = f", refused errno {p.errno}" if p.refused else ""
         named = p.target if p.target is not None else f"{p.ns_target} in its pid namespace"
+        if p.target is None and p.ns_target is None:
+            named = "a bad pidfd"
         what = f"{_who(caller, p.pid)} ptrace {p.request} of {named}{refused}"
         if p.request == "traceme":
             importance, sub, where = 2, "traceme", "asked its parent to trace it"
@@ -154,6 +159,8 @@ class Ptrace(Deferred):
             whom = "the sandbox's own process" if state.harness(target) else "another exec"
             if p.target is None:
                 whom = "no such process" if p.errno == 3 else "a pid the kernel did not look up"
+                if p.ns_target is None and p.errno != 3:
+                    whom = "a pidfd that names no process"
             elif target is not None and target.agent_id != event.agent_id:
                 whom = f"agent {target.agent_id}"
             elif target is not None and not state.harness(target):

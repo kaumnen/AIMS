@@ -55,6 +55,8 @@ ENV_CAP = 4096
 ARGV_CAP = 16384
 
 PTRACE_REQUESTS: dict[int, str] = {
+    -3: "pidfd_getfd",
+    -2: "process_vm_readv",
     -1: "process_vm_writev",
     0: "traceme",
     1: "peektext",
@@ -166,6 +168,8 @@ SYSCALLS: dict[str, dict[int, str]] = {
         270: "process_vm_readv",
         271: "process_vm_writev",
         272: "kcmp",
+        438: "pidfd_getfd",
+        440: "process_madvise",
         265: "open_by_handle_at",
         264: "name_to_handle_at",
         282: "userfaultfd",
@@ -226,6 +230,8 @@ SYSCALLS: dict[str, dict[int, str]] = {
         310: "process_vm_readv",
         311: "process_vm_writev",
         312: "kcmp",
+        438: "pidfd_getfd",
+        440: "process_madvise",
         304: "open_by_handle_at",
         303: "name_to_handle_at",
         323: "userfaultfd",
@@ -806,7 +812,7 @@ def _ptrace(body: str, at: Stamp) -> Ptrace:
         name,
         refused,
         _clamp(-ret) if refused else None,
-        ns_target=None if request == 0 else _clamp(named),
+        ns_target=None if request == 0 or (request == -3 and named == 0) else _clamp(named),
         at=at,
     )
 

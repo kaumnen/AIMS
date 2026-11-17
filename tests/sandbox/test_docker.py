@@ -40,6 +40,7 @@ from aims.events import (
 )
 from aims.sandbox import MASK_PROC, AuditedSandbox, DockerBackend, Mount, SandboxSpec
 from aims.sandbox import audit as audit_module
+from aims.sandbox import docker as docker_module
 from aims.sandbox import reader as reader_module
 from aims.sandbox.execs import exec_output
 from aims.sandbox.trace import ARGV_CAP, STRLEN
@@ -1586,6 +1587,207 @@ async def test_ptrace_event(backend: DockerBackend, store: LocalEventStore) -> N
         (forks[0][1], child[0], "attach", False, None),
         (inits[0], 1, "process_vm_writev", vmw[1] < 0, -vmw[1] if vmw[1] < 0 else None),
     ]
+
+
+# A python process that forks a child holding `secret` in memory and `held` open, then prints
+# its own pid and the child's. `held` is a file whose only content is the secret.
+FORKED = (
+    "import ctypes, os, time\n"
+    "libc = ctypes.CDLL(None, use_errno=True)\n"
+    "libc.syscall.restype = ctypes.c_long\n"
+    "libc.process_vm_readv.restype = ctypes.c_ssize_t\n"
+    "secret = ctypes.create_string_buffer(b's3cr3t')\n"
+    "with open('/work/held', 'w') as f:\n"
+    "    f.write('s3cr3t')\n"
+    "held = os.open('/work/held', os.O_RDONLY)\n"
+    "r, w = os.pipe()\n"
+    "child = os.fork()\n"
+    "if child == 0:\n"
+    "    os.close(r)\n"
+    "    os.write(w, b'x')\n"
+    "    time.sleep(30)\n"
+    "    os._exit(0)\n"
+    "os.close(held)\n"
+    "os.read(r, 1)\n"
+    "print(os.getpid(), child, held, flush=True)\n"
+)
+
+
+async def caller_and_child(store: LocalEventStore, run_id: str, ns_pid: int) -> tuple[int, int]:
+    """The host pids of the process with `ns_pid` and of the one child it forked."""
+    (caller,) = [
+        p.pid
+        for p in (e.payload() for e in await events(store, run_id, "proc.exec"))
+        if isinstance(p, ProcExec) and p.ns_pid == ns_pid
+    ]
+    (child,) = [
+        p.pid
+        for p in (e.payload() for e in await events(store, run_id, "proc.fork"))
+        if isinstance(p, ProcFork) and p.ppid == caller
+    ]
+    return caller, child
+
+
+def ptraces(
+    evs: list[Event], pid: int
+) -> list[tuple[int | None, int | None, str, bool, int | None]]:
+    return [
+        (p.target, p.ns_target, p.request, p.refused, p.errno)
+        for p in (e.payload() for e in evs)
+        if isinstance(p, PtraceEvent) and p.pid == pid
+    ]
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_a_memory_read_of_another_process_is_recorded(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    command = (
+        "python3 - <<'EOF'\n" + FORKED + "out = ctypes.create_string_buffer(6)\n"
+        "local = (ctypes.c_void_p * 2)(ctypes.addressof(out), 6)\n"
+        "remote = (ctypes.c_void_p * 2)(ctypes.addressof(secret), 6)\n"
+        "for pid in (child, 1, 99999):\n"
+        "    n = libc.process_vm_readv(pid, local, 1, remote, 1, 0)\n"
+        "    print(pid, n, ctypes.get_errno() if n < 0 else 0, flush=True)\n"
+        "print(out.value.decode(), flush=True)\n"
+        "os.kill(child, 9)\n"
+        "EOF"
+    )
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(command, timeout_s=20)
+        processes = await sb.sandbox.processes()
+    finally:
+        await sb.close()
+
+    lines = result.stdout.decode().splitlines()
+    ns_caller, ns_child, _ = (int(x) for x in lines[0].split())
+    mine, one, missing = ([int(x) for x in row.split()] for row in lines[1:4])
+    assert (mine, missing, lines[4]) == ([ns_child, 6, 0], [99999, -1, 3], "s3cr3t")
+    host = {p.pid for p in processes}
+    (init,) = [p.pid for p in processes if p.ppid not in host]
+    caller, child = await caller_and_child(store, run_id, ns_caller)
+    assert ptraces(await events(store, run_id, "ptrace.event"), caller) == [
+        (child, ns_child, "process_vm_readv", False, None),
+        (init, 1, "process_vm_readv", one[1] < 0, one[2] or None),
+        (None, 99999, "process_vm_readv", True, 3),
+    ]
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_calls_on_another_process_that_seccomp_refuses_are_recorded(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    # Docker's default seccomp profile refuses pidfd_getfd and process_madvise without
+    # CAP_SYS_PTRACE, before the kernel's syscall tracepoints run.
+    command = (
+        "python3 - <<'EOF'\n" + FORKED + "pidfd = os.pidfd_open(child)\n"
+        "n = libc.syscall(438, pidfd, held, 0)\n"
+        "print(n, ctypes.get_errno(), flush=True)\n"
+        "iov = (ctypes.c_void_p * 2)(ctypes.addressof(secret), 6)\n"
+        "n = libc.syscall(440, pidfd, iov, 1, 21, 0)\n"
+        "print(n, ctypes.get_errno(), flush=True)\n"
+        "os.kill(child, 9)\n"
+        "EOF"
+    )
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+
+    lines = result.stdout.decode().splitlines()
+    assert lines[1:] == ["-1 1", "-1 1"]
+    caller, _ = await caller_and_child(store, run_id, int(lines[0].split()[0]))
+    denied = [
+        (p.syscall, p.errno)
+        for p in (e.payload() for e in await events(store, run_id, "sys.denied"))
+        if isinstance(p, SysDenied) and p.pid == caller
+    ]
+    assert denied == [("pidfd_getfd", 1), ("process_madvise", 1)]
+    assert ptraces(await events(store, run_id, "ptrace.event"), caller) == []
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_an_fd_grab_from_another_process_is_recorded(
+    backend: DockerBackend, store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A host whose seccomp profile lets pidfd_getfd through, as Docker's does with CAP_SYS_PTRACE.
+    create = docker_module.create_container
+
+    async def unconfined(
+        docker: aiodocker.Docker, *, config: dict[str, Any], name: str | None = None
+    ) -> Any:
+        if "aims.agent" in config["Labels"] and "aims.role" not in config["Labels"]:
+            config["HostConfig"]["SecurityOpt"] = [
+                *config["HostConfig"]["SecurityOpt"],
+                "seccomp=unconfined",
+            ]
+        return await create(docker, config=config, name=name)
+
+    monkeypatch.setattr(docker_module, "create_container", unconfined)
+    command = (
+        "python3 - <<'EOF'\n" + FORKED + "pidfd = os.pidfd_open(child)\n"
+        "got = []\n"
+        "for fd, target in ((pidfd, held), (pidfd, 77), (os.pidfd_open(1), 0)):\n"
+        "    n = libc.syscall(438, fd, target, 0)\n"
+        "    got.append(n)\n"
+        "    print(n, ctypes.get_errno() if n < 0 else 0, flush=True)\n"
+        "print(os.read(got[0], 6).decode(), flush=True)\n"
+        "os.kill(child, 9)\n"
+        "EOF"
+    )
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(command, timeout_s=20)
+        processes = await sb.sandbox.processes()
+    finally:
+        await sb.close()
+
+    lines = result.stdout.decode().splitlines()
+    ns_caller, ns_child, _ = (int(x) for x in lines[0].split())
+    mine, bad, one = ([int(x) for x in row.split()] for row in lines[1:4])
+    assert (mine[0] >= 0, bad, lines[4]) == (True, [-1, 9], "s3cr3t")
+    host = {p.pid for p in processes}
+    (init,) = [p.pid for p in processes if p.ppid not in host]
+    caller, child = await caller_and_child(store, run_id, ns_caller)
+    assert ptraces(await events(store, run_id, "ptrace.event"), caller) == [
+        (child, ns_child, "pidfd_getfd", False, None),
+        (child, ns_child, "pidfd_getfd", True, 9),
+        (init, 1, "pidfd_getfd", one[0] < 0, one[1] or None),
+    ]
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_a_pidfd_is_not_recorded_as_a_file_write(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    command = (
+        'python3 -c "import os\n'
+        "os.close(os.pidfd_open(os.getpid()))\n"
+        "open('/work/ctl', 'w').write('x')\""
+    )
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+
+    assert result.finished.exit_code == 0
+    evs = await events(store, run_id)
+    written = [
+        (e.type, e.data.get("path"))
+        for e in evs
+        if e.type in ("file.access", "file.write") and e.data.get("op") in (None, "write")
+    ]
+    assert ("file.access", "/work/ctl") in written
+    assert ("file.write", "/work/ctl") in written
+    assert [path for _, path in written if not str(path).startswith("/work/")] == []
+    assert not [e for e in evs if e.type == "audit.lost"]
 
 
 @pytest.mark.tracer
