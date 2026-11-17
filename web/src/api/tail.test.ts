@@ -12,6 +12,8 @@ import { run } from "@/test/runs";
 
 import type { Schemas } from "./client";
 import type { Event } from "./events";
+import { type FromHub, type FromTab, PROTOCOL } from "./hub";
+import { REOPEN_MAX_MS, REOPEN_MS } from "./live";
 import {
   flagsQuery,
   rawEventsQuery,
@@ -622,6 +624,179 @@ test("the run's end closes the stream and clears what was in flight", () => {
   source.send({ kind: "end", run_id: RUN });
   expect(source.readyState).toBe(FakeEventSource.CLOSED);
   expect(tail.inflight).toEqual([]);
+});
+
+// The paths the tail read, as it asks whether the run may still be read before a stream opens
+// again; each answered `answer`.
+function answering(answer: () => Response) {
+  const asked: string[] = [];
+  fetch.mockImplementation(async (request) => {
+    asked.push(new URL(request.url).pathname);
+    return answer();
+  });
+  return asked;
+}
+
+const refused = (status: number) => () =>
+  Response.json(
+    { type: "about:blank", title: "Refused", status },
+    { status, headers: { "content-type": "application/problem+json" } },
+  );
+
+test("a stream of its own the browser gave up on opens again from the last event, slower each time", async () => {
+  vi.useFakeTimers();
+  try {
+    const asked = answering(() => Response.json({}));
+    const { source, tail } = open(new QueryClient());
+    source.open();
+    source.send({ kind: "events", run_id: RUN, events: [event(42, "tool.result")] });
+    source.fail(true);
+    await vi.advanceTimersByTimeAsync(REOPEN_MS - 1);
+    expect(asked).toEqual([`/api/runs/${RUN}`]);
+    expect(FakeEventSource.all).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(FakeEventSource.all[1]?.url).toBe(`/api/stream?run=${RUN}&after=42&deltas=${RUN}`);
+    // still away: it waits twice as long
+    FakeEventSource.all[1]?.fail(true);
+    await vi.advanceTimersByTimeAsync(2 * REOPEN_MS - 1);
+    expect(FakeEventSource.all).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(FakeEventSource.all).toHaveLength(3);
+    // one that opens starts the wait over
+    FakeEventSource.all[2]?.open();
+    FakeEventSource.all[2]?.fail(true);
+    await vi.advanceTimersByTimeAsync(REOPEN_MS);
+    expect(FakeEventSource.all).toHaveLength(4);
+    tail.stop();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("model output in flight when the stream opens again is not doubled", async () => {
+  vi.useFakeTimers();
+  try {
+    answering(() => Response.json({}));
+    const { source, tail } = open(new QueryClient());
+    source.send({ kind: "delta", deltas: [delta({ kind: "start" }), delta({ text: "Run" })] });
+    flush();
+    source.fail(true);
+    await vi.advanceTimersByTimeAsync(REOPEN_MS);
+    // the server sends what it holds of the call from its start, then what came since
+    const held = [delta({ kind: "start" }), delta({ text: "Run" }), delta({ text: "ning" })];
+    FakeEventSource.all[1]?.send({ kind: "delta", deltas: held });
+    flush();
+    expect(tail.inflight.map((d) => d.text)).toEqual(["Running"]);
+    tail.stop();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test.each([
+  ["a proxy's 502", refused(502)],
+  ["no answer", () => Promise.reject(new TypeError("Failed to fetch")) as never],
+])("a run read that gets %s still opens the stream again", async (_, answer) => {
+  vi.useFakeTimers();
+  try {
+    answering(answer);
+    const { source, tail } = open(new QueryClient());
+    source.fail(true);
+    await vi.advanceTimersByTimeAsync(REOPEN_MS);
+    expect(FakeEventSource.all).toHaveLength(2);
+    tail.stop();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test.each([401, 403, 404])(
+  "a run read refused with %i leaves the stream closed",
+  async (status) => {
+    vi.useFakeTimers();
+    try {
+      const asked = answering(refused(status));
+      const { source, tail } = open(new QueryClient());
+      source.fail(true);
+      await vi.advanceTimersByTimeAsync(REOPEN_MAX_MS * 2);
+      expect(asked).toHaveLength(1);
+      expect(FakeEventSource.all).toHaveLength(1);
+      tail.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  },
+);
+
+test("a tail stopped while it asks or waits opens nothing more", async () => {
+  vi.useFakeTimers();
+  try {
+    const gate = Promise.withResolvers<void>();
+    answering(() => Response.json({}));
+    const read = fetch.getMockImplementation();
+    fetch.mockImplementationOnce(async (request) => {
+      await gate.promise;
+      return read!(request);
+    });
+    const first = open(new QueryClient());
+    first.source.fail(true);
+    first.tail.stop();
+    gate.resolve();
+    await vi.advanceTimersByTimeAsync(REOPEN_MAX_MS);
+    expect(FakeEventSource.all).toHaveLength(1);
+
+    const second = open(new QueryClient());
+    second.source.fail(true);
+    await vi.advanceTimersByTimeAsync(REOPEN_MS - 1);
+    second.tail.stop();
+    await vi.advanceTimersByTimeAsync(REOPEN_MAX_MS);
+    expect(FakeEventSource.all).toHaveLength(2);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+// The tab's side of a shared worker, enough to join and hear that the stream closed.
+class Port extends EventTarget {
+  sent: FromTab[] = [];
+  postMessage(m: FromTab): void {
+    this.sent.push(m);
+  }
+  start(): void {}
+  close(): void {}
+  reply(m: FromHub): void {
+    this.dispatchEvent(new MessageEvent("message", { data: m }));
+  }
+}
+
+class Worker extends EventTarget {
+  static last: Worker | null = null;
+  port = new Port();
+  constructor() {
+    super();
+    Worker.last = this;
+  }
+}
+
+test("a tail on the shared connection leaves opening again to the page's stream", async () => {
+  vi.useFakeTimers();
+  vi.resetModules();
+  vi.stubGlobal("SharedWorker", Worker);
+  try {
+    const { RunTail: Fresh } = await import("./tail");
+    const tail = new Fresh(RUN, new QueryClient(), (fn) => frames.push(fn));
+    tail.start(41);
+    const port = Worker.last?.port;
+    port?.reply({ t: "ack", v: PROTOCOL, known: false, state: "open", tabs: 1 });
+    port?.reply({ t: "closed" });
+    await vi.advanceTimersByTimeAsync(REOPEN_MS * 4);
+    expect(port?.sent.map((m) => m.t)).toEqual(["hello", "sub", "unsub"]);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(FakeEventSource.all).toHaveLength(0);
+    tail.stop();
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("the run's end reads again what a view polled of it, and its sealed summary then nothing", async () => {

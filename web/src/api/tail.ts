@@ -2,7 +2,7 @@ import { hashKey, type InfiniteData, type QueryClient, type QueryKey } from "@ta
 
 import { client, type Schemas } from "./client";
 import type { Event } from "./events";
-import { Live } from "./live";
+import { Live, Reopen } from "./live";
 import {
   RAW_PAGE,
   RAW_PAGES,
@@ -69,6 +69,7 @@ const NONE: readonly InFlight[] = [];
 // events tab and the model text in flight. Batches apply once per animation frame.
 export class RunTail {
   #live: Live | null = null;
+  #reopen: Reopen | null = null;
   #drafts = new Map<string, Draft>();
   // calls whose answer is logged; deltas of theirs that come late are dropped
   #done = new Set<string>();
@@ -127,6 +128,7 @@ export class RunTail {
     live.on("end", (m) => {
       if (m.run_id !== this.runId) return;
       // the server keeps the connection open after the end; nothing more will come
+      this.#reopen?.stop();
       live.stop();
       this.#drafts.clear();
       this.#publish();
@@ -134,11 +136,17 @@ export class RunTail {
       readFinal(this.qc, this.runId);
     });
     this.#live = live;
+    this.#reopen = new Reopen(
+      live,
+      () => this.#readable(),
+      () => live.start(),
+    );
     live.start();
   }
 
   stop(): void {
     this.#stopped = true;
+    this.#reopen?.stop();
     this.#live?.stop();
     this.#live = null;
     this.#held.clear();
@@ -156,9 +164,26 @@ export class RunTail {
     return () => this.#watchers.delete(fn);
   };
 
-  // A closed stream is not a lost session here: the page's own stream says that.
+  // A closed stream is not a lost session here: the page's own stream says that. On the shared
+  // connection the page's stream closed with this one, and opening that again opens this. A
+  // connection of this tail's own opens again, from the last event it got.
   #closed(): void {
+    const own = this.#live?.sharing === null;
     this.#live?.stop();
+    if (own) this.#reopen?.closed();
+  }
+
+  // Whether the run may still be read, as the stream checks it: 401 brings the sign-in form,
+  // 403 and 404 refuse it for good. A server away, as behind a proxy, may answer later.
+  async #readable(): Promise<boolean> {
+    try {
+      const { response } = await client.GET("/api/runs/{run_id}", {
+        params: { path: { run_id: this.runId } },
+      });
+      return response.status < 400 || response.status >= 500;
+    } catch {
+      return true;
+    }
   }
 
   #schedule(): void {

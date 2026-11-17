@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest"
 
 import type { CommandInfo } from "@/api/commands";
 import type { Event } from "@/api/events";
+import { REOPEN_MS } from "@/api/live";
 import type { CallCost, Dependents, FlagInfo, RunDetail, SampleWindow, StepInfo } from "@/api/run";
 import type { RunSummary } from "@/api/runs";
 import type { Label } from "@/api/score";
@@ -1902,6 +1903,35 @@ test("an open run follows its latest step and shows the next one as it is writte
   // step 2's tool call has its result, so its row is final and the tail reads on past it
   const tails = requests("steps").filter((q) => q.get("after") === "11");
   expect(tails).toHaveLength(1);
+});
+
+test("a run's own stream the browser gave up on opens again where it got to", async () => {
+  detail = { ...detail, run: run(BEE5, { status: "running", state: "running", events: 15 }) };
+  renderAt(`/runs/${BEE5}`);
+  const tail = await waitFor(() => {
+    const s = runStream();
+    if (!s) throw new Error("no run stream");
+    return s;
+  });
+  const list = FakeEventSource.all.find((s) => s.url.includes("runs=true"));
+  act(() => list?.open());
+  act(() => tail.open());
+  const landed = [ev(15, "model.response", { call_id: "m3", text: "Again." })];
+  events.push(...landed);
+  act(() => tail.send({ kind: "events", run_id: BEE5, events: landed }));
+  // a proxy answers its reconnect with an error, while the list stream stays up
+  act(() => tail.fail(true));
+  const again = await waitFor(
+    () => {
+      const s = FakeEventSource.all.findLast((e) => e.url.includes("run="));
+      if (s === tail || !s) throw new Error("not open again");
+      return s;
+    },
+    { timeout: REOPEN_MS + 2000 },
+  );
+  expect(again.url).toBe(`/api/stream?run=${BEE5}&after=15&deltas=${BEE5}`);
+  expect(list?.readyState).toBe(FakeEventSource.OPEN);
+  expect(FakeEventSource.all.filter((s) => s.url.includes("runs=true"))).toHaveLength(1);
 });
 
 const chosenStep = () =>

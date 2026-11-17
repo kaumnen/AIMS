@@ -8,28 +8,26 @@ import {
   useSyncExternalStore,
 } from "react";
 
-import { Live, type LiveState } from "@/api/live";
+import { Live, type LiveState, Reopen } from "@/api/live";
 import { syncRuns } from "@/api/runs";
 
 const LiveContext = createContext<Live | null>(null);
 // how many times the stream was opened again after the browser gave up on it
 const EpochContext = createContext(0);
 
-// the wait before the stream is opened again, doubled each time up to the last
-export const REOPEN_MS = 1000;
-export const REOPEN_MAX_MS = 30_000;
-
-// Opens the page's stream again once the browser gave up on it, when the session still stands:
-// the server or a proxy before it was away, and the browser tries no more on its own.
+// Opens the page's stream again once the browser gave up on it, when the session still stands.
 class Kept {
-  readonly live = new Live({ runs: true }, () => this.#closed());
+  readonly live = new Live({ runs: true }, () => this.#reopen.closed());
   #stands: () => Promise<boolean> = async () => false;
   #reopened: () => void = () => undefined;
-  #tries = 0;
-  #timer: ReturnType<typeof setTimeout> | null = null;
-  #asking = false;
-  #on = false;
-  #unwatch: (() => void) | null = null;
+  readonly #reopen = new Reopen(
+    this.live,
+    () => this.#stands(),
+    () => {
+      this.live.start();
+      this.#reopened();
+    },
+  );
 
   // `stands` says whether the session still does; `reopened` runs after each new start
   use(stands: () => Promise<boolean>, reopened: () => void): void {
@@ -38,36 +36,12 @@ class Kept {
   }
 
   start(): void {
-    this.#on = true;
-    this.#unwatch = this.live.watch(() => {
-      if (this.live.state === "open") this.#tries = 0;
-    });
     this.live.start();
   }
 
   stop(): void {
-    this.#on = false;
-    if (this.#timer !== null) clearTimeout(this.#timer);
-    this.#timer = null;
-    this.#unwatch?.();
+    this.#reopen.stop();
     this.live.stop();
-  }
-
-  #closed(): void {
-    if (this.#asking || this.#timer !== null) return;
-    this.#asking = true;
-    void this.#stands()
-      .catch(() => false)
-      .then((stands) => {
-        this.#asking = false;
-        if (!stands || !this.#on) return;
-        const wait = Math.min(REOPEN_MAX_MS, REOPEN_MS * 2 ** this.#tries++);
-        this.#timer = setTimeout(() => {
-          this.#timer = null;
-          this.live.start();
-          this.#reopened();
-        }, wait);
-      });
   }
 }
 

@@ -5,7 +5,7 @@ import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
-import { REOPEN_MS } from "@/components/live";
+import { REOPEN_MS } from "@/api/live";
 import { makeRouter } from "@/router";
 import { FakeEventSource, runnerInfo } from "@/test/event-source";
 import { stubHeight } from "@/test/layout";

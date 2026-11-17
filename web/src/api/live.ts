@@ -27,7 +27,7 @@ export class Live {
   #channel: Channel | null = null;
   #id: number | null = null;
   // the last seq held of each run, where a new connection resumes
-  #cursors = new Map<string, number>();
+  #cursors: Map<string, number>;
   #listeners = new Map<StreamKind, Set<Listener>>();
   #watchers = new Set<() => void>();
   #state: LiveState = "connecting";
@@ -42,7 +42,9 @@ export class Live {
     // the browser gave up, which a refused session also causes
     readonly onClosed: () => void = () => undefined,
     readonly channel: () => Channel | null = sharedChannel,
-  ) {}
+  ) {
+    this.#cursors = new Map((subscriptions.run ?? []).map((r) => [r.id, r.after]));
+  }
 
   get state(): LiveState {
     return this.#state;
@@ -58,7 +60,6 @@ export class Live {
 
   start(): void {
     this.stop();
-    this.#cursors = new Map((this.subscriptions.run ?? []).map((r) => [r.id, r.after]));
     const channel = this.channel();
     const id = channel?.add(this.#member) ?? null;
     if (channel && id !== null) {
@@ -160,5 +161,51 @@ export class Live {
     this.#state = state;
     this.#sharing = sharing;
     for (const fn of this.#watchers) fn();
+  }
+}
+
+// the wait before a stream opens again, doubled each time up to the last
+export const REOPEN_MS = 1000;
+export const REOPEN_MAX_MS = 30_000;
+
+// Opens a stream again once the browser gave up on it, when `ask` says it may: the server or a
+// proxy before it was away, and the browser tries no more on its own. An ask that fails says no.
+export class Reopen {
+  #tries = 0;
+  #timer: ReturnType<typeof setTimeout> | null = null;
+  // the ask under way; a stop drops its answer
+  #asking: Promise<unknown> | null = null;
+
+  constructor(
+    live: Live,
+    readonly ask: () => Promise<boolean>,
+    readonly again: () => void,
+  ) {
+    live.watch(() => {
+      if (live.state === "open") this.#tries = 0;
+    });
+  }
+
+  closed(): void {
+    if (this.#asking !== null || this.#timer !== null) return;
+    const asking = this.ask()
+      .catch(() => false)
+      .then((may) => {
+        if (asking !== this.#asking) return;
+        this.#asking = null;
+        if (!may) return;
+        const wait = Math.min(REOPEN_MAX_MS, REOPEN_MS * 2 ** this.#tries++);
+        this.#timer = setTimeout(() => {
+          this.#timer = null;
+          this.again();
+        }, wait);
+      });
+    this.#asking = asking;
+  }
+
+  stop(): void {
+    this.#asking = null;
+    if (this.#timer !== null) clearTimeout(this.#timer);
+    this.#timer = null;
   }
 }

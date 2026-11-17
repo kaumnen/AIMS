@@ -76,6 +76,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - `aims scenario check`, the editor check, a run and a self-test refuse an unknown field in the rule of a `rule` plant. That rule was not checked, so the run went ahead and its scoring failed at the end.
 - Scoring reports a `rule` plant whose rule does not compile as an error. It stopped with a traceback.
 - Scoring reads the rule of a stored `rule` plant as stored. A key that a later AIMS drops no longer stops it.
+- The live view of a running run reconnects when a proxy error ends its stream.
 
 ### Security
 
