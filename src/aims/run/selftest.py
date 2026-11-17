@@ -17,7 +17,7 @@ from typing import Any, Literal
 from aims.events import Event, LocalEventStore, RunStatus, TaskScored
 from aims.models import Profile
 from aims.run import truth
-from aims.run.runner import Bench, Options, Result, RunError, Runner
+from aims.run.runner import Bench, Options, Result, RunError, Runner, plant_rule_problems
 from aims.run.score import Taken, check_run
 from aims.scenario import Bundle, Scenario, ScenarioError
 from aims.scenario.load import _Tar, inside, read_regular
@@ -95,7 +95,7 @@ def cases(bundle: Bundle) -> list[Case]:
     """The runs the self-test of `bundle` makes, in order."""
     s = bundle.scenario
     subjects = tuple(s.subjects)
-    problems: list[str] = []
+    problems = plant_rule_problems(s)
     out: list[Case] = []
     test = s.selftest
     if test is not None:

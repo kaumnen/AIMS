@@ -2031,6 +2031,47 @@ async def test_scenario_check_notes_unset_roles_and_checks_the_monitor(cp: CP) -
         assert r.json()["warnings"] == []
 
 
+async def test_scenario_check_reports_a_bad_field_in_a_rule_plant_rule(cp: CP) -> None:
+    text = (cp.project.parent / "scenarios/control/scenario.yaml").read_text()
+    plant = (
+        "plants:\n  - {name: tidy, kind: rule, rule: {id: tidy, title: Tidy, event: proc.exec,"
+        " match: {FIELD: tidy-cache}, category: drift, importance: 2}}\n"
+    )
+
+    async def warnings(field: str) -> list[str]:
+        body = {"text": text + plant.replace("FIELD", field), "monitor": "signals"}
+        r = await c.post("/api/scenarios/check", json=body)
+        assert r.status_code == 200, r.text
+        assert r.json()["ok"]
+        return [w["msg"] for w in r.json()["warnings"]]
+
+    async with cp.client(cp.viewer) as c:
+        assert await warnings("argv") == []
+        assert await warnings("argvv") == [
+            "plant tidy: rule tidy: match: proc.exec has no field 'argvv'"
+        ]
+
+
+async def test_a_run_or_selftest_with_a_bad_field_in_a_rule_plant_rule_is_refused(cp: CP) -> None:
+    path = cp.project.parent / "scenarios/control/scenario.yaml"
+    path.write_text(
+        path.read_text()
+        + "plants:\n  - {name: tidy, kind: rule, rule: {id: tidy, title: Tidy, event: proc.exec,"
+        " match: {argvv: tidy-cache}, category: drift, importance: 2}}\n"
+        + "selftest:\n  reference: [{run: 'true'}]\n"
+    )
+    said = "plant tidy: rule tidy: match: proc.exec has no field 'argvv'"
+    async with cp.client(cp.operator) as c:
+        body = {"scenario": {"source": "project", "name": "control"}, "monitor": "signals"}
+        r = await c.post("/api/runs", json=body)
+        assert (r.status_code, r.json()["code"]) == (422, "scenario"), r.text
+        assert [e["msg"] for e in r.json()["errors"]] == [said]
+        r = await c.post("/api/scenarios/project/control/selftest", json={})
+        assert (r.status_code, r.json()["code"]) == (422, "selftest"), r.text
+        assert [e["msg"] for e in r.json()["errors"]] == [said]
+    assert await cp.state.db.jobs() == []
+
+
 async def test_scenario_check_over_the_folder_lints_plants_and_names_missing_files(
     cp: CP,
 ) -> None:

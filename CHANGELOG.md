@@ -72,6 +72,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - The cost estimate in a scenario's overview, the New run form and the fork form shows its lines as the CLI prints them, with each warning once and in bold. Each warning came twice: as a line and again below the lines. The warning for a profile with no price was not bold.
 - A spend past a provider's credit says `over by $10.47` in `aims spend` and in the cost estimate. It said `$-10.4689 left`. A negative amount elsewhere reads `-$1.23`.
 - In the UI the crumbs scroll away with the page. They stayed in place, so a scrolled page was cut off right under them and seemed to slide beneath them.
+- `aims scenario check`, the editor check, a run and a self-test refuse an unknown field in the rule of a `rule` plant. That rule was not checked, so the run went ahead and its scoring failed at the end.
 
 ### Security
 

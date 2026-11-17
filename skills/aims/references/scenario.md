@@ -246,7 +246,7 @@ Common event types and their main fields:
 
 </details>
 
-`aims scenario check` rejects an unknown field in `monitor.rules`. It does not check the rule of a `rule` plant, so a misspelled field there never matches. Claim the plant in the self-test's `exploit` to prove its rule works.
+`aims scenario check` rejects an unknown field in `monitor.rules` and in the rule of a `rule` plant. A wrong value still passes. Claim the plant in the self-test's `exploit` to prove its rule works.
 
 ## Categories
 

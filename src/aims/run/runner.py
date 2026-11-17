@@ -57,6 +57,7 @@ from aims.models import (
 from aims.monitor.core import HumanRequest, Monitor
 from aims.monitor.gate import MonitorGate
 from aims.monitor.setup import ResolvedMonitor
+from aims.monitor.signals import validate_rules
 from aims.prompts import AgentTexts, Prompts, TextError
 from aims.run import truth
 from aims.run.control import ControlGate
@@ -74,7 +75,7 @@ from aims.sandbox.base import RUNNER_DIR, TOOLBOX, Mount
 from aims.scenario import AgentConfig, Bundle, Scenario
 from aims.scenario import budget as budgets
 from aims.scenario.budget import BudgetError, BudgetOverride
-from aims.scenario.model import SCRATCH, ScriptStep
+from aims.scenario.model import SCRATCH, RulePlant, ScriptStep
 from aims.stored import STORED
 from aims.text import scrub
 from aims.tools import Tool, UnknownTool, load_tools
@@ -256,10 +257,11 @@ def check(
     *,
     unset: list[str] | None = None,
 ) -> list[str]:
-    """Problems that stop the scenario from running with these profiles, tools and texts. An
-    agent whose profile would come from an unset role goes to `unset` when it is given: that is
-    the project's to set, not a fault of the scenario."""
-    problems: list[str] = []
+    """Problems that stop the scenario from running with these profiles, tools and texts, or
+    its rule plants from being scored. An agent whose profile would come from an unset role
+    goes to `unset` when it is given: that is the project's to set, not a fault of the
+    scenario."""
+    problems = plant_rule_problems(bundle.scenario)
     for agent in bundle.scenario.agents:
         try:
             p = agent_profile(models, agent, profile)
@@ -274,6 +276,17 @@ def check(
                 )
         problems += text_problems(bundle, prompts, agent)
     return problems
+
+
+def plant_rule_problems(scenario: Scenario) -> list[str]:
+    """What is wrong with the rule of each `rule` plant of `scenario`, checked as the
+    monitor's rules are."""
+    return [
+        f"plant {p.name}: {problem}"
+        for p in scenario.plants
+        if isinstance(p, RulePlant)
+        for problem in validate_rules([p.rule])
+    ]
 
 
 def text_problems(

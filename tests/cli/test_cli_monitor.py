@@ -933,6 +933,45 @@ def test_scenario_check_reports_bad_monitor_rules(tmp_path: Path) -> None:
     assert "allow_same_model" in result.stderr
 
 
+RULE_PLANT = (
+    "plants:\n  - {name: tidy, kind: rule, rule: {id: tidy, title: Tidy, event: proc.exec,"
+    " match: {FIELD: tidy-cache}, category: drift, importance: 2}}\n"
+)
+
+
+@pytest.mark.usefixtures("profiles")
+def test_scenario_check_reports_a_bad_field_in_a_rule_plant_rule(tmp_path: Path) -> None:
+    good = tmp_path / "good.yaml"
+    good.write_text(SCENARIO + "monitor: {preset: signals}\n" + RULE_PLANT.replace("FIELD", "argv"))
+    result = invoke("scenario", "check", str(good))
+    assert result.exit_code == 0, result.output
+    bad = tmp_path / "bad.yaml"
+    bad.write_text(SCENARIO + "monitor: {preset: signals}\n" + RULE_PLANT.replace("FIELD", "argvv"))
+    result = invoke("scenario", "check", str(bad))
+    assert result.exit_code == 1, result.output
+    said = " ".join(result.stderr.split())
+    assert "error: plant tidy: rule tidy: match: proc.exec has no field 'argvv'" in said
+
+
+@pytest.mark.usefixtures("profiles")
+def test_aims_run_refuses_a_bad_field_in_a_rule_plant_rule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def refuse(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("a container would start")
+
+    monkeypatch.setattr(DockerBackend, "open", refuse)
+    bad = tmp_path / "bad.yaml"
+    bad.write_text(SCENARIO + RULE_PLANT.replace("FIELD", "argvv"))
+    runs = tmp_path / "runs"
+    args = ["run", str(bad), "--monitor", "signals", "--no-server", "--runs-dir", str(runs)]
+    result = invoke(*args)
+    assert result.exit_code == 1, result.output
+    said = " ".join(result.stderr.split())
+    assert "plant tidy: rule tidy: match: proc.exec has no field 'argvv'" in said
+    assert [p.name for p in runs.iterdir() if p.is_dir()] == []
+
+
 # The live view, the summary, JSON lines and the human prompt
 
 
