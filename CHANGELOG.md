@@ -60,6 +60,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 ### Fixed
 
+- A runner without its kernel tracer says it takes no kernel runs or self-tests, under Settings > Runners and in the runner tooltip of the header. It said its runs use snapshot audit. Kernel runs and self-tests wait for a runner with the tracer.
 - Saving a text under Settings > Prompts failed with 422 `a part of it is not a table` when its table was apart in the config file, as `[profiles.a]` and `[profiles.b]` are with `[roles]` between them. `PATCH /api/config/{layer}` failed the same way.
 - `aims models check` keeps a profile's effort when it is `none` or `minimal`. It turned the effort up to `low`, so a model that reasons only when asked sent its reasoning in the check but not in a run.
 - The cost estimate of runs whose models all have no price says their total is not counted. It said `typically $0.00` and `Cannot exceed $0.00`, whatever caps the runs had.

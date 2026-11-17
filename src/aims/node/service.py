@@ -146,9 +146,14 @@ class Node:
         if alive:
             detail = None
         elif self.options.audit == "snapshot":
-            detail = "this runner has no kernel tracer (--audit snapshot); runs use snapshot audit"
+            detail = (
+                "this runner has no kernel tracer (--audit snapshot);"
+                " it takes no kernel runs or self-tests"
+            )
         else:
-            detail = "the kernel tracer is down; runs use snapshot audit"
+            detail = (
+                "the kernel tracer is down; it takes no kernel runs or self-tests until it is back"
+            )
         return TracerHealth(
             alive=alive,
             detail=detail,
