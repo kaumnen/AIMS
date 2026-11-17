@@ -325,8 +325,11 @@ async def test_an_end_that_cannot_be_logged_ends_the_agent_as_an_error(
 async def test_a_cancelled_agent_whose_end_cannot_be_logged_still_raises_the_cancel(
     store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    running = asyncio.Event()
+
     class Hang(FakeSandbox):
         async def exec(self, command: str, **kw: Any) -> ExecResult:
+            running.set()
             await asyncio.sleep(30)
             raise AssertionError("not reached")
 
@@ -343,7 +346,8 @@ async def test_a_cancelled_agent_whose_end_cannot_be_logged_still_raises_the_can
 
     monkeypatch.setattr(agent, "_finish", failing)
     task = asyncio.create_task(agent.run())
-    await asyncio.sleep(0.2)
+    async with asyncio.timeout(5):
+        await running.wait()
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task

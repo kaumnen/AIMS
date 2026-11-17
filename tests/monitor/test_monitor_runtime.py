@@ -48,6 +48,7 @@ from aims.prompts import AgentTexts, Prompts
 from aims.run import runner as runner_module
 from aims.run.job import Job, bundle_of, monitor_for, runner_for, scenario_jobs
 from aims.run.runner import Bench, Options, Result, RunError, Runner, _status, seeded
+from aims.run.script import ScriptedAgent
 from aims.sandbox import DockerBackend
 from aims.sandbox import audit as audit_module
 from aims.sandbox.base import Capture, Outcome, SandboxInfo, SandboxSpec
@@ -873,26 +874,37 @@ async def test_a_scripted_agent_that_starts_during_a_pause_holds_until_it_is_let
 
 @pytest.mark.timing
 async def test_a_scripted_step_waits_out_its_delay_in_time_its_agent_is_not_paused(
-    store: LocalEventStore, tmp_path: Path
+    store: LocalEventStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     backend = FreezeBoxes()
     scripts = steps(a=[{"after_s": 0.5, "run": "echo a"}])
+    delays: list[float] = []
+    delay = ScriptedAgent._delay
+
+    async def timed(self: ScriptedAgent, seconds: float) -> None:
+        delays.append(time.monotonic())
+        await delay(self, seconds)
+
+    monkeypatch.setattr(ScriptedAgent, "_delay", timed)
     runner = Runner(bench(store, Script(), backend), scenario(tmp_path), Options(scripts=scripts))
     task = asyncio.create_task(runner.run())
-    await until(lambda: "a" in runner.scripted)
+    await until(lambda: bool(delays))
     await runner.operate("pause", agent="a")
+    paused = time.monotonic()
     await asyncio.sleep(1)
     box = backend.boxes["a"]
     assert (box.refused, box.commands.count("echo a")) == ([], 0)
-    await runner.operate("resume", agent="a")
     resumed = time.monotonic()
+    await runner.operate("resume", agent="a")
     await until(lambda: "echo a" in box.commands)
     waited = time.monotonic() - resumed
     async with asyncio.timeout(5):
         result = await task
 
     assert result.status == "completed", result.reason
-    assert waited >= 0.3
+    # The delay ran from its start until the pause took hold, which a busy machine makes
+    # later. The rest of its 0.5 s comes after the resume.
+    assert waited >= 0.5 - (paused - delays[0])
     assert result.agents["a"].paused_ms >= 900
     assert box.refused == []
 

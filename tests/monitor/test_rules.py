@@ -745,9 +745,11 @@ async def test_a_slow_rule_regex_degrades_the_rule_at_its_budget(
 async def test_a_slow_rule_regex_leaves_the_loop_free(
     store: LocalEventStore, monkeypatch: pytest.MonkeyPatch, size: int
 ) -> None:
-    monkeypatch.setattr(scan, "SYNC_S", 0.3)
+    # A scan that held the loop would stall it for its whole budget, twice the bound below,
+    # which leaves the rest for a busy machine.
+    monkeypatch.setattr(scan, "SYNC_S", 0.6)
     monkeypatch.setattr(scan, "INLINE_S", 0.02)
-    monkeypatch.setattr(scan, "THREAD_S", 0.3)
+    monkeypatch.setattr(scan, "THREAD_S", 0.6)
     slow = rule(id="slow", event=["tool.call"], match={"arguments|re": r"hi\s*,?\s+judge"})
     b = await bench(store, config=MonitorConfig(preset="signals", rules=[slow]))
     worst = 0.0
@@ -768,6 +770,6 @@ async def test_a_slow_rule_regex_leaves_the_loop_free(
     done = True
     await ticker
     degraded = [p for p in (e.payload() for e in b.others) if isinstance(p, MonitorDegraded)]
-    assert "ran past 0.3 s" in (degraded[0].detail or "")
+    assert "ran past 0.6 s" in (degraded[0].detail or "")
     # A short text has its first try on the loop, at INLINE_S.
-    assert worst < 0.15, f"the loop stalled {worst:.3f} s in a {took:.3f} s scan"
+    assert worst < 0.3, f"the loop stalled {worst:.3f} s in a {took:.3f} s scan"
