@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 log = logging.getLogger("aims.server")
 
-VERSION = 7
+VERSION = 8
 SESSION_DAYS = 30
 # a token's last use is noted at most this often
 USE_S = 60.0
@@ -64,6 +64,15 @@ create trigger audit_append_only before update on audit
 begin
     select raise(abort, 'the audit log is append-only');
 end;
+"""
+
+# A job's kind, as filters on jobs read it: a job from before kinds were written runs a
+# scenario. A filter written with this text can use the indexes below.
+KIND = "coalesce(json_extract(payload, '$.kind'), 'scenario')"
+KINDS = f"create index jobs_by_kind on jobs ({KIND}, run_id);"
+ORIGINS = f"""
+create index if not exists jobs_by_origin on jobs (json_extract(payload, '$.origin'), {KIND})
+    where json_extract(payload, '$.origin') is not null;
 """
 
 SCHEMA = (
@@ -142,22 +151,25 @@ create table runs (
 ) strict;
 """
     + AUDIT
+    + KINDS
 )
 
 # What deleting runs needs: the ids of deleted runs, which a runner that still holds one would
 # ship back, and indexes that find the jobs made from a run.
-DELETES = """
+DELETES = (
+    """
 create table if not exists deleted_runs (
     run_id text primary key,
     deleted real not null
 ) strict;
 
-create index if not exists jobs_by_origin on jobs (json_extract(payload, '$.origin'))
-    where json_extract(payload, '$.origin') is not null;
-
+"""
+    + ORIGINS
+    + """
 create index if not exists jobs_by_score_monitor on jobs (json_extract(payload, '$.monitor'))
     where json_extract(payload, '$.kind') = 'score';
 """
+)
 
 # v2 had no runs.shipper. Its runner names never changed token, so the token a name is bound
 # to is the one that shipped every run of that name.
@@ -188,12 +200,15 @@ MIGRATE_6 = """
 alter table commands add column in_part integer not null default 0 check (in_part in (0, 1));
 update commands set in_part = 1 where state = 'done' and outcome is not 'done';
 """
+# v7 read the kind from the payload of each job a filter on kind looked at.
+MIGRATE_7 = "drop index jobs_by_origin;" + ORIGINS + KINDS
 MIGRATIONS = {
-    2: MIGRATE_2 + MIGRATE_3 + MIGRATE_4 + MIGRATE_5 + MIGRATE_6,
-    3: MIGRATE_3 + MIGRATE_4 + MIGRATE_5 + MIGRATE_6,
-    4: MIGRATE_4 + MIGRATE_5 + MIGRATE_6,
-    5: MIGRATE_5 + MIGRATE_6,
-    6: MIGRATE_6,
+    2: MIGRATE_2 + MIGRATE_3 + MIGRATE_4 + MIGRATE_5 + MIGRATE_6 + MIGRATE_7,
+    3: MIGRATE_3 + MIGRATE_4 + MIGRATE_5 + MIGRATE_6 + MIGRATE_7,
+    4: MIGRATE_4 + MIGRATE_5 + MIGRATE_6 + MIGRATE_7,
+    5: MIGRATE_5 + MIGRATE_6 + MIGRATE_7,
+    6: MIGRATE_6 + MIGRATE_7,
+    7: MIGRATE_7,
 }
 
 
@@ -705,7 +720,7 @@ class ServerDB:
     async def added_checks(self) -> dict[str, Job]:
         """The newest check job an add in the app queued, by the profile it checks."""
         rows = await self._all(
-            f"{self._JOB} where json_extract(payload, '$.kind') = 'models.check'"
+            f"{self._JOB} where {KIND} = 'models.check'"
             " and json_type(payload, '$.add') = 'object' order by created, run_id"
         )
         out: dict[str, Job] = {}
@@ -723,8 +738,7 @@ class ServerDB:
         marks = ", ".join("?" * len(origins))
         rows = await self._all(
             "select run_id, json_extract(payload, '$.origin') from jobs"
-            " where json_extract(payload, '$.kind') = 'monitor'"
-            f" and json_extract(payload, '$.origin') in ({marks})",
+            f" where {KIND} = 'monitor' and json_extract(payload, '$.origin') in ({marks})",
             tuple(origins),
         )
         out: dict[str, list[str]] = {}
@@ -761,17 +775,20 @@ class ServerDB:
             where.append("run_id < ?")
             args.append(before)
         if kind is not None:
-            where.append("coalesce(json_extract(payload, '$.kind'), 'scenario') = ?")
+            where.append(f"{KIND} = ?")
             args.append(kind)
         if skip_kinds:
             marks = ",".join("?" * len(skip_kinds))
-            where.append(f"coalesce(json_extract(payload, '$.kind'), 'scenario') not in ({marks})")
+            where.append(f"{KIND} not in ({marks})")
             args.extend(skip_kinds)
+        table = self._JOB
         if origin is not None:
             where.append("json_extract(payload, '$.origin') = ?")
             args.append(origin)
+            # it finds the few jobs over one run; the index on kind reads every job of the kind
+            table += " indexed by jobs_by_origin"
         clause = f"where {' and '.join(where)}" if where else ""
-        rows = await self._all(f"{self._JOB} {clause} order by run_id desc limit ?", (*args, limit))
+        rows = await self._all(f"{table} {clause} order by run_id desc limit ?", (*args, limit))
         return [self._job(r) for r in rows]
 
     async def jobs_of(self, run_ids: Sequence[str]) -> dict[str, Job]:

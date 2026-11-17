@@ -1226,6 +1226,14 @@ class LocalEventStore:
     async def run(self, run_id: str) -> RunInfo | None:
         return await self._index.run(run_id)
 
+    async def runs_of(self, run_ids: Sequence[str]) -> dict[str, RunInfo]:
+        """The runs of `run_ids` the index holds, by run id."""
+        return await self._index.runs_of(run_ids)
+
+    async def known(self, run_ids: Sequence[str]) -> set[str]:
+        """Which of `run_ids` the index holds."""
+        return await self._index.known(run_ids)
+
     async def runs(
         self,
         *,

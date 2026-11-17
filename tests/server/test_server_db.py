@@ -4,14 +4,18 @@ import sqlite3
 import threading
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable, Coroutine
+from collections.abc import AsyncIterator, Callable, Coroutine, Sequence
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from aims.server.db import VERSION, AuditRow, Job, Outcome, ServerDB
-from aims.server.state import close_state, open_state
+from aims.events import Draft, LocalEventStore, RunFinished, RunStarted
+from aims.events.payloads import RunKind
+from aims.server import api
+from aims.server.api import RunSummary
+from aims.server.db import KIND, VERSION, AuditRow, Job, Outcome, ServerDB
+from aims.server.state import ServerState, close_state, open_state
 
 pytestmark = pytest.mark.anyio
 
@@ -23,14 +27,19 @@ async def db(tmp_path: Path) -> AsyncIterator[ServerDB]:
     await db.close()
 
 
-def job(group: str | None = None, parallel: int | None = None) -> Job:
+def job(
+    group: str | None = None,
+    parallel: int | None = None,
+    payload: dict[str, Any] | None = None,
+    run_id: str | None = None,
+) -> Job:
     at = time.time()
     return Job(
-        run_id=str(uuid.uuid7()),
+        run_id=run_id or str(uuid.uuid7()),
         group=group,
         parallel=parallel,
         state="queued",
-        payload={"x": 1},
+        payload={"x": 1} if payload is None else payload,
         needs={},
         target=None,
         runner=None,
@@ -211,7 +220,14 @@ async def test_runs_keep_their_first_runner_and_divergence(db: ServerDB) -> None
 def downgrade(path: Path, version: int) -> None:
     """Make the database at `path` look like one of schema `version`."""
     raw = sqlite3.connect(path)
-    raw.execute("alter table commands drop column in_part")
+    raw.execute("drop index jobs_by_kind")
+    raw.execute("drop index jobs_by_origin")
+    raw.execute(
+        "create index jobs_by_origin on jobs (json_extract(payload, '$.origin'))"
+        " where json_extract(payload, '$.origin') is not null"
+    )
+    if version < 7:
+        raw.execute("alter table commands drop column in_part")
     if version < 6:
         raw.execute("alter table commands drop column state")
     if version < 5:
@@ -384,7 +400,7 @@ async def test_an_older_db_keeps_its_drops_and_takes_late_answers_after(
     finally:
         await db.close()
     raw = sqlite3.connect(path)
-    assert raw.execute("pragma user_version").fetchone() == (VERSION,) == (7,)
+    assert raw.execute("pragma user_version").fetchone() == (VERSION,) == (8,)
     raw.close()
 
 
@@ -423,6 +439,143 @@ async def test_an_older_db_keeps_the_state_of_each_command_its_outcome_said(
         assert await db.command_counts([run]) == {run: (5, 1, 1)}
     finally:
         await db.close()
+
+
+def indexes(path: Path) -> list[tuple[str, str]]:
+    raw = sqlite3.connect(path)
+    try:
+        return sorted(raw.execute("select name, sql from sqlite_master where type = 'index'"))
+    finally:
+        raw.close()
+
+
+@pytest.mark.parametrize("version", [2, 3, 6, 7])
+async def test_an_older_db_gets_the_indexes_of_a_new_one(tmp_path: Path, version: int) -> None:
+    fresh, old = tmp_path / "fresh.sqlite", tmp_path / "old.sqlite"
+    for path in (fresh, old):
+        await (await ServerDB.open(path)).close()
+    downgrade(old, version)
+    assert indexes(old) != indexes(fresh)
+    await (await ServerDB.open(old)).close()
+    assert indexes(old) == indexes(fresh)
+
+
+async def test_a_v7_db_finds_jobs_by_kind_through_an_index(tmp_path: Path) -> None:
+    path = tmp_path / "server.sqlite"
+    db = await ServerDB.open(path)
+    origin = str(uuid.uuid7())
+    legacy = job(payload={"scenario": "s"})
+    review = job(payload={"kind": "monitor", "origin": origin})
+    score = job(payload={"kind": "score", "origin": origin})
+    other = job(payload={"kind": "monitor", "origin": str(uuid.uuid7())})
+    scenario = job(payload={"kind": "scenario", "scenario": "s"})
+    added = job(payload={"kind": "models.check", "check": ["p"], "add": {}})
+    checked = job(payload={"kind": "models.check", "check": ["q"]})
+    await db.add_jobs([legacy, review, score, other, scenario, added, checked])
+    await db.close()
+    downgrade(path, 7)
+    db = await ServerDB.open(path)
+    try:
+
+        async def page(kind: str, origin: str | None = None) -> list[str]:
+            got = await db.jobs_page(before=None, limit=10, kind=kind, origin=origin)
+            return [j.run_id for j in got]
+
+        assert await page("scenario") == [scenario.run_id, legacy.run_id]
+        assert await page("monitor") == [other.run_id, review.run_id]
+        assert await page("monitor", origin) == [review.run_id]
+        assert await page("score", origin) == [score.run_id]
+        assert await db.review_jobs([origin]) == {origin: [review.run_id]}
+        assert {p: j.run_id for p, j in (await db.added_checks()).items()} == {"p": added.run_id}
+    finally:
+        await db.close()
+    raw = sqlite3.connect(path)
+    try:
+        assert raw.execute("pragma user_version").fetchone() == (VERSION,) == (8,)
+
+        def plan(sql: str, args: tuple[str, ...]) -> str:
+            return " ".join(r[-1] for r in raw.execute(f"explain query plan {sql}", args))
+
+        by_kind = plan(f"select * from jobs where {KIND} = ? order by run_id desc limit 5", ("a",))
+        assert by_kind == "SEARCH jobs USING INDEX jobs_by_kind (<expr>=?)"
+        reviews = plan(
+            f"select * from jobs where {KIND} = 'monitor'"
+            " and json_extract(payload, '$.origin') in (?, ?)",
+            ("a", "b"),
+        )
+        assert reviews == "SEARCH jobs USING INDEX jobs_by_origin (<expr>=? AND <expr>=?)"
+    finally:
+        raw.close()
+
+
+async def summaries_one_by_one(
+    state: ServerState, run_ids: list[str], skip: Sequence[str] = ()
+) -> list[RunSummary]:
+    """`api.summaries` as it read the index: once for each run and once for each review job."""
+    jobs = await state.db.jobs_of(run_ids)
+    metas = await state.db.runs_meta(run_ids)
+    reviews = await state.db.review_jobs(run_ids)
+    sent = await state.db.command_counts(run_ids)
+    out = []
+    for run_id in run_ids:
+        info = await state.store.run(run_id)
+        if info is None and run_id not in jobs:
+            continue
+        found = api.summary(state, run_id, info, jobs.get(run_id), metas.get(run_id))
+        if found.kind in skip:
+            continue
+        found.commands, found.commands_waiting, found.commands_dropped = sent.get(run_id, (0, 0, 0))
+        for review in reviews.get(run_id, ()):
+            if await state.store.run(review) is None:
+                found.reviews += 1
+        out.append(found)
+    return out
+
+
+async def test_run_summaries_count_each_review_once(tmp_path: Path) -> None:
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+
+        async def sealed(kind: RunKind = "scenario", origin: str | None = None) -> str:
+            started = RunStarted(
+                scenario="s",
+                oversight="observe",
+                kind=kind,
+                origin=origin,
+                origin_head=None if origin is None else "a" * 64,
+            )
+            run_id = await store.create_run(started)
+            await store.append(run_id, [Draft(RunFinished(status="completed"))])
+            return run_id
+
+        reviewed, plain, selftest = await sealed(), await sealed(), await sealed("selftest")
+        shipped = await sealed("monitor", reviewed)
+        await sealed("monitor", reviewed)  # pushed by `aims monitor`, with no job
+        scored = await sealed("score", reviewed)
+    state = await open_state(tmp_path)
+    try:
+        waiting = job(payload={"kind": "scenario", "scenario": "s"})
+        await state.db.add_jobs(
+            [
+                job(run_id=shipped, payload={"kind": "monitor", "origin": reviewed}),
+                job(payload={"kind": "monitor", "origin": reviewed}),
+                job(payload={"kind": "score", "origin": reviewed}),
+                waiting,
+            ]
+        )
+        await state.db.add_command("r1", plain, {"action": "pause"})
+        ids = [reviewed, plain, waiting.run_id, str(uuid.uuid7()), reviewed, shipped]
+        ids += [scored, selftest]
+        expected = {
+            (): [3, 0, 0, 3, 0, 0, 0],
+            api.TRUTH_KINDS: [3, 0, 0, 3, 0],
+        }
+        for skip, counts in expected.items():
+            got = await api.summaries(state, ids, skip)
+            assert [s.reviews for s in got] == counts
+            old = await summaries_one_by_one(state, ids, skip)
+            assert [s.model_dump() for s in got] == [s.model_dump() for s in old]
+    finally:
+        await close_state(state)
 
 
 async def test_forgetting_runs_drops_their_rows_and_keeps_them_deleted(db: ServerDB) -> None:

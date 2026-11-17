@@ -51,6 +51,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - A profile sends `parallel_tool_calls` only when it sets the field. The default was `false`, which went with every request that offered tools. A profile that leaves it out now lets the provider decide, so it sends no such field. Set `parallel_tool_calls = false` in it to keep the old request. `aims models check` warns of several calls in one turn only when the profile sets `false`.
 - A run, fork, self-test or check that a runner takes may use a profile with `structured_output = false`. The runner failed such a job before it started when that profile came first in the job, with the error that role sweep needs structured output. A config file's sweep and judge roles still need structured output. The error for one that lacks it now names only that rule.
 - A tab opens a live connection of its own when the one its tabs share neither opens nor fails within 10 seconds. A browser can let the shared worker ask for the stream and never answer it, so the run page stayed on Starting with 0 steps.
+- The runs list, series page and models page read the server database with fewer, indexed queries. The server database moves to version 8. An older AIMS refuses the file.
 
 ### Removed
 

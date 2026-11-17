@@ -1325,6 +1325,25 @@ class Index:
         runs = await self._runs("where run_id = ?", (run_id,))
         return runs[0] if runs else None
 
+    async def runs_of(self, run_ids: Sequence[str]) -> dict[str, RunInfo]:
+        """The runs of `run_ids` the index holds, by run id."""
+        out: dict[str, RunInfo] = {}
+        for part in _parts(run_ids):
+            marks = ",".join("?" * len(part))
+            out.update((r.run_id, r) for r in await self._runs(f"where run_id in ({marks})", part))
+        return out
+
+    async def known(self, run_ids: Sequence[str]) -> set[str]:
+        """Which of `run_ids` the index holds."""
+        out: set[str] = set()
+        for part in _parts(run_ids):
+            marks = ",".join("?" * len(part))
+            async with self._db.execute(
+                f"select run_id from runs where run_id in ({marks})", part
+            ) as cur:
+                out.update(r[0] for r in await cur.fetchall())
+        return out
+
     async def runs(
         self,
         *,
@@ -2284,6 +2303,13 @@ def _held(*texts: str | None) -> bool:
 def _kept(values: Sequence[str]) -> list[str]:
     """The values of an `in (...)` or `not in (...)` filter that a row could hold."""
     return [v for v in values if encodable(v)]
+
+
+def _parts(values: Sequence[str], size: int = 500) -> list[list[str]]:
+    """The distinct values of an `in (...)` filter that a row could hold, in binds of at most
+    `size`."""
+    kept = list(dict.fromkeys(_kept(values)))
+    return [kept[i : i + size] for i in range(0, len(kept), size)]
 
 
 def _within(values: Sequence[str]) -> list[str] | None:

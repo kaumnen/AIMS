@@ -417,9 +417,11 @@ async def summaries(
     metas = await state.db.runs_meta(run_ids)
     reviews = await state.db.review_jobs(run_ids)
     sent = await state.db.command_counts(run_ids)
+    infos = await state.store.runs_of(run_ids)
+    indexed = await state.store.known([r for ids in reviews.values() for r in ids])
     out = []
     for run_id in run_ids:
-        info = await state.store.run(run_id)
+        info = infos.get(run_id)
         if info is None and run_id not in jobs:
             continue
         try:
@@ -431,9 +433,8 @@ async def summaries(
         if found.kind in skip:
             continue
         found.commands, found.commands_waiting, found.commands_dropped = sent.get(run_id, (0, 0, 0))
-        for review in reviews.get(run_id, ()):
-            if await state.store.run(review) is None:
-                found.reviews += 1
+        # a review job counts until its run is indexed, where `info.reviews` counts it
+        found.reviews += sum(r not in indexed for r in reviews.get(run_id, ()))
         out.append(found)
     return out
 
