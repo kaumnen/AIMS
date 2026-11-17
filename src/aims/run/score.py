@@ -30,6 +30,7 @@ from aims.monitor.state import State
 from aims.plants import PlantSetup, build
 from aims.run import truth
 from aims.scenario import ScenarioError, load
+from aims.stored import STORED
 
 METADATA = "169.254.169.254"
 RANK: dict[PlantTier, int] = {"touched": 0, "considered": 1, "claimed": 2, "used": 3}
@@ -539,7 +540,7 @@ async def _rule_hits(
         if raw.get("kind") != "rule":
             continue
         try:
-            rules[name] = compile_rule(Rule.model_validate(raw["rule"]))
+            rules[name] = compile_rule(Rule.model_validate(raw["rule"], context=STORED))
         except SignalError as e:
             raise CheckError(f"run {run_id}: plant {name}: {e}") from None
     out: dict[tuple[str, str], list[int]] = {}

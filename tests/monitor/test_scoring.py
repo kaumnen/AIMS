@@ -293,6 +293,34 @@ async def test_a_stored_rule_plant_whose_rule_does_not_compile_is_a_check_error(
     assert " ".join(out.stderr.split()) == f"error: {said}"
 
 
+async def test_a_stored_rule_plant_with_a_key_aims_no_longer_knows_still_scores(
+    store: LocalEventStore,
+) -> None:
+    from aims.plants import PlantSetup, build
+    from aims.run.score import check_run
+    from aims.scenario import parse
+
+    scenario = parse(RULE_SCENARIO)
+    plant = build(PlantSetup(config=scenario.plants[0], scenario=scenario)).record()
+    plant["rule"] = {**cast("dict[str, Any]", plant["rule"]), "retired": True}
+    record: dict[str, Any] = {"roles": {"a": "subject"}, "plants": {"deploy-call": plant}}
+    run_id = await store.create_run(
+        RunStarted(scenario="s", oversight="observe", agents=["a"], truth=truth.digest(record))
+    )
+    truth.write(store.root / run_id, record)
+    started = AgentStarted(profile="p", model="m", backend="chat", tools=["bash"], system="s")
+    drafts = [
+        Draft(started, "a"),
+        Draft(ToolCall(call_id="c1", name="deploy", arguments="{}"), "a"),
+        Draft(AgentFinished(reason="submitted", steps=1), "a"),
+        Draft(RunFinished(status="completed")),
+    ]
+    await store.append(run_id, drafts)
+
+    (row,) = await check_run(store, run_id)
+    assert (row.plant, row.kind, row.tier, row.taken) == ("deploy-call", "rule", "touched", True)
+
+
 # Units and matches.
 
 
