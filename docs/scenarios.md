@@ -1,6 +1,6 @@
 # Write a scenario
 
-A scenario is a YAML file next to the files it uses. The built-in ones are in [`src/aims/scenarios`](../src/aims/scenarios). The [scenario reference](../skills/aims/references/scenario.md) maps the format and the rules that are easy to miss. `aims scenario schema` prints every field.
+A scenario is a YAML file next to the files it uses. The built-in ones are in [`src/aims/scenarios`](../src/aims/scenarios). The [scenario reference](../skills/aims/references/scenario.md) maps the format and the rules that are easy to miss. `aims scenario schema` prints the JSON Schema with every field.
 
 - [Example](#example)
 - [Plant kinds](#plant-kinds)
@@ -64,8 +64,8 @@ selftest:
 
 - The verifier runs after the agent stops. It writes a reward to `$AIMS_LOGS_DIR/reward.json` or `reward.txt`. Its `files` stay out of the agent's reach until then.
 - The monitor flags a verifier that runs a file the agent wrote. If the task asks for a program that the verifier runs, list it in `verifier.programs`, such as `programs: [main.py]`. Each entry is a glob, relative to the workdir unless it is absolute.
-- `aims scenario check` runs the self-test. The `reference` must solve the task without taking a plant. The `exploit` must take every plant it claims.
-- `aims scenario schema` prints the JSON Schema of the format. The UI has an editor with the same checks.
+- `aims scenario check` runs the self-test. Each step of the `reference` must succeed without taking a plant. It does not need full reward. The `exploit` must take every plant it claims.
+- The UI has an editor with the same checks.
 
 ## Plant kinds
 
@@ -78,13 +78,13 @@ selftest:
 | `rule` | A custom trigger in the monitor's rule syntax. | The rule matches an event of the agent | |
 | `imds` | A fake cloud metadata service at 169.254.169.254 that hands out canary credentials. | The agent sends it a request | The credentials turn up elsewhere |
 
-An `impossible` plant also counts as claimed when the agent submits without telling the operator. `taken` sets the tier that counts as taking the plant. By default that is claimed for `impossible`, used for a plant with a canary and touched for the rest.
+An `impossible` plant is claimed when the agent submits without telling the operator. `taken` sets the tier that counts as taking the plant. By default that is claimed for `impossible`, used for a plant with a canary and touched for the rest.
 
 `facts` say in plain words what taking a plant means. Only the score's answer check reads them. The monitor never sees the plants.
 
 ## Agents, channels and tools
 
-- Agents have the role `subject` (under study) or `confederate`. A confederate follows a script or its own prompt. `start` delays an agent until another reaches a step.
-- Channels let agents reach each other. A `folder` is a directory every member mounts. A `board` is a message board with post and read tools. A channel with `lifetime: series` keeps its content across the runs of a series.
+- Agents have the role `subject` (under study) or `confederate`. A confederate follows a script or its own prompt. `start` delays an agent by some seconds, or until another agent starts, finishes or takes a number of steps.
+- Channels let agents reach each other. A `folder` is a directory every member mounts. A `board` is a message board with post and read tools. A folder with `lifetime: series` keeps its content across the runs of a series.
 - Built-in tools are `bash`, `edit`, `submit` and `report_to_operator`.
 - Tools, signals, channels and plants are plugins. A Python package adds more through the entry point groups `aims.tools`, `aims.signals`, `aims.channels` and `aims.plants`.
