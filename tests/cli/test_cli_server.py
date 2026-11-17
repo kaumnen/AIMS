@@ -17,7 +17,7 @@ from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 import aiodocker
 import httpx2
@@ -42,6 +42,7 @@ from aims.sandbox import DockerBackend, SandboxSpec
 from aims.server import serve as serve_module
 from aims.server.db import ServerDB
 from aims.server.serve import (
+    KILL_NOW,
     UI_RUNNER,
     ServeError,
     UiOptions,
@@ -363,6 +364,8 @@ def test_the_runner_reads_how_long_unused_scenario_images_stay(
 
 # In `signalled_runner`: `aims ui` ends, so the pipe on the runner's stdin ends.
 GONE = "gone"
+# In `signalled_runner`: `aims ui` says kill now on the runner's stdin, as on its second stop.
+KILL = "kill"
 
 
 def signalled_runner(
@@ -374,7 +377,8 @@ def signalled_runner(
     said: list[str] | None = None,
 ) -> tuple[int, bool, bool, bool]:
     """Run `aims runner` on a stub node that sends its thread `signals`, 10 ms apart; GONE ends
-    the pipe on its stdin, which this test holds as `aims ui` does. Returns the exit code,
+    the pipe on its stdin, which this test holds as `aims ui` does, and KILL writes KILL_NOW on
+    it. Returns the exit code,
     whether the node was asked to stop, whether it ran to its end (a kill now cancels it) and
     whether the runner said it kills now. Each hangup that would point the streams at
     /dev/null goes to `hung` instead. The output goes to `said`."""
@@ -391,7 +395,9 @@ def signalled_runner(
         async def run(self, stop: asyncio.Event) -> None:
             try:
                 for sig in signals:
-                    if isinstance(sig, str):
+                    if sig == KILL:
+                        os.write(held[0], KILL_NOW)
+                    elif isinstance(sig, str):
                         os.close(held.pop())
                     else:
                         # to this thread, which runs the loop: another thread of the test
@@ -530,13 +536,25 @@ def test_a_runner_aims_ui_starts_takes_its_signals_once_it_handles_them(
 def test_a_runner_aims_ui_starts_kills_now_on_a_second_ctrl_c(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # `aims ui` passes the first Ctrl-C on as SIGTERM and the second on stdin
     ended = signalled_runner(
         monkeypatch,
         tmp_path,
-        [signal.SIGINT, signal.SIGTERM, signal.SIGINT, signal.SIGTERM],
+        [signal.SIGINT, signal.SIGTERM, signal.SIGINT, KILL],
         {UI_RUNNER: "1"},
     )
     assert ended == (EXIT_CANCELLED, True, False, True)
+
+
+@pytest.mark.parametrize("times", [2, 3])
+def test_a_runner_aims_ui_starts_stops_once_for_one_stop_sent_to_the_whole_job(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, times: int
+) -> None:
+    """systemd, or `kill -- -<pgid>`, sends one SIGTERM to every process of the job. The runner
+    gets it on its own and through `aims ui`, three times under `uv run`. That is one stop, so
+    the runner seals its runs. While `aims ui` lives, only `aims ui` says kill now."""
+    ended = signalled_runner(monkeypatch, tmp_path, [signal.SIGTERM] * times, {UI_RUNNER: "1"})
+    assert ended == (0, True, True, False)
 
 
 def test_a_runner_on_its_own_kills_now_on_a_second_signal(
@@ -806,10 +824,11 @@ async def test_the_ui_runner_reaches_its_ui_on_any_address_without_the_proxy(
     assert seen["env"]["NO_PROXY"] == "example.org,fd00::1"
 
 
-# A stand-in for the runner `aims ui` starts: it logs each SIGTERM, stops in `argv[2]` seconds
-# after the first and exits 130 at once on the second, as the runner kills now.
+# A stand-in for the runner `aims ui` starts: it logs each SIGTERM and stops in `argv[2]`
+# seconds after the first. On KILL_NOW from stdin it logs KILL and exits 130 at once, as the
+# runner kills now.
 FAKE_RUNNER = """
-import os, signal, sys, time
+import os, signal, sys, threading, time
 log, slow = sys.argv[1], float(sys.argv[2])
 signal.signal(signal.SIGINT, signal.SIG_IGN)
 terms = []
@@ -817,9 +836,14 @@ def on_term(*_):
     terms.append(1)
     with open(log, "a") as f:
         f.write("TERM\\n")
-    if len(terms) > 1:
-        os._exit(130)
 signal.signal(signal.SIGTERM, on_term)
+def on_input():
+    while data := os.read(0, 4096):
+        if b"k" in data:
+            with open(log, "a") as f:
+                f.write("KILL\\n")
+            os._exit(130)
+threading.Thread(target=on_input, daemon=True).start()
 with open(log, "a") as f:
     f.write("ready\\n")
 while not terms:
@@ -874,9 +898,11 @@ async def test_aims_ui_passes_each_ctrl_c_on_to_its_runner(
             lambda: signal.getsignal(signal.SIGINT) is not before and "ready" in log.read_text(),
             30,
         )
-        for press in range(1, presses + 1):
+        os.kill(os.getpid(), signal.SIGINT)
+        await until(lambda: "TERM" in log.read_text(), 5)
+        if presses == 2:
             os.kill(os.getpid(), signal.SIGINT)
-            await until(lambda n=press: log.read_text().count("TERM") >= n, 5)
+            await until(lambda: "KILL" in log.read_text(), 5)
         async with asyncio.timeout(10):
             assert await task == 0
     finally:
@@ -884,7 +910,8 @@ async def test_aims_ui_passes_each_ctrl_c_on_to_its_runner(
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
-    assert log.read_text().count("TERM") == presses
+    # the first Ctrl-C goes on as SIGTERM, the second as KILL_NOW on the runner's stdin
+    assert log.read_text().split() == ["ready", "TERM", "KILL"][: presses + 1]
     # the app shuts down too, or asyncio.run cancels its lifespan at exit and logs a traceback
     assert dispatcher_ended.is_set()
     err = capsys.readouterr().err
@@ -1987,6 +2014,133 @@ async def test_a_ctrl_c_in_the_terminal_stops_the_local_runner_once(tmp_path: Pa
     assert "killing now" not in err
     assert "the local runner exited" not in err
     assert "the local runner was killed" not in err
+
+
+class SleepingModel(BaseHTTPRequestHandler):
+    """A chat model that answers each call with `sleep 1` in bash, so a run stays under way.
+    `calls` counts the calls."""
+
+    calls: ClassVar[list[int]]
+
+    def do_POST(self) -> None:
+        self.rfile.read(int(self.headers.get("content-length", 0)))
+        self.calls.append(1)
+        n = len(self.calls)
+        call = {
+            "id": f"t{n}",
+            "type": "function",
+            "function": {"name": "bash", "arguments": json.dumps({"command": "sleep 1"})},
+        }
+        body = json.dumps(
+            {
+                "id": f"c{n}",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "m",
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "tool_calls",
+                        "message": {"role": "assistant", "content": None, "tool_calls": [call]},
+                    }
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            }
+        ).encode()
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: Any) -> None:
+        pass
+
+
+@pytest.mark.docker
+async def test_one_stop_sent_to_the_whole_job_still_archives_and_seals_a_run(
+    tmp_path: Path,
+) -> None:
+    """systemd, or `kill -- -<pgid>`, sends one SIGTERM to every process of the job. The runner
+    gets it on its own and through `aims ui`. That is one stop: the run under way keeps its
+    files and its seal reaches the control plane."""
+    if not os.environ.get("AIMS_REQUIRE_DOCKER"):
+        try:
+            backend = await DockerBackend.open(audit="snapshot")
+            await backend.close()
+        except Exception as e:
+            pytest.skip(f"Docker is not available: {e}")
+    handler = type("Sleeping", (SleepingModel,), {"calls": []})
+    model = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=model.serve_forever, daemon=True).start()
+    (tmp_path / "aims.toml").write_text(
+        f"""
+[profiles.sleeping]
+backend = "chat"
+base_url = "http://127.0.0.1:{model.server_address[1]}/v1"
+model = "m"
+weights = "w"
+stream = false
+reasoning = "none"
+price = {{ input = 0.0, cached = 0.0, output = 0.0 }}
+
+[roles]
+agent = "sleeping"
+sweep = "sleeping"
+judge = "sleeping"
+"""
+    )
+    folder = tmp_path / "scenarios" / "stop"
+    folder.mkdir(parents=True)
+    (folder / "scenario.yaml").write_text(
+        "version: 1\n"
+        "name: stop\n"
+        "oversight: observe\n"
+        "task:\n"
+        "  instruction: Do it.\n"
+        "  environment: {image: python:3.13-slim}\n"
+        "agents:\n"
+        "  - id: agent\n"
+        "    budget: {steps: 60, wall_s: 300}\n"
+    )
+    try:
+        async with ui_process(tmp_path, "--audit", "snapshot", session=True) as (proc, url):
+            base = url.partition("/#code=")[0]
+            token = json.loads((tmp_path / "server" / "server.json").read_text())["operator"]
+            async with httpx2.AsyncClient(
+                base_url=base, headers={"Authorization": f"Bearer {token}"}, trust_env=False
+            ) as c:
+                async with asyncio.timeout(120):
+                    while True:
+                        runners = (await c.get("/api/runners")).json()
+                        if runners and runners[0]["connected"]:
+                            break
+                        await asyncio.sleep(0.2)
+                body = {
+                    "scenario": {"source": "project", "name": "stop"},
+                    "monitor": "off",
+                    "audit": "snapshot",
+                    "confirm": True,
+                }
+                r = await c.post("/api/runs", json=body)
+                assert r.status_code == 202, r.text
+                [run_id] = r.json()["run_ids"]
+            await until(lambda: len(handler.calls) >= 2, 120)
+            os.killpg(proc.pid, signal.SIGTERM)
+            assert proc.stderr is not None
+            async with asyncio.timeout(120):
+                err = (await proc.stderr.read()).decode()
+                assert await proc.wait() == 0
+    finally:
+        model.shutdown()
+        model.server_close()
+    assert "killing now" not in err
+    assert "the local runner exited" not in err
+    events = (tmp_path / "server" / "runs" / run_id / "events.jsonl").read_text()
+    lines = [json.loads(line) for line in events.splitlines()]
+    assert "sandbox.archived" in [e["type"] for e in lines]
+    assert lines[-1]["type"] == "run.finished"
+    assert lines[-1]["data"] == {"status": "cancelled", "reason": "cancelled by the operator"}
 
 
 @pytest.mark.docker

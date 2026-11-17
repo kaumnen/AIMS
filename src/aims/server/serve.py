@@ -35,6 +35,8 @@ PORT = 8484
 SERVER_JSON = "server.json"
 LOCAL_RUNNER = "local"
 UI_RUNNER = "AIMS_UI_RUNNER"
+# What `aims ui` writes on its runner's stdin for a later stop: kill now
+KILL_NOW = b"k"
 
 
 def server_dir(env: dict[str, str] | None = None) -> Path:
@@ -179,13 +181,21 @@ async def serve(o: UiOptions) -> int:
     told = 0
 
     def tell_runner() -> None:
-        """The runner leaves Ctrl-C to this server, which sends it one SIGTERM per stop:
-        the first seals its runs as cancelled, the next kills it now."""
+        """The runner leaves Ctrl-C to this server. The first stop goes to it as SIGTERM,
+        which seals its runs as cancelled. A later one goes as KILL_NOW on its stdin, which
+        kills it now. A second SIGTERM would not do: one stop sent to the whole job, as
+        systemd sends it, reaches the runner on its own too."""
         nonlocal told
-        if child is not None and child.returncode is None:
-            told += 1
+        if child is None or child.returncode is not None:
+            return
+        told += 1
+        if told == 1:
             with contextlib.suppress(ProcessLookupError):
                 child.send_signal(signal.SIGTERM)
+        elif lifeline >= 0:
+            # a runner that has ended no longer reads it
+            with contextlib.suppress(OSError):
+                os.write(lifeline, KILL_NOW)
 
     def kill_runner() -> None:
         """Before a third stop quits this process at once: the runner must not outlive it.
@@ -469,10 +479,10 @@ async def _spawn_runner(
     url: str, token: str, o: UiOptions, stdin: int
 ) -> asyncio.subprocess.Process:
     """The runner `aims ui` brings: its token goes in the environment, never on argv.
-    UI_RUNNER tells it to ignore the terminal's Ctrl-C and wait for this server's SIGTERM, and
-    to stop once `stdin` ends. NO_PROXY lists this server, on any address. It starts with
-    SIGINT, SIGTERM and SIGHUP blocked, as a child takes the mask of the thread that starts
-    it, so a signal in its start-up waits for its handlers."""
+    UI_RUNNER tells it to ignore the terminal's Ctrl-C and wait for this server's SIGTERM, to
+    kill now only on KILL_NOW from `stdin`, and to stop once `stdin` ends. NO_PROXY lists this
+    server, on any address. It starts with SIGINT, SIGTERM and SIGHUP blocked, as a child takes
+    the mask of the thread that starts it, so a signal in its start-up waits for its handlers."""
     host = urlsplit(url).hostname or ""
     env = {**os.environ, **no_proxy(host), "AIMS_TOKEN": token, UI_RUNNER: "1"}
     before = signal.pthread_sigmask(

@@ -2238,8 +2238,9 @@ def runner_cmd(
     assert found is not None
     url, token = found
     # Set by `aims ui` on the runner it starts (UI_RUNNER in aims.server.serve). A Ctrl-C in
-    # the terminal reaches both processes. `aims ui` passes it on as SIGTERM, so the runner
-    # would count one Ctrl-C twice and kill now. It ignores SIGINT and waits for the SIGTERM.
+    # the terminal reaches both processes. `aims ui` passes the first on as SIGTERM and a later
+    # one on stdin, so the runner would count one Ctrl-C twice and kill now. It ignores SIGINT
+    # and leaves the count to `aims ui`.
     by_ui = os.environ.get("AIMS_UI_RUNNER") == "1"
     if by_ui:
         signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -2262,21 +2263,27 @@ def runner_cmd(
         loop = asyncio.get_running_loop()
         current = asyncio.current_task()
         stops = 0
+        # `aims ui` holds the other end of this pipe. While it does, `aims ui` alone says when
+        # to kill now, and says it there: one stop sent to the whole job, as systemd and
+        # `kill -- -<pgid>` send it, reaches this runner both on its own and through `aims ui`.
+        ui_lives = by_ui and stat.S_ISFIFO(os.fstat(0).st_mode)
 
         def say(text: str) -> None:
             # a terminal that hung up fails the write; the stop goes on without it
             with contextlib.suppress(OSError):
                 typer.echo(text, err=True)
 
-        def on_signal() -> None:
+        def on_signal(*, kill: bool = False) -> None:
             nonlocal stops
             # Once the runner closes, or a stop killed it, a stop does nothing. What is left is
             # bounded, and a cut store close can leave the store open, which holds the process
             # at exit.
             if node.closing or (current is not None and current.cancelling()):
                 return
+            if stops and ui_lives and not kill:
+                return
             stops += 1
-            if stops == 1:
+            if stops == 1 and not kill:
                 stop.set()
                 say("stopping: runs are sealed as cancelled; again to kill now")
             elif current is not None:
@@ -2308,14 +2315,19 @@ def runner_cmd(
             )
 
         def on_input() -> None:
-            nonlocal stops
+            nonlocal stops, ui_lives
             try:
                 data = os.read(0, 4096)
             except OSError:
                 data = b""
             if data:
+                # KILL_NOW in aims.server.serve: a later stop of `aims ui`
+                if b"k" in data:
+                    on_signal(kill=True)
                 return
             loop.remove_reader(0)
+            # From here a signal adds to a stop again: nobody else is left to say kill now
+            ui_lives = False
             # A stop under way, from a signal or from a control plane that refused the runner,
             # was not for this, so the line would give the wrong reason
             if not stop.is_set():
@@ -2325,7 +2337,7 @@ def runner_cmd(
 
         # `aims ui` holds the other end of this pipe. It ends when `aims ui` ends, even by
         # SIGKILL, and with no control plane left this runner stops once, as for its SIGTERM.
-        if by_ui and stat.S_ISFIFO(os.fstat(0).st_mode):
+        if ui_lives:
             loop.add_reader(0, on_input)
         await node.run(stop)
 
