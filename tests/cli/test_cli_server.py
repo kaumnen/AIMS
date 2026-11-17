@@ -373,7 +373,7 @@ def signalled_runner(
     hung: list[tuple[int, ...]] | None = None,
     said: list[str] | None = None,
 ) -> tuple[int, bool, bool, bool]:
-    """Run `aims runner` on a stub node that sends itself `signals`, 10 ms apart; GONE ends
+    """Run `aims runner` on a stub node that sends its thread `signals`, 10 ms apart; GONE ends
     the pipe on its stdin, which this test holds as `aims ui` does. Returns the exit code,
     whether the node was asked to stop, whether it ran to its end (a kill now cancels it) and
     whether the runner said it kills now. Each hangup that would point the streams at
@@ -394,7 +394,9 @@ def signalled_runner(
                     if isinstance(sig, str):
                         os.close(held.pop())
                     else:
-                        os.kill(os.getpid(), sig)
+                        # to this thread, which runs the loop: another thread of the test
+                        # process could take a signal this one blocks
+                        signal.raise_signal(sig)
                     await asyncio.sleep(0.01)
                 async with asyncio.timeout(5):
                     await stop.wait()
@@ -502,6 +504,26 @@ def test_a_runner_aims_ui_starts_stops_once_for_a_ctrl_c(
     ended = signalled_runner(
         monkeypatch, tmp_path, [signal.SIGINT, signal.SIGTERM], {UI_RUNNER: "1"}
     )
+    assert ended == (0, True, True, False)
+
+
+def test_a_runner_aims_ui_starts_takes_its_signals_once_it_handles_them(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`aims ui` starts its runner with these signals blocked. Once its handlers are in, the
+    runner unblocks them and stops once for a Ctrl-C."""
+    held = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+    before = signal.pthread_sigmask(signal.SIG_BLOCK, held)
+    try:
+        ended = signalled_runner(
+            monkeypatch, tmp_path, [signal.SIGINT, signal.SIGTERM], {UI_RUNNER: "1"}
+        )
+    finally:
+        # Signals still blocked here would reach this test process once unblocked
+        handlers = [signal.signal(sig, signal.SIG_IGN) for sig in held]
+        signal.pthread_sigmask(signal.SIG_SETMASK, before)
+        for sig, handler in zip(held, handlers, strict=True):
+            signal.signal(sig, handler)
     assert ended == (0, True, True, False)
 
 
@@ -727,6 +749,36 @@ async def test_aims_ui_tells_its_runner_to_leave_ctrl_c_to_it(
     assert seen["env"][UI_RUNNER] == "1"
     assert seen["stdin"] == 7
     assert seen["env"]["AIMS_TOKEN"] == "t"
+
+
+async def test_a_stop_in_the_start_up_of_the_runner_aims_ui_starts_ends_it_cleanly(
+    tmp_path: Path,
+) -> None:
+    """Python, its imports and the runner's own start-up come before its handlers. A signal
+    sent then waits for them, and a stop that early ends the runner before it starts anything."""
+    # A runner that does start fails as it makes its data folder, before it reaches Docker
+    blocker = tmp_path / "file"
+    blocker.touch()
+    options = UiOptions(runner_data=blocker / "runner")
+    before = signal.pthread_sigmask(signal.SIG_BLOCK, [])
+    read_end, write_end = os.pipe()
+    proc = None
+    try:
+        try:
+            proc = await _spawn_runner("http://127.0.0.1:9", "t", options, read_end)
+        finally:
+            os.close(read_end)
+        assert signal.pthread_sigmask(signal.SIG_BLOCK, []) == before
+        # a Ctrl-C as `aims ui` starts: SIGINT from the terminal, SIGTERM from `aims ui`
+        proc.send_signal(signal.SIGINT)
+        proc.send_signal(signal.SIGTERM)
+        async with asyncio.timeout(60):
+            assert await proc.wait() == 0
+    finally:
+        if proc is not None and proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+        os.close(write_end)
 
 
 async def test_the_ui_runner_reaches_its_ui_on_any_address_without_the_proxy(

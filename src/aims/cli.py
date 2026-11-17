@@ -2292,6 +2292,15 @@ def runner_cmd(
         # `aims ui` passes a hangup on as one SIGTERM, as it does Ctrl-C. On its own the runner
         # lets a hangup start a stop but never add to one: nobody is left to press Ctrl-C.
         on_hangup(loop, (lambda: None) if by_ui else (lambda: None if stops else on_signal()))
+        if by_ui:
+            # `aims ui` starts this runner with these signals blocked, so one sent during the
+            # start-up waited for the handlers above. A stop sent that early ends the runner
+            # before it starts anything.
+            if signal.SIGTERM in signal.sigpending():
+                return
+            signal.pthread_sigmask(
+                signal.SIG_UNBLOCK, (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+            )
 
         def on_input() -> None:
             nonlocal stops

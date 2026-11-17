@@ -470,27 +470,35 @@ async def _spawn_runner(
 ) -> asyncio.subprocess.Process:
     """The runner `aims ui` brings: its token goes in the environment, never on argv.
     UI_RUNNER tells it to ignore the terminal's Ctrl-C and wait for this server's SIGTERM, and
-    to stop once `stdin` ends. NO_PROXY lists this server, on any address."""
+    to stop once `stdin` ends. NO_PROXY lists this server, on any address. It starts with
+    SIGINT, SIGTERM and SIGHUP blocked, as a child takes the mask of the thread that starts
+    it, so a signal in its start-up waits for its handlers."""
     host = urlsplit(url).hostname or ""
     env = {**os.environ, **no_proxy(host), "AIMS_TOKEN": token, UI_RUNNER: "1"}
-    return await asyncio.create_subprocess_exec(
-        sys.executable,
-        "-P",
-        "-m",
-        "aims",
-        "runner",
-        "--server",
-        url,
-        "--name",
-        LOCAL_RUNNER,
-        "--slots",
-        str(o.slots),
-        "--audit",
-        o.audit,
-        *(["--data-dir", str(o.runner_data)] if o.runner_data is not None else []),
-        *(["--config", str(o.project)] if o.project is not None else []),
-        *(["--tls-ca", str(o.tls_cert)] if o.tls_cert is not None else []),
-        *(["--keep-days", f"{o.keep_days:g}"] if o.keep_days is not None else []),
-        stdin=stdin,
-        env=env,
+    before = signal.pthread_sigmask(
+        signal.SIG_BLOCK, (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
     )
+    try:
+        return await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-P",
+            "-m",
+            "aims",
+            "runner",
+            "--server",
+            url,
+            "--name",
+            LOCAL_RUNNER,
+            "--slots",
+            str(o.slots),
+            "--audit",
+            o.audit,
+            *(["--data-dir", str(o.runner_data)] if o.runner_data is not None else []),
+            *(["--config", str(o.project)] if o.project is not None else []),
+            *(["--tls-ca", str(o.tls_cert)] if o.tls_cert is not None else []),
+            *(["--keep-days", f"{o.keep_days:g}"] if o.keep_days is not None else []),
+            stdin=stdin,
+            env=env,
+        )
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, before)
