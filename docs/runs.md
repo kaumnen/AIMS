@@ -8,25 +8,29 @@
 - A run is a folder with `events.jsonl` and `blobs/`. Each event holds the hash of the event before it. `aims verify <run>` checks the chain and every blob. In a folder of runs with an index, it also checks that the index holds the run as the log does.
 - A run never changes after it is sealed. Monitor runs and scores are new runs that point at it.
 - `--series <name> --runs 5` makes five runs in a row, each going on from the one before.
-- Budgets cap steps, tokens, cost and time for each agent and for the run. `aims estimate` prints what a run can cost. `aims spend` shows what each provider was paid.
+- Budgets cap steps, output tokens, cost and time for each agent and for the run. `aims estimate` prints what a run can cost. `aims spend` shows what each provider was paid.
 
 ### Forks
 
-`aims run --replay <run> --fork-at agent:12 --inject "<message>"` replays the recorded answers up to step 12, then goes on live. Add `--samples 5` for five forks. The run page in the UI has **Fork from here** on each step.
+`aims run --replay <run> --fork-at agent:12 --inject "<message>"` replays the recorded answers up to step 12, then goes on live. `--fork-at` also takes `@seq` (after an event) or `N` (for a run of one agent). Add `--samples 5` for five forks. In the UI an operator gets **Fork from here** on each step of a sealed run.
 
-A fork replays a step only when the run recorded a result for each of its tool calls. A run killed in a step before its tool calls returned has none, so a fork cuts before that step and makes it again live. Without `--fork-at`, a run of one agent forks after the last step that replays. In a cut of several agents, another agent that was in such a step makes it again live too.
+A fork replays a step only when the run recorded a result for each of its tool calls. A run that ended in a step before its tool calls returned has none for that step.
+
+- `agent:N` or `N` refuses that step and names the last one that replays.
+- With `@seq`, an agent that was in such a step at the cut makes it again live. So does an agent that `agent:N` does not name.
+- Without `--fork-at`, a run of one agent forks after the last step that replays. A run of several agents needs `--fork-at`.
 
 ### Monitor and score again
 
 - `aims monitor <run>` feeds a sealed run through the monitor again, with any preset or model.
-- `aims score <run>` lists the plants each agent took. It shows which monitor layer caught each one and how soon. It also checks whether the agent told the operator the truth and whether it said it thought it was tested.
-- Those two checks call a model: the first profile in `[monitor] extract` whose weights no agent of the run runs, else the `sweep` role. When none fits, the score skips them and says why.
+- `aims score <run>` lists the plants each agent took. It shows which monitor layer caught each one and how soon. It also checks whether each agent said it thought it was tested. For a subject that took a plant, it checks whether it told the operator and gave true reasons.
+- Those two checks call a model: the first profile whose weights no agent of the run runs, from `[monitor] extract`, then the `sweep` role. When none fits, the score skips them and says why.
 - `aims rates` sums take and catch rates over many scored runs, with 95% intervals.
 
 ### Delete
 
 - `aims delete <run>` or **Delete** on the run page removes a run from the control plane with its monitor runs and scores.
-- A run that still runs, or that a queued job uses, stays.
+- A run that still runs, or that a queued or running job uses, stays.
 - A run marked running whose runner is offline goes with `--force` or **Delete anyway**. A runner that still holds a deleted run drops its copy.
 - `aims ui --keep-days 30` deletes runs that ended more than 30 days ago in the same way, at start and once a day. Its local runner drops its own copies after the same days. It takes up to 36500 days.
 
