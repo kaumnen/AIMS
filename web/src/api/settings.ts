@@ -1,6 +1,6 @@
 import { infiniteQueryOptions, queryOptions } from "@tanstack/react-query";
 
-import { client, type Schemas } from "./client";
+import { client, precondition, type Schemas } from "./client";
 
 export type AuditEntry = Schemas["AuditEntry"];
 export type AuditOutcome = AuditEntry["outcome"];
@@ -140,7 +140,7 @@ export async function patchConfig(
   const { data, error } = await client.PATCH("/api/config/{layer}", {
     params: {
       path: { layer },
-      header: etag === null ? { "If-None-Match": "*" } : { "If-Match": `"${etag}"` },
+      header: precondition(etag),
     },
     body: { set: [], unset: [], ...change },
   });
@@ -179,7 +179,7 @@ export async function saveConfig(
   const { data, error } = await client.PUT("/api/config/{layer}", {
     params: {
       path: { layer },
-      header: etag === null ? { "If-None-Match": "*" } : { "If-Match": `"${etag}"` },
+      header: precondition(etag),
     },
     body: { text },
   });

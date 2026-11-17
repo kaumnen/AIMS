@@ -25,6 +25,17 @@ client.use({
   },
 });
 
+// Etags are kept as the server's JSON gives them; a header names one in quotes.
+export const quoted = (etag: string) => `"${etag}"`;
+
+// What a write replaces: the version `etag` names, or no file yet for null.
+export function precondition(etag: string | null): {
+  "If-Match"?: string;
+  "If-None-Match"?: string;
+} {
+  return etag === null ? { "If-None-Match": "*" } : { "If-Match": quoted(etag) };
+}
+
 export function onUnauthorized(fn: () => void): () => void {
   unauthorized.addEventListener("401", fn);
   return () => unauthorized.removeEventListener("401", fn);

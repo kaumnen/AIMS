@@ -364,3 +364,27 @@ test("pasted text takes the file's line ending", async () => {
   await screen.findByText("Saved");
   expect(puts.at(-1)?.body).toBe(`${text}a: 1\r\nb: 2\r\n`);
 });
+
+test("a delete names the version it removes and a new file names none", async () => {
+  vi.stubGlobal("confirm", () => true);
+  const read = fetch.getMockImplementation();
+  fetch.mockImplementation(async (request) =>
+    request.method === "DELETE" ? new Response(null, { status: 204 }) : read!(request),
+  );
+  const { open, onFile } = renderTab();
+  open("selftest/exploit.sh");
+  await editor("selftest/exploit.sh");
+  fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+  await waitFor(() => expect(onFile).toHaveBeenCalledWith("scenario.yaml", { discard: true }));
+  const sent = (method: string) => fetch.mock.calls.find(([r]) => r.method === method)?.[0];
+  expect(sent("DELETE")?.headers.get("If-Match")).toBe('"x1"');
+
+  fireEvent.click(screen.getByRole("button", { name: "New file" }));
+  const path = screen.getByRole("textbox", { name: "New file path" });
+  fireEvent.change(path, { target: { value: "notes.md" } });
+  fireEvent.submit(path);
+  await waitFor(() => expect(onFile).toHaveBeenCalledWith("notes.md", { discard: true }));
+  const made = sent("PUT");
+  expect(made?.headers.get("If-None-Match")).toBe("*");
+  expect(made?.headers.has("If-Match")).toBe(false);
+});

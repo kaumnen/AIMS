@@ -1,7 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
-import { isProblem } from "@/api/session";
 import {
   checkConfig,
   CONFIG_DEPENDENT,
@@ -11,17 +9,13 @@ import {
   mergedQuery,
   saveConfig,
 } from "@/api/settings";
-import { CodeEditor, type LineProblem, Problems } from "@/components/code-editor";
-import { conflictText, problemText } from "@/components/form";
+import { CodeEditor, failed, Problems, useFileDraft } from "@/components/code-editor";
+import { conflictText } from "@/components/form";
 import { Button } from "@/components/ui/button";
-import { useDebounced } from "@/lib/use-debounced";
 
 export type View = Layer | "merged";
 
-const CHECK_MS = 400;
 const EDITOR = "h-[calc(100dvh-17rem)] min-h-80 rounded-sm border";
-
-const failed = (e: unknown) => (isProblem(e) ? problemText(e) : "the request failed.");
 
 export default function ConfigPane({
   view,
@@ -74,96 +68,43 @@ function LayerFile({
   editable: boolean;
   onDirty: (dirty: boolean) => void;
 }) {
+  // The compiler skipped this until its draft moved to useFileDraft. Memoized, it adds 1.4 kB.
+  "use no memo";
   const queryClient = useQueryClient();
-  const opened = useQuery(layerQuery(layer));
-  const [draft, setDraft] = useState<string | null>(null);
-  // the draft as last rendered, for a save that ends after more was typed
-  const typed = useRef(draft);
-  useLayoutEffect(() => {
-    typed.current = draft;
-  });
-  // the version the draft began from, null when there was no file; a save replaces that one
-  const [from, setFrom] = useState<string | null | undefined>(undefined);
-  const [problems, setProblems] = useState<LineProblem[]>([]);
-  const [status, setStatus] = useState<string | null>(null);
-  const [conflict, setConflict] = useState<string | null>(null);
-  const [goto, setGoto] = useState<{ line: number } | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  const base = opened.data;
-  const text = draft ?? base?.text ?? "";
-  const dirty = draft !== null && draft !== base?.text;
-  const settled = useDebounced(editable ? text : null, CHECK_MS);
-  const name = (file?.path ?? base?.path ?? "").split(/[\\/]/).pop() ?? "";
-
   // the page asks before a draft is left, and once this file is gone there is none
-  useEffect(() => {
-    onDirty(dirty);
-    return () => onDirty(false);
-  }, [dirty, onDirty]);
-
-  useEffect(() => {
-    if (settled === null || base === undefined || settled !== text) return;
-    const ask = new AbortController();
-    checkConfig(layer, settled, ask.signal)
-      .then((r) => {
-        setProblems(r.errors.map((e) => ({ line: e.line ?? null, msg: e.msg, severity: "error" })));
-      })
-      .catch(() => undefined);
-    return () => ask.abort();
-  }, [settled, base, text, layer]);
-
-  const edit = (t: string) => {
-    if (draft === null) setFrom(base?.exists ? base.etag : null);
-    setDraft(t);
-    setStatus(null);
-  };
-
-  const save = async (etag: string | null = from !== undefined ? from : (base?.etag ?? null)) => {
-    if (!editable || busy || base === undefined) return;
-    setBusy(true);
-    setStatus("Saving");
-    try {
-      const saved = await saveConfig(layer, text, etag);
-      queryClient.setQueryData(layerQuery(layer).queryKey, saved);
-      // what was typed while it saved stays a draft over the saved version
-      const more = typed.current !== null && typed.current !== text;
-      setDraft((d) => (d === text ? null : d));
-      setFrom(saved.etag);
-      setConflict(null);
-      setStatus(more ? null : base.exists ? "Saved" : "Created");
+  const {
+    opened,
+    text,
+    dirty,
+    problems,
+    status,
+    conflict,
+    goto,
+    setGoto,
+    busy,
+    edit,
+    save,
+    overwrite,
+    reload,
+  } = useFileDraft(layerQuery(layer), {
+    scope: layer,
+    editable,
+    check: editable
+      ? async (settled, signal) => {
+          const r = await checkConfig(layer, settled, signal);
+          return r.errors.map((e) => ({ line: e.line ?? null, msg: e.msg, severity: "error" }));
+        }
+      : null,
+    write: (next, etag) => saveConfig(layer, next, etag),
+    done: (was) => (was.exists ? "Saved" : "Created"),
+    invalid: "Not saved: it does not load.",
+    onSaved: () => {
       for (const queryKey of CONFIG_DEPENDENT) void queryClient.invalidateQueries({ queryKey });
-    } catch (e) {
-      if (isProblem(e) && e.status === 412) {
-        setConflict(problemText(e));
-        setStatus(null);
-      } else if (isProblem(e) && e.status === 422 && e.errors?.length) {
-        setProblems(e.errors.map((p) => ({ line: p.line ?? null, msg: p.msg, severity: "error" })));
-        setStatus("Not saved: it does not load.");
-      } else {
-        setStatus(`Not saved: ${failed(e)}`);
-      }
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const overwrite = async () => {
-    try {
-      const latest = await queryClient.fetchQuery(layerQuery(layer));
-      await save(latest.exists ? latest.etag : null);
-    } catch (e) {
-      setStatus(`Not saved: ${failed(e)}`);
-    }
-  };
-
-  const reload = async () => {
-    setDraft(null);
-    setFrom(undefined);
-    setConflict(null);
-    setStatus(null);
-    await opened.refetch();
-  };
+    },
+    onDirty,
+  });
+  const base = opened.data;
+  const name = (file?.path ?? base?.path ?? "").split(/[\\/]/).pop() ?? "";
 
   const errors = problems.length;
   return (

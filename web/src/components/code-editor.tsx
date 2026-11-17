@@ -40,6 +40,10 @@ import { reflow } from "@/lib/scenario";
 import { cn } from "@/lib/utils";
 import { hoverAt, keyOptions, placeAt, type Schema, valueOptions } from "@/lib/yaml-schema";
 
+// The draft of a file in this editor. Its pages take it from here, so it loads in the editor's
+// chunk, which keeps the editor's name.
+export { failed, useFileDraft } from "./file-draft";
+
 // Problems found in the text, by line (1-based); a line of null marks the whole file. An info
 // is a note, such as a role the config leaves unset: no fault of the text.
 export interface LineProblem {

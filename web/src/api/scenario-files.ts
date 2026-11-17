@@ -2,7 +2,7 @@ import { queryOptions } from "@tanstack/react-query";
 
 import type { Schema } from "@/lib/yaml-schema";
 
-import { client, type Schemas } from "./client";
+import { client, precondition, quoted, type Schemas } from "./client";
 
 export type FileInfo = Schemas["FileInfo"];
 export type Saved = Schemas["Saved"];
@@ -64,7 +64,7 @@ export function fileQuery(source: string, name: string, file: string) {
         text: bom ? text.slice(BOM.length) : text,
         bom,
         size: bytes.byteLength,
-        etag: response.headers.get("ETag") ?? "",
+        etag: (response.headers.get("ETag") ?? "").replaceAll('"', ""),
       };
     },
     staleTime: 0,
@@ -108,7 +108,7 @@ export async function saveFile(
   const { data, error } = await client.PUT("/api/scenarios/{source}/{name}/files/{file}", {
     params: {
       path: { source, name, file },
-      header: etag === null ? { "If-None-Match": "*" } : { "If-Match": etag },
+      header: precondition(etag),
     },
     body: text,
     bodySerializer: (body) => new Blob([String(body)]),
@@ -125,7 +125,7 @@ export async function deleteFile(
   etag: string,
 ): Promise<void> {
   const { error } = await client.DELETE("/api/scenarios/{source}/{name}/files/{file}", {
-    params: { path: { source, name, file }, header: { "If-Match": etag } },
+    params: { path: { source, name, file }, header: { "If-Match": quoted(etag) } },
   });
   if (error) throw error;
 }
@@ -181,7 +181,7 @@ export async function patchPrompt(
   etag: string | null,
 ): Promise<Saved> {
   const body = value === null ? { unset: [{ agent, key }] } : { set: [{ agent, key, value }] };
-  const header = etag === null ? {} : { "If-Match": `"${etag}"` };
+  const header = etag === null ? {} : { "If-Match": quoted(etag) };
   const { data, error } = await client.PATCH("/api/scenarios/{source}/{name}/prompts", {
     params: { path: { source, name }, header },
     body,

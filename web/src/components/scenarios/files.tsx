@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useState } from "react";
 
 import {
   BOM,
@@ -15,17 +15,14 @@ import {
   schemaQuery,
 } from "@/api/scenario-files";
 import type { ScenarioDetail } from "@/api/scenarios";
-import { isProblem } from "@/api/session";
-import { CodeEditor, type LineProblem, Problems } from "@/components/code-editor";
-import { conflictText, problemText } from "@/components/form";
+import { CodeEditor, failed, Problems, useFileDraft } from "@/components/code-editor";
+import { conflictText } from "@/components/form";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { fileTree, type TreeNode } from "@/lib/scenario";
 import { mayDiscard } from "@/lib/unsaved";
-import { useDebounced } from "@/lib/use-debounced";
 import { cn } from "@/lib/utils";
 
-const CHECK_MS = 400;
 const lineOf = (p: { line?: number | null }) => p.line ?? null;
 
 // The scenario's files: a list, the open file in an editor, scenario.yaml checked as you type.
@@ -43,63 +40,14 @@ export default function FilesTab({
   onFile: (file: string, how?: { discard: boolean }) => void;
   onDirty?: (dirty: boolean) => void;
 }) {
+  // The compiler skipped this until its draft moved to useFileDraft. Memoized, it adds 3 kB.
+  "use no memo";
   const { source, name, writable } = detail;
   const queryClient = useQueryClient();
   const files = useQuery(filesQuery(source, name));
-  const opened = useQuery(fileQuery(source, name, file));
   const schema = useQuery(schemaQuery);
-  const [draft, setDraft] = useState<string | null>(null);
-  // the draft as last rendered, for a save that ends after more was typed
-  const typed = useRef(draft);
-  useLayoutEffect(() => {
-    typed.current = draft;
-  });
-  // the version the draft was started from: a save replaces that one or is refused, even if
-  // the file was read again since
-  const [from, setFrom] = useState<string | null>(null);
-  const [problems, setProblems] = useState<LineProblem[]>([]);
-  const [status, setStatus] = useState<string | null>(null);
-  const [conflict, setConflict] = useState<string | null>(null);
-  const [goto, setGoto] = useState<{ line: number } | null>(null);
-  const [busy, setBusy] = useState(false);
   const [adding, setAdding] = useState<string | null>(null);
-  // Whatever opens another file (the tree, Back, a delete), the last one's edits stay behind.
-  const [shown, setShown] = useState(file);
-  if (shown !== file) {
-    setShown(file);
-    setDraft(null);
-    setFrom(null);
-    setProblems([]);
-    setStatus(null);
-    setConflict(null);
-    setGoto(null);
-  }
-
-  const base = opened.data;
-  const text = draft ?? base?.text ?? "";
-  const dirty = draft !== null && draft !== base?.text;
   const isScenario = file === SCENARIO_FILE;
-  const settled = useDebounced(isScenario ? text : null, CHECK_MS);
-
-  useEffect(() => {
-    if (settled === null || base === undefined || settled !== text) return;
-    const ask = new AbortController();
-    checkScenario(settled, { source, name }, ask.signal)
-      .then((r) => {
-        setProblems([
-          ...r.errors.map((e) => ({ line: lineOf(e), msg: e.msg, severity: "error" as const })),
-          ...r.warnings.map((w) => ({ line: lineOf(w), msg: w.msg, severity: "warning" as const })),
-          ...r.notes.map((n) => ({ line: lineOf(n), msg: n.msg, severity: "info" as const })),
-        ]);
-      })
-      .catch(() => undefined);
-    return () => ask.abort();
-  }, [settled, base, text, source, name]);
-
-  useEffect(() => {
-    onDirty?.(dirty);
-    return () => onDirty?.(false);
-  }, [dirty, onDirty]);
 
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ["scenarios", "files", source, name] });
@@ -107,65 +55,51 @@ export default function FilesTab({
     void queryClient.invalidateQueries({ queryKey: ["scenarios"], exact: true });
   };
 
+  // Whatever opens another file (the tree, Back, a delete), the last one's edits stay behind.
+  const {
+    opened,
+    text,
+    dirty,
+    problems,
+    status,
+    setStatus,
+    conflict,
+    goto,
+    setGoto,
+    busy,
+    edit,
+    save,
+    overwrite,
+    reload,
+  } = useFileDraft(fileQuery(source, name, file), {
+    scope: file,
+    editable: writable,
+    check: isScenario
+      ? async (settled, signal) => {
+          const r = await checkScenario(settled, { source, name }, signal);
+          return [
+            ...r.errors.map((e) => ({ line: lineOf(e), msg: e.msg, severity: "error" as const })),
+            ...r.warnings.map((w) => ({
+              line: lineOf(w),
+              msg: w.msg,
+              severity: "warning" as const,
+            })),
+            ...r.notes.map((n) => ({ line: lineOf(n), msg: n.msg, severity: "info" as const })),
+          ];
+        }
+      : null,
+    write: async (next, etag, { bom }): Promise<Opened> => {
+      const bytes = bom ? BOM + next : next;
+      const saved = await saveFile(source, name, file, bytes, etag);
+      return { text: next, bom, size: new Blob([bytes]).size, etag: saved.etag };
+    },
+    onSaved: refresh,
+    onDirty,
+  });
+  const base = opened.data;
+
   const open = (next: string) => {
     if (next !== file) onFile(next);
-  };
-
-  const edit = (t: string) => {
-    if (draft === null) setFrom(base?.etag ?? null);
-    setDraft(t);
-    setStatus(null);
-  };
-
-  const save = async (etag: string | null = from ?? base?.etag ?? null) => {
-    if (!writable || busy || base === undefined || base.text === null) return;
-    setBusy(true);
-    setStatus("Saving");
-    try {
-      const bytes = base.bom ? BOM + text : text;
-      const saved = await saveFile(source, name, file, bytes, etag);
-      const now: Opened = {
-        text,
-        bom: base.bom,
-        size: new Blob([bytes]).size,
-        etag: `"${saved.etag}"`,
-      };
-      queryClient.setQueryData(fileQuery(source, name, file).queryKey, now);
-      // what was typed while it saved stays a draft over the saved version
-      const more = typed.current !== null && typed.current !== text;
-      setDraft((d) => (d === text ? null : d));
-      setFrom(now.etag);
-      setConflict(null);
-      setStatus(more ? null : "Saved");
-      refresh();
-    } catch (e) {
-      if (isProblem(e) && e.status === 412) {
-        setConflict(problemText(e));
-        setStatus(null);
-      } else if (isProblem(e) && e.status === 422 && e.errors) {
-        setProblems(
-          e.errors.map((p) => ({ line: p.line ?? null, msg: p.msg, severity: "error" as const })),
-        );
-        setStatus(`Not saved: ${problemText(e)}`);
-      } else {
-        setStatus(`Not saved: ${isProblem(e) ? problemText(e) : "the request failed."}`);
-      }
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const overwrite = async () => {
-    const latest = await queryClient.fetchQuery(fileQuery(source, name, file));
-    await save(latest.etag);
-  };
-
-  const reload = async () => {
-    setDraft(null);
-    setFrom(null);
-    setConflict(null);
-    setStatus(null);
-    await opened.refetch();
   };
 
   const remove = async () => {
@@ -176,7 +110,7 @@ export default function FilesTab({
       // its draft went with it
       onFile(SCENARIO_FILE, { discard: true });
     } catch (e) {
-      setStatus(`Not deleted: ${isProblem(e) ? problemText(e) : "the request failed."}`);
+      setStatus(`Not deleted: ${failed(e)}`);
     }
   };
 
@@ -190,7 +124,7 @@ export default function FilesTab({
       refresh();
       onFile(clean, { discard: true });
     } catch (e) {
-      setStatus(`Not created: ${isProblem(e) ? problemText(e) : "the request failed."}`);
+      setStatus(`Not created: ${failed(e)}`);
     }
   };
 
@@ -287,8 +221,7 @@ export default function FilesTab({
             <p className="text-muted-foreground p-3">Opening {file}</p>
           ) : opened.isError ? (
             <p className="text-muted-foreground p-3">
-              {file} did not open:{" "}
-              {isProblem(opened.error) ? problemText(opened.error) : "the request failed."}
+              {file} did not open: {failed(opened.error)}
             </p>
           ) : opened.data.text === null || opened.data.size > MAX_EDIT_BYTES ? (
             <p className="text-muted-foreground p-3">
