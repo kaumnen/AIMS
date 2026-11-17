@@ -93,13 +93,15 @@ tracepoint:sched:sched_process_exec /@sandbox[cgroup]/ {
     str($pw->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
     str($pw->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
     str($pw->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
+  // The first 4 KiB of env, in chunks of what one buf() keeps (max_strlen - 4 bytes).
   $ea = curtask->mm->env_start; $en = curtask->mm->env_end - $ea; $eo = (uint64)0;
-  unroll(8) {
-    if ($eo < $en) {
+  $er = $en > 4096 ? (uint64)4096 : $en;
+  unroll(11) {
+    if ($eo < $er) {
       $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
       printf("G %llu %llu %llu %llu %d %d %d %rx\n", nsecs(boot), cpu, $s, $g, curtask->tgid, $en, $eo,
-        buf(uptr($ea + $eo), $en - $eo > 512 ? 512 : $en - $eo));
-      $eo += 512;
+        buf(uptr($ea + $eo), $er - $eo > 380 ? 380 : $er - $eo));
+      $eo += 380;
     }
   }
   $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;

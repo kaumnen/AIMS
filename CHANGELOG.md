@@ -84,6 +84,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - Command help wraps each paragraph to the terminal width. Lines broke where the source broke them.
 - `aims control` asks again while the control plane cannot show a run yet. A run whose first events were still arriving got a 503 `not indexed yet; ask again soon`. The command then exited 1 as if it had been refused. It now waits that out within `--wait`. When the wait ends first, it says why.
 - An agent stopped while it logged its start still logs its end. A kill or cancel that came in that moment left `agent.started` with no `agent.finished`. Its start could even be written after the run had ended.
+- The `env` of a `proc.exec` holds the first 4 KiB of the program's environment in full. The tracer read it in steps of 512 bytes but kept only 380 bytes of each. A variable past byte 380 came out cut short or as empty entries.
 
 ### Security
 

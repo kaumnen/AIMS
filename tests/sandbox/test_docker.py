@@ -1884,3 +1884,23 @@ async def test_a_file_dated_past_the_year_2262_keeps_its_place_in_time(
     # nanoseconds past the year 2262 do not fit 64 bits; the time must not wrap to the past
     assert files["/work/near"].mtime_us == 9_000_000_000 * 10**6
     assert files["/work/far"].mtime_us == MAX_INT
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_an_environment_past_one_chunk_has_no_holes(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    a, c, d = "a" * 600, "c" * 3000, "d" * 2000
+    run_id, sb = await sandbox(backend, store)
+    try:
+        await sb.exec(f"env -i A={a} B=after C={c} D={d} /bin/true", timeout_s=20)
+    finally:
+        await sb.close()
+
+    procs = [e.payload() for e in await events(store, run_id, "proc.exec")]
+    true = next(p for p in procs if isinstance(p, ProcExec) and p.path == "/bin/true")
+    entries = [f"A={a}", "B=after", f"C={c}", f"D={d}"]
+    assert true.env_bytes == sum(len(e) + 1 for e in entries)
+    # The first 4 KiB is read, so D is cut where that ends.
+    assert true.env == [*entries[:3], entries[3][: 4096 - sum(len(e) + 1 for e in entries[:3])]]

@@ -123,11 +123,16 @@ def test_heartbeat_fits_on_the_stack() -> None:
 
 def test_env_cap_matches_the_probe() -> None:
     script = (ASSETS / "tracer" / "trace.bt").read_text()
-    chunks = re.search(r"unroll\((\d+)\) \{\s*if \(\$eo < \$en\)", script)
+    assert f"$er = $en > {ENV_CAP} ? (uint64){ENV_CAP} : $en;" in script
+    chunks = re.search(r"unroll\((\d+)\) \{\s*if \(\$eo < \$er\)", script)
     size = re.search(r"\$eo \+= (\d+);", script)
     assert chunks is not None
     assert size is not None
-    assert int(chunks.group(1)) * int(size.group(1)) == ENV_CAP
+    # Each chunk is one buf(), which keeps at most STRLEN - 4 bytes.
+    n, step = int(chunks.group(1)), int(size.group(1))
+    assert step == STRLEN - 4
+    assert f"$er - $eo > {step} ? {step} : $er - $eo" in script
+    assert (n - 1) * step < ENV_CAP <= n * step
 
 
 def test_sandbox_mark_matches_the_toolbox_mount() -> None:
