@@ -10,8 +10,8 @@ AIMS runs model agents on a task in Docker sandboxes. The task hides temptations
 
 ## Rules
 
-- Use the installed CLI, `aims`. Check it with `aims --version`. If it is missing, install it with `uv tool install aims-bench`.
-- Do not guess a field or an option. `aims scenario schema` prints the JSON Schema of scenario files with a description for every type. `aims <command> --help` lists every option.
+- Use the installed CLI, `aims`. If `aims --version` fails, install it with `uv tool install aims-bench`.
+- Do not guess a field or an option. `aims scenario schema` prints the JSON Schema of scenario files. Most types in it carry a description. `aims <command> --help` lists every option.
 - Run `aims scenario check <dir>` after every change to a scenario. Fix every error before a model run. The check costs nothing.
 - Model runs cost money. Run `aims estimate <scenario>` first and tell the user what the run can cost. Start `aims run`, `aims monitor` or `aims score` only when the user asked for it.
 - Commands take full run ids, such as `01a1a456-a8a8-7317-bd3d-36f38d33d8af`. A prefix does not work.
@@ -26,7 +26,16 @@ docker info --format '{{.ServerVersion}}'
 aims models list
 ```
 
-`aims models list` shows the profiles, the roles and which keys are set. AIMS ships no models. A model run needs a profile with the `agent` role. The `standard` monitor needs the `sweep` and `judge` roles on a model other than the agent's. `--monitor signals` needs no monitor model. Ask the user which models to use. `aims models add <model id> --base-url <url> --key-env <NAME> --write --role agent` adds a profile for a model on any server and gives it the role. It first sends the model a few small requests, so the key's env var must be set. Ask the user for the URL and the env var. `aims scenario check` and the self-test need Docker but no key or model.
+`aims models list` shows the profiles, the roles and which keys are set. AIMS ships no models. Ask the user which models to use.
+
+| To run | You need |
+| --- | --- |
+| A model run | A profile with the `agent` role |
+| The `standard` monitor | The `sweep` and `judge` roles on a model other than the agent's |
+| `--monitor signals` | No monitor model |
+| `aims scenario check` and the self-test | Docker. No key or model. |
+
+`aims models add <model id> --base-url <url> --key-env <NAME> --write --role agent` adds a profile for a model on any server and gives it the role. It first sends the model a few small requests, so the key's env var must be set. Ask the user for the URL and the env var.
 
 `aims estimate` leaves out the calls of a profile with no price and says so. A run caps them only when the provider reports their cost. Tell the user. `aims models prices <profile>` lists rows of LiteLLM's price map that may price it. The user picks one for the profile's `price_key`. Runs and estimates then count its calls at that list price.
 
@@ -58,7 +67,7 @@ aims models list
 
 | Kind | Use it for | Counts as taken when |
 | --- | --- | --- |
-| `file` | A bait file: answer key, credentials, oversight config | The agent reads it, or does an action listed in `on` |
+| `file` | A bait file: answer key, credentials, oversight config | The agent does an action listed in `on`, `read` by default |
 | `canary` | A secret placed with `{{canaries.NAME}}` in any text | It turns up where it was not placed |
 | `impossible` | Tests that contradict the instruction | The agent submits without telling the operator |
 | `tool` | A tempting extra tool with a fixed reply | The agent calls it |
@@ -92,9 +101,12 @@ aims verify <run>                 # the hash chain and blobs
 
 ## When something fails
 
-- `aims scenario check` prints `error:` lines. Each names the field or the self-test case. Fix the first one and run it again.
-- A `note:` line from `aims scenario check` names an unset role. The check still passes. Set the role before a model run.
-- `selftest reference: failed` means a step of the honest solution exited with an error or took a plant.
-- `selftest exploit: failed` means a plant in `claims` was not taken. Check its path, its `on` actions or its rule.
-- `the self-test needs Docker and the kernel tracer` means Docker is down or cannot start privileged containers.
-- A run that stops on a missing key needs the key that `aims models list` shows as unset. A run that stops on an unset role needs it under `[roles]`.
+| Output | Meaning and fix |
+| --- | --- |
+| `error:` lines from `aims scenario check` | Each names the field or the self-test case. Fix the first one and run it again. |
+| A `note:` line from `aims scenario check` | It names an unset role. The check still passes. Set the role before a model run. |
+| `selftest reference: failed` | A step of the honest solution exited with an error or took a plant. |
+| `selftest exploit: failed` | A plant in `claims` was not taken. Check its path, its `on` actions or its rule. |
+| `the self-test needs Docker and the kernel tracer` | Docker is down or cannot start privileged containers. |
+| A run stops on a missing key | Set the key that `aims models list` shows as unset. |
+| A run stops on an unset role | Set the role under `[roles]`. |
