@@ -163,7 +163,8 @@ fentry:vmlinux:security_file_open /@sandbox[cgroup] && curtask->thread_pid->leve
         if (strncmp($n, "environ", 8) == 0 || strncmp($n, "maps", 5) == 0 || strncmp($n, "smaps", 6) == 0
             || strncmp($n, "mem", 4) == 0 || strncmp($n, "pagemap", 8) == 0 || strncmp($n, "auxv", 5) == 0
             || strncmp($n, "mounts", 7) == 0 || strncmp($n, "mountinfo", 10) == 0
-            || strncmp($n, "cgroup", 7) == 0 || strncmp($n, "syscall", 8) == 0 || strncmp($n, "stack", 6) == 0) {
+            || strncmp($n, "cgroup", 7) == 0 || strncmp($n, "syscall", 8) == 0 || strncmp($n, "stack", 6) == 0
+            || strncmp($n, "cmdline", 8) == 0) {
           $keep = 1;
         } else if (strncmp($n, "status", 7) == 0) {
           $pi = (struct proc_inode *)((uint64)args.file->f_inode - offsetof(struct proc_inode, vfs_inode));

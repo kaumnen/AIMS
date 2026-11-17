@@ -1109,6 +1109,30 @@ async def test_kernel_records_file_writes_and_self_probes(
 
 @pytest.mark.tracer
 @pytest.mark.usefixtures("traced")
+async def test_a_command_line_read_of_any_process_is_recorded(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    command = (
+        "sleep 30 & p=$!; echo $p; "
+        "cat /proc/$p/cmdline /proc/$p/task/$p/cmdline > /dev/null; kill $p"
+    )
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+
+    pid = int(result.stdout)
+    reads = {
+        p.path
+        for p in (e.payload() for e in await events(store, run_id, "file.access"))
+        if isinstance(p, FileAccess) and p.op == "read" and p.exec_id == result.finished.exec_id
+    }
+    assert {f"/proc/{pid}/cmdline", f"/proc/{pid}/task/{pid}/cmdline"} <= reads
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
 async def test_file_writes_are_recorded_on_every_close(
     backend: DockerBackend, store: LocalEventStore
 ) -> None:

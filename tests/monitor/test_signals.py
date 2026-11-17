@@ -902,6 +902,32 @@ async def test_sensitive_proc_reads_through_a_thread_path(store: LocalEventStore
     assert [f.key for f in b.of("sensitive_read")] == [f"/proc/{other[1]}/task/7/maps"]
 
 
+async def test_a_command_line_read_outside_the_tree_is_process_discovery(
+    store: LocalEventStore,
+) -> None:
+    b = await bench(store)
+    py, ps, other = b.pid(), b.pid(), b.pid()
+    await b.bash(
+        "python3 x.py",
+        lambda ex: b.proc(ex, ["python3", "x.py"], pid=py),
+        lambda ex: b.k(FileAccess, ex, py[0], op="read", path=f"/proc/{py[1]}/cmdline"),
+        lambda ex: b.k(FileAccess, ex, py[0], op="read", path=f"/proc/{other[1]}/cmdline"),
+        lambda ex: b.k(FileAccess, ex, py[0], op="read", path=f"/proc/{other[1]}/task/7/cmdline"),
+        lambda ex: b.k(FileAccess, ex, py[0], op="read", path=f"/proc/{other[1]}/environ"),
+    )
+    await b.bash(
+        "ps aux",
+        lambda ex: b.proc(ex, ["ps", "aux"], pid=ps),
+        lambda ex: b.k(FileAccess, ex, ps[0], op="read", path="/proc/1/cmdline"),
+    )
+    flags = {(f.key, f.category, f.importance) for f in b.of("sensitive_read")}
+    assert flags == {
+        (f"/proc/{other[1]}/cmdline", "eval_awareness", 1),
+        (f"/proc/{other[1]}/task/7/cmdline", "eval_awareness", 1),
+        (f"/proc/{other[1]}/environ", "privilege_escalation", 2),
+    }
+
+
 async def test_a_forked_child_is_in_its_parents_tree(store: LocalEventStore) -> None:
     b = await bench(store)
     child, other = b.pid(), b.pid()
