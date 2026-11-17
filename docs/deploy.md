@@ -23,7 +23,7 @@ docker compose up -d
 docker compose exec server aims open --no-open
 ```
 
-The last command prints a sign-in link for http://localhost:8484. AIMS ships no models. Add them under **Settings** > **Models** > **Add a model**, or write them in the project config under **Settings** > **Config**. [Models](models.md) has the fields. The runner reads the keys from `.env`.
+The last command prints a sign-in link for http://localhost:8484. AIMS ships no models. Add them under **Settings** > **Models** > **Add a model**, or in the project config under **Settings** > **Config**. [Models](models.md) has the fields. The runner reads the keys from `.env`.
 
 | Service | Role |
 | --- | --- |
@@ -32,16 +32,16 @@ The last command prints a sign-in link for http://localhost:8484. AIMS ships no 
 | `runner` | Runs the jobs. Mounts the Docker socket. |
 | `caddy` | Serves the UI on 127.0.0.1:8484, or with TLS on a public address. |
 
-`server` has a healthcheck on `GET /healthz`. That route needs no token and answers only `{"ok": true}`. `runner` and `caddy` start once it passes. `docker compose ps` shows its state.
-
-`init`, `server` and `caddy` run with a read-only root filesystem, no capabilities and `no-new-privileges`. Caddy keeps `NET_BIND_SERVICE`, which its binary needs. They write only to their volumes and a 64 MiB `/tmp`. The server keeps the config the UI saves and its large temp files in the `server` volume. The project's `aims.toml` is `/data/aims.toml` there.
+- `server` has a healthcheck on `GET /healthz`. That route needs no token and answers only `{"ok": true}`. `runner` and `caddy` start once it passes. `docker compose ps` shows its state.
+- `init`, `server` and `caddy` run with a read-only root filesystem, no capabilities and `no-new-privileges`. Caddy keeps `NET_BIND_SERVICE`, which its binary needs. They write only to their volumes and a 64 MiB `/tmp`.
+- The `server` volume holds the config the UI saves and the server's large temp files. The project's `aims.toml` is `/data/aims.toml` there.
 
 > [!NOTE]
-> Compose gives the runner 3 minutes to stop. In that time it seals its runs as cancelled. Then it removes its sandboxes, tracer and sampler. After 3 minutes Docker sends SIGKILL. Anything not yet removed keeps running until the next AIMS start on that host. `docker ps --filter label=aims.managed=1` lists it.
+> Compose gives the runner 3 minutes to stop. It seals its runs as cancelled, then removes its sandboxes, tracer and sampler. After 3 minutes Docker sends SIGKILL. Anything not yet removed keeps running until the next AIMS start on that host. `docker ps --filter label=aims.managed=1` lists it.
 
 | `.env` variable | Default | Meaning |
 | --- | --- | --- |
-| The variables the profiles name in `api_key_env` | | The model API keys, for the runner |
+| The variables named in `api_key_env` | | The model API keys, for the runner |
 | `AIMS_SITE` | `http://localhost:8484` | The address people open |
 | `AIMS_AUDIT` | `auto` | The runner's audit: `auto`, `kernel` or `snapshot` |
 | `AIMS_IMAGE` | The release's image, pinned by digest | The AIMS image |
@@ -76,7 +76,7 @@ export AIMS_TOKEN=<runner token> EXAMPLE_API_KEY=<your key>
 aims runner --server https://<your AIMS_SITE>
 ```
 
-The same runner as a container:
+Or run it as a container:
 
 ```sh
 docker run -d --name aims-runner --restart unless-stopped --user root --stop-timeout 180 \
@@ -87,24 +87,31 @@ docker run -d --name aims-runner --restart unless-stopped --user root --stop-tim
 
 `runner.env` holds `AIMS_TOKEN` and the model keys. `--stop-timeout 180` gives the runner the same 3 minutes to stop as Compose. Docker's default is 10 seconds.
 
-A runner stops when the control plane answers 401 or 403 five times in a row, as it does for a wrong or revoked token. It stops its runs as for a first Ctrl-C and exits 1 with the reason. A container with a restart policy starts again and stops the same way, so give it a valid token or remove it.
+> [!IMPORTANT]
+> A runner stops when the control plane answers 401 or 403 five times in a row, as for a wrong or revoked token. It stops its runs as for a first Ctrl-C and exits 1 with the reason. A container with a restart policy starts again and stops the same way. Give it a valid token or remove it.
 
 ## Proxies
 
-Runners, the CLI and model calls go through the proxy in `HTTPS_PROXY`, `HTTP_PROXY` or `ALL_PROXY`, except to hosts, domains and networks in `NO_PROXY`. Loopback always goes direct. A private CA can come from `SSL_CERT_FILE`, or from the runner's `--tls-ca`, which wins over it.
+Runners, the CLI and model calls go through the proxy in `HTTPS_PROXY`, `HTTP_PROXY` or `ALL_PROXY`. Hosts, domains and networks in `NO_PROXY` go direct. Loopback always goes direct.
+
+A private CA can come from `SSL_CERT_FILE` or `SSL_CERT_DIR`. For the control plane, a runner's `--tls-ca` wins over them.
 
 The control plane itself calls these hosts, with no key and through the same proxy settings:
 
 | Host | What reads it | When the host cannot reach it |
 | --- | --- | --- |
-| The server of a model you add | **Add a model** under **Settings** > **Models** reads the server's list of models. A host on a link-local or cloud metadata address is refused. See [SECURITY.md](../SECURITY.md#network). | The draft goes on with a note. [`aims models add`](models.md#add-a-model) does the same from the CLI. |
-| `raw.githubusercontent.com` | A run, fork, review or score reads [LiteLLM's price map](models.md#list-prices) when it calls a profile that names a `price_key` and sets no `price`. So do estimates and **Settings** > **Models**. A runner never reads it. | A kept copy serves with its date. Without one such a profile stays unpriced. Give it a `price` instead. |
+| The server of a model you add | **Add a model** under **Settings** > **Models**, for the server's list of models. It refuses a host on a link-local or cloud metadata address ([SECURITY.md](../SECURITY.md#network)). | The draft goes on with a note. [`aims models add`](models.md#add-a-model) does the same from the CLI. |
+| `raw.githubusercontent.com` | A run, fork, review, score or estimate reads [LiteLLM's price map](models.md#list-prices) when it calls a profile that names a `price_key` and sets no `price`. **Settings** > **Models** reads it for any profile with no `price`. **Add a model** reads it for each draft. A runner never reads it. | A kept copy serves with its date. Without one such a profile stays unpriced. Give it a `price` instead. |
 
-Nothing else changes when a lookup fails. A read of the price map waits 5 seconds at most. After a failed one the next try comes 10 minutes later. Compose keeps the copy on the server's volume, in `/data/cache`.
+- Nothing else changes when a lookup fails.
+- A read of the price map waits 5 seconds at most. After a failed one the next try comes 10 minutes later.
+- Compose keeps the copy on the server's volume, in `/data/cache`.
 
 ## Helper images and offline hosts
 
-A runner needs two helper images: `aims-toolbox` and `aims-tracer`. It pulls them from GHCR by the digests the release pinned. Print the tags and digests of the version you run:
+A runner needs two helper images: `aims-toolbox` and `aims-tracer`. Its first start pulls them from GHCR by the digests the release pinned. That is about 125 MB to download on amd64 or arm64. On disk they take about 500 MB.
+
+Print the tags and digests of the version you run:
 
 ```sh
 uvx --from aims-bench==<version> python -c "from aims.sandbox import images; print(images.published())"
@@ -118,6 +125,8 @@ uvx --from aims-bench==<version> python -c "from aims.sandbox import images; pri
 
 A mirror must hold byte for byte copies, for example made with `crane copy`. A rebuilt image has another digest, so the runner would not use it.
 
+### Offline hosts
+
 A host without network access can load the images instead. On a machine with the same CPU architecture:
 
 ```sh
@@ -130,8 +139,19 @@ Do the same for `aims-toolbox`. Then run `docker load -i aims-tracer.tar` on the
 
 Scenario images build from their Dockerfiles, which often need the network. Run `aims scenario check` on a connected host first. Then move the `aims-env:<hash>` images it built with `docker save` and `docker load`.
 
-A scenario image that no run used in 30 days is removed when `aims run`, `aims runner` or a self-test starts. So are the helper images of other AIMS versions. A runner that stays up checks again every hour. Images a container uses always stay. `keep_days` under `[images]` in a config file changes the 30 days, up to 36500. On an offline host, set it high enough to keep the images you loaded. `aims images prune` removes these images now. Add `--dry-run` to only list them.
+### Cleanup
+
+`aims run`, `aims runner` and a self-test remove old images when they start. A runner that stays up checks again every hour. Images a container uses always stay.
+
+| Image | Removed once unused for |
+| --- | --- |
+| A scenario image | 30 days. `keep_days` under `[images]` in a config file changes this, up to 36500. |
+| A helper image of another AIMS version | 1 day |
+
+On an offline host, set `keep_days` high enough to keep the scenario images you loaded. `aims images prune` removes these images now. Add `--dry-run` to only list them.
 
 ## Audit log
 
-The control plane keeps an audit log of every change sent to it and every failed sign-in. Operators read it under **Settings** > **Audit** or with `aims audit`. Rows stay 90 days. `keep_days` under `[audit]` changes that, up to 36500. 0 keeps them all. [SECURITY.md](../SECURITY.md#audit-log) says what a row holds.
+The control plane keeps an audit log of each change sent to its API, refused ones too. It also logs each failed sign-in. Runner traffic is not logged.
+
+Operators read it under **Settings** > **Audit** or with `aims audit`. Rows stay 90 days. `keep_days` under `[audit]` changes that, up to 36500. 0 keeps them all. [SECURITY.md](../SECURITY.md#audit-log) says what a row holds.
