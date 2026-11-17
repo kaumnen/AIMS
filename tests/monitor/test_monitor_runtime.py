@@ -1371,6 +1371,47 @@ async def test_a_second_cancel_while_the_agents_end_after_a_stop_propagates_and_
     ]
 
 
+async def test_a_cancel_while_the_subjects_wait_ends_after_the_agents_finished_propagates(
+    store: LocalEventStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The agents ended on their own, and Ctrl-C lands while the wait for the subjects ends:
+    the run task must raise the cancel, not take it for the wait's own and go on."""
+    ending, release = asyncio.Event(), asyncio.Event()
+
+    async def subjects_done(self: Any, subjects: Any) -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            ending.set()
+        while not release.is_set():
+            with contextlib.suppress(asyncio.CancelledError):
+                await release.wait()
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(runner_module.Watch, "subjects_done", subjects_done)
+    before = asyncio.all_tasks()
+    script = Script(call("submit", answer="ok"))
+    runner = Runner(bench(store, script), scenario(tmp_path), Options(), monitor=None)
+    running = asyncio.create_task(runner.run())
+    async with asyncio.timeout(10):
+        await ending.wait()
+    running.cancel()
+    await asyncio.sleep(0.05)
+    assert not running.done()
+    release.set()
+    async with asyncio.timeout(10):
+        with pytest.raises(asyncio.CancelledError):
+            await running
+    assert not asyncio.all_tasks() - before
+    assert runner.run_id is not None
+    agents = await of(store, runner.run_id, AgentFinished, "agent.finished")
+    assert [a.reason for a in agents] == ["submitted"]
+    finished = await of(store, runner.run_id, RunFinished, "run.finished")
+    assert [(f.status, f.reason) for f in finished] == [
+        ("cancelled", "cancelled before the agents finished")
+    ]
+
+
 class SetupBox(Box):
     """A box whose `hold` setup command runs until it is cancelled."""
 
