@@ -54,10 +54,11 @@ Docker Compose runs both on one host.
 
 - Docker's default seccomp profile stays on for every part except the tracer. AppArmor too, where the host has it.
 - The tracer needs privileged mode for eBPF. It sees every process on the host. AIMS keeps only sandbox events.
-- A runner stopped with SIGKILL leaves its tracer and sandboxes running. The next AIMS start on that host removes them. To clean up a host you retire:
+- A runner stopped with SIGKILL leaves its tracer and sandboxes running. Their volumes with the run's files stay too. The next AIMS start on that host removes them. To clean up a host you retire, remove the containers first, then the volumes:
 
   ```sh
   docker rm -f $(docker ps -aq --filter label=aims.managed=1)
+  docker volume rm $(docker volume ls -q --filter label=aims.managed=1)
   ```
 - Sandbox defaults: 1 CPU, 1024 MiB memory, 256 PIDs. A scenario's `sandbox` section changes them.
 - The `/work` volume has no size limit, so an agent can fill the host disk with real bytes.
