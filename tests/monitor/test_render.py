@@ -285,6 +285,29 @@ async def test_a_small_run_renders_exactly(run: Run) -> None:
     assert r.tokens == tokens(r.text)
 
 
+async def test_a_command_line_the_tracer_cut_says_so(run: Run) -> None:
+    await run.preamble()
+    echo = {"ppid": 10, "ns_pid": 3, "uid": 1000, "path": "/bin/echo", "root": False}
+    await run.step(
+        1,
+        command="/bin/echo a; /bin/echo b",
+        kernel=[
+            {"cls": ProcExec, **echo, "argv": ["/bin/echo", "a"], "argv_bytes": 12},
+            {
+                "cls": ProcExec,
+                **echo,
+                "argv": ["/bin/echo", "b"],
+                "argv_bytes": 20000,
+                "argv_partial": True,
+            },
+        ],
+    )
+    r = await run.trajectory.render(FULL, texts=TEXTS)
+    rows = {tuple(x["argv"]): x for x in of_type(r, "proc.exec")}
+    assert "argv_partial" not in rows["/bin/echo", "a"]
+    assert rows["/bin/echo", "b"]["argv_partial"] is True
+
+
 async def test_a_scripted_call_shows_with_its_exec_and_result(run: Run) -> None:
     await run.preamble()
     (call,) = await run.add(ToolCall(call_id="s1", name="bash", arguments='{"command": "ls"}'))

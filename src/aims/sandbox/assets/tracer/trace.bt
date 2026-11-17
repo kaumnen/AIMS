@@ -8,6 +8,10 @@ BEGIN {
   @base = curtask->thread_pid->level;
   $s = @seq[(uint64)0, cpu] + 1; @seq[(uint64)0, cpu] = $s;
   printf("R %llu %llu %llu %d %llu\n", nsecs(boot), cpu, $s, @base, nsecs(tai));
+  // The offsets of a command line's chunks past the 380 bytes E holds, up to 16 KiB. A loop over
+  // a map is checked once; an unrolled or while loop of this size is too big for the verifier.
+  $i = (uint64)1;
+  while ($i * 380 < 16384) { @argv_chunk[$i] = $i * 380; $i++; }
 }
 
 // One record per cpu each second, so the tracer knows how far each cpu's stream has been read
@@ -102,6 +106,18 @@ tracepoint:sched:sched_process_exec /@sandbox[cgroup]/ {
       printf("G %llu %llu %llu %llu %d %d %d %rx\n", nsecs(boot), cpu, $s, $g, curtask->tgid, $en, $eo,
         buf(uptr($ea + $eo), $er - $eo > 380 ? 380 : $er - $eo));
       $eo += 380;
+    }
+  }
+  // The rest of the command line, up to 16 KiB, in chunks of the same size and in any order.
+  $aa = curtask->mm->arg_start; $ar = $len > 16384 ? (uint64)16384 : $len;
+  if ($ar > 380) {
+    for ($kv : @argv_chunk) {
+      $ao = $kv.1;
+      if ($ao < $ar) {
+        $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+        printf("i %llu %llu %llu %llu %d %d %rx\n", nsecs(boot), cpu, $s, $g, curtask->tgid, $ao,
+          buf(uptr($aa + $ao), $ar - $ao > 380 ? 380 : $ar - $ao));
+      }
     }
   }
   $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;

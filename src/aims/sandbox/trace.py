@@ -51,6 +51,8 @@ def _fd(ino: int, mode: int, magic: int) -> Fd:
 DEPTH = 12
 STRLEN = 384
 ENV_CAP = 4096
+# The tracer reads this much of a command line.
+ARGV_CAP = 16384
 
 PTRACE_REQUESTS: dict[int, str] = {
     -1: "process_vm_writev",
@@ -328,14 +330,24 @@ class EnvChunk(Raw):
 
 
 @dataclass(frozen=True, slots=True)
+class ArgvChunk(Raw):
+    """A slice of the next exec's command line at `offset`, past the part its `E` line holds."""
+
+    offset: int
+    data: bytes
+
+
+@dataclass(frozen=True, slots=True)
 class RawExec(Raw):
+    """An exec with the start of its command line in `data`; `argv_bytes` is the full size."""
+
     ppid: int
     root: bool
     uid: int
     pidns: int
     ns_pid: int
     argv_bytes: int
-    argv: tuple[str, ...]
+    data: bytes
 
 
 @dataclass(frozen=True, slots=True)
@@ -532,11 +544,21 @@ def _bprm(body: str, at: Stamp) -> Bprm:
 def _exec(body: str, at: Stamp) -> RawExec:
     f = _fields(body, 8)
     pid, ppid, root, uid, pidns, ns_pid, size = (int(x) for x in f[:7])
-    argv = _hex(f[7]).split(b"\0")
+    return RawExec(pid, ppid, root == 1, uid, pidns, ns_pid, size, _hex(f[7]), at=at)
+
+
+@record("i")
+def _argv(body: str, at: Stamp) -> ArgvChunk:
+    pid, offset, data = body.split(" ", 2)
+    return ArgvChunk(int(pid), int(offset), _hex(data), at=at)
+
+
+def split_argv(data: bytes) -> tuple[str, ...]:
+    """The arguments of a command line as the kernel holds it: each one ends in a NUL."""
+    argv = data.split(b"\0")
     if argv and argv[-1] == b"":
         argv.pop()
-    args = tuple(_text(a) for a in argv)
-    return RawExec(pid, ppid, root == 1, uid, pidns, ns_pid, size, args, at=at)
+    return tuple(_text(a) for a in argv)
 
 
 @record("V")

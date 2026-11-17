@@ -37,6 +37,8 @@ from aims.sandbox.containers import create_container, remove_container
 from aims.sandbox.execs import exec_output, open_stream
 from aims.sandbox.images import ensure_image
 from aims.sandbox.trace import (
+    ARGV_CAP,
+    ArgvChunk,
     Delete,
     Dropped,
     EnvChunk,
@@ -63,6 +65,7 @@ from aims.sandbox.trace import (
     Tick,
     Walk,
     parse,
+    split_argv,
 )
 
 log = logging.getLogger("aims.sandbox")
@@ -254,6 +257,7 @@ class Tracer:
         self._cwd: OrderedDict[int, str] = OrderedDict()
         self._env: OrderedDict[int, bytearray] = OrderedDict()
         self._env_bytes: dict[int, int] = {}
+        self._argv: OrderedDict[int, bytearray] = OrderedDict()
         self._roots: OrderedDict[int, int] = OrderedDict()
         # The pid namespace of each sandbox cgroup, from the runtime's first exec in it.
         self._cgroups: OrderedDict[int, int] = OrderedDict()
@@ -708,6 +712,16 @@ class Tracer:
                                 except Exception:
                                     log.exception("pre-exec callback failed")
                                     route.put(record)
+            case ArgvChunk(pid):
+                # Chunks come in any order; the exec's E line ends and cuts the buffer.
+                argv = self._argv.setdefault(pid, bytearray())
+                self._argv.move_to_end(pid)
+                if len(self._argv) > MEMORY:
+                    self._argv.popitem(last=False)
+                end = item.offset + len(item.data)
+                if len(argv) < end:
+                    argv.extend(bytes(end - len(argv)))
+                argv[item.offset : end] = item.data
             case EnvChunk(pid):
                 if item.offset == 0:
                     self._env[pid] = bytearray()
@@ -728,6 +742,7 @@ class Tracer:
                 self._parts.pop(pid, None)
                 self._env.pop(pid, None)
                 self._env_bytes.pop(pid, None)
+                self._argv.pop(pid, None)
                 route = self._pids.pop(pid, None)
                 if route is None:
                     self._unrouted(pid)
@@ -930,6 +945,9 @@ class Tracer:
                 route.put(Lost(gap.count, "kernel record gap", *window))
 
     def _exec(self, raw: RawExec) -> None:
+        data = self._argv.pop(raw.pid, bytearray())
+        data[: len(raw.data)] = raw.data
+        del data[min(raw.argv_bytes, ARGV_CAP) :]
         self._gone.pop(raw.pid, None)
         self._foreign.pop(raw.pid, None)
         held = self._held.pop(raw.pid, None)
@@ -951,7 +969,10 @@ class Tracer:
             return
         self._pids[raw.pid] = route
         parts = self._parts.pop(raw.pid, {})
-        parts.setdefault("path", raw.argv[0] if raw.argv else "")
+        argv = split_argv(bytes(data))
+        parts.setdefault("path", argv[0] if argv else "")
+        if len(data) < raw.argv_bytes:
+            parts["argv_partial"] = True
         walk = parts.pop("cwd", None)
         if isinstance(walk, Walk):
             parts["cwd"], parts["cwd_partial"] = route.mounts.resolve(walk)
@@ -975,7 +996,7 @@ class Tracer:
             raw.ns_pid,
             raw.uid,
             "",
-            raw.argv,
+            argv,
             raw.argv_bytes,
             raw.root,
             at=raw.at,

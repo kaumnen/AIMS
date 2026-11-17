@@ -3,11 +3,11 @@ import re
 from aims.events.schema import _registry
 from aims.sandbox.base import TOOLBOX
 from aims.sandbox.images import ASSETS
-from aims.sandbox.trace import ENV_CAP, PARSERS, STRLEN, UNGROUPED
+from aims.sandbox.trace import ARGV_CAP, ENV_CAP, PARSERS, STRLEN, UNGROUPED
 from aims.sandbox.tracer import TRACE
 
 TAGS = set("RFBEXOWAUNCPD") | set("VGT") | set("Z") | set("Q") | set("IKSMHJL") | set("Y")
-TAGS |= set("abcdefgh")
+TAGS |= set("abcdefghi")
 TYPES = {
     "run.started",
     "run.finished",
@@ -133,6 +133,15 @@ def test_env_cap_matches_the_probe() -> None:
     assert step == STRLEN - 4
     assert f"$er - $eo > {step} ? {step} : $er - $eo" in script
     assert (n - 1) * step < ENV_CAP <= n * step
+
+
+def test_argv_cap_matches_the_probe() -> None:
+    script = (ASSETS / "tracer" / "trace.bt").read_text()
+    step = STRLEN - 4
+    assert f"while ($i * {step} < {ARGV_CAP}) {{ @argv_chunk[$i] = $i * {step}; $i++; }}" in script
+    assert f"$ar = $len > {ARGV_CAP} ? (uint64){ARGV_CAP} : $len;" in script
+    assert f"if ($ar > {step}) {{" in script
+    assert f"$ar - $ao > {step} ? {step} : $ar - $ao" in script
 
 
 def test_sandbox_mark_matches_the_toolbox_mount() -> None:

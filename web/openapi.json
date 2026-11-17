@@ -10063,6 +10063,12 @@
             "title": "Argv Bytes",
             "type": "integer"
           },
+          "argv_partial": {
+            "default": false,
+            "description": "Only the first 16 KiB of the command line is read; `argv_bytes` is its full size. Set when it was longer: `argv` then holds its start and its last item may be cut.",
+            "title": "Argv Partial",
+            "type": "boolean"
+          },
           "cpu": {
             "title": "Cpu",
             "type": "integer"
@@ -10242,6 +10248,7 @@
           "argv_bytes",
           "root",
           "path_partial",
+          "argv_partial",
           "cwd",
           "cwd_partial",
           "env",

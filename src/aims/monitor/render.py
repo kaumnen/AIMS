@@ -910,6 +910,7 @@ class Trajectory:
                 return fields | _some(
                     nlink=0 if d.get("nlink") == 0 else None,
                     path_partial=d.get("path_partial"),
+                    argv_partial=d.get("argv_partial"),
                 )
             case "proc.exit":
                 return {"pid": pid, "exit_code": d.get("exit_code")} | _some(

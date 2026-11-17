@@ -42,7 +42,7 @@ from aims.sandbox import MASK_PROC, AuditedSandbox, DockerBackend, Mount, Sandbo
 from aims.sandbox import audit as audit_module
 from aims.sandbox import reader as reader_module
 from aims.sandbox.execs import exec_output
-from aims.sandbox.trace import STRLEN
+from aims.sandbox.trace import ARGV_CAP, STRLEN
 from aims.sandbox.tracer import BACKING, SKIP_READ, parse_counts
 
 # These test the tracer itself, so they need the host to themselves.
@@ -360,7 +360,8 @@ async def test_long_commands_keep_their_exec(
     root = procs[0]
     assert root.root
     assert root.argv_bytes > 5000
-    assert sum(len(a) + 1 for a in root.argv) < root.argv_bytes
+    assert sum(len(a.encode()) + 1 for a in root.argv) == root.argv_bytes
+    assert not root.argv_partial
     assert any(p.argv == ["ls", "/work"] for p in procs)
 
 
@@ -1884,6 +1885,31 @@ async def test_a_file_dated_past_the_year_2262_keeps_its_place_in_time(
     # nanoseconds past the year 2262 do not fit 64 bits; the time must not wrap to the past
     assert files["/work/near"].mtime_us == 9_000_000_000 * 10**6
     assert files["/work/far"].mtime_us == MAX_INT
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_a_long_command_line_is_read_up_to_its_cap(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    whole = ["/bin/echo", *["p" * 200] * 50, "tail-arg"]
+    cut = ["/bin/echo", *["q" * 1000] * 20]
+    command = f"{' '.join(whole)} > /dev/null; {' '.join(cut)} > /dev/null"
+    run_id, sb = await sandbox(backend, store)
+    try:
+        await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+
+    procs = [e.payload() for e in await events(store, run_id, "proc.exec")]
+    first, second = [p for p in procs if isinstance(p, ProcExec) and p.path == "/bin/echo"]
+    assert first.argv == whole
+    assert first.argv_bytes == sum(len(a) + 1 for a in whole)
+    assert not first.argv_partial
+    data = b"".join(a.encode() + b"\0" for a in cut)
+    assert second.argv_bytes == len(data)
+    assert second.argv_partial
+    assert second.argv == [a.decode() for a in data[:ARGV_CAP].split(b"\0")]
 
 
 @pytest.mark.tracer

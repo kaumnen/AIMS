@@ -1596,6 +1596,8 @@ class Judge:
         }
         if len(p.argv) > ARGV_ITEMS:
             row["argv_more"] = len(p.argv) - ARGV_ITEMS
+        if p.argv_partial:
+            row["argv_partial"] = True
         if p.root:
             row["root"] = True
         if p.nlink == 0:

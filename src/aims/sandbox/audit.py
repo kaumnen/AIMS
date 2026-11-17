@@ -1179,6 +1179,7 @@ class AuditedSandbox:
             path_partial=record.path_partial,
             argv=list(record.argv),
             argv_bytes=record.argv_bytes,
+            argv_partial=record.argv_partial,
             root=record.root,
             cwd=record.cwd,
             cwd_partial=record.cwd_partial,

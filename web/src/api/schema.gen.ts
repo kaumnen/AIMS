@@ -5624,6 +5624,12 @@ export interface components {
             argv: string[];
             /** Argv Bytes */
             argv_bytes: number;
+            /**
+             * Argv Partial
+             * @description Only the first 16 KiB of the command line is read; `argv_bytes` is its full size. Set when it was longer: `argv` then holds its start and its last item may be cut.
+             * @default false
+             */
+            argv_partial: boolean;
             /** Cpu */
             cpu: number;
             /** Cpu Seq */

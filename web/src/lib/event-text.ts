@@ -26,7 +26,8 @@ export function summary(e: Event): string {
     case "file.setattr":
       return `setattr ${str(d["path"]) ?? ""}`;
     case "proc.exec":
-      return Array.isArray(d["argv"]) ? d["argv"].join(" ") : (str(d["filename"]) ?? "");
+      if (!Array.isArray(d["argv"])) return str(d["filename"]) ?? "";
+      return d["argv"].join(" ") + (d["argv_partial"] ? " (cut)" : "");
     case "proc.exit": {
       const signal = num(d["signal"]);
       return `pid ${num(d["pid"])} ${signal ? `signal ${signal}` : `exit ${num(d["exit_code"])}`}`;

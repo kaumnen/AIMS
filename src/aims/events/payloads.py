@@ -525,6 +525,13 @@ class ProcExec(KernelPayload):
     argv_bytes: int
     root: bool
     path_partial: bool = False
+    argv_partial: bool = Field(
+        default=False,
+        description=(
+            "Only the first 16 KiB of the command line is read; `argv_bytes` is its full size. "
+            "Set when it was longer: `argv` then holds its start and its last item may be cut."
+        ),
+    )
     cwd: str = ""
     cwd_partial: bool = False
     env: list[str] = Field(default_factory=list)

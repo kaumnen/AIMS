@@ -227,6 +227,7 @@ class Exec(Kernel):
     argv_bytes: int
     root: bool
     path_partial: bool = False
+    argv_partial: bool = False
     cwd: str = ""
     cwd_partial: bool = False
     env: tuple[str, ...] = ()

@@ -34,12 +34,14 @@ from aims.sandbox.base import (
     Sync,
 )
 from aims.sandbox.trace import (
+    ARGV_CAP,
     DEPTH,
     FORGET_US,
     LATE_US,
     STRLEN,
     SYSCALLS,
     UNGROUPED,
+    ArgvChunk,
     Bprm,
     Context,
     Delete,
@@ -68,6 +70,7 @@ from aims.sandbox.trace import (
     Walk,
     namespaces,
     parse,
+    split_argv,
 )
 from aims.sandbox.trace import (
     PIPEFS_MAGIC as PIPEFS,
@@ -162,8 +165,13 @@ def rename(pid: int, devs: tuple[int, int], old: tuple[str, ...], new: tuple[str
 def test_parse_exec_splits_argv_exactly() -> None:
     argv = b"sh\0-c\0echo 'a b' \\x00 \"q\"\0"
     item = parse(line(f"E 10 1 1 1000 99 5 {len(argv)} {hx(argv)}"))
-    args = ("sh", "-c", "echo 'a b' \\x00 \"q\"")
-    assert item == RawExec(10, 1, True, 1000, 99, 5, len(argv), args, at=PARSED)
+    assert item == RawExec(10, 1, True, 1000, 99, 5, len(argv), argv, at=PARSED)
+    assert split_argv(argv) == ("sh", "-c", "echo 'a b' \\x00 \"q\"")
+
+
+def test_parse_argv_chunk() -> None:
+    item = parse(line(f"i 10 380 {hx(b'tail\0')}"))
+    assert item == ArgvChunk(10, 380, b"tail\0", at=PARSED)
 
 
 def test_parse_reads_the_header() -> None:
@@ -1317,6 +1325,34 @@ async def test_env_of_an_exec_never_keeps_an_earlier_exec_tail() -> None:
 
     execs = [r for r in drain(route) if isinstance(r, Exec)]
     assert [(e.env, e.env_bytes) for e in execs] == [((), 0), (("B=2",), len(short))]
+    await tracer.stop()
+
+
+@pytest.mark.anyio
+async def test_argv_chunks_complete_the_command_line_up_to_the_cap() -> None:
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    route = tracer.register(99, Mounts([]), {})
+    feed = Feed(tracer)
+    feed("R 0 999")
+    whole = b"".join(b"a" * 99 + b"\0" for _ in range(10))
+    feed(f"i 10 760 {hx(whole[760:])}")
+    feed(f"i 10 380 {hx(whole[380:760])}")
+    feed(f"E 10 1 1 1000 99 5 {len(whole)} {hx(whole[:380])}")
+    # A longer line of an exec whose E was lost leaves no tail on the next one.
+    feed(f"i 11 380 {hx(b'x' * 380)}")
+    feed(f"i 11 760 {hx(b'old\0')}")
+    feed(f"E 11 1 1 1000 99 6 4 {hx(b'new\0')}")
+    cut = b"b" * (ARGV_CAP + 100) + b"\0"
+    for offset in range(380, ARGV_CAP, 380):
+        feed(f"i 12 {offset} {hx(cut[offset : min(offset + 380, ARGV_CAP)])}")
+    feed(f"E 12 1 1 1000 99 7 {len(cut)} {hx(cut[:380])}")
+
+    execs = [r for r in drain(route) if isinstance(r, Exec)]
+    assert [(e.argv, e.argv_bytes, e.argv_partial) for e in execs] == [
+        (("a" * 99,) * 10, len(whole), False),
+        (("new",), 4, False),
+        (("b" * ARGV_CAP,), len(cut), True),
+    ]
     await tracer.stop()
 
 

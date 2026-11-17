@@ -664,6 +664,44 @@ async def test_a_process_tree_with_a_long_head_still_shows_its_rows(store: Local
     assert "procs_cut" not in out
 
 
+async def test_a_process_tree_marks_a_command_line_the_tracer_cut(
+    store: LocalEventStore,
+) -> None:
+    run_id = await store.create_run(RunStarted(scenario="t", oversight="observe"))
+    run = Run(store, run_id)
+    started = ExecStarted(
+        exec_id="e",
+        call_id="c",
+        command="x",
+        wrapper=[],
+        user="agent",
+        cwd="/",
+        timeout_ms=1000,
+        audit="kernel",
+    )
+    await run.add("started", started)
+    for pid, cut in ((7, False), (8, True)):
+        proc = ProcExec(
+            exec_id="e",
+            pid=pid,
+            ppid=1,
+            ns_pid=pid,
+            uid=0,
+            path="/bin/true",
+            argv=["true"],
+            argv_bytes=20000 if cut else 5,
+            argv_partial=cut,
+            root=pid == 7,
+            **K,
+        )
+        await run.add(f"proc{pid}", proc)
+    judge = make_judge(store, run, Script())
+    out = await tool(judge, "proc_tree", exec_id="e")
+    rows = {p["pid"]: p["execs"][0] for p in out["procs"]}
+    assert "argv_partial" not in rows[7]
+    assert rows[8]["argv_partial"] is True
+
+
 async def test_proc_tree_builds_the_tree(store: LocalEventStore) -> None:
     run = await make_run(store)
     judge = make_judge(store, run, Script())
