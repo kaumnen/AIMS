@@ -73,6 +73,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - A spend past a provider's credit says `over by $10.47` in `aims spend` and in the cost estimate. It said `$-10.4689 left`. A negative amount elsewhere reads `-$1.23`.
 - In the UI the crumbs scroll away with the page. They stayed in place, so a scrolled page was cut off right under them and seemed to slide beneath them.
 - `aims scenario check`, the editor check, a run and a self-test refuse an unknown field in the rule of a `rule` plant. That rule was not checked, so the run went ahead and its scoring failed at the end.
+- Scoring reports a `rule` plant whose rule does not compile as an error. It stopped with a traceback.
 
 ### Security
 

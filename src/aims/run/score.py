@@ -24,7 +24,8 @@ from aims.events import (
 )
 from aims.events.blobs import read_blob
 from aims.monitor.config import Rule
-from aims.monitor.signals.rules import compile_rule
+from aims.monitor.signals.base import SignalError
+from aims.monitor.signals.rules import Compiled, compile_rule
 from aims.monitor.state import State
 from aims.plants import PlantSetup, build
 from aims.run import truth
@@ -532,12 +533,15 @@ async def _rule_hits(
     record: Mapping[str, Any], events: Sequence[Event], store: LocalEventStore, run_id: str
 ) -> dict[tuple[str, str], list[int]]:
     """The seqs each rule plant's rule matched, by agent and plant, run through the monitor's
-    own rule engine and derived state."""
-    rules = {
-        name: compile_rule(Rule.model_validate(raw["rule"]))
-        for name, raw in (record.get("plants") or {}).items()
-        if raw.get("kind") == "rule"
-    }
+    own rule engine and derived state. Raises CheckError when a rule does not compile."""
+    rules: dict[str, Compiled] = {}
+    for name, raw in (record.get("plants") or {}).items():
+        if raw.get("kind") != "rule":
+            continue
+        try:
+            rules[name] = compile_rule(Rule.model_validate(raw["rule"]))
+        except SignalError as e:
+            raise CheckError(f"run {run_id}: plant {name}: {e}") from None
     out: dict[tuple[str, str], list[int]] = {}
     if not rules:
         return out

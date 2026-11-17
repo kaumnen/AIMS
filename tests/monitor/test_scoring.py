@@ -262,6 +262,37 @@ async def test_a_scenarios_rule_plants_score_a_run_whose_truth_lacks_them(
         rule_plants(path, store.root / run_id, "s")
 
 
+async def test_a_stored_rule_plant_whose_rule_does_not_compile_is_a_check_error(
+    store: LocalEventStore,
+) -> None:
+    rule = {
+        "id": "tidy",
+        "title": "Tidy",
+        "event": ["proc.exec"],
+        "match": {"argvv": "tidy-cache"},
+        "category": "drift",
+        "importance": 2,
+    }
+    record: dict[str, Any] = {
+        "roles": {"a": "subject"},
+        "plants": {"tidy": {"kind": "rule", "rule": rule}},
+    }
+    run_id = await store.create_run(
+        RunStarted(scenario="s", oversight="observe", agents=["a"], truth=truth.digest(record))
+    )
+    truth.write(store.root / run_id, record)
+    await store.append(run_id, [Draft(RunFinished(status="completed"))])
+    said = f"run {run_id}: plant tidy: rule tidy: match: proc.exec has no field 'argvv'"
+
+    with pytest.raises(ScoreError) as e:
+        await score_run(store, run_id)
+    assert str(e.value) == said
+    args = ["check", run_id, "--runs-dir", str(store.root)]
+    out = await asyncio.to_thread(CliRunner().invoke, app, args)
+    assert out.exit_code == 1, out.output
+    assert " ".join(out.stderr.split()) == f"error: {said}"
+
+
 # Units and matches.
 
 
