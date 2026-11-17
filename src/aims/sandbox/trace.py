@@ -414,15 +414,40 @@ class RawMmap(Raw):
 
 @dataclass(frozen=True, slots=True)
 class RawSetattr(Raw):
+    """A requested metadata change. `errno` is set when the kernel refused it before its hook;
+    a time it would have taken from the clock is then None."""
+
     walk: Walk
     valid: int
     mode: int
     uid: int
     gid: int
     size: int
-    atime_us: int
-    mtime_us: int
-    ctime_us: int
+    atime_us: int | None
+    mtime_us: int | None
+    ctime_us: int | None
+    errno: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Named:
+    """A name as a process passed it, with the walk of the directory a relative name was looked
+    up from. `base` is None for an absolute name or a directory the tracer could not read."""
+
+    name: str
+    base: Walk | None
+    cut: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class Refused(Raw):
+    """A call the kernel refused with EPERM, EACCES or EROFS, as `op` names it for file.access.
+    A symlink's `target` is its content, which is never resolved."""
+
+    op: Literal["denied", "delete", "mkdir", "rename", "link", "symlink"]
+    errno: int
+    path: Named
+    target: Named | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -885,10 +910,87 @@ def _identity(body: str, at: Stamp) -> Identity:
 
 
 @record("P")
-def _refused(body: str, at: Stamp) -> File:
-    pid, errno, path = body.split(" ", 2)
-    partial = not path.startswith("/") or _cut(path)
-    return File(int(pid), "denied", path, errno=int(errno), partial=partial, at=at)
+def _refused_open(body: str, at: Stamp) -> Refused:
+    f = body.split(" ", 5)
+    if len(f) != 6:
+        raise ValueError("expected six refused open fields")
+    pid, errno, dev, depth = (int(x) for x in f[:4])
+    name = Named(f[5], _hex_walk(dev, depth, f[4]), _cut(f[5]))
+    return Refused(pid, "denied", errno, name, at=at)
+
+
+REFUSED_OPS: dict[str, Literal["delete", "mkdir", "rename", "link", "symlink"]] = {
+    "u": "delete",
+    "d": "delete",
+    "m": "mkdir",
+    "n": "rename",
+    "l": "link",
+    "s": "symlink",
+}
+
+
+@record("r")
+def _refused(body: str, at: Stamp) -> Refused:
+    head = body.split(" ", 3)
+    if len(head) != 4 or head[1] not in REFUSED_OPS:
+        raise ValueError("unknown refused call")
+    pid, op, errno = int(head[0]), REFUSED_OPS[head[1]], int(head[2])
+    if head[1] in "udm":
+        f = head[3].split(" ", 3)
+        if len(f) != 4:
+            raise ValueError("expected four refused call fields")
+        dev, depth = int(f[0]), int(f[1])
+        return Refused(pid, op, errno, Named(f[3], _hex_walk(dev, depth, f[2]), _cut(f[3])), at=at)
+    f = head[3].split(" ", 7)
+    if len(f) != 8:
+        raise ValueError("expected eight refused call fields")
+    raw = _hex(f[0])
+    end = raw.find(b"\0")
+    first = _text(raw if end < 0 else raw[:end])
+    first_dev, first_depth, second_dev, second_depth = (int(x) for x in f[1:5])
+    second = Named(f[7], _hex_walk(second_dev, second_depth, f[6]), _cut(f[7]))
+    if op == "symlink":
+        return Refused(pid, op, errno, second, Named(first, None, end < 0), at=at)
+    first_named = Named(first, _hex_walk(first_dev, first_depth, f[5]), end < 0)
+    if op == "link":
+        return Refused(pid, op, errno, second, first_named, at=at)
+    return Refused(pid, op, errno, first_named, second, at=at)
+
+
+# Kernel iattr bits and the nanosecond values utimensat takes as now and as leave alone.
+ATTR_MODE, ATTR_SIZE, ATTR_ATIME, ATTR_MTIME, ATTR_CTIME = 1, 8, 16, 32, 64
+ATTR_ATIME_SET, ATTR_MTIME_SET, ATTR_TIMES_SET, ATTR_TOUCH = 128, 256, 1 << 16, 1 << 17
+UTIME_NOW, UTIME_OMIT = (1 << 30) - 1, (1 << 30) - 2
+
+
+@record("t")
+def _refused_setattr(body: str, at: Stamp) -> RawSetattr:
+    f = body.split(" ", 10)
+    if len(f) != 11 or f[1] not in ("c", "t", "u"):
+        raise ValueError("unknown refused setattr")
+    pid, kind, errno = int(f[0]), f[1], int(f[2])
+    a, b, c, d, e = (int(x) for x in f[3:8])
+    walk = _walk(int(f[8]), int(f[9]), f[10].split("/"))
+    mode = size = 0
+    atime: int | None = None
+    mtime: int | None = None
+    if kind == "c":
+        valid, mode = ATTR_MODE | ATTR_CTIME, (a & 0o7777) | (b & 0o170000)
+    elif kind == "t":
+        valid, size = ATTR_SIZE, _clamp(a)
+    elif a == 0 or (c == UTIME_NOW and e == UTIME_NOW):
+        valid = ATTR_ATIME | ATTR_MTIME | ATTR_CTIME | ATTR_TOUCH
+    else:
+        valid = ATTR_CTIME | ATTR_TIMES_SET
+        if c != UTIME_OMIT:
+            valid |= ATTR_ATIME
+            if c != UTIME_NOW:
+                valid, atime = valid | ATTR_ATIME_SET, _clamp(b * 1_000_000 + c // 1000)
+        if e != UTIME_OMIT:
+            valid |= ATTR_MTIME
+            if e != UTIME_NOW:
+                valid, mtime = valid | ATTR_MTIME_SET, _clamp(d * 1_000_000 + e // 1000)
+    return RawSetattr(pid, walk, valid, mode, 0, 0, size, atime, mtime, None, errno, at=at)
 
 
 @record("Z")
@@ -927,6 +1029,27 @@ def _walk(dev: int, depth: int, parts: list[str]) -> Walk:
         return Walk(dev, tuple(n.encode() for n in names) + root)
     if len(parts) == DEPTH and depth < DEPTH and len(set(rest)) == 1:
         return Walk(dev, tuple(n.encode() for n in [*names, rest[0]]))
+    raise ValueError("walk does not match its depth")
+
+
+def _hex_walk(dev: int, depth: int, field: str) -> Walk | None:
+    """A walk printed as DEPTH hex names joined by `/`, or None when `depth` is -1.
+
+    Names cannot hold `/`, so a filesystem root's name `/` marks the root. A pseudo filesystem's
+    file is its own root and repeats its own name, so its walk resolves as a partial path.
+    """
+    if depth == -1:
+        return None
+    parts = [_hex(x) for x in field.split("/")]
+    names, rest = parts[:depth], parts[depth:]
+    if len(parts) != DEPTH or not 0 <= depth <= DEPTH or not all(names):
+        raise ValueError("walk does not match its depth")
+    if any(b"/" in n for n in names):
+        raise ValueError("walk does not match its depth")
+    if not rest or all(r == b"/" for r in rest):
+        return Walk(dev, tuple(names) + ((b"/",) if rest else ()))
+    if len(set(rest)) == 1:
+        return Walk(dev, (*names, rest[0]))
     raise ValueError("walk does not match its depth")
 
 

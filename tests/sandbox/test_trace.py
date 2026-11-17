@@ -53,6 +53,7 @@ from aims.sandbox.trace import (
     Link,
     Mkdir,
     Mounts,
+    Named,
     Note,
     RawCache,
     RawClose,
@@ -63,6 +64,7 @@ from aims.sandbox.trace import (
     RawSetattr,
     RawSync,
     Ready,
+    Refused,
     Rename,
     Sequence,
     Symlink,
@@ -142,6 +144,16 @@ def walk(*names: str) -> tuple[int, str]:
     return len(names), "/".join([*names, *["/"] * (DEPTH - len(names))])
 
 
+def hexwalk(*names: str) -> tuple[int, str]:
+    """The depth and the `/`-joined hex names bpftrace prints for a walk of a lookup directory."""
+    names = names[:DEPTH]
+    return len(names), "/".join(hx(n.encode()) for n in [*names, *["/"] * (DEPTH - len(names))])
+
+
+# The walk printed with -1 as the depth, which the parser never reads.
+NOWALK = hexwalk("work")[1]
+
+
 def unlink(pid: int, dev: int, *names: str) -> str:
     depth, text = walk(*names)
     return f"U {pid} {dev} {depth} {text}"
@@ -218,15 +230,69 @@ def test_parse_simple_lines() -> None:
     assert parse(line("O 10")) == Oom(10, at=PARSED)
     assert parse(line("W 10 /work/a b.txt")) == File(10, "write", "/work/a b.txt", at=PARSED)
     assert parse(line("A 10 /work/x")) == File(10, "read", "/work/x", at=PARSED)
-    assert parse(line("P 10 13 /etc/shadow")) == File(
-        10, "denied", "/etc/shadow", errno=13, at=PARSED
+    assert parse(line(f"P 10 13 64 -1 {NOWALK} /etc/shadow")) == Refused(
+        10, "denied", 13, Named("/etc/shadow", None), at=PARSED
     )
-    assert parse(line("P 10 1 rel")) == File(10, "denied", "rel", errno=1, partial=True, at=PARSED)
     assert parse(line("D 10 97 1")) == RawDenied(10, 97, 1, at=PARSED)
     assert parse(line("C 10 c 4 169.254.169.254 80")) == Net(
         10, "connect", "inet", "169.254.169.254", 80, at=PARSED
     )
     assert parse(line("C 10 s 6 ::1 53")) == Net(10, "sendto", "inet6", "::1", 53, at=PARSED)
+
+
+def test_parse_refused_calls() -> None:
+    etc = Walk(64, (b"etc", b"/"))
+    depth, text = hexwalk("etc")
+    assert parse(line(f"P 10 30 64 {depth} {text} pass wd")) == Refused(
+        10, "denied", 30, Named("pass wd", etc), at=PARSED
+    )
+    assert parse(line(f"r 10 u 30 64 {depth} {text} profile")) == Refused(
+        10, "delete", 30, Named("profile", etc), at=PARSED
+    )
+    assert parse(line(f"r 10 d 13 64 -1 {NOWALK} /etc/apt")) == Refused(
+        10, "delete", 13, Named("/etc/apt", None), at=PARSED
+    )
+    assert parse(line(f"r 10 m 1 64 -1 {NOWALK} /etc/d")) == Refused(
+        10, "mkdir", 1, Named("/etc/d", None), at=PARSED
+    )
+    old = hx(b"a b".ljust(380, b"\0"))
+    renamed = parse(line(f"r 10 n 30 {old} 64 {depth} 64 -1 {text} {NOWALK} /etc/c d"))
+    assert renamed == Refused(
+        10, "rename", 30, Named("a b", etc), Named("/etc/c d", None), at=PARSED
+    )
+    linked = parse(line(f"r 10 l 30 {old} 64 {depth} 64 -1 {text} {NOWALK} /etc/h"))
+    assert linked == Refused(10, "link", 30, Named("/etc/h", None), Named("a b", etc), at=PARSED)
+    target = hx(b"x" * 380)
+    made = parse(line(f"r 10 s 30 {target} 64 -1 64 {depth} {NOWALK} {text} s"))
+    assert made == Refused(
+        10, "symlink", 30, Named("s", etc), Named("x" * 380, None, True), at=PARSED
+    )
+
+
+def test_parse_refused_setattr() -> None:
+    depth, text = walk("profile", "etc")
+    profile = Walk(64, (b"profile", b"etc", b"/"))
+
+    def t(kind: str, errno: int, *values: int) -> RawSetattr:
+        item = parse(line(f"t 10 {kind} {errno} {' '.join(map(str, values))} 64 {depth} {text}"))
+        assert isinstance(item, RawSetattr)
+        assert item.walk == profile
+        return item
+
+    chmod = t("c", 30, 0o4755, 0o100644, 0, 0, 0)
+    assert (chmod.valid, chmod.mode, chmod.errno) == (65, 0o104755, 30)
+    truncate = t("t", 13, 7, 0, 0, 0, 0)
+    assert (truncate.valid, truncate.size, truncate.errno) == (8, 7, 13)
+    touch = t("u", 30, 0, 0, 0, 0, 0)
+    assert (touch.valid, touch.atime_us, touch.mtime_us) == (16 | 32 | 64 | 1 << 17, None, None)
+    now = (1 << 30) - 1
+    assert t("u", 30, 1, 5, now, 6, now).valid == 16 | 32 | 64 | 1 << 17
+    dated = t("u", 30, 1, 978307200, (1 << 30) - 2, 978307200, 5000)
+    assert dated.valid == 32 | 64 | 256 | 1 << 16
+    assert (dated.atime_us, dated.mtime_us, dated.ctime_us) == (None, 978307200000005, None)
+    stamped = t("u", 1, 1, 1, 0, 2, now)
+    assert stamped.valid == 16 | 32 | 64 | 128 | 1 << 16
+    assert (stamped.atime_us, stamped.mtime_us) == (1_000_000, None)
 
 
 def mkdir(pid: int, dev: int, *names: str) -> str:
@@ -251,8 +317,8 @@ def test_paths_at_the_string_cap_are_partial() -> None:
     assert parse(line(f"W 10 {cut}")) == File(10, "write", cut, partial=True, at=PARSED)
     assert parse(line("W 10 ")) == File(10, "write", "", partial=True, at=PARSED)
     assert parse(line(f"A 10 {cut}")) == File(10, "read", cut, partial=True, at=PARSED)
-    assert parse(line(f"P 10 13 {cut}")) == File(
-        10, "denied", cut, errno=13, partial=True, at=PARSED
+    assert parse(line(f"P 10 13 64 -1 {NOWALK} {cut}")) == Refused(
+        10, "denied", 13, Named(cut, None, True), at=PARSED
     )
     assert parse(line(f"M 10 x 42 0 {cut}")) == Mem(10, "exec", cut, 42, 0, partial=True, at=PARSED)
     assert Bprm(10, cut, at=PARSED).fields()["path_partial"] is True
@@ -579,6 +645,17 @@ def test_parse_keeps_bytes_that_are_not_utf8() -> None:
         "Y 10 s 1 1 3 nothex " + walk("a")[1],
         f"Y 10 s 1 1 1 {hx(b'ab')} {walk('a')[1]}",
         f"Y 10 l 1 1 2 1 {walk('a')[1]}",
+        "P 10 13 /etc/shadow",
+        f"P 10 13 64 2 {hexwalk('a')[1]} x",
+        f"P 10 13 64 1 {walk('a')[1]} x",
+        f"P 10 13 64 1 {hexwalk('a/b')[1]} x",
+        f"r 10 q 30 64 -1 {NOWALK} x",
+        f"r 10 u 30 64 -1 {NOWALK}",
+        f"r 10 n 30 {hx(b'a')} 64 -1 64 -1 {NOWALK} x",
+        f"r 10 n 30 nothex 64 -1 64 -1 {NOWALK} {NOWALK} x",
+        "t 10 c 30 1 2 3 4 5 64",
+        f"t 10 z 30 1 2 3 4 5 64 1 64 1 {walk('a')[1]}",
+        f"t 10 c 30 1 2 3 4 x 64 1 {walk('a')[1]}",
     ],
 )
 def test_parse_rejects_misshapen_lines(text: str) -> None:
@@ -987,6 +1064,44 @@ async def test_tracer_resolves_cache_and_sync_paths() -> None:
         Sync(10, "fsync", "/work/page", at=at[1]),
         Cache(10, "mincore", None, at=at[2]),
         Sync(10, "syncfs", None, at=at[3]),
+    ]
+    await tracer.stop()
+
+
+@pytest.mark.anyio
+async def test_tracer_joins_refused_names_with_their_directory() -> None:
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    route = tracer.register(99, Mounts.parse(MOUNTINFO), SYSCALLS["aarch64"])
+    feed = Feed(tracer)
+    feed("R 0 999")
+    feed(f"E 10 1 1 1000 99 5 3 {hx(b'sh\0')}")
+    drain(route)
+
+    etc_depth, etc = hexwalk("etc")
+    work_depth, work = hexwalk("_data", "aims-r-a1-work", "volumes", "docker")
+    deep_depth, deep = hexwalk(*"abcdefghijkl")
+    first = hx(b"f".ljust(380, b"\0"))
+    s = [
+        feed(f"P 10 30 64 -1 {NOWALK} /etc/passwd"),
+        feed(f"P 10 30 64 {etc_depth} {etc} rel"),
+        feed(f"r 10 u 13 {VDA1} {work_depth} {work} locked/x"),
+        feed(f"r 10 m 30 64 -1 {NOWALK} made"),
+        feed(f"r 10 d 30 64 {deep_depth} {deep} x"),
+        feed(f"r 10 n 30 {first} {VDA1} {work_depth} 64 -1 {work} {NOWALK} /etc/moved"),
+        feed(f"r 10 l 30 {first} {VDA1} {work_depth} 64 {etc_depth} {work} {etc} hard"),
+        feed(f"r 10 s 30 {hx(b'..'.ljust(380, b'\0'))} 64 -1 64 {etc_depth} {NOWALK} {etc} s"),
+        feed(f"r 10 u 30 64 {etc_depth} {etc} "),
+    ]
+    assert drain(route) == [
+        File(10, "denied", "/etc/passwd", errno=30, at=s[0]),
+        File(10, "denied", "/etc/rel", errno=30, at=s[1]),
+        File(10, "delete", "/work/locked/x", errno=13, at=s[2]),
+        File(10, "mkdir", "made", errno=30, partial=True, at=s[3]),
+        File(10, "delete", ".../l/k/j/i/h/g/f/e/d/c/b/a/x", errno=30, partial=True, at=s[4]),
+        File(10, "rename", "/work/f", "/etc/moved", errno=30, at=s[5]),
+        File(10, "link", "/etc/hard", "/work/f", errno=30, at=s[6]),
+        File(10, "symlink", "/etc/s", "..", errno=30, at=s[7]),
+        File(10, "delete", "/etc", errno=30, partial=True, at=s[8]),
     ]
     await tracer.stop()
 

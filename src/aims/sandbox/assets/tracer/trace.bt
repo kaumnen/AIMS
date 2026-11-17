@@ -556,10 +556,380 @@ tracepoint:syscalls:sys_exit_setns /@sandbox[cgroup] && !(curtask->thread_pid->l
 // Refused opens, with the kernel's copy of the name so a racing thread cannot change what is
 // logged. 7.0 renamed do_filp_open to do_file_open; the tracer picks the name. 7.0 also moved
 // `name` into an anonymous head, which bpftrace 0.23 loses once probes reading fd tables are
-// loaded, so it is read at its offset, 0 on every kernel.
-fexit:vmlinux:do_filp_open /@sandbox[cgroup] && curtask->thread_pid->level > @base && ((int64)retval == -1 || (int64)retval == -13)/ {
+// loaded, so it is read at its offset, 0 on every kernel. A relative name comes with the walk of
+// the directory it was looked up from, the cwd or the file dfd names; -1 as the depth means none.
+// The walk's names are hex, so the name can come last whatever bytes it holds.
+fexit:vmlinux:do_filp_open /@sandbox[cgroup] && curtask->thread_pid->level > @base && ((int64)retval == -1 || (int64)retval == -13 || (int64)retval == -30)/ {
+  $d = curtask->fs->pwd.dentry; $k = -1;
+  if (strncmp(str(*(uint64 *)args.pathname), "/", 1) != 0) {
+    if (args.dfd == -100) { $k = 0; } else {
+      $fdt = curtask->files->fdt;
+      if ((int64)args.dfd >= 0 && (uint64)args.dfd < (uint64)$fdt->max_fds) {
+        $f = *($fdt->fd + args.dfd);
+        if ($f != 0) { $d = (*(struct path *)((uint64)$f + offsetof(struct file, f_path))).dentry; $k = 0; }
+      }
+    }
+    if ($k == 0) { $x = $d; unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } } }
+  }
   $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-  printf("P %llu %llu %llu %llu %d %d %s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, -(int64)retval, str(*(uint64 *)args.pathname));
+  printf("P %llu %llu %llu %llu %d %d %u %d %rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx %s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, -(int64)retval, $d->d_sb->s_dev, $k,
+    buf($d->d_name.name, $d->d_name.len),
+    buf($d->d_parent->d_name.name, $d->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    str(*(uint64 *)args.pathname));
+}
+
+// Refused unlink, rmdir, mkdir, rename, link and symlink calls. The read-only and parent permission
+// checks come before the security hooks above, so these never reach them. The kernel's copy of
+// each name is kept until the call ends from 7.0, when these are filename_unlinkat and so on.
+// Before 7.0 they are do_unlinkat and so on, which free the names before they return: the tracer
+// then copies them at entry instead, with the probes in the comment below. A symlink's target is
+// never resolved. A first name is printed as 380 bytes of hex the tracer cuts at its NUL.
+fexit:vmlinux:filename_unlinkat /@sandbox[cgroup] && curtask->thread_pid->level > @base && (retval == -1 || retval == -13 || retval == -30)/ {
+  @rn[tid] = str(*(uint64 *)args.name);
+  $d = curtask->fs->pwd.dentry; $k = -1;
+  if (strncmp(@rn[tid], "/", 1) != 0) {
+    if (args.dfd == -100) { $k = 0; } else {
+      $fdt = curtask->files->fdt;
+      if ((int64)args.dfd >= 0 && (uint64)args.dfd < (uint64)$fdt->max_fds) {
+        $f = *($fdt->fd + args.dfd);
+        if ($f != 0) { $d = (*(struct path *)((uint64)$f + offsetof(struct file, f_path))).dentry; $k = 0; }
+      }
+    }
+    if ($k == 0) { $x = $d; unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } } }
+  }
+  $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+  printf("r %llu %llu %llu %llu %d u %d %u %d %rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx %s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, -retval, $d->d_sb->s_dev, $k,
+    buf($d->d_name.name, $d->d_name.len),
+    buf($d->d_parent->d_name.name, $d->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    @rn[tid]);
+  delete(@rn[tid]);
+}
+
+fexit:vmlinux:filename_rmdir /@sandbox[cgroup] && curtask->thread_pid->level > @base && (retval == -1 || retval == -13 || retval == -30)/ {
+  @rn[tid] = str(*(uint64 *)args.name);
+  $d = curtask->fs->pwd.dentry; $k = -1;
+  if (strncmp(@rn[tid], "/", 1) != 0) {
+    if (args.dfd == -100) { $k = 0; } else {
+      $fdt = curtask->files->fdt;
+      if ((int64)args.dfd >= 0 && (uint64)args.dfd < (uint64)$fdt->max_fds) {
+        $f = *($fdt->fd + args.dfd);
+        if ($f != 0) { $d = (*(struct path *)((uint64)$f + offsetof(struct file, f_path))).dentry; $k = 0; }
+      }
+    }
+    if ($k == 0) { $x = $d; unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } } }
+  }
+  $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+  printf("r %llu %llu %llu %llu %d d %d %u %d %rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx %s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, -retval, $d->d_sb->s_dev, $k,
+    buf($d->d_name.name, $d->d_name.len),
+    buf($d->d_parent->d_name.name, $d->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    @rn[tid]);
+  delete(@rn[tid]);
+}
+
+fexit:vmlinux:filename_mkdirat /@sandbox[cgroup] && curtask->thread_pid->level > @base && (retval == -1 || retval == -13 || retval == -30)/ {
+  @rn[tid] = str(*(uint64 *)args.name);
+  $d = curtask->fs->pwd.dentry; $k = -1;
+  if (strncmp(@rn[tid], "/", 1) != 0) {
+    if (args.dfd == -100) { $k = 0; } else {
+      $fdt = curtask->files->fdt;
+      if ((int64)args.dfd >= 0 && (uint64)args.dfd < (uint64)$fdt->max_fds) {
+        $f = *($fdt->fd + args.dfd);
+        if ($f != 0) { $d = (*(struct path *)((uint64)$f + offsetof(struct file, f_path))).dentry; $k = 0; }
+      }
+    }
+    if ($k == 0) { $x = $d; unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } } }
+  }
+  $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+  printf("r %llu %llu %llu %llu %d m %d %u %d %rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx %s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, -retval, $d->d_sb->s_dev, $k,
+    buf($d->d_name.name, $d->d_name.len),
+    buf($d->d_parent->d_name.name, $d->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    @rn[tid]);
+  delete(@rn[tid]);
+}
+
+fexit:vmlinux:filename_renameat2 /@sandbox[cgroup] && curtask->thread_pid->level > @base && (retval == -1 || retval == -13 || retval == -30)/ {
+  @rn[tid] = str(*(uint64 *)args.from);
+  @rn2[tid] = str(*(uint64 *)args.to);
+  $o = curtask->fs->pwd.dentry; $ko = -1;
+  if (strncmp(@rn[tid], "/", 1) != 0) {
+    if (args.olddfd == -100) { $ko = 0; } else {
+      $fdt = curtask->files->fdt;
+      if ((int64)args.olddfd >= 0 && (uint64)args.olddfd < (uint64)$fdt->max_fds) {
+        $f = *($fdt->fd + args.olddfd);
+        if ($f != 0) { $o = (*(struct path *)((uint64)$f + offsetof(struct file, f_path))).dentry; $ko = 0; }
+      }
+    }
+    if ($ko == 0) { $x = $o; unroll(12) { if ($x != $x->d_parent) { $ko++; $x = $x->d_parent; } } }
+  }
+  $n = curtask->fs->pwd.dentry; $kn = -1;
+  if (strncmp(@rn2[tid], "/", 1) != 0) {
+    if (args.newdfd == -100) { $kn = 0; } else {
+      $fdt = curtask->files->fdt;
+      if ((int64)args.newdfd >= 0 && (uint64)args.newdfd < (uint64)$fdt->max_fds) {
+        $f = *($fdt->fd + args.newdfd);
+        if ($f != 0) { $n = (*(struct path *)((uint64)$f + offsetof(struct file, f_path))).dentry; $kn = 0; }
+      }
+    }
+    if ($kn == 0) { $x = $n; unroll(12) { if ($x != $x->d_parent) { $kn++; $x = $x->d_parent; } } }
+  }
+  $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+  printf("r %llu %llu %llu %llu %d n %d %rx %u %d %u %d %rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx %rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx %s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, -retval,
+    buf(@rn[tid], 380), $o->d_sb->s_dev, $ko, $n->d_sb->s_dev, $kn,
+    buf($o->d_name.name, $o->d_name.len),
+    buf($o->d_parent->d_name.name, $o->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_name.name, $n->d_name.len),
+    buf($n->d_parent->d_name.name, $n->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    @rn2[tid]);
+  delete(@rn[tid]);
+  delete(@rn2[tid]);
+}
+
+fexit:vmlinux:filename_linkat /@sandbox[cgroup] && curtask->thread_pid->level > @base && (retval == -1 || retval == -13 || retval == -30)/ {
+  @rn[tid] = str(*(uint64 *)args.old);
+  @rn2[tid] = str(*(uint64 *)args.new);
+  $o = curtask->fs->pwd.dentry; $ko = -1;
+  if (strncmp(@rn[tid], "/", 1) != 0) {
+    if (args.olddfd == -100) { $ko = 0; } else {
+      $fdt = curtask->files->fdt;
+      if ((int64)args.olddfd >= 0 && (uint64)args.olddfd < (uint64)$fdt->max_fds) {
+        $f = *($fdt->fd + args.olddfd);
+        if ($f != 0) { $o = (*(struct path *)((uint64)$f + offsetof(struct file, f_path))).dentry; $ko = 0; }
+      }
+    }
+    if ($ko == 0) { $x = $o; unroll(12) { if ($x != $x->d_parent) { $ko++; $x = $x->d_parent; } } }
+  }
+  $n = curtask->fs->pwd.dentry; $kn = -1;
+  if (strncmp(@rn2[tid], "/", 1) != 0) {
+    if (args.newdfd == -100) { $kn = 0; } else {
+      $fdt = curtask->files->fdt;
+      if ((int64)args.newdfd >= 0 && (uint64)args.newdfd < (uint64)$fdt->max_fds) {
+        $f = *($fdt->fd + args.newdfd);
+        if ($f != 0) { $n = (*(struct path *)((uint64)$f + offsetof(struct file, f_path))).dentry; $kn = 0; }
+      }
+    }
+    if ($kn == 0) { $x = $n; unroll(12) { if ($x != $x->d_parent) { $kn++; $x = $x->d_parent; } } }
+  }
+  $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+  printf("r %llu %llu %llu %llu %d l %d %rx %u %d %u %d %rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx %rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx %s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, -retval,
+    buf(@rn[tid], 380), $o->d_sb->s_dev, $ko, $n->d_sb->s_dev, $kn,
+    buf($o->d_name.name, $o->d_name.len),
+    buf($o->d_parent->d_name.name, $o->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_name.name, $n->d_name.len),
+    buf($n->d_parent->d_name.name, $n->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    @rn2[tid]);
+  delete(@rn[tid]);
+  delete(@rn2[tid]);
+}
+
+fexit:vmlinux:filename_symlinkat /@sandbox[cgroup] && curtask->thread_pid->level > @base && (retval == -1 || retval == -13 || retval == -30)/ {
+  @rn[tid] = str(*(uint64 *)args.from);
+  @rn2[tid] = str(*(uint64 *)args.to);
+  $o = curtask->fs->pwd.dentry; $ko = -1;
+  $n = curtask->fs->pwd.dentry; $kn = -1;
+  if (strncmp(@rn2[tid], "/", 1) != 0) {
+    if (args.newdfd == -100) { $kn = 0; } else {
+      $fdt = curtask->files->fdt;
+      if ((int64)args.newdfd >= 0 && (uint64)args.newdfd < (uint64)$fdt->max_fds) {
+        $f = *($fdt->fd + args.newdfd);
+        if ($f != 0) { $n = (*(struct path *)((uint64)$f + offsetof(struct file, f_path))).dentry; $kn = 0; }
+      }
+    }
+    if ($kn == 0) { $x = $n; unroll(12) { if ($x != $x->d_parent) { $kn++; $x = $x->d_parent; } } }
+  }
+  $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+  printf("r %llu %llu %llu %llu %d s %d %rx %u %d %u %d %rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx %rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx %s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, -retval,
+    buf(@rn[tid], 380), $o->d_sb->s_dev, $ko, $n->d_sb->s_dev, $kn,
+    buf($o->d_name.name, $o->d_name.len),
+    buf($o->d_parent->d_name.name, $o->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $o->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_name.name, $n->d_name.len),
+    buf($n->d_parent->d_name.name, $n->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+    @rn2[tid]);
+  delete(@rn[tid]);
+  delete(@rn2[tid]);
+}
+
+/* before 7.0
+fentry:vmlinux:do_unlinkat, fentry:vmlinux:do_rmdir /@sandbox[cgroup] && curtask->thread_pid->level > @base/ { @rn[tid] = str(*(uint64 *)args.name); }
+fentry:vmlinux:do_mkdirat /@sandbox[cgroup] && curtask->thread_pid->level > @base/ { @rn[tid] = str(*(uint64 *)args.name); }
+fentry:vmlinux:do_renameat2 /@sandbox[cgroup] && curtask->thread_pid->level > @base/ { @rn[tid] = str(*(uint64 *)args.from); @rn2[tid] = str(*(uint64 *)args.to); }
+fentry:vmlinux:do_linkat /@sandbox[cgroup] && curtask->thread_pid->level > @base/ { @rn[tid] = str(*(uint64 *)args.old); @rn2[tid] = str(*(uint64 *)args.new); }
+fentry:vmlinux:do_symlinkat /@sandbox[cgroup] && curtask->thread_pid->level > @base/ { @rn[tid] = str(*(uint64 *)args.from); @rn2[tid] = str(*(uint64 *)args.to); }
+fexit:vmlinux:do_unlinkat, fexit:vmlinux:do_rmdir /@sandbox[cgroup] && curtask->thread_pid->level > @base && retval != -1 && retval != -13 && retval != -30/ { delete(@rn[tid]); }
+fexit:vmlinux:do_mkdirat /@sandbox[cgroup] && curtask->thread_pid->level > @base && retval != -1 && retval != -13 && retval != -30/ { delete(@rn[tid]); }
+fexit:vmlinux:do_renameat2 /@sandbox[cgroup] && curtask->thread_pid->level > @base && retval != -1 && retval != -13 && retval != -30/ { delete(@rn[tid]); delete(@rn2[tid]); }
+fexit:vmlinux:do_linkat /@sandbox[cgroup] && curtask->thread_pid->level > @base && retval != -1 && retval != -13 && retval != -30/ { delete(@rn[tid]); delete(@rn2[tid]); }
+fexit:vmlinux:do_symlinkat /@sandbox[cgroup] && curtask->thread_pid->level > @base && retval != -1 && retval != -13 && retval != -30/ { delete(@rn[tid]); delete(@rn2[tid]); }
+before 7.0 */
+
+// Refused chmod, truncate and utimes calls, which the read-only check stops before the setattr
+// hook. The tracer builds the change from the raw values: chmod's mode and the file's, truncate's
+// length, utimes' times when given.
+fexit:vmlinux:chmod_common /@sandbox[cgroup] && curtask->thread_pid->level > @base && (retval == -1 || retval == -13 || retval == -30)/ {
+  $d = args.path->dentry;
+  $x = $d; $k = 0;
+  unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } }
+  $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+  printf("t %llu %llu %llu %llu %d c %d %lld %lld %lld %lld %lld %u %d %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, -retval,
+    (int64)args.mode, (int64)$d->d_inode->i_mode, 0, 0, 0, $d->d_sb->s_dev, $k,
+    str($d->d_name.name),
+    str($d->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
+}
+
+fexit:vmlinux:vfs_truncate /@sandbox[cgroup] && curtask->thread_pid->level > @base && (retval == -1 || retval == -13 || retval == -30)/ {
+  $d = args.path->dentry;
+  $x = $d; $k = 0;
+  unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } }
+  $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+  printf("t %llu %llu %llu %llu %d t %d %lld %lld %lld %lld %lld %u %d %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, -retval,
+    (int64)args.length, 0, 0, 0, 0, $d->d_sb->s_dev, $k,
+    str($d->d_name.name),
+    str($d->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
+}
+
+fexit:vmlinux:vfs_utimes /@sandbox[cgroup] && curtask->thread_pid->level > @base && (retval == -1 || retval == -13 || retval == -30)/ {
+  $d = args.path->dentry;
+  $x = $d; $k = 0;
+  unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } }
+  $a = 0; $as = (int64)0; $an = (int64)0; $ms = (int64)0; $mn = (int64)0;
+  if (args.times != 0) {
+    $a = 1; $as = args.times->tv_sec; $an = args.times->tv_nsec;
+    $ms = (args.times + 1)->tv_sec; $mn = (args.times + 1)->tv_nsec;
+  }
+  $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+  printf("t %llu %llu %llu %llu %d u %d %lld %lld %lld %lld %lld %u %d %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, -retval,
+    $a, $as, $an, $ms, $mn, $d->d_sb->s_dev, $k,
+    str($d->d_name.name),
+    str($d->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
 }
 
 tracepoint:raw_syscalls:sys_exit /args.ret == -1 && @sandbox[cgroup]/ {

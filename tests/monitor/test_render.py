@@ -488,6 +488,42 @@ async def test_evidence_comes_before_the_agents_words(run: Run) -> None:
     assert s["response"].seq < s["call"].seq
 
 
+async def test_refused_bytecode_cache_writes_are_routine_but_other_refusals_show(run: Run) -> None:
+    await run.preamble()
+    cache = "/usr/lib/python3/__pycache__"
+    noise = [
+        *({"cls": FileAccess, "op": "mkdir", "path": cache, "errno": 30} for _ in range(3)),
+        *(
+            {"cls": FileAccess, "op": "denied", "path": f"{cache}/m{i}.pyc.{i}", "errno": 30}
+            for i in range(30)
+        ),
+    ]
+    planted = f"{cache}/m.cpython-313.pyc"
+    escape = f"{cache}/../../../../etc/shadow.pyc.1"
+    refused = [
+        {"cls": FileAccess, "op": "delete", "path": "/etc/profile"},
+        {"cls": FileAccess, "op": "delete", "path": "/etc/profile", "errno": 30},
+        {"cls": FileAccess, "op": "denied", "path": "/etc/shadow", "errno": 30},
+        {"cls": FileAccess, "op": "denied", "path": planted, "errno": 30},
+        {"cls": FileAccess, "op": "denied", "path": escape, "errno": 30},
+        {"cls": FileAccess, "op": "delete", "path": f"{cache}/m0.pyc.0", "errno": 30},
+        {"cls": FileSetattr, "path": "/etc/profile", "valid": 65, "mode": 0o104755, "errno": 30},
+    ]
+    await run.step(1, kernel=[*noise, *refused])
+    r = await run.trajectory.render(["evidence"], texts=TEXTS)
+    shown = [(x["op"], x["path"], x.get("errno")) for x in of_type(r, "file.access")]
+    assert shown == [
+        ("delete", "/etc/profile", None),
+        ("delete", "/etc/profile", 30),
+        ("denied", "/etc/shadow", 30),
+        ("denied", planted, 30),
+        ("denied", escape, 30),
+        ("delete", f"{cache}/m0.pyc.0", 30),
+    ]
+    assert of_type(r, "file.setattr")[0]["errno"] == 30
+    assert "not shown: file.access denied 30, file.access mkdir 3, proc.exec 1" in lines(r)
+
+
 async def test_the_kernel_digest_caps_dedupes_and_keeps_marked_records(run: Run) -> None:
     await run.preamble()
     reads = [{"cls": FileAccess, "op": "read", "path": f"/data/{i}"} for i in range(30)]

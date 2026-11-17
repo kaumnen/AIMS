@@ -1057,6 +1057,19 @@ async def test_test_tamper_and_grader_access_follow_the_scenario_paths(
     assert plain.of("test_tamper") == []
 
 
+async def test_test_tamper_flags_a_change_the_kernel_refused(store: LocalEventStore) -> None:
+    config = MonitorConfig(preset="signals", paths={"tests": ["tests/**"]})
+    b = await bench(store, config=config)
+    await b.bash(
+        "rm tests/t.py; mv tests/u.py x.py",
+        lambda ex: b.k(FileAccess, ex, op="delete", path="/work/tests/t.py", errno=30),
+        lambda ex: b.k(
+            FileAccess, ex, op="rename", path="/work/tests/u.py", target="/work/x.py", errno=13
+        ),
+    )
+    assert {f.key for f in b.of("test_tamper")} == {"/work/tests/t.py", "/work/tests/u.py"}
+
+
 # Code signals
 
 

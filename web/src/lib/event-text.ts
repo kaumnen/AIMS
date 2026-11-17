@@ -24,7 +24,9 @@ export function summary(e: Event): string {
     case "file.write":
       return `write ${str(d["path"]) ?? ""} ${bytes(num(d["size"]) ?? 0)}`;
     case "file.setattr":
-      return `setattr ${str(d["path"]) ?? ""}`;
+      return ["setattr", str(d["path"]), d["errno"] ? `errno ${num(d["errno"])}` : ""]
+        .filter(Boolean)
+        .join(" ");
     case "proc.exec":
       if (!Array.isArray(d["argv"])) return str(d["filename"]) ?? "";
       return d["argv"].join(" ") + (d["argv_partial"] ? " (cut)" : "");

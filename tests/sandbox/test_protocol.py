@@ -7,7 +7,7 @@ from aims.sandbox.trace import ARGV_CAP, ENV_CAP, PARSERS, STRLEN, UNGROUPED
 from aims.sandbox.tracer import TRACE
 
 TAGS = set("RFBEXOWAUNCPD") | set("VGT") | set("Z") | set("Q") | set("IKSMHJL") | set("Y")
-TAGS |= set("abcdefghi")
+TAGS |= set("abcdefghi") | set("rt")
 TYPES = {
     "run.started",
     "run.finished",
@@ -165,7 +165,7 @@ def test_sandbox_probes_filter_by_pid_namespace() -> None:
     probes = [
         line for line in script.splitlines() if re.match(r"(fentry|fexit|(raw)?tracepoint):", line)
     ]
-    assert not [line for line in probes if "comm" in line]
+    assert not [line for line in probes if re.search(r"\bcomm\b", line)]
     level = re.compile(
         r"curtask->thread_pid->level > @base|!\(curtask->thread_pid->level <= @base\)"
     )

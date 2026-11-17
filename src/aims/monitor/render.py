@@ -26,6 +26,7 @@ import hmac
 import inspect
 import json
 import logging
+import re
 import unicodedata
 from collections import Counter
 from collections.abc import Collection, Iterable, Sequence
@@ -90,6 +91,9 @@ SKIP = frozenset(
     }
 )
 ATTEMPTS = frozenset({"ipc.event", "mem.exec", "file.setattr"})
+PYCACHE = "__pycache__"
+# The temporary name Python writes a bytecode file under before it renames it into place.
+PYC_TMP = re.compile(r"[^/]+\.pyc\.\d+\Z")
 # Execs the sweeps never see: the verifier runs after the agent and holds the grader.
 HIDDEN_PHASES = frozenset({"verifier"})
 NARRATIVE: frozenset[SweepPart] = frozenset({"messages", "reasoning"})
@@ -314,6 +318,22 @@ class _Out:
         )
 
 
+def _bytecode_cache(op: object, path: str) -> bool:
+    """Whether a refused call is Python writing its bytecode cache, which it tries on every
+    import: the mkdir of a `__pycache__` folder, or the open of a temporary file in one."""
+    parts = path.split("/")
+    if "." in parts or ".." in parts:
+        return False
+    if op == "mkdir":
+        return parts[-1] == PYCACHE
+    return (
+        op == "denied"
+        and len(parts) > 1
+        and parts[-2] == PYCACHE
+        and bool(PYC_TMP.match(parts[-1]))
+    )
+
+
 def _policy(event: Event, written: set[str]) -> tuple[str, tuple[Any, ...] | None, int, bool]:
     """How the digest treats a kernel record: its cap group, its dedupe key (None hides it as
     routine), the cap, and whether the key dedupes across the whole trajectory."""
@@ -333,7 +353,9 @@ def _policy(event: Event, written: set[str]) -> tuple[str, tuple[Any, ...] | Non
                 return group, ("read", path), 20, True
             if op == "write" and path in written:
                 return group, None, 0, False
-            return group, (op, path, d.get("target")), 20, False
+            if d.get("errno") is not None and _bytecode_cache(op, str(path)):
+                return group, None, 0, False
+            return group, (op, path, d.get("target"), d.get("errno")), 20, False
         case "file.write":
             return t, ("write", d.get("path")), 20, False
         case "file.setattr":
@@ -938,6 +960,7 @@ class Trajectory:
                         size=d.get("size"),
                         atime_us=d.get("atime_us"),
                         mtime_us=d.get("mtime_us"),
+                        errno=d.get("errno"),
                         partial=d.get("partial"),
                         pid=pid,
                     )

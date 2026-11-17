@@ -49,6 +49,7 @@ from aims.sandbox.trace import (
     Link,
     Mkdir,
     Mounts,
+    Named,
     Note,
     RawCache,
     RawClose,
@@ -59,6 +60,7 @@ from aims.sandbox.trace import (
     RawSetattr,
     RawSync,
     Ready,
+    Refused,
     Rename,
     Sequence,
     Symlink,
@@ -137,6 +139,15 @@ BACKING = (
     'if [ -n "$w" ]; then '
     r"sed -i 's/f_mode & 0x1000000)/f_mode \& 0x2000000)/' $f; fi; fi; "
 )
+# Before 7.0 the calls the refused-call probes watch are do_unlinkat and so on, which free their
+# names before they return, so the names are copied at entry by the probes kept in a comment.
+PRE_7 = (
+    "if ! grep -qx filename_unlinkat $a; then sed -i "
+    r"-e '/^  @rn2\?\[tid\] = str(/d' "
+    r"-e 's/^fexit:vmlinux:filename_\(unlinkat\|rmdir\|mkdirat\|renameat2\|linkat\|symlinkat\) "
+    r"/fexit:vmlinux:do_\1 /' "
+    r"-e '/^\/\* before 7\.0$/d' -e '/^before 7\.0 \*\/$/d' $f; fi; "
+)
 # Kernels from 6.15 split pipe_write into anon_pipe_write and fifo_pipe_write, and 7.0 renamed
 # do_filp_open to do_file_open.
 TRACE = (
@@ -147,7 +158,8 @@ TRACE = (
     "fentry:vmlinux:fifo_pipe_write /' $f; fi; "
     "if ! grep -qx do_filp_open $a; then "
     "sed -i 's/^fexit:vmlinux:do_filp_open /fexit:vmlinux:do_file_open /' $f; fi; "
-    "v=$(uname -r); m=${v%%.*}; n=${v#*.}; n=${n%%.*}; "
+    + PRE_7
+    + "v=$(uname -r); m=${v%%.*}; n=${v#*.}; n=${n%%.*}; "
     + BACKING
     # cachestat arrived in 6.5; older kernels have neither the syscall nor its tracepoint.
     + 'if [ "$m" -lt 6 ] || { [ "$m" -eq 6 ] && [ "$n" -lt 5 ]; } '
@@ -173,6 +185,18 @@ PMU = (
 
 class TracerError(Exception):
     pass
+
+
+def _resolve(mounts: Mounts, named: Named) -> tuple[str, bool]:
+    """The path a name stands for, joined with the directory a relative name was looked up from.
+    A relative name whose directory is unknown stays as given, marked partial."""
+    if named.name.startswith("/"):
+        return named.name, named.cut
+    if named.base is None:
+        return named.name, True
+    base, partial = mounts.resolve(named.base)
+    path = posixpath.join(base, named.name) if named.name else base
+    return path, partial or named.cut
 
 
 @dataclass(slots=True)
@@ -829,9 +853,21 @@ class Tracer:
                             atime_us,
                             mtime_us,
                             ctime_us,
+                            errno=item.errno,
                             at=item.at,
                         )
                     )
+            case Refused(pid, op, errno, named, other):
+                route = self._route(pid)
+                if route is not None:
+                    path, partial = _resolve(route.mounts, named)
+                    target = None
+                    if other is not None and op == "symlink":
+                        target, partial = other.name, partial or other.cut
+                    elif other is not None:
+                        target, cut = _resolve(route.mounts, other)
+                        partial = partial or cut
+                    route.put(File(pid, op, path, target, errno, partial, at=item.at))
             case RawCache(pid, op, walk):
                 route = self._route(pid)
                 if route is not None:

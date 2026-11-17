@@ -4129,6 +4129,7 @@
               }
             ],
             "default": null,
+            "description": "Set when the kernel refused the call with EPERM, EACCES or EROFS. A refused open is `denied`; any other refused call keeps its op, recorded when the call returned.",
             "title": "Errno"
           },
           "exec_id": {
@@ -4255,6 +4256,19 @@
             "default": null,
             "title": "Ctime Us"
           },
+          "errno": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Set when the kernel refused a chmod, truncate or utimes call with EPERM, EACCES or EROFS before its setattr check. A time it would have taken from the clock is unset.",
+            "title": "Errno"
+          },
           "exec_id": {
             "anyOf": [
               {
@@ -4363,7 +4377,8 @@
           "size",
           "atime_us",
           "mtime_us",
-          "ctime_us"
+          "ctime_us",
+          "errno"
         ],
         "title": "FileSetattr",
         "type": "object"

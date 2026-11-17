@@ -383,6 +383,7 @@ class Setattr(Kernel):
     atime_us: int | None = None
     mtime_us: int | None = None
     ctime_us: int | None = None
+    errno: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

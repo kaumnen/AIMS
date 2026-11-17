@@ -586,7 +586,13 @@ class FileAccess(KernelPayload):
     op: FileOp
     path: str
     target: str | None = None
-    errno: int | None = None
+    errno: int | None = Field(
+        default=None,
+        description=(
+            "Set when the kernel refused the call with EPERM, EACCES or EROFS. A refused open is "
+            "`denied`; any other refused call keeps its op, recorded when the call returned."
+        ),
+    )
     partial: bool = False
 
 
@@ -788,6 +794,13 @@ class FileSetattr(KernelPayload):
     atime_us: int | None = None
     mtime_us: int | None = None
     ctime_us: int | None = None
+    errno: int | None = Field(
+        default=None,
+        description=(
+            "Set when the kernel refused a chmod, truncate or utimes call with EPERM, EACCES or "
+            "EROFS before its setattr check. A time it would have taken from the clock is unset."
+        ),
+    )
 
 
 class NsEvent(KernelPayload):

@@ -1930,3 +1930,62 @@ async def test_an_environment_past_one_chunk_has_no_holes(
     assert true.env_bytes == sum(len(e) + 1 for e in entries)
     # The first 4 KiB is read, so D is cut where that ends.
     assert true.env == [*entries[:3], entries[3][: 4096 - sum(len(e) + 1 for e in entries[:3])]]
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_refused_changes_on_read_only_paths_are_recorded(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    command = (
+        "echo x > /etc/passwd; rm -f /etc/profile; mv /etc/profile /etc/moved; mkdir /etc/made;"
+        " rmdir /etc/apt; ln -s x /etc/linked; ln /work/f /etc/hard; chmod 4755 /etc/profile;"
+        " touch -d '2001-01-01' /etc/profile;"
+        " python3 -c \"import os; os.truncate('/etc/profile', 0)\";"
+        " echo x > /ro/f; mkdir /ro/d; cd /etc && rm -f issue; echo x > rel; rm -rf /etc/apt;"
+        " mkdir /work/locked && touch /work/locked/x && chmod 555 /work/locked;"
+        " rm -f /work/locked/x; true"
+    )
+    run_id, sb = await sandbox(
+        backend, store, mounts=[Mount(volume="ro", target="/ro", read_only=True)]
+    )
+    try:
+        await sb.exec("echo x > /work/f", timeout_s=20)
+        result = await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+        await backend.remove_run(run_id)
+
+    payloads = [e.payload() for e in await events(store, run_id, "file.access", "file.setattr")]
+    assert all(isinstance(p, KernelPayload) for p in payloads)
+    exec_id = result.finished.exec_id
+    refused = {
+        (p.op, p.path, p.target, p.errno, p.partial)
+        for p in payloads
+        if isinstance(p, FileAccess) and p.errno is not None and p.exec_id == exec_id
+    }
+    assert {
+        ("denied", "/etc/passwd", None, 30, False),
+        ("delete", "/etc/profile", None, 30, False),
+        ("rename", "/etc/profile", "/etc/moved", 30, False),
+        ("mkdir", "/etc/made", None, 30, False),
+        ("delete", "/etc/apt", None, 30, False),
+        ("symlink", "/etc/linked", "x", 30, False),
+        ("link", "/etc/hard", "/work/f", 30, False),
+        ("denied", "/ro/f", None, 30, False),
+        ("mkdir", "/ro/d", None, 30, False),
+        ("delete", "/etc/issue", None, 30, False),
+        ("denied", "/etc/rel", None, 30, False),
+        ("delete", "/work/locked/x", None, 13, False),
+    } <= refused
+    # rm -r names each entry relative to its directory's fd.
+    assert any(
+        op == "delete" and path.startswith("/etc/apt/") and not partial
+        for op, path, _, _, partial in refused
+    )
+    attrs = [p for p in payloads if isinstance(p, FileSetattr) and p.path == "/etc/profile"]
+    assert all(p.exec_id == exec_id and not p.partial for p in attrs)
+    assert any(p.errno == 30 and p.mode == 0o104755 and p.size is None for p in attrs)
+    assert any(p.errno == 30 and p.mtime_us == 978307200000000 for p in attrs)
+    # Older kernels check for a read-only mount before the file's permissions.
+    assert any(p.errno in (13, 30) and p.size == 0 and p.mode is None for p in attrs)

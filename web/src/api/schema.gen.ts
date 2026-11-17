@@ -3235,6 +3235,7 @@ export interface components {
             cpu_seq: number;
             /**
              * Errno
+             * @description Set when the kernel refused the call with EPERM, EACCES or EROFS. A refused open is `denied`; any other refused call keeps its op, recorded when the call returned.
              * @default null
              */
             errno: number | null;
@@ -3291,6 +3292,12 @@ export interface components {
              * @default null
              */
             ctime_us: number | null;
+            /**
+             * Errno
+             * @description Set when the kernel refused a chmod, truncate or utimes call with EPERM, EACCES or EROFS before its setattr check. A time it would have taken from the clock is unset.
+             * @default null
+             */
+            errno: number | null;
             /** Exec Id */
             exec_id: string | null;
             /**
