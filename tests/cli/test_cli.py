@@ -85,6 +85,29 @@ def test_each_help_paragraph_wraps_to_the_terminal() -> None:
     assert "\b" not in control
 
 
+def test_help_shows_no_type_for_a_flag() -> None:
+    """A flag takes no value, so no help page puts a type such as `<bool>` beside it."""
+    pages = []
+
+    def walk(command: Any, path: list[str]) -> None:
+        r = CliRunner().invoke(app, [*path, "--help"], env={"COLUMNS": "1000"})
+        assert r.exit_code == 0, path
+        pages.append(r.output)
+        if "<bool>" in r.output:
+            shown.append(f"aims {' '.join(path)}")
+        for name, sub in getattr(command, "commands", {}).items():
+            walk(sub, [*path, name])
+
+    shown: list[str] = []
+    walk(get_command(app), [])
+    assert shown == []
+    assert len(pages) > 30
+    run = next(p for p in pages if "--fork-at" in p)
+    keep = next(line for line in run.splitlines() if "--no-keep" in line)
+    assert "Leave containers" in keep
+    assert re.search(r"--samples\s+<int range> \[x>=1\]", run)
+
+
 def test_help_offers_what_each_command_takes() -> None:
     root: Any = get_command(app)
 

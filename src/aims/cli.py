@@ -16,9 +16,24 @@ def _shown_usage(e: typer.TyperException) -> None:
     e.message = visible(e.message)
 
 
+def _typeless_flags(params: list[Any]) -> list[Any]:
+    """`params` with no value type shown for a flag in --help. A flag takes no value, yet typer
+    0.29 puts `<bool>` beside each one in Rich help, its own --help too. Typer 0.28 and its
+    plain help leave it out. An empty metavar fills the type column with nothing. Drop this
+    once typer leaves it out again."""
+    for param in params:
+        if isinstance(param, TyperOption) and param.is_bool_flag and param.metavar is None:
+            param.metavar = ""
+    return params
+
+
 class _Group(TyperGroup):
     """Shows the text of a usage error as the characters it holds. Click and typer put argv
-    text in some messages as it is, such as `Got unexpected extra argument (...)`."""
+    text in some messages as it is, such as `Got unexpected extra argument (...)`. Its help
+    shows no type for a flag."""
+
+    def get_params(self, ctx: Any) -> Any:
+        return _typeless_flags(super().get_params(ctx))
 
     def make_context(self, *args: Any, **kwargs: Any) -> Any:
         try:
@@ -63,7 +78,9 @@ class _App(typer.Typer):
 
 
 app = _App(name="aims", no_args_is_help=True, add_completion=False, cls=_Group)
-models_app = typer.Typer(no_args_is_help=True, help="Model profiles and provider checks.")
+models_app = typer.Typer(
+    no_args_is_help=True, cls=_Group, help="Model profiles and provider checks."
+)
 app.add_typer(models_app, name="models")
 
 ConfigOption = Annotated[
@@ -792,7 +809,9 @@ async def _check(
     return checks
 
 
-images_app = typer.Typer(no_args_is_help=True, help="Docker images AIMS builds and pulls.")
+images_app = typer.Typer(
+    no_args_is_help=True, cls=_Group, help="Docker images AIMS builds and pulls."
+)
 app.add_typer(images_app, name="images")
 
 
@@ -845,9 +864,9 @@ def images_prune(
         typer.echo("nothing to remove")
 
 
-scenario_app = typer.Typer(no_args_is_help=True, help="Scenario files.")
+scenario_app = typer.Typer(no_args_is_help=True, cls=_Group, help="Scenario files.")
 app.add_typer(scenario_app, name="scenario")
-prompts_app = typer.Typer(no_args_is_help=True, help="The texts the agent reads.")
+prompts_app = typer.Typer(no_args_is_help=True, cls=_Group, help="The texts the agent reads.")
 app.add_typer(prompts_app, name="prompts")
 
 
@@ -3145,7 +3164,7 @@ def _operator(
     return url, token
 
 
-token_app = typer.Typer(no_args_is_help=True, help="Tokens of the local control plane.")
+token_app = typer.Typer(no_args_is_help=True, cls=_Group, help="Tokens of the local control plane.")
 app.add_typer(token_app, name="token")
 DataDirOption = Annotated[
     Path | None,
@@ -3923,7 +3942,10 @@ class _Utf8Command(TyperCommand):
     """A command that refuses a text argument UTF-8 cannot encode. A byte in argv that is not
     UTF-8 reaches Python as a lone surrogate, which the log, a model request, the control plane
     and SQLite all refuse. A path is let through: typer hands it over as a Path, not a str, and
-    the file system takes it back as the same bytes."""
+    the file system takes it back as the same bytes. Its help shows no type for a flag."""
+
+    def get_params(self, ctx: Any) -> Any:
+        return _typeless_flags(super().get_params(ctx))
 
     def parse_args(self, ctx: Any, args: list[str]) -> list[str]:
         from aims.text import encodable
