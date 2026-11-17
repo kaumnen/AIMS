@@ -11,7 +11,7 @@ Fixes go into the latest release only.
 
 ## Overview
 
-AIMS runs model output as shell commands. This happens on the runner host.
+AIMS runs model output as shell commands on the runner host.
 
 ```mermaid
 flowchart LR
@@ -59,16 +59,20 @@ Docker Compose runs both on one host.
   ```sh
   docker rm -f $(docker ps -aq --filter label=aims.managed=1)
   ```
-- Sandbox defaults: 1 CPU, 1024 MiB memory, 256 PIDs. A scenario can turn on `writable_root`.
+- Sandbox defaults: 1 CPU, 1024 MiB memory, 256 PIDs. A scenario's `sandbox` section changes them.
 - The `/work` volume has no size limit, so an agent can fill the host disk with real bytes.
 
 ## Access
 
-Every API call needs a token. Each token has one role. `GET /healthz` needs none. It answers only `{"ok": true}`, for container healthchecks.
+Every API call needs a token. Each token has one role. Three calls need none:
+
+- Sign-in. It takes a token or a launch code.
+- `GET /api/openapi.json`, the API schema. It names the AIMS version.
+- `GET /healthz`. It answers only `{"ok": true}`, for container healthchecks.
 
 | Role | Can |
 | --- | --- |
-| `viewer` | Read runs. Cannot see a scenario's plants or self-test. |
+| `viewer` | Read runs. Cannot see scenario files, plants, scores or self-tests. |
 | `operator` | All a viewer can. Start runs. Edit scenarios. |
 | `runner` | Use the runner API only. |
 
@@ -148,7 +152,7 @@ Set `AIMS_IMAGE_REGISTRY=` to empty to never pull them. AIMS then builds them fr
 
 ## Deployment checklist
 
-Go through this list before you deploy AIMS. Each line sums up a rule from the sections above.
+Check these before you deploy. Each line sums up a rule above.
 
 - [ ] Runners on a dedicated machine or VM
 - [ ] No other secrets or production access on runner hosts
