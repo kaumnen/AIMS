@@ -439,7 +439,8 @@ async def test_a_viewer_reads_no_blob_the_job_carried_for_its_runner_alone(
         for sha in inputs:
             assert (await op.get(f"/api/runs/{run_id}/blobs/{sha}")).status_code == 200
     async with cp.client(cp.viewer) as viewer:
-        assert (await viewer.get("/api/scenarios/project/planted")).json()["etag"] == etag
+        # the scenario's tag is the sha256 of its blob; a viewer gets neither
+        assert (await viewer.get("/api/scenarios/project/planted")).json()["etag"] is None
         assert (await viewer.get(f"/api/runs/{run_id}/blobs/{shown}")).status_code == 200
         for sha in set(inputs) - {shown}:
             r = await viewer.get(f"/api/runs/{run_id}/blobs/{sha}")

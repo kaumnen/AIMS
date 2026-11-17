@@ -81,6 +81,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 - `GET /api/openapi.json` needs a viewer or operator token. It answered without one and named the AIMS version. An API client that reads the schema now sends its token.
 - The image ships opentelemetry-api 1.45.2, a dependency of FastAPI. It fixes CVE-2026-126360, a denial of service through slow `traceparent` parsing.
+- The scenario page leaves out the scenario.yaml tag for viewers.
 
 ## [0.2.3] - 2026-11-14
 

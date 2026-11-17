@@ -14054,7 +14054,7 @@
         "type": "object"
       },
       "ScenarioDetail": {
-        "description": "A scenario as the scenario page shows it. `errors` say why it does not load, and then\nonly the names are set. Viewers see what a run of it shows (`truth` False): no plants,\nroles, scripts, prompts or self-test.",
+        "description": "A scenario as the scenario page shows it. `errors` say why it does not load, and then\nonly the names are set. `etag` is the tag a write of scenario.yaml names. Viewers see what\na run of it shows (`truth` False): no plants, roles, scripts, prompts, self-test or etag.",
         "properties": {
           "agents": {
             "items": {
@@ -14089,8 +14089,15 @@
             "type": "array"
           },
           "etag": {
-            "title": "Etag",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Etag"
           },
           "instruction": {
             "anyOf": [

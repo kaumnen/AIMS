@@ -7073,8 +7073,8 @@ export interface components {
         /**
          * ScenarioDetail
          * @description A scenario as the scenario page shows it. `errors` say why it does not load, and then
-         *     only the names are set. Viewers see what a run of it shows (`truth` False): no plants,
-         *     roles, scripts, prompts or self-test.
+         *     only the names are set. `etag` is the tag a write of scenario.yaml names. Viewers see what
+         *     a run of it shows (`truth` False): no plants, roles, scripts, prompts, self-test or etag.
          */
         ScenarioDetail: {
             /** Agents */
@@ -7086,7 +7086,7 @@ export interface components {
             /** Errors */
             errors: components["schemas"]["ProblemError"][];
             /** Etag */
-            etag: string;
+            etag: string | null;
             /** Instruction */
             instruction: string | null;
             /** Limits */

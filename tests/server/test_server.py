@@ -1897,6 +1897,24 @@ async def test_scenario_files_and_truth_are_for_operators(cp: CP) -> None:
         assert (await c.get("/api/scenarios/project/missing")).status_code == 404
 
 
+async def test_only_operators_get_the_tag_a_scenario_write_names(cp: CP) -> None:
+    broken = cp.project.parent / "scenarios/broken"
+    broken.mkdir()
+    (broken / "scenario.yaml").write_text("version: 1\nname: [\n")
+    for name in ("control", "broken"):
+        url = f"/api/scenarios/project/{name}"
+        data = (cp.project.parent / "scenarios" / name / "scenario.yaml").read_bytes()
+        tag = hashlib.sha256(data).hexdigest()
+        async with cp.client(cp.viewer) as c:
+            r = await c.get(url)
+            assert r.status_code == 200, r.text
+            assert r.json()["etag"] is None
+            assert tag not in r.text
+            assert all(tag not in v for v in r.headers.values())
+        async with cp.client(cp.operator) as c:
+            assert (await c.get(url)).json()["etag"] == tag
+
+
 async def test_the_built_in_scenarios_are_read_only_and_duplicate_to_edit(cp: CP) -> None:
     root = builtin_root()
     assert root == Path(aims.__file__).parent / "scenarios"

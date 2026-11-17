@@ -171,18 +171,19 @@ export const promptsQuery = queryOptions({
 });
 
 // Set an agent's text override in scenario.yaml, or drop it with `value` null. `etag` is the
-// scenario.yaml version the change is made against.
+// scenario.yaml version the change is made against. The server refuses a change without one.
 export async function patchPrompt(
   source: string,
   name: string,
   agent: string,
   key: PromptKey,
   value: string | null,
-  etag: string,
+  etag: string | null,
 ): Promise<Saved> {
   const body = value === null ? { unset: [{ agent, key }] } : { set: [{ agent, key, value }] };
+  const header = etag === null ? {} : { "If-Match": `"${etag}"` };
   const { data, error } = await client.PATCH("/api/scenarios/{source}/{name}/prompts", {
-    params: { path: { source, name }, header: { "If-Match": `"${etag}"` } },
+    params: { path: { source, name }, header },
     body,
   });
   if (error) throw error;

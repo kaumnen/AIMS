@@ -864,13 +864,13 @@ class SelfTestOverview(Out):
 
 class ScenarioDetail(Out):
     """A scenario as the scenario page shows it. `errors` say why it does not load, and then
-    only the names are set. Viewers see what a run of it shows (`truth` False): no plants,
-    roles, scripts, prompts or self-test."""
+    only the names are set. `etag` is the tag a write of scenario.yaml names. Viewers see what
+    a run of it shows (`truth` False): no plants, roles, scripts, prompts, self-test or etag."""
 
     source: str
     name: str
     writable: bool
-    etag: str
+    etag: str | None
     errors: list[ProblemError]
     truth: bool
     title: str | None
@@ -896,7 +896,7 @@ async def scenario_detail(
         source=s.id,
         name=name,
         writable=s.writable,
-        etag=etag(data),
+        etag=etag(data) if truth else None,
         errors=[],
         truth=truth,
         title=None,
