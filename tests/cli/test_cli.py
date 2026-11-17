@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import os
 import re
 import shutil
@@ -35,6 +36,53 @@ def test_help_texts_keep_their_brackets() -> None:
 
     walk(get_command(app), "aims")
     assert found == []
+
+
+def test_each_help_paragraph_wraps_to_the_terminal() -> None:
+    """A paragraph of a command's help wraps where the terminal ends, not where its source line
+    ends, so a wide terminal shows it on one line. A paragraph led by a `\\b` line keeps its
+    lines."""
+    split = []
+    kept = []
+
+    def paragraphs(command: Any) -> list[str]:
+        """The help of `command` as written: a group's, or the docstring of a command."""
+        text = command.help if command.callback is None else inspect.getdoc(command.callback)
+        return str(text or "").split("\n\n")
+
+    def shown(text: str) -> str:
+        return " ".join(text.split()).replace("\\[", "[")
+
+    def walk(command: Any, path: list[str]) -> None:
+        subs = getattr(command, "commands", None)
+        r = CliRunner().invoke(app, [*path, "--help"], env={"COLUMNS": "1000"})
+        lines = [" ".join(line.split()) for line in r.output.splitlines()]
+        for name, sub in (subs or {}).items():
+            walk(sub, [*path, name])
+            # the list of a group's commands shows the first paragraph of each
+            first = shown(paragraphs(sub)[0])
+            if not any(first in line for line in lines):
+                split.append(f"aims {' '.join(path)} list: {first[:50]!r}")
+        if subs is not None:
+            return
+        for paragraph in paragraphs(command):
+            if paragraph.startswith("\b\n"):
+                for line in paragraph.splitlines()[1:]:
+                    if shown(line) not in lines:
+                        kept.append(f"aims {' '.join(path)}: {line!r}")
+            elif shown(paragraph) not in lines:
+                split.append(f"aims {' '.join(path)}: {paragraph[:50]!r}")
+
+    walk(get_command(app), [])
+    assert split == []
+    assert kept == []
+    r = CliRunner().invoke(app, ["control", "--help"], env={"COLUMNS": "1000"})
+    control = "\n".join(line.rstrip() for line in r.output.splitlines())
+    assert "\n 4 dropped: the run ended or its runner changed first, so it was not done;\n" in (
+        control
+    )
+    assert "\n   a drop as the run ended may wait out --wait" in control
+    assert "\b" not in control
 
 
 def test_help_offers_what_each_command_takes() -> None:

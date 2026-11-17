@@ -1,4 +1,5 @@
 import contextlib
+import inspect
 from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import Annotated, Any, NoReturn
@@ -2814,6 +2815,7 @@ def control(
     it waits in the queue. Both stop the monitor's model calls and skip the judge; sent while
     the judge runs, either only cuts it short and the run keeps its outcome.
 
+    \b
     Exit codes:
     0 done, or sent with --wait 0
     1 refused by the runner or the control plane, or it could not be reached
@@ -3909,14 +3911,31 @@ class _Utf8Command(TyperCommand):
         return rest
 
 
-def _utf8_only(group: typer.Typer) -> None:
-    """Make each command of `group` and of its subgroups a _Utf8Command."""
+def _unwrapped(text: str) -> str:
+    """`text` with each paragraph on one line, which Rich wraps to the terminal. Typer keeps
+    the line breaks of each paragraph after the first, so a docstring's lines would print as
+    they wrap in the source. A paragraph whose first line is `\\b` keeps its lines, as in
+    click."""
+    paragraphs = []
+    for paragraph in inspect.cleandoc(text).split("\n\n"):
+        if paragraph.startswith("\b\n"):
+            paragraphs.append(paragraph.removeprefix("\b\n"))
+        else:
+            paragraphs.append(" ".join(line.strip() for line in paragraph.splitlines()))
+    return "\n\n".join(paragraphs)
+
+
+def _set_up(group: typer.Typer) -> None:
+    """Make each command of `group` and of its subgroups a _Utf8Command, with its help
+    unwrapped."""
     for command in group.registered_commands:
         if command.cls in (None, TyperCommand):
             command.cls = _Utf8Command
+        if text := command.help or inspect.getdoc(command.callback):
+            command.help = _unwrapped(text)
     for sub in group.registered_groups:
         if sub.typer_instance is not None:
-            _utf8_only(sub.typer_instance)
+            _set_up(sub.typer_instance)
 
 
-_utf8_only(app)
+_set_up(app)
