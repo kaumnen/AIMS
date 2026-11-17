@@ -117,8 +117,8 @@ npx skills add kaumnen/AIMS -a claude-code   # or -a codex
 | --- | --- | --- |
 | `off` | Nothing | $0 |
 | `signals` | 41 pattern detectors, no model | $0 |
-| `standard` (default) | Signals, model sweeps every 5 steps, a judge at the end | At least $5 |
-| `research` | Adds a second judge that does not see the flags | At least $8 |
+| `standard` (default) | Signals, model sweeps every 5 steps, a judge at the end | At least $5 per agent |
+| `research` | Adds a second judge that does not see the flags | At least $8 per agent |
 
 `--oversight` sets what a flag does. `observe` records it. `autonomous` pauses for a model review. `human` waits for you. [The monitor](https://github.com/kaumnen/AIMS/blob/main/docs/monitor.md) lists the 15 flag categories.
 
