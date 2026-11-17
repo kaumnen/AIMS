@@ -163,7 +163,7 @@ Open the printed sign-in link. Add your models under **Settings** > **Models** >
 | [Write a scenario](https://github.com/kaumnen/AIMS/blob/main/docs/scenarios.md) | An example, plant kinds, agents and channels |
 | [Scenario reference](https://github.com/kaumnen/AIMS/blob/main/skills/aims/references/scenario.md) | The scenario format and the rules that are easy to miss |
 | [The monitor](https://github.com/kaumnen/AIMS/blob/main/docs/monitor.md) | Layers, budgets, oversight and categories |
-| [Runs and reports](https://github.com/kaumnen/AIMS/blob/main/docs/runs.md) | Logs, forks, scores, series and deletion |
+| [Runs and reports](https://github.com/kaumnen/AIMS/blob/main/docs/runs.md) | Logs, forks, scores, series, deletion and reports |
 | [Models](https://github.com/kaumnen/AIMS/blob/main/docs/models.md) | Profile fields, prices, adding a model and headers |
 | [Deploy](https://github.com/kaumnen/AIMS/blob/main/docs/deploy.md) | TLS, more runners, proxies and offline hosts |
 | [SECURITY.md](https://github.com/kaumnen/AIMS/blob/main/SECURITY.md) | The security model and how to report a vulnerability |
