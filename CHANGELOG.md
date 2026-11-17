@@ -80,6 +80,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - `aims ui` ignores Ctrl-C, SIGTERM and hangups once its stop is over. A late second Ctrl-C ended it with code 130 or by SIGINT.
 - The local runner of `aims ui` holds SIGINT, SIGTERM and SIGHUP until its handlers are in. A stop in its first seconds killed it. A stop that early now ends it before it starts anything.
 - Command help wraps each paragraph to the terminal width. Lines broke where the source broke them.
+- `aims control` asks again while the control plane cannot show a run yet. A run whose first events were still arriving got a 503 `not indexed yet; ask again soon`. The command then exited 1 as if it had been refused. It now waits that out within `--wait`. When the wait ends first, it says why.
 
 ### Security
 

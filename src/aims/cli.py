@@ -2892,10 +2892,18 @@ async def _control(
             command = sent.get("command_id")
             deadline = time.monotonic() + wait
             found = None
+            unread: str | None = None
             while time.monotonic() < deadline:
                 r = await c.get(f"/api/runs/{run}/commands")
+                # A 503 asks to try again soon: the index can lag the run's log for a moment,
+                # as while the run's first events arrive.
+                if r.status_code == 503:
+                    unread = _problem_text(r)
+                    await asyncio.sleep(0.2)
+                    continue
                 if r.status_code >= 400:
                     return _problem(r)
+                unread = None
                 found = next((x for x in r.json() if x["id"] == command), None)
                 # A drop by the run's end is not final: the runner may have carried the
                 # command out, and its answer may still come and say done.
@@ -2907,8 +2915,13 @@ async def _control(
             return EXIT_FAILED
     if found is not None and found["state"] == "dropped":
         return _answered(action, run, found)
+    why = (
+        "the runner did not answer"
+        if unread is None
+        else f"the control plane could not show its answer ({unread})"
+    )
     _echo(
-        f"error: {action} {run}: sent, but the runner did not answer within {wait:g} s;"
+        f"error: {action} {run}: sent, but {why} within {wait:g} s;"
         f" `aims control {run} list` shows it later",
         err=True,
     )
@@ -3066,13 +3079,17 @@ async def _commands(url: str, token: str, run: str) -> int:
 
 
 def _problem(r: Any) -> int:
+    _echo(f"error: {_problem_text(r)}", err=True)
+    return EXIT_FAILED
+
+
+def _problem_text(r: Any) -> str:
     try:
         problem = r.json()
         message = problem.get("detail") or problem.get("title") or r.text
     except ValueError:
         message = r.text[:500]
-    _echo(f"error: {r.status_code} {message}", err=True)
-    return EXIT_FAILED
+    return f"{r.status_code} {message}"
 
 
 def _operator(

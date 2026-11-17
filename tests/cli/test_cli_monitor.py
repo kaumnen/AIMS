@@ -2068,11 +2068,11 @@ async def test_aims_control_exits_non_zero_for_a_command_not_carried_out_in_full
     note = "the sandbox of agent a did not freeze: boom"
     await fake.client.ack(message.id, Ack(ok=True, outcome=note, in_part=True))
     result = await sent
-    assert result.exit_code == EXIT_PART_DONE == 5
+    assert result.exit_code == EXIT_PART_DONE == 5, result.output
     assert result.stdout.strip() == f"pause {run_id}: done in part: {note}"
 
     result = await control(cp, run_id, "resume", "--wait", "0.5", token=cp.operator)
-    assert result.exit_code == EXIT_NO_ANSWER == 6
+    assert result.exit_code == EXIT_NO_ANSWER == 6, result.output
     assert f"resume {run_id}: sent, but the runner did not answer within 0.5 s" in result.stderr
     await fake.next(CommandMessage)
 
@@ -2081,10 +2081,44 @@ async def test_aims_control_exits_non_zero_for_a_command_not_carried_out_in_full
     await local.append(run_id, [Draft(RunFinished(status="completed"))])
     await ship(local, fake.client, run_id)
     result = await sent
-    assert result.exit_code == EXIT_DROPPED == 4
+    assert result.exit_code == EXIT_DROPPED == 4, result.output
     assert result.stdout.strip() == (
         f"kill {run_id}: dropped: the run ended; it was not carried out"
     )
+
+
+async def test_aims_control_asks_again_while_the_index_lags_the_run(
+    cp: CP, fake: FakeRunner, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # As while a run's first events arrive: its log is here and the index does not hold it
+    # yet, so reads of it answer 503 and ask to try again soon.
+    (run_id,) = await start_run(cp)
+    await play_job(fake, local, await fake.next(OfferMessage))
+    logged = cp.state.store.logged
+    lagged: list[str] = []
+
+    def lagging(name: str) -> bool:
+        if name == run_id and len(lagged) < 4:
+            lagged.append(name)
+            return True
+        return logged(name)
+
+    monkeypatch.setattr(cp.state.store, "logged", lagging)
+    sent = asyncio.create_task(control(cp, run_id, "kill", "--wait", "10", token=cp.operator))
+    message = await fake.next(CommandMessage)
+    await fake.client.ack(message.id, Ack(ok=True, outcome="done"))
+    result = await sent
+    assert result.exit_code == 0, result.output
+    assert result.stdout.strip() == f"kill {run_id}: done"
+    assert len(lagged) == 4
+
+    monkeypatch.setattr(cp.state.store, "logged", lambda name: name == run_id or logged(name))
+    result = await control(cp, run_id, "pause", "--wait", "1.5", token=cp.operator)
+    assert result.exit_code == EXIT_NO_ANSWER, result.output
+    assert (
+        f"pause {run_id}: sent, but the control plane could not show its answer"
+        f" (503 run {run_id} is not indexed yet; ask again soon) within 1.5 s"
+    ) in result.stderr
 
 
 async def test_aims_control_reports_a_kill_done_when_its_answer_comes_after_the_run_ended(
