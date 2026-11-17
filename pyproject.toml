@@ -123,8 +123,14 @@ Issues = "https://github.com/kaumnen/AIMS/issues"
 Changelog = "https://github.com/kaumnen/AIMS/blob/main/CHANGELOG.md"
 Security = "https://github.com/kaumnen/AIMS/blob/main/SECURITY.md"
 
+[project.optional-dependencies]
+mcp = [
+    "mcp>=2.3.0,<3.0.0",
+]
+
 [dependency-groups]
 dev = [
+    "aims-bench[mcp]",
     "anyio>=4.15.1",
     "hypothesis>=6.170.15",
     "pytest>=9.1.1",
@@ -145,6 +151,9 @@ add-bounds = "major"
 
 [tool.uv.build-backend]
 module-name = "aims"
+
+[tool.uv.sources]
+aims-bench = { workspace = true }
 
 [tool.ruff]
 line-length = 100

@@ -2196,6 +2196,48 @@ async def _open(url: str, token: str, open_browser: bool, shown: str) -> int:
     return 0
 
 
+@app.command("mcp")
+def mcp_cmd(
+    act: Annotated[
+        bool,
+        typer.Option(
+            "--act",
+            help="Also offer the tools that act: run, fork, monitor, score and control. They"
+            " need an operator token.",
+        ),
+    ] = False,
+    server: ServerOption = None,
+    token_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--token-file",
+            help="A file holding the token. Any token reads; --act needs an operator token.",
+        ),
+    ] = None,
+) -> None:
+    """Serve the control plane to an MCP client over stdio.
+
+    The tools are named after these commands. They read runs, flags, steps, events, reports,
+    scores and scenarios. A viewer token gets no plants and no scores. With --act, a tool that
+    spends asks the person through the client to confirm a cost above confirm_above_usd.
+
+    It finds the control plane as `aims open` does: the local `aims ui` with its operator token,
+    or --server with the token in AIMS_TOKEN or --token-file. It needs the mcp extra:
+    `uv tool install 'aims-bench\\[mcp]'`.
+    """
+    import asyncio
+
+    try:
+        from aims.mcp.server import serve
+    except ModuleNotFoundError as e:
+        if (e.name or "").partition(".")[0] not in ("mcp", "mcp_types"):
+            raise
+        _echo("error: aims mcp needs the mcp extra: uv tool install 'aims-bench[mcp]'", err=True)
+        raise typer.Exit(EXIT_FAILED) from None
+    url, token = _operator(server, token_file, reads=not act)
+    asyncio.run(serve(url, token, act=act))
+
+
 @app.command("runner")
 def runner_cmd(
     server: ServerOption = None,

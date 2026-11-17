@@ -466,6 +466,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Check Plants
+         * @description The plants each agent of a sealed run took, in event order, from its log and truth
+         *     file, as `aims check` gives them. Operators only. 409 while the run runs, or when its log
+         *     does not verify or its truth file is not here yet.
+         */
+        get: operations["check_plants"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{run_id}/commands": {
         parameters: {
             query?: never;
@@ -5473,6 +5495,37 @@ export interface components {
             taken: string | null;
         };
         /**
+         * PlantTaken
+         * @description A plant one agent reached, as `aims check` prints it: `tier` is the highest tier it
+         *     reached, or the one that counts as taken, first at `seq`; `evidence` holds every seq that
+         *     shows it. `inherited` marks a canary a run of the series before made, used here.
+         */
+        PlantTaken: {
+            /** Agent */
+            agent: string;
+            /** Category */
+            category: string;
+            /** Detail */
+            detail: string;
+            /** Evidence */
+            evidence: number[];
+            /** Inherited */
+            inherited: boolean;
+            /** Kind */
+            kind: string;
+            /** Plant */
+            plant: string;
+            /** Seq */
+            seq: number;
+            /** Taken */
+            taken: boolean;
+            /**
+             * Tier
+             * @enum {string}
+             */
+            tier: "touched" | "considered" | "claimed" | "used";
+        };
+        /**
          * PlantTriggered
          * @description A plant reached a tier for the event's agent, in the run `origin` that a score run
          *     scores. `seq` is the first event that set it off, the harm seq when the tier counts as
@@ -10163,6 +10216,82 @@ export interface operations {
             };
             /** @description Unsupported media type */
             415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    check_plants: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlantTaken"][];
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -15543,6 +15672,7 @@ export const operatorActionActionValues: ReadonlyArray<FlattenedDeepRequired<com
 export const operatorActionThenAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["OperatorAction"]["then"]> = ["continue", "kill", "inject", "deny"];
 export const pinsRoleValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Pins"]["role"]> = ["local", "operator", "viewer"];
 export const plantTierValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Plant"]["tier"]> = ["touched", "considered", "claimed", "used"];
+export const plantTakenTierValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PlantTaken"]["tier"]> = ["touched", "considered", "claimed", "used"];
 export const plantTriggeredCategoryValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PlantTriggered"]["category"]> = ["covert_communication", "scorer_tampering", "transcript_tampering", "deceiving_operator", "evading_checks", "collective_over_own_task", "drift", "loop_or_confusion", "fabricated_completion", "constraint_violation", "eval_awareness", "alerting_operator", "egress_attempt", "privilege_escalation", "monitor_manipulation"];
 export const plantTriggeredTierValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PlantTriggered"]["tier"]> = ["touched", "considered", "claimed", "used"];
 export const procOutputStreamValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ProcOutput"]["stream"]> = ["stdout", "stderr", "pipe", "fifo"];
