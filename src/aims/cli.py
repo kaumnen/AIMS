@@ -2059,6 +2059,7 @@ def ui(
     """Serve the control plane and the UI, with a local runner."""
     import asyncio
     import logging
+    import signal
 
     from aims.config import ConfigError, project_file
     from aims.server.serve import ServeError, UiOptions, serve, server_dir
@@ -2100,7 +2101,15 @@ def ui(
         keep_days=keep_days,
     )
     try:
-        code = asyncio.run(serve(options))
+        with asyncio.Runner() as aio:
+            try:
+                code = aio.run(serve(options))
+            finally:
+                # The stop is over and the exit code says how it went. serve() has taken its
+                # handlers out, so a late Ctrl-C, SIGTERM or hangup would end the process with
+                # a signal as asyncio closes and Python exits.
+                for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+                    signal.signal(sig, signal.SIG_IGN)
     except ServeError as e:
         _echo(f"error: {e}", err=True)
         raise typer.Exit(EXIT_FAILED) from None

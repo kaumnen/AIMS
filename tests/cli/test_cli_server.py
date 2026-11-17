@@ -671,6 +671,33 @@ def test_aims_ui_with_a_data_dir_keeps_its_runner_inside_it(
     assert [o.runner_data for o in served] == [None, tmp_path / "runner"]
 
 
+def test_aims_ui_ignores_a_stop_once_its_own_stop_is_over(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """serve() takes its handlers out as it returns. A late signal as asyncio closes, or as
+    Python exits, would end the process with that signal in place of the exit code."""
+    signals = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+    held: list[AsyncIterator[None]] = []
+    seen: list[list[object]] = []
+
+    async def closed_by_asyncio() -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            seen.append([signal.getsignal(sig) for sig in signals])
+
+    async def serve(o: UiOptions) -> int:
+        held.append(closed_by_asyncio())
+        await anext(held[0])
+        return 0
+
+    monkeypatch.setattr("aims.server.serve.serve", serve)
+    r = CliRunner().invoke(app, ["ui", "--no-open"])
+    assert r.exit_code == 0, r.output
+    assert seen == [[signal.SIG_IGN] * 3]
+    assert [signal.getsignal(sig) for sig in signals] == [signal.SIG_IGN] * 3
+
+
 async def test_aims_ui_hands_its_runner_the_folder_for_its_runs(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1831,6 +1858,22 @@ async def test_aims_ui_answers_on_the_address_it_binds(tmp_path: Path) -> None:
             assert (await c.get("/api/health")).status_code == 401
         proc.send_signal(signal.SIGTERM)
         await proc.wait()
+
+
+async def test_a_ctrl_c_after_aims_ui_closed_leaves_its_exit_code(tmp_path: Path) -> None:
+    async with ui_process(tmp_path, "--no-runner") as (proc, _):
+        data = tmp_path / "server"
+        proc.send_signal(signal.SIGINT)
+        # SQLite removes the WAL file as the database closes, the last step of the stop
+        await until(lambda: not (data / "server.sqlite-wal").exists(), 30)
+        await asyncio.sleep(0.05)
+        # one more only: a third stop signal before the close ends quits at once
+        with contextlib.suppress(ProcessLookupError):
+            proc.send_signal(signal.SIGINT)
+        assert proc.stderr is not None
+        async with asyncio.timeout(30):
+            err = (await proc.stderr.read()).decode()
+            assert await proc.wait() == 0, err
 
 
 @pytest.mark.docker

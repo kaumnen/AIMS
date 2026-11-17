@@ -77,6 +77,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - Scoring reports a `rule` plant whose rule does not compile as an error. It stopped with a traceback.
 - Scoring reads the rule of a stored `rule` plant as stored. A key that a later AIMS drops no longer stops it.
 - The live view of a running run reconnects when a proxy error ends its stream.
+- `aims ui` ignores Ctrl-C, SIGTERM and hangups once its stop is over. A late second Ctrl-C ended it with code 130 or by SIGINT.
 
 ### Security
 
