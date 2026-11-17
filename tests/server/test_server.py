@@ -238,8 +238,6 @@ async def test_healthz_needs_no_token_and_tells_nothing_else(cp: CP) -> None:
         assert (await anon.get("/healthz", headers={"Host": "evil.example"})).status_code == 400
         assert (await anon.post("/healthz")).status_code == 405
         assert (await anon.get("/api/health")).status_code == 401
-        spec = (await anon.get("/api/openapi.json")).json()
-        assert "/healthz" not in spec["paths"]
     async with cp.client(cp.viewer) as viewer:
         assert (await viewer.get("/api/health")).json()["ok"] is True
     server, task, port = await start(create_app(cp.state, hosts=("server",), dispatcher=False))
@@ -249,6 +247,24 @@ async def test_healthz_needs_no_token_and_tells_nothing_else(cp: CP) -> None:
             assert (r.status_code, r.json()) == (200, {"ok": True})
     finally:
         await stop(server, task)
+
+
+async def test_the_api_schema_needs_a_viewer_token(cp: CP, tmp_path: Path) -> None:
+    async with cp.client() as anon:
+        r = await anon.get("/api/openapi.json")
+        assert (r.status_code, r.json()["code"]) == (401, "unauthenticated")
+        assert __version__ not in r.text
+        assert all(__version__ not in v for v in r.headers.values())
+    async with cp.client(cp.runner) as runner:
+        assert (await runner.get("/api/openapi.json")).status_code == 403
+    for token in (cp.viewer, cp.operator):
+        async with cp.client(token) as c:
+            spec = (await c.get("/api/openapi.json")).json()
+            assert spec["info"]["version"] == __version__
+            assert "/healthz" not in spec["paths"]
+            assert "/api/openapi.json" not in spec["paths"]
+    async with control_plane(tmp_path / "open", auth=False) as open_cp, open_cp.client() as c:
+        assert (await c.get("/api/openapi.json")).status_code == 200
 
 
 async def test_a_session_cookie_needs_the_same_origin_to_act(cp: CP) -> None:
@@ -2409,7 +2425,7 @@ async def sse_inflight(cp: CP, run_id: str) -> list[Any]:
 
 
 async def test_openapi_lists_every_payload_and_the_stream_messages(cp: CP) -> None:
-    async with cp.client() as c:
+    async with cp.client(cp.viewer) as c:
         spec = (await c.get("/api/openapi.json")).json()
     schemas = spec["components"]["schemas"]
     assert "run.started" in schemas["EventTypes"]["properties"]

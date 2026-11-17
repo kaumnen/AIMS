@@ -788,7 +788,7 @@ async def test_a_monitor_run_lists_by_origin_and_takes_no_sweep(
 
 
 async def test_openapi_documents_the_monitor_surface(cp: CP) -> None:
-    async with cp.client() as c:
+    async with cp.client(cp.viewer) as c:
         spec = (await c.get("/api/openapi.json")).json()
     paths = spec["paths"]
     assert paths["/api/runs/{run_id}/flags"]["get"]["operationId"] == "list_flags"

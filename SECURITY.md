@@ -65,11 +65,12 @@ Docker Compose runs both on one host.
 
 ## Access
 
-Every API call needs a token. Each token has one role. Three calls need none:
+Every API call needs a token. Each token has one role. Two calls need none:
 
 - Sign-in. It takes a token or a launch code.
-- `GET /api/openapi.json`, the API schema. It names the AIMS version.
 - `GET /healthz`. It answers only `{"ok": true}`, for container healthchecks.
+
+The API schema at `GET /api/openapi.json` needs a viewer or operator token.
 
 | Role | Can |
 | --- | --- |

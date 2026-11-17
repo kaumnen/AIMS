@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, get_args
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.routing import APIRoute, iter_route_contexts
@@ -35,7 +35,7 @@ from aims.server import (
     stream,
 )
 from aims.server.audit import AuditLog
-from aims.server.auth import HEADERS, SAFE, SecurityHeaders
+from aims.server.auth import HEADERS, SAFE, SecurityHeaders, require
 from aims.server.codings import allowed
 from aims.server.db import Job
 from aims.server.files import Sources
@@ -83,7 +83,7 @@ def create_app(
         title="AIMS",
         version=__version__,
         generate_unique_id_function=operation_id,
-        openapi_url="/api/openapi.json",
+        openapi_url=None,
         docs_url=None,
         redoc_url=None,
         lifespan=lifespan,
@@ -112,6 +112,12 @@ def create_app(
     app.include_router(stream.router)
     app.include_router(runner_api.router)
     app.add_api_route("/healthz", healthz, include_in_schema=False)
+    app.add_api_route(
+        "/api/openapi.json",
+        schema,
+        include_in_schema=False,
+        dependencies=[Depends(require("viewer"))],
+    )
     app.add_middleware(AuditLog, db=state.db)
     app.add_middleware(BodyLimit)
     app.add_middleware(SecurityHeaders)
@@ -124,6 +130,11 @@ def create_app(
 async def healthz() -> JSONResponse:
     """For a container healthcheck. It needs no token and tells nothing else."""
     return JSONResponse({"ok": True})
+
+
+async def schema(request: Request) -> JSONResponse:
+    """The API schema, for viewers and operators. It names the version, so it needs a token."""
+    return JSONResponse(request.app.openapi())
 
 
 def _stamp(root: Path | None) -> int | None:

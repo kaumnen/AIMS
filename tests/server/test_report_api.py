@@ -189,7 +189,7 @@ async def test_a_base_unfit_for_links_gives_plain_seqs(cp: CP, run_id: str) -> N
 
 
 async def test_the_schema_types_both_formats(cp: CP) -> None:
-    async with cp.client() as c:
+    async with cp.client(cp.viewer) as c:
         spec = (await c.get("/api/openapi.json")).json()
     op = spec["paths"]["/api/runs/{run_id}/report"]["get"]
     content = op["responses"]["200"]["content"]
