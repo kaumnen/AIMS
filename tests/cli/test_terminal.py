@@ -92,6 +92,29 @@ async def test_the_second_stop_warns_and_the_third_quits(
             loop.remove_signal_handler(handled)
 
 
+async def test_stops_that_cannot_quit_never_end_the_process(quits: list[bool]) -> None:
+    seen: list[str] = []
+    loop = asyncio.get_running_loop()
+    on_stop(
+        loop,
+        lambda: seen.append("stop"),
+        say=seen.append,
+        last=lambda: seen.append("last"),
+        quits=False,
+    )
+    try:
+        for n in range(1, 5):
+            os.kill(os.getpid(), signal.SIGTERM)
+            async with asyncio.timeout(5):
+                while seen.count("stop") < n:  # noqa: ASYNC110
+                    await asyncio.sleep(0.01)
+        assert seen == ["stop"] * 4
+        assert quits == []
+    finally:
+        for handled in (signal.SIGINT, signal.SIGTERM):
+            loop.remove_signal_handler(handled)
+
+
 async def test_a_hangup_does_not_count_as_a_stop(quits: list[bool]) -> None:
     stops: list[str] = []
     loop = asyncio.get_running_loop()

@@ -146,13 +146,15 @@ def on_stop(
     signals: Sequence[signal.Signals] = (signal.SIGINT, signal.SIGTERM),
     say: Callable[[str], object] | None = _say,
     last: Callable[[], object] | None = None,
+    quits: bool = True,
 ) -> None:
     """Handle Ctrl-C and SIGTERM: each calls `then` on the loop. The second also gives AGAIN
     to `say`. The third calls `last` and ends the process through quit_now, so a cleanup that
     hangs needs no SIGKILL. That count is kept where Python runs signal handlers and not on
     the loop, as a cleanup that blocks the loop would never run a callback. Signals of one
     kind sent with no gap can arrive as one, so a supervisor that must end the process sends
-    SIGKILL. The handlers stay in until the loop closes. Main thread only."""
+    SIGKILL. With `quits` false no count of signals ends the process, and AGAIN is not said.
+    The handlers stay in until the loop closes. Main thread only."""
     count = 0
     told = 0
 
@@ -160,13 +162,13 @@ def on_stop(
         nonlocal told
         told += 1
         then()
-        if told == QUIT_AT - 1 and say is not None:
+        if told == QUIT_AT - 1 and say is not None and quits:
             say(AGAIN)
 
     def on_signal(signum: int, frame: object) -> None:
         nonlocal count
         count += 1
-        if count >= QUIT_AT:
+        if quits and count >= QUIT_AT:
             if last is not None:
                 with contextlib.suppress(Exception):
                     last()

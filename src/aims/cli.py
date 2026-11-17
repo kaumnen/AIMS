@@ -2283,12 +2283,16 @@ def runner_cmd(
                 current.cancel()
                 say("killing now")
 
-        # `aims ui` says what a third Ctrl-C does for the runner it started
+        # `aims ui` says what a third Ctrl-C does for the runner it started, and on its own
+        # third it kills the runner. So this runner never quits on a count of SIGTERMs: one
+        # stop sent to the whole job reaches it again through `aims ui`, twice under `uv run`,
+        # which passes SIGTERM on too, and a quit then would skip removing its helpers.
         on_stop(
             loop,
             on_signal,
             signals=(signal.SIGTERM,) if by_ui else (signal.SIGINT, signal.SIGTERM),
             say=None if by_ui else say,
+            quits=not by_ui,
         )
         # `aims ui` passes a hangup on as one SIGTERM, as it does Ctrl-C. On its own the runner
         # lets a hangup start a stop but never add to one: nobody is left to press Ctrl-C.

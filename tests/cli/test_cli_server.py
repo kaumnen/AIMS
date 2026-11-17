@@ -2043,6 +2043,59 @@ async def test_a_third_ctrl_c_quits_aims_ui_at_once_with_its_runner(tmp_path: Pa
         await backend.close()
 
 
+@pytest.mark.docker
+async def test_a_stop_sent_to_the_job_and_passed_on_still_removes_the_runners_helpers(
+    tmp_path: Path,
+) -> None:
+    if not os.environ.get("AIMS_REQUIRE_DOCKER"):
+        try:
+            backend = await DockerBackend.open(audit="snapshot")
+            await backend.close()
+        except Exception as e:
+            pytest.skip(f"Docker is not available: {e}")
+    runner = 0
+    try:
+        async with ui_process(tmp_path, "--audit", "snapshot", session=True) as (proc, url):
+            base = url.partition("/#code=")[0]
+            token = json.loads((tmp_path / "server" / "server.json").read_text())["operator"]
+            async with httpx2.AsyncClient(
+                base_url=base, headers={"Authorization": f"Bearer {token}"}, trust_env=False
+            ) as c:
+                async with asyncio.timeout(120):
+                    while True:
+                        runners = (await c.get("/api/runners")).json()
+                        if runners and runners[0]["connected"]:
+                            break
+                        await asyncio.sleep(0.2)
+            children = await asyncio.create_subprocess_exec(
+                "pgrep", "-P", str(proc.pid), stdout=asyncio.subprocess.PIPE
+            )
+            runner = int((await children.communicate())[0].split()[0])
+            assert await helpers_of(runner)
+            # One stop of a job run through `uv run`: SIGTERM to every process of the job,
+            # then uv passes its own on to `aims ui`. The runner hears it three times: from
+            # the job and twice through `aims ui`.
+            os.killpg(proc.pid, signal.SIGTERM)
+            # a gap, so the two do not arrive as one, short enough to land in the stop
+            await asyncio.sleep(0.02)
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(proc.pid, signal.SIGTERM)
+            assert proc.stderr is not None
+            async with asyncio.timeout(120):
+                err = (await proc.stderr.read()).decode()
+                await proc.wait()
+        assert "quit at once and skipped the cleanup" not in err
+        assert await helpers_of(runner) == [], err
+        runner = 0
+    finally:
+        if runner:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(runner, signal.SIGKILL)
+            # what the next start does: it removes what the killed runner left
+            backend = await DockerBackend.open(audit="snapshot")
+            await backend.close()
+
+
 async def helpers_of(pid: int) -> list[str]:
     """The containers AIMS process `pid` made on this host."""
     docker = aiodocker.Docker()

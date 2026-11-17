@@ -79,6 +79,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - The live view of a running run reconnects when a proxy error ends its stream.
 - `aims ui` ignores Ctrl-C, SIGTERM and hangups once its stop is over. A late second Ctrl-C ended it with code 130 or by SIGINT.
 - The local runner of `aims ui` holds SIGINT, SIGTERM and SIGHUP until its handlers are in. A stop in its first seconds killed it. A stop that early now ends it before it starts anything.
+- The local runner of `aims ui` no longer quits at once on a third SIGTERM. One SIGTERM sent to the whole job reached it three times under `uv run`: from the job, then twice through `aims ui`, since uv passes SIGTERM on as well. The runner then quit without its cleanup, so its tracer and sampler containers kept running until the next start. A third stop of `aims ui` still kills the runner.
 - Command help wraps each paragraph to the terminal width. Lines broke where the source broke them.
 - `aims control` asks again while the control plane cannot show a run yet. A run whose first events were still arriving got a 503 `not indexed yet; ask again soon`. The command then exited 1 as if it had been refused. It now waits that out within `--wait`. When the wait ends first, it says why.
 - An agent stopped while it logged its start still logs its end. A kill or cancel that came in that moment left `agent.started` with no `agent.finished`. Its start could even be written after the run had ended.
