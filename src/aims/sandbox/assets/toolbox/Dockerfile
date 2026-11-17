@@ -1,4 +1,4 @@
-FROM alpine:3.22@sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f AS build
+FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf AS build
 RUN apk add --no-cache gcc musl-dev
 COPY exec.c sample.c snap.c /src/
 RUN gcc -static -Os -s -Wall -Wextra -Werror -o /aims-exec /src/exec.c \
