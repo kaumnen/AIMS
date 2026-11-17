@@ -301,19 +301,12 @@ class ScriptedAgent:
         reason: AgentEnd = "error"
         detail: str | None = None
         answer: str | None = None
-        await self._emit(
-            AgentStarted(
-                profile=self.profile.name,
-                model=self.profile.model,
-                backend=None,
-                tools=list(self.tools),
-                system=await self.store.content(self.run_id, ""),
-                budget=self.config.budget.model_dump(mode="json"),
-                compaction=None
-                if self.config.compaction is None
-                else self.config.compaction.model_dump(mode="json"),
-            )
-        )
+        try:
+            # Logged whole even when a cancel lands meanwhile, so the agent's end follows it.
+            await settle(self._log_start())
+        except asyncio.CancelledError:
+            await self._end_cancelled(start)
+            raise
         try:
             reason, detail = "no_submit", "the steps finished"
             for n, step in enumerate(self.script, 1):
@@ -333,15 +326,34 @@ class ScriptedAgent:
         except AgentKilled as e:
             reason, detail = "killed", str(e) or None
         except asyncio.CancelledError:
-            if self.killed is not None:
-                await settle(self._finish(start, "killed", self.killed))
-            else:
-                await settle(self._finish(start, "cancelled", None))
+            await self._end_cancelled(start)
             raise
         except Exception as e:
             log.exception("scripted agent %s failed", self.id)
             reason, detail = "error", f"{type(e).__name__}: {e}"
         return await settle(self._finish(start, reason, detail, answer))
+
+    async def _log_start(self) -> None:
+        await self._emit(
+            AgentStarted(
+                profile=self.profile.name,
+                model=self.profile.model,
+                backend=None,
+                tools=list(self.tools),
+                system=await self.store.content(self.run_id, ""),
+                budget=self.config.budget.model_dump(mode="json"),
+                compaction=None
+                if self.config.compaction is None
+                else self.config.compaction.model_dump(mode="json"),
+            )
+        )
+
+    async def _end_cancelled(self, start: float) -> None:
+        """Log the end of an agent cancelled while it ran, killed when a kill cancelled it."""
+        if self.killed is not None:
+            await settle(self._finish(start, "killed", self.killed))
+        else:
+            await settle(self._finish(start, "cancelled", None))
 
     async def _again(self, n: int, step: ScriptStep) -> End | None:
         """Take step `n` again where the origin's order has it."""

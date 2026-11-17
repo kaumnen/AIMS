@@ -24,6 +24,7 @@ from aims.cli import app
 from aims.events import (
     AgentFinished,
     AgentHeld,
+    AgentStarted,
     Event,
     ExecFinished,
     LocalEventStore,
@@ -870,6 +871,41 @@ async def test_a_scripted_agent_that_starts_during_a_pause_holds_until_it_is_let
         assert finished.reason == ("killed" if then == "kill" else "cancelled")
         assert "echo b" not in box.commands
     assert box.refused == []
+
+
+@pytest.mark.parametrize("then", ["kill", "cancel"])
+async def test_a_scripted_agent_stopped_while_its_start_is_logged_still_logs_its_end(
+    store: LocalEventStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, then: Any
+) -> None:
+    backend = FreezeBoxes()
+    writing, release = asyncio.Event(), asyncio.Event()
+    append = store._append
+
+    async def held(run_id: str, drafts: Any) -> Any:
+        if any(isinstance(d.payload, AgentStarted) for d in drafts):
+            writing.set()
+            await release.wait()
+        return await append(run_id, drafts)
+
+    monkeypatch.setattr(store, "_append", held)
+    scripts = steps(a=[{"run": "echo a"}])
+    runner = Runner(bench(store, Script(), backend), scenario(tmp_path), Options(scripts=scripts))
+    task = asyncio.create_task(runner.run())
+    async with asyncio.timeout(5):
+        await writing.wait()
+    agent = runner._agent_tasks["a"]
+    stop = asyncio.create_task(runner.operate(then))
+    await until(lambda: agent.cancelling() > 0 or agent.done())
+    release.set()
+    async with asyncio.timeout(5):
+        await stop
+        result = await task
+
+    assert result.run_id is not None
+    assert len(await of(store, result.run_id, AgentStarted, "agent.started")) == 1
+    (finished,) = await of(store, result.run_id, AgentFinished, "agent.finished")
+    assert finished.reason == ("killed" if then == "kill" else "cancelled")
+    assert "echo a" not in backend.boxes["a"].commands
 
 
 @pytest.mark.timing

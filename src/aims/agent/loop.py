@@ -360,20 +360,12 @@ class Agent:
         start = self._start = time.monotonic()
         self._paused_base = self.clock.paused_s(start)
         self._was_paused = self.clock.paused
-        await self._emit(
-            AgentStarted(
-                profile=self.profile.name,
-                model=self.profile.model,
-                backend=self.profile.backend,
-                tools=list(self.tools),
-                system=await self.store.content(self.run_id, self.texts.system),
-                budget=self.config.budget.model_dump(mode="json"),
-                compaction=None
-                if self.config.compaction is None
-                else self.config.compaction.model_dump(mode="json"),
-                fork_at=None if self.replay is None else self.replay.fork_at,
-            )
-        )
+        try:
+            # Logged whole even when a cancel lands meanwhile, so the agent's end follows it.
+            await settle(self._log_start())
+        except asyncio.CancelledError:
+            await self._end_cancelled(start)
+            raise
         reason: AgentEnd = "error"
         detail: str | None = None
         answer: str | None = None
@@ -399,15 +391,35 @@ class Agent:
         except AgentKilled as e:
             reason, detail = "killed", str(e) or None
         except asyncio.CancelledError:
-            if self.killed is not None:
-                await self._end(start, "killed", self.killed, None)
-            else:
-                await self._end(start, "cancelled", None, None)
+            await self._end_cancelled(start)
             raise
         except Exception as e:
             log.exception("agent %s failed", self.id)
             reason, detail = "error", f"{type(e).__name__}: {e}"
         return await self._end(start, reason, detail, answer)
+
+    async def _log_start(self) -> None:
+        await self._emit(
+            AgentStarted(
+                profile=self.profile.name,
+                model=self.profile.model,
+                backend=self.profile.backend,
+                tools=list(self.tools),
+                system=await self.store.content(self.run_id, self.texts.system),
+                budget=self.config.budget.model_dump(mode="json"),
+                compaction=None
+                if self.config.compaction is None
+                else self.config.compaction.model_dump(mode="json"),
+                fork_at=None if self.replay is None else self.replay.fork_at,
+            )
+        )
+
+    async def _end_cancelled(self, start: float) -> None:
+        """Log the end of an agent cancelled while it ran, killed when a kill cancelled it."""
+        if self.killed is not None:
+            await self._end(start, "killed", self.killed, None)
+        else:
+            await self._end(start, "cancelled", None, None)
 
     async def _end(
         self, start: float, reason: AgentEnd, detail: str | None, answer: str | None

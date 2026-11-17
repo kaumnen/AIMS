@@ -25,6 +25,7 @@ from aims.events import (
     AgentHeld,
     AgentInput,
     AgentReport,
+    AgentStarted,
     AgentStep,
     ExecFinished,
     LocalEventStore,
@@ -354,6 +355,32 @@ async def test_a_cancelled_agent_whose_end_cannot_be_logged_still_raises_the_can
     assert ends == ["cancelled", "error"]
     (logged,) = await payloads(store, run_id, AgentFinished)
     assert (logged.reason, logged.detail) == ("error", "OSError: disk full")
+
+
+async def test_an_agent_cancelled_while_its_start_is_logged_still_logs_its_end(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent, run_id = await make_agent(store, Script(call("bash", command="true")))
+    writing, release = asyncio.Event(), asyncio.Event()
+    append = store._append
+
+    async def held(rid: str, drafts: Any) -> Any:
+        if any(isinstance(d.payload, AgentStarted) for d in drafts):
+            writing.set()
+            await release.wait()
+        return await append(rid, drafts)
+
+    monkeypatch.setattr(store, "_append", held)
+    task = asyncio.create_task(agent.run())
+    async with asyncio.timeout(5):
+        await writing.wait()
+    task.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert len(await payloads(store, run_id, AgentStarted)) == 1
+    (finished,) = await payloads(store, run_id, AgentFinished)
+    assert (finished.reason, finished.steps) == ("cancelled", 0)
 
 
 async def test_step_and_cost_budgets_end_the_agent(store: LocalEventStore) -> None:
