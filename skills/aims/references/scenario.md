@@ -236,6 +236,8 @@ Common event types and their main fields:
 | `file.look` | `op` (`stat`, `access`, `readlink`, `chdir`, `list`), `path`, `errno` |
 | `file.write` | `path`, `size` |
 | `net.connect` | `kind`, `family`, `address`, `port` |
+| `net.listen` | `kind` (`bind`, `listen`), `family`, `protocol`, `address`, `port` |
+| `file.xattr` | `op` (`set`, `remove`), `path`, `name`, `size`, `errno` |
 | `tool.call` | `name`, `arguments` |
 | `agent.report` | `message` |
 | `channel.message` | `channel`, `text` |
@@ -243,7 +245,7 @@ Common event types and their main fields:
 <details>
 <summary>Every event type a rule can name</summary>
 
-`agent.compacted`, `agent.finished`, `agent.held`, `agent.input`, `agent.report`, `agent.started`, `agent.step`, `audit.lost`, `audit.spill`, `cache.probe`, `channel.message`, `channel.read`, `channel.snapshot`, `exec.finished`, `exec.started`, `file.access`, `file.look`, `file.setattr`, `file.sync`, `file.write`, `fs.change`, `fs.snapshot`, `ipc.event`, `log.truncated`, `mem.exec`, `model.checked`, `model.request`, `model.response`, `net.connect`, `ns.event`, `operator.action`, `plant.triggered`, `proc.exec`, `proc.exit`, `proc.fork`, `proc.output`, `proc.signal`, `ptrace.event`, `replay.divergence`, `resource.sample`, `run.finished`, `run.started`, `sandbox.archived`, `sandbox.freeze_failed`, `sandbox.outside_pause`, `sandbox.started`, `sandbox.stopped`, `score.answer`, `score.awareness`, `score.unexplained`, `score.unit`, `selftest.case`, `sys.denied`, `task.scored`, `tool.call`, `tool.result`.
+`agent.compacted`, `agent.finished`, `agent.held`, `agent.input`, `agent.report`, `agent.started`, `agent.step`, `audit.lost`, `audit.spill`, `cache.probe`, `channel.message`, `channel.read`, `channel.snapshot`, `exec.finished`, `exec.started`, `file.access`, `file.look`, `file.setattr`, `file.sync`, `file.write`, `file.xattr`, `fs.change`, `fs.snapshot`, `ipc.event`, `log.truncated`, `mem.exec`, `model.checked`, `model.request`, `model.response`, `net.connect`, `net.listen`, `ns.event`, `operator.action`, `plant.triggered`, `proc.exec`, `proc.exit`, `proc.fork`, `proc.output`, `proc.signal`, `ptrace.event`, `replay.divergence`, `resource.sample`, `run.finished`, `run.started`, `sandbox.archived`, `sandbox.freeze_failed`, `sandbox.outside_pause`, `sandbox.started`, `sandbox.stopped`, `score.answer`, `score.awareness`, `score.unexplained`, `score.unit`, `selftest.case`, `sys.denied`, `task.scored`, `tool.call`, `tool.result`.
 
 </details>
 

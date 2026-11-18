@@ -7,7 +7,7 @@ from aims.sandbox.trace import ARGV_CAP, ENV_CAP, LOOK_BUDGET, PARSERS, STRLEN, 
 from aims.sandbox.tracer import LOOKS, TRACE
 
 TAGS = set("RFBEXOWAUNCPD") | set("VGT") | set("Z") | set("Q") | set("IKSMHJL") | set("Y")
-TAGS |= set("abcdefghi") | set("rt") | set("o") | set("jklm")
+TAGS |= set("abcdefghi") | set("rt") | set("o") | set("jklm") | set("nquwxy")
 TYPES = {
     "run.started",
     "run.finished",
@@ -32,8 +32,10 @@ TYPES = {
     "file.sync",
     "file.setattr",
     "file.look",
+    "file.xattr",
     "fs.snapshot",
     "net.connect",
+    "net.listen",
     "sys.denied",
     "ipc.event",
     "ptrace.event",
@@ -192,7 +194,7 @@ def test_overlay_filters_match_the_script() -> None:
         for line in script.splitlines()
         if line.startswith(("fentry:vmlinux:security_inode_", "fentry:vmlinux:security_file_open"))
     ]
-    assert len(hooks) == 12
+    assert len(hooks) == 16
     assert all("curtask->cred == curtask->real_cred" in line for line in hooks)
 
 

@@ -21,6 +21,7 @@ from aims.sandbox.base import (
     File,
     Fork,
     Ipc,
+    Listen,
     Look,
     LookSkip,
     Lost,
@@ -34,6 +35,7 @@ from aims.sandbox.base import (
     Signal,
     Stamp,
     Sync,
+    Xattr,
 )
 from aims.sandbox.trace import (
     ARGV_CAP,
@@ -46,6 +48,7 @@ from aims.sandbox.trace import (
     ArgvChunk,
     Bprm,
     Context,
+    Deeper,
     Delete,
     Dropped,
     EnvChunk,
@@ -66,8 +69,12 @@ from aims.sandbox.trace import (
     RawMmap,
     RawSetattr,
     RawSync,
+    RawXattr,
     Ready,
     Refused,
+    RefusedChown,
+    RefusedNode,
+    RefusedXattr,
     Rename,
     Sequence,
     Symlink,
@@ -1306,6 +1313,197 @@ async def test_tracer_resolves_new_records() -> None:
         File(10, "symlink", "/work/s", "/etc/shadow", at=s[9]),
         File(10, "symlink", "/tmp/long", "a" * (STRLEN - 4), partial=True, at=s[10]),
         File(10, "link", "/tmp/h", "/work/f", at=s[11]),
+    ]
+    await tracer.stop()
+
+
+def test_parse_binds_and_listens() -> None:
+    assert parse(line("n 10 b 4 6 127.0.0.1 8080")) == Listen(
+        10, "bind", "inet", "tcp", "127.0.0.1", 8080, at=PARSED
+    )
+    assert parse(line("n 10 b 6 17 :: 0")) == Listen(10, "bind", "inet6", "udp", "::", 0, at=PARSED)
+    # A listen on a socket never bound holds port 0 until the kernel picks one.
+    assert parse(line("n 10 l 4 6 0.0.0.0 0")) == Listen(
+        10, "listen", "inet", "tcp", "0.0.0.0", None, at=PARSED
+    )
+    assert parse(line("n 10 l 4 132 10.0.0.1 9")) == Listen(
+        10, "listen", "inet", None, "10.0.0.1", 9, at=PARSED
+    )
+    assert parse(line("I 10 l 1 " + hx(b"\0hidden"))) == Ipc(
+        10, "listen", "unix", "@hidden", at=PARSED
+    )
+    for bad in ("n 10 c 4 6 a 1", "n 10 b 5 6 a 1", "n 10 b 4 6 a", "n 10 b 4 6 a x"):
+        assert isinstance(parse(line(bad)), Garbled), bad
+
+
+def test_a_unix_path_name_ends_at_its_nul() -> None:
+    # A caller that passes the whole sockaddr_un leaves its own memory after the name.
+    junk = b"/var/run/nscd/socket\0\0\x8c\xffjunk"
+    assert parse(line("I 10 c 1 " + hx(junk))) == Ipc(
+        10, "connect", "unix", "/var/run/nscd/socket", at=PARSED
+    )
+    assert parse(line("I 10 b 1 " + hx(b"\0a\0b\0"))) == Ipc(
+        10, "bind", "unix", "@a\x00b", at=PARSED
+    )
+
+
+def test_parse_refused_mknod_and_chown() -> None:
+    depth, text = hexwalk("work")
+    work = Walk(64, (b"work", b"/"))
+    assert parse(line(f"u 10 30 4534 64 -1 {NOWALK} /etc/fifo")) == RefusedNode(
+        10, 30, 0o10666, Named("/etc/fifo", None), at=PARSED
+    )
+    assert parse(line(f"u 10 13 33188 64 {depth} {text} f")) == RefusedNode(
+        10, 13, 0o100644, Named("f", work), at=PARSED
+    )
+    assert parse(line(f"q 10 30 1000 -1 64 -1 {NOWALK} /etc/passwd")) == RefusedChown(
+        10, 30, 1000, -1, Named("/etc/passwd", None), at=PARSED
+    )
+    # fchownat with an empty name changes the file the descriptor names.
+    assert parse(line(f"q 10 1 0 0 64 {depth} {text} ")) == RefusedChown(
+        10, 1, 0, 0, Named("", work), at=PARSED
+    )
+    owner_depth, owner_text = walk("passwd", "etc")
+    owned = parse(line(f"t 10 o 30 1000 -1 0 0 0 64 {owner_depth} {owner_text}"))
+    assert isinstance(owned, RawSetattr)
+    assert (owned.valid, owned.uid, owned.gid, owned.errno) == (2 | 64, 1000, 0, 30)
+    for bad in (
+        f"u 10 30 x 64 -1 {NOWALK} /a",
+        "u 10 30 4534 64 -1",
+        f"q 10 30 1 1 64 -1 {NOWALK}",
+        "q 10 30 1 1 64 -1",
+    ):
+        assert isinstance(parse(line(bad)), Garbled), bad
+
+
+def test_parse_xattr_changes() -> None:
+    depth, text = walk("f", "work")
+    name = hx(b"user.secret".ljust(256, b"\0"))
+    work_f = Walk(64, (b"f", b"work", b"/"))
+    assert parse(line(f"x 10 s 100 1 {name} 64 {depth} {text}")) == RawXattr(
+        10, "set", 100, 1, "user.secret", False, work_f, at=PARSED
+    )
+    long = hx(b"user." + b"a" * 251)
+    assert parse(line(f"x 10 r 0 0 {long} 64 {depth} {text}")) == RawXattr(
+        10, "remove", 0, 0, "user." + "a" * 251, True, work_f, at=PARSED
+    )
+    hex_depth, hex_text = hexwalk("work")
+    assert parse(line(f"y 10 1 30 1 0 {name} 64 -1 {NOWALK} /etc/passwd")) == RefusedXattr(
+        10, "set", 30, 1, 0, "user.secret", False, Named("/etc/passwd", None), at=PARSED
+    )
+    # A call on a descriptor names no path: the walk is the file's.
+    assert parse(line(f"y 10 2 1 0 0 {name} 64 {hex_depth} {hex_text} ")) == RefusedXattr(
+        10,
+        "remove",
+        1,
+        0,
+        0,
+        "user.secret",
+        False,
+        Named("", Walk(64, (b"work", b"/"))),
+        at=PARSED,
+    )
+    for bad in (
+        f"x 10 z 1 0 {name} 64 {depth} {text}",
+        f"x 10 s 1 0 {name} 64 {depth}",
+        f"x 10 s 1 0 nothex 64 {depth} {text}",
+        f"y 10 3 30 1 0 {name} 64 -1 {NOWALK} /a",
+        f"y 10 1 30 1 0 {name} 64 -1",
+    ):
+        assert isinstance(parse(line(bad)), Garbled), bad
+
+
+@pytest.mark.anyio
+async def test_tracer_resolves_the_extras() -> None:
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    route = tracer.register(99, Mounts.parse(MOUNTINFO), SYSCALLS["aarch64"])
+    feed = Feed(tracer)
+    feed("R 0 999")
+    feed(f"E 10 1 1 1000 99 5 3 {hx(b'sh\0')}")
+    drain(route)
+
+    etc_depth, etc = hexwalk("etc")
+    shared_depth, shared = walk("note", "_data", "aims-r-shared", "volumes", "docker")
+    name = hx(b"user.k".ljust(256, b"\0"))
+    s = [
+        feed("n 10 l 4 6 127.0.0.1 80"),
+        feed(f"u 10 30 4534 64 {etc_depth} {etc} fifo"),
+        feed(f"u 10 30 33188 64 -1 {NOWALK} /etc/node"),
+        feed(f"q 10 30 -1 1000 64 -1 {NOWALK} /etc/hostname"),
+        feed(f"x 10 s 3 0 {name} {VDA1} {shared_depth} {shared}"),
+        feed(f"y 10 1 30 3 0 {name} 64 {etc_depth} {etc} passwd"),
+        feed(f"x 10 r 0 0 {name} {VDA1} {shared_depth} {shared}"),
+    ]
+    assert drain(route) == [
+        Listen(10, "listen", "inet", "tcp", "127.0.0.1", 80, at=s[0]),
+        Ipc(10, "fifo", path="/etc/fifo", errno=30, at=s[1]),
+        File(10, "denied", "/etc/node", errno=30, at=s[2]),
+        Setattr(10, "/etc/hostname", False, 4 | 64, None, 0, 1000, errno=30, at=s[3]),
+        Xattr(10, "set", "/shared/note", "user.k", 3, 0, at=s[4]),
+        Xattr(10, "set", "/etc/passwd", "user.k", 3, 0, 30, at=s[5]),
+        Xattr(10, "remove", "/shared/note", "user.k", at=s[6]),
+    ]
+    await tracer.stop()
+
+
+def test_parse_a_walk_continuation() -> None:
+    depth, text = walk(*(f"d{i}" for i in range(12)))
+    names = tuple(f"d{i}".encode() for i in range(12))
+    assert parse(line(f"w 10 1 {depth} {text}")) == Deeper(10, 1, Walk(0, names), at=PARSED)
+    depth, text = walk("d1", "work")
+    assert parse(line(f"w 10 0 {depth} {text}")) == Deeper(
+        10, 0, Walk(0, (b"d1", b"work", b"/")), at=PARSED
+    )
+    for bad in (f"w 10 2 {depth} {text}", f"w 10 0 {depth}", f"w 10 0 3 {text}"):
+        assert isinstance(parse(line(bad)), Garbled), bad
+
+
+def test_a_walk_cut_inside_a_volume_maps_to_its_mount() -> None:
+    mounts = Mounts.parse(MOUNTINFO)
+    deep = tuple(f"d{i}".encode() for i in range(9, 0, -1))
+    assert mounts.resolve(Walk(VDA1, (*deep, b"_data", b"aims-r-a1-work", b"volumes"))) == (
+        "/work/d1/d2/d3/d4/d5/d6/d7/d8/d9",
+        False,
+    )
+    # One name is not enough: a folder called _data inside the volume would pass for it.
+    assert mounts.resolve(Walk(VDA1, (b"f", b"_data"))) == (".../_data/f", True)
+    # Nor is a volume of another filesystem.
+    assert mounts.resolve(Walk(TMP, (b"f", b"_data", b"aims-r-a1-work"))) == (
+        ".../aims-r-a1-work/_data/f",
+        True,
+    )
+
+
+@pytest.mark.anyio
+async def test_tracer_continues_deep_walks() -> None:
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    route = tracer.register(99, Mounts.parse(MOUNTINFO), SYSCALLS["aarch64"])
+    feed = Feed(tracer)
+    feed("R 0 999")
+    feed(f"E 10 1 1 1000 99 5 3 {hx(b'sh\0')}")
+    drain(route)
+
+    leaf = [f"d{i}" for i in range(30, 0, -1)]
+    first = walk(*leaf[:12])
+    second = walk(*leaf[12:24])
+    rest = walk(*leaf[24:], "_data", "aims-r-a1-work", "volumes", "docker")
+    path = "/work/" + "/".join(f"d{i}" for i in range(1, 31))
+    feed(f"w 10 0 {second[0]} {second[1]}")
+    feed(f"w 10 0 {rest[0]} {rest[1]}")
+    s = feed(f"U 10 {VDA1} {first[0]} {first[1]}")
+    # A continuation the next record has no walk for is dropped with it.
+    feed(f"w 10 0 {second[0]} {second[1]}")
+    signal = feed("S 10 1 15")
+    lost = feed(f"U 10 {VDA1} {first[0]} {first[1]}")
+    feed(f"w 10 0 {second[0]} {second[1]}")
+    feed(f"w 10 0 {rest[0]} {rest[1]}")
+    n = ("n", "_data", "aims-r-a1-work", "volumes", "docker")
+    moved = feed(rename(10, (VDA1, VDA1), tuple(leaf[:12]), n))
+    assert drain(route) == [
+        File(10, "delete", path, at=s),
+        Signal(10, 1, 15, at=signal),
+        File(10, "delete", ".../" + "/".join(reversed(leaf[:12])), partial=True, at=lost),
+        File(10, "rename", path, "/work/n", at=moved),
     ]
     await tracer.stop()
 

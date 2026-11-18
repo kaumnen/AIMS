@@ -335,6 +335,30 @@ class Net(Kernel):
 
 
 @dataclass(frozen=True, slots=True)
+class Listen(Kernel):
+    """A bind or listen on an inet address. `port` is None for a listen on a socket never bound."""
+
+    kind: Literal["bind", "listen"]
+    family: Literal["inet", "inet6"]
+    protocol: Literal["tcp", "udp"] | None
+    address: str
+    port: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class Xattr(Kernel):
+    """An extended attribute set or removed, or a call the kernel refused before its check."""
+
+    op: Literal["set", "remove"]
+    path: str
+    name: str
+    size: int | None = None
+    flags: int | None = None
+    errno: int | None = None
+    partial: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class Denied(Kernel):
     syscall: str
     errno: int
@@ -354,13 +378,14 @@ class Output(Kernel):
 class Ipc(Kernel):
     """A unix socket or FIFO channel, or a SysV shared memory segment."""
 
-    kind: Literal["bind", "connect", "sendto", "fifo", "shmget", "shmat"]
+    kind: Literal["bind", "listen", "connect", "sendto", "fifo", "shmget", "shmat"]
     family: Literal["unix", "sysv"] | None = None
     path: str | None = None
     key: int | None = None
     id: int | None = None
     size: int | None = None
     flags: int | None = None
+    errno: int | None = None
     partial: bool = False
 
 

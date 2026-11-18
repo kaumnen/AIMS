@@ -35,6 +35,7 @@ from aims.events import (
     FileSetattr,
     FileSync,
     FileWrite,
+    FileXattr,
     FsChange,
     FsSnapshot,
     IpcEvent,
@@ -42,6 +43,7 @@ from aims.events import (
     LossScope,
     MemExec,
     NetConnect,
+    NetListen,
     NsEvent,
     Payload,
     Proc,
@@ -75,6 +77,7 @@ from aims.sandbox.base import (
     Fork,
     Ipc,
     Kernel,
+    Listen,
     Look,
     LookSkip,
     Lost,
@@ -95,6 +98,7 @@ from aims.sandbox.base import (
     Signal,
     Sync,
     Tree,
+    Xattr,
 )
 from aims.sandbox.resources import Windows
 from aims.sandbox.trace import ENV_CAP, PIPEFS_MAGIC
@@ -1081,6 +1085,10 @@ class AuditedSandbox:
                     self._on_sync(record)
                 case Net():
                     self._on_net(record)
+                case Listen():
+                    self._on_listen(record)
+                case Xattr():
+                    self._on_xattr(record)
                 case Denied():
                     self._on_denied(record)
                 case Output():
@@ -1435,6 +1443,36 @@ class AuditedSandbox:
         )
         self._admit(owner, "other", payload)
 
+    def _on_listen(self, record: Listen) -> None:
+        owner = self._owner_of(record.pid)
+        payload = self._kernel(
+            NetListen,
+            record,
+            owner,
+            kind=record.kind,
+            family=record.family,
+            protocol=record.protocol,
+            address=record.address,
+            port=record.port,
+        )
+        self._admit(owner, "other", payload)
+
+    def _on_xattr(self, record: Xattr) -> None:
+        owner = self._owner_of(record.pid)
+        payload = self._kernel(
+            FileXattr,
+            record,
+            owner,
+            op=record.op,
+            path=record.path,
+            name=record.name,
+            size=record.size,
+            flags=record.flags,
+            errno=record.errno,
+            partial=record.partial,
+        )
+        self._admit(owner, "other", payload)
+
     def _on_denied(self, record: Denied) -> None:
         owner = self._owner_of(record.pid)
         payload = self._kernel(SysDenied, record, owner, syscall=record.syscall, errno=record.errno)
@@ -1453,6 +1491,7 @@ class AuditedSandbox:
             id=record.id,
             size=record.size,
             flags=record.flags,
+            errno=record.errno,
             partial=record.partial,
         )
         self._admit(owner, "other", payload)

@@ -10,6 +10,31 @@ const setattr = (data: Record<string, unknown>) =>
 const ptrace = (data: Record<string, unknown>) =>
   ({ type: "ptrace.event", data }) as unknown as Event;
 const look = (data: Record<string, unknown>) => ({ type: "file.look", data }) as unknown as Event;
+const of = (type: string, data: Record<string, unknown>) => ({ type, data }) as unknown as Event;
+
+test("an extended attribute change names the attribute and the file", () => {
+  expect(summary(of("file.xattr", { op: "set", name: "user.k", path: "/work/f" }))).toBe(
+    "xattr set user.k on /work/f",
+  );
+  expect(
+    summary(of("file.xattr", { op: "remove", name: "trusted.k", path: "/etc/a", errno: 30 })),
+  ).toBe("xattr remove trusted.k on /etc/a errno 30");
+});
+
+test("a bind or listen names its address and port", () => {
+  expect(
+    summary(of("net.listen", { kind: "listen", protocol: "tcp", address: "127.0.0.1", port: 80 })),
+  ).toBe("listen tcp 127.0.0.1 80");
+  expect(summary(of("net.listen", { kind: "listen", address: "0.0.0.0" }))).toBe(
+    "listen 0.0.0.0 any port",
+  );
+});
+
+test("a refused FIFO shows its errno", () => {
+  expect(summary(of("ipc.event", { kind: "fifo", path: "/etc/p", errno: 30 }))).toBe(
+    "fifo /etc/p errno 30",
+  );
+});
 
 test("a command line longer than the tracer reads says it is cut", () => {
   expect(summary(exec({ argv: ["echo", "a"] }))).toBe("echo a");

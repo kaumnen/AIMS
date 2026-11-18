@@ -21,6 +21,7 @@ from aims.events import (
     FileAccess,
     FileSetattr,
     FileWrite,
+    FileXattr,
     FsChange,
     FsSnapshot,
     IpcEvent,
@@ -28,6 +29,7 @@ from aims.events import (
     LocalEventStore,
     MemExec,
     NetConnect,
+    NetListen,
     ProcExec,
     ProcExit,
     ProcFork,
@@ -179,6 +181,160 @@ async def test_io_uring_is_refused_when_the_daemon_allows_it(
         if isinstance(p, SysDenied) and p.exec_id == result.finished.exec_id
     ]
     assert [(p.syscall, p.errno) for p in denied] == [("io_uring_setup", 1)]
+
+
+def mine(evs: list[Event], exec_id: str, kind: type[Any]) -> list[Any]:
+    return [p for p in (e.payload() for e in evs) if isinstance(p, kind) and p.exec_id == exec_id]
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_binds_and_listens_are_recorded(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    command = (
+        'python3 -c "import socket\n'
+        "s = socket.socket(); s.bind(('127.0.0.1', 8080)); s.listen()\n"
+        "six = socket.socket(socket.AF_INET6); six.bind(('::1', 0)); six.listen()\n"
+        "print(six.getsockname()[1])\n"
+        "bare = socket.socket(); bare.listen()\n"
+        "udp = socket.socket(type=socket.SOCK_DGRAM); udp.bind(('0.0.0.0', 5353))\n"
+        "u = socket.socket(socket.AF_UNIX); u.bind('/tmp/s.sock'); u.listen()\n"
+        "c = socket.socket(socket.AF_UNIX)\n"
+        "try: c.connect(b'/tmp/none\\0junk')\n"
+        'except OSError: pass"'
+    )
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+
+    assert result.finished.exit_code == 0, result.stderr
+    port = int(result.stdout)
+    evs = await events(store, run_id, "net.listen", "ipc.event")
+    listens = {
+        (p.kind, p.family, p.protocol, p.address, p.port)
+        for p in mine(evs, result.finished.exec_id, NetListen)
+    }
+    assert listens == {
+        ("bind", "inet", "tcp", "127.0.0.1", 8080),
+        ("listen", "inet", "tcp", "127.0.0.1", 8080),
+        ("bind", "inet6", "tcp", "::1", 0),
+        ("listen", "inet6", "tcp", "::1", port),
+        ("listen", "inet", "tcp", "0.0.0.0", None),
+        ("bind", "inet", "udp", "0.0.0.0", 5353),
+    }
+    unix = {(p.kind, p.path) for p in mine(evs, result.finished.exec_id, IpcEvent)}
+    assert {("bind", "/tmp/s.sock"), ("listen", "/tmp/s.sock"), ("connect", "/tmp/none")} <= unix
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_extended_attribute_changes_are_recorded(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    command = (
+        'echo x > /work/f && python3 -c "import os\n'
+        "os.setxattr('/work/f', 'user.k', b'v' * 10)\n"
+        "os.removexattr('/work/f', 'user.k')\n"
+        "for path, name in (('/etc/passwd', 'user.k'), ('/work/f', 'trusted.k')):\n"
+        "    try: os.setxattr(path, name, b'v')\n"
+        "    except OSError: pass\n"
+        "fd = os.open('/etc/hostname', os.O_RDONLY)\n"
+        "try: os.setxattr(fd, 'user.z', b'1')\n"
+        'except OSError: pass"'
+    )
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+
+    assert result.finished.exit_code == 0, result.stderr
+    evs = await events(store, run_id, "file.xattr")
+    got = {
+        (p.op, p.path, p.name, p.size, p.errno)
+        for p in mine(evs, result.finished.exec_id, FileXattr)
+    }
+    assert got == {
+        ("set", "/work/f", "user.k", 10, None),
+        ("remove", "/work/f", "user.k", None, None),
+        ("set", "/etc/passwd", "user.k", 1, 30),
+        ("set", "/work/f", "trusted.k", 1, 1),
+        ("set", "/etc/hostname", "user.z", 1, 30),
+    }
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_refused_nodes_and_owners_on_a_read_only_root_are_recorded(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    command = (
+        "mkfifo /etc/fifo; chown 1000 /etc/passwd; chgrp 1000 /etc/hostname; "
+        'python3 -c "import os\n'
+        "fd = os.open('/etc/group', os.O_RDONLY)\n"
+        "calls = (lambda: os.mknod('/etc/node', 0o100644), lambda: os.fchown(fd, 1000, -1))\n"
+        "for call in calls:\n"
+        "    try: call()\n"
+        '    except OSError: pass"; true'
+    )
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+
+    exec_id = result.finished.exec_id
+    evs = await events(store, run_id, "ipc.event", "file.access", "file.setattr")
+    fifos = {(p.kind, p.path, p.errno) for p in mine(evs, exec_id, IpcEvent) if p.kind == "fifo"}
+    assert fifos == {("fifo", "/etc/fifo", 30)}
+    denied = {(p.op, p.path, p.errno) for p in mine(evs, exec_id, FileAccess)}
+    assert ("denied", "/etc/node", 30) in denied
+    owners = {(p.path, p.uid, p.gid, p.errno) for p in mine(evs, exec_id, FileSetattr)}
+    assert owners == {
+        ("/etc/passwd", 1000, None, 30),
+        ("/etc/hostname", None, 1000, 30),
+        ("/etc/group", 1000, None, 30),
+    }
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_deep_paths_are_whole_up_to_sixty_names(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    deep = "/work/" + "/".join(f"d{i}" for i in range(1, 31))
+    deeper = "/work/" + "/".join(f"e{i}" for i in range(1, 71))
+    command = (
+        f"mkdir -p {deep} {deeper} && echo x > {deep}/f && chmod 600 {deep}/f"
+        f" && mv {deep}/f {deep}/g && rm {deep}/g && echo x > {deeper}/f && rm {deeper}/f"
+    )
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+
+    assert result.finished.exit_code == 0, result.stderr
+    exec_id = result.finished.exec_id
+    evs = await events(store, run_id, "file.access", "file.write", "file.setattr")
+    writes = {(p.path, p.partial) for p in mine(evs, exec_id, FileWrite)}
+    changes = {
+        (p.op, p.path, p.target, p.partial)
+        for p in mine(evs, exec_id, FileAccess)
+        if p.op in ("rename", "delete")
+    }
+    setattrs = {(p.path, p.partial) for p in mine(evs, exec_id, FileSetattr)}
+    assert (f"{deep}/f", False) in writes
+    assert (f"{deep}/f", False) in setattrs
+    assert ("rename", f"{deep}/f", f"{deep}/g", False) in changes
+    assert ("delete", f"{deep}/g", None, False) in changes
+    # Past sixty names the leading part is left out.
+    tail = "/".join(f"e{i}" for i in range(12, 71))
+    assert (f".../{tail}/f", True) in writes
+    assert ("delete", f".../{tail}/f", None, True) in changes
 
 
 async def test_masked_proc_files_read_empty(backend: DockerBackend, store: LocalEventStore) -> None:

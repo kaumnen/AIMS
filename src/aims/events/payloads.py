@@ -699,6 +699,20 @@ class NetConnect(KernelPayload):
     port: int | None
 
 
+class NetListen(KernelPayload):
+    """A request to bind or listen on an address. The sandbox has no network, so only its own
+    processes can reach it. A listen names the address the socket holds then: a socket that was
+    never bound has port None, and the kernel picks a port as the listen goes on."""
+
+    type = "net.listen"
+
+    kind: Literal["bind", "listen"]
+    family: Literal["inet", "inet6"]
+    protocol: Literal["tcp", "udp"] | None
+    address: str
+    port: int | None
+
+
 class SysDenied(KernelPayload):
     """A privileged syscall the kernel refused."""
 
@@ -741,13 +755,20 @@ class IpcEvent(KernelPayload):
 
     type = "ipc.event"
 
-    kind: Literal["bind", "connect", "sendto", "fifo", "shmget", "shmat"]
+    kind: Literal["bind", "listen", "connect", "sendto", "fifo", "shmget", "shmat"]
     family: Literal["unix", "sysv"] | None = None
     path: str | None = None
     key: int | None = None
     id: int | None = None
     size: int | None = None
     flags: int | None = None
+    errno: int | None = Field(
+        default=None,
+        description=(
+            "Set on a FIFO the kernel refused with EPERM, EACCES or EROFS. A listen's path is "
+            "local, as a bind's is."
+        ),
+    )
     partial: bool = False
 
 
@@ -871,10 +892,38 @@ class FileSetattr(KernelPayload):
     errno: int | None = Field(
         default=None,
         description=(
-            "Set when the kernel refused a chmod, truncate or utimes call with EPERM, EACCES or "
-            "EROFS before its setattr check. A time it would have taken from the clock is unset."
+            "Set when the kernel refused a chmod, chown, truncate or utimes call with EPERM, "
+            "EACCES or EROFS before its setattr check. A time it would have taken from the clock "
+            "is unset."
         ),
     )
+
+
+class FileXattr(KernelPayload):
+    """A request to set or remove an extended attribute. The file snapshots do not hold extended
+    attributes, so this is the only record of one.
+
+    It is recorded at the kernel's security check, so the call can still fail. `name` is the
+    attribute's name, `size` the length of a set value and `flags` its create or replace flags.
+    A `partial` path or name is not exact: it lacks its leading part or may be cut at the tracer's
+    string cap.
+    """
+
+    type = "file.xattr"
+
+    op: Literal["set", "remove"]
+    path: str
+    name: str
+    size: int | None = None
+    flags: int | None = None
+    errno: int | None = Field(
+        default=None,
+        description=(
+            "Set when the kernel refused the call with EPERM, EACCES or EROFS before its security "
+            "check, as for a read-only mount or a trusted attribute."
+        ),
+    )
+    partial: bool = False
 
 
 class NsEvent(KernelPayload):

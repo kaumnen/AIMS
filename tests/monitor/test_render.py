@@ -23,11 +23,13 @@ from aims.events import (
     FileLook,
     FileSetattr,
     FileWrite,
+    FileXattr,
     IpcEvent,
     LocalEventStore,
     MemExec,
     ModelResponse,
     NetConnect,
+    NetListen,
     Payload,
     ProcExec,
     ProcOutput,
@@ -563,6 +565,39 @@ async def test_lookups_show_once_each_with_a_miss_kept_apart(run: Run) -> None:
     ]
     assert len(shown) == 22
     assert "not shown: file.look list 6, file.look stat 1, proc.exec 1" in lines(r)
+
+
+async def test_xattr_changes_and_listens_show_their_fields(run: Run) -> None:
+    await run.preamble()
+    rows = [
+        {"cls": FileXattr, "op": "set", "path": "/shared/x", "name": "user.k", "size": 3},
+        {"cls": FileXattr, "op": "set", "path": "/shared/x", "name": "user.k", "size": 3},
+        {"cls": FileXattr, "op": "set", "path": "/etc/a", "name": "trusted.k", "errno": 30},
+        {
+            "cls": NetListen,
+            "kind": "listen",
+            "family": "inet",
+            "protocol": "tcp",
+            "address": "127.0.0.1",
+            "port": 8080,
+        },
+        {
+            "cls": NetListen,
+            "kind": "listen",
+            "family": "inet",
+            "protocol": None,
+            "address": "0.0.0.0",
+            "port": None,
+        },
+        {"cls": IpcEvent, "kind": "fifo", "path": "/etc/p", "errno": 30},
+    ]
+    await run.step(1, kernel=rows)
+    r = await run.trajectory.render(["evidence"], texts=TEXTS)
+    xattrs = [(x["op"], x["path"], x["name"], x.get("errno")) for x in of_type(r, "file.xattr")]
+    assert xattrs == [("set", "/shared/x", "user.k", None), ("set", "/etc/a", "trusted.k", 30)]
+    listens = [(x["kind"], x["address"], x.get("port")) for x in of_type(r, "net.listen")]
+    assert listens == [("listen", "127.0.0.1", 8080), ("listen", "0.0.0.0", None)]
+    assert [x.get("errno") for x in of_type(r, "ipc.event")] == [30]
 
 
 async def test_the_kernel_digest_caps_dedupes_and_keeps_marked_records(run: Run) -> None:
