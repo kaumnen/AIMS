@@ -3,8 +3,16 @@ import re
 from aims.events.schema import _registry
 from aims.sandbox.base import TOOLBOX
 from aims.sandbox.images import ASSETS
-from aims.sandbox.trace import ARGV_CAP, ENV_CAP, LOOK_BUDGET, PARSERS, STRLEN, UNGROUPED
-from aims.sandbox.tracer import LOOKS, TRACE
+from aims.sandbox.trace import (
+    ARGV_CAP,
+    ENV_CAP,
+    LOOK_BUDGET,
+    PARSERS,
+    STRLEN,
+    SYSCALLS,
+    UNGROUPED,
+)
+from aims.sandbox.tracer import LOOKS, SYSCALL_ARCH, TRACE
 
 TAGS = set("RFBEXOWAUNCPD") | set("VGT") | set("Z") | set("Q") | set("IKSMHJL") | set("Y")
 TAGS |= set("abcdefghi") | set("rt") | set("o") | set("jklm") | set("nquwxy")
@@ -105,15 +113,27 @@ def test_built_tags_and_types_match() -> None:
     assert set(_registry) == TYPES
 
 
+# The page-cache and durability records share one printf, whose letter is the code in $l.
+FD_TAGS = {"a", "b", "c", "e", "f", "g", "h"}
+
+
 def test_every_tracer_line_has_a_parser_and_a_header() -> None:
     printfs = _printfs()
-    assert {tag for tag, *_ in printfs} == TAGS
+    tags = [tag for tag, *_ in printfs]
+    assert tags.count("%c") == 1
+    assert {tag for tag in tags if tag != "%c"} | FD_TAGS == TAGS
+    script = (ASSETS / "tracer" / "trace.bt").read_text()
+    assert all(f"{{ $l = {ord(tag)}; }}" in script for tag in FD_TAGS)
+    (shared,) = [args for tag, _, args, _ in printfs if tag == "%c"]
+    assert shared.startswith("(uint8)$l, ")
     for tag, fmt, args, before in printfs:
         assert before == OWN.get(tag, SEQ), tag
         if tag in UNGROUPED:
             assert fmt.startswith("%llu %llu %llu ") or fmt == "%llu %llu %llu\\n", tag
             assert args.startswith("nsecs(boot), cpu, $s,") or args == "nsecs(boot), cpu, $s", tag
         else:
+            if tag == "%c":
+                args = args.removeprefix("(uint8)$l, ")
             assert fmt.startswith("%llu %llu %llu %llu "), tag
             assert args.startswith("nsecs(boot), cpu, $s, $g,"), tag
 
@@ -237,3 +257,23 @@ def test_the_lookup_budget_matches_the_script() -> None:
     # Each probe that logs a lookup by name checks the thread's budget the same way.
     assert script.count(f"else if ($w.1 < {LOOK_BUDGET}) {{") == 3
     assert f"A process logs at most {LOOK_BUDGET} lookups a second" in script
+
+
+def test_the_syscall_numbers_match_the_names() -> None:
+    # The probes' table and the names a refused call is recorded under number calls alike, in
+    # each ABI the probes follow.
+    script = (ASSETS / "tracer" / "trace.bt").read_text()
+    named = {3: "ptrace", 4: "process_vm_writev", 5: "process_vm_readv", 6: "pidfd_getfd"}
+    named |= {7: "unshare", 8: "setns"}
+    for arch in ("x86_64", "aarch64"):
+        rows = re.findall(
+            rf"^//@{arch}  @sysop\[(?:(0x[0-9a-f]+) \| )?(\d+)\] = (\d+);$", script, re.M
+        )
+        table = {int(base or "0", 16) | int(nr): int(op) for base, nr, op in rows}
+        assert len(table) == len(rows), arch
+        abis = 3 if arch == "x86_64" else 1
+        for op, name in named.items():
+            keys = [k for k, o in table.items() if o == op]
+            assert len(keys) == abis, (arch, name)
+            assert all(SYSCALLS[arch][k] == name for k in keys), (arch, name)
+    assert SYSCALL_ARCH in TRACE

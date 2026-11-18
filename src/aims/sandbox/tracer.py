@@ -169,34 +169,6 @@ MKNOD = (
     r"-e '/^fexit:vmlinux:do_mknodat /,/^}/d' $f; "
     "fi; "
 )
-# From 6.13 every refused extended attribute call is logged at path_setxattrat and
-# path_removexattrat, which 32-bit calls reach too. Some kernels never fire the syscall enter
-# tracepoints that take a path, so the older kernels' probes stay only where those calls are
-# missing.
-XATTR_CALLS = (
-    "if grep -qx path_setxattrat $a && grep -qx path_removexattrat $a; then sed -i "
-    r"-e '/^tracepoint:syscalls:sys_enter_setxattr, /,/^}/d' "
-    r"-e '/^tracepoint:syscalls:sys_enter_removexattr, /,/^}/d' "
-    r"-e '/^tracepoint:syscalls:sys_enter_fsetxattr /,/^}/d' "
-    r"-e '/^tracepoint:syscalls:sys_enter_fremovexattr /,/^}/d' "
-    r"-e '/^tracepoint:syscalls:sys_exit_setxattr, /,/^}/d' "
-    r"-e '/^tracepoint:syscalls:sys_enter_setxattrat /,/^}/d' "
-    r"-e '/^tracepoint:syscalls:sys_enter_removexattrat /,/^}/d' "
-    r"-e '/^tracepoint:syscalls:sys_exit_setxattrat, /,/^}/d' $f; else sed -i "
-    r"-e '/^fentry:vmlinux:path_setxattrat /,/^}/d' "
-    r"-e '/^fentry:vmlinux:path_removexattrat /,/^}/d' "
-    r"-e '/^fexit:vmlinux:path_setxattrat /,/^}/d' "
-    r"-e '/^fexit:vmlinux:path_removexattrat /,/^}/d' $f; "
-    "fi; "
-)
-# The *xattrat calls arrived in 6.13.
-XATTRAT = (
-    "if [ ! -e /sys/kernel/tracing/events/syscalls/sys_enter_setxattrat/id ]; then sed -i "
-    r"-e '/^tracepoint:syscalls:sys_enter_setxattrat /,/^}/d' "
-    r"-e '/^tracepoint:syscalls:sys_enter_removexattrat /,/^}/d' "
-    r"-e '/^tracepoint:syscalls:sys_exit_setxattrat, /,/^}/d' $f; "
-    "fi; "
-)
 # The probes that log an open through another process's /proc link, dropped on a kernel that
 # lacks either function they attach to.
 PROC_LINKS = (
@@ -215,6 +187,9 @@ LOOKS = (
     'echo "filename_lookup cannot be traced on this kernel, so no lookup is recorded"; sed -i '
     r"'/^f\(entry\|exit\):vmlinux:filename_lookup /,/^}/d' $f; fi; "
 )
+# The syscall probes follow calls by number, so the script keeps the numbers and ABI checks of the
+# host's architecture: its lines marked `//@<arch> `.
+SYSCALL_ARCH = 'u=$(uname -m); sed -i "s|^//@$u ||" $f; '
 # Kernels from 6.15 split pipe_write into anon_pipe_write and fifo_pipe_write, and 7.0 renamed
 # do_filp_open to do_file_open.
 TRACE = (
@@ -227,23 +202,12 @@ TRACE = (
     r"sed -i 's/^\(fentry\|fexit\):vmlinux:do_filp_open /\1:vmlinux:do_file_open /' $f; fi; "
     + PRE_7
     + MKNOD
-    + XATTR_CALLS
-    + XATTRAT
     + PROC_LINKS
     + LOOKS
     + "v=$(uname -r); m=${v%%.*}; n=${v#*.}; n=${n%%.*}; "
     + BACKING
-    # cachestat arrived in 6.5; older kernels have neither the syscall nor its tracepoint.
-    + 'if [ "$m" -lt 6 ] || { [ "$m" -eq 6 ] && [ "$n" -lt 5 ]; } '
-    "|| ! grep -q '_sys_cachestat$' $a "
-    "|| ! [ -e /sys/kernel/tracing/events/syscalls/sys_enter_cachestat/id ]; then "
-    "sed -i 's|^tracepoint:syscalls:sys_enter_cachestat |//&|' $f; fi; "
-    # x86_64 calls the 64-bit-offset tracepoint fadvise64_64; aarch64 calls it fadvise64.
-    "if [ ! -e /sys/kernel/tracing/events/syscalls/sys_enter_fadvise64_64/id ]; then "
-    "if [ -e /sys/kernel/tracing/events/syscalls/sys_enter_fadvise64/id ]; then "
-    "sed -i 's/sys_enter_fadvise64_64/sys_enter_fadvise64/g' $f; else "
-    "sed -i 's|^tracepoint:syscalls:sys_enter_fadvise64_64 |//&|' $f; fi; fi; "
-    "exec bpftrace -B line -f json $f"
+    + SYSCALL_ARCH
+    + "exec bpftrace -B line -f json $f"
 )
 PMU_EVENTS = ("cpu-cycles", "instructions", "cache-misses")
 PMU = (

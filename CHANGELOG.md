@@ -24,7 +24,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - `GET /api/runs/{run_id}/check` lists the plants each agent of a sealed run took, as `aims check` does. It needs the operator role.
 - `POST /api/runs/{run_id}/resume` takes `operator_only`. Such a resume lets go of an operator's pause only. The runner refuses it while the monitor holds an agent it names. An agent the monitor pauses while the resume is on its way stays paused. The `operator.action` event records it, so the run's holds and the monitor match the runner.
 - Binds and listens on inet and inet6 addresses are recorded as `net.listen` events, with the address, the port and the protocol. A listen on a socket never bound has no port, as the kernel picks one. A unix socket's listen is an `ipc.event` of kind `listen`. Neither was recorded.
-- Extended attribute changes are recorded as `file.xattr` events with the path, the attribute's name and the value's size. A call the kernel refused before its check is recorded with its `errno`, as on a read-only mount or for a `trusted.` attribute. From kernel 6.13 that holds for 32-bit calls too. The file snapshots do not hold extended attributes, so nothing recorded them. The new `shared_xattr` signal flags one set in a folder shared with other agents as covert communication, at importance 3.
+- Extended attribute changes are recorded as `file.xattr` events with the path, the attribute's name and the value's size. A call the kernel refused before its check is recorded with its `errno`, as on a read-only mount or for a `trusted.` attribute. That holds for 32-bit calls too. The file snapshots do not hold extended attributes, so nothing recorded them. The new `shared_xattr` signal flags one set in a folder shared with other agents as covert communication, at importance 3.
 
 ### Changed
 
@@ -66,6 +66,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 ### Fixed
 
+- Calls a 64-bit process made the 32-bit way, through `int 0x80`, or as x32 calls went unrecorded: ptrace, `process_vm_readv` and `_writev`, `pidfd_getfd`, `unshare`, `setns`, SysV shared memory, the page-cache and durability calls and `chdir`. The kernel's per-call syscall tracepoints skip them. The tracer now follows these calls, and the refused extended attribute calls, through `raw_syscalls` by number, for each ABI. On Linux 7.0 the per-call tracepoint of a call that takes a path also missed most calls, so a `chdir` lookup was often not recorded. A refused 32-bit or x32 call is recorded as `sys.denied` under its own name. It was named after the 64-bit call with its number, or dropped.
 - A runner without its kernel tracer says it takes no kernel runs or self-tests, under Settings > Runners and in the runner tooltip of the header. It said its runs use snapshot audit. Kernel runs and self-tests wait for a runner with the tracer.
 - Saving a text under Settings > Prompts failed with 422 `a part of it is not a table` when its table was apart in the config file, as `[profiles.a]` and `[profiles.b]` are with `[roles]` between them. `PATCH /api/config/{layer}` failed the same way.
 - `aims models check` keeps a profile's effort when it is `none` or `minimal`. It turned the effort up to `low`, so a model that reasons only when asked sent its reasoning in the check but not in a run.

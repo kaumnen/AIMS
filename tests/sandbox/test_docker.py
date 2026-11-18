@@ -1637,6 +1637,108 @@ async def test_output_prepending_is_visible(backend: DockerBackend, store: Local
     assert result.stdout == b"all tests passed\n"
 
 
+# A 64-bit process can make 32-bit calls through int 0x80, with ia32's numbers and arguments
+# 32 bits wide. `int80(nr, *args)` makes one; its memory sits below 4 GiB, where a 32-bit pointer
+# reaches. aims-exec refuses such calls, so the first test runs its command without aims-exec.
+INT80 = (
+    "import ctypes, mmap, os, time\n"
+    "libc = ctypes.CDLL(None, use_errno=True)\n"
+    "libc.mmap.restype = ctypes.c_void_p\n"
+    "libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int,"
+    " ctypes.c_int, ctypes.c_long]\n"
+    "def low(prot):\n"
+    "    return libc.mmap(None, 4096, prot, mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS | 0x40, -1, 0)\n"
+    # push rbx and rbp, load eax and ebx to ebp from the 7 words at rdi, int 0x80, sign-extend eax.
+    "code = bytes.fromhex('5355' '4989fa' '418b02' '418b5a04' '418b4a08' '418b520c' '418b7210'"
+    " '418b7a14' '418b6a18' 'cd80' '4863c0' '5d5b' 'c3')\n"
+    "page = low(7)\n"
+    "ctypes.memmove(page, code, len(code))\n"
+    "shim = ctypes.CFUNCTYPE(ctypes.c_long, ctypes.c_void_p)(page)\n"
+    "def int80(nr, *args):\n"
+    "    regs = (ctypes.c_uint32 * 7)(nr, *[a & 0xffffffff for a in args])\n"
+    "    return shim(ctypes.addressof(regs))\n"
+    "buf = low(3)\n"
+)
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_32_bit_calls_are_recorded(
+    backend: DockerBackend, store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if backend.arch != "x86_64":
+        pytest.skip("int 0x80 and x32 calls exist on x86_64 only")
+    command = (
+        INT80 + "ctypes.memmove(buf, b'held\\0', 5)\n"
+        "ctypes.memmove(buf + 1024, b'/work\\0', 6)\n"
+        "child = os.fork()\n"
+        "if child == 0:\n"
+        "    time.sleep(30)\n"
+        "    os._exit(0)\n"
+        "fd = os.open('/work/f', os.O_CREAT | os.O_RDWR)\n"
+        "os.write(fd, b'x' * 4096)\n"
+        "ns = os.open('/proc/self/ns/uts', os.O_RDONLY)\n"
+        # Compat iovecs at buf+64 and buf+72: 5 bytes into buf+32, from the child's buf.
+        "iov = (ctypes.c_uint32 * 4).from_address(buf + 64)\n"
+        "iov[0], iov[1], iov[2], iov[3] = buf + 32, 5, buf, 5\n"
+        "ok = [int80(26, 16, child), int80(26, 17, child)]\n"
+        "ok += [int80(347, child, buf + 64, 1, buf + 72, 1, 0)]\n"
+        "ok += [int80(118, fd), int80(148, fd), int80(344, fd), int80(314, fd, 0, 0, 0, 0, 0)]\n"
+        "ok += [int80(272, fd, 0, 0, 0, 0, 4), int80(250, fd, 0, 0, 0, 4)]\n"
+        "ok += [int80(378, fd, buf + 64, 1, 0, 0, 8), int80(218, buf, 4096, buf + 256)]\n"
+        "ok += [int80(451, fd, buf + 512, buf + 576, 0), int80(12, buf + 1024)]\n"
+        # ipc(2)'s SHMGET and SHMAT, then the calls of their own. A 32-bit call's address is cut to
+        # 32 bits, so it may read as negative.
+        "via = int80(117, 23, 4321, 4096, 0o1600)\n"
+        "own = int80(395, 4322, 4096, 0o1600)\n"
+        "ok += [int80(117, 21, via, 0, buf + 2048, 0), not -4096 < int80(397, own, 0, 0) < 0]\n"
+        "print(child, via, own, flush=True)\n"
+        "print(' '.join(map(str, ok)), flush=True)\n"
+        "print(int80(310, 0x10000000), int80(346, ns, 0), flush=True)\n"
+        "os.kill(child, 9)\n"
+    )
+    run_id, sb = await sandbox(backend, store)
+    inner = cast(Any, sb.sandbox)
+    monkeypatch.setattr(inner, "wrapper", lambda timeout_ms: list(inner._shell))
+    try:
+        result = await sb.exec(f"python3 - <<'EOF'\n{command}EOF", timeout_s=30)
+    finally:
+        await sb.close()
+
+    assert result.finished.exit_code == 0, result.stderr
+    first, calls, refused = result.stdout.decode().splitlines()
+    child, via, own = map(int, first.split())
+    assert via >= 0
+    assert own >= 0
+    # The rest may fail, preadv2 with EAGAIN for one; each is recorded either way.
+    assert calls.split()[:3] == ["0", "0", "5"]
+    assert calls.split()[-1] == "True"
+    assert refused == "-1 -1"
+
+    async def seen(kind: str, *fields: str) -> set[tuple[Any, ...]]:
+        return {tuple(e.data.get(f) for f in fields) for e in await events(store, run_id, kind)}
+
+    ptraces = await seen("ptrace.event", "request", "ns_target")
+    assert {("attach", child), ("detach", child), ("process_vm_readv", child)} <= ptraces
+    assert await seen("file.sync", "call", "path") == {
+        ("fsync", "/work/f"),
+        ("fdatasync", "/work/f"),
+        ("syncfs", "/work/f"),
+        ("sync_file_range", "/work/f"),
+    }
+    assert await seen("cache.probe", "op", "path") == {
+        ("fadvise_dontneed", "/work/f"),
+        ("preadv2_nowait", "/work/f"),
+        ("cachestat", "/work/f"),
+        ("mincore", None),
+    }
+    assert ("chdir", "/work") in await seen("file.look", "op", "path")
+    shm = await seen("ipc.event", "kind", "key", "id")
+    assert {("shmget", 4321, None), ("shmget", 4322, None)} <= shm
+    assert {("shmat", None, via), ("shmat", None, own)} <= shm
+    assert {("unshare",), ("setns",)} <= await seen("sys.denied", "syscall")
+
+
 @pytest.mark.tracer
 @pytest.mark.usefixtures("traced")
 async def test_ipc_events(backend: DockerBackend, store: LocalEventStore) -> None:

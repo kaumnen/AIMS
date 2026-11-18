@@ -15,6 +15,117 @@ BEGIN {
   // Gives the lookup budget's map its type: second, lookups logged in it, lookups not logged.
   @lbud[0] = ((uint64)0, (uint64)0, (uint64)0);
   delete(@lbud[0]);
+  // The calls the syscall probes follow, by number, each with its op: 1 shmget, 2 shmat,
+  // 3 ptrace, 4 process_vm_writev, 5 process_vm_readv, 6 pidfd_getfd, 7 unshare, 8 setns,
+  // 9 chdir, 10 fadvise64, 11 preadv2, 12 cachestat, 13 mincore, 14 fsync, 15 fdatasync,
+  // 16 sync_file_range and 17 syncfs. A call that takes the same argument elsewhere has an op
+  // of its own: 18 and 19 fadvise64 and fadvise64_64 of ia32, 20 preadv2 of x32, 21 ia32's
+  // ipc(2). 22 setxattr and lsetxattr, 23 removexattr and lremovexattr, 24 fsetxattr,
+  // 25 fremovexattr, 26 setxattrat and 27 removexattrat. An ia32 call's number is its own table's
+  // plus 0x10000, and an x32 call's keeps the kernel's x32 bit. The tracer keeps the lines of the
+  // host's architecture.
+//@x86_64  @sysop[29] = 1;
+//@x86_64  @sysop[30] = 2;
+//@x86_64  @sysop[101] = 3;
+//@x86_64  @sysop[311] = 4;
+//@x86_64  @sysop[310] = 5;
+//@x86_64  @sysop[438] = 6;
+//@x86_64  @sysop[272] = 7;
+//@x86_64  @sysop[308] = 8;
+//@x86_64  @sysop[80] = 9;
+//@x86_64  @sysop[221] = 10;
+//@x86_64  @sysop[327] = 11;
+//@x86_64  @sysop[451] = 12;
+//@x86_64  @sysop[27] = 13;
+//@x86_64  @sysop[74] = 14;
+//@x86_64  @sysop[75] = 15;
+//@x86_64  @sysop[277] = 16;
+//@x86_64  @sysop[306] = 17;
+//@x86_64  @sysop[0x40000000 | 29] = 1;
+//@x86_64  @sysop[0x40000000 | 30] = 2;
+//@x86_64  @sysop[0x40000000 | 521] = 3;
+//@x86_64  @sysop[0x40000000 | 540] = 4;
+//@x86_64  @sysop[0x40000000 | 539] = 5;
+//@x86_64  @sysop[0x40000000 | 438] = 6;
+//@x86_64  @sysop[0x40000000 | 272] = 7;
+//@x86_64  @sysop[0x40000000 | 308] = 8;
+//@x86_64  @sysop[0x40000000 | 80] = 9;
+//@x86_64  @sysop[0x40000000 | 221] = 10;
+//@x86_64  @sysop[0x40000000 | 546] = 20;
+//@x86_64  @sysop[0x40000000 | 451] = 12;
+//@x86_64  @sysop[0x40000000 | 27] = 13;
+//@x86_64  @sysop[0x40000000 | 74] = 14;
+//@x86_64  @sysop[0x40000000 | 75] = 15;
+//@x86_64  @sysop[0x40000000 | 277] = 16;
+//@x86_64  @sysop[0x40000000 | 306] = 17;
+//@x86_64  @sysop[0x10000 | 395] = 1;
+//@x86_64  @sysop[0x10000 | 397] = 2;
+//@x86_64  @sysop[0x10000 | 117] = 21;
+//@x86_64  @sysop[0x10000 | 26] = 3;
+//@x86_64  @sysop[0x10000 | 348] = 4;
+//@x86_64  @sysop[0x10000 | 347] = 5;
+//@x86_64  @sysop[0x10000 | 438] = 6;
+//@x86_64  @sysop[0x10000 | 310] = 7;
+//@x86_64  @sysop[0x10000 | 346] = 8;
+//@x86_64  @sysop[0x10000 | 12] = 9;
+//@x86_64  @sysop[0x10000 | 250] = 18;
+//@x86_64  @sysop[0x10000 | 272] = 19;
+//@x86_64  @sysop[0x10000 | 378] = 11;
+//@x86_64  @sysop[0x10000 | 451] = 12;
+//@x86_64  @sysop[0x10000 | 218] = 13;
+//@x86_64  @sysop[0x10000 | 118] = 14;
+//@x86_64  @sysop[0x10000 | 148] = 15;
+//@x86_64  @sysop[0x10000 | 314] = 16;
+//@x86_64  @sysop[0x10000 | 344] = 17;
+//@aarch64  @sysop[194] = 1;
+//@aarch64  @sysop[196] = 2;
+//@aarch64  @sysop[117] = 3;
+//@aarch64  @sysop[271] = 4;
+//@aarch64  @sysop[270] = 5;
+//@aarch64  @sysop[438] = 6;
+//@aarch64  @sysop[97] = 7;
+//@aarch64  @sysop[268] = 8;
+//@aarch64  @sysop[49] = 9;
+//@aarch64  @sysop[223] = 10;
+//@aarch64  @sysop[286] = 11;
+//@aarch64  @sysop[451] = 12;
+//@aarch64  @sysop[232] = 13;
+//@aarch64  @sysop[82] = 14;
+//@aarch64  @sysop[83] = 15;
+//@aarch64  @sysop[84] = 16;
+//@aarch64  @sysop[267] = 17;
+//@x86_64  @sysop[188] = 22;
+//@x86_64  @sysop[189] = 22;
+//@x86_64  @sysop[190] = 24;
+//@x86_64  @sysop[197] = 23;
+//@x86_64  @sysop[198] = 23;
+//@x86_64  @sysop[199] = 25;
+//@x86_64  @sysop[463] = 26;
+//@x86_64  @sysop[466] = 27;
+//@x86_64  @sysop[0x40000000 | 188] = 22;
+//@x86_64  @sysop[0x40000000 | 189] = 22;
+//@x86_64  @sysop[0x40000000 | 190] = 24;
+//@x86_64  @sysop[0x40000000 | 197] = 23;
+//@x86_64  @sysop[0x40000000 | 198] = 23;
+//@x86_64  @sysop[0x40000000 | 199] = 25;
+//@x86_64  @sysop[0x40000000 | 463] = 26;
+//@x86_64  @sysop[0x40000000 | 466] = 27;
+//@x86_64  @sysop[0x10000 | 226] = 22;
+//@x86_64  @sysop[0x10000 | 227] = 22;
+//@x86_64  @sysop[0x10000 | 228] = 24;
+//@x86_64  @sysop[0x10000 | 235] = 23;
+//@x86_64  @sysop[0x10000 | 236] = 23;
+//@x86_64  @sysop[0x10000 | 237] = 25;
+//@x86_64  @sysop[0x10000 | 463] = 26;
+//@x86_64  @sysop[0x10000 | 466] = 27;
+//@aarch64  @sysop[5] = 22;
+//@aarch64  @sysop[6] = 22;
+//@aarch64  @sysop[7] = 24;
+//@aarch64  @sysop[14] = 23;
+//@aarch64  @sysop[15] = 23;
+//@aarch64  @sysop[16] = 25;
+//@aarch64  @sysop[463] = 26;
+//@aarch64  @sysop[466] = 27;
 }
 
 // One record per cpu each second, so the tracer knows how far each cpu's stream has been read
@@ -783,75 +894,14 @@ fentry:vmlinux:security_inode_mknod /@sandbox[cgroup] && curtask->thread_pid->le
     str($md->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
 }
 
-tracepoint:syscalls:sys_enter_shmget /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
-  $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-  printf("I %llu %llu %llu %llu %d g 2 %d %lu %d\n", nsecs(boot), cpu, $s, $g, curtask->tgid, args.key, args.size, args.shmflg);
-}
-
-tracepoint:syscalls:sys_enter_shmat /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
-  $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-  printf("I %llu %llu %llu %llu %d a 2 %d %d\n", nsecs(boot), cpu, $s, $g, curtask->tgid, args.shmid, args.shmflg);
-}
-
-tracepoint:syscalls:sys_enter_ptrace /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
-  @ptrace_req[tid] = args.request + 1;
-  @ptrace_pid[tid] = args.pid;
-  delete(@ptrace_task[tid]);
-}
-
 fexit:vmlinux:find_get_task_by_vpid /(@ptrace_req[tid] != 0 || @vmw[tid] != 0 || @vmr[tid] != 0) && @ptrace_task[tid] == 0/ {
   $t = retval;
   if ($t != 0) { @ptrace_task[tid] = (int64)$t->tgid + 1; } else { @ptrace_task[tid] = -1; }
 }
 
-tracepoint:syscalls:sys_exit_ptrace /@sandbox[cgroup] && !(curtask->thread_pid->level <= @base) && @ptrace_req[tid] != 0/ {
-  $rq = @ptrace_req[tid] - 1;
-  $tg = (int64)@ptrace_task[tid] - 1;
-  if ($rq == 0) { $tg = curtask->real_parent->tgid; }
-  $ns = @ptrace_pid[tid];
-  delete(@ptrace_req[tid]);
-  delete(@ptrace_pid[tid]);
-  delete(@ptrace_task[tid]);
-  $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-  printf("K %llu %llu %llu %llu %d %lld %llu %lld %lld\n", nsecs(boot), cpu, $s, $g, curtask->tgid, $tg, $rq, args.ret, $ns);
-}
-
-tracepoint:syscalls:sys_enter_process_vm_writev /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
-  @vmw[tid] = args.pid + 1;
-  delete(@ptrace_task[tid]);
-}
-
-tracepoint:syscalls:sys_exit_process_vm_writev /@sandbox[cgroup] && !(curtask->thread_pid->level <= @base) && @vmw[tid] != 0/ {
-  $vt = @vmw[tid] - 1;
-  $tg = (int64)@ptrace_task[tid] - 1;
-  delete(@vmw[tid]);
-  delete(@ptrace_task[tid]);
-  $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-  printf("K %llu %llu %llu %llu %d %lld -1 %lld %lld\n", nsecs(boot), cpu, $s, $g, curtask->tgid, $tg, args.ret, $vt);
-}
-
-tracepoint:syscalls:sys_enter_process_vm_readv /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
-  @vmr[tid] = args.pid + 1;
-  delete(@ptrace_task[tid]);
-}
-
-tracepoint:syscalls:sys_exit_process_vm_readv /@sandbox[cgroup] && !(curtask->thread_pid->level <= @base) && @vmr[tid] != 0/ {
-  $vt = @vmr[tid] - 1;
-  $tg = (int64)@ptrace_task[tid] - 1;
-  delete(@vmr[tid]);
-  delete(@ptrace_task[tid]);
-  $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-  printf("K %llu %llu %llu %llu %d %lld -2 %lld %lld\n", nsecs(boot), cpu, $s, $g, curtask->tgid, $tg, args.ret, $vt);
-}
-
-// A seccomp profile that refuses pidfd_getfd stops it before these tracepoints; raw_syscalls'
-// exit still sees the refusal. The process comes from the kernel's lookup of the pidfd. Its pid
-// is the one in its own namespace; 0 means the pidfd was not looked up.
-tracepoint:syscalls:sys_enter_pidfd_getfd /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
-  @getfd[tid] = 1;
-  delete(@getfd_ns[tid]);
-  delete(@ptrace_task[tid]);
-}
+// pidfd_getfd's process comes from the kernel's lookup of the pidfd. Its pid is the one in its
+// own namespace; 0 means the pidfd was not looked up. A seccomp profile that refuses the call
+// stops it before the syscall probes; raw_syscalls' exit still sees the refusal.
 
 fexit:vmlinux:pidfd_pid /@getfd[tid] != 0 && @ptrace_task[tid] == 0/ {
   $p = retval;
@@ -869,15 +919,206 @@ fexit:vmlinux:pidfd_pid /@getfd[tid] != 0 && @ptrace_task[tid] == 0/ {
   }
 }
 
-tracepoint:syscalls:sys_exit_pidfd_getfd /@sandbox[cgroup] && !(curtask->thread_pid->level <= @base) && @getfd[tid] != 0/ {
-  $tg = (int64)@ptrace_task[tid] - 1;
-  $vt = @getfd_ns[tid];
-  delete(@getfd[tid]);
-  delete(@getfd_ns[tid]);
-  delete(@ptrace_task[tid]);
-  $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-  printf("K %llu %llu %llu %llu %d %lld -3 %lld %lld\n", nsecs(boot), cpu, $s, $g, curtask->tgid, $tg, args.ret, $vt);
+// The syscalls of BEGIN's table, through raw_syscalls rather than each call's own tracepoint: a
+// 64-bit kernel's syscall tracepoints skip an ia32 call (int 0x80) and an x32 one, and from 7.0
+// they often miss a call that takes a path. An ia32 call's arguments are 32 bits wide; the rest
+// of each register is not the caller's to set. shmget, shmat and mincore are logged here.
+// ptrace, process_vm_writev and _readv, pidfd_getfd, unshare, setns and chdir mark the thread,
+// and the exit probe below logs them. The page-cache calls that reveal whether another sandbox
+// has touched the same host pages, and the durability calls, are logged with the file the fd
+// names when the task still holds it; -1 as the depth means no file. They share one printf, as
+// seven would push the probe past the reach of a BPF jump.
+tracepoint:raw_syscalls:sys_enter /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
+  $id = args.id;
+  $w = (uint64)0xffffffffffffffff;
+//@x86_64  if ((curtask->thread_info.status & 2) != 0) { $id = $id | 0x10000; $w = 0xffffffff; }
+  $op = @sysop[$id];
+  if ($op != 0) {
+    $p0 = (uint64)args.args[0] & $w; $p1 = (uint64)args.args[1] & $w; $p2 = (uint64)args.args[2] & $w;
+    $p3 = (uint64)args.args[3] & $w; $p4 = (uint64)args.args[4] & $w; $p5 = (uint64)args.args[5] & $w;
+    // ipc(2) names its call in the low half of its first argument: SHMAT is 21 and SHMGET 23.
+    if ($op == 21) {
+      $c = $p0 & 0xffff;
+      $op = 0;
+      if ($c == 23) { $op = 1; $p0 = $p1; $p1 = $p2; $p2 = $p3; }
+      if ($c == 21) { $op = 2; $p0 = $p1; }
+    }
+    if ($op == 1) {
+      $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+      printf("I %llu %llu %llu %llu %d g 2 %d %lu %d\n", nsecs(boot), cpu, $s, $g, curtask->tgid, (int32)$p0, $p1, (int32)$p2);
+    } else if ($op == 2) {
+      $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+      printf("I %llu %llu %llu %llu %d a 2 %d %d\n", nsecs(boot), cpu, $s, $g, curtask->tgid, (int32)$p0, (int32)$p2);
+    } else if ($op == 3) {
+      @ptrace_req[tid] = (int64)$p0 + 1;
+      @ptrace_pid[tid] = (int32)$p1;
+      delete(@ptrace_task[tid]);
+    } else if ($op == 4) {
+      @vmw[tid] = (int32)$p0 + 1;
+      delete(@ptrace_task[tid]);
+    } else if ($op == 5) {
+      @vmr[tid] = (int32)$p0 + 1;
+      delete(@ptrace_task[tid]);
+    } else if ($op == 6) {
+      @getfd[tid] = 1;
+      delete(@getfd_ns[tid]);
+      delete(@ptrace_task[tid]);
+    } else if ($op == 7) {
+      @unshare[tid] = $p0 + 1;
+    } else if ($op == 8) {
+      @setns[tid] = (int32)$p1 + 1;
+    } else if ($op == 9) {
+      @look[tid] = 4;
+    } else if ($op >= 22) {
+      // A call on a file descriptor names no path: the walk is the file's. The names are copied
+      // at entry, as the kernel copies them, so a racing thread can change what is logged.
+      delete(@xl[tid]);
+      @xo[tid] = 1; @xs[tid] = (uint64)0; @xf[tid] = 0; @xd[tid] = -100;
+      if ($op == 23 || $op == 25 || $op == 27) { @xo[tid] = 2; }
+      if ($op == 22 || $op == 24) { @xs[tid] = $p3; @xf[tid] = (int32)$p4; }
+      if ($op == 24 || $op == 25) { @xd[tid] = (int32)$p0; }
+      if ($op >= 26) { @xd[tid] = (int32)$p0; }
+      if ($op == 22 || $op == 23) {
+        @xp[tid] = str(uptr($p0)); @xn[tid] = str(uptr($p1));
+      } else if ($op == 24 || $op == 25) {
+        @xp[tid] = str(uptr($p1), 0); @xn[tid] = str(uptr($p1));
+      } else {
+        @xp[tid] = str(uptr($p1)); @xn[tid] = str(uptr($p3));
+      }
+    } else if ($op == 13) {
+      $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+      printf("d %llu %llu %llu %llu %d\n", nsecs(boot), cpu, $s, $g, curtask->tgid);
+    } else {
+      // $l is the code of the record's letter: a for fadvise's DONTNEED (4), b for preadv2's
+      // RWF_NOWAIT (8), then c cachestat, e fsync, f fdatasync, g sync_file_range and h syncfs.
+      $l = 0;
+      if (($op == 10 && $p3 == 4) || ($op == 18 && $p4 == 4) || ($op == 19 && $p5 == 4)) { $l = 97; }
+      if (($op == 11 && ($p5 & 0x8)) || ($op == 20 && ($p4 & 0x8))) { $l = 98; }
+      if ($op == 12) { $l = 99; }
+      if ($op == 14) { $l = 101; }
+      if ($op == 15) { $l = 102; }
+      if ($op == 16) { $l = 103; }
+      if ($op == 17) { $l = 104; }
+      if ($l != 0) {
+        $fd = (int64)(int32)$p0;
+        $fdt = curtask->files->fdt; $d = curtask->fs->pwd.dentry; $k = -1;
+        if ($fd >= 0 && (uint64)$fd < (uint64)$fdt->max_fds) {
+          $f = *($fdt->fd + $fd);
+          if ($f != 0) {
+            $d = (*(struct path *)((uint64)$f + offsetof(struct file, f_path))).dentry; $x = $d; $k = 0;
+            unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } }
+          }
+        }
+        $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+        printf("%c %llu %llu %llu %llu %d %u %d %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", (uint8)$l, nsecs(boot), cpu, $s, $g, curtask->tgid,
+          $d->d_sb->s_dev, $k,
+          str($d->d_name.name),
+          str($d->d_parent->d_name.name),
+          str($d->d_parent->d_parent->d_name.name),
+          str($d->d_parent->d_parent->d_parent->d_name.name),
+          str($d->d_parent->d_parent->d_parent->d_parent->d_name.name),
+          str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+          str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+          str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+          str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+          str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+          str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+          str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
+      }
+    }
+    if (($op >= 3 && $op <= 9) || $op >= 22) { @scx[tid] = ($op, args.id); }
+  }
 }
+
+// A marked call's exit, when it is the call that marked the thread.
+tracepoint:raw_syscalls:sys_exit /@scx[tid].0 != 0/ {
+  $mk = @scx[tid];
+  delete(@scx[tid]);
+  if ($mk.1 == args.id) {
+    $op = $mk.0;
+    $r = args.ret;
+    if ($op == 3) {
+      $rq = @ptrace_req[tid] - 1;
+      $tg = (int64)@ptrace_task[tid] - 1;
+      if ($rq == 0) { $tg = curtask->real_parent->tgid; }
+      $ns = @ptrace_pid[tid];
+      delete(@ptrace_req[tid]);
+      delete(@ptrace_pid[tid]);
+      delete(@ptrace_task[tid]);
+      $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+      printf("K %llu %llu %llu %llu %d %lld %llu %lld %lld\n", nsecs(boot), cpu, $s, $g, curtask->tgid, $tg, $rq, $r, $ns);
+    } else if ($op == 4 || $op == 5) {
+      $vt = @vmw[tid] - 1;
+      $kind = -1;
+      if ($op == 5) { $vt = @vmr[tid] - 1; $kind = -2; }
+      $tg = (int64)@ptrace_task[tid] - 1;
+      delete(@vmw[tid]);
+      delete(@vmr[tid]);
+      delete(@ptrace_task[tid]);
+      $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+      printf("K %llu %llu %llu %llu %d %lld %lld %lld %lld\n", nsecs(boot), cpu, $s, $g, curtask->tgid, $tg, $kind, $r, $vt);
+    } else if ($op == 6) {
+      $tg = (int64)@ptrace_task[tid] - 1;
+      $vt = @getfd_ns[tid];
+      delete(@getfd[tid]);
+      delete(@getfd_ns[tid]);
+      delete(@ptrace_task[tid]);
+      $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+      printf("K %llu %llu %llu %llu %d %lld -3 %lld %lld\n", nsecs(boot), cpu, $s, $g, curtask->tgid, $tg, $r, $vt);
+    } else if ($op == 7) {
+      $nf = @unshare[tid] - 1;
+      delete(@unshare[tid]);
+      if ($r == 0 && ($nf & 0x7E020080) != 0) {
+        $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+        printf("J %llu %llu %llu %llu %d u %llu\n", nsecs(boot), cpu, $s, $g, curtask->tgid, $nf);
+      }
+    } else if ($op == 8) {
+      $sf = @setns[tid] - 1;
+      delete(@setns[tid]);
+      if ($r == 0) {
+        $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+        printf("J %llu %llu %llu %llu %d n %llu\n", nsecs(boot), cpu, $s, $g, curtask->tgid, $sf);
+      }
+    } else if ($op == 9) {
+      delete(@look[tid]);
+    } else if ($op >= 22) {
+      // A refused extended attribute call, unless its inode hook logged it.
+      if (@xl[tid] == 0 && ($r == -1 || $r == -13 || $r == -30)) {
+        $d = curtask->fs->pwd.dentry; $k = -1;
+        if (strncmp(@xp[tid], "/", 1) != 0) {
+          if (@xd[tid] == -100) { $k = 0; } else {
+            $fdt = curtask->files->fdt;
+            if ((int64)@xd[tid] >= 0 && (uint64)@xd[tid] < (uint64)$fdt->max_fds) {
+              $f = *($fdt->fd + @xd[tid]);
+              if ($f != 0) { $d = (*(struct path *)((uint64)$f + offsetof(struct file, f_path))).dentry; $k = 0; }
+            }
+          }
+          if ($k == 0) { $x = $d; unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } } }
+        }
+        $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+        printf("y %llu %llu %llu %llu %d %d %d %llu %d %rx %u %d %rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx %s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, @xo[tid], -$r, @xs[tid], @xf[tid],
+          buf(@xn[tid], 256), $d->d_sb->s_dev, $k,
+          buf($d->d_name.name, $d->d_name.len),
+          buf($d->d_parent->d_name.name, $d->d_parent->d_name.len),
+          buf($d->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_name.len),
+          buf($d->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_name.len),
+          buf($d->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_name.len),
+          buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+          buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+          buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+          buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+          buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+          buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+          buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+          @xp[tid]);
+      }
+      delete(@xo[tid]); delete(@xs[tid]); delete(@xf[tid]); delete(@xd[tid]); delete(@xp[tid]); delete(@xn[tid]); delete(@xl[tid]);
+      delete(@xo[tid]); delete(@xs[tid]); delete(@xf[tid]); delete(@xd[tid]); delete(@xp[tid]); delete(@xn[tid]); delete(@xl[tid]);
+    }
+  }
+}
+
+tracepoint:sched:sched_process_exit /@scx[tid].0 != 0/ { delete(@scx[tid]); }
 
 fentry:vmlinux:security_task_kill /@sandbox[cgroup] && curtask->thread_pid->level > @base
     && args.p->tgid != curtask->tgid && args.sig != 17/ {
@@ -954,32 +1195,6 @@ fentry:vmlinux:security_inode_setattr /@sandbox[cgroup] && curtask->thread_pid->
     str($sd->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
     str($sd->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
     str($sd->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
-}
-
-tracepoint:syscalls:sys_enter_unshare /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
-  @unshare[tid] = args.unshare_flags + 1;
-}
-
-tracepoint:syscalls:sys_exit_unshare /@sandbox[cgroup] && !(curtask->thread_pid->level <= @base) && @unshare[tid] != 0/ {
-  $nf = @unshare[tid] - 1;
-  delete(@unshare[tid]);
-  if (args.ret == 0 && ($nf & 0x7E020080) != 0) {
-    $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-    printf("J %llu %llu %llu %llu %d u %llu\n", nsecs(boot), cpu, $s, $g, curtask->tgid, $nf);
-  }
-}
-
-tracepoint:syscalls:sys_enter_setns /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
-  @setns[tid] = args.flags + 1;
-}
-
-tracepoint:syscalls:sys_exit_setns /@sandbox[cgroup] && !(curtask->thread_pid->level <= @base) && @setns[tid] != 0/ {
-  $sf = @setns[tid] - 1;
-  delete(@setns[tid]);
-  if (args.ret == 0) {
-    $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-    printf("J %llu %llu %llu %llu %d n %llu\n", nsecs(boot), cpu, $s, $g, curtask->tgid, $sf);
-  }
 }
 
 // Extended attribute changes, which the file snapshots do not hold. An access list is set
@@ -1230,8 +1445,7 @@ fentry:vmlinux:do_faccessat /@sandbox[cgroup] && curtask->thread_pid->level > @b
 fexit:vmlinux:do_faccessat /@look[tid] != 0/ { delete(@look[tid]); }
 fentry:vmlinux:do_readlinkat /@sandbox[cgroup] && curtask->thread_pid->level > @base/ { @look[tid] = 3; }
 fexit:vmlinux:do_readlinkat /@look[tid] != 0/ { delete(@look[tid]); }
-tracepoint:syscalls:sys_enter_chdir /@sandbox[cgroup] && curtask->thread_pid->level > @base/ { @look[tid] = 4; }
-tracepoint:syscalls:sys_exit_chdir /@look[tid] != 0/ { delete(@look[tid]); }
+// chdir's mark is set and dropped by the syscall probes.
 
 fexit:vmlinux:filename_lookup /@look[tid] != 0 && retval == 0/ {
   $op = @look[tid];
@@ -1930,538 +2144,12 @@ fexit:vmlinux:vfs_fchown /@sandbox[cgroup] && curtask->thread_pid->level > @base
     str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
 }
 
-// Refused extended attribute calls. From 6.13 every set and remove call, a 32-bit one too, goes
-// through path_setxattrat or path_removexattrat, which copy the names from user memory: the
-// probes copy them at entry as well, so a racing thread can change what is logged. A call on a
-// file descriptor names no path: the walk is the file's. An older kernel keeps the syscall
-// tracepoints below instead, and the *xattrat calls arrived in 6.13.
-fentry:vmlinux:path_setxattrat /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
-  delete(@xl[tid]);
-  @xo[tid] = 1; @xs[tid] = (uint64)args.size; @xf[tid] = args.flags; @xd[tid] = args.dfd;
-  @xp[tid] = str(uptr(args.pathname)); @xn[tid] = str(uptr(args.name));
-}
-
-fentry:vmlinux:path_removexattrat /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
-  delete(@xl[tid]);
-  @xo[tid] = 2; @xs[tid] = (uint64)0; @xf[tid] = 0; @xd[tid] = args.dfd;
-  @xp[tid] = str(uptr(args.pathname)); @xn[tid] = str(uptr(args.name));
-}
-
-fexit:vmlinux:path_setxattrat /@sandbox[cgroup] && curtask->thread_pid->level > @base && @xo[tid] != 0/ {
-  if (@xl[tid] == 0 && (retval == -1 || retval == -13 || retval == -30)) {
-    $d = curtask->fs->pwd.dentry; $k = -1;
-    if (strncmp(@xp[tid], "/", 1) != 0) {
-      if (@xd[tid] == -100) { $k = 0; } else {
-        $fdt = curtask->files->fdt;
-        if ((int64)@xd[tid] >= 0 && (uint64)@xd[tid] < (uint64)$fdt->max_fds) {
-          $f = *($fdt->fd + @xd[tid]);
-          if ($f != 0) { $d = (*(struct path *)((uint64)$f + offsetof(struct file, f_path))).dentry; $k = 0; }
-        }
-      }
-      if ($k == 0) { $x = $d; unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } } }
-    }
-    $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-    printf("y %llu %llu %llu %llu %d %d %d %llu %d %rx %u %d %rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx %s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, @xo[tid], -retval, @xs[tid], @xf[tid],
-      buf(@xn[tid], 256), $d->d_sb->s_dev, $k,
-      buf($d->d_name.name, $d->d_name.len),
-      buf($d->d_parent->d_name.name, $d->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      @xp[tid]);
-  }
-  delete(@xo[tid]); delete(@xs[tid]); delete(@xf[tid]); delete(@xd[tid]); delete(@xp[tid]); delete(@xn[tid]); delete(@xl[tid]);
-}
-
-fexit:vmlinux:path_removexattrat /@sandbox[cgroup] && curtask->thread_pid->level > @base && @xo[tid] != 0/ {
-  if (@xl[tid] == 0 && (retval == -1 || retval == -13 || retval == -30)) {
-    $d = curtask->fs->pwd.dentry; $k = -1;
-    if (strncmp(@xp[tid], "/", 1) != 0) {
-      if (@xd[tid] == -100) { $k = 0; } else {
-        $fdt = curtask->files->fdt;
-        if ((int64)@xd[tid] >= 0 && (uint64)@xd[tid] < (uint64)$fdt->max_fds) {
-          $f = *($fdt->fd + @xd[tid]);
-          if ($f != 0) { $d = (*(struct path *)((uint64)$f + offsetof(struct file, f_path))).dentry; $k = 0; }
-        }
-      }
-      if ($k == 0) { $x = $d; unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } } }
-    }
-    $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-    printf("y %llu %llu %llu %llu %d %d %d %llu %d %rx %u %d %rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx %s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, @xo[tid], -retval, @xs[tid], @xf[tid],
-      buf(@xn[tid], 256), $d->d_sb->s_dev, $k,
-      buf($d->d_name.name, $d->d_name.len),
-      buf($d->d_parent->d_name.name, $d->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      @xp[tid]);
-  }
-  delete(@xo[tid]); delete(@xs[tid]); delete(@xf[tid]); delete(@xd[tid]); delete(@xp[tid]); delete(@xn[tid]); delete(@xl[tid]);
-}
-
-tracepoint:syscalls:sys_enter_setxattr, tracepoint:syscalls:sys_enter_lsetxattr /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
-  delete(@xl[tid]);
-  @xo[tid] = 1; @xs[tid] = (uint64)args.size; @xf[tid] = args.flags; @xd[tid] = -100;
-  @xp[tid] = str(args.pathname); @xn[tid] = str(args.name);
-}
-
-tracepoint:syscalls:sys_enter_removexattr, tracepoint:syscalls:sys_enter_lremovexattr /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
-  delete(@xl[tid]);
-  @xo[tid] = 2; @xs[tid] = (uint64)0; @xf[tid] = 0; @xd[tid] = -100;
-  @xp[tid] = str(args.pathname); @xn[tid] = str(args.name);
-}
-
-tracepoint:syscalls:sys_enter_fsetxattr /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
-  delete(@xl[tid]);
-  @xo[tid] = 1; @xs[tid] = (uint64)args.size; @xf[tid] = args.flags; @xd[tid] = args.fd;
-  @xp[tid] = str(args.name, 0); @xn[tid] = str(args.name);
-}
-
-tracepoint:syscalls:sys_enter_fremovexattr /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
-  delete(@xl[tid]);
-  @xo[tid] = 2; @xs[tid] = (uint64)0; @xf[tid] = 0; @xd[tid] = args.fd;
-  @xp[tid] = str(args.name, 0); @xn[tid] = str(args.name);
-}
-
-tracepoint:syscalls:sys_exit_setxattr, tracepoint:syscalls:sys_exit_lsetxattr, tracepoint:syscalls:sys_exit_fsetxattr, tracepoint:syscalls:sys_exit_removexattr, tracepoint:syscalls:sys_exit_lremovexattr, tracepoint:syscalls:sys_exit_fremovexattr /@sandbox[cgroup] && !(curtask->thread_pid->level <= @base) && @xo[tid] != 0/ {
-  if (@xl[tid] == 0 && (args.ret == -1 || args.ret == -13 || args.ret == -30)) {
-    $d = curtask->fs->pwd.dentry; $k = -1;
-    if (strncmp(@xp[tid], "/", 1) != 0) {
-      if (@xd[tid] == -100) { $k = 0; } else {
-        $fdt = curtask->files->fdt;
-        if ((int64)@xd[tid] >= 0 && (uint64)@xd[tid] < (uint64)$fdt->max_fds) {
-          $f = *($fdt->fd + @xd[tid]);
-          if ($f != 0) { $d = (*(struct path *)((uint64)$f + offsetof(struct file, f_path))).dentry; $k = 0; }
-        }
-      }
-      if ($k == 0) { $x = $d; unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } } }
-    }
-    $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-    printf("y %llu %llu %llu %llu %d %d %d %llu %d %rx %u %d %rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx %s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, @xo[tid], -args.ret, @xs[tid], @xf[tid],
-      buf(@xn[tid], 256), $d->d_sb->s_dev, $k,
-      buf($d->d_name.name, $d->d_name.len),
-      buf($d->d_parent->d_name.name, $d->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      @xp[tid]);
-  }
-  delete(@xo[tid]); delete(@xs[tid]); delete(@xf[tid]); delete(@xd[tid]); delete(@xp[tid]); delete(@xn[tid]); delete(@xl[tid]);
-}
-
-tracepoint:syscalls:sys_enter_setxattrat /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
-  delete(@xl[tid]);
-  @xo[tid] = 1; @xs[tid] = (uint64)0; @xf[tid] = 0; @xd[tid] = args.dfd;
-  @xp[tid] = str(args.pathname); @xn[tid] = str(args.name);
-}
-
-tracepoint:syscalls:sys_enter_removexattrat /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
-  delete(@xl[tid]);
-  @xo[tid] = 2; @xs[tid] = (uint64)0; @xf[tid] = 0; @xd[tid] = args.dfd;
-  @xp[tid] = str(args.pathname); @xn[tid] = str(args.name);
-}
-
-tracepoint:syscalls:sys_exit_setxattrat, tracepoint:syscalls:sys_exit_removexattrat /@sandbox[cgroup] && !(curtask->thread_pid->level <= @base) && @xo[tid] != 0/ {
-  if (@xl[tid] == 0 && (args.ret == -1 || args.ret == -13 || args.ret == -30)) {
-    $d = curtask->fs->pwd.dentry; $k = -1;
-    if (strncmp(@xp[tid], "/", 1) != 0) {
-      if (@xd[tid] == -100) { $k = 0; } else {
-        $fdt = curtask->files->fdt;
-        if ((int64)@xd[tid] >= 0 && (uint64)@xd[tid] < (uint64)$fdt->max_fds) {
-          $f = *($fdt->fd + @xd[tid]);
-          if ($f != 0) { $d = (*(struct path *)((uint64)$f + offsetof(struct file, f_path))).dentry; $k = 0; }
-        }
-      }
-      if ($k == 0) { $x = $d; unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } } }
-    }
-    $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-    printf("y %llu %llu %llu %llu %d %d %d %llu %d %rx %u %d %rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx %s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, @xo[tid], -args.ret, @xs[tid], @xf[tid],
-      buf(@xn[tid], 256), $d->d_sb->s_dev, $k,
-      buf($d->d_name.name, $d->d_name.len),
-      buf($d->d_parent->d_name.name, $d->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      @xp[tid]);
-  }
-  delete(@xo[tid]); delete(@xs[tid]); delete(@xf[tid]); delete(@xd[tid]); delete(@xp[tid]); delete(@xn[tid]); delete(@xl[tid]);
-}
-
+// A refused call, numbered as BEGIN's table numbers it.
 tracepoint:raw_syscalls:sys_exit /args.ret == -1 && @sandbox[cgroup]/ {
+  $id = args.id;
+//@x86_64  if ((curtask->thread_info.status & 2) != 0) { $id = $id | 0x10000; }
   $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-  printf("D %llu %llu %llu %llu %d %d %d\n", nsecs(boot), cpu, $s, $g, curtask->tgid, args.id, -args.ret);
-}
-
-// Page-cache calls that reveal whether another sandbox has touched the same host pages. The
-// file comes from the fd through the task's file table; -1 as the depth means no file.
-tracepoint:syscalls:sys_enter_fadvise64_64 /@sandbox[cgroup] && curtask->thread_pid->level > @base && (int64)args.advice == 4/ {
-  $fdt = curtask->files->fdt; $d = curtask->fs->pwd.dentry; $k = -1;
-  if ((int64)args.fd >= 0 && (uint64)args.fd < (uint64)$fdt->max_fds) {
-    $f = *($fdt->fd + args.fd);
-    if ($f != 0) {
-      $d = (*(struct path *)((uint64)$f + offsetof(struct file, f_path))).dentry; $x = $d; $k = 0;
-      unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } }
-      if ($k == 12 && $x != $x->d_parent) {
-        $i = 0;
-        while ($i < 4 && $x != $x->d_parent) {
-          $w = $x; $c = 0;
-          unroll(12) { if ($x != $x->d_parent) { $c++; $x = $x->d_parent; } }
-          $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-          printf("w %llu %llu %llu %llu %d 0 %d %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, $c,
-            str($w->d_name.name),
-            str($w->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
-          $i++;
-        }
-      }
-    }
-  }
-  $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-  printf("a %llu %llu %llu %llu %d %u %d %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, $g, curtask->tgid,
-    $d->d_sb->s_dev, $k,
-    str($d->d_name.name),
-    str($d->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
-}
-
-tracepoint:syscalls:sys_enter_preadv2 /@sandbox[cgroup] && curtask->thread_pid->level > @base && ((uint64)args.flags & 0x8)/ {
-  $fdt = curtask->files->fdt; $d = curtask->fs->pwd.dentry; $k = -1;
-  if ((int64)args.fd >= 0 && (uint64)args.fd < (uint64)$fdt->max_fds) {
-    $f = *($fdt->fd + args.fd);
-    if ($f != 0) {
-      $d = (*(struct path *)((uint64)$f + offsetof(struct file, f_path))).dentry; $x = $d; $k = 0;
-      unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } }
-      if ($k == 12 && $x != $x->d_parent) {
-        $i = 0;
-        while ($i < 4 && $x != $x->d_parent) {
-          $w = $x; $c = 0;
-          unroll(12) { if ($x != $x->d_parent) { $c++; $x = $x->d_parent; } }
-          $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-          printf("w %llu %llu %llu %llu %d 0 %d %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, $c,
-            str($w->d_name.name),
-            str($w->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
-          $i++;
-        }
-      }
-    }
-  }
-  $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-  printf("b %llu %llu %llu %llu %d %u %d %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, $g, curtask->tgid,
-    $d->d_sb->s_dev, $k,
-    str($d->d_name.name),
-    str($d->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
-}
-
-tracepoint:syscalls:sys_enter_cachestat /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
-  $fdt = curtask->files->fdt; $d = curtask->fs->pwd.dentry; $k = -1;
-  if ((int64)args.fd >= 0 && (uint64)args.fd < (uint64)$fdt->max_fds) {
-    $f = *($fdt->fd + args.fd);
-    if ($f != 0) {
-      $d = (*(struct path *)((uint64)$f + offsetof(struct file, f_path))).dentry; $x = $d; $k = 0;
-      unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } }
-      if ($k == 12 && $x != $x->d_parent) {
-        $i = 0;
-        while ($i < 4 && $x != $x->d_parent) {
-          $w = $x; $c = 0;
-          unroll(12) { if ($x != $x->d_parent) { $c++; $x = $x->d_parent; } }
-          $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-          printf("w %llu %llu %llu %llu %d 0 %d %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, $c,
-            str($w->d_name.name),
-            str($w->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
-          $i++;
-        }
-      }
-    }
-  }
-  $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-  printf("c %llu %llu %llu %llu %d %u %d %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, $g, curtask->tgid,
-    $d->d_sb->s_dev, $k,
-    str($d->d_name.name),
-    str($d->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
-}
-
-tracepoint:syscalls:sys_enter_mincore /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
-  $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-  printf("d %llu %llu %llu %llu %d\n", nsecs(boot), cpu, $s, $g, curtask->tgid);
-}
-
-// Durability calls, with the file the fd names when the task still holds it.
-tracepoint:syscalls:sys_enter_fsync /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
-  $fdt = curtask->files->fdt; $d = curtask->fs->pwd.dentry; $k = -1;
-  if ((int64)args.fd >= 0 && (uint64)args.fd < (uint64)$fdt->max_fds) {
-    $f = *($fdt->fd + args.fd);
-    if ($f != 0) {
-      $d = (*(struct path *)((uint64)$f + offsetof(struct file, f_path))).dentry; $x = $d; $k = 0;
-      unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } }
-      if ($k == 12 && $x != $x->d_parent) {
-        $i = 0;
-        while ($i < 4 && $x != $x->d_parent) {
-          $w = $x; $c = 0;
-          unroll(12) { if ($x != $x->d_parent) { $c++; $x = $x->d_parent; } }
-          $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-          printf("w %llu %llu %llu %llu %d 0 %d %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, $c,
-            str($w->d_name.name),
-            str($w->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
-          $i++;
-        }
-      }
-    }
-  }
-  $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-  printf("e %llu %llu %llu %llu %d %u %d %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, $g, curtask->tgid,
-    $d->d_sb->s_dev, $k,
-    str($d->d_name.name),
-    str($d->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
-}
-
-tracepoint:syscalls:sys_enter_fdatasync /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
-  $fdt = curtask->files->fdt; $d = curtask->fs->pwd.dentry; $k = -1;
-  if ((int64)args.fd >= 0 && (uint64)args.fd < (uint64)$fdt->max_fds) {
-    $f = *($fdt->fd + args.fd);
-    if ($f != 0) {
-      $d = (*(struct path *)((uint64)$f + offsetof(struct file, f_path))).dentry; $x = $d; $k = 0;
-      unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } }
-      if ($k == 12 && $x != $x->d_parent) {
-        $i = 0;
-        while ($i < 4 && $x != $x->d_parent) {
-          $w = $x; $c = 0;
-          unroll(12) { if ($x != $x->d_parent) { $c++; $x = $x->d_parent; } }
-          $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-          printf("w %llu %llu %llu %llu %d 0 %d %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, $c,
-            str($w->d_name.name),
-            str($w->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
-          $i++;
-        }
-      }
-    }
-  }
-  $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-  printf("f %llu %llu %llu %llu %d %u %d %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, $g, curtask->tgid,
-    $d->d_sb->s_dev, $k,
-    str($d->d_name.name),
-    str($d->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
-}
-
-tracepoint:syscalls:sys_enter_sync_file_range /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
-  $fdt = curtask->files->fdt; $d = curtask->fs->pwd.dentry; $k = -1;
-  if ((int64)args.fd >= 0 && (uint64)args.fd < (uint64)$fdt->max_fds) {
-    $f = *($fdt->fd + args.fd);
-    if ($f != 0) {
-      $d = (*(struct path *)((uint64)$f + offsetof(struct file, f_path))).dentry; $x = $d; $k = 0;
-      unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } }
-      if ($k == 12 && $x != $x->d_parent) {
-        $i = 0;
-        while ($i < 4 && $x != $x->d_parent) {
-          $w = $x; $c = 0;
-          unroll(12) { if ($x != $x->d_parent) { $c++; $x = $x->d_parent; } }
-          $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-          printf("w %llu %llu %llu %llu %d 0 %d %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, $c,
-            str($w->d_name.name),
-            str($w->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
-          $i++;
-        }
-      }
-    }
-  }
-  $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-  printf("g %llu %llu %llu %llu %d %u %d %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, $g, curtask->tgid,
-    $d->d_sb->s_dev, $k,
-    str($d->d_name.name),
-    str($d->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
-}
-
-tracepoint:syscalls:sys_enter_syncfs /@sandbox[cgroup] && curtask->thread_pid->level > @base/ {
-  $fdt = curtask->files->fdt; $d = curtask->fs->pwd.dentry; $k = -1;
-  if ((int64)args.fd >= 0 && (uint64)args.fd < (uint64)$fdt->max_fds) {
-    $f = *($fdt->fd + args.fd);
-    if ($f != 0) {
-      $d = (*(struct path *)((uint64)$f + offsetof(struct file, f_path))).dentry; $x = $d; $k = 0;
-      unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } }
-      if ($k == 12 && $x != $x->d_parent) {
-        $i = 0;
-        while ($i < 4 && $x != $x->d_parent) {
-          $w = $x; $c = 0;
-          unroll(12) { if ($x != $x->d_parent) { $c++; $x = $x->d_parent; } }
-          $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-          printf("w %llu %llu %llu %llu %d 0 %d %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, $c,
-            str($w->d_name.name),
-            str($w->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-            str($w->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
-          $i++;
-        }
-      }
-    }
-  }
-  $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-  printf("h %llu %llu %llu %llu %d %u %d %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, $g, curtask->tgid,
-    $d->d_sb->s_dev, $k,
-    str($d->d_name.name),
-    str($d->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-    str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
+  printf("D %llu %llu %llu %llu %d %lld %d\n", nsecs(boot), cpu, $s, $g, curtask->tgid, $id, -args.ret);
 }
 
 // From 6.15 the tracer attaches anon_pipe_write and fifo_pipe_write here instead; anon_pipe_write
