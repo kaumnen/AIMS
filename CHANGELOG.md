@@ -97,6 +97,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 
 ### Security
 
+- Commands in a sandbox can no longer use io_uring. `aims-exec` adds a seccomp filter that refuses `io_uring_setup`, `io_uring_enter` and `io_uring_register` with EPERM, as Docker's default profile does since 25.0. Docker 24 and older allow them, as does a daemon with a custom or unconfined profile. Ops sent through a ring with a registered personality were not recorded: opens for writing, mkdir, rename, symlink, link and delete. Cache calls sent through a ring and the close of a ring's direct descriptor were not recorded either. A refused call is recorded as `sys.denied` and raises `privileged_syscall`, as before. When the filter cannot be installed the command does not run. The toolbox image changes, so a runner builds it again.
 - `GET /api/openapi.json` needs a viewer or operator token. It answered without one and named the AIMS version. An API client that reads the schema now sends its token.
 - The image ships opentelemetry-api 1.45.2, a dependency of FastAPI. It fixes CVE-2026-126360, a denial of service through slow `traceparent` parsing.
 - The scenario page leaves out the scenario.yaml tag for viewers.

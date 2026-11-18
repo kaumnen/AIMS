@@ -144,6 +144,43 @@ async def test_sandbox_is_locked_down(backend: DockerBackend, store: LocalEventS
         await sb.close()
 
 
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_io_uring_is_refused_when_the_daemon_allows_it(
+    backend: DockerBackend, store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    create = docker_module.create_container
+
+    async def unconfined(
+        docker: aiodocker.Docker, *, config: dict[str, Any], name: str | None = None
+    ) -> Any:
+        if config["Cmd"] == ["sleep", "infinity"]:
+            host = config["HostConfig"]
+            host["SecurityOpt"] = [*host["SecurityOpt"], "seccomp=unconfined"]
+        return await create(docker, config=config, name=name)
+
+    monkeypatch.setattr(docker_module, "create_container", unconfined)
+    command = (
+        "grep Seccomp_filters /proc/self/status | tr -s '\\t' ' '; python3 -c \"import ctypes\n"
+        "libc = ctypes.CDLL(None, use_errno=True)\n"
+        'print(libc.syscall(425, 1, ctypes.create_string_buffer(120)), ctypes.get_errno())"'
+    )
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(command, timeout_s=10)
+    finally:
+        await sb.close()
+
+    # One filter: the daemon applied none, so the refusal is aims-exec's own.
+    assert result.stdout == b"Seccomp_filters: 1\n-1 1\n"
+    denied = [
+        p
+        for p in (e.payload() for e in await events(store, run_id, "sys.denied"))
+        if isinstance(p, SysDenied) and p.exec_id == result.finished.exec_id
+    ]
+    assert [(p.syscall, p.errno) for p in denied] == [("io_uring_setup", 1)]
+
+
 async def test_masked_proc_files_read_empty(backend: DockerBackend, store: LocalEventStore) -> None:
     command = "for f in /proc/meminfo /proc/loadavg /proc/stat /proc/uptime; do wc -c < $f; done"
     _, plain = await sandbox(backend, store)

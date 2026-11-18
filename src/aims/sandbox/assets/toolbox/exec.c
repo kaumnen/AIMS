@@ -14,6 +14,13 @@
  * in short slices, and a slice that took far longer than asked is taken as a
  * freeze and moves the deadline on by the excess.
  *
+ * PROG and everything it starts cannot use io_uring: a seccomp filter makes
+ * io_uring_setup, io_uring_enter and io_uring_register fail with EPERM, as
+ * Docker's default profile does since 25.0. Ops sent through a ring with a
+ * registered personality skip some kernel records. A daemon may run an older
+ * or a custom profile. When the filter cannot be installed, PROG does not run
+ * and aims-exec exits 125.
+ *
  * -k ends what a cancelled exec started: each process whose command line is
  * ARG... exactly gets SIGKILL to the process group of each of its children,
  * the group the deadline ends, then SIGKILL itself. The process is stopped
@@ -25,13 +32,39 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <linux/filter.h>
+#include <linux/seccomp.h>
 #include <signal.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/prctl.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+
+/* io_uring_setup, io_uring_enter and io_uring_register. Every architecture
+ * takes these numbers from the shared table, the 32-bit calls of a 64-bit
+ * kernel too, so the filter needs no architecture check. The x32 bit is
+ * cleared first. */
+#define URING_FIRST 425
+#define URING_LAST 427
+#define X32_BIT 0x40000000u
+
+static int refuse_uring(void) {
+    struct sock_filter code[] = {
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+        BPF_STMT(BPF_ALU | BPF_AND | BPF_K, ~X32_BIT),
+        BPF_JUMP(BPF_JMP | BPF_JGE | BPF_K, URING_FIRST, 0, 2),
+        BPF_JUMP(BPF_JMP | BPF_JGT | BPF_K, URING_LAST, 1, 0),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+    };
+    struct sock_fprog prog = {sizeof code / sizeof code[0], code};
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) return -1;
+    return prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog);
+}
 
 static long long now_ms(void) {
     struct timespec t;
@@ -177,6 +210,10 @@ int main(int argc, char **argv) {
     long long timeout = atoll(argv[first]);
     long long grace = atoll(argv[first + 1]);
     char **prog = argv + first + 2;
+    if (refuse_uring() != 0) {
+        perror("aims-exec: seccomp");
+        return 125;
+    }
     sigset_t chld;
     sigemptyset(&chld);
     sigaddset(&chld, SIGCHLD);
