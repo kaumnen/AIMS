@@ -57,7 +57,7 @@ def monitor(action: str, *agents: str, simulated: bool = False, mode: str = "hum
     return Draft(payload, agents[0] if len(agents) == 1 else None)
 
 
-def operator(action: str, agent: str | None = None, **fields: str) -> Draft:
+def operator(action: str, agent: str | None = None, **fields: str | bool) -> Draft:
     return Draft(OperatorAction.model_validate({"action": action, **fields}), agent)
 
 
@@ -155,6 +155,18 @@ async def test_a_monitor_resume_leaves_an_operator_pause(store: LocalEventStore)
 async def test_an_operator_resume_ends_the_monitors_pause_too(store: LocalEventStore) -> None:
     run_id = await store.create_run(STARTED)
     await store.append(run_id, [monitor("pause", "a1"), operator("resume", "a1", then="deny")])
+    assert await holds(store, run_id) == []
+
+
+async def test_an_operator_only_resume_leaves_the_monitors_pause(store: LocalEventStore) -> None:
+    run_id = await store.create_run(STARTED)
+    await store.append(
+        run_id, [monitor("pause", "a1"), operator("pause", "a1"), operator("pause", "a2")]
+    )
+    await store.append(run_id, [operator("resume", then="continue", operator_only=True)])
+    assert await holds(store, run_id) == [("a1", "monitor")]
+
+    await store.append(run_id, [operator("resume", "a1", then="continue")])
     assert await holds(store, run_id) == []
 
 

@@ -19,7 +19,7 @@ from test_server import FakeRunner, push_forged
 from typer.testing import CliRunner
 
 from aims.cli import app
-from aims.events import Draft, LocalEventStore, MonitorAction
+from aims.events import LocalEventStore
 from aims.mcp.client import Api
 from aims.mcp.server import build
 from aims.server import api as routes
@@ -335,20 +335,22 @@ async def test_control_cancels_a_queued_run_and_waits_for_a_runners_answer(
 async def test_resume_leaves_a_monitors_pause_to_the_person(
     cp: CP, local: LocalEventStore, fake: FakeRunner
 ) -> None:
-    pause = Draft(
-        MonitorAction(action="pause", agents=["a"], flags=[1], mode="human", reason="flagged")
-    )
-    run_id, task = await live(cp, local, fake, [call(1), pause])
-    async with cp.client(cp.operator) as api:
-        held = (await api.get(f"/api/runs/{run_id}")).json()["run"]["held"]
-        assert [(h["agent"], h["by"]) for h in held] == [("a", "monitor")]
+    run_id, task = await live(cp, local, fake, [call(1)])
+    refused = "agent a waits on the monitor's pause"
+
+    async def answer() -> CommandMessage:
+        command = await fake.next(CommandMessage)
+        await fake.client.ack(command.id, Ack(ok=False, outcome=refused))
+        return command
+
     async with client(cp, cp.operator, act=True) as c:
-        for agent in (None, "a"):
-            args = {"run_id": run_id, "action": "resume"} | ({"agent": agent} if agent else {})
-            said = error(await c.call_tool("control", args))
-            assert said.startswith("agent a waits on the monitor's pause.")
-    async with cp.client(cp.operator) as api:
-        assert (await api.get(f"/api/runs/{run_id}/commands")).json() == []
+        answering = asyncio.create_task(answer())
+        args = {"run_id": run_id, "action": "resume", "agent": "a"}
+        said = data(await c.call_tool("control", args))
+        command = await answering
+        assert (command.command.agent, command.command.operator_only) == ("a", True)
+        assert (said["action"], said["state"]) == ("resume", "failed")
+        assert said["outcome"] == f"failed: {refused}"
     await seal(local, run_id, task)
 
 

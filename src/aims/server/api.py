@@ -1286,6 +1286,7 @@ class ResumeBody(BaseModel):
     then: ResumeThen = "continue"
     text: Utf8 | None = None
     reason: Utf8 | None = None
+    operator_only: bool = False
 
 
 class SweepBody(BaseModel):
@@ -1365,6 +1366,8 @@ async def command(
     parts = [f"agent {action.agent}"] if action.agent else []
     if action.action == "resume" and action.then != "continue":
         parts.append(f"then {action.then}")
+    if action.operator_only:
+        parts.append("operator only")
     note.detail = ", ".join(parts) or None
     run_id = _run_id(run_id)
     job = await state.db.job(run_id)
@@ -1423,15 +1426,25 @@ async def resume_run(
 ) -> CommandSent:
     """Let paused agents go on. `then` is what comes first: `continue`, `kill`, `inject` the
     `text`, or `deny` the tool call the agent is held at, which does not run; the agent gets
-    the configured `denied` reply, never `text` or `reason`."""
+    the configured `denied` reply, never `text` or `reason`. With `operator_only` a monitor's
+    pause stays: the runner refuses the resume while the monitor holds an agent it names."""
     if body.then == "inject" and not body.text:
         raise ProblemException(422, "Invalid request", "an inject needs text")
     if body.then == "deny" and body.text:
         raise ProblemException(
             422, "Invalid request", "a deny takes no text; the agent gets the `denied` reply"
         )
+    if body.then == "kill" and body.operator_only:
+        raise ProblemException(
+            422, "Invalid request", "a kill ends every pause; leave out operator_only"
+        )
     act = CommandAction(
-        action="resume", agent=body.agent, then=body.then, text=body.text, reason=body.reason
+        action="resume",
+        agent=body.agent,
+        then=body.then,
+        text=body.text,
+        reason=body.reason,
+        operator_only=body.operator_only,
     )
     return await command(state, run_id, act, principal, note)
 

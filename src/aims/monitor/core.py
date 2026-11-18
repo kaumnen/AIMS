@@ -623,7 +623,8 @@ class Monitor:
             self._operator_paused.update(targets)
         elif action == "resume":
             self._operator_paused.difference_update(targets)
-            self._release(targets)
+            if not event.data.get("operator_only"):
+                self._release(targets)
         elif action in ("kill", "cancel"):
             if action == "kill":
                 self._killed = True

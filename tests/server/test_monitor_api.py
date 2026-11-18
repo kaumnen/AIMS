@@ -249,16 +249,23 @@ async def test_sweep_and_deny_reach_the_runner(
             "deny",
             None,
         )
+        r = await c.post(f"/api/runs/{run_id}/resume", json={"agent": "a", "operator_only": True})
+        assert r.status_code == 202, r.text
+        mine = await fake.next(CommandMessage)
+        assert (mine.command.then, mine.command.operator_only) == ("continue", True)
         r = await c.post(f"/api/runs/{run_id}/resume", json={"then": "deny", "text": "why"})
         assert r.status_code == 422
         r = await c.post(f"/api/runs/{run_id}/resume", json={"then": "explode"})
         assert r.status_code == 422
+        r = await c.post(f"/api/runs/{run_id}/resume", json={"then": "kill", "operator_only": True})
+        assert r.status_code == 422
+        assert r.json()["detail"] == "a kill ends every pause; leave out operator_only"
         r = await c.post(f"/api/runs/{bare}/sweep", json={})
         assert (r.status_code, r.json()["code"]) == (409, "no_monitor")
         runners = {x["name"]: x for x in (await c.get("/api/runners")).json()}
         assert runners["fake"]["kinds"] == ["scenario", "models.check"]
         listed = (await c.get(f"/api/runs/{run_id}/commands")).json()
-        assert [x["action"] for x in listed] == ["sweep", "resume"]
+        assert [x["action"] for x in listed] == ["sweep", "resume", "resume"]
     await seal(local, run_id, task)
     await seal(local, bare, bare_task)
 

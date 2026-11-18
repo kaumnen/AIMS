@@ -641,8 +641,7 @@ def add_actions(mcp: MCPServer, api: Api) -> None:
         if agent is not None and action in ("kill", "cancel"):
             raise ToolError(f"a {action} stops the whole run; leave out agent")
         if action == "resume":
-            await operator_holds(api, run_id, agent)
-            body: dict[str, Any] = {"agent": agent, "then": "continue", "reason": reason}
+            body: dict[str, Any] = {"agent": agent, "reason": reason, "operator_only": True}
         elif action == "pause":
             body = {"agent": agent, "reason": reason}
         else:
@@ -651,24 +650,6 @@ def add_actions(mcp: MCPServer, api: Api) -> None:
         if sent.get("state") == "cancelled":
             return {"state": "cancelled", "outcome": "cancelled before it started"}
         return await answer_of(api, run_id, sent)
-
-
-async def operator_holds(api: Api, run_id: str, agent: str | None) -> None:
-    """Raises ToolError when an agent a resume would let go waits on a monitor's pause."""
-    found = await api.get(f"/runs/{seg(run_id)}")
-    holds = found.get("run", {}).get("held") or []
-    waiting = sorted(
-        {
-            str(h.get("agent"))
-            for h in holds
-            if h.get("by") == "monitor" and (agent is None or h.get("agent") == agent)
-        }
-    )
-    if waiting:
-        raise ToolError(
-            f"agent {', '.join(waiting)} waits on the monitor's pause. A person answers it in"
-            " the AIMS UI or with `aims control`."
-        )
 
 
 async def answer_of(api: Api, run_id: str, sent: dict[str, Any]) -> dict[str, Any]:

@@ -835,7 +835,8 @@ export interface paths {
          * Resume Run
          * @description Let paused agents go on. `then` is what comes first: `continue`, `kill`, `inject` the
          *     `text`, or `deny` the tool call the agent is held at, which does not run; the agent gets
-         *     the configured `denied` reply, never `text` or `reason`.
+         *     the configured `denied` reply, never `text` or `reason`. With `operator_only` a monitor's
+         *     pause stays: the runner refuses the resume while the monitor holds an agent it names.
          */
         post: operations["resume_run"];
         delete?: never;
@@ -2528,8 +2529,9 @@ export interface components {
         /**
          * CommandAction
          * @description An operator request for one run, as the runner gets it. `then` belongs to a resume:
-         *     continue, kill, inject `text`, or deny the tool call the agent is held at. `sweep` asks the
-         *     run's monitor for a sweep now, of `agent` or of every agent.
+         *     continue, kill, inject `text`, or deny the tool call the agent is held at. So does
+         *     `operator_only`, which leaves a monitor's pause in place. `sweep` asks the run's monitor
+         *     for a sweep now, of `agent` or of every agent.
          */
         CommandAction: {
             /**
@@ -2542,6 +2544,11 @@ export interface components {
              * @default null
              */
             agent: string | null;
+            /**
+             * Operator Only
+             * @default false
+             */
+            operator_only: boolean;
             /**
              * Reason
              * @default null
@@ -5355,8 +5362,9 @@ export interface components {
          * OperatorAction
          * @description What an operator asked of a run, recorded by its runner before acting on it. The event's
          *     agent is the agent it targets, none for the whole run. `then` is what a resume does next;
-         *     deny refuses the tool call the agent holds at. `sweep` asks the monitor for a sweep now.
-         *     `token` names the token the request came with.
+         *     deny refuses the tool call the agent holds at. An `operator_only` resume leaves a monitor's
+         *     pause in place. `sweep` asks the monitor for a sweep now. `token` names the token the
+         *     request came with.
          */
         OperatorAction: {
             /**
@@ -5369,6 +5377,11 @@ export interface components {
              * @default null
              */
             command_id: string | null;
+            /**
+             * Operator Only
+             * @default false
+             */
+            operator_only: boolean;
             /**
              * Reason
              * @default null
@@ -6381,6 +6394,11 @@ export interface components {
         ResumeBody: {
             /** Agent */
             agent?: string | null;
+            /**
+             * Operator Only
+             * @default false
+             */
+            operator_only?: boolean;
             /** Reason */
             reason?: string | null;
             /** Text */

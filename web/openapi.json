@@ -2233,7 +2233,7 @@
       },
       "CommandAction": {
         "additionalProperties": false,
-        "description": "An operator request for one run, as the runner gets it. `then` belongs to a resume:\ncontinue, kill, inject `text`, or deny the tool call the agent is held at. `sweep` asks the\nrun's monitor for a sweep now, of `agent` or of every agent.",
+        "description": "An operator request for one run, as the runner gets it. `then` belongs to a resume:\ncontinue, kill, inject `text`, or deny the tool call the agent is held at. So does\n`operator_only`, which leaves a monitor's pause in place. `sweep` asks the run's monitor\nfor a sweep now, of `agent` or of every agent.",
         "properties": {
           "action": {
             "enum": [
@@ -2258,6 +2258,11 @@
             ],
             "default": null,
             "title": "Agent"
+          },
+          "operator_only": {
+            "default": false,
+            "title": "Operator Only",
+            "type": "boolean"
           },
           "reason": {
             "anyOf": [
@@ -2320,7 +2325,8 @@
           "then",
           "text",
           "reason",
-          "token"
+          "token",
+          "operator_only"
         ],
         "title": "CommandAction",
         "type": "object"
@@ -9329,7 +9335,7 @@
       },
       "OperatorAction": {
         "additionalProperties": false,
-        "description": "What an operator asked of a run, recorded by its runner before acting on it. The event's\nagent is the agent it targets, none for the whole run. `then` is what a resume does next;\ndeny refuses the tool call the agent holds at. `sweep` asks the monitor for a sweep now.\n`token` names the token the request came with.",
+        "description": "What an operator asked of a run, recorded by its runner before acting on it. The event's\nagent is the agent it targets, none for the whole run. `then` is what a resume does next;\ndeny refuses the tool call the agent holds at. An `operator_only` resume leaves a monitor's\npause in place. `sweep` asks the monitor for a sweep now. `token` names the token the\nrequest came with.",
         "properties": {
           "action": {
             "enum": [
@@ -9354,6 +9360,11 @@
             ],
             "default": null,
             "title": "Command Id"
+          },
+          "operator_only": {
+            "default": false,
+            "title": "Operator Only",
+            "type": "boolean"
           },
           "reason": {
             "anyOf": [
@@ -9419,7 +9430,8 @@
           "text",
           "reason",
           "token",
-          "command_id"
+          "command_id",
+          "operator_only"
         ],
         "title": "OperatorAction",
         "type": "object"
@@ -12079,6 +12091,11 @@
               }
             ],
             "title": "Agent"
+          },
+          "operator_only": {
+            "default": false,
+            "title": "Operator Only",
+            "type": "boolean"
           },
           "reason": {
             "anyOf": [
@@ -22475,7 +22492,7 @@
     },
     "/api/runs/{run_id}/resume": {
       "post": {
-        "description": "Let paused agents go on. `then` is what comes first: `continue`, `kill`, `inject` the\n`text`, or `deny` the tool call the agent is held at, which does not run; the agent gets\nthe configured `denied` reply, never `text` or `reason`.",
+        "description": "Let paused agents go on. `then` is what comes first: `continue`, `kill`, `inject` the\n`text`, or `deny` the tool call the agent is held at, which does not run; the agent gets\nthe configured `denied` reply, never `text` or `reason`. With `operator_only` a monitor's\npause stays: the runner refuses the resume while the monitor holds an agent it names.",
         "operationId": "resume_run",
         "parameters": [
           {

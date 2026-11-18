@@ -7,6 +7,7 @@ import tarfile
 import time
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import aiodocker
@@ -30,7 +31,7 @@ from aims.events import (
 from aims.prompts import Prompts
 from aims.run.control import ControlGate
 from aims.run.job import Job, bundle_of, runner_for, scenario_jobs
-from aims.run.runner import RESTARTED, Bench, Options, Runner, seal_unsealed
+from aims.run.runner import RESTARTED, Bench, Options, RunError, Runner, seal_unsealed
 from aims.sandbox import DockerBackend
 from aims.sandbox import docker as docker_module
 from aims.sandbox.base import SandboxInfo, SandboxSpec
@@ -682,6 +683,56 @@ async def test_a_paused_agent_holds_before_it_takes_an_inject() -> None:
     gate.resume(["a"])
     verdict = await gate.check(point())
     assert (verdict.action, verdict.text) == ("inject", "later")
+
+
+async def test_an_operator_only_resume_leaves_the_monitors_pause(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with await LocalEventStore.open(tmp_path / "runs") as store:
+        bench = Bench(store, cast(Any, None), models(profile()), gate=ControlGate())
+        runner = Runner(bench, load(scenario(tmp_path, "a", "b")), Options())
+        started = RunStarted(scenario="control", oversight="observe", agents=["a", "b"])
+        runner.run_id = run_id = await store.create_run(started)
+        await runner.pause(["a"], "flag 1")
+        await runner.operate("pause", agent="b")
+        with pytest.raises(RunError, match="agent a waits on the monitor's pause"):
+            await runner.operate("resume", operator_only=True)
+        assert await runner.operate("resume", agent="b", operator_only=True) is None
+        assert (runner.paused("a"), runner.paused("b")) == (True, False)
+
+        # The monitor pauses b while the resume is being recorded.
+        await runner.operate("pause", agent="b")
+        append = store.append
+
+        async def racing(run_id: str, drafts: Any) -> Any:
+            monkeypatch.setattr(store, "append", append)
+            done = await append(run_id, drafts)
+            await runner.pause(["b"], "flag 2")
+            return done
+
+        monkeypatch.setattr(store, "append", racing)
+        note = await runner.operate("resume", agent="b", operator_only=True)
+        assert note == "agent b waits on the monitor's pause and stays paused"
+        assert runner.paused("b")
+
+        assert await runner.operate("resume") is None
+        assert (runner.paused("a"), runner.paused("b")) == (False, False)
+        actions = await of(store, run_id, OperatorAction, "operator.action")
+        assert [(a.action, a.operator_only) for a in actions] == [
+            ("pause", False),
+            ("resume", True),
+            ("pause", False),
+            ("resume", True),
+            ("resume", False),
+        ]
+        # A finished agent waits on nothing.
+        await runner.pause(["b"], "flag 3")
+        runner.agents["b"] = cast(Any, SimpleNamespace(done=True))
+        assert await runner.operate("resume", operator_only=True) is None
+        await runner.pause(["a"], "flag 4")
+        assert await runner.operate("resume", then="kill", operator_only=True) is None
+        (action,) = (await of(store, run_id, OperatorAction, "operator.action"))[-1:]
+        assert (action.then, action.operator_only) == ("kill", False)
 
 
 async def test_a_command_sent_twice_while_running_is_carried_out_once(tmp_path: Path) -> None:
