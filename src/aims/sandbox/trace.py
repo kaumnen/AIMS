@@ -12,7 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
-from aims.events import MAX_INT, FdKind
+from aims.events import MAX_INT, FdKind, LookOp
 from aims.sandbox.base import (
     Cache,
     Exit,
@@ -21,6 +21,8 @@ from aims.sandbox.base import (
     Fork,
     Ipc,
     Kernel,
+    Look,
+    LookSkip,
     Mem,
     Net,
     Ns,
@@ -457,6 +459,23 @@ class Refused(Raw):
 
 
 @dataclass(frozen=True, slots=True)
+class RawLook(Raw):
+    """A name looked up without opening it: the walk of what it reached, or the name as given
+    with the lookup's errno when it failed. A lookup `again` beneath the directory of thread
+    `tid`'s last one of its kind comes without that directory's walk: a found one as its own name
+    only, a failed relative one with no base. `dir` names that directory."""
+
+    op: LookOp
+    found: Walk | None
+    missed: Named | None = None
+    errno: int | None = None
+    tid: int | None = None
+    again: bool = False
+    # The directory's address and the kernel's count of directory renames when it was printed.
+    dir: tuple[int, int] | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class RawCache(Raw):
     """A page-cache call with the walk of the fd's file, or None for an invalid fd."""
 
@@ -636,6 +655,65 @@ def _write(body: str, at: Stamp) -> File:
 def _read(body: str, at: Stamp) -> File:
     pid, path = body.split(" ", 1)
     return File(int(pid), "read", path, partial=_cut(path), at=at)
+
+
+LOOK_OPS: dict[int, LookOp] = {1: "stat", 2: "access", 3: "readlink", 4: "chdir", 5: "list"}
+# The depth of a lookup whose directory is the one the same thread's last lookup of its kind
+# had: the tracer prints no walk for it, so the reader joins it to the one it kept.
+AGAIN = -3
+
+
+def _look_op(value: str) -> LookOp:
+    op = LOOK_OPS.get(int(value))
+    if op is None:
+        raise ValueError("unknown lookup")
+    return op
+
+
+@record("j")
+def _looked(body: str, at: Stamp) -> Look:
+    """A found name with the path the kernel gives the file it reached."""
+    f = body.split(" ", 2)
+    if len(f) != 3:
+        raise ValueError("short lookup line")
+    return Look(int(f[0]), _look_op(f[1]), f[2], partial=_cut(f[2]), at=at)
+
+
+# Lookups a process may log in a second; the tracer counts the rest.
+LOOK_BUDGET = 2000
+
+
+@record("l")
+def _skipped(body: str, at: Stamp) -> LookSkip:
+    pid, count = _ints(body, 2)
+    return LookSkip(pid, _clamp(count), at=at)
+
+
+@record("k")
+def _found(body: str, at: Stamp) -> RawLook:
+    f = body.split(" ", 7)
+    if len(f) != 8:
+        raise ValueError("short lookup line")
+    pid, tid, dev, depth, ptr, gen = (int(x) for x in f[:2] + f[3:7])
+    if depth == AGAIN:
+        if not f[7] or "/" in f[7]:
+            raise ValueError("a name beneath the last directory must be one name")
+        walk = Walk(dev, (f[7].encode(),))
+    else:
+        walk = _walk(dev, depth, f[7].split("/"))
+    op = _look_op(f[2])
+    return RawLook(pid, op, walk, tid=tid, again=depth == AGAIN, dir=(ptr, gen), at=at)
+
+
+@record("m")
+def _missed(body: str, at: Stamp) -> RawLook:
+    f = body.split(" ", 9)
+    if len(f) != 10:
+        raise ValueError("expected ten failed lookup fields")
+    pid, tid, errno, dev, depth, ptr, gen = (int(x) for x in f[:2] + f[3:8])
+    again = depth == AGAIN
+    name = Named(f[9], None if again else _hex_walk(dev, depth, f[8]), _cut(f[9]))
+    return RawLook(pid, _look_op(f[2]), None, name, errno, tid, again, (ptr, gen), at=at)
 
 
 def _walked(body: str) -> tuple[int, Walk | None]:
@@ -820,6 +898,9 @@ def _ptrace(body: str, at: Stamp) -> Ptrace:
 PROC_LINKS: dict[int, str] = {-1: "proc_cwd", -2: "proc_root", -3: "proc_exe"}
 FMODE_EXEC = 0x20
 FMODE_PATH = 0x4000
+# A lookup through a link prints its op from LOOK_OPS with this bit in place of the open's mode.
+LOOKUP = 0x10000
+LINK_LOOKS: dict[int, Literal["stat", "access", "chdir"]] = {1: "stat", 2: "access", 4: "chdir"}
 ACCESS: dict[int, Literal["read", "write", "read_write"]] = {1: "read", 2: "write", 3: "read_write"}
 
 
@@ -832,9 +913,16 @@ def _proc_link(body: str, at: Stamp) -> Ptrace:
     request = PROC_LINKS.get(link, "proc_fd" if link >= 0 else "")
     if not request:
         raise ValueError("unknown proc link")
-    # An O_PATH open comes with the file's own name only, which a pipe does not have.
+    # An O_PATH open or a lookup comes with the file's own name only, which a pipe does not have.
     path: str | None = f[8]
-    if mode & FMODE_PATH:
+    if mode & LOOKUP:
+        # A readlink reads the link itself and never follows it.
+        access = LINK_LOOKS.get(mode & 0xFF)
+        if access is None:
+            raise ValueError("unknown lookup through a link")
+        partial = bool(path)
+        path = path or None
+    elif mode & FMODE_PATH:
         access, partial = "path", bool(path)
         path = path or None
     else:

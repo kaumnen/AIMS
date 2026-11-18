@@ -15,6 +15,7 @@ from aims.events import (
     BlobRef,
     Draft,
     Event,
+    FileLook,
     FileSetattr,
     FsSnapshot,
     IpcEvent,
@@ -45,6 +46,8 @@ from aims.sandbox.base import (
     File,
     Fork,
     Ipc,
+    Look,
+    LookSkip,
     Lost,
     Mem,
     Net,
@@ -776,6 +779,69 @@ async def test_caps_spill_what_they_do_not_log(
         ("proc.exit", 104, None),
     ]
     assert all(d["exec_id"] == result.finished.exec_id for _, d in records)
+
+
+async def test_lookups_dedupe_and_spill_under_their_own_cap(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(audit_module.CAPS, "looks", 2)
+    monkeypatch.setitem(audit_module.CAPS, "files", 1)
+    sb = FakeSandbox()
+    looks = [
+        Look(100, "stat", "/.dockerenv", at=AT),
+        Look(100, "stat", "/.dockerenv", at=AT),
+        Look(100, "stat", "/.dockerenv", 2, at=AT),
+        Look(100, "list", "/work", at=AT),
+    ]
+    sb.steps.append(
+        step(
+            root(100),
+            *looks,
+            File(100, "read", "/work/a", at=AT),
+            LookSkip(100, 7, at=AT),
+            Exit(100, 0, None, at=AT),
+        )
+    )
+    run_id, audited = await start(store, sb)
+    result = await audited.exec("ls", timeout_s=5)
+    assert result.finished.looks_skipped == 7
+    await audited.close()
+
+    evs = await events(store, run_id)
+    kept = [e.payload() for e in evs if e.type == "file.look"]
+    assert [(p.op, p.path, p.errno) for p in kept if isinstance(p, FileLook)] == [
+        ("stat", "/.dockerenv", None),
+        ("stat", "/.dockerenv", 2),
+    ]
+    # Looks past their cap spill without taking the room opens have.
+    assert kinds(evs).count("file.access") == 1
+    (spill,) = [e.payload() for e in evs if e.type == "audit.spill"]
+    assert isinstance(spill, AuditSpill)
+    assert spill.kinds == {"looks": 1}
+    assert result.finished.spilled == 1
+
+
+async def test_lookups_leave_room_in_the_spill_for_other_records(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(audit_module.CAPS, "looks", 1)
+    monkeypatch.setitem(audit_module.CAPS, "files", 1)
+    monkeypatch.setattr(audit_module, "SPILL_BYTES", 4000)
+    monkeypatch.setattr(audit_module, "LOOK_SPILL_BYTES", 2000)
+    sb = FakeSandbox()
+    looks = [Look(100, "stat", f"/work/{i}", at=AT) for i in range(100)]
+    files = [File(100, "read", f"/data/{i}", at=AT) for i in range(3)]
+    sb.steps.append(step(root(100), *looks, *files, Exit(100, 0, None, at=AT)))
+    run_id, audited = await start(store, sb)
+    result = await audited.exec("find /work", timeout_s=5)
+    await audited.close()
+
+    (spill,) = [e.payload() for e in await events(store, run_id) if e.type == "audit.spill"]
+    assert isinstance(spill, AuditSpill)
+    # A stat flood fills its share and is dropped past it; the opens after it still spill.
+    assert spill.kinds["files"] == 2
+    assert 0 < spill.kinds["looks"] < 99
+    assert result.finished.dropped == 99 - spill.kinds["looks"]
 
 
 async def test_spill_is_bounded_and_late_records_still_spill(

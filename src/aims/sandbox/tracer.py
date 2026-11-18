@@ -26,6 +26,7 @@ from aims.sandbox.base import (
     Fork,
     Ipc,
     Kernel,
+    Look,
     Lost,
     Mem,
     PreExec,
@@ -56,6 +57,7 @@ from aims.sandbox.trace import (
     RawDenied,
     RawExec,
     RawFifo,
+    RawLook,
     RawMmap,
     RawSetattr,
     RawSync,
@@ -155,6 +157,17 @@ PROC_LINKS = (
     r"'/^fentry:vmlinux:proc_pid_get_link /,/^tracepoint:sched:sched_process_exit \/@plink/d' $f; "
     "fi; "
 )
+# The calls that mark a lookup with its op are static, so a kernel may inline them away; each
+# op whose call is missing is dropped, and the tracer's log says so. Without filename_lookup no
+# lookup is logged.
+LOOKS = (
+    "for c in vfs_statx do_faccessat do_readlinkat; do grep -qx $c $a || { "
+    'echo "$c cannot be traced on this kernel, so its lookups are not recorded"; '
+    r"""sed -i "/^f\(entry\|exit\):vmlinux:$c /d" $f; }; done; """
+    "if ! grep -qx filename_lookup $a; then "
+    'echo "filename_lookup cannot be traced on this kernel, so no lookup is recorded"; sed -i '
+    r"'/^f\(entry\|exit\):vmlinux:filename_lookup /,/^}/d' $f; fi; "
+)
 # Kernels from 6.15 split pipe_write into anon_pipe_write and fifo_pipe_write, and 7.0 renamed
 # do_filp_open to do_file_open.
 TRACE = (
@@ -167,6 +180,7 @@ TRACE = (
     r"sed -i 's/^\(fentry\|fexit\):vmlinux:do_filp_open /\1:vmlinux:do_file_open /' $f; fi; "
     + PRE_7
     + PROC_LINKS
+    + LOOKS
     + "v=$(uname -r); m=${v%%.*}; n=${v#*.}; n=${n%%.*}; "
     + BACKING
     # cachestat arrived in 6.5; older kernels have neither the syscall nor its tracepoint.
@@ -205,6 +219,28 @@ def _resolve(mounts: Mounts, named: Named) -> tuple[str, bool]:
     base, partial = mounts.resolve(named.base)
     path = posixpath.join(base, named.name) if named.name else base
     return path, partial or named.cut
+
+
+def _lexical(path: str) -> tuple[str, bool]:
+    """`path` without repeated slashes and `.` parts, with each `..` taking off the part before
+    it, and whether it held a `..`: a symlink before one would have led elsewhere."""
+    parts: list[str] = []
+    dotdot = False
+    for part in path.split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            dotdot = True
+            if parts and parts[-1] != "..":
+                parts.pop()
+            elif not path.startswith("/"):
+                parts.append(part)
+            continue
+        parts.append(part)
+    joined = "/".join(parts)
+    if path.startswith("/"):
+        return f"/{joined}", dotdot
+    return joined or ".", dotdot
 
 
 @dataclass(slots=True)
@@ -290,6 +326,10 @@ class Tracer:
         self._env: OrderedDict[int, bytearray] = OrderedDict()
         self._env_bytes: dict[int, int] = {}
         self._argv: OrderedDict[int, bytearray] = OrderedDict()
+        # The directory each thread's last failed relative lookup was beneath.
+        self._bases: OrderedDict[int, tuple[tuple[int, int], Walk]] = OrderedDict()
+        # The directory of each thread's last found lookup.
+        self._parents: OrderedDict[int, tuple[tuple[int, int], Walk]] = OrderedDict()
         self._roots: OrderedDict[int, int] = OrderedDict()
         # The pid namespace of each sandbox cgroup, from the runtime's first exec in it.
         self._cgroups: OrderedDict[int, int] = OrderedDict()
@@ -876,6 +916,23 @@ class Tracer:
                         target, cut = _resolve(route.mounts, other)
                         partial = partial or cut
                     route.put(File(pid, op, path, target, errno, partial, at=item.at))
+            case RawLook(pid, op, found, missed, errno, tid, again, dir_):
+                if tid is not None and dir_ is not None:
+                    if found is not None:
+                        found = self._parent(tid, dir_, found, again=again)
+                    elif missed is not None and not missed.name.startswith("/"):
+                        missed = self._base(tid, dir_, missed, again=again)
+                route = self._route(pid)
+                if route is not None:
+                    if found is not None:
+                        path, partial = route.mounts.resolve(found)
+                    elif missed is not None:
+                        path, partial = _resolve(route.mounts, missed)
+                        path, dotdot = _lexical(path)
+                        partial = partial or dotdot
+                    else:
+                        return
+                    route.put(Look(pid, op, path, errno, partial, at=item.at))
             case RawCache(pid, op, walk):
                 route = self._route(pid)
                 if route is not None:
@@ -900,6 +957,36 @@ class Tracer:
                 route = self._route(pid)
                 if route is not None:
                     route.put(item)
+
+    def _parent(self, tid: int, dir_: tuple[int, int], walk: Walk, *, again: bool) -> Walk:
+        """`walk` joined to the directory of its thread's last found lookup when it came `again`
+        as one name and names the same directory, after which its own directory is remembered for
+        the thread. One whose directory's walk is not at hand stays its own name, partial."""
+        if again:
+            kept = self._parents.get(tid)
+            if kept is None or kept[0] != dir_:
+                return walk
+            return Walk(kept[1].dev, walk.names + kept[1].names)
+        if len(walk.names) > 1:
+            self._parents[tid] = (dir_, Walk(walk.dev, walk.names[1:]))
+            self._parents.move_to_end(tid)
+            if len(self._parents) > MEMORY:
+                self._parents.popitem(last=False)
+        return walk
+
+    def _base(self, tid: int, dir_: tuple[int, int], named: Named, *, again: bool) -> Named:
+        """`named` with the directory its thread's last failed relative lookup was beneath when it
+        came `again` without one and names the same directory, after which that directory is
+        remembered for the thread."""
+        if again:
+            kept = self._bases.get(tid)
+            return dataclasses.replace(named, base=kept[1] if kept and kept[0] == dir_ else None)
+        if named.base is not None:
+            self._bases[tid] = (dir_, named.base)
+            self._bases.move_to_end(tid)
+            if len(self._bases) > MEMORY:
+                self._bases.popitem(last=False)
+        return named
 
     def _route(self, pid: int) -> Route | None:
         route = self._lookup(pid)

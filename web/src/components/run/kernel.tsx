@@ -24,6 +24,7 @@ const typeWords: Record<string, [string, string]> = {
   "proc.exec": ["proc", "procs"],
   "net.connect": ["connect", "connects"],
   "ipc.event": ["ipc", "ipc"],
+  "file.look": ["look", "looks"],
   "file.write": ["file write", "file writes"],
   "file.setattr": ["setattr", "setattrs"],
   "sys.denied": ["denied call", "denied calls"],

@@ -21,6 +21,8 @@ from aims.sandbox.base import (
     File,
     Fork,
     Ipc,
+    Look,
+    LookSkip,
     Lost,
     Mem,
     Net,
@@ -60,6 +62,7 @@ from aims.sandbox.trace import (
     RawDenied,
     RawExec,
     RawFifo,
+    RawLook,
     RawMmap,
     RawSetattr,
     RawSync,
@@ -459,6 +462,58 @@ def test_parse_an_open_through_another_processs_proc_link() -> None:
     assert isinstance(parse(line("o 10 11 4 5 1 9")), Garbled)
 
 
+def test_parse_a_lookup_through_another_processs_proc_link() -> None:
+    held = parse(line("o 10 11 4 5 65537 9 33188 2035054128 held"))
+    assert held == Ptrace(
+        10,
+        11,
+        "proc_fd",
+        ns_target=4,
+        fd=5,
+        access="stat",
+        kind="file",
+        inode=9,
+        path="held",
+        path_partial=True,
+        at=PARSED,
+    )
+    cwd = parse(line("o 10 11 4 -1 65540 8 16877 2035054128 work"))
+    assert isinstance(cwd, Ptrace)
+    assert (cwd.request, cwd.access, cwd.kind) == ("proc_cwd", "chdir", "dir")
+    assert isinstance(parse(line("o 10 11 4 5 65538 9 33188 1 x")), Ptrace)
+    # A readlink reads the link itself, so it never comes through one.
+    assert isinstance(parse(line("o 10 11 4 5 65539 9 33188 1 x")), Garbled)
+
+
+def test_parse_lookups() -> None:
+    # A found stat or listing comes with the kernel's path, other found lookups with the walk of
+    # what they reached, or one name when it is beneath the thread's last directory.
+    assert parse(line("j 10 1 /work/a b")) == Look(10, "stat", "/work/a b", at=PARSED)
+    assert parse(line("j 10 5 /.aims")) == Look(10, "list", "/.aims", at=PARSED)
+    depth, text = walk("held", "work")
+    held = Walk(64, (b"held", b"work", b"/"))
+    assert parse(line(f"k 10 12 2 64 {depth} 7 0 {text}")) == RawLook(
+        10, "access", held, tid=12, dir=(7, 0), at=PARSED
+    )
+    assert parse(line("k 10 12 3 64 -3 7 1 a b")) == RawLook(
+        10, "readlink", Walk(64, (b"a b",)), tid=12, again=True, dir=(7, 1), at=PARSED
+    )
+    # A missed name is kept as given: an absolute one with no walk, a relative one with the walk
+    # of its directory, or none when it is the thread's last.
+    assert parse(line("m 10 12 1 2 0 -1 0 0 - /run/.containerenv")) == RawLook(
+        10, "stat", None, Named("/run/.containerenv", None), 2, 12, dir=(0, 0), at=PARSED
+    )
+    work_depth, work = hexwalk("work")
+    base = Walk(64, (b"work", b"/"))
+    assert parse(line(f"m 10 12 4 13 64 {work_depth} 5 0 {work} sub dir")) == RawLook(
+        10, "chdir", None, Named("sub dir", base), 13, 12, dir=(5, 0), at=PARSED
+    )
+    assert parse(line("m 10 12 2 2 64 -3 5 0 - x")) == RawLook(
+        10, "access", None, Named("x", None), 2, 12, True, (5, 0), at=PARSED
+    )
+    assert parse(line("l 10 4096")) == LookSkip(10, 4096, at=PARSED)
+
+
 def test_parse_mem_exec_and_mmap() -> None:
     assert parse(line("M 10 x 42 0 /proc/self/fd/3")) == Mem(
         10, "exec", "/proc/self/fd/3", 42, 0, at=PARSED
@@ -687,6 +742,20 @@ def test_parse_keeps_bytes_that_are_not_utf8() -> None:
         f"r 10 u 30 64 -1 {NOWALK}",
         f"r 10 n 30 {hx(b'a')} 64 -1 64 -1 {NOWALK} x",
         f"r 10 n 30 nothex 64 -1 64 -1 {NOWALK} {NOWALK} x",
+        "j 10 9 /x",
+        "j 10 1",
+        "k 10 12 1 64 -3 7 0 a/b",
+        "k 10 12 1 64 -3 7 0 ",
+        "k 10 12 1 64 -3 a",
+        f"k 10 12 9 64 1 7 0 {walk('a')[1]}",
+        f"k 10 12 1 64 2 7 0 {walk('a')[1]}",
+        "k 10 12 1 64",
+        "l 10",
+        "l 10 x",
+        "m 10 12 1 2 0 -1 0 0 -",
+        "m 10 12 7 2 0 -1 0 0 - /x",
+        "m 10 12 1 2 0 -1 - /x",
+        f"m 10 12 1 2 64 2 5 0 {hexwalk('a')[1]} x",
         "t 10 c 30 1 2 3 4 5 64",
         f"t 10 z 30 1 2 3 4 5 64 1 64 1 {walk('a')[1]}",
         f"t 10 c 30 1 2 3 4 x 64 1 {walk('a')[1]}",
@@ -1136,6 +1205,61 @@ async def test_tracer_joins_refused_names_with_their_directory() -> None:
         File(10, "link", "/etc/hard", "/work/f", errno=30, at=s[6]),
         File(10, "symlink", "/etc/s", "..", errno=30, at=s[7]),
         File(10, "delete", "/etc", errno=30, partial=True, at=s[8]),
+    ]
+    await tracer.stop()
+
+
+@pytest.mark.anyio
+async def test_tracer_resolves_lookups_where_they_led() -> None:
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    route = tracer.register(99, Mounts.parse(MOUNTINFO), SYSCALLS["aarch64"])
+    feed = Feed(tracer)
+    feed("R 0 999")
+    feed(f"E 10 1 1 1000 99 5 3 {hx(b'sh\0')}")
+    drain(route)
+
+    held_depth, held = walk("held", "_data", "aims-r-a1-work", "volumes", "docker")
+    work_depth, work = hexwalk("_data", "aims-r-a1-work", "volumes", "docker")
+    etc_depth, etc = hexwalk("etc")
+    deep_depth, deep = walk(*"abcdefghijklm")
+    s = [
+        feed("j 10 5 /proc"),
+        feed(f"k 10 12 2 {VDA1} {held_depth} 7 0 {held}"),
+        feed("k 10 12 3 64 -3 7 0 link"),
+        feed(f"k 10 13 4 {TMP} {deep_depth} 8 0 {deep}"),
+        feed("k 10 13 2 9 -3 8 0 n"),
+        feed("k 10 14 2 64 -3 9 0 n"),
+        # The full record of another directory went missing, or a rename came between.
+        feed("k 10 12 2 64 -3 6 0 other"),
+        feed("k 10 12 2 64 -3 7 1 moved"),
+        feed("m 10 12 1 2 0 -1 0 0 - //run/./.containerenv"),
+        feed("m 10 12 2 2 0 -1 0 0 - /work/../run/gone"),
+        feed(f"m 10 12 1 2 {VDA1} {work_depth} 5 0 {work} src/x"),
+        feed("m 10 12 1 2 64 -3 5 0 - y"),
+        feed(f"m 10 13 1 13 64 {etc_depth} 6 0 {etc} shadow/z"),
+        feed("m 10 14 1 2 64 -3 5 0 - lost"),
+        feed("m 10 12 1 2 64 -3 4 0 - away"),
+        feed("m 10 12 1 2 64 -1 5 0 - ../q"),
+    ]
+    assert drain(route) == [
+        Look(10, "list", "/proc", at=s[0]),
+        Look(10, "access", "/work/held", at=s[1]),
+        # Beneath the last directory the thread's found lookup was in, wherever it ran next.
+        Look(10, "readlink", "/work/link", at=s[2]),
+        Look(10, "chdir", ".../l/k/j/i/h/g/f/e/d/c/b/a", partial=True, at=s[3]),
+        Look(10, "access", ".../l/k/j/i/h/g/f/e/d/c/b/n", partial=True, at=s[4]),
+        Look(10, "access", ".../n", partial=True, at=s[5]),
+        Look(10, "access", ".../other", partial=True, at=s[6]),
+        Look(10, "access", ".../moved", partial=True, at=s[7]),
+        # A miss is kept as given, with repeated slashes and dots dropped and `..` applied.
+        Look(10, "stat", "/run/.containerenv", 2, at=s[8]),
+        Look(10, "access", "/run/gone", 2, partial=True, at=s[9]),
+        Look(10, "stat", "/work/src/x", 2, at=s[10]),
+        Look(10, "stat", "/work/y", 2, at=s[11]),
+        Look(10, "stat", "/etc/shadow/z", 13, at=s[12]),
+        Look(10, "stat", "lost", 2, partial=True, at=s[13]),
+        Look(10, "stat", "away", 2, partial=True, at=s[14]),
+        Look(10, "stat", "../q", 2, partial=True, at=s[15]),
     ]
     await tracer.stop()
 

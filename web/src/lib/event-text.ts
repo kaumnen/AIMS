@@ -21,6 +21,10 @@ export function summary(e: Event): string {
       return [str(d["op"]), str(d["path"]), d["errno"] ? `errno ${num(d["errno"])}` : ""]
         .filter(Boolean)
         .join(" ");
+    case "file.look":
+      return [str(d["op"]), str(d["path"]), d["errno"] ? `errno ${num(d["errno"])}` : ""]
+        .filter(Boolean)
+        .join(" ");
     case "file.write":
       return `write ${str(d["path"]) ?? ""} ${bytes(num(d["size"]) ?? 0)}`;
     case "file.setattr":

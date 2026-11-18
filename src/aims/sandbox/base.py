@@ -14,6 +14,7 @@ from aims.events import (
     FileOp,
     FsChangeType,
     FsKind,
+    LookOp,
     LossScope,
     Proc,
 )
@@ -277,6 +278,23 @@ class File(Kernel):
 
 
 @dataclass(frozen=True, slots=True)
+class Look(Kernel):
+    """A name looked up without opening a file, or a directory opened to list it."""
+
+    op: LookOp
+    path: str
+    errno: int | None = None
+    partial: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class LookSkip(Kernel):
+    """Lookups a process made past the tracer's budget, which it counted but did not log."""
+
+    count: int
+
+
+@dataclass(frozen=True, slots=True)
 class Close(Kernel):
     """A file opened for writing was closed, with its size then."""
 
@@ -348,8 +366,8 @@ class Ipc(Kernel):
 
 @dataclass(frozen=True, slots=True)
 class Ptrace(Kernel):
-    """A request against another process. An open through its /proc link also names the fd,
-    how the file was opened and what it is."""
+    """A request against another process. An open, stat, access or chdir through its /proc link
+    also names the fd, how the file was reached and what it is."""
 
     target: int | None
     request: str
@@ -357,7 +375,9 @@ class Ptrace(Kernel):
     errno: int | None = None
     ns_target: int | None = None
     fd: int | None = None
-    access: Literal["read", "write", "read_write", "exec", "path"] | None = None
+    access: (
+        Literal["read", "write", "read_write", "exec", "path", "stat", "access", "chdir"] | None
+    ) = None
     kind: FdKind | None = None
     inode: int | None = None
     path: str | None = None

@@ -58,6 +58,7 @@ KERNEL = frozenset(
         "proc.fork",
         "proc.exit",
         "file.access",
+        "file.look",
         "file.write",
         "file.setattr",
         "fs.snapshot",
@@ -356,6 +357,9 @@ def _policy(event: Event, written: set[str]) -> tuple[str, tuple[Any, ...] | Non
             if d.get("errno") is not None and _bytecode_cache(op, str(path)):
                 return group, None, 0, False
             return group, (op, path, d.get("target"), d.get("errno")), 20, False
+        case "file.look":
+            op = d.get("op")
+            return f"{t} {op}", ("look", op, d.get("path"), d.get("errno")), 20, True
         case "file.write":
             return t, ("write", d.get("path")), 20, False
         case "file.setattr":
@@ -420,6 +424,7 @@ def _finished(event: Event) -> dict[str, Any]:
         leftover_killed=bool(leftover) and f.get("leftover_killed"),
         dropped=f.get("dropped") or None,
         spilled=f.get("spilled") or None,
+        looks_skipped=f.get("looks_skipped") or None,
         error=f.get("error"),
     )
 
@@ -946,6 +951,10 @@ class Trajectory:
                     errno=d.get("errno"),
                     partial=d.get("partial"),
                     pid=pid,
+                )
+            case "file.look":
+                return {"op": d.get("op"), "path": cut(str(d.get("path")), FIELD_BYTES)} | _some(
+                    errno=d.get("errno"), partial=d.get("partial"), pid=pid
                 )
             case "file.write":
                 return {"path": cut(str(d.get("path")), FIELD_BYTES), "size": d.get("size")} | (

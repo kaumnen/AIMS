@@ -12,6 +12,9 @@ BEGIN {
   // a map is checked once; an unrolled or while loop of this size is too big for the verifier.
   $i = (uint64)1;
   while ($i * 380 < 16384) { @argv_chunk[$i] = $i * 380; $i++; }
+  // Gives the lookup budget's map its type: second, lookups logged in it, lookups not logged.
+  @lbud[0] = ((uint64)0, (uint64)0, (uint64)0);
+  delete(@lbud[0]);
 }
 
 // One record per cpu each second, so the tracer knows how far each cpu's stream has been read
@@ -201,13 +204,35 @@ fentry:vmlinux:security_file_open /@sandbox[cgroup] && curtask->thread_pid->leve
   }
 }
 
+// A directory opened to list it (5), outside the system paths reads skip too. In /proc the caller's
+// own directories are skipped, such as the fd list a new process walks to close its fds.
+fentry:vmlinux:security_file_open /@sandbox[cgroup] && curtask->thread_pid->level > @base && curtask->cred == curtask->real_cred && (args.file->f_inode->i_mode & 0xF000) == 0x4000/ {
+  $p = path(args.file->f_path);
+  $keep = 1;
+  if (strncmp($p, "/usr/", 5) == 0 || strncmp($p, "/usr", 5) == 0 || strncmp($p, "/lib", 4) == 0
+      || (strncmp($p, "/dev/", 5) == 0 && strncmp($p, "/dev/shm", 8) != 0)) {
+    $keep = 0;
+  } else if (args.file->f_inode->i_sb->s_magic == 0x9fa0) {
+    $pi = (struct proc_inode *)((uint64)args.file->f_inode - offsetof(struct proc_inode, vfs_inode));
+    $pf = (uint64)$pi->pid;
+    if ($pf != 0) {
+      $pt = (uint64)$pi->pid->tasks[0].first;
+      if ($pt != 0 && ((struct task_struct *)($pt - offsetof(struct task_struct, pid_links)))->tgid == curtask->tgid) { $keep = 0; }
+    }
+  }
+  if ($keep) {
+    $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+    printf("j %llu %llu %llu %llu %d 5 %s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, $p);
+  }
+}
+
 // An open through another process's link in /proc: its fd/N, cwd, root or exe. A follow of one
 // marks the thread with the process and the link, then with the file the link reached. Each open
 // starts with no mark. A follow of the caller's own link, such as /dev/fd/N, drops it too, so only
 // a link this open followed counts. The open's file_open hook logs it when it opens that file,
 // then drops the mark. An O_PATH open never reaches that hook; its exit logs it with
-// the file's own name only. A stat through a link, as lsof makes for every fd, logs nothing. A
-// socket's open fails after the hook, so it is not logged. An exec's open keeps its exec bit in
+// the file's own name only. A stat, access or chdir through a link is logged by the lookup's exit
+// below. A socket's open fails after the hook, so it is not logged. An exec's open keeps its exec bit in
 // f_flags. The link is the fd, or -1, -2 and -3 for cwd, root and exe. The tracer drops these
 // probes on a kernel without either function.
 fentry:vmlinux:proc_pid_get_link /@sandbox[cgroup] && curtask->thread_pid->level > @base && args.dentry != 0/ {
@@ -259,6 +284,23 @@ fexit:vmlinux:do_filp_open /@plink[tid].0 != 0/ {
       printf("o %llu %llu %llu %llu %d %d %d %lld %u %lu %u %lu %s\n", nsecs(boot), cpu, $s, $g, curtask->tgid,
         $m.0, $m.1, $m.2, 0x4000, $fi->i_ino, $fi->i_mode, $fi->i_sb->s_magic, str($f->f_path.dentry->d_name.name));
     }
+  }
+}
+
+// A stat, access or chdir through such a link, logged by the lookup's exit as the open's is above,
+// with its op in place of the open's mode and the file's own name only. A readlink is left out:
+// it reads the link it names, not one it followed on the way.
+fentry:vmlinux:filename_lookup /@plink[tid].0 != 0/ { delete(@plink[tid]); }
+
+fexit:vmlinux:filename_lookup /@plink[tid].0 != 0/ {
+  $m = @plink[tid];
+  delete(@plink[tid]);
+  $op = @look[tid];
+  if (retval == 0 && $op != 0 && $op != 3 && $m.3 == (uint64)args.path->dentry->d_inode) {
+    $fi = args.path->dentry->d_inode;
+    $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+    printf("o %llu %llu %llu %llu %d %d %d %lld %u %lu %u %lu %s\n", nsecs(boot), cpu, $s, $g, curtask->tgid,
+      $m.0, $m.1, $m.2, 0x10000 | $op, $fi->i_ino, $fi->i_mode, $fi->i_sb->s_magic, str(args.path->dentry->d_name.name));
   }
 }
 
@@ -710,6 +752,210 @@ fexit:vmlinux:do_filp_open /@sandbox[cgroup] && curtask->thread_pid->level > @ba
     buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
     buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
     str(*(uint64 *)args.pathname));
+}
+
+// A directory rename may change the path of a directory a thread's last lookup was beneath, so
+// the lookups below print that directory again after one.
+fentry:vmlinux:security_inode_rename /@sandbox[cgroup] && curtask->thread_pid->level > @base && curtask->cred == curtask->real_cred && (args.old_dentry->d_inode->i_mode & 0xF000) == 0x4000/ { @rengen = @rengen + 1; }
+
+// Looking a name up without opening it: stat (1), access (2), readlink (3) and chdir (4). Each
+// call marks the thread with its op and the lookup's exit logs it, with the kernel's copy of the
+// name. A found name is logged as what it reached, so a symlink, `..` or a relative name cannot
+// hide where it led: a stat by its path from the attribute check that follows, the rest by the
+// walk. Under the root's usr, lib*, bin and sbin that is skipped, as are the caller's own /proc
+// entries but for its namespaces, cgroup and mounts. A missed name is logged as given, with the
+// walk of the directory a relative one was looked up from. One under those system paths is
+// skipped unless it holds `..`, as is the loader's check for /etc/ld.so.preload, which every exec
+// makes. The errno is the lookup's: access's own answer and a readlink of what is no link come
+// after it. The tracer drops each op whose call it cannot attach to.
+// A walk fills the ring as a dozen names do, so a loop of lookups would outrun the reader. A
+// thread's lookup that repeats its last one, found or missed, is skipped. One beneath the
+// directory of the thread's last of its kind prints -3 as its depth and no walk of it. Each prints
+// the thread, the directory's address and the count of directory renames, and the tracer joins a
+// -3 one to the walk it kept for that thread only when both match. A name the kernel could not
+// copy, such as an empty one, is never looked up.
+fentry:vmlinux:vfs_statx /@sandbox[cgroup] && curtask->thread_pid->level > @base/ { @look[tid] = 1; }
+fexit:vmlinux:vfs_statx /@look[tid] != 0/ { delete(@look[tid]); if (@getattr[tid] != 0) { delete(@getattr[tid]); } }
+fentry:vmlinux:do_faccessat /@sandbox[cgroup] && curtask->thread_pid->level > @base/ { @look[tid] = 2; }
+fexit:vmlinux:do_faccessat /@look[tid] != 0/ { delete(@look[tid]); }
+fentry:vmlinux:do_readlinkat /@sandbox[cgroup] && curtask->thread_pid->level > @base/ { @look[tid] = 3; }
+fexit:vmlinux:do_readlinkat /@look[tid] != 0/ { delete(@look[tid]); }
+tracepoint:syscalls:sys_enter_chdir /@sandbox[cgroup] && curtask->thread_pid->level > @base/ { @look[tid] = 4; }
+tracepoint:syscalls:sys_exit_chdir /@look[tid] != 0/ { delete(@look[tid]); }
+
+fexit:vmlinux:filename_lookup /@look[tid] != 0 && retval == 0/ {
+  $op = @look[tid];
+  $d = args.path->dentry;
+  $h = *(uint64 *)((uint64)$d + offsetof(struct dentry, d_name));
+  $last = @lfound[tid];
+  $keep = 1;
+  if ($last.0 == $op && $last.1 == (uint64)$d && $last.2 == $h) { $keep = 0; }
+  $x = $d; $c1 = $d; $c2 = $d; $k = 0;
+  unroll(12) { if ($x != $x->d_parent) { $k++; $c2 = $c1; $c1 = $x; $x = $x->d_parent; } }
+  // Names are matched as little-endian words, which keeps the stack within its limit.
+  if ($keep && $x == $x->d_parent) {
+    $t = (uint64)$c1->d_name.name;
+    $t4 = *(uint32 *)$t;
+    if ($d->d_sb == curtask->fs->root.dentry->d_sb && $x == curtask->fs->root.dentry
+        && ($t4 == 0x727375 || ($t4 & 0xffffff) == 0x62696c || $t4 == 0x6e6962
+            || ($t4 == 0x6e696273 && *(uint8 *)($t + 4) == 0))) {
+      $keep = 0;
+    } else if ($d->d_sb->s_magic == 0x9fa0 && $k > 1) {
+      $pi = (struct proc_inode *)((uint64)$c1->d_inode - offsetof(struct proc_inode, vfs_inode));
+      $pf = (uint64)$pi->pid;
+      if ($pf != 0) {
+        $pt = (uint64)$pi->pid->tasks[0].first;
+        if ($pt != 0 && ((struct task_struct *)($pt - offsetof(struct task_struct, pid_links)))->tgid == curtask->tgid) {
+          // Kept: ns, cgroup, mountinfo and mounts.
+          $u = (uint64)$c2->d_name.name;
+          $u4 = *(uint32 *)$u;
+          if (($u4 & 0xffffff) != 0x736e
+              && !($u4 == 0x6f726763 && *(uint16 *)($u + 4) == 0x7075 && *(uint8 *)($u + 6) == 0)
+              && !($u4 == 0x6e756f6d && *(uint32 *)($u + 4) == 0x666e6974 && *(uint16 *)($u + 8) == 0x6f)
+              && !($u4 == 0x6e756f6d && *(uint16 *)($u + 4) == 0x7374 && *(uint8 *)($u + 6) == 0)) {
+            $keep = 0;
+          }
+        }
+      }
+    }
+  }
+  if ($keep) {
+    $sec = nsecs(boot) / 1000000000;
+    $w = @lbud[pid];
+    if ($w.0 != $sec) { @lbud[pid] = ($sec, (uint64)1, $w.2); }
+    else if ($w.1 < 2000) { @lbud[pid] = ($sec, $w.1 + 1, $w.2); }
+    else { @lbud[pid] = ($sec, $w.1, $w.2 + 1); $keep = 0; }
+  }
+  if ($keep) {
+    @lfound[tid] = ($op, (uint64)$d, $h);
+    $pp = $d->d_parent;
+    $ph = *(uint64 *)((uint64)$pp + offsetof(struct dentry, d_name));
+    $lp = @lkpar[tid];
+    $rg = @rengen;
+    if ($op == 1) {
+      @getattr[tid] = 1;
+    } else if ($k > 0 && $lp.0 == (uint64)$pp && $lp.1 == $ph && $lp.2 == $rg) {
+      $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+      printf("k %llu %llu %llu %llu %d %d %d %u -3 %lu %lu %s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, tid, $op, $d->d_sb->s_dev, (uint64)$pp, $rg, str($d->d_name.name));
+    } else {
+      if ($k > 0) { @lkpar[tid] = ((uint64)$pp, $ph, $rg); }
+      $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+      printf("k %llu %llu %llu %llu %d %d %d %u %d %lu %lu %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, tid, $op, $d->d_sb->s_dev, $k, (uint64)$pp, $rg,
+        str($d->d_name.name),
+        str($d->d_parent->d_name.name),
+        str($d->d_parent->d_parent->d_name.name),
+        str($d->d_parent->d_parent->d_parent->d_name.name),
+        str($d->d_parent->d_parent->d_parent->d_parent->d_name.name),
+        str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+        str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+        str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+        str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+        str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+        str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+        str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
+    }
+  }
+}
+
+fentry:vmlinux:security_inode_getattr /@getattr[tid] != 0 && curtask->cred == curtask->real_cred/ {
+  delete(@getattr[tid]);
+  $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+  printf("j %llu %llu %llu %llu %d 1 %s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, path(args.path));
+}
+
+fexit:vmlinux:filename_lookup /@look[tid] != 0 && retval != 0 && (uint64)args.name < 0xfffffffffffff001 && *(uint8 *)*(uint64 *)args.name == 47/ {
+  $op = @look[tid];
+  $n = str(*(uint64 *)args.name);
+  $e = $op * 4096 - (int64)retval;
+  $keep = 1;
+  if ((strncmp($n, "/usr/", 5) == 0 || strncmp($n, "/lib", 4) == 0 || strncmp($n, "/bin/", 5) == 0
+       || strncmp($n, "/sbin/", 6) == 0) && !strcontains($n, "/..")) {
+    $keep = 0;
+  } else if (strncmp($n, "/etc/ld.so.preload", 19) == 0) {
+    $keep = 0;
+  } else if (@lmissop[tid] == $e && strncmp(@lmiss[tid], $n, 384) == 0) {
+    $keep = 0;
+  }
+  if ($keep) {
+    $sec = nsecs(boot) / 1000000000;
+    $w = @lbud[pid];
+    if ($w.0 != $sec) { @lbud[pid] = ($sec, (uint64)1, $w.2); }
+    else if ($w.1 < 2000) { @lbud[pid] = ($sec, $w.1 + 1, $w.2); }
+    else { @lbud[pid] = ($sec, $w.1, $w.2 + 1); $keep = 0; }
+  }
+  if ($keep) {
+    @lmiss[tid] = $n; @lmissop[tid] = $e;
+    $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+    printf("m %llu %llu %llu %llu %d %d %d %d 0 -1 0 0 - %s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, tid, $op, -(int64)retval, $n);
+  }
+}
+
+fexit:vmlinux:filename_lookup /@look[tid] != 0 && retval != 0 && (uint64)args.name < 0xfffffffffffff001 && *(uint8 *)*(uint64 *)args.name != 47/ {
+  $op = @look[tid];
+  $n = str(*(uint64 *)args.name);
+  $e = $op * 4096 - (int64)retval;
+  $keep = @lmissop[tid] != $e || strncmp(@lmiss[tid], $n, 384) != 0;
+  if ($keep) {
+    $sec = nsecs(boot) / 1000000000;
+    $w = @lbud[pid];
+    if ($w.0 != $sec) { @lbud[pid] = ($sec, (uint64)1, $w.2); }
+    else if ($w.1 < 2000) { @lbud[pid] = ($sec, $w.1 + 1, $w.2); }
+    else { @lbud[pid] = ($sec, $w.1, $w.2 + 1); $keep = 0; }
+  }
+  if ($keep) {
+    @lmiss[tid] = $n; @lmissop[tid] = $e;
+    $d = curtask->fs->pwd.dentry; $k = -1;
+    if (args.dfd == -100) { $k = 0; } else {
+      $fdt = curtask->files->fdt;
+      if ((int64)args.dfd >= 0 && (uint64)args.dfd < (uint64)$fdt->max_fds) {
+        $f = *($fdt->fd + args.dfd);
+        if ($f != 0) { $d = (*(struct path *)((uint64)$f + offsetof(struct file, f_path))).dentry; $k = 0; }
+      }
+    }
+    $bh = *(uint64 *)((uint64)$d + offsetof(struct dentry, d_name));
+    $lb = @lbase[tid];
+    $rg = @rengen;
+    if ($k == 0 && $lb.0 == (uint64)$d && $lb.1 == $bh && $lb.2 == $rg) {
+      $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+      printf("m %llu %llu %llu %llu %d %d %d %d %u -3 %lu %lu - %s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, tid, $op, -(int64)retval, $d->d_sb->s_dev, (uint64)$d, $rg, $n);
+    } else {
+    if ($k == 0) { @lbase[tid] = ((uint64)$d, $bh, $rg); $x = $d; unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } } }
+    $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+    printf("m %llu %llu %llu %llu %d %d %d %d %u %d %lu %lu %rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx %s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, tid, $op, -(int64)retval, $d->d_sb->s_dev, $k, (uint64)$d, $rg,
+      buf($d->d_name.name, $d->d_name.len),
+      buf($d->d_parent->d_name.name, $d->d_parent->d_name.len),
+      buf($d->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_name.len),
+      buf($d->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_name.len),
+      buf($d->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_name.len),
+      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+      $n);
+    }
+  }
+}
+
+// A process logs at most 2000 lookups a second, all its threads together; the rest are only
+// counted, so a walk of a large tree stays cheap and cannot crowd out other records. The count
+// comes when its last thread exits. Its threads count at once, so the count is near, not exact.
+tracepoint:sched:sched_process_exit /@lbud[pid].0 != 0 && *(int32 *)((uint64)curtask->signal + offsetof(struct signal_struct, live)) == 0/ {
+  $sk = @lbud[pid].2;
+  if ($sk != 0) {
+    $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+    printf("l %llu %llu %llu %llu %d %llu\n", nsecs(boot), cpu, $s, $g, curtask->tgid, $sk);
+  }
+  delete(@lbud[pid]);
+}
+
+tracepoint:sched:sched_process_exit /@lfound[tid].0 != 0 || @lmissop[tid] != 0 || @lbase[tid].0 != 0 || @lkpar[tid].0 != 0/ {
+  if (@lkpar[tid].0 != 0) { delete(@lkpar[tid]); }
+  if (@lfound[tid].0 != 0) { delete(@lfound[tid]); }
+  if (@lmissop[tid] != 0) { delete(@lmissop[tid]); delete(@lmiss[tid]); }
+  if (@lbase[tid].0 != 0) { delete(@lbase[tid]); }
 }
 
 // Refused unlink, rmdir, mkdir, rename, link and symlink calls. The read-only and parent permission

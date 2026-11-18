@@ -10,6 +10,7 @@ RunStatus = Literal["completed", "failed", "killed", "cancelled"]
 AuditLevel = Literal["kernel", "snapshot"]
 ExecEnd = Literal["exited", "timeout", "cancelled", "failed"]
 FileOp = Literal["read", "write", "delete", "rename", "denied", "mkdir", "symlink", "link"]
+LookOp = Literal["stat", "access", "readlink", "chdir", "list"]
 FsChangeType = Literal["added", "modified", "meta", "removed", "kind"]
 FsKind = Literal["file", "dir", "symlink", "fifo", "socket", "other"]
 FdKind = Literal["pipe", "fifo", "file", "char", "sock", "dir", "other"]
@@ -478,6 +479,14 @@ class ExecFinished(Payload):
     stderr_tail: Content | None = None
     stdout_omitted: int | None = None
     stderr_omitted: int | None = None
+    looks_skipped: int | None = Field(
+        default=None,
+        description=(
+            "Lookups the exec's processes made past the tracer's 2000 a second for each process, "
+            "counted but not recorded as `file.look` events. A process's count comes when it "
+            "exits, so one still running when the exec ends is left out."
+        ),
+    )
 
 
 class KernelPayload(Payload):
@@ -593,6 +602,27 @@ class FileAccess(KernelPayload):
             "`denied`; any other refused call keeps its op, recorded when the call returned."
         ),
     )
+    partial: bool = False
+
+
+class FileLook(KernelPayload):
+    """A name the sandbox looked up without opening a file: `stat` (stat, lstat or statx),
+    `access`, `readlink` or `chdir`, or a directory it opened to `list`.
+
+    `path` is where the name led, with symlinks and `..` followed. A lookup that failed keeps the
+    name as given, with `errno` set: 2 means nothing was there. The errno is the lookup's own, so
+    the answer access gives about a permission is not in it. Left out, as for reads: paths under
+    /usr and /lib, the process's own /proc entries but its namespaces, cgroup and mounts, and the
+    loader's check for /etc/ld.so.preload. A process records at most 2000 a second; its exec's
+    exec.finished counts the rest in `looks_skipped`. A `partial` path is not exact: it lacks its
+    leading part, reached the tracer's string cap, or held a `..` that was not followed.
+    """
+
+    type = "file.look"
+
+    op: LookOp
+    path: str
+    errno: int | None = None
     partial: bool = False
 
 
@@ -735,8 +765,8 @@ class PtraceEvent(KernelPayload):
     an empty process_vm_writev or a bad pidfd. `ns_target` is that pid as the caller named it, in
     its own pid namespace; traceme names none. For pidfd_getfd, which names no pid, it is the
     target's pid in its own namespace. A request a seccomp profile refuses is a sys.denied record
-    instead. proc_fd, proc_cwd, proc_root and proc_exe are opens of a file through the target's
-    /proc/<pid>/fd/N, cwd, root or exe link.
+    instead. proc_fd, proc_cwd, proc_root and proc_exe are opens, stats, access checks or chdirs
+    reaching a file through the target's /proc/<pid>/fd/N, cwd, root or exe link.
     """
 
     type = "ptrace.event"
@@ -749,11 +779,15 @@ class PtraceEvent(KernelPayload):
     fd: int | None = Field(
         default=None, description="For proc_fd, the target's fd that the link names."
     )
-    access: Literal["read", "write", "read_write", "exec", "path"] | None = Field(
+    access: (
+        Literal["read", "write", "read_write", "exec", "path", "stat", "access", "chdir"] | None
+    ) = Field(
         default=None,
         description=(
             "For an open through a /proc link, how the caller opened the file; `path` is an "
-            "O_PATH open, which another open of the caller's own fd can turn into a read."
+            "O_PATH open, which another open of the caller's own fd can turn into a read. "
+            "`stat`, `access` and `chdir` reached the file through the link without opening "
+            "it."
         ),
     )
     kind: FdKind | None = Field(
@@ -778,7 +812,7 @@ class PtraceEvent(KernelPayload):
         default=False,
         description=(
             "Set when `path` is not whole: it reached the tracer's string cap, or it is only the "
-            "file's own name, as for an O_PATH open."
+            "file's own name, as for an O_PATH open or a lookup."
         ),
     )
 

@@ -20,6 +20,7 @@ from aims.events import (
     ExecFinished,
     ExecStarted,
     FileAccess,
+    FileLook,
     FileSetattr,
     FileWrite,
     IpcEvent,
@@ -540,6 +541,28 @@ async def test_an_open_through_a_proc_link_shows_what_it_opened(run: Run) -> Non
         "inode": 77,
         "path": "pipe:[77]",
     }
+
+
+async def test_lookups_show_once_each_with_a_miss_kept_apart(run: Run) -> None:
+    await run.preamble()
+    looks = [
+        {"cls": FileLook, "op": "stat", "path": "/.dockerenv"},
+        {"cls": FileLook, "op": "stat", "path": "/.dockerenv"},
+        {"cls": FileLook, "op": "stat", "path": "/run/.containerenv", "errno": 2},
+        {"cls": FileLook, "op": "list", "path": "/.aims"},
+        *({"cls": FileLook, "op": "list", "path": f"/work/{i}"} for i in range(25)),
+    ]
+    await run.step(1, kernel=looks)
+    await run.step(2, kernel=[{"cls": FileLook, "op": "stat", "path": "/.dockerenv"}])
+    r = await run.trajectory.render(["evidence"], texts=TEXTS)
+    shown = [(x["op"], x["path"], x.get("errno")) for x in of_type(r, "file.look")]
+    assert shown[:3] == [
+        ("stat", "/.dockerenv", None),
+        ("stat", "/run/.containerenv", 2),
+        ("list", "/.aims", None),
+    ]
+    assert len(shown) == 22
+    assert "not shown: file.look list 6, file.look stat 1, proc.exec 1" in lines(r)
 
 
 async def test_the_kernel_digest_caps_dedupes_and_keeps_marked_records(run: Run) -> None:

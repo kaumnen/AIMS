@@ -1188,10 +1188,13 @@ async def test_writable_root_records_each_change_once(
     kernel = by_kernel_order(await events(store, run_id))
     assert not [p for p in kernel if getattr(p, "partial", False)]
     d = "/var/tmp/d"
+    # rm's stats and its listing of the directory are lookups, not changes.
     seen = Counter(
         (p.type, getattr(p, "op", None) or getattr(p, "kind", None), path)
         for p in kernel
-        if isinstance(path := getattr(p, "path", None), str) and path.startswith(d)
+        if isinstance(path := getattr(p, "path", None), str)
+        and path.startswith(d)
+        and p.type != "file.look"
     )
     assert seen == {
         ("file.access", "mkdir", d): 1,
@@ -1852,6 +1855,8 @@ async def test_a_use_of_another_processs_fd_link_is_recorded(
         "os.stat(f'/proc/{child}/fd/{held}')\n"
         "own(f'/proc/self/fd/{mine}')\n"
         "os.stat(f'/proc/{child}/cwd')\n"
+        "os.chdir(f'/proc/{child}/cwd')\n"
+        "os.chdir('/work')\n"
         "own('/work')\n"
         "path = os.open(f'/proc/{child}/fd/{held}', os.O_PATH)\n"
         "own('/work')\n"
@@ -1881,12 +1886,16 @@ async def test_a_use_of_another_processs_fd_link_is_recorded(
         if isinstance(p, ProcFork) and p.ppid == caller
     ]
     evs = await events(store, run_id, "ptrace.event")
-    # A stat through a link logs nothing, nor does an open after it of something else.
+    # A stat or chdir through a link is kept too. An open after it of something else is not.
     assert fds_taken(evs, caller) == [
         (child, ns_child, "proc_fd", r, "read", "pipe"),
         (child, ns_child, "proc_fd", w, "write", "pipe"),
         (child, ns_child, "proc_fd", held, "read", "file"),
+        (child, ns_child, "proc_fd", held, "stat", "file"),
         (child, ns_child, "proc_cwd", None, "read", "dir"),
+        (child, ns_child, "proc_fd", held, "stat", "file"),
+        (child, ns_child, "proc_cwd", None, "stat", "dir"),
+        (child, ns_child, "proc_cwd", None, "chdir", "dir"),
         (child, ns_child, "proc_fd", held, "path", "file"),
         (child, ns_child, "proc_exe", None, "exec", "file"),
     ]
@@ -1897,8 +1906,9 @@ async def test_a_use_of_another_processs_fd_link_is_recorded(
         "/work/held (deleted)",
         False,
     )
-    assert taken[3].path == "/work"
-    assert (taken[4].inode, taken[4].path, taken[4].path_partial) == (ino, "held", True)
+    assert taken[3].inode == ino
+    assert taken[4].path == "/work"
+    assert (taken[8].inode, taken[8].path, taken[8].path_partial) == (ino, "held", True)
 
 
 @pytest.mark.tracer
@@ -1927,6 +1937,138 @@ async def test_reads_of_another_processs_ptrace_checked_proc_files_are_recorded(
     kept = {f"/proc/{pid}/{n}" for n in [*names, "mountstats"]}
     kept |= {f"/proc/{pid}/task/{pid}/{n}" for n in names}
     assert {p for p in reads if p.startswith(f"/proc/{pid}/")} == kept
+
+
+async def lost_records(store: LocalEventStore, run_id: str) -> list[str]:
+    """The reasons of the run's losses, but for the kernel skipping a probe run, which any test
+    can meet on a busy host."""
+    return [
+        reason
+        for e in await events(store, run_id, "audit.lost")
+        if not (reason := str(e.data.get("reason"))).startswith("kernel skipped tracer probe")
+    ]
+
+
+LOOKER = (
+    "import os\n"
+    "os.symlink('/.dockerenv', '/tmp/link')\n"
+    "os.chdir('/')\n"
+    "os.path.exists('.dockerenv')\n"
+    "os.access('//.dockerenv', os.F_OK)\n"
+    "os.path.exists('/run/.containerenv')\n"
+    "os.access('/work/../run/./gone', os.R_OK)\n"
+    "os.access('/etc/shadow', os.R_OK)\n"
+    "os.readlink('/tmp/link')\n"
+    "os.lstat('/usr/../.aims')\n"
+    "os.listdir('/.aims')\n"
+    "os.listdir('/proc')\n"
+    "os.listdir('/usr/lib')\n"
+    "os.listdir('/proc/self/fd')\n"
+    "os.stat('/usr/bin/env')\n"
+    "for odd in ('', 'x' * 5000, f'/proc/{os.getppid()}/cwd/.'):\n"
+    "    for call in (os.stat, os.readlink):\n"
+    "        try:\n"
+    "            call(odd)\n"
+    "        except OSError:\n"
+    "            pass\n"
+    "print(os.getpid(), flush=True)\n"
+)
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_looking_around_without_opening_a_file_is_recorded(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(f"python3 - <<'EOF'\n{LOOKER}EOF", timeout_s=20)
+    finally:
+        await sb.close()
+
+    assert result.finished.exit_code == 0, result.stderr
+    ns_pid = int(result.stdout)
+    looks = {
+        (e.data["op"], e.data["path"], e.data.get("errno"), e.data.get("partial", False))
+        for e in await events(store, run_id, "file.look")
+        if e.data["exec_id"] == result.finished.exec_id
+    }
+    # A miss is kept with its errno, and a name is kept as the path it resolves to.
+    assert {
+        ("chdir", "/", None, False),
+        ("stat", "/.dockerenv", None, False),
+        ("access", "/.dockerenv", None, False),
+        ("stat", "/run/.containerenv", 2, False),
+        ("access", "/run/gone", 2, True),
+        ("access", "/etc/shadow", None, False),
+        ("readlink", "/tmp/link", None, False),
+        ("stat", "/.aims", None, False),
+        ("list", "/.aims", None, False),
+        ("list", "/proc", None, False),
+    } <= looks
+    # System paths and the caller's own /proc entries are left out, as for reads.
+    paths = {path for _, path, _, _ in looks}
+    assert "/usr/lib" not in paths
+    assert "/usr/bin/env" not in paths
+    assert f"/proc/{ns_pid}/fd" not in paths
+    # A name the kernel never copied is not a lookup, and a readlink through another process's
+    # link is no use of the link.
+    assert not [x for x in looks if x[1] == "/" and x[2] is not None]
+    assert 36 not in {errno for _, _, errno, _ in looks}
+    assert await lost_records(store, run_id) == []
+
+
+FLOOD_LOOKS = 20_000
+LOOK_FLOOD = (
+    "import os, time\n"
+    "os.makedirs('/work/d')\n"
+    "for i in range(25):\n"
+    "    open(f'/work/d/{i}', 'w').close()\n"
+    "os.chdir('/work')\n"
+    f"for i in range({FLOOD_LOOKS}):\n"
+    "    os.path.exists(f'gone{i}')\n"
+    "    os.path.exists(f'/work/lost{i}')\n"
+    "    os.access(f'/work/d/{i % 25}', os.R_OK)\n"
+    "    os.stat('/work/d')\n"
+    "time.sleep(1.1)\n"
+    "os.path.exists('/.dockerenv')\n"
+)
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_a_flood_of_lookups_loses_nothing(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    # Each lookup the kernel logs fills the ring, so a loop of them must not outrun the reader. A
+    # thread logs 2000 a second and counts the rest; a lookup after the flood is logged again.
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(f"python3 - <<'EOF'\n{LOOK_FLOOD}EOF", timeout_s=60)
+    finally:
+        await sb.close()
+
+    assert result.finished.exit_code == 0, result.stderr
+    assert await lost_records(store, run_id) == []
+    spills = [e.payload() for e in await events(store, run_id, "audit.spill")]
+    spilled = sum(p.kinds.get("looks", 0) for p in spills if isinstance(p, AuditSpill))
+    kept = [
+        e.data
+        for e in await events(store, run_id, "file.look")
+        if e.data["exec_id"] == result.finished.exec_id
+    ]
+    skipped = result.finished.looks_skipped or 0
+    assert skipped > 0
+    assert len(kept) + spilled + skipped >= 2 * FLOOD_LOOKS + 25
+    misses = {d["path"] for d in kept if d.get("errno") == 2}
+    assert {"/work/gone0", "/work/lost0"} <= misses
+    later = [
+        json.loads(x)["data"]
+        for p in spills
+        if isinstance(p, AuditSpill)
+        for x in (await store.get_blob(run_id, p.records.sha256)).decode().splitlines()
+    ]
+    assert "/.dockerenv" in {d.get("path") for d in [*kept, *later]}
 
 
 @pytest.mark.tracer

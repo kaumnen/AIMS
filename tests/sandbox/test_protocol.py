@@ -3,11 +3,11 @@ import re
 from aims.events.schema import _registry
 from aims.sandbox.base import TOOLBOX
 from aims.sandbox.images import ASSETS
-from aims.sandbox.trace import ARGV_CAP, ENV_CAP, PARSERS, STRLEN, UNGROUPED
-from aims.sandbox.tracer import TRACE
+from aims.sandbox.trace import ARGV_CAP, ENV_CAP, LOOK_BUDGET, PARSERS, STRLEN, UNGROUPED
+from aims.sandbox.tracer import LOOKS, TRACE
 
 TAGS = set("RFBEXOWAUNCPD") | set("VGT") | set("Z") | set("Q") | set("IKSMHJL") | set("Y")
-TAGS |= set("abcdefghi") | set("rt") | set("o")
+TAGS |= set("abcdefghi") | set("rt") | set("o") | set("jklm")
 TYPES = {
     "run.started",
     "run.finished",
@@ -31,6 +31,7 @@ TYPES = {
     "file.write",
     "file.sync",
     "file.setattr",
+    "file.look",
     "fs.snapshot",
     "net.connect",
     "sys.denied",
@@ -191,7 +192,7 @@ def test_overlay_filters_match_the_script() -> None:
         for line in script.splitlines()
         if line.startswith(("fentry:vmlinux:security_inode_", "fentry:vmlinux:security_file_open"))
     ]
-    assert len(hooks) == 9
+    assert len(hooks) == 12
     assert all("curtask->cred == curtask->real_cred" in line for line in hooks)
 
 
@@ -212,3 +213,25 @@ def test_the_proc_link_probes_go_together() -> None:
     opens = [x for x in script if ":vmlinux:do_filp_open " in x]
     assert len(opens) == 3
     assert r"s/^\(fentry\|fexit\):vmlinux:do_filp_open /" in TRACE
+
+
+def test_the_lookup_probes_drop_cleanly() -> None:
+    # A kernel without a call that marks a lookup drops that call's lines one by one, so each
+    # must be a whole probe. Without filename_lookup each of its probes goes as a range of lines.
+    script = (ASSETS / "tracer" / "trace.bt").read_text().splitlines()
+    for call in ("vfs_statx", "do_faccessat", "do_readlinkat"):
+        lines = [x for x in script if f":vmlinux:{call} " in x]
+        assert len(lines) == 2, call
+        assert all(re.match(rf"f(entry|exit):vmlinux:{call} /.*\}}$", x) for x in lines), call
+        assert call in LOOKS
+    lookups = [i for i, x in enumerate(script) if ":vmlinux:filename_lookup " in x]
+    assert all(re.match(r"f(entry|exit):vmlinux:filename_lookup /", script[i]) for i in lookups)
+    assert r"'/^f\(entry\|exit\):vmlinux:filename_lookup /,/^}/d'" in LOOKS
+    assert LOOKS in TRACE
+
+
+def test_the_lookup_budget_matches_the_script() -> None:
+    script = (ASSETS / "tracer" / "trace.bt").read_text()
+    # Each probe that logs a lookup by name checks the thread's budget the same way.
+    assert script.count(f"else if ($w.1 < {LOOK_BUDGET}) {{") == 3
+    assert f"A process logs at most {LOOK_BUDGET} lookups a second" in script

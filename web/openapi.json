@@ -3274,6 +3274,7 @@
           "exec.finished",
           "exec.started",
           "file.access",
+          "file.look",
           "file.setattr",
           "file.sync",
           "file.write",
@@ -3371,6 +3372,9 @@
           },
           "file.access": {
             "$ref": "#/components/schemas/FileAccess"
+          },
+          "file.look": {
+            "$ref": "#/components/schemas/FileLook"
           },
           "file.setattr": {
             "$ref": "#/components/schemas/FileSetattr"
@@ -3522,6 +3526,7 @@
           "exec.finished",
           "exec.started",
           "file.access",
+          "file.look",
           "file.setattr",
           "file.sync",
           "file.write",
@@ -3712,6 +3717,19 @@
             "title": "Leftover Killed",
             "type": "boolean"
           },
+          "looks_skipped": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Lookups the exec's processes made past the tracer's 2000 a second for each process, counted but not recorded as `file.look` events. A process's count comes when it exits, so one still running when the exec ends is left out.",
+            "title": "Looks Skipped"
+          },
           "pid": {
             "anyOf": [
               {
@@ -3850,7 +3868,8 @@
           "stdout_tail",
           "stderr_tail",
           "stdout_omitted",
-          "stderr_omitted"
+          "stderr_omitted",
+          "looks_skipped"
         ],
         "title": "ExecFinished",
         "type": "object"
@@ -4224,6 +4243,84 @@
           "size"
         ],
         "title": "FileInfo",
+        "type": "object"
+      },
+      "FileLook": {
+        "additionalProperties": false,
+        "description": "A name the sandbox looked up without opening a file: `stat` (stat, lstat or statx),\n`access`, `readlink` or `chdir`, or a directory it opened to `list`.\n\n`path` is where the name led, with symlinks and `..` followed. A lookup that failed keeps the\nname as given, with `errno` set: 2 means nothing was there. The errno is the lookup's own, so\nthe answer access gives about a permission is not in it. Left out, as for reads: paths under\n/usr and /lib, the process's own /proc entries but its namespaces, cgroup and mounts, and the\nloader's check for /etc/ld.so.preload. A process records at most 2000 a second; its exec's\nexec.finished counts the rest in `looks_skipped`. A `partial` path is not exact: it lacks its\nleading part, reached the tracer's string cap, or held a `..` that was not followed.",
+        "properties": {
+          "cpu": {
+            "title": "Cpu",
+            "type": "integer"
+          },
+          "cpu_seq": {
+            "title": "Cpu Seq",
+            "type": "integer"
+          },
+          "errno": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Errno"
+          },
+          "exec_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exec Id"
+          },
+          "op": {
+            "enum": [
+              "stat",
+              "access",
+              "readlink",
+              "chdir",
+              "list"
+            ],
+            "title": "Op",
+            "type": "string"
+          },
+          "partial": {
+            "default": false,
+            "title": "Partial",
+            "type": "boolean"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "pid": {
+            "title": "Pid",
+            "type": "integer"
+          },
+          "ts_kernel": {
+            "title": "Ts Kernel",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "exec_id",
+          "pid",
+          "ts_kernel",
+          "cpu",
+          "cpu_seq",
+          "op",
+          "path",
+          "errno",
+          "partial"
+        ],
+        "title": "FileLook",
         "type": "object"
       },
       "FileSetattr": {
@@ -11297,7 +11394,7 @@
       },
       "PtraceEvent": {
         "additionalProperties": false,
-        "description": "A ptrace, process_vm_readv, process_vm_writev or pidfd_getfd request by `pid` against\n`target`, recorded when the kernel returns.\n\nIt proves the request was made and whether it was refused, not that the target changed or\nwas read. `errno` is set when it was refused. Peek requests can return negative data, so a\nnegative return for them is not marked as a refusal. pidfd_getfd copies one of the target's\nopen files into the caller. `target` is the host pid of the process the kernel looked up,\nlike every other pid in a record; for traceme it is the parent that will trace, for\npidfd_getfd the process the pidfd names. It is missing when the kernel found no process for\nthe pid the caller named, which fails the request with ESRCH, or never looked one up, as for\nan empty process_vm_writev or a bad pidfd. `ns_target` is that pid as the caller named it, in\nits own pid namespace; traceme names none. For pidfd_getfd, which names no pid, it is the\ntarget's pid in its own namespace. A request a seccomp profile refuses is a sys.denied record\ninstead. proc_fd, proc_cwd, proc_root and proc_exe are opens of a file through the target's\n/proc/<pid>/fd/N, cwd, root or exe link.",
+        "description": "A ptrace, process_vm_readv, process_vm_writev or pidfd_getfd request by `pid` against\n`target`, recorded when the kernel returns.\n\nIt proves the request was made and whether it was refused, not that the target changed or\nwas read. `errno` is set when it was refused. Peek requests can return negative data, so a\nnegative return for them is not marked as a refusal. pidfd_getfd copies one of the target's\nopen files into the caller. `target` is the host pid of the process the kernel looked up,\nlike every other pid in a record; for traceme it is the parent that will trace, for\npidfd_getfd the process the pidfd names. It is missing when the kernel found no process for\nthe pid the caller named, which fails the request with ESRCH, or never looked one up, as for\nan empty process_vm_writev or a bad pidfd. `ns_target` is that pid as the caller named it, in\nits own pid namespace; traceme names none. For pidfd_getfd, which names no pid, it is the\ntarget's pid in its own namespace. A request a seccomp profile refuses is a sys.denied record\ninstead. proc_fd, proc_cwd, proc_root and proc_exe are opens, stats, access checks or chdirs\nreaching a file through the target's /proc/<pid>/fd/N, cwd, root or exe link.",
         "properties": {
           "access": {
             "anyOf": [
@@ -11307,7 +11404,10 @@
                   "write",
                   "read_write",
                   "exec",
-                  "path"
+                  "path",
+                  "stat",
+                  "access",
+                  "chdir"
                 ],
                 "type": "string"
               },
@@ -11316,7 +11416,7 @@
               }
             ],
             "default": null,
-            "description": "For an open through a /proc link, how the caller opened the file; `path` is an O_PATH open, which another open of the caller's own fd can turn into a read.",
+            "description": "For an open through a /proc link, how the caller opened the file; `path` is an O_PATH open, which another open of the caller's own fd can turn into a read. `stat`, `access` and `chdir` reached the file through the link without opening it.",
             "title": "Access"
           },
           "cpu": {
@@ -11425,7 +11525,7 @@
           },
           "path_partial": {
             "default": false,
-            "description": "Set when `path` is not whole: it reached the tracer's string cap, or it is only the file's own name, as for an O_PATH open.",
+            "description": "Set when `path` is not whole: it reached the tracer's string cap, or it is only the file's own name, as for an O_PATH open or a lookup.",
             "title": "Path Partial",
             "type": "boolean"
           },

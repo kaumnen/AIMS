@@ -1626,7 +1626,7 @@ class Judge:
         query = name if len(name) >= 3 else path
         found, cursor = await self.reader.page(
             after=start - 1,
-            types=("file.access", "file.write"),
+            types=("file.access", "file.look", "file.write"),
             query=query,
             limit=HISTORY_ROWS,
             keep=match,

@@ -31,6 +31,7 @@ from aims.events import (
     ExecStarted,
     FdInfo,
     FileAccess,
+    FileLook,
     FileSetattr,
     FileSync,
     FileWrite,
@@ -74,6 +75,8 @@ from aims.sandbox.base import (
     Fork,
     Ipc,
     Kernel,
+    Look,
+    LookSkip,
     Lost,
     Mem,
     Net,
@@ -103,7 +106,9 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("aims.sandbox")
 
-CAPS = {"procs": 1000, "files": 2000, "other": 500, "output": 200}
+# Looks have their own cap, so a walk that stats every file cannot push opens into the spill. It
+# is lower, as a walk over a work tree is most of them: past it they go to the spill.
+CAPS = {"procs": 1000, "files": 2000, "looks": 500, "other": 500, "output": 200}
 PROC_READS = frozenset(MASK_PROC)
 PROC_DIR = re.compile(r"^/proc/(\d+)(?:/|$)")
 PROC_READ_CAP = 64
@@ -117,6 +122,9 @@ ATTR_MODE, ATTR_UID, ATTR_GID, ATTR_SIZE, ATTR_ATIME, ATTR_MTIME, ATTR_CTIME = (
     64,
 )
 SPILL_BYTES = 32 * 1024 * 1024
+# Lookups may take this much of the spill, so a walk that stats a large tree leaves the rest for
+# the records it would crowd out.
+LOOK_SPILL_BYTES = SPILL_BYTES // 2
 CHANGES = 200
 OUTPUT_PREFIX = 64
 FLUSH_S = 0.1
@@ -162,6 +170,7 @@ class _Scope:
     counts: dict[str, int] = field(default_factory=dict)
     dropped: int = 0
     spilled: int = 0
+    looks_skipped: int = 0
     seen: set[tuple[object, ...]] = field(default_factory=set)
     polled: dict[str, int] = field(default_factory=dict)
 
@@ -309,6 +318,7 @@ class AuditedSandbox:
         self._losses: dict[str, _Loss] = {}
         self._spills: dict[str | None, _Spill] = {}
         self._spill_bytes = 0
+        self._look_bytes = 0
         self._spilled: set[int] = set()
         self._digest: str | None = None
         self._outputs: dict[int, dict[int, _Out]] = {}
@@ -720,6 +730,7 @@ class AuditedSandbox:
             stderr_tail=err_tail,
             stdout_omitted=None if out is None else out[1],
             stderr_omitted=None if err is None else err[1],
+            looks_skipped=scope.looks_skipped if scope and scope.looks_skipped else None,
         )
         self._active = None
         self._open = None
@@ -837,7 +848,7 @@ class AuditedSandbox:
         return [snapshot]
 
     async def _spill_events(self) -> list[Payload]:
-        spills, self._spills, self._spill_bytes = self._spills, {}, 0
+        spills, self._spills, self._spill_bytes, self._look_bytes = self._spills, {}, 0, 0
         out: list[Payload] = []
         for owner, spill in spills.items():
             records = await self._store.put_blob(self._run_id, bytes(spill.data))
@@ -1056,6 +1067,12 @@ class AuditedSandbox:
                     self._oom.add(pid)
                 case File():
                     self._on_file(record)
+                case Look():
+                    self._on_look(record)
+                case LookSkip(pid, count):
+                    owner = self._owner_of(pid)
+                    if owner != INTERNAL:
+                        self._scope(owner).looks_skipped += count
                 case Close():
                     self._on_close(record)
                 case Cache():
@@ -1331,6 +1348,27 @@ class AuditedSandbox:
         )
         child = self._proc_child(record.path, record.at.ts)
         if self._admit(owner, "files", payload, target=child) and not polled:
+            scope.seen.add(key)
+
+    def _on_look(self, record: Look) -> None:
+        owner = self._owner_of(record.pid)
+        if owner == INTERNAL:
+            return
+        scope = self._scope(owner)
+        key = ("look", record.op, record.pid, record.path, record.errno)
+        if key in scope.seen:
+            return
+        payload = self._kernel(
+            FileLook,
+            record,
+            owner,
+            op=record.op,
+            path=record.path,
+            errno=record.errno,
+            partial=record.partial,
+        )
+        child = self._proc_child(record.path, record.at.ts)
+        if self._admit(owner, "looks", payload, target=child):
             scope.seen.add(key)
 
     def _proc_child(self, path: str, ts: int) -> int | None:
@@ -1626,11 +1664,16 @@ class AuditedSandbox:
             self._losses.setdefault(LATE_DROP, _Loss("sandbox")).add(Lost(1, LATE_DROP, (), ts, ts))
 
     def _spill(self, kind: str, payload: Payload) -> bool:
-        """Keep `payload` for its exec's `audit.spill` unless `SPILL_BYTES` are already pending."""
+        """Keep `payload` for its exec's `audit.spill` unless `SPILL_BYTES` are already pending,
+        or for a lookup `LOOK_SPILL_BYTES` of lookups."""
         line = f'{{"type": {json.dumps(payload.type)}, "data": {payload.model_dump_json()}}}\n'
         data = line.encode()
         if self._spill_bytes + len(data) > SPILL_BYTES:
             return False
+        if kind == "looks":
+            if self._look_bytes + len(data) > LOOK_SPILL_BYTES:
+                return False
+            self._look_bytes += len(data)
         self._spill_bytes += len(data)
         spill = self._spills.setdefault(getattr(payload, "exec_id", None), _Spill())
         spill.data += data

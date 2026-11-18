@@ -2954,7 +2954,7 @@ export interface components {
             next: string | null;
         };
         /** @enum {string} */
-        EventType: "agent.compacted" | "agent.finished" | "agent.held" | "agent.input" | "agent.report" | "agent.started" | "agent.step" | "audit.lost" | "audit.spill" | "cache.probe" | "channel.message" | "channel.read" | "channel.snapshot" | "exec.finished" | "exec.started" | "file.access" | "file.setattr" | "file.sync" | "file.write" | "fs.snapshot" | "ipc.event" | "log.truncated" | "mem.exec" | "model.checked" | "model.request" | "model.response" | "monitor.action" | "monitor.cleared" | "monitor.degraded" | "monitor.flag" | "monitor.sweep" | "monitor.verdict" | "net.connect" | "ns.event" | "operator.action" | "plant.triggered" | "proc.exec" | "proc.exit" | "proc.fork" | "proc.output" | "proc.signal" | "ptrace.event" | "replay.divergence" | "resource.sample" | "run.finished" | "run.started" | "sandbox.archived" | "sandbox.freeze_failed" | "sandbox.outside_pause" | "sandbox.started" | "sandbox.stopped" | "score.answer" | "score.awareness" | "score.unexplained" | "score.unit" | "selftest.case" | "sys.denied" | "task.scored" | "tool.call" | "tool.result";
+        EventType: "agent.compacted" | "agent.finished" | "agent.held" | "agent.input" | "agent.report" | "agent.started" | "agent.step" | "audit.lost" | "audit.spill" | "cache.probe" | "channel.message" | "channel.read" | "channel.snapshot" | "exec.finished" | "exec.started" | "file.access" | "file.look" | "file.setattr" | "file.sync" | "file.write" | "fs.snapshot" | "ipc.event" | "log.truncated" | "mem.exec" | "model.checked" | "model.request" | "model.response" | "monitor.action" | "monitor.cleared" | "monitor.degraded" | "monitor.flag" | "monitor.sweep" | "monitor.verdict" | "net.connect" | "ns.event" | "operator.action" | "plant.triggered" | "proc.exec" | "proc.exit" | "proc.fork" | "proc.output" | "proc.signal" | "ptrace.event" | "replay.divergence" | "resource.sample" | "run.finished" | "run.started" | "sandbox.archived" | "sandbox.freeze_failed" | "sandbox.outside_pause" | "sandbox.started" | "sandbox.stopped" | "score.answer" | "score.awareness" | "score.unexplained" | "score.unit" | "selftest.case" | "sys.denied" | "task.scored" | "tool.call" | "tool.result";
         /** @description Each event type and the schema of its `data`. */
         EventTypes: {
             "agent.compacted": components["schemas"]["AgentCompacted"];
@@ -2973,6 +2973,7 @@ export interface components {
             "exec.finished": components["schemas"]["ExecFinished"];
             "exec.started": components["schemas"]["ExecStarted"];
             "file.access": components["schemas"]["FileAccess"];
+            "file.look": components["schemas"]["FileLook"];
             "file.setattr": components["schemas"]["FileSetattr"];
             "file.sync": components["schemas"]["FileSync"];
             "file.write": components["schemas"]["FileWrite"];
@@ -3093,6 +3094,12 @@ export interface components {
              * @default false
              */
             leftover_killed: boolean;
+            /**
+             * Looks Skipped
+             * @description Lookups the exec's processes made past the tracer's 2000 a second for each process, counted but not recorded as `file.look` events. A process's count comes when it exits, so one still running when the exec ends is left out.
+             * @default null
+             */
+            looks_skipped: number | null;
             /** Pid */
             pid: number | null;
             /**
@@ -3298,6 +3305,48 @@ export interface components {
             path: string;
             /** Size */
             size: number;
+        };
+        /**
+         * FileLook
+         * @description A name the sandbox looked up without opening a file: `stat` (stat, lstat or statx),
+         *     `access`, `readlink` or `chdir`, or a directory it opened to `list`.
+         *
+         *     `path` is where the name led, with symlinks and `..` followed. A lookup that failed keeps the
+         *     name as given, with `errno` set: 2 means nothing was there. The errno is the lookup's own, so
+         *     the answer access gives about a permission is not in it. Left out, as for reads: paths under
+         *     /usr and /lib, the process's own /proc entries but its namespaces, cgroup and mounts, and the
+         *     loader's check for /etc/ld.so.preload. A process records at most 2000 a second; its exec's
+         *     exec.finished counts the rest in `looks_skipped`. A `partial` path is not exact: it lacks its
+         *     leading part, reached the tracer's string cap, or held a `..` that was not followed.
+         */
+        FileLook: {
+            /** Cpu */
+            cpu: number;
+            /** Cpu Seq */
+            cpu_seq: number;
+            /**
+             * Errno
+             * @default null
+             */
+            errno: number | null;
+            /** Exec Id */
+            exec_id: string | null;
+            /**
+             * Op
+             * @enum {string}
+             */
+            op: "stat" | "access" | "readlink" | "chdir" | "list";
+            /**
+             * Partial
+             * @default false
+             */
+            partial: boolean;
+            /** Path */
+            path: string;
+            /** Pid */
+            pid: number;
+            /** Ts Kernel */
+            ts_kernel: number;
         };
         /**
          * FileSetattr
@@ -6130,16 +6179,16 @@ export interface components {
          *     an empty process_vm_writev or a bad pidfd. `ns_target` is that pid as the caller named it, in
          *     its own pid namespace; traceme names none. For pidfd_getfd, which names no pid, it is the
          *     target's pid in its own namespace. A request a seccomp profile refuses is a sys.denied record
-         *     instead. proc_fd, proc_cwd, proc_root and proc_exe are opens of a file through the target's
-         *     /proc/<pid>/fd/N, cwd, root or exe link.
+         *     instead. proc_fd, proc_cwd, proc_root and proc_exe are opens, stats, access checks or chdirs
+         *     reaching a file through the target's /proc/<pid>/fd/N, cwd, root or exe link.
          */
         PtraceEvent: {
             /**
              * Access
-             * @description For an open through a /proc link, how the caller opened the file; `path` is an O_PATH open, which another open of the caller's own fd can turn into a read.
+             * @description For an open through a /proc link, how the caller opened the file; `path` is an O_PATH open, which another open of the caller's own fd can turn into a read. `stat`, `access` and `chdir` reached the file through the link without opening it.
              * @default null
              */
-            access: ("read" | "write" | "read_write" | "exec" | "path") | null;
+            access: ("read" | "write" | "read_write" | "exec" | "path" | "stat" | "access" | "chdir") | null;
             /** Cpu */
             cpu: number;
             /** Cpu Seq */
@@ -6182,7 +6231,7 @@ export interface components {
             path: string | null;
             /**
              * Path Partial
-             * @description Set when `path` is not whole: it reached the tracer's string cap, or it is only the file's own name, as for an O_PATH open.
+             * @description Set when `path` is not whole: it reached the tracer's string cap, or it is only the file's own name, as for an O_PATH open or a lookup.
              * @default false
              */
             path_partial: boolean;
@@ -15657,13 +15706,14 @@ export const deltaMessageKindValues: ReadonlyArray<FlattenedDeepRequired<compone
 export const deltasDroppedMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["DeltasDroppedMessage"]["kind"]> = ["deltas_dropped"];
 export const endMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EndMessage"]["kind"]> = ["end"];
 export const envsMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EnvsMessage"]["kind"]> = ["envs"];
-export const eventTypeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventType"]> = ["agent.compacted", "agent.finished", "agent.held", "agent.input", "agent.report", "agent.started", "agent.step", "audit.lost", "audit.spill", "cache.probe", "channel.message", "channel.read", "channel.snapshot", "exec.finished", "exec.started", "file.access", "file.setattr", "file.sync", "file.write", "fs.snapshot", "ipc.event", "log.truncated", "mem.exec", "model.checked", "model.request", "model.response", "monitor.action", "monitor.cleared", "monitor.degraded", "monitor.flag", "monitor.sweep", "monitor.verdict", "net.connect", "ns.event", "operator.action", "plant.triggered", "proc.exec", "proc.exit", "proc.fork", "proc.output", "proc.signal", "ptrace.event", "replay.divergence", "resource.sample", "run.finished", "run.started", "sandbox.archived", "sandbox.freeze_failed", "sandbox.outside_pause", "sandbox.started", "sandbox.stopped", "score.answer", "score.awareness", "score.unexplained", "score.unit", "selftest.case", "sys.denied", "task.scored", "tool.call", "tool.result"];
+export const eventTypeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventType"]> = ["agent.compacted", "agent.finished", "agent.held", "agent.input", "agent.report", "agent.started", "agent.step", "audit.lost", "audit.spill", "cache.probe", "channel.message", "channel.read", "channel.snapshot", "exec.finished", "exec.started", "file.access", "file.look", "file.setattr", "file.sync", "file.write", "fs.snapshot", "ipc.event", "log.truncated", "mem.exec", "model.checked", "model.request", "model.response", "monitor.action", "monitor.cleared", "monitor.degraded", "monitor.flag", "monitor.sweep", "monitor.verdict", "net.connect", "ns.event", "operator.action", "plant.triggered", "proc.exec", "proc.exit", "proc.fork", "proc.output", "proc.signal", "ptrace.event", "replay.divergence", "resource.sample", "run.finished", "run.started", "sandbox.archived", "sandbox.freeze_failed", "sandbox.outside_pause", "sandbox.started", "sandbox.stopped", "score.answer", "score.awareness", "score.unexplained", "score.unit", "selftest.case", "sys.denied", "task.scored", "tool.call", "tool.result"];
 export const eventsMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventsMessage"]["kind"]> = ["events"];
 export const execFinishedEndValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ExecFinished"]["end"]> = ["exited", "timeout", "cancelled", "failed"];
 export const execStartedAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ExecStarted"]["audit"]> = ["kernel", "snapshot"];
 export const execStartedPhaseValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ExecStarted"]["phase"]> = ["agent", "setup", "verifier", "replay"];
 export const fdInfoKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["FdInfo"]["kind"]> = ["pipe", "fifo", "file", "char", "sock", "dir", "other"];
 export const fileAccessOpValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["FileAccess"]["op"]> = ["read", "write", "delete", "rename", "denied", "mkdir", "symlink", "link"];
+export const fileLookOpValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["FileLook"]["op"]> = ["stat", "access", "readlink", "chdir", "list"];
 export const fileSyncCallValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["FileSync"]["call"]> = ["fsync", "fdatasync", "sync_file_range", "syncfs"];
 export const flagCategoryValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Flag"]["category"]> = ["covert_communication", "scorer_tampering", "transcript_tampering", "deceiving_operator", "evading_checks", "collective_over_own_task", "drift", "loop_or_confusion", "fabricated_completion", "constraint_violation", "eval_awareness", "alerting_operator", "egress_attempt", "privilege_escalation", "monitor_manipulation"];
 export const flagLayerValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Flag"]["layer"]> = ["signal", "sweep", "judge"];
@@ -15739,7 +15789,7 @@ export const profileBackendValues: ReadonlyArray<FlattenedDeepRequired<component
 export const profileEffortAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Profile"]["effort"]> = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 export const profileReasoningValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Profile"]["reasoning"]> = ["none", "summary", "full"];
 export const profileSummaryAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Profile"]["summary"]> = ["auto", "concise", "detailed"];
-export const ptraceEventAccessAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PtraceEvent"]["access"]> = ["read", "write", "read_write", "exec", "path"];
+export const ptraceEventAccessAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PtraceEvent"]["access"]> = ["read", "write", "read_write", "exec", "path", "stat", "access", "chdir"];
 export const ptraceEventKindAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PtraceEvent"]["kind"]> = ["pipe", "fifo", "file", "char", "sock", "dir", "other"];
 export const replayDivergenceKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ReplayDivergence"]["kind"]> = ["output", "channel"];
 export const resumeBodyThenValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ResumeBody"]["then"]> = ["continue", "kill", "inject", "deny"];
