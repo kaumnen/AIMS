@@ -150,6 +150,11 @@ class Node:
                 "this runner has no kernel tracer (--audit snapshot);"
                 " it takes no kernel runs or self-tests"
             )
+        elif backend.unsupported is not None:
+            detail = (
+                f"kernel audit unavailable: {backend.unsupported};"
+                " this runner takes no kernel runs or self-tests"
+            )
         else:
             detail = (
                 "the kernel tracer is down; it takes no kernel runs or self-tests until it is back"
@@ -612,12 +617,15 @@ class Node:
                 await origins.ingest(run_id, lines)
 
     async def _watch_tracer(self) -> None:
-        """Bring the tracer back once no sandbox is open; until then kernel jobs are refused."""
+        """Bring the tracer back once no sandbox is open; until then kernel jobs are refused.
+        On a Docker host that cannot run the tracer it gives up."""
         if self.options.audit == "snapshot":
             return
         while True:
             await asyncio.sleep(TRACER_POLL_S)
             backend = self.backend
+            if backend is not None and backend.unsupported is not None:
+                return
             if backend is None or self.tracer().alive or self.claimed:
                 continue
             if time.monotonic() - self._tracer_tried < TRACER_RETRY_S:

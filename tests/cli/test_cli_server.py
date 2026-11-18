@@ -1142,6 +1142,7 @@ async def test_aims_ui_hands_its_audit_mode_to_the_runner(
 class NoTracer:
     tracer = None
     tracer_restarts = 0
+    unsupported = None
 
     async def restart_tracer(self) -> None:
         raise AssertionError("a snapshot runner never starts the tracer")
@@ -1158,6 +1159,29 @@ async def test_a_snapshot_runner_never_starts_the_tracer(tmp_path: Path) -> None
         await node._watch_tracer()
 
 
+async def test_a_runner_whose_host_cannot_run_the_tracer_says_why_and_never_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Unfit(NoTracer):
+        unsupported = "needs Linux 6.11 or newer; the Docker host runs 6.8.0-147-generic"
+
+        async def restart_tracer(self) -> None:
+            raise AssertionError("a host that cannot run the tracer is not tried again")
+
+    monkeypatch.setattr(service, "TRACER_POLL_S", 0.01)
+    monkeypatch.setattr(service, "TRACER_RETRY_S", 0.0)
+    node = Node(NodeOptions(url="http://x", token="t", name="n", data=tmp_path))
+    node.backend = cast(Any, Unfit())
+    health = node.tracer()
+    assert not health.alive
+    assert health.detail == (
+        "kernel audit unavailable: needs Linux 6.11 or newer; the Docker host runs"
+        " 6.8.0-147-generic; this runner takes no kernel runs or self-tests"
+    )
+    async with asyncio.timeout(1):
+        await node._watch_tracer()
+
+
 async def test_the_tracer_watch_goes_on_after_a_restart_fails_in_any_way(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1166,6 +1190,7 @@ async def test_the_tracer_watch_goes_on_after_a_restart_fails_in_any_way(
     class Failing:
         tracer = None
         tracer_restarts = 0
+        unsupported = None
 
         def __init__(self) -> None:
             self.tries = 0

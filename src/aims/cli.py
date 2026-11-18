@@ -1712,7 +1712,10 @@ async def _run(**o: Any) -> int:
                     store,
                     bench.bus,
                     tracer=lambda: TracerHealth(
-                        alive=backend.tracer is not None and backend.tracer.alive
+                        alive=backend.tracer is not None and backend.tracer.alive,
+                        detail=None
+                        if backend.unsupported is None
+                        else f"kernel audit unavailable: {backend.unsupported}",
                     ),
                 )
                 await link.start()

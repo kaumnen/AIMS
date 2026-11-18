@@ -6,9 +6,10 @@ import logging
 import posixpath
 import re
 from collections import OrderedDict, deque
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from stat import S_ISFIFO
+from typing import Any
 
 import aiodocker
 from aiodocker.containers import DockerContainer
@@ -41,6 +42,7 @@ from aims.sandbox.containers import create_container, remove_container
 from aims.sandbox.execs import exec_output, open_stream
 from aims.sandbox.images import ensure_image
 from aims.sandbox.trace import (
+    ARCHES,
     ARGV_CAP,
     ArgvChunk,
     Deeper,
@@ -187,13 +189,22 @@ LOOKS = (
     'echo "filename_lookup cannot be traced on this kernel, so no lookup is recorded"; sed -i '
     r"'/^f\(entry\|exit\):vmlinux:filename_lookup /,/^}/d' $f; fi; "
 )
+# bpftrace attaches its probes through the kernel's BTF type data, so a host without it says
+# so in a line the tracer turns into `Unsupported`.
+UNSUPPORTED = "unsupported: "
+BTF = (
+    "[ -e /sys/kernel/btf/vmlinux ] || { echo '"
+    + UNSUPPORTED
+    + "needs a kernel built with BTF type data; the Docker host has no /sys/kernel/btf/vmlinux'"
+    "; exit 1; }; "
+)
 # The syscall probes follow calls by number, so the script keeps the numbers and ABI checks of the
 # host's architecture: its lines marked `//@<arch> `.
 SYSCALL_ARCH = 'u=$(uname -m); sed -i "s|^//@$u ||" $f; '
 # Kernels from 6.15 split pipe_write into anon_pipe_write and fifo_pipe_write, and 7.0 renamed
 # do_filp_open to do_file_open.
 TRACE = (
-    "mountpoint -q /sys/kernel/tracing || mount -t tracefs nodev /sys/kernel/tracing; "
+    BTF + "mountpoint -q /sys/kernel/tracing || mount -t tracefs nodev /sys/kernel/tracing; "
     "f=/tmp/trace.bt; cp /aims/trace.bt $f; a=/sys/kernel/tracing/available_filter_functions; "
     "if grep -qx anon_pipe_write $a; then "
     "sed -i 's/^fentry:vmlinux:pipe_write /fentry:vmlinux:anon_pipe_write, "
@@ -219,8 +230,49 @@ PMU = (
 )
 
 
+# The oldest kernel trace.bt compiles on: it reads inode->i_mtime_sec, which 6.11 added.
+FLOOR = (6, 11)
+# The newest kernel the tracer was tested on.
+NEWEST_TESTED = (7, 0)
+TRACED_ARCHES = ("x86_64", "aarch64")
+RELEASE = re.compile(r"(\d+)\.(\d+)")
+
+
 class TracerError(Exception):
     pass
+
+
+class Unsupported(TracerError):
+    """The Docker host cannot run the tracer, so starting it again cannot help."""
+
+
+def _release(version: tuple[int, int]) -> str:
+    return f"{version[0]}.{version[1]}"
+
+
+def preflight(info: Mapping[str, Any]) -> tuple[str | None, str | None]:
+    """Whether the Docker host `info` (`docker info`) describes can run the tracer: why not, or
+    None, then a warning for a kernel newer than any tested, or None. A field that is missing or
+    does not parse is no reason, so the tracer is tried as it would be without this check."""
+    reasons: list[str] = []
+    kernel = info.get("KernelVersion")
+    found = RELEASE.match(kernel) if isinstance(kernel, str) else None
+    version = None if found is None else (int(found[1]), int(found[2]))
+    if version is not None and version < FLOOR:
+        reasons.append(f"needs Linux {_release(FLOOR)} or newer; the Docker host runs {kernel}")
+    if str(info.get("CgroupVersion")) == "1":
+        reasons.append("needs cgroup v2; the Docker host uses cgroup v1")
+    arch = info.get("Architecture")
+    if isinstance(arch, str) and arch and ARCHES.get(arch, arch) not in TRACED_ARCHES:
+        reasons.append(f"needs an x86_64 or aarch64 Docker host; this one is {arch}")
+    if reasons:
+        return "; ".join(reasons), None
+    if version is not None and version > NEWEST_TESTED:
+        return None, (
+            f"the Docker host runs Linux {kernel}, newer than any kernel the tracer was tested"
+            f" on ({_release(NEWEST_TESTED)}); kernel audit may fail or miss calls"
+        )
+    return None, None
 
 
 def _resolve(mounts: Mounts, named: Named) -> tuple[str, bool]:
@@ -691,6 +743,10 @@ class Tracer:
 
     def _note(self, text: str) -> None:
         """Log what bpftrace says; known compile warnings and their source lines at debug."""
+        if text.startswith(UNSUPPORTED):
+            if not self._ready.done():
+                self._ready.set_exception(Unsupported(text.removeprefix(UNSUPPORTED)))
+            return
         found = DIAGNOSTIC.fullmatch(text)
         if found is not None:
             self._quiet = 2 if found[1] == "WARNING" and found[2] in KNOWN_WARNINGS else 0

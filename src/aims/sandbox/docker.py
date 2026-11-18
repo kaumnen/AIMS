@@ -51,7 +51,7 @@ from aims.sandbox.imds import start as start_imds_server
 from aims.sandbox.reader import Reader, stream_archive
 from aims.sandbox.resources import Sampler, SamplerError, Watch
 from aims.sandbox.trace import ARCHES, SYSCALLS, Mounts
-from aims.sandbox.tracer import Route, Tracer, TracerError
+from aims.sandbox.tracer import Route, Tracer, TracerError, Unsupported, preflight
 
 log = logging.getLogger("aims.sandbox")
 
@@ -115,6 +115,8 @@ class DockerBackend:
         self.sampler = sampler
         self.ring_pages: int | None = None
         self.tracer_restarts = 0
+        # Why the Docker host cannot run the tracer, once that is known; no restart is tried.
+        self.unsupported: str | None = None
         self._labels = labels
         self._toolbox_image, self._toolbox_volume = toolbox
         self._sharing = asyncio.Lock()
@@ -128,7 +130,8 @@ class DockerBackend:
         ring_pages: int | None = None,
         image_keep_days: float = KEEP_DAYS,
     ) -> DockerBackend:
-        """Connect to Docker and start the kernel tracer unless `audit` is snapshot.
+        """Connect to Docker and start the kernel tracer unless `audit` is snapshot. A host that
+        cannot run the tracer gets snapshot audit on auto and refuses on kernel.
 
         `ring_pages` sizes the tracer's kernel ring in 4 KiB pages, a power of two. Scenario
         images no container used in `image_keep_days` days are removed.
@@ -139,6 +142,15 @@ class DockerBackend:
         try:
             info = await docker.system.info()
             arch = ARCHES.get(info["Architecture"], info["Architecture"])
+            unsupported = None
+            if audit != "snapshot":
+                unsupported, untested = preflight(info)
+                if unsupported is not None:
+                    if audit == "kernel":
+                        raise SandboxError(f"kernel audit unavailable: {unsupported}")
+                    log.warning("kernel audit unavailable, using snapshot audit: %s", unsupported)
+                elif untested is not None:
+                    log.warning("%s", untested)
             labels = {
                 "aims.managed": "1",
                 "aims.host": socket.gethostname(),
@@ -152,12 +164,14 @@ class DockerBackend:
             toolbox = await _toolbox(docker, labels)
             await _remove_old(docker, toolbox[1], image_keep_days)
             sampler = await _sampler(docker, labels, toolbox[0])
-            if audit != "snapshot":
+            if audit != "snapshot" and unsupported is None:
                 name = f"aims-tracer-{uuid.uuid4().hex[:12]}"
                 tracer = Tracer(docker, labels, name, ring_pages=ring_pages, toolbox=toolbox[1])
                 try:
                     await tracer.start()
                 except (TracerError, LockError, aiodocker.DockerError, TimeoutError) as e:
+                    if isinstance(e, Unsupported):
+                        unsupported = str(e)
                     if audit == "kernel":
                         raise SandboxError(f"kernel audit unavailable: {e}") from e
                     log.warning("kernel audit unavailable, using snapshot audit: %s", e)
@@ -166,6 +180,7 @@ class DockerBackend:
                 docker, arch=arch, labels=labels, toolbox=toolbox, tracer=tracer, sampler=sampler
             )
             backend.ring_pages = ring_pages
+            backend.unsupported = unsupported
             return backend
         except BaseException:
             await settle(_teardown(docker, tracer, sampler))
@@ -189,10 +204,13 @@ class DockerBackend:
 
     async def restart_tracer(self) -> None:
         """Start a new kernel tracer in place of one that stopped or never started. Sandboxes
-        made after it use the new one; call it only while no sandbox is open."""
+        made after it use the new one; call it only while no sandbox is open. On a host that
+        cannot run the tracer it raises at once."""
         old = self.tracer
         if old is not None and old.alive:
             return
+        if self.unsupported is not None:
+            raise SandboxError(f"kernel audit unavailable: {self.unsupported}")
         if old is not None:
             await old.stop()
             self.tracer = None
@@ -207,6 +225,8 @@ class DockerBackend:
         try:
             await tracer.start()
         except (TracerError, LockError, aiodocker.DockerError, TimeoutError) as e:
+            if isinstance(e, Unsupported):
+                self.unsupported = str(e)
             raise SandboxError(f"kernel audit unavailable: {e}") from e
         self.tracer = tracer
         self.tracer_restarts += 1

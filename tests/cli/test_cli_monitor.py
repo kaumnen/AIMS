@@ -1419,6 +1419,7 @@ class NoDocker:
 
     tracer = None
     tracer_restarts = 0
+    unsupported = None
 
     async def restart_tracer(self) -> None:
         raise SandboxError("no Docker here")
