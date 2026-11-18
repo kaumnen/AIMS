@@ -39,6 +39,7 @@ from aims.events import (
     MissingBlobs,
     ModelBackend,
     Oversight,
+    PlantTier,
     ReasoningKind,
     ResumeThen,
     RunCorrupt,
@@ -98,6 +99,7 @@ from aims.run.job import (
     selftest_job,
 )
 from aims.run.runner import Fork, RunError, agent_profile, check, text_problems
+from aims.run.score import CheckError, check_run
 from aims.scenario import Bundle, Scenario, ScenarioError, folder_tar, load, missing, parse
 from aims.scenario import budget as budgets
 from aims.scenario.budget import BudgetError, BudgetOverride
@@ -617,6 +619,42 @@ async def get_truth(run_id: str, principal: Operator, state: State) -> dict[str,
     if not isinstance(value, dict):
         raise ProblemException(404, "Not found", f"run {run_id} has no truth file here")
     return value
+
+
+class PlantTaken(Out):
+    """A plant one agent reached, as `aims check` prints it: `tier` is the highest tier it
+    reached, or the one that counts as taken, first at `seq`; `evidence` holds every seq that
+    shows it. `inherited` marks a canary a run of the series before made, used here."""
+
+    agent: str
+    plant: str
+    kind: str
+    category: str
+    tier: PlantTier
+    taken: bool
+    seq: int
+    evidence: list[int]
+    detail: str
+    inherited: bool
+
+
+@router.get("/runs/{run_id}/check", tags=["runs"], responses=responses(404, 409, 503))
+async def check_plants(run_id: str, principal: Operator, state: State) -> list[PlantTaken]:
+    """The plants each agent of a sealed run took, in event order, from its log and truth
+    file, as `aims check` gives them. Operators only. 409 while the run runs, or when its log
+    does not verify or its truth file is not here yet."""
+    run_id = _run_id(run_id)
+    await _shown(state, principal, run_id)
+    info = await state.store.run(run_id)
+    if info is None:
+        raise _no_run(state, run_id)
+    if info.status == "running":
+        raise ProblemException(409, "Conflict", "the run is not sealed yet", code="not_sealed")
+    try:
+        rows = await check_run(state.store, run_id)
+    except CheckError as e:
+        raise ProblemException(409, "Cannot check", str(e), code="check") from None
+    return [PlantTaken.model_validate(row.as_dict()) for row in rows]
 
 
 class RunDetail(Out):
@@ -1248,6 +1286,7 @@ class ResumeBody(BaseModel):
     then: ResumeThen = "continue"
     text: Utf8 | None = None
     reason: Utf8 | None = None
+    operator_only: bool = False
 
 
 class SweepBody(BaseModel):
@@ -1327,6 +1366,8 @@ async def command(
     parts = [f"agent {action.agent}"] if action.agent else []
     if action.action == "resume" and action.then != "continue":
         parts.append(f"then {action.then}")
+    if action.operator_only:
+        parts.append("operator only")
     note.detail = ", ".join(parts) or None
     run_id = _run_id(run_id)
     job = await state.db.job(run_id)
@@ -1385,15 +1426,25 @@ async def resume_run(
 ) -> CommandSent:
     """Let paused agents go on. `then` is what comes first: `continue`, `kill`, `inject` the
     `text`, or `deny` the tool call the agent is held at, which does not run; the agent gets
-    the configured `denied` reply, never `text` or `reason`."""
+    the configured `denied` reply, never `text` or `reason`. With `operator_only` a monitor's
+    pause stays: the runner refuses the resume while the monitor holds an agent it names."""
     if body.then == "inject" and not body.text:
         raise ProblemException(422, "Invalid request", "an inject needs text")
     if body.then == "deny" and body.text:
         raise ProblemException(
             422, "Invalid request", "a deny takes no text; the agent gets the `denied` reply"
         )
+    if body.then == "kill" and body.operator_only:
+        raise ProblemException(
+            422, "Invalid request", "a kill ends every pause; leave out operator_only"
+        )
     act = CommandAction(
-        action="resume", agent=body.agent, then=body.then, text=body.text, reason=body.reason
+        action="resume",
+        agent=body.agent,
+        then=body.then,
+        text=body.text,
+        reason=body.reason,
+        operator_only=body.operator_only,
     )
     return await command(state, run_id, act, principal, note)
 

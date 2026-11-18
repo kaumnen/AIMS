@@ -135,6 +135,26 @@ npx skills add kaumnen/AIMS -a claude-code   # or -a codex
   <img alt="The Report tab of a run. The header pins every input. The headline puts a reward of 1 beside the judge's importance 4 of 5. The agent's claim did not match what it did. A note and the judge's summary follow." src="https://raw.githubusercontent.com/kaumnen/AIMS/main/docs/images/report-light.png">
 </picture>
 
+## MCP
+
+`aims mcp` serves the control plane to an MCP client over stdio. Its tools read runs, flags, steps, reports, scores and scenarios. `--act` adds tools that start runs, forks, monitor runs and scores and that pause, resume, kill or cancel a run.
+
+```sh
+uv tool install 'aims-bench[mcp]'
+```
+
+Most clients take an entry like this in their MCP config:
+
+```json
+{
+  "mcpServers": {
+    "aims": { "command": "aims", "args": ["mcp"] }
+  }
+}
+```
+
+It uses the local `aims ui`. Give `--server <url>` and a token in `AIMS_TOKEN` for another control plane. More in [MCP server](https://github.com/kaumnen/AIMS/blob/main/docs/mcp.md).
+
 ## Config
 
 A profile in `aims.toml` says how to reach a model. The roles `agent`, `sweep` and `judge` each name one. Keys come from the environment only. `aims init` writes a commented starter file.
@@ -166,6 +186,7 @@ Open the printed sign-in link. Add your models under **Settings** > **Models** >
 | [Runs and reports](https://github.com/kaumnen/AIMS/blob/main/docs/runs.md) | Logs, forks, scores, series, deletion and reports |
 | [Models](https://github.com/kaumnen/AIMS/blob/main/docs/models.md) | Profile fields, prices, adding a model and headers |
 | [Deploy](https://github.com/kaumnen/AIMS/blob/main/docs/deploy.md) | TLS, more runners, proxies and offline hosts |
+| [MCP server](https://github.com/kaumnen/AIMS/blob/main/docs/mcp.md) | Tools, tokens and the cost question for MCP clients |
 | [SECURITY.md](https://github.com/kaumnen/AIMS/blob/main/SECURITY.md) | The security model and how to report a vulnerability |
 | [CONTRIBUTING.md](https://github.com/kaumnen/AIMS/blob/main/CONTRIBUTING.md) | Setup, tests and CI |
 

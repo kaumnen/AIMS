@@ -75,8 +75,9 @@ class RunnerStatus(_Wire):
 
 class CommandAction(_Wire):
     """An operator request for one run, as the runner gets it. `then` belongs to a resume:
-    continue, kill, inject `text`, or deny the tool call the agent is held at. `sweep` asks the
-    run's monitor for a sweep now, of `agent` or of every agent."""
+    continue, kill, inject `text`, or deny the tool call the agent is held at. So does
+    `operator_only`, which leaves a monitor's pause in place. `sweep` asks the run's monitor
+    for a sweep now, of `agent` or of every agent."""
 
     action: OperatorActionKind
     agent: str | None = None
@@ -84,6 +85,7 @@ class CommandAction(_Wire):
     text: str | None = None
     reason: str | None = None
     token: str | None = None
+    operator_only: bool = False
 
 
 class CommandMessage(_Wire):

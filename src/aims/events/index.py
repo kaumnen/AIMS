@@ -1106,6 +1106,12 @@ class Index:
                                     "since": format_ts(e.ts),
                                 },
                             )
+                        elif action == "resume" and e.data.get("operator_only"):
+                            hold = held.get(agent)
+                            if hold is not None:
+                                hold.pop("operator", None)
+                                if "monitor" not in hold:
+                                    held.pop(agent)
                         elif action == "resume":
                             held.pop(agent, None)
                 case AgentHeld.type:

@@ -1171,8 +1171,9 @@ class MonitorDegraded(Payload):
 class OperatorAction(Payload):
     """What an operator asked of a run, recorded by its runner before acting on it. The event's
     agent is the agent it targets, none for the whole run. `then` is what a resume does next;
-    deny refuses the tool call the agent holds at. `sweep` asks the monitor for a sweep now.
-    `token` names the token the request came with."""
+    deny refuses the tool call the agent holds at. An `operator_only` resume leaves a monitor's
+    pause in place. `sweep` asks the monitor for a sweep now. `token` names the token the
+    request came with."""
 
     type = "operator.action"
 
@@ -1182,6 +1183,7 @@ class OperatorAction(Payload):
     reason: str | None = None
     token: str | None = None
     command_id: str | None = None
+    operator_only: bool = False
 
 
 class AgentStarted(Payload):

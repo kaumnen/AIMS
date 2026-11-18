@@ -374,6 +374,7 @@ class Link:
                 reason=c.reason,
                 token=c.token,
                 command_id=message.id,
+                operator_only=c.operator_only,
             )
         except RunError as e:
             return Ack(ok=False, outcome=str(e))

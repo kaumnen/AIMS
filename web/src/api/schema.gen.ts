@@ -466,6 +466,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Check Plants
+         * @description The plants each agent of a sealed run took, in event order, from its log and truth
+         *     file, as `aims check` gives them. Operators only. 409 while the run runs, or when its log
+         *     does not verify or its truth file is not here yet.
+         */
+        get: operations["check_plants"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{run_id}/commands": {
         parameters: {
             query?: never;
@@ -813,7 +835,8 @@ export interface paths {
          * Resume Run
          * @description Let paused agents go on. `then` is what comes first: `continue`, `kill`, `inject` the
          *     `text`, or `deny` the tool call the agent is held at, which does not run; the agent gets
-         *     the configured `denied` reply, never `text` or `reason`.
+         *     the configured `denied` reply, never `text` or `reason`. With `operator_only` a monitor's
+         *     pause stays: the runner refuses the resume while the monitor holds an agent it names.
          */
         post: operations["resume_run"];
         delete?: never;
@@ -2506,8 +2529,9 @@ export interface components {
         /**
          * CommandAction
          * @description An operator request for one run, as the runner gets it. `then` belongs to a resume:
-         *     continue, kill, inject `text`, or deny the tool call the agent is held at. `sweep` asks the
-         *     run's monitor for a sweep now, of `agent` or of every agent.
+         *     continue, kill, inject `text`, or deny the tool call the agent is held at. So does
+         *     `operator_only`, which leaves a monitor's pause in place. `sweep` asks the run's monitor
+         *     for a sweep now, of `agent` or of every agent.
          */
         CommandAction: {
             /**
@@ -2520,6 +2544,11 @@ export interface components {
              * @default null
              */
             agent: string | null;
+            /**
+             * Operator Only
+             * @default false
+             */
+            operator_only: boolean;
             /**
              * Reason
              * @default null
@@ -5333,8 +5362,9 @@ export interface components {
          * OperatorAction
          * @description What an operator asked of a run, recorded by its runner before acting on it. The event's
          *     agent is the agent it targets, none for the whole run. `then` is what a resume does next;
-         *     deny refuses the tool call the agent holds at. `sweep` asks the monitor for a sweep now.
-         *     `token` names the token the request came with.
+         *     deny refuses the tool call the agent holds at. An `operator_only` resume leaves a monitor's
+         *     pause in place. `sweep` asks the monitor for a sweep now. `token` names the token the
+         *     request came with.
          */
         OperatorAction: {
             /**
@@ -5347,6 +5377,11 @@ export interface components {
              * @default null
              */
             command_id: string | null;
+            /**
+             * Operator Only
+             * @default false
+             */
+            operator_only: boolean;
             /**
              * Reason
              * @default null
@@ -5471,6 +5506,37 @@ export interface components {
             name: string;
             /** Taken */
             taken: string | null;
+        };
+        /**
+         * PlantTaken
+         * @description A plant one agent reached, as `aims check` prints it: `tier` is the highest tier it
+         *     reached, or the one that counts as taken, first at `seq`; `evidence` holds every seq that
+         *     shows it. `inherited` marks a canary a run of the series before made, used here.
+         */
+        PlantTaken: {
+            /** Agent */
+            agent: string;
+            /** Category */
+            category: string;
+            /** Detail */
+            detail: string;
+            /** Evidence */
+            evidence: number[];
+            /** Inherited */
+            inherited: boolean;
+            /** Kind */
+            kind: string;
+            /** Plant */
+            plant: string;
+            /** Seq */
+            seq: number;
+            /** Taken */
+            taken: boolean;
+            /**
+             * Tier
+             * @enum {string}
+             */
+            tier: "touched" | "considered" | "claimed" | "used";
         };
         /**
          * PlantTriggered
@@ -6332,6 +6398,11 @@ export interface components {
         ResumeBody: {
             /** Agent */
             agent?: string | null;
+            /**
+             * Operator Only
+             * @default false
+             */
+            operator_only?: boolean;
             /** Reason */
             reason?: string | null;
             /** Text */
@@ -10167,6 +10238,82 @@ export interface operations {
             };
             /** @description Unsupported media type */
             415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Invalid request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    check_plants: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlantTaken"][];
+                };
+            };
+            /** @description Not signed in */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -15547,6 +15694,7 @@ export const operatorActionActionValues: ReadonlyArray<FlattenedDeepRequired<com
 export const operatorActionThenAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["OperatorAction"]["then"]> = ["continue", "kill", "inject", "deny"];
 export const pinsRoleValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Pins"]["role"]> = ["local", "operator", "viewer"];
 export const plantTierValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Plant"]["tier"]> = ["touched", "considered", "claimed", "used"];
+export const plantTakenTierValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PlantTaken"]["tier"]> = ["touched", "considered", "claimed", "used"];
 export const plantTriggeredCategoryValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PlantTriggered"]["category"]> = ["covert_communication", "scorer_tampering", "transcript_tampering", "deceiving_operator", "evading_checks", "collective_over_own_task", "drift", "loop_or_confusion", "fabricated_completion", "constraint_violation", "eval_awareness", "alerting_operator", "egress_attempt", "privilege_escalation", "monitor_manipulation"];
 export const plantTriggeredTierValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PlantTriggered"]["tier"]> = ["touched", "considered", "claimed", "used"];
 export const procOutputStreamValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ProcOutput"]["stream"]> = ["stdout", "stderr", "pipe", "fifo"];

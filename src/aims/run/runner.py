@@ -361,6 +361,8 @@ class Runner:
         self._decided = False
         self._monitor_cut = False
         self._control = ControlGate(bench.gate)
+        # Agents the monitor paused that no resume has let go.
+        self._monitor_held: set[str] = set()
         self._phase_task: asyncio.Task[None] | None = None
         self._agents_task: asyncio.Task[Any] | None = None
         self._agent_tasks: dict[str, asyncio.Task[Any]] = {}
@@ -458,12 +460,15 @@ class Runner:
         reason: str | None = None,
         token: str | None = None,
         command_id: str | None = None,
+        operator_only: bool = False,
     ) -> str | None:
         """Carry out an operator request on the running run, recorded first as
         `operator.action`. Pause, resume and inject take one agent or, with none, all. A resume
-        with deny refuses the tool call each agent waits before, and needs one that does. A
-        sweep is left to the monitor, which reads the action from the log. Returns what did not
-        take effect, such as a sandbox that did not freeze or stop, else None."""
+        with deny refuses the tool call each agent waits before, and needs one that does. An
+        `operator_only` resume lets go of an operator's pause only: it is refused while the
+        monitor holds an agent it targets, and an agent the monitor pauses meanwhile stays
+        paused. A sweep is left to the monitor, which reads the action from the log. Returns
+        what did not take effect, such as a sandbox that did not freeze or stop, else None."""
         if self.run_id is None or self.finished:
             raise RunError("the run is not running")
         if (action == "inject" or then == "inject") and not text:
@@ -475,6 +480,9 @@ class Runner:
         held = any(c.is_paused(a) and c.held_call(a) for a in targets)
         if action == "resume" and then == "deny" and not held:
             raise RunError("no paused agent has a tool call waiting to deny")
+        operator_only = operator_only and action == "resume" and then != "kill"
+        if operator_only and (waiting := self._monitor_holds(targets)):
+            raise RunError(f"agent {', '.join(waiting)} waits on the monitor's pause")
         store = self.bench.store
         recorded = OperatorAction(
             action=action,
@@ -483,6 +491,7 @@ class Runner:
             reason=reason,
             token=token,
             command_id=command_id,
+            operator_only=operator_only,
         )
         await store.append(self.run_id, [Draft(recorded, agent)])
         failed: list[str] = []
@@ -497,7 +506,13 @@ class Runner:
                 verdict = Verdict("inject", text=text)
             else:
                 verdict = DENY if then == "deny" else CONTINUE
-            failed = await self._resume(targets, verdict)
+            # No await from this check to the resume, so a pause the monitor took during the
+            # append above stays.
+            kept = self._monitor_holds(targets) if operator_only else []
+            failed = [f"agent {a} waits on the monitor's pause and stays paused" for a in kept]
+            targets = [a for a in targets if a not in kept]
+            self._monitor_held.difference_update(targets)
+            failed += await self._resume(targets, verdict)
         elif action == "inject":
             self._control.inject(targets, text or "")
         elif action == "kill":
@@ -528,6 +543,14 @@ class Runner:
                 await sb.resume()
         return failed
 
+    def _monitor_holds(self, targets: Sequence[str]) -> list[str]:
+        """The agents of `targets` that wait on the monitor's pause. A finished agent waits on
+        nothing."""
+        c = self._control
+        return [
+            a for a in targets if a in self._monitor_held and c.is_paused(a) and not self._done(a)
+        ]
+
     def _done(self, agent_id: str) -> bool:
         agent = self.agents.get(agent_id)
         scripted = self.scripted.get(agent_id)
@@ -552,12 +575,16 @@ class Runner:
     # The monitor's Actuator: it records `monitor.action` itself before each of these.
 
     async def pause(self, agents: Sequence[str], reason: str) -> None:
-        await self._pause(self._targets_of(agents), reason)
+        targets = self._targets_of(agents)
+        self._monitor_held.update(targets)
+        await self._pause(targets, reason)
 
     async def resume(
         self, agents: Sequence[str], then: Literal["continue", "deny"] = "continue"
     ) -> None:
-        await self._resume(self._targets_of(agents), DENY if then == "deny" else CONTINUE)
+        targets = self._targets_of(agents)
+        self._monitor_held.difference_update(targets)
+        await self._resume(targets, DENY if then == "deny" else CONTINUE)
 
     def paused(self, agent_id: str) -> bool:
         return self._control.is_paused(agent_id)

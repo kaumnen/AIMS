@@ -521,6 +521,17 @@ async def test_operator_resume_ends_the_pause(tmp_path: Path) -> None:
         assert h.actuator.kinds() == ["pause", "pause"]
 
 
+async def test_an_operator_only_resume_leaves_the_pause_to_time_out(tmp_path: Path) -> None:
+    config = {"sweeps": [], "policy": {"pause_timeout_s": 0.2}}
+    async with harness(tmp_path, config=config) as h:
+        await h.add(started())
+        await h.bad(importance=4)
+        await h.monitor.barrier()
+        await h.add(OperatorAction(action="resume", then="continue", operator_only=True), "a")
+        await h.monitor.barrier()
+        await h.until(lambda: h.actuator.kinds() == ["pause", "kill"])
+
+
 async def test_verifier_flags_taint_and_never_pause(tmp_path: Path) -> None:
     async with harness(tmp_path) as h:
         await h.add(started())
