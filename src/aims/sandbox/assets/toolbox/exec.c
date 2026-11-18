@@ -18,8 +18,11 @@
  * io_uring_setup, io_uring_enter and io_uring_register fail with EPERM, as
  * Docker's default profile does since 25.0. Ops sent through a ring with a
  * registered personality skip some kernel records. A daemon may run an older
- * or a custom profile. When the filter cannot be installed, PROG does not run
- * and aims-exec exits 125.
+ * or a custom profile. The filter also refuses with EPERM every call of
+ * another ABI than the binary's own: a 32-bit call through int 0x80 or of a
+ * 32-bit process, and an x32 call. Kernel probes on a syscall's own
+ * tracepoint skip those, and nothing in a sandbox needs them. When the filter
+ * cannot be installed, PROG does not run and aims-exec exits 125.
  *
  * -k ends what a cancelled exec started: each process whose command line is
  * ARG... exactly gets SIGKILL to the process group of each of its children,
@@ -32,6 +35,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <linux/audit.h>
 #include <linux/filter.h>
 #include <linux/seccomp.h>
 #include <signal.h>
@@ -44,22 +48,29 @@
 #include <time.h>
 #include <unistd.h>
 
-/* io_uring_setup, io_uring_enter and io_uring_register. Every architecture
- * takes these numbers from the shared table, the 32-bit calls of a 64-bit
- * kernel too, so the filter needs no architecture check. The x32 bit is
- * cleared first. */
+/* The binary's own ABI. io_uring_setup, io_uring_enter and io_uring_register
+ * have the same numbers in each. */
+#if defined(__x86_64__)
+#define NATIVE AUDIT_ARCH_X86_64
+#elif defined(__aarch64__)
+#define NATIVE AUDIT_ARCH_AARCH64
+#else
+#error "aims-exec knows the ABI of x86_64 and aarch64 only"
+#endif
 #define URING_FIRST 425
 #define URING_LAST 427
 #define X32_BIT 0x40000000u
 
-static int refuse_uring(void) {
+static int refuse_calls(void) {
     struct sock_filter code[] = {
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch)),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, NATIVE, 0, 5),
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
-        BPF_STMT(BPF_ALU | BPF_AND | BPF_K, ~X32_BIT),
-        BPF_JUMP(BPF_JMP | BPF_JGE | BPF_K, URING_FIRST, 0, 2),
-        BPF_JUMP(BPF_JMP | BPF_JGT | BPF_K, URING_LAST, 1, 0),
-        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+        BPF_JUMP(BPF_JMP | BPF_JSET | BPF_K, X32_BIT, 3, 0),
+        BPF_JUMP(BPF_JMP | BPF_JGE | BPF_K, URING_FIRST, 0, 1),
+        BPF_JUMP(BPF_JMP | BPF_JGT | BPF_K, URING_LAST, 0, 1),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
     };
     struct sock_fprog prog = {sizeof code / sizeof code[0], code};
     if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) return -1;
@@ -210,7 +221,7 @@ int main(int argc, char **argv) {
     long long timeout = atoll(argv[first]);
     long long grace = atoll(argv[first + 1]);
     char **prog = argv + first + 2;
-    if (refuse_uring() != 0) {
+    if (refuse_calls() != 0) {
         perror("aims-exec: seccomp");
         return 125;
     }

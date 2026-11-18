@@ -1741,6 +1741,48 @@ async def test_32_bit_calls_are_recorded(
 
 @pytest.mark.tracer
 @pytest.mark.usefixtures("traced")
+async def test_aims_exec_refuses_32_bit_and_x32_calls(
+    backend: DockerBackend, store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if backend.arch != "x86_64":
+        pytest.skip("int 0x80 and x32 calls exist on x86_64 only")
+    # The daemon's profile is off, so each refusal is aims-exec's own.
+    create = docker_module.create_container
+
+    async def unconfined(
+        docker: aiodocker.Docker, *, config: dict[str, Any], name: str | None = None
+    ) -> Any:
+        if config["Cmd"] == ["sleep", "infinity"]:
+            host = config["HostConfig"]
+            host["SecurityOpt"] = [*host["SecurityOpt"], "seccomp=unconfined"]
+        return await create(docker, config=config, name=name)
+
+    monkeypatch.setattr(docker_module, "create_container", unconfined)
+    command = (
+        "python3 - <<'EOF'\n" + INT80 + "libc.syscall.restype = ctypes.c_long\n"
+        "def x32(nr, *args):\n"
+        "    return libc.syscall(0x40000000 | nr, *args), ctypes.get_errno()\n"
+        # getpid and unshare through int 0x80, then x32's getpid and ptrace.
+        "print(int80(20), int80(310, 0x10000000), *x32(39), *x32(521, 0, 0, 0, 0))\n"
+        "EOF"
+    )
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+
+    assert result.stdout == b"-1 -1 -1 1 -1 1\n", result.stderr
+    denied = {
+        p.syscall
+        for p in (e.payload() for e in await events(store, run_id, "sys.denied"))
+        if isinstance(p, SysDenied) and p.exec_id == result.finished.exec_id
+    }
+    assert {"unshare", "ptrace"} <= denied
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
 async def test_ipc_events(backend: DockerBackend, store: LocalEventStore) -> None:
     command = (
         "python3 - <<'EOF'\n"
