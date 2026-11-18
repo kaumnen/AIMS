@@ -7,7 +7,7 @@ from aims.sandbox.trace import ARGV_CAP, ENV_CAP, PARSERS, STRLEN, UNGROUPED
 from aims.sandbox.tracer import TRACE
 
 TAGS = set("RFBEXOWAUNCPD") | set("VGT") | set("Z") | set("Q") | set("IKSMHJL") | set("Y")
-TAGS |= set("abcdefghi") | set("rt")
+TAGS |= set("abcdefghi") | set("rt") | set("o")
 TYPES = {
     "run.started",
     "run.finished",
@@ -191,5 +191,24 @@ def test_overlay_filters_match_the_script() -> None:
         for line in script.splitlines()
         if line.startswith(("fentry:vmlinux:security_inode_", "fentry:vmlinux:security_file_open"))
     ]
-    assert len(hooks) == 8
+    assert len(hooks) == 9
     assert all("curtask->cred == curtask->real_cred" in line for line in hooks)
+
+
+def test_the_proc_link_probes_go_together() -> None:
+    # A kernel without a function they attach to drops them as one range of lines; any line of
+    # the range's map left outside would fail to compile.
+    script = (ASSETS / "tracer" / "trace.bt").read_text().splitlines()
+    first = next(
+        i for i, x in enumerate(script) if x.startswith("fentry:vmlinux:proc_pid_get_link ")
+    )
+    last = next(
+        i
+        for i, x in enumerate(script)
+        if x.startswith("tracepoint:sched:sched_process_exit /@plink")
+    )
+    assert [i for i, x in enumerate(script) if "@plink" in x and not first <= i <= last] == []
+    assert "'/^fentry:vmlinux:proc_pid_get_link /,/^tracepoint:sched:sched_process_exit" in TRACE
+    opens = [x for x in script if ":vmlinux:do_filp_open " in x]
+    assert len(opens) == 3
+    assert r"s/^\(fentry\|fexit\):vmlinux:do_filp_open /" in TRACE

@@ -1027,8 +1027,19 @@ class Trajectory:
                 )
             case "ptrace.event":
                 named = d.get("ns_target") if d.get("target") is None else None
+                path = d.get("path")
                 return {"pid": pid, "target": d.get("target"), "request": d.get("request")} | (
-                    _some(ns_target=named, refused=d.get("refused"), errno=d.get("errno"))
+                    _some(
+                        ns_target=named,
+                        refused=d.get("refused"),
+                        errno=d.get("errno"),
+                        fd=d.get("fd"),
+                        access=d.get("access"),
+                        kind=d.get("kind"),
+                        inode=d.get("inode"),
+                        path=None if path is None else cut(str(path), FIELD_BYTES),
+                        path_partial=d.get("path_partial"),
+                    )
                 )
             case "proc.signal":
                 return {"pid": pid, "target": d.get("target"), "signal": d.get("signal")}

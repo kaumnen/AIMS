@@ -11297,8 +11297,28 @@
       },
       "PtraceEvent": {
         "additionalProperties": false,
-        "description": "A ptrace, process_vm_readv, process_vm_writev or pidfd_getfd request by `pid` against\n`target`, recorded when the kernel returns.\n\nIt proves the request was made and whether it was refused, not that the target changed or\nwas read. `errno` is set when it was refused. Peek requests can return negative data, so a\nnegative return for them is not marked as a refusal. pidfd_getfd copies one of the target's\nopen files into the caller. `target` is the host pid of the process the kernel looked up,\nlike every other pid in a record; for traceme it is the parent that will trace, for\npidfd_getfd the process the pidfd names. It is missing when the kernel found no process for\nthe pid the caller named, which fails the request with ESRCH, or never looked one up, as for\nan empty process_vm_writev or a bad pidfd. `ns_target` is that pid as the caller named it, in\nits own pid namespace; traceme names none. For pidfd_getfd, which names no pid, it is the\ntarget's pid in its own namespace. A request a seccomp profile refuses is a sys.denied record\ninstead.",
+        "description": "A ptrace, process_vm_readv, process_vm_writev or pidfd_getfd request by `pid` against\n`target`, recorded when the kernel returns.\n\nIt proves the request was made and whether it was refused, not that the target changed or\nwas read. `errno` is set when it was refused. Peek requests can return negative data, so a\nnegative return for them is not marked as a refusal. pidfd_getfd copies one of the target's\nopen files into the caller. `target` is the host pid of the process the kernel looked up,\nlike every other pid in a record; for traceme it is the parent that will trace, for\npidfd_getfd the process the pidfd names. It is missing when the kernel found no process for\nthe pid the caller named, which fails the request with ESRCH, or never looked one up, as for\nan empty process_vm_writev or a bad pidfd. `ns_target` is that pid as the caller named it, in\nits own pid namespace; traceme names none. For pidfd_getfd, which names no pid, it is the\ntarget's pid in its own namespace. A request a seccomp profile refuses is a sys.denied record\ninstead. proc_fd, proc_cwd, proc_root and proc_exe are opens of a file through the target's\n/proc/<pid>/fd/N, cwd, root or exe link.",
         "properties": {
+          "access": {
+            "anyOf": [
+              {
+                "enum": [
+                  "read",
+                  "write",
+                  "read_write",
+                  "exec",
+                  "path"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "For an open through a /proc link, how the caller opened the file; `path` is an O_PATH open, which another open of the caller's own fd can turn into a read.",
+            "title": "Access"
+          },
           "cpu": {
             "title": "Cpu",
             "type": "integer"
@@ -11330,6 +11350,54 @@
             ],
             "title": "Exec Id"
           },
+          "fd": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "For proc_fd, the target's fd that the link names.",
+            "title": "Fd"
+          },
+          "inode": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "For an open through a /proc link, the file's inode. A pipe's is the inode that proc.exec fds and proc.output give for the same pipe.",
+            "title": "Inode"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "pipe",
+                  "fifo",
+                  "file",
+                  "char",
+                  "sock",
+                  "dir",
+                  "other"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "For an open through a /proc link, what the file is, such as a pipe.",
+            "title": "Kind"
+          },
           "ns_target": {
             "anyOf": [
               {
@@ -11341,6 +11409,25 @@
             ],
             "default": null,
             "title": "Ns Target"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "For an open through a /proc link, the file's path as the kernel names it, such as `pipe:[12]` or a path ending in ` (deleted)`.",
+            "title": "Path"
+          },
+          "path_partial": {
+            "default": false,
+            "description": "Set when `path` is not whole: it reached the tracer's string cap, or it is only the file's own name, as for an O_PATH open.",
+            "title": "Path Partial",
+            "type": "boolean"
           },
           "pid": {
             "title": "Pid",
@@ -11381,7 +11468,13 @@
           "request",
           "refused",
           "errno",
-          "ns_target"
+          "ns_target",
+          "fd",
+          "access",
+          "kind",
+          "inode",
+          "path",
+          "path_partial"
         ],
         "title": "PtraceEvent",
         "type": "object"

@@ -1790,6 +1790,145 @@ async def test_a_pidfd_is_not_recorded_as_a_file_write(
     assert not [e for e in evs if e.type == "audit.lost"]
 
 
+# A python process whose child holds a pipe with bytes waiting, that pipe's write end and a file
+# it unlinked. The parent prints its own pid, the child's, the child's three fds and the file's
+# inode.
+HOLDER = (
+    "import os, threading, time\n"
+    "r, w = os.pipe()\n"
+    "ready, tell = os.pipe()\n"
+    "with open('/work/held', 'w') as f:\n"
+    "    f.write('s3cr3t')\n"
+    "ino = os.stat('/work/held').st_ino\n"
+    "child = os.fork()\n"
+    "if child == 0:\n"
+    "    os.write(w, b'piped')\n"
+    "    held = os.open('/work/held', os.O_RDONLY)\n"
+    "    os.unlink('/work/held')\n"
+    "    os.write(tell, f'{r} {w} {held}'.encode())\n"
+    "    time.sleep(30)\n"
+    "    os._exit(0)\n"
+    "os.close(r)\n"
+    "os.close(w)\n"
+    "r, w, held = map(int, os.read(ready, 64).split())\n"
+    "print(os.getpid(), child, r, w, held, ino, flush=True)\n"
+)
+
+
+def fds_taken(
+    evs: list[Event], pid: int
+) -> list[tuple[int | None, int | None, str, int | None, str | None, str | None]]:
+    """Each use by `pid` of a link to another process's file, as (target, ns_target, request,
+    fd, access, kind)."""
+    return [
+        (p.target, p.ns_target, p.request, p.fd, p.access, p.kind)
+        for p in (e.payload() for e in evs)
+        if isinstance(p, PtraceEvent) and p.pid == pid and p.request.startswith("proc_")
+    ]
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_a_use_of_another_processs_fd_link_is_recorded(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    command = (
+        "python3 - <<'EOF'\n" + HOLDER + "def own(path):\n"
+        "    os.close(os.open(path, os.O_RDONLY))\n"
+        "mine = os.open('/work', os.O_RDONLY)\n"
+        "own(f'/proc/self/fd/{mine}')\n"
+        "own(f'/dev/fd/{mine}')\n"
+        "own(f'/proc/thread-self/fd/{mine}')\n"
+        "t = threading.Thread(target=own, args=(f'/proc/{os.getpid()}/fd/{mine}',))\n"
+        "t.start()\n"
+        "t.join()\n"
+        "fd = os.open(f'/proc/{child}/fd/{r}', os.O_RDONLY | os.O_NONBLOCK)\n"
+        "print(os.read(fd, 9).decode(), flush=True)\n"
+        "os.close(os.open(f'/proc/{child}/fd/{w}', os.O_WRONLY))\n"
+        "fd = os.open(f'/proc/{child}/fd/{held}', os.O_RDONLY)\n"
+        "print(os.read(fd, 9).decode(), flush=True)\n"
+        "os.stat(f'/proc/{child}/fd/{held}')\n"
+        "os.listdir(f'/proc/{child}/cwd')\n"
+        "os.stat(f'/proc/{child}/fd/{held}')\n"
+        "own(f'/proc/self/fd/{mine}')\n"
+        "os.stat(f'/proc/{child}/cwd')\n"
+        "own('/work')\n"
+        "path = os.open(f'/proc/{child}/fd/{held}', os.O_PATH)\n"
+        "own('/work')\n"
+        "print(os.read(os.open(f'/proc/self/fd/{path}', os.O_RDONLY), 9).decode(), flush=True)\n"
+        "end = f'import os; os.kill({child}, 9); print(\"ran\")'\n"
+        "os.execv(f'/proc/{child}/exe', ['python3', '-c', end])\n"
+        "EOF"
+    )
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+
+    lines = result.stdout.decode().splitlines()
+    ns_caller, ns_child, r, w, held, ino = (int(x) for x in lines[0].split())
+    assert lines[1:] == ["piped", "s3cr3t", "s3cr3t", "ran"]
+    # The caller runs the child's program at the end, so it has two execs.
+    (caller,) = {
+        p.pid
+        for p in (e.payload() for e in await events(store, run_id, "proc.exec"))
+        if isinstance(p, ProcExec) and p.ns_pid == ns_caller
+    }
+    (child,) = [
+        p.pid
+        for p in (e.payload() for e in await events(store, run_id, "proc.fork"))
+        if isinstance(p, ProcFork) and p.ppid == caller
+    ]
+    evs = await events(store, run_id, "ptrace.event")
+    # A stat through a link logs nothing, nor does an open after it of something else.
+    assert fds_taken(evs, caller) == [
+        (child, ns_child, "proc_fd", r, "read", "pipe"),
+        (child, ns_child, "proc_fd", w, "write", "pipe"),
+        (child, ns_child, "proc_fd", held, "read", "file"),
+        (child, ns_child, "proc_cwd", None, "read", "dir"),
+        (child, ns_child, "proc_fd", held, "path", "file"),
+        (child, ns_child, "proc_exe", None, "exec", "file"),
+    ]
+    taken = [p for p in (e.payload() for e in evs) if isinstance(p, PtraceEvent)]
+    assert taken[0].inode == taken[1].inode
+    assert (taken[2].inode, taken[2].path, taken[2].path_partial) == (
+        ino,
+        "/work/held (deleted)",
+        False,
+    )
+    assert taken[3].path == "/work"
+    assert (taken[4].inode, taken[4].path, taken[4].path_partial) == (ino, "held", True)
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_reads_of_another_processs_ptrace_checked_proc_files_are_recorded(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    names = ["smaps_rollup", "io", "personality", "fdinfo/0", "wchan"]
+    command = (
+        "sleep 30 & p=$!; echo $p; "
+        + " ".join(f"cat /proc/$p/{n} /proc/$p/task/$p/{n} > /dev/null;" for n in names)
+        + " cat /proc/$p/mountstats /proc/$p/stat /proc/$p/statm > /dev/null; kill $p"
+    )
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+
+    pid = int(result.stdout)
+    reads = {
+        p.path
+        for p in (e.payload() for e in await events(store, run_id, "file.access"))
+        if isinstance(p, FileAccess) and p.op == "read" and p.exec_id == result.finished.exec_id
+    }
+    kept = {f"/proc/{pid}/{n}" for n in [*names, "mountstats"]}
+    kept |= {f"/proc/{pid}/task/{pid}/{n}" for n in names}
+    assert {p for p in reads if p.startswith(f"/proc/{pid}/")} == kept
+
+
 @pytest.mark.tracer
 @pytest.mark.usefixtures("traced")
 async def test_signal_event(backend: DockerBackend, store: LocalEventStore) -> None:

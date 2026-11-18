@@ -160,12 +160,22 @@ fentry:vmlinux:security_file_open /@sandbox[cgroup] && curtask->thread_pid->leve
           || strncmp($p, "/proc/stat", 10) == 0 || strncmp($p, "/proc/uptime", 12) == 0) {
         $keep = 1;
       } else {
+        // Every file the kernel keeps to the owner or checks ptrace access for, plus a few any
+        // process may read. fdinfo's files are named by their fd, so their dir is matched, read as
+        // little-endian words.
         $n = str(args.file->f_path.dentry->d_name.name);
+        $up = (uint64)args.file->f_path.dentry->d_parent->d_name.name;
         if (strncmp($n, "environ", 8) == 0 || strncmp($n, "maps", 5) == 0 || strncmp($n, "smaps", 6) == 0
             || strncmp($n, "mem", 4) == 0 || strncmp($n, "pagemap", 8) == 0 || strncmp($n, "auxv", 5) == 0
             || strncmp($n, "mounts", 7) == 0 || strncmp($n, "mountinfo", 10) == 0
             || strncmp($n, "cgroup", 7) == 0 || strncmp($n, "syscall", 8) == 0 || strncmp($n, "stack", 6) == 0
-            || strncmp($n, "cmdline", 8) == 0) {
+            || strncmp($n, "cmdline", 8) == 0 || strncmp($n, "smaps_rollup", 13) == 0
+            || strncmp($n, "numa_maps", 10) == 0 || strncmp($n, "io", 3) == 0
+            || strncmp($n, "personality", 12) == 0 || strncmp($n, "wchan", 6) == 0
+            || strncmp($n, "mountstats", 11) == 0 || strncmp($n, "ksm_stat", 9) == 0
+            || strncmp($n, "ksm_merging_pages", 18) == 0 || strncmp($n, "patch_state", 12) == 0
+            || strncmp($n, "seccomp_cache", 14) == 0
+            || (*(uint32 *)$up == 0x6e696466 && *(uint16 *)($up + 4) == 0x6f66 && *(uint8 *)($up + 6) == 0)) {
           $keep = 1;
         } else if (strncmp($n, "status", 7) == 0) {
           $pi = (struct proc_inode *)((uint64)args.file->f_inode - offsetof(struct proc_inode, vfs_inode));
@@ -190,6 +200,69 @@ fentry:vmlinux:security_file_open /@sandbox[cgroup] && curtask->thread_pid->leve
     }
   }
 }
+
+// An open through another process's link in /proc: its fd/N, cwd, root or exe. A follow of one
+// marks the thread with the process and the link, then with the file the link reached. Each open
+// starts with no mark. A follow of the caller's own link, such as /dev/fd/N, drops it too, so only
+// a link this open followed counts. The open's file_open hook logs it when it opens that file,
+// then drops the mark. An O_PATH open never reaches that hook; its exit logs it with
+// the file's own name only. A stat through a link, as lsof makes for every fd, logs nothing. A
+// socket's open fails after the hook, so it is not logged. An exec's open keeps its exec bit in
+// f_flags. The link is the fd, or -1, -2 and -3 for cwd, root and exe. The tracer drops these
+// probes on a kernel without either function.
+fentry:vmlinux:proc_pid_get_link /@sandbox[cgroup] && curtask->thread_pid->level > @base && args.dentry != 0/ {
+  delete(@plink[tid]);
+  $ei = (struct proc_inode *)((uint64)args.inode - offsetof(struct proc_inode, vfs_inode));
+  $pp = $ei->pid;
+  $pf = (uint64)$pp->tasks[0].first;
+  if ($pf != 0) {
+    $tg = ((struct task_struct *)($pf - offsetof(struct task_struct, pid_links)))->tgid;
+    if ($tg != curtask->tgid) {
+      $n = $pp->numbers[1].nr;
+      if ($pp->level == 0) { $n = $pp->numbers[0].nr; }
+      if ($pp->level == 2) { $n = $pp->numbers[2].nr; }
+      if ($pp->level == 3) { $n = $pp->numbers[3].nr; }
+      $c = *(uint8 *)args.dentry->d_name.name;
+      $k = (int64)$ei->fd;
+      if ($c == 99) { $k = -1; } else if ($c == 114) { $k = -2; } else if ($c == 101) { $k = -3; }
+      @plink[tid] = ($tg, $n, $k, (uint64)0);
+    }
+  }
+}
+
+fexit:vmlinux:nd_jump_link /@plink[tid].0 != 0/ {
+  $m = @plink[tid];
+  if (retval == 0) { @plink[tid] = ($m.0, $m.1, $m.2, (uint64)args.path->dentry->d_inode); } else { delete(@plink[tid]); }
+}
+
+fentry:vmlinux:do_filp_open /@plink[tid].0 != 0/ { delete(@plink[tid]); }
+
+fentry:vmlinux:security_file_open /@plink[tid].0 != 0 && curtask->cred == curtask->real_cred/ {
+  $m = @plink[tid];
+  delete(@plink[tid]);
+  $fi = args.file->f_inode;
+  if ($m.3 == (uint64)$fi && ($fi->i_mode & 0xF000) != 0xC000) {
+    $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+    printf("o %llu %llu %llu %llu %d %d %d %lld %u %lu %u %lu %s\n", nsecs(boot), cpu, $s, $g, curtask->tgid,
+      $m.0, $m.1, $m.2, (args.file->f_mode & 3) | (args.file->f_flags & 0x20), $fi->i_ino, $fi->i_mode, $fi->i_sb->s_magic, path(args.file->f_path));
+  }
+}
+
+fexit:vmlinux:do_filp_open /@plink[tid].0 != 0/ {
+  $m = @plink[tid];
+  delete(@plink[tid]);
+  $f = (struct file *)retval;
+  if ((int64)$f < -4095 || (int64)$f > 0) {
+    $fi = $f->f_inode;
+    if ($m.3 == (uint64)$fi && ($f->f_mode & 0x4000)) {
+      $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+      printf("o %llu %llu %llu %llu %d %d %d %lld %u %lu %u %lu %s\n", nsecs(boot), cpu, $s, $g, curtask->tgid,
+        $m.0, $m.1, $m.2, 0x4000, $fi->i_ino, $fi->i_mode, $fi->i_sb->s_magic, str($f->f_path.dentry->d_name.name));
+    }
+  }
+}
+
+tracepoint:sched:sched_process_exit /@plink[tid].0 != 0/ { delete(@plink[tid]); }
 
 // The last reference to a file, on every path: close(2) on 6.8+ never reaches filp_close, and an
 // exiting task releases its files after its X line. Overlay's backing files are skipped by

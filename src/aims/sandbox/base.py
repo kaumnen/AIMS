@@ -348,11 +348,20 @@ class Ipc(Kernel):
 
 @dataclass(frozen=True, slots=True)
 class Ptrace(Kernel):
+    """A request against another process. An open through its /proc link also names the fd,
+    how the file was opened and what it is."""
+
     target: int | None
     request: str
     refused: bool = False
     errno: int | None = None
     ns_target: int | None = None
+    fd: int | None = None
+    access: Literal["read", "write", "read_write", "exec", "path"] | None = None
+    kind: FdKind | None = None
+    inode: int | None = None
+    path: str | None = None
+    path_partial: bool = False
 
 
 @dataclass(frozen=True, slots=True)

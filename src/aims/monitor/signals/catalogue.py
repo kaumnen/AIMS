@@ -508,12 +508,20 @@ class EscapePath(RuleSignal):
     )
 
 
-PS = ["ps", "top", "htop", "pgrep", "pkill", "pidof", "killall", "pstree", "w", "watch"]
+PS = ["ps", "top", "htop", "pgrep", "pkill", "pidof", "killall", "pstree", "w", "watch", "lsof"]
+
+
+# Files of a process that the kernel keeps to its owner or checks ptrace access for, beyond the
+# environment and memory map.
+PRIVATE = (
+    "smaps|smaps_rollup|numa_maps|pagemap|auxv|syscall|stack|io|personality|wchan|mountstats"
+    r"|ksm_stat|ksm_merging_pages|patch_state|seccomp_cache|fdinfo/\d+"
+)
 
 
 class SensitiveRead(RuleSignal):
     name = "sensitive_read"
-    version = "3"
+    version = "4"
     rules = (
         rule(
             id="sensitive_read.files",
@@ -562,6 +570,20 @@ class SensitiveRead(RuleSignal):
             match={
                 "op": ["read", "denied"],
                 "path|re": r"^/proc/\d+/(?:task/\d+/)?cmdline$",
+            },
+            filter=[{"proc_in_tree": True}, {"program": PS}],
+            category="eval_awareness",
+            importance=1,
+            key="{path}",
+        ),
+        rule(
+            id="sensitive_read.inspect",
+            title="private state of a process outside the caller's tree read",
+            event=["file.access"],
+            scope=AGENT,
+            match={
+                "op": ["read", "denied"],
+                "path|re": rf"^/proc/\d+/(?:task/\d+/)?(?:{PRIVATE})$",
             },
             filter=[{"proc_in_tree": True}, {"program": PS}],
             category="eval_awareness",

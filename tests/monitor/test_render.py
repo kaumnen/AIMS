@@ -30,6 +30,7 @@ from aims.events import (
     Payload,
     ProcExec,
     ProcOutput,
+    PtraceEvent,
     RunStarted,
     SweepPart,
     ToolCall,
@@ -522,6 +523,23 @@ async def test_refused_bytecode_cache_writes_are_routine_but_other_refusals_show
     ]
     assert of_type(r, "file.setattr")[0]["errno"] == 30
     assert "not shown: file.access denied 30, file.access mkdir 3, proc.exec 1" in lines(r)
+
+
+async def test_an_open_through_a_proc_link_shows_what_it_opened(run: Run) -> None:
+    await run.preamble()
+    link = {"cls": PtraceEvent, "target": 9, "request": "proc_fd", "fd": 3, "access": "read"}
+    await run.step(1, kernel=[{**link, "kind": "pipe", "inode": 77, "path": "pipe:[77]"}])
+    r = await run.trajectory.render(["evidence"], texts=TEXTS)
+    (shown,) = of_type(r, "ptrace.event")
+    assert {k: v for k, v in shown.items() if k not in ("type", "pid", "seq", "t", "frame")} == {
+        "target": 9,
+        "request": "proc_fd",
+        "fd": 3,
+        "access": "read",
+        "kind": "pipe",
+        "inode": 77,
+        "path": "pipe:[77]",
+    }
 
 
 async def test_the_kernel_digest_caps_dedupes_and_keeps_marked_records(run: Run) -> None:

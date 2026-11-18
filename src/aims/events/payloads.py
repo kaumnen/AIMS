@@ -735,7 +735,8 @@ class PtraceEvent(KernelPayload):
     an empty process_vm_writev or a bad pidfd. `ns_target` is that pid as the caller named it, in
     its own pid namespace; traceme names none. For pidfd_getfd, which names no pid, it is the
     target's pid in its own namespace. A request a seccomp profile refuses is a sys.denied record
-    instead.
+    instead. proc_fd, proc_cwd, proc_root and proc_exe are opens of a file through the target's
+    /proc/<pid>/fd/N, cwd, root or exe link.
     """
 
     type = "ptrace.event"
@@ -745,6 +746,41 @@ class PtraceEvent(KernelPayload):
     refused: bool = False
     errno: int | None = None
     ns_target: int | None = None
+    fd: int | None = Field(
+        default=None, description="For proc_fd, the target's fd that the link names."
+    )
+    access: Literal["read", "write", "read_write", "exec", "path"] | None = Field(
+        default=None,
+        description=(
+            "For an open through a /proc link, how the caller opened the file; `path` is an "
+            "O_PATH open, which another open of the caller's own fd can turn into a read."
+        ),
+    )
+    kind: FdKind | None = Field(
+        default=None,
+        description="For an open through a /proc link, what the file is, such as a pipe.",
+    )
+    inode: int | None = Field(
+        default=None,
+        description=(
+            "For an open through a /proc link, the file's inode. A pipe's is the inode that "
+            "proc.exec fds and proc.output give for the same pipe."
+        ),
+    )
+    path: str | None = Field(
+        default=None,
+        description=(
+            "For an open through a /proc link, the file's path as the kernel names it, such as "
+            "`pipe:[12]` or a path ending in ` (deleted)`."
+        ),
+    )
+    path_partial: bool = Field(
+        default=False,
+        description=(
+            "Set when `path` is not whole: it reached the tracer's string cap, or it is only the "
+            "file's own name, as for an O_PATH open."
+        ),
+    )
 
 
 class ProcSignal(KernelPayload):

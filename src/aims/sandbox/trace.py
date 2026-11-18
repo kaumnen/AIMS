@@ -817,6 +817,44 @@ def _ptrace(body: str, at: Stamp) -> Ptrace:
     )
 
 
+PROC_LINKS: dict[int, str] = {-1: "proc_cwd", -2: "proc_root", -3: "proc_exe"}
+FMODE_EXEC = 0x20
+FMODE_PATH = 0x4000
+ACCESS: dict[int, Literal["read", "write", "read_write"]] = {1: "read", 2: "write", 3: "read_write"}
+
+
+@record("o")
+def _proc_link(body: str, at: Stamp) -> Ptrace:
+    f = body.split(" ", 8)
+    if len(f) != 9:
+        raise ValueError("short proc link line")
+    pid, target, named, link, mode, ino, imode, magic = (int(x) for x in f[:8])
+    request = PROC_LINKS.get(link, "proc_fd" if link >= 0 else "")
+    if not request:
+        raise ValueError("unknown proc link")
+    # An O_PATH open comes with the file's own name only, which a pipe does not have.
+    path: str | None = f[8]
+    if mode & FMODE_PATH:
+        access, partial = "path", bool(path)
+        path = path or None
+    else:
+        access = "exec" if mode & FMODE_EXEC else ACCESS.get(mode & 3)
+        partial = _cut(f[8])
+    return Ptrace(
+        pid,
+        _clamp(target),
+        request,
+        ns_target=_clamp(named),
+        fd=_clamp(link) if link >= 0 else None,
+        access=access,
+        kind=_fd(ino, imode, magic).kind,
+        inode=_clamp(ino),
+        path=path,
+        path_partial=partial,
+        at=at,
+    )
+
+
 @record("S")
 def _signal(body: str, at: Stamp) -> Signal:
     pid, target, sig = _ints(body, 3)

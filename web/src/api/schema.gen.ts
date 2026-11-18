@@ -6130,9 +6130,16 @@ export interface components {
          *     an empty process_vm_writev or a bad pidfd. `ns_target` is that pid as the caller named it, in
          *     its own pid namespace; traceme names none. For pidfd_getfd, which names no pid, it is the
          *     target's pid in its own namespace. A request a seccomp profile refuses is a sys.denied record
-         *     instead.
+         *     instead. proc_fd, proc_cwd, proc_root and proc_exe are opens of a file through the target's
+         *     /proc/<pid>/fd/N, cwd, root or exe link.
          */
         PtraceEvent: {
+            /**
+             * Access
+             * @description For an open through a /proc link, how the caller opened the file; `path` is an O_PATH open, which another open of the caller's own fd can turn into a read.
+             * @default null
+             */
+            access: ("read" | "write" | "read_write" | "exec" | "path") | null;
             /** Cpu */
             cpu: number;
             /** Cpu Seq */
@@ -6145,10 +6152,40 @@ export interface components {
             /** Exec Id */
             exec_id: string | null;
             /**
+             * Fd
+             * @description For proc_fd, the target's fd that the link names.
+             * @default null
+             */
+            fd: number | null;
+            /**
+             * Inode
+             * @description For an open through a /proc link, the file's inode. A pipe's is the inode that proc.exec fds and proc.output give for the same pipe.
+             * @default null
+             */
+            inode: number | null;
+            /**
+             * Kind
+             * @description For an open through a /proc link, what the file is, such as a pipe.
+             * @default null
+             */
+            kind: ("pipe" | "fifo" | "file" | "char" | "sock" | "dir" | "other") | null;
+            /**
              * Ns Target
              * @default null
              */
             ns_target: number | null;
+            /**
+             * Path
+             * @description For an open through a /proc link, the file's path as the kernel names it, such as `pipe:[12]` or a path ending in ` (deleted)`.
+             * @default null
+             */
+            path: string | null;
+            /**
+             * Path Partial
+             * @description Set when `path` is not whole: it reached the tracer's string cap, or it is only the file's own name, as for an O_PATH open.
+             * @default false
+             */
+            path_partial: boolean;
             /** Pid */
             pid: number;
             /**
@@ -15702,6 +15739,8 @@ export const profileBackendValues: ReadonlyArray<FlattenedDeepRequired<component
 export const profileEffortAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Profile"]["effort"]> = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 export const profileReasoningValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Profile"]["reasoning"]> = ["none", "summary", "full"];
 export const profileSummaryAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Profile"]["summary"]> = ["auto", "concise", "detailed"];
+export const ptraceEventAccessAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PtraceEvent"]["access"]> = ["read", "write", "read_write", "exec", "path"];
+export const ptraceEventKindAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["PtraceEvent"]["kind"]> = ["pipe", "fifo", "file", "char", "sock", "dir", "other"];
 export const replayDivergenceKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ReplayDivergence"]["kind"]> = ["output", "channel"];
 export const resumeBodyThenValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ResumeBody"]["then"]> = ["continue", "kill", "inject", "deny"];
 export const reviewEstimateModeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ReviewEstimate"]["mode"]> = ["full", "signals_only", "judge_only"];

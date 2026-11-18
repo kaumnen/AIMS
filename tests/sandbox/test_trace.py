@@ -433,6 +433,32 @@ def test_parse_ptrace_and_signal() -> None:
     assert parse(line("S 10 11 15")) == Signal(10, 11, 15, at=PARSED)
 
 
+def test_parse_an_open_through_another_processs_proc_link() -> None:
+    assert parse(line("o 10 11 4 5 1 77 4480 1346981957 pipe:[77]")) == Ptrace(
+        10,
+        11,
+        "proc_fd",
+        ns_target=4,
+        fd=5,
+        access="read",
+        kind="pipe",
+        inode=77,
+        path="pipe:[77]",
+        at=PARSED,
+    )
+    held = parse(line("o 10 11 4 7 2 9 33188 2035054128 /work/held (deleted)"))
+    assert isinstance(held, Ptrace)
+    assert (held.access, held.kind, held.path) == ("write", "file", "/work/held (deleted)")
+    links = [parse(line(f"o 10 11 4 {k} 33 9 33261 1 /usr/bin/x")) for k in (-1, -2, -3)]
+    assert [(p.request, p.fd, p.access) for p in links if isinstance(p, Ptrace)] == [
+        ("proc_cwd", None, "exec"),
+        ("proc_root", None, "exec"),
+        ("proc_exe", None, "exec"),
+    ]
+    assert isinstance(parse(line("o 10 11 4 -4 1 9 33188 1 /x")), Garbled)
+    assert isinstance(parse(line("o 10 11 4 5 1 9")), Garbled)
+
+
 def test_parse_mem_exec_and_mmap() -> None:
     assert parse(line("M 10 x 42 0 /proc/self/fd/3")) == Mem(
         10, "exec", "/proc/self/fd/3", 42, 0, at=PARSED

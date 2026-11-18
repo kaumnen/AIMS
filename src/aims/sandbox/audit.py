@@ -1430,6 +1430,12 @@ class AuditedSandbox:
             request=record.request,
             refused=record.refused,
             errno=record.errno,
+            fd=record.fd,
+            access=record.access,
+            kind=record.kind,
+            inode=record.inode,
+            path=record.path,
+            path_partial=record.path_partial,
         )
         self._admit(owner, "other", payload, target=record.target)
 

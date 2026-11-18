@@ -148,6 +148,13 @@ PRE_7 = (
     r"/fexit:vmlinux:do_\1 /' "
     r"-e '/^\/\* before 7\.0$/d' -e '/^before 7\.0 \*\/$/d' $f; fi; "
 )
+# The probes that log an open through another process's /proc link, dropped on a kernel that
+# lacks either function they attach to.
+PROC_LINKS = (
+    "if ! grep -qx proc_pid_get_link $a || ! grep -qx nd_jump_link $a; then sed -i "
+    r"'/^fentry:vmlinux:proc_pid_get_link /,/^tracepoint:sched:sched_process_exit \/@plink/d' $f; "
+    "fi; "
+)
 # Kernels from 6.15 split pipe_write into anon_pipe_write and fifo_pipe_write, and 7.0 renamed
 # do_filp_open to do_file_open.
 TRACE = (
@@ -157,8 +164,9 @@ TRACE = (
     "sed -i 's/^fentry:vmlinux:pipe_write /fentry:vmlinux:anon_pipe_write, "
     "fentry:vmlinux:fifo_pipe_write /' $f; fi; "
     "if ! grep -qx do_filp_open $a; then "
-    "sed -i 's/^fexit:vmlinux:do_filp_open /fexit:vmlinux:do_file_open /' $f; fi; "
+    r"sed -i 's/^\(fentry\|fexit\):vmlinux:do_filp_open /\1:vmlinux:do_file_open /' $f; fi; "
     + PRE_7
+    + PROC_LINKS
     + "v=$(uname -r); m=${v%%.*}; n=${v#*.}; n=${n%%.*}; "
     + BACKING
     # cachestat arrived in 6.5; older kernels have neither the syscall nor its tracepoint.

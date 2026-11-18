@@ -34,6 +34,20 @@ export function summary(e: Event): string {
       const signal = num(d["signal"]);
       return `pid ${num(d["pid"])} ${signal ? `signal ${signal}` : `exit ${num(d["exit_code"])}`}`;
     }
+    case "ptrace.event": {
+      const fd = num(d["fd"]);
+      const access = str(d["access"]);
+      return [
+        str(d["request"]),
+        `of ${num(d["target"]) ?? num(d["ns_target"]) ?? "?"}`,
+        fd !== undefined ? `fd ${fd}` : "",
+        access ? `for ${access.replace("_", " and ")}` : "",
+        str(d["path"]) ?? "",
+        d["errno"] ? `errno ${num(d["errno"])}` : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+    }
     case "proc.fork":
       return `pid ${num(d["pid"])} forked from ${num(d["ppid"])}`;
     case "proc.output":
