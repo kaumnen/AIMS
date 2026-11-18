@@ -276,4 +276,9 @@ def test_the_syscall_numbers_match_the_names() -> None:
             keys = [k for k, o in table.items() if o == op]
             assert len(keys) == abis, (arch, name)
             assert all(SYSCALLS[arch][k] == name for k in keys), (arch, name)
+        # fchown, of the native ABI only, also names its exit probe by number.
+        fchown = {"x86_64": 93, "aarch64": 55}[arch]
+        assert [k for k, o in table.items() if o == 28] == [fchown], arch
+        exit_ = f"//@{arch} tracepoint:raw_syscalls:sys_exit /args.id == {fchown} && @fch[tid]"
+        assert script.count(exit_) == 1, arch
     assert SYSCALL_ARCH in TRACE

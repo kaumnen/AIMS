@@ -310,6 +310,9 @@ async def test_deep_paths_are_whole_up_to_sixty_names(
     command = (
         f"mkdir -p {deep} {deeper} && echo x > {deep}/f && chmod 600 {deep}/f"
         f" && mv {deep}/f {deep}/g && rm {deep}/g && echo x > {deeper}/f && rm {deeper}/f"
+        f' && echo x > {deep}/o && python3 -c "import os\n'
+        f"try: os.fchown(os.open('{deep}/o', os.O_RDONLY), 0, -1)\n"
+        'except OSError: pass"'
     )
     run_id, sb = await sandbox(backend, store)
     try:
@@ -327,8 +330,11 @@ async def test_deep_paths_are_whole_up_to_sixty_names(
         if p.op in ("rename", "delete")
     }
     setattrs = {(p.path, p.partial) for p in mine(evs, exec_id, FileSetattr)}
+    refused = {(p.path, p.uid, p.errno) for p in mine(evs, exec_id, FileSetattr) if p.errno}
     assert (f"{deep}/f", False) in writes
     assert (f"{deep}/f", False) in setattrs
+    # The refused fchown's walk goes past the first twelve names too.
+    assert (f"{deep}/o", 0, 1) in refused
     assert ("rename", f"{deep}/f", f"{deep}/g", False) in changes
     assert ("delete", f"{deep}/g", None, False) in changes
     # Past sixty names the leading part is left out.
