@@ -143,17 +143,16 @@ npx skills add kaumnen/AIMS -a claude-code   # or -a codex
 uv tool install 'aims-bench[mcp]'
 ```
 
-Most clients take an entry like this in their MCP config:
+Then add it to your client:
 
-```json
-{
-  "mcpServers": {
-    "aims": { "command": "aims", "args": ["mcp"] }
-  }
-}
+```sh
+claude mcp add aims -- aims mcp     # Claude Code
+codex mcp add aims -- aims mcp      # Codex
+opencode mcp add aims -- aims mcp   # opencode
+pi mcp add aims -- aims mcp         # pi
 ```
 
-It uses the local `aims ui`. Give `--server <url>` and a token in `AIMS_TOKEN` for another control plane. More in [MCP server](https://github.com/kaumnen/AIMS/blob/main/docs/mcp.md).
+It uses the local `aims ui`. Give `--server <url>` and a token in `AIMS_TOKEN` for another control plane. [MCP server](https://github.com/kaumnen/AIMS/blob/main/docs/mcp.md) has the JSON for other clients and every option.
 
 ## Config
 

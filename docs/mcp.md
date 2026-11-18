@@ -15,7 +15,18 @@ Install the CLI with the `mcp` extra:
 uv tool install 'aims-bench[mcp]'
 ```
 
-Most clients take an entry like this in their MCP config:
+Then add it to your client:
+
+| Client | Command |
+| --- | --- |
+| Claude Code | `claude mcp add aims -- aims mcp` |
+| Codex | `codex mcp add aims -- aims mcp` |
+| opencode | `opencode mcp add aims -- aims mcp` |
+| pi | `pi mcp add aims -- aims mcp` |
+| Gemini CLI | `gemini mcp add aims aims mcp` |
+| VS Code | `code --add-mcp '{"name":"aims","type":"stdio","command":"aims","args":["mcp"]}'` |
+| Cursor | Add the JSON below to `~/.cursor/mcp.json` |
+| Any other | Add the JSON below to its MCP config |
 
 ```json
 {
@@ -25,12 +36,32 @@ Most clients take an entry like this in their MCP config:
 }
 ```
 
+Claude Code and opencode add the server to the current project. Pass `--scope user` or `--global` for every project. Codex and pi add it for every project. Pass `-l` to pi for the current project.
+
 | Control plane | How `aims mcp` finds it |
 | --- | --- |
 | The local `aims ui` | With no flags. It uses the UI's operator token. `aims ui` must be running. |
 | Another one | `--server <url>` with a token in `AIMS_TOKEN` or `--token-file`. `aims token create <name>` makes one. |
 
-Add `--act` to the args for the tools that start and steer runs. They need an operator token.
+Add `--act` after `aims mcp` for the tools that start and steer runs. They need an operator token. For another control plane, give the token with `--env` before `--`:
+
+```sh
+codex mcp add aims --env AIMS_TOKEN=<token> -- aims mcp --server https://aims.example.com --act
+```
+
+Claude Code, opencode and pi take the same form. In a JSON config, the flags go in `args` and the token in `env`:
+
+```json
+{
+  "mcpServers": {
+    "aims": {
+      "command": "aims",
+      "args": ["mcp", "--server", "https://aims.example.com", "--act"],
+      "env": { "AIMS_TOKEN": "<token>" }
+    }
+  }
+}
+```
 
 ## Tools
 
