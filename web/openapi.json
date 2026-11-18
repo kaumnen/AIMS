@@ -3278,6 +3278,7 @@
           "file.setattr",
           "file.sync",
           "file.write",
+          "file.xattr",
           "fs.snapshot",
           "ipc.event",
           "log.truncated",
@@ -3292,6 +3293,7 @@
           "monitor.sweep",
           "monitor.verdict",
           "net.connect",
+          "net.listen",
           "ns.event",
           "operator.action",
           "plant.triggered",
@@ -3385,6 +3387,9 @@
           "file.write": {
             "$ref": "#/components/schemas/FileWrite"
           },
+          "file.xattr": {
+            "$ref": "#/components/schemas/FileXattr"
+          },
           "fs.snapshot": {
             "$ref": "#/components/schemas/FsSnapshot"
           },
@@ -3426,6 +3431,9 @@
           },
           "net.connect": {
             "$ref": "#/components/schemas/NetConnect"
+          },
+          "net.listen": {
+            "$ref": "#/components/schemas/NetListen"
           },
           "ns.event": {
             "$ref": "#/components/schemas/NsEvent"
@@ -3530,6 +3538,7 @@
           "file.setattr",
           "file.sync",
           "file.write",
+          "file.xattr",
           "fs.snapshot",
           "ipc.event",
           "log.truncated",
@@ -3544,6 +3553,7 @@
           "monitor.sweep",
           "monitor.verdict",
           "net.connect",
+          "net.listen",
           "ns.event",
           "operator.action",
           "plant.triggered",
@@ -4369,7 +4379,7 @@
               }
             ],
             "default": null,
-            "description": "Set when the kernel refused a chmod, truncate or utimes call with EPERM, EACCES or EROFS before its setattr check. A time it would have taken from the clock is unset.",
+            "description": "Set when the kernel refused a chmod, chown, truncate or utimes call with EPERM, EACCES or EROFS before its setattr check. A time it would have taken from the clock is unset.",
             "title": "Errno"
           },
           "exec_id": {
@@ -4621,6 +4631,113 @@
           "partial"
         ],
         "title": "FileWrite",
+        "type": "object"
+      },
+      "FileXattr": {
+        "additionalProperties": false,
+        "description": "A request to set or remove an extended attribute. The file snapshots do not hold extended\nattributes, so this is the only record of one.\n\nIt is recorded at the kernel's security check, so the call can still fail. `name` is the\nattribute's name, `size` the length of a set value and `flags` its create or replace flags.\nA `partial` path or name is not exact: it lacks its leading part or may be cut at the tracer's\nstring cap.",
+        "properties": {
+          "cpu": {
+            "title": "Cpu",
+            "type": "integer"
+          },
+          "cpu_seq": {
+            "title": "Cpu Seq",
+            "type": "integer"
+          },
+          "errno": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Set when the kernel refused the call with EPERM, EACCES or EROFS before its security check, as for a read-only mount or a trusted attribute.",
+            "title": "Errno"
+          },
+          "exec_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exec Id"
+          },
+          "flags": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Flags"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "op": {
+            "enum": [
+              "set",
+              "remove"
+            ],
+            "title": "Op",
+            "type": "string"
+          },
+          "partial": {
+            "default": false,
+            "title": "Partial",
+            "type": "boolean"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "pid": {
+            "title": "Pid",
+            "type": "integer"
+          },
+          "size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Size"
+          },
+          "ts_kernel": {
+            "title": "Ts Kernel",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "exec_id",
+          "pid",
+          "ts_kernel",
+          "cpu",
+          "cpu_seq",
+          "op",
+          "path",
+          "name",
+          "size",
+          "flags",
+          "errno",
+          "partial"
+        ],
+        "title": "FileXattr",
         "type": "object"
       },
       "Flag": {
@@ -6169,6 +6286,19 @@
             "title": "Cpu Seq",
             "type": "integer"
           },
+          "errno": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Set on a FIFO the kernel refused with EPERM, EACCES or EROFS. A listen's path is local, as a bind's is.",
+            "title": "Errno"
+          },
           "exec_id": {
             "anyOf": [
               {
@@ -6235,6 +6365,7 @@
           "kind": {
             "enum": [
               "bind",
+              "listen",
               "connect",
               "sendto",
               "fifo",
@@ -6295,6 +6426,7 @@
           "id",
           "size",
           "flags",
+          "errno",
           "partial"
         ],
         "title": "IpcEvent",
@@ -9335,6 +9467,99 @@
           "port"
         ],
         "title": "NetConnect",
+        "type": "object"
+      },
+      "NetListen": {
+        "additionalProperties": false,
+        "description": "A request to bind or listen on an address. The sandbox has no network, so only its own\nprocesses can reach it. A listen names the address the socket holds then: a socket that was\nnever bound has port None, and the kernel picks a port as the listen goes on.",
+        "properties": {
+          "address": {
+            "title": "Address",
+            "type": "string"
+          },
+          "cpu": {
+            "title": "Cpu",
+            "type": "integer"
+          },
+          "cpu_seq": {
+            "title": "Cpu Seq",
+            "type": "integer"
+          },
+          "exec_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exec Id"
+          },
+          "family": {
+            "enum": [
+              "inet",
+              "inet6"
+            ],
+            "title": "Family",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "bind",
+              "listen"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "pid": {
+            "title": "Pid",
+            "type": "integer"
+          },
+          "port": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Port"
+          },
+          "protocol": {
+            "anyOf": [
+              {
+                "enum": [
+                  "tcp",
+                  "udp"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Protocol"
+          },
+          "ts_kernel": {
+            "title": "Ts Kernel",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "exec_id",
+          "pid",
+          "ts_kernel",
+          "cpu",
+          "cpu_seq",
+          "kind",
+          "family",
+          "protocol",
+          "address",
+          "port"
+        ],
+        "title": "NetListen",
         "type": "object"
       },
       "NsEvent": {

@@ -6,6 +6,7 @@ type Data = Record<string, unknown>;
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 const num = (v: unknown): number | undefined => (typeof v === "number" ? v : undefined);
 const firstLine = (s: string) => s.split("\n", 1)[0] ?? "";
+const errno = (d: Data) => (d["errno"] ? `errno ${num(d["errno"])}` : "");
 
 export function bytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -18,17 +19,18 @@ export function summary(e: Event): string {
   const d = e.data as Data;
   switch (e.type) {
     case "file.access":
-      return [str(d["op"]), str(d["path"]), d["errno"] ? `errno ${num(d["errno"])}` : ""]
-        .filter(Boolean)
-        .join(" ");
     case "file.look":
-      return [str(d["op"]), str(d["path"]), d["errno"] ? `errno ${num(d["errno"])}` : ""]
-        .filter(Boolean)
-        .join(" ");
+      return [str(d["op"]), str(d["path"]), errno(d)].filter(Boolean).join(" ");
     case "file.write":
       return `write ${str(d["path"]) ?? ""} ${bytes(num(d["size"]) ?? 0)}`;
     case "file.setattr":
-      return ["setattr", str(d["path"]), d["errno"] ? `errno ${num(d["errno"])}` : ""]
+      return ["setattr", str(d["path"]), errno(d)].filter(Boolean).join(" ");
+    case "file.xattr":
+      return [`xattr ${str(d["op"])}`, str(d["name"]), `on ${str(d["path"])}`, errno(d)]
+        .filter(Boolean)
+        .join(" ");
+    case "net.listen":
+      return [str(d["kind"]), str(d["protocol"]), str(d["address"]), num(d["port"]) || "any port"]
         .filter(Boolean)
         .join(" ");
     case "proc.exec":
@@ -47,7 +49,7 @@ export function summary(e: Event): string {
         fd !== undefined ? `fd ${fd}` : "",
         access ? `for ${access.replace("_", " and ")}` : "",
         str(d["path"]) ?? "",
-        d["errno"] ? `errno ${num(d["errno"])}` : "",
+        errno(d),
       ]
         .filter(Boolean)
         .join(" ");
@@ -57,7 +59,7 @@ export function summary(e: Event): string {
     case "proc.output":
       return `${str(d["stream"])} ${bytes(num(d["bytes"]) ?? 0)}: ${firstLine(str(d["prefix"]) ?? "")}`;
     case "ipc.event":
-      return [str(d["kind"]), str(d["family"]), str(d["path"])?.replace(/\0.*$/s, "")]
+      return [str(d["kind"]), str(d["family"]), str(d["path"])?.replace(/\0.*$/s, ""), errno(d)]
         .filter(Boolean)
         .join(" ");
     case "fs.snapshot":

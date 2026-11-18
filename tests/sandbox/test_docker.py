@@ -21,6 +21,7 @@ from aims.events import (
     FileAccess,
     FileSetattr,
     FileWrite,
+    FileXattr,
     FsChange,
     FsSnapshot,
     IpcEvent,
@@ -28,6 +29,7 @@ from aims.events import (
     LocalEventStore,
     MemExec,
     NetConnect,
+    NetListen,
     ProcExec,
     ProcExit,
     ProcFork,
@@ -142,6 +144,197 @@ async def test_sandbox_is_locked_down(backend: DockerBackend, store: LocalEventS
             assert result.stdout == expected, command
     finally:
         await sb.close()
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_io_uring_is_refused_when_the_daemon_allows_it(
+    backend: DockerBackend, store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    create = docker_module.create_container
+
+    async def unconfined(
+        docker: aiodocker.Docker, *, config: dict[str, Any], name: str | None = None
+    ) -> Any:
+        if config["Cmd"] == ["sleep", "infinity"]:
+            host = config["HostConfig"]
+            host["SecurityOpt"] = [*host["SecurityOpt"], "seccomp=unconfined"]
+        return await create(docker, config=config, name=name)
+
+    monkeypatch.setattr(docker_module, "create_container", unconfined)
+    command = (
+        "grep Seccomp_filters /proc/self/status | tr -s '\\t' ' '; python3 -c \"import ctypes\n"
+        "libc = ctypes.CDLL(None, use_errno=True)\n"
+        'print(libc.syscall(425, 1, ctypes.create_string_buffer(120)), ctypes.get_errno())"'
+    )
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(command, timeout_s=10)
+    finally:
+        await sb.close()
+
+    # One filter: the daemon applied none, so the refusal is aims-exec's own.
+    assert result.stdout == b"Seccomp_filters: 1\n-1 1\n"
+    denied = [
+        p
+        for p in (e.payload() for e in await events(store, run_id, "sys.denied"))
+        if isinstance(p, SysDenied) and p.exec_id == result.finished.exec_id
+    ]
+    assert [(p.syscall, p.errno) for p in denied] == [("io_uring_setup", 1)]
+
+
+def mine(evs: list[Event], exec_id: str, kind: type[Any]) -> list[Any]:
+    return [p for p in (e.payload() for e in evs) if isinstance(p, kind) and p.exec_id == exec_id]
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_binds_and_listens_are_recorded(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    command = (
+        'python3 -c "import socket\n'
+        "s = socket.socket(); s.bind(('127.0.0.1', 8080)); s.listen()\n"
+        "six = socket.socket(socket.AF_INET6); six.bind(('::1', 0)); six.listen()\n"
+        "print(six.getsockname()[1])\n"
+        "bare = socket.socket(); bare.listen()\n"
+        "udp = socket.socket(type=socket.SOCK_DGRAM); udp.bind(('0.0.0.0', 5353))\n"
+        "u = socket.socket(socket.AF_UNIX); u.bind('/tmp/s.sock'); u.listen()\n"
+        "c = socket.socket(socket.AF_UNIX)\n"
+        "try: c.connect(b'/tmp/none\\0junk')\n"
+        'except OSError: pass"'
+    )
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+
+    assert result.finished.exit_code == 0, result.stderr
+    port = int(result.stdout)
+    evs = await events(store, run_id, "net.listen", "ipc.event")
+    listens = {
+        (p.kind, p.family, p.protocol, p.address, p.port)
+        for p in mine(evs, result.finished.exec_id, NetListen)
+    }
+    assert listens == {
+        ("bind", "inet", "tcp", "127.0.0.1", 8080),
+        ("listen", "inet", "tcp", "127.0.0.1", 8080),
+        ("bind", "inet6", "tcp", "::1", 0),
+        ("listen", "inet6", "tcp", "::1", port),
+        ("listen", "inet", "tcp", "0.0.0.0", None),
+        ("bind", "inet", "udp", "0.0.0.0", 5353),
+    }
+    unix = {(p.kind, p.path) for p in mine(evs, result.finished.exec_id, IpcEvent)}
+    assert {("bind", "/tmp/s.sock"), ("listen", "/tmp/s.sock"), ("connect", "/tmp/none")} <= unix
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_extended_attribute_changes_are_recorded(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    command = (
+        'echo x > /work/f && python3 -c "import os\n'
+        "os.setxattr('/work/f', 'user.k', b'v' * 10)\n"
+        "os.removexattr('/work/f', 'user.k')\n"
+        "for path, name in (('/etc/passwd', 'user.k'), ('/work/f', 'trusted.k')):\n"
+        "    try: os.setxattr(path, name, b'v')\n"
+        "    except OSError: pass\n"
+        "fd = os.open('/etc/hostname', os.O_RDONLY)\n"
+        "try: os.setxattr(fd, 'user.z', b'1')\n"
+        'except OSError: pass"'
+    )
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+
+    assert result.finished.exit_code == 0, result.stderr
+    evs = await events(store, run_id, "file.xattr")
+    got = {
+        (p.op, p.path, p.name, p.size, p.errno)
+        for p in mine(evs, result.finished.exec_id, FileXattr)
+    }
+    assert got == {
+        ("set", "/work/f", "user.k", 10, None),
+        ("remove", "/work/f", "user.k", None, None),
+        ("set", "/etc/passwd", "user.k", 1, 30),
+        ("set", "/work/f", "trusted.k", 1, 1),
+        ("set", "/etc/hostname", "user.z", 1, 30),
+    }
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_refused_nodes_and_owners_on_a_read_only_root_are_recorded(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    command = (
+        "mkfifo /etc/fifo; chown 1000 /etc/passwd; chgrp 1000 /etc/hostname; "
+        'python3 -c "import os\n'
+        "fd = os.open('/etc/group', os.O_RDONLY)\n"
+        "calls = (lambda: os.mknod('/etc/node', 0o100644), lambda: os.fchown(fd, 1000, -1))\n"
+        "for call in calls:\n"
+        "    try: call()\n"
+        '    except OSError: pass"; true'
+    )
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+
+    exec_id = result.finished.exec_id
+    evs = await events(store, run_id, "ipc.event", "file.access", "file.setattr")
+    fifos = {(p.kind, p.path, p.errno) for p in mine(evs, exec_id, IpcEvent) if p.kind == "fifo"}
+    assert fifos == {("fifo", "/etc/fifo", 30)}
+    denied = {(p.op, p.path, p.errno) for p in mine(evs, exec_id, FileAccess)}
+    assert ("denied", "/etc/node", 30) in denied
+    owners = {(p.path, p.uid, p.gid, p.errno) for p in mine(evs, exec_id, FileSetattr)}
+    assert owners == {
+        ("/etc/passwd", 1000, None, 30),
+        ("/etc/hostname", None, 1000, 30),
+        ("/etc/group", 1000, None, 30),
+    }
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_deep_paths_are_whole_up_to_sixty_names(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    deep = "/work/" + "/".join(f"d{i}" for i in range(1, 31))
+    deeper = "/work/" + "/".join(f"e{i}" for i in range(1, 71))
+    command = (
+        f"mkdir -p {deep} {deeper} && echo x > {deep}/f && chmod 600 {deep}/f"
+        f" && mv {deep}/f {deep}/g && rm {deep}/g && echo x > {deeper}/f && rm {deeper}/f"
+    )
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+
+    assert result.finished.exit_code == 0, result.stderr
+    exec_id = result.finished.exec_id
+    evs = await events(store, run_id, "file.access", "file.write", "file.setattr")
+    writes = {(p.path, p.partial) for p in mine(evs, exec_id, FileWrite)}
+    changes = {
+        (p.op, p.path, p.target, p.partial)
+        for p in mine(evs, exec_id, FileAccess)
+        if p.op in ("rename", "delete")
+    }
+    setattrs = {(p.path, p.partial) for p in mine(evs, exec_id, FileSetattr)}
+    assert (f"{deep}/f", False) in writes
+    assert (f"{deep}/f", False) in setattrs
+    assert ("rename", f"{deep}/f", f"{deep}/g", False) in changes
+    assert ("delete", f"{deep}/g", None, False) in changes
+    # Past sixty names the leading part is left out.
+    tail = "/".join(f"e{i}" for i in range(12, 71))
+    assert (f".../{tail}/f", True) in writes
+    assert ("delete", f".../{tail}/f", None, True) in changes
 
 
 async def test_masked_proc_files_read_empty(backend: DockerBackend, store: LocalEventStore) -> None:
@@ -1442,6 +1635,150 @@ async def test_output_prepending_is_visible(backend: DockerBackend, store: Local
     assert any(p.startswith("all tests passed") for p in prefixes)
     # The bytes on the pipe are recorded even though the command exited non-zero.
     assert result.stdout == b"all tests passed\n"
+
+
+# A 64-bit process can make 32-bit calls through int 0x80, with ia32's numbers and arguments
+# 32 bits wide. `int80(nr, *args)` makes one; its memory sits below 4 GiB, where a 32-bit pointer
+# reaches. aims-exec refuses such calls, so the first test runs its command without aims-exec.
+INT80 = (
+    "import ctypes, mmap, os, time\n"
+    "libc = ctypes.CDLL(None, use_errno=True)\n"
+    "libc.mmap.restype = ctypes.c_void_p\n"
+    "libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int,"
+    " ctypes.c_int, ctypes.c_long]\n"
+    "def low(prot):\n"
+    "    return libc.mmap(None, 4096, prot, mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS | 0x40, -1, 0)\n"
+    # push rbx and rbp, load eax and ebx to ebp from the 7 words at rdi, int 0x80, sign-extend eax.
+    "code = bytes.fromhex('5355' '4989fa' '418b02' '418b5a04' '418b4a08' '418b520c' '418b7210'"
+    " '418b7a14' '418b6a18' 'cd80' '4863c0' '5d5b' 'c3')\n"
+    "page = low(7)\n"
+    "ctypes.memmove(page, code, len(code))\n"
+    "shim = ctypes.CFUNCTYPE(ctypes.c_long, ctypes.c_void_p)(page)\n"
+    "def int80(nr, *args):\n"
+    "    regs = (ctypes.c_uint32 * 7)(nr, *[a & 0xffffffff for a in args])\n"
+    "    return shim(ctypes.addressof(regs))\n"
+    "buf = low(3)\n"
+)
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_32_bit_calls_are_recorded(
+    backend: DockerBackend, store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if backend.arch != "x86_64":
+        pytest.skip("int 0x80 and x32 calls exist on x86_64 only")
+    command = (
+        INT80 + "ctypes.memmove(buf, b'held\\0', 5)\n"
+        "ctypes.memmove(buf + 1024, b'/work\\0', 6)\n"
+        "child = os.fork()\n"
+        "if child == 0:\n"
+        "    time.sleep(30)\n"
+        "    os._exit(0)\n"
+        "fd = os.open('/work/f', os.O_CREAT | os.O_RDWR)\n"
+        "os.write(fd, b'x' * 4096)\n"
+        "ns = os.open('/proc/self/ns/uts', os.O_RDONLY)\n"
+        # Compat iovecs at buf+64 and buf+72: 5 bytes into buf+32, from the child's buf.
+        "iov = (ctypes.c_uint32 * 4).from_address(buf + 64)\n"
+        "iov[0], iov[1], iov[2], iov[3] = buf + 32, 5, buf, 5\n"
+        "ok = [int80(26, 16, child), int80(26, 17, child)]\n"
+        "ok += [int80(347, child, buf + 64, 1, buf + 72, 1, 0)]\n"
+        "ok += [int80(118, fd), int80(148, fd), int80(344, fd), int80(314, fd, 0, 0, 0, 0, 0)]\n"
+        "ok += [int80(272, fd, 0, 0, 0, 0, 4), int80(250, fd, 0, 0, 0, 4)]\n"
+        "ok += [int80(378, fd, buf + 64, 1, 0, 0, 8), int80(218, buf, 4096, buf + 256)]\n"
+        "ok += [int80(451, fd, buf + 512, buf + 576, 0), int80(12, buf + 1024)]\n"
+        # ipc(2)'s SHMGET and SHMAT, then the calls of their own. A 32-bit call's address is cut to
+        # 32 bits, so it may read as negative.
+        "via = int80(117, 23, 4321, 4096, 0o1600)\n"
+        "own = int80(395, 4322, 4096, 0o1600)\n"
+        "ok += [int80(117, 21, via, 0, buf + 2048, 0), not -4096 < int80(397, own, 0, 0) < 0]\n"
+        "print(child, via, own, flush=True)\n"
+        "print(' '.join(map(str, ok)), flush=True)\n"
+        "print(int80(310, 0x10000000), int80(346, ns, 0), flush=True)\n"
+        "os.kill(child, 9)\n"
+    )
+    run_id, sb = await sandbox(backend, store)
+    inner = cast(Any, sb.sandbox)
+    monkeypatch.setattr(inner, "wrapper", lambda timeout_ms: list(inner._shell))
+    try:
+        result = await sb.exec(f"python3 - <<'EOF'\n{command}EOF", timeout_s=30)
+    finally:
+        await sb.close()
+
+    assert result.finished.exit_code == 0, result.stderr
+    first, calls, refused = result.stdout.decode().splitlines()
+    child, via, own = map(int, first.split())
+    assert via >= 0
+    assert own >= 0
+    # The rest may fail, preadv2 with EAGAIN for one; each is recorded either way.
+    assert calls.split()[:3] == ["0", "0", "5"]
+    assert calls.split()[-1] == "True"
+    assert refused == "-1 -1"
+
+    async def seen(kind: str, *fields: str) -> set[tuple[Any, ...]]:
+        return {tuple(e.data.get(f) for f in fields) for e in await events(store, run_id, kind)}
+
+    ptraces = await seen("ptrace.event", "request", "ns_target")
+    assert {("attach", child), ("detach", child), ("process_vm_readv", child)} <= ptraces
+    assert await seen("file.sync", "call", "path") == {
+        ("fsync", "/work/f"),
+        ("fdatasync", "/work/f"),
+        ("syncfs", "/work/f"),
+        ("sync_file_range", "/work/f"),
+    }
+    assert await seen("cache.probe", "op", "path") == {
+        ("fadvise_dontneed", "/work/f"),
+        ("preadv2_nowait", "/work/f"),
+        ("cachestat", "/work/f"),
+        ("mincore", None),
+    }
+    assert ("chdir", "/work") in await seen("file.look", "op", "path")
+    shm = await seen("ipc.event", "kind", "key", "id")
+    assert {("shmget", 4321, None), ("shmget", 4322, None)} <= shm
+    assert {("shmat", None, via), ("shmat", None, own)} <= shm
+    assert {("unshare",), ("setns",)} <= await seen("sys.denied", "syscall")
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_aims_exec_refuses_32_bit_and_x32_calls(
+    backend: DockerBackend, store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if backend.arch != "x86_64":
+        pytest.skip("int 0x80 and x32 calls exist on x86_64 only")
+    # The daemon's profile is off, so each refusal is aims-exec's own.
+    create = docker_module.create_container
+
+    async def unconfined(
+        docker: aiodocker.Docker, *, config: dict[str, Any], name: str | None = None
+    ) -> Any:
+        if config["Cmd"] == ["sleep", "infinity"]:
+            host = config["HostConfig"]
+            host["SecurityOpt"] = [*host["SecurityOpt"], "seccomp=unconfined"]
+        return await create(docker, config=config, name=name)
+
+    monkeypatch.setattr(docker_module, "create_container", unconfined)
+    command = (
+        "python3 - <<'EOF'\n" + INT80 + "libc.syscall.restype = ctypes.c_long\n"
+        "def x32(nr, *args):\n"
+        "    return libc.syscall(0x40000000 | nr, *args), ctypes.get_errno()\n"
+        # getpid and unshare through int 0x80, then x32's getpid and ptrace.
+        "print(int80(20), int80(310, 0x10000000), *x32(39), *x32(521, 0, 0, 0, 0))\n"
+        "EOF"
+    )
+    run_id, sb = await sandbox(backend, store)
+    try:
+        result = await sb.exec(command, timeout_s=20)
+    finally:
+        await sb.close()
+
+    assert result.stdout == b"-1 -1 -1 1 -1 1\n", result.stderr
+    denied = {
+        p.syscall
+        for p in (e.payload() for e in await events(store, run_id, "sys.denied"))
+        if isinstance(p, SysDenied) and p.exec_id == result.finished.exec_id
+    }
+    assert {"unshare", "ptrace"} <= denied
 
 
 @pytest.mark.tracer

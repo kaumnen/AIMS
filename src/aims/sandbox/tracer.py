@@ -8,6 +8,7 @@ import re
 from collections import OrderedDict, deque
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
+from stat import S_ISFIFO
 
 import aiodocker
 from aiodocker.containers import DockerContainer
@@ -32,7 +33,9 @@ from aims.sandbox.base import (
     PreExec,
     Record,
     Setattr,
+    Stamp,
     Sync,
+    Xattr,
 )
 from aims.sandbox.containers import create_container, remove_container
 from aims.sandbox.execs import exec_output, open_stream
@@ -40,6 +43,7 @@ from aims.sandbox.images import ensure_image
 from aims.sandbox.trace import (
     ARGV_CAP,
     ArgvChunk,
+    Deeper,
     Delete,
     Dropped,
     EnvChunk,
@@ -52,6 +56,7 @@ from aims.sandbox.trace import (
     Mounts,
     Named,
     Note,
+    Raw,
     RawCache,
     RawClose,
     RawDenied,
@@ -61,13 +66,19 @@ from aims.sandbox.trace import (
     RawMmap,
     RawSetattr,
     RawSync,
+    RawXattr,
     Ready,
     Refused,
+    RefusedChown,
+    RefusedNode,
+    RefusedXattr,
     Rename,
     Sequence,
     Symlink,
     Tick,
     Walk,
+    chown_mask,
+    deepen,
     parse,
     split_argv,
 )
@@ -146,9 +157,17 @@ BACKING = (
 PRE_7 = (
     "if ! grep -qx filename_unlinkat $a; then sed -i "
     r"-e '/^  @rn2\?\[tid\] = str(/d' "
-    r"-e 's/^fexit:vmlinux:filename_\(unlinkat\|rmdir\|mkdirat\|renameat2\|linkat\|symlinkat\) "
+    r"-e 's/^fexit:vmlinux:filename_"
+    r"\(unlinkat\|rmdir\|mkdirat\|mknodat\|renameat2\|linkat\|symlinkat\) "
     r"/fexit:vmlinux:do_\1 /' "
     r"-e '/^\/\* before 7\.0$/d' -e '/^before 7\.0 \*\/$/d' $f; fi; "
+)
+# Before 7.0 mknod's call is static, so a build may inline it; its probes go when it is missing.
+MKNOD = (
+    "if ! grep -qx filename_mknodat $a && ! grep -qx do_mknodat $a; then sed -i "
+    r"-e '/^f\(entry\|exit\):vmlinux:do_mknodat .*}$/d' "
+    r"-e '/^fexit:vmlinux:do_mknodat /,/^}/d' $f; "
+    "fi; "
 )
 # The probes that log an open through another process's /proc link, dropped on a kernel that
 # lacks either function they attach to.
@@ -168,6 +187,9 @@ LOOKS = (
     'echo "filename_lookup cannot be traced on this kernel, so no lookup is recorded"; sed -i '
     r"'/^f\(entry\|exit\):vmlinux:filename_lookup /,/^}/d' $f; fi; "
 )
+# The syscall probes follow calls by number, so the script keeps the numbers and ABI checks of the
+# host's architecture: its lines marked `//@<arch> `.
+SYSCALL_ARCH = 'u=$(uname -m); sed -i "s|^//@$u ||" $f; '
 # Kernels from 6.15 split pipe_write into anon_pipe_write and fifo_pipe_write, and 7.0 renamed
 # do_filp_open to do_file_open.
 TRACE = (
@@ -179,21 +201,13 @@ TRACE = (
     "if ! grep -qx do_filp_open $a; then "
     r"sed -i 's/^\(fentry\|fexit\):vmlinux:do_filp_open /\1:vmlinux:do_file_open /' $f; fi; "
     + PRE_7
+    + MKNOD
     + PROC_LINKS
     + LOOKS
     + "v=$(uname -r); m=${v%%.*}; n=${v#*.}; n=${n%%.*}; "
     + BACKING
-    # cachestat arrived in 6.5; older kernels have neither the syscall nor its tracepoint.
-    + 'if [ "$m" -lt 6 ] || { [ "$m" -eq 6 ] && [ "$n" -lt 5 ]; } '
-    "|| ! grep -q '_sys_cachestat$' $a "
-    "|| ! [ -e /sys/kernel/tracing/events/syscalls/sys_enter_cachestat/id ]; then "
-    "sed -i 's|^tracepoint:syscalls:sys_enter_cachestat |//&|' $f; fi; "
-    # x86_64 calls the 64-bit-offset tracepoint fadvise64_64; aarch64 calls it fadvise64.
-    "if [ ! -e /sys/kernel/tracing/events/syscalls/sys_enter_fadvise64_64/id ]; then "
-    "if [ -e /sys/kernel/tracing/events/syscalls/sys_enter_fadvise64/id ]; then "
-    "sed -i 's/sys_enter_fadvise64_64/sys_enter_fadvise64/g' $f; else "
-    "sed -i 's|^tracepoint:syscalls:sys_enter_fadvise64_64 |//&|' $f; fi; fi; "
-    "exec bpftrace -B line -f json $f"
+    + SYSCALL_ARCH
+    + "exec bpftrace -B line -f json $f"
 )
 PMU_EVENTS = ("cpu-cycles", "instructions", "cache-misses")
 PMU = (
@@ -323,6 +337,8 @@ class Tracer:
         self._ts = 0
         self._parts: OrderedDict[int, dict[str, object]] = OrderedDict()
         self._cwd: OrderedDict[int, str] = OrderedDict()
+        # Walk continuations by (cgroup, cpu): the last one's sequence number and the walks.
+        self._deeper: dict[tuple[int, int], tuple[int, dict[int, list[Walk]]]] = {}
         self._env: OrderedDict[int, bytearray] = OrderedDict()
         self._env_bytes: dict[int, int] = {}
         self._argv: OrderedDict[int, bytearray] = OrderedDict()
@@ -718,6 +734,8 @@ class Tracer:
         self._cgroup = 0 if at is None else at.cgroup
         if at is not None:
             self._gaps(self._sequence.observe(at))
+        if at is not None and (isinstance(item, Deeper) or self._deeper):
+            item = self._deep(item, at)
         match item:
             case None:
                 return
@@ -933,6 +951,59 @@ class Tracer:
                     else:
                         return
                     route.put(Look(pid, op, path, errno, partial, at=item.at))
+            case RefusedNode(pid, errno, mode, named):
+                route = self._route(pid)
+                if route is not None:
+                    path, partial = _resolve(route.mounts, named)
+                    if S_ISFIFO(mode):
+                        route.put(
+                            Ipc(pid, "fifo", path=path, errno=errno, partial=partial, at=item.at)
+                        )
+                    else:
+                        route.put(File(pid, "denied", path, None, errno, partial, at=item.at))
+            case RefusedChown(pid, errno, uid, gid, named):
+                route = self._route(pid)
+                if route is not None:
+                    path, partial = _resolve(route.mounts, named)
+                    valid, uid, gid = chown_mask(uid, gid)
+                    route.put(
+                        Setattr(pid, path, partial, valid, None, uid, gid, errno=errno, at=item.at)
+                    )
+            case RawXattr(pid, op, size, flags, name, cut, walk):
+                route = self._route(pid)
+                if route is not None:
+                    path, partial = route.mounts.resolve(walk)
+                    set_ = op == "set"
+                    route.put(
+                        Xattr(
+                            pid,
+                            op,
+                            path,
+                            name,
+                            size if set_ else None,
+                            flags if set_ else None,
+                            partial=partial or cut,
+                            at=item.at,
+                        )
+                    )
+            case RefusedXattr(pid, op, errno, size, flags, name, cut, named):
+                route = self._route(pid)
+                if route is not None:
+                    path, partial = _resolve(route.mounts, named)
+                    set_ = op == "set"
+                    route.put(
+                        Xattr(
+                            pid,
+                            op,
+                            path,
+                            name,
+                            size if set_ else None,
+                            flags if set_ else None,
+                            errno,
+                            partial or cut,
+                            at=item.at,
+                        )
+                    )
             case RawCache(pid, op, walk):
                 route = self._route(pid)
                 if route is not None:
@@ -987,6 +1058,22 @@ class Tracer:
             if len(self._bases) > MEMORY:
                 self._bases.popitem(last=False)
         return named
+
+    def _deep(self, item: object, at: Stamp) -> object:
+        """Hold a walk's continuation until the record after it in its stream, then join them.
+        A continuation that record does not follow is dropped, as its record was lost."""
+        key = (at.cgroup, at.cpu)
+        held = self._deeper.pop(key, None)
+        if held is not None and held[0] != at.seq - 1:
+            held = None
+        if isinstance(item, Deeper):
+            walks = {} if held is None else held[1]
+            walks.setdefault(item.slot, []).append(item.walk)
+            self._deeper[key] = (at.seq, walks)
+            return None
+        if held is not None and isinstance(item, Raw):
+            return deepen(item, held[1])
+        return item
 
     def _route(self, pid: int) -> Route | None:
         route = self._lookup(pid)

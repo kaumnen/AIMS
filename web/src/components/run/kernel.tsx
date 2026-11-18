@@ -23,10 +23,12 @@ const opWords: Record<string, [string, string]> = {
 const typeWords: Record<string, [string, string]> = {
   "proc.exec": ["proc", "procs"],
   "net.connect": ["connect", "connects"],
+  "net.listen": ["bind or listen", "binds and listens"],
   "ipc.event": ["ipc", "ipc"],
   "file.look": ["look", "looks"],
   "file.write": ["file write", "file writes"],
   "file.setattr": ["setattr", "setattrs"],
+  "file.xattr": ["xattr change", "xattr changes"],
   "sys.denied": ["denied call", "denied calls"],
   "ptrace.event": ["ptrace", "ptraces"],
   "ns.event": ["namespace change", "namespace changes"],

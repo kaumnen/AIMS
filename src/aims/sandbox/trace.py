@@ -6,9 +6,10 @@ not fit its shape is returned as `Garbled`, never guessed at. Each tag is one `@
 below and one probe block in `trace.bt`.
 """
 
+import dataclasses
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -21,6 +22,7 @@ from aims.sandbox.base import (
     Fork,
     Ipc,
     Kernel,
+    Listen,
     Look,
     LookSkip,
     Mem,
@@ -96,8 +98,9 @@ PTRACE_REQUESTS: dict[int, str] = {
     0x420E: "get_syscall_info",
 }
 
-UNIX_KINDS: dict[str, Literal["bind", "connect", "sendto"]] = {
+UNIX_KINDS: dict[str, Literal["bind", "listen", "connect", "sendto"]] = {
     "b": "bind",
+    "l": "listen",
     "c": "connect",
     "s": "sendto",
 }
@@ -176,6 +179,8 @@ SYSCALLS: dict[str, dict[int, str]] = {
         264: "name_to_handle_at",
         282: "userfaultfd",
         425: "io_uring_setup",
+        426: "io_uring_enter",
+        427: "io_uring_register",
         430: "fsopen",
         432: "fsmount",
         431: "fsconfig",
@@ -238,6 +243,8 @@ SYSCALLS: dict[str, dict[int, str]] = {
         303: "name_to_handle_at",
         323: "userfaultfd",
         425: "io_uring_setup",
+        426: "io_uring_enter",
+        427: "io_uring_register",
         430: "fsopen",
         432: "fsmount",
         431: "fsconfig",
@@ -246,6 +253,88 @@ SYSCALLS: dict[str, dict[int, str]] = {
         442: "mount_setattr",
         135: "personality",
     },
+}
+# On x86_64 a 32-bit call reaches the kernel through int 0x80 with ia32's numbers, which the
+# tracer offsets by IA32, or through syscall with the kernel's X32 bit set. ia32 has 16-bit and
+# 32-bit forms of the uid and gid calls, and x32 its own numbers for a few calls.
+IA32 = 0x10000
+X32 = 0x40000000
+I386 = {
+    310: "unshare",
+    346: "setns",
+    21: "mount",
+    52: "umount2",
+    217: "pivot_root",
+    61: "chroot",
+    26: "ptrace",
+    357: "bpf",
+    336: "perf_event_open",
+    128: "init_module",
+    350: "finit_module",
+    129: "delete_module",
+    283: "kexec_load",
+    288: "keyctl",
+    286: "add_key",
+    287: "request_key",
+    23: "setuid",
+    213: "setuid",
+    46: "setgid",
+    214: "setgid",
+    70: "setreuid",
+    203: "setreuid",
+    71: "setregid",
+    204: "setregid",
+    164: "setresuid",
+    208: "setresuid",
+    170: "setresgid",
+    210: "setresgid",
+    138: "setfsuid",
+    215: "setfsuid",
+    139: "setfsgid",
+    216: "setfsgid",
+    81: "setgroups",
+    206: "setgroups",
+    185: "capset",
+    120: "clone",
+    435: "clone3",
+    297: "mknodat",
+    14: "mknod",
+    110: "iopl",
+    101: "ioperm",
+    88: "reboot",
+    87: "swapon",
+    115: "swapoff",
+    74: "sethostname",
+    121: "setdomainname",
+    79: "settimeofday",
+    264: "clock_settime",
+    404: "clock_settime",
+    124: "adjtimex",
+    51: "acct",
+    131: "quotactl",
+    103: "syslog",
+    347: "process_vm_readv",
+    348: "process_vm_writev",
+    349: "kcmp",
+    438: "pidfd_getfd",
+    440: "process_madvise",
+    342: "open_by_handle_at",
+    341: "name_to_handle_at",
+    374: "userfaultfd",
+    425: "io_uring_setup",
+    426: "io_uring_enter",
+    427: "io_uring_register",
+    430: "fsopen",
+    432: "fsmount",
+    431: "fsconfig",
+    429: "move_mount",
+    428: "open_tree",
+    442: "mount_setattr",
+    136: "personality",
+}
+X32_OWN = {521: "ptrace", 528: "kexec_load", 539: "process_vm_readv", 540: "process_vm_writev"}
+SYSCALLS["x86_64"] |= {IA32 | nr: name for nr, name in I386.items()} | {
+    X32 | nr: name for nr, name in (SYSCALLS["x86_64"] | X32_OWN).items()
 }
 ARCHES = {"arm64": "aarch64", "amd64": "x86_64"}
 
@@ -476,6 +565,50 @@ class RawLook(Raw):
 
 
 @dataclass(frozen=True, slots=True)
+class RefusedNode(Raw):
+    """A mknod the kernel refused with EPERM, EACCES or EROFS, with the mode it asked for."""
+
+    errno: int
+    mode: int
+    path: Named
+
+
+@dataclass(frozen=True, slots=True)
+class RefusedChown(Raw):
+    """A chown the kernel refused by name. -1 leaves an owner or group as it is."""
+
+    errno: int
+    uid: int
+    gid: int
+    path: Named
+
+
+@dataclass(frozen=True, slots=True)
+class RawXattr(Raw):
+    """An extended attribute change at its security check. `cut` marks a name at the cap."""
+
+    op: Literal["set", "remove"]
+    size: int
+    flags: int
+    name: str
+    cut: bool
+    walk: Walk
+
+
+@dataclass(frozen=True, slots=True)
+class RefusedXattr(Raw):
+    """An extended attribute call the kernel refused before its security check."""
+
+    op: Literal["set", "remove"]
+    errno: int
+    size: int
+    flags: int
+    name: str
+    cut: bool
+    path: Named
+
+
+@dataclass(frozen=True, slots=True)
 class RawCache(Raw):
     """A page-cache call with the walk of the fd's file, or None for an invalid fd."""
 
@@ -489,6 +622,16 @@ class RawSync(Raw):
 
     call: Literal["fsync", "fdatasync", "sync_file_range", "syncfs"]
     walk: Walk | None
+
+
+@dataclass(frozen=True, slots=True)
+class Deeper(Raw):
+    """The next names of a walk the record after it cut at `DEPTH` names. `slot` is the walk's
+    place among that record's walks. A record's continuations come right before it in its
+    cgroup's stream on its cpu, so each one's sequence number is one less than the next one's."""
+
+    slot: int
+    walk: Walk
 
 
 @dataclass(frozen=True, slots=True)
@@ -816,6 +959,38 @@ def _create(body: str, at: Stamp) -> Mkdir | Symlink | Link:
     raise ValueError("unknown create kind")
 
 
+@record("w")
+def _deeper(body: str, at: Stamp) -> Deeper:
+    f = body.split(" ", 3)
+    if len(f) != 4:
+        raise ValueError("expected four walk continuation fields")
+    pid, slot, depth = int(f[0]), int(f[1]), int(f[2])
+    if slot not in (0, 1):
+        raise ValueError("unknown walk slot")
+    return Deeper(pid, slot, _walk(0, depth, f[3].split("/")), at=at)
+
+
+# The walks of each record the tracer continues past `DEPTH` names, in the order it prints them.
+DEEP_WALKS: dict[type, tuple[str, ...]] = {}
+
+
+def deepen(item: Raw, more: Mapping[int, list[Walk]]) -> Raw:
+    """`item` with each walk the tracer cut at `DEPTH` names joined with the names after it."""
+    fields = DEEP_WALKS.get(type(item), ())
+    changes: dict[str, Walk] = {}
+    for slot, walks in more.items():
+        if slot >= len(fields):
+            continue
+        walk = getattr(item, fields[slot])
+        if not isinstance(walk, Walk) or len(walk.names) != DEPTH or b"/" in walk.names:
+            continue
+        names = list(walk.names)
+        for w in walks:
+            names.extend(w.names)
+        changes[fields[slot]] = Walk(walk.dev, tuple(names))
+    return dataclasses.replace(item, **changes) if changes else item
+
+
 @record("C")
 def _net(body: str, at: Stamp) -> Net:
     f = _fields(body, 5)
@@ -843,7 +1018,8 @@ def _ipc(body: str, at: Stamp) -> Ipc | RawFifo:
             path = "@" + _text(raw[1:].rstrip(b"\0"))
             partial = False
         else:
-            path = _text(raw.rstrip(b"\0"))
+            # The kernel reads a path name up to its first NUL; what follows is caller memory.
+            path = _text(raw.split(b"\0", 1)[0])
             partial = not path.startswith("/")
         return Ipc(
             pid,
@@ -1090,7 +1266,8 @@ def _refused(body: str, at: Stamp) -> Refused:
 
 
 # Kernel iattr bits and the nanosecond values utimensat takes as now and as leave alone.
-ATTR_MODE, ATTR_SIZE, ATTR_ATIME, ATTR_MTIME, ATTR_CTIME = 1, 8, 16, 32, 64
+ATTR_MODE, ATTR_UID, ATTR_GID, ATTR_SIZE = 1, 2, 4, 8
+ATTR_ATIME, ATTR_MTIME, ATTR_CTIME = 16, 32, 64
 ATTR_ATIME_SET, ATTR_MTIME_SET, ATTR_TIMES_SET, ATTR_TOUCH = 128, 256, 1 << 16, 1 << 17
 UTIME_NOW, UTIME_OMIT = (1 << 30) - 1, (1 << 30) - 2
 
@@ -1098,7 +1275,7 @@ UTIME_NOW, UTIME_OMIT = (1 << 30) - 1, (1 << 30) - 2
 @record("t")
 def _refused_setattr(body: str, at: Stamp) -> RawSetattr:
     f = body.split(" ", 10)
-    if len(f) != 11 or f[1] not in ("c", "t", "u"):
+    if len(f) != 11 or f[1] not in ("c", "o", "t", "u"):
         raise ValueError("unknown refused setattr")
     pid, kind, errno = int(f[0]), f[1], int(f[2])
     a, b, c, d, e = (int(x) for x in f[3:8])
@@ -1106,8 +1283,11 @@ def _refused_setattr(body: str, at: Stamp) -> RawSetattr:
     mode = size = 0
     atime: int | None = None
     mtime: int | None = None
+    uid = gid = 0
     if kind == "c":
         valid, mode = ATTR_MODE | ATTR_CTIME, (a & 0o7777) | (b & 0o170000)
+    elif kind == "o":
+        valid, uid, gid = chown_mask(a, b)
     elif kind == "t":
         valid, size = ATTR_SIZE, _clamp(a)
     elif a == 0 or (c == UTIME_NOW and e == UTIME_NOW):
@@ -1122,7 +1302,107 @@ def _refused_setattr(body: str, at: Stamp) -> RawSetattr:
             valid |= ATTR_MTIME
             if e != UTIME_NOW:
                 valid, mtime = valid | ATTR_MTIME_SET, _clamp(d * 1_000_000 + e // 1000)
-    return RawSetattr(pid, walk, valid, mode, 0, 0, size, atime, mtime, None, errno, at=at)
+    return RawSetattr(pid, walk, valid, mode, uid, gid, size, atime, mtime, None, errno, at=at)
+
+
+def chown_mask(uid: int, gid: int) -> tuple[int, int, int]:
+    """The iattr mask of a chown and the ids it sets; -1 leaves one as it is."""
+    valid = ATTR_CTIME
+    if uid != -1:
+        valid |= ATTR_UID
+    if gid != -1:
+        valid |= ATTR_GID
+    return valid, max(uid, 0), max(gid, 0)
+
+
+@record("q")
+def _refused_chown(body: str, at: Stamp) -> RefusedChown:
+    f = body.split(" ", 6)
+    if len(f) != 7:
+        raise ValueError("expected seven refused chown fields")
+    pid, errno, uid, gid, dev, depth = (int(x) for x in f[:6])
+    walk, sep, name = f[6].partition(" ")
+    if not walk or not sep:
+        raise ValueError("refused chown without a walk and a name")
+    named = Named(name, _hex_walk(dev, depth, walk), bool(name) and _cut(name))
+    return RefusedChown(pid, errno, uid, gid, named, at=at)
+
+
+@record("u")
+def _refused_node(body: str, at: Stamp) -> RefusedNode:
+    f = body.split(" ", 5)
+    if len(f) != 6:
+        raise ValueError("expected six refused mknod fields")
+    pid, errno, mode, dev, depth = (int(x) for x in f[:5])
+    walk, sep, name = f[5].partition(" ")
+    if not walk or not sep:
+        raise ValueError("refused mknod without a walk and a name")
+    named = Named(name, _hex_walk(dev, depth, walk), _cut(name))
+    return RefusedNode(pid, errno, _clamp(mode), named, at=at)
+
+
+XATTR_OPS: dict[str, Literal["set", "remove"]] = {
+    "s": "set",
+    "r": "remove",
+    "1": "set",
+    "2": "remove",
+}
+
+
+def _xattr_name(field: str) -> tuple[str, bool]:
+    """An attribute name printed as 256 bytes of hex, cut at its NUL. No NUL means it is cut."""
+    raw = _hex(field)
+    end = raw.find(b"\0")
+    return _text(raw if end < 0 else raw[:end]), end < 0
+
+
+@record("x")
+def _xattr(body: str, at: Stamp) -> RawXattr:
+    f = body.split(" ", 6)
+    if len(f) != 7 or f[1] not in ("s", "r"):
+        raise ValueError("unknown xattr call")
+    pid, op = int(f[0]), XATTR_OPS[f[1]]
+    size, flags = min(int(f[2]), MAX_INT), _clamp(int(f[3]))
+    name, cut = _xattr_name(f[4])
+    rest = f[6].split(" ", 1)
+    if len(rest) != 2:
+        raise ValueError("expected an xattr walk")
+    walk = _walk(int(f[5]), int(rest[0]), rest[1].split("/"))
+    return RawXattr(pid, op, size, flags, name, cut, walk, at=at)
+
+
+@record("y")
+def _refused_xattr(body: str, at: Stamp) -> RefusedXattr:
+    f = body.split(" ", 8)
+    if len(f) != 9 or f[1] not in ("1", "2"):
+        raise ValueError("unknown refused xattr call")
+    pid, op, errno = int(f[0]), XATTR_OPS[f[1]], int(f[2])
+    size, flags = min(int(f[3]), MAX_INT), _clamp(int(f[4]))
+    name, cut = _xattr_name(f[5])
+    dev, depth = int(f[6]), int(f[7])
+    walk, sep, path = f[8].partition(" ")
+    if not walk or not sep:
+        raise ValueError("refused xattr call without a walk and a path")
+    named = Named(path, _hex_walk(dev, depth, walk), bool(path) and _cut(path))
+    return RefusedXattr(pid, op, errno, size, flags, name, cut, named, at=at)
+
+
+PROTOCOLS: dict[int, Literal["tcp", "udp"]] = {6: "tcp", 17: "udp"}
+
+
+@record("n")
+def _listen(body: str, at: Stamp) -> Listen:
+    f = _fields(body, 6)
+    if f[1] not in ("b", "l") or f[2] not in ("4", "6"):
+        raise ValueError("unknown bind or listen")
+    kind: Literal["bind", "listen"] = "bind" if f[1] == "b" else "listen"
+    family: Literal["inet", "inet6"] = "inet" if f[2] == "4" else "inet6"
+    port = int(f[5])
+    # A listen on a socket never bound holds port 0 until the kernel binds it.
+    none = kind == "listen" and port == 0
+    return Listen(
+        int(f[0]), kind, family, PROTOCOLS.get(int(f[3])), f[4], None if none else port, at=at
+    )
 
 
 @record("Z")
@@ -1399,7 +1679,8 @@ class Mounts:
             names.append(_text(name))
         inner = "/".join(reversed(names))
         if not whole:
-            return f".../{inner}", True
+            beneath = self._beneath(walk.dev, list(reversed(names)))
+            return (f".../{inner}", True) if beneath is None else (beneath, False)
         path = f"/{inner}"
         dev = (walk.dev >> 20, walk.dev & 0xFFFFF)
         best: MountPoint | None = None
@@ -1413,6 +1694,27 @@ class Mounts:
         rest = path if best.root == "/" else path[len(best.root) :]
         return (best.target.rstrip("/") + rest) or "/", False
 
+    def _beneath(self, dev: int, parts: list[str]) -> str | None:
+        """Where a walk cut short of its filesystem root sits in the sandbox, when its top names
+        end the root of one mount of its filesystem: at least that mount's last two names, so a
+        folder of the same name inside it cannot pass for it."""
+        major_minor = (dev >> 20, dev & 0xFFFFF)
+        found: list[tuple[int, str]] = []
+        for point in self.points:
+            if point.dev != major_minor or point.root == "/":
+                continue
+            root = point.root.strip("/").split("/")
+            for k in range(min(len(root), len(parts)), 1, -1):
+                if parts[:k] == root[-k:]:
+                    rest = "/".join(parts[k:])
+                    found.append((k, point.target.rstrip("/") + (f"/{rest}" if rest else "")))
+                    break
+        if not found:
+            return None
+        best = max(k for k, _ in found)
+        paths = {path for k, path in found if k == best}
+        return paths.pop() if len(paths) == 1 else None
+
 
 def _under(path: str, root: str) -> bool:
     return root == "/" or path == root or path.startswith(f"{root}/")
@@ -1420,3 +1722,20 @@ def _under(path: str, root: str) -> bool:
 
 def _unescape(value: str) -> str:
     return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), value)
+
+
+DEEP_WALKS.update(
+    {
+        RawClose: ("walk",),
+        Delete: ("walk",),
+        Rename: ("old", "new"),
+        Mkdir: ("walk",),
+        Symlink: ("walk",),
+        Link: ("old", "new"),
+        RawFifo: ("walk",),
+        RawSetattr: ("walk",),
+        RawXattr: ("walk",),
+        RawCache: ("walk",),
+        RawSync: ("walk",),
+    }
+)

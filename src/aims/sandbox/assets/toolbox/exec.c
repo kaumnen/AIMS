@@ -14,6 +14,16 @@
  * in short slices, and a slice that took far longer than asked is taken as a
  * freeze and moves the deadline on by the excess.
  *
+ * PROG and everything it starts cannot use io_uring: a seccomp filter makes
+ * io_uring_setup, io_uring_enter and io_uring_register fail with EPERM, as
+ * Docker's default profile does since 25.0. Ops sent through a ring with a
+ * registered personality skip some kernel records. A daemon may run an older
+ * or a custom profile. The filter also refuses with EPERM every call of
+ * another ABI than the binary's own: a 32-bit call through int 0x80 or of a
+ * 32-bit process, and an x32 call. Kernel probes on a syscall's own
+ * tracepoint skip those, and nothing in a sandbox needs them. When the filter
+ * cannot be installed, PROG does not run and aims-exec exits 125.
+ *
  * -k ends what a cancelled exec started: each process whose command line is
  * ARG... exactly gets SIGKILL to the process group of each of its children,
  * the group the deadline ends, then SIGKILL itself. The process is stopped
@@ -25,13 +35,47 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <linux/audit.h>
+#include <linux/filter.h>
+#include <linux/seccomp.h>
 #include <signal.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/prctl.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+
+/* The binary's own ABI. io_uring_setup, io_uring_enter and io_uring_register
+ * have the same numbers in each. */
+#if defined(__x86_64__)
+#define NATIVE AUDIT_ARCH_X86_64
+#elif defined(__aarch64__)
+#define NATIVE AUDIT_ARCH_AARCH64
+#else
+#error "aims-exec knows the ABI of x86_64 and aarch64 only"
+#endif
+#define URING_FIRST 425
+#define URING_LAST 427
+#define X32_BIT 0x40000000u
+
+static int refuse_calls(void) {
+    struct sock_filter code[] = {
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch)),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, NATIVE, 0, 5),
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+        BPF_JUMP(BPF_JMP | BPF_JSET | BPF_K, X32_BIT, 3, 0),
+        BPF_JUMP(BPF_JMP | BPF_JGE | BPF_K, URING_FIRST, 0, 1),
+        BPF_JUMP(BPF_JMP | BPF_JGT | BPF_K, URING_LAST, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+    };
+    struct sock_fprog prog = {sizeof code / sizeof code[0], code};
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) return -1;
+    return prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog);
+}
 
 static long long now_ms(void) {
     struct timespec t;
@@ -177,6 +221,10 @@ int main(int argc, char **argv) {
     long long timeout = atoll(argv[first]);
     long long grace = atoll(argv[first + 1]);
     char **prog = argv + first + 2;
+    if (refuse_calls() != 0) {
+        perror("aims-exec: seccomp");
+        return 125;
+    }
     sigset_t chld;
     sigemptyset(&chld);
     sigaddset(&chld, SIGCHLD);

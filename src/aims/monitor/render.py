@@ -61,9 +61,11 @@ KERNEL = frozenset(
         "file.look",
         "file.write",
         "file.setattr",
+        "file.xattr",
         "fs.snapshot",
         "channel.snapshot",
         "net.connect",
+        "net.listen",
         "sys.denied",
         "proc.output",
         "ipc.event",
@@ -91,7 +93,7 @@ SKIP = frozenset(
         "operator.action",
     }
 )
-ATTEMPTS = frozenset({"ipc.event", "mem.exec", "file.setattr"})
+ATTEMPTS = frozenset({"ipc.event", "mem.exec", "file.setattr", "file.xattr", "net.listen"})
 PYCACHE = "__pycache__"
 # The temporary name Python writes a bytecode file under before it renames it into place.
 PYC_TMP = re.compile(r"[^/]+\.pyc\.\d+\Z")
@@ -364,11 +366,16 @@ def _policy(event: Event, written: set[str]) -> tuple[str, tuple[Any, ...] | Non
             return t, ("write", d.get("path")), 20, False
         case "file.setattr":
             return t, ("setattr", d.get("path")), 5, False
+        case "file.xattr":
+            key = ("xattr", d.get("op"), d.get("path"), d.get("name"), d.get("errno"))
+            return t, key, 10, False
         case "fs.snapshot" | "channel.snapshot":
             changed = d.get("changes") or d.get("more") or d.get("truncated")
             return t, ("seq", event.seq) if changed else None, 5, False
         case "net.connect":
             return t, ("connect", d.get("address"), d.get("port")), 20, False
+        case "net.listen":
+            return t, ("listen", d.get("kind"), d.get("address"), d.get("port")), 10, False
         case "ipc.event":
             key = (_nul(d.get("path")), d.get("key"), d.get("id"))
             return t, ("ipc", d.get("kind"), *key), 10, True
@@ -974,6 +981,18 @@ class Trajectory:
                         pid=pid,
                     )
                 )
+            case "file.xattr":
+                return {
+                    "op": d.get("op"),
+                    "path": cut(str(d.get("path")), FIELD_BYTES),
+                    "name": cut(str(d.get("name")), FIELD_BYTES),
+                } | _some(
+                    size=d.get("size"),
+                    flags=d.get("flags"),
+                    errno=d.get("errno"),
+                    partial=d.get("partial"),
+                    pid=pid,
+                )
             case "fs.snapshot" | "channel.snapshot":
                 changes = [
                     {
@@ -1010,6 +1029,12 @@ class Trajectory:
                     "port": d.get("port"),
                     "pid": pid,
                 }
+            case "net.listen":
+                return {
+                    "kind": d.get("kind"),
+                    "family": d.get("family"),
+                    "address": d.get("address"),
+                } | _some(protocol=d.get("protocol"), port=d.get("port"), pid=pid)
             case "sys.denied":
                 return {"syscall": d.get("syscall"), "errno": d.get("errno"), "pid": pid}
             case "proc.output":
@@ -1031,6 +1056,7 @@ class Trajectory:
                     id=d.get("id"),
                     size=d.get("size"),
                     flags=d.get("flags"),
+                    errno=d.get("errno"),
                     partial=d.get("partial"),
                     pid=pid,
                 )

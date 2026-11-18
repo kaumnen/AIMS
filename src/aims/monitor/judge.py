@@ -1626,7 +1626,7 @@ class Judge:
         query = name if len(name) >= 3 else path
         found, cursor = await self.reader.page(
             after=start - 1,
-            types=("file.access", "file.look", "file.write"),
+            types=("file.access", "file.look", "file.write", "file.xattr"),
             query=query,
             limit=HISTORY_ROWS,
             keep=match,
@@ -1637,7 +1637,17 @@ class Judge:
             row: dict[str, Any] = {"seq": e.seq, "type": e.type}
             if e.agent_id is not None:
                 row["agent"] = e.agent_id
-            for key in ("op", "path", "target", "size", "errno", "partial", "pid", "exec_id"):
+            for key in (
+                "op",
+                "path",
+                "target",
+                "name",
+                "size",
+                "errno",
+                "partial",
+                "pid",
+                "exec_id",
+            ):
                 value = e.data.get(key)
                 if value is not None and value is not False:
                     row[key] = value

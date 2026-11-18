@@ -2954,7 +2954,7 @@ export interface components {
             next: string | null;
         };
         /** @enum {string} */
-        EventType: "agent.compacted" | "agent.finished" | "agent.held" | "agent.input" | "agent.report" | "agent.started" | "agent.step" | "audit.lost" | "audit.spill" | "cache.probe" | "channel.message" | "channel.read" | "channel.snapshot" | "exec.finished" | "exec.started" | "file.access" | "file.look" | "file.setattr" | "file.sync" | "file.write" | "fs.snapshot" | "ipc.event" | "log.truncated" | "mem.exec" | "model.checked" | "model.request" | "model.response" | "monitor.action" | "monitor.cleared" | "monitor.degraded" | "monitor.flag" | "monitor.sweep" | "monitor.verdict" | "net.connect" | "ns.event" | "operator.action" | "plant.triggered" | "proc.exec" | "proc.exit" | "proc.fork" | "proc.output" | "proc.signal" | "ptrace.event" | "replay.divergence" | "resource.sample" | "run.finished" | "run.started" | "sandbox.archived" | "sandbox.freeze_failed" | "sandbox.outside_pause" | "sandbox.started" | "sandbox.stopped" | "score.answer" | "score.awareness" | "score.unexplained" | "score.unit" | "selftest.case" | "sys.denied" | "task.scored" | "tool.call" | "tool.result";
+        EventType: "agent.compacted" | "agent.finished" | "agent.held" | "agent.input" | "agent.report" | "agent.started" | "agent.step" | "audit.lost" | "audit.spill" | "cache.probe" | "channel.message" | "channel.read" | "channel.snapshot" | "exec.finished" | "exec.started" | "file.access" | "file.look" | "file.setattr" | "file.sync" | "file.write" | "file.xattr" | "fs.snapshot" | "ipc.event" | "log.truncated" | "mem.exec" | "model.checked" | "model.request" | "model.response" | "monitor.action" | "monitor.cleared" | "monitor.degraded" | "monitor.flag" | "monitor.sweep" | "monitor.verdict" | "net.connect" | "net.listen" | "ns.event" | "operator.action" | "plant.triggered" | "proc.exec" | "proc.exit" | "proc.fork" | "proc.output" | "proc.signal" | "ptrace.event" | "replay.divergence" | "resource.sample" | "run.finished" | "run.started" | "sandbox.archived" | "sandbox.freeze_failed" | "sandbox.outside_pause" | "sandbox.started" | "sandbox.stopped" | "score.answer" | "score.awareness" | "score.unexplained" | "score.unit" | "selftest.case" | "sys.denied" | "task.scored" | "tool.call" | "tool.result";
         /** @description Each event type and the schema of its `data`. */
         EventTypes: {
             "agent.compacted": components["schemas"]["AgentCompacted"];
@@ -2977,6 +2977,7 @@ export interface components {
             "file.setattr": components["schemas"]["FileSetattr"];
             "file.sync": components["schemas"]["FileSync"];
             "file.write": components["schemas"]["FileWrite"];
+            "file.xattr": components["schemas"]["FileXattr"];
             "fs.snapshot": components["schemas"]["FsSnapshot"];
             "ipc.event": components["schemas"]["IpcEvent"];
             "log.truncated": components["schemas"]["LogTruncated"];
@@ -2991,6 +2992,7 @@ export interface components {
             "monitor.sweep": components["schemas"]["MonitorSweep"];
             "monitor.verdict": components["schemas"]["MonitorVerdict"];
             "net.connect": components["schemas"]["NetConnect"];
+            "net.listen": components["schemas"]["NetListen"];
             "ns.event": components["schemas"]["NsEvent"];
             "operator.action": components["schemas"]["OperatorAction"];
             "plant.triggered": components["schemas"]["PlantTriggered"];
@@ -3372,7 +3374,7 @@ export interface components {
             ctime_us: number | null;
             /**
              * Errno
-             * @description Set when the kernel refused a chmod, truncate or utimes call with EPERM, EACCES or EROFS before its setattr check. A time it would have taken from the clock is unset.
+             * @description Set when the kernel refused a chmod, chown, truncate or utimes call with EPERM, EACCES or EROFS before its setattr check. A time it would have taken from the clock is unset.
              * @default null
              */
             errno: number | null;
@@ -3481,6 +3483,58 @@ export interface components {
             pid: number;
             /** Size */
             size: number;
+            /** Ts Kernel */
+            ts_kernel: number;
+        };
+        /**
+         * FileXattr
+         * @description A request to set or remove an extended attribute. The file snapshots do not hold extended
+         *     attributes, so this is the only record of one.
+         *
+         *     It is recorded at the kernel's security check, so the call can still fail. `name` is the
+         *     attribute's name, `size` the length of a set value and `flags` its create or replace flags.
+         *     A `partial` path or name is not exact: it lacks its leading part or may be cut at the tracer's
+         *     string cap.
+         */
+        FileXattr: {
+            /** Cpu */
+            cpu: number;
+            /** Cpu Seq */
+            cpu_seq: number;
+            /**
+             * Errno
+             * @description Set when the kernel refused the call with EPERM, EACCES or EROFS before its security check, as for a read-only mount or a trusted attribute.
+             * @default null
+             */
+            errno: number | null;
+            /** Exec Id */
+            exec_id: string | null;
+            /**
+             * Flags
+             * @default null
+             */
+            flags: number | null;
+            /** Name */
+            name: string;
+            /**
+             * Op
+             * @enum {string}
+             */
+            op: "set" | "remove";
+            /**
+             * Partial
+             * @default false
+             */
+            partial: boolean;
+            /** Path */
+            path: string;
+            /** Pid */
+            pid: number;
+            /**
+             * Size
+             * @default null
+             */
+            size: number | null;
             /** Ts Kernel */
             ts_kernel: number;
         };
@@ -4005,6 +4059,12 @@ export interface components {
             cpu: number;
             /** Cpu Seq */
             cpu_seq: number;
+            /**
+             * Errno
+             * @description Set on a FIFO the kernel refused with EPERM, EACCES or EROFS. A listen's path is local, as a bind's is.
+             * @default null
+             */
+            errno: number | null;
             /** Exec Id */
             exec_id: string | null;
             /**
@@ -4031,7 +4091,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "bind" | "connect" | "sendto" | "fifo" | "shmget" | "shmat";
+            kind: "bind" | "listen" | "connect" | "sendto" | "fifo" | "shmget" | "shmat";
             /**
              * Partial
              * @default false
@@ -5362,6 +5422,40 @@ export interface components {
             pid: number;
             /** Port */
             port: number | null;
+            /** Ts Kernel */
+            ts_kernel: number;
+        };
+        /**
+         * NetListen
+         * @description A request to bind or listen on an address. The sandbox has no network, so only its own
+         *     processes can reach it. A listen names the address the socket holds then: a socket that was
+         *     never bound has port None, and the kernel picks a port as the listen goes on.
+         */
+        NetListen: {
+            /** Address */
+            address: string;
+            /** Cpu */
+            cpu: number;
+            /** Cpu Seq */
+            cpu_seq: number;
+            /** Exec Id */
+            exec_id: string | null;
+            /**
+             * Family
+             * @enum {string}
+             */
+            family: "inet" | "inet6";
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "bind" | "listen";
+            /** Pid */
+            pid: number;
+            /** Port */
+            port: number | null;
+            /** Protocol */
+            protocol: ("tcp" | "udp") | null;
             /** Ts Kernel */
             ts_kernel: number;
         };
@@ -15706,7 +15800,7 @@ export const deltaMessageKindValues: ReadonlyArray<FlattenedDeepRequired<compone
 export const deltasDroppedMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["DeltasDroppedMessage"]["kind"]> = ["deltas_dropped"];
 export const endMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EndMessage"]["kind"]> = ["end"];
 export const envsMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EnvsMessage"]["kind"]> = ["envs"];
-export const eventTypeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventType"]> = ["agent.compacted", "agent.finished", "agent.held", "agent.input", "agent.report", "agent.started", "agent.step", "audit.lost", "audit.spill", "cache.probe", "channel.message", "channel.read", "channel.snapshot", "exec.finished", "exec.started", "file.access", "file.look", "file.setattr", "file.sync", "file.write", "fs.snapshot", "ipc.event", "log.truncated", "mem.exec", "model.checked", "model.request", "model.response", "monitor.action", "monitor.cleared", "monitor.degraded", "monitor.flag", "monitor.sweep", "monitor.verdict", "net.connect", "ns.event", "operator.action", "plant.triggered", "proc.exec", "proc.exit", "proc.fork", "proc.output", "proc.signal", "ptrace.event", "replay.divergence", "resource.sample", "run.finished", "run.started", "sandbox.archived", "sandbox.freeze_failed", "sandbox.outside_pause", "sandbox.started", "sandbox.stopped", "score.answer", "score.awareness", "score.unexplained", "score.unit", "selftest.case", "sys.denied", "task.scored", "tool.call", "tool.result"];
+export const eventTypeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventType"]> = ["agent.compacted", "agent.finished", "agent.held", "agent.input", "agent.report", "agent.started", "agent.step", "audit.lost", "audit.spill", "cache.probe", "channel.message", "channel.read", "channel.snapshot", "exec.finished", "exec.started", "file.access", "file.look", "file.setattr", "file.sync", "file.write", "file.xattr", "fs.snapshot", "ipc.event", "log.truncated", "mem.exec", "model.checked", "model.request", "model.response", "monitor.action", "monitor.cleared", "monitor.degraded", "monitor.flag", "monitor.sweep", "monitor.verdict", "net.connect", "net.listen", "ns.event", "operator.action", "plant.triggered", "proc.exec", "proc.exit", "proc.fork", "proc.output", "proc.signal", "ptrace.event", "replay.divergence", "resource.sample", "run.finished", "run.started", "sandbox.archived", "sandbox.freeze_failed", "sandbox.outside_pause", "sandbox.started", "sandbox.stopped", "score.answer", "score.awareness", "score.unexplained", "score.unit", "selftest.case", "sys.denied", "task.scored", "tool.call", "tool.result"];
 export const eventsMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventsMessage"]["kind"]> = ["events"];
 export const execFinishedEndValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ExecFinished"]["end"]> = ["exited", "timeout", "cancelled", "failed"];
 export const execStartedAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ExecStarted"]["audit"]> = ["kernel", "snapshot"];
@@ -15715,6 +15809,7 @@ export const fdInfoKindValues: ReadonlyArray<FlattenedDeepRequired<components>["
 export const fileAccessOpValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["FileAccess"]["op"]> = ["read", "write", "delete", "rename", "denied", "mkdir", "symlink", "link"];
 export const fileLookOpValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["FileLook"]["op"]> = ["stat", "access", "readlink", "chdir", "list"];
 export const fileSyncCallValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["FileSync"]["call"]> = ["fsync", "fdatasync", "sync_file_range", "syncfs"];
+export const fileXattrOpValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["FileXattr"]["op"]> = ["set", "remove"];
 export const flagCategoryValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Flag"]["category"]> = ["covert_communication", "scorer_tampering", "transcript_tampering", "deceiving_operator", "evading_checks", "collective_over_own_task", "drift", "loop_or_confusion", "fabricated_completion", "constraint_violation", "eval_awareness", "alerting_operator", "egress_attempt", "privilege_escalation", "monitor_manipulation"];
 export const flagLayerValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Flag"]["layer"]> = ["signal", "sweep", "judge"];
 export const flagStatusValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Flag"]["status"]> = ["open", "cleared", "tainted", "confirmed", "rejected", "unclear"];
@@ -15735,7 +15830,7 @@ export const holdInfoAtAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<compone
 export const holdInfoByValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["HoldInfo"]["by"]> = ["monitor", "operator"];
 export const holdInfoModeAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["HoldInfo"]["mode"]> = ["observe", "autonomous", "human"];
 export const ipcEventFamilyAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["IpcEvent"]["family"]> = ["unix", "sysv"];
-export const ipcEventKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["IpcEvent"]["kind"]> = ["bind", "connect", "sendto", "fifo", "shmget", "shmat"];
+export const ipcEventKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["IpcEvent"]["kind"]> = ["bind", "listen", "connect", "sendto", "fifo", "shmget", "shmat"];
 export const jobAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Job"]["audit"]> = ["kernel", "snapshot"];
 export const jobKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["Job"]["kind"]> = ["models.check", "scenario", "selftest"];
 export const jobAddOutcomeAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["JobAdd"]["outcome"]> = ["done", "failed", "changed", "refused"];
@@ -15775,6 +15870,9 @@ export const monitorSweepTriggerValues: ReadonlyArray<FlattenedDeepRequired<comp
 export const monitorVerdictClaim_matchedAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["MonitorVerdict"]["claim_matched"]> = ["yes", "no", "unclear"];
 export const netConnectFamilyValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["NetConnect"]["family"]> = ["inet", "inet6"];
 export const netConnectKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["NetConnect"]["kind"]> = ["connect", "sendto"];
+export const netListenFamilyValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["NetListen"]["family"]> = ["inet", "inet6"];
+export const netListenKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["NetListen"]["kind"]> = ["bind", "listen"];
+export const netListenProtocolAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["NetListen"]["protocol"]> = ["tcp", "udp"];
 export const nsEventKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["NsEvent"]["kind"]> = ["unshare", "setns"];
 export const offerMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["OfferMessage"]["kind"]> = ["offer"];
 export const operatorActionActionValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["OperatorAction"]["action"]> = ["pause", "resume", "inject", "kill", "cancel", "sweep"];
