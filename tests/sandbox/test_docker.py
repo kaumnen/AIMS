@@ -1687,7 +1687,10 @@ async def test_32_bit_calls_are_recorded(
         # Compat iovecs at buf+64 and buf+72: 5 bytes into buf+32, from the child's buf.
         "iov = (ctypes.c_uint32 * 4).from_address(buf + 64)\n"
         "iov[0], iov[1], iov[2], iov[3] = buf + 32, 5, buf, 5\n"
-        "ok = [int80(26, 16, child), int80(26, 17, child)]\n"
+        # A detach is refused with ESRCH until the tracee has stopped.
+        "ok = [int80(26, 16, child)]\n"
+        "os.waitpid(child, 0)\n"
+        "ok += [int80(26, 17, child)]\n"
         "ok += [int80(347, child, buf + 64, 1, buf + 72, 1, 0)]\n"
         "ok += [int80(118, fd), int80(148, fd), int80(344, fd), int80(314, fd, 0, 0, 0, 0, 0)]\n"
         "ok += [int80(272, fd, 0, 0, 0, 0, 4), int80(250, fd, 0, 0, 0, 4)]\n"
