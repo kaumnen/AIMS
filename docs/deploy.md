@@ -20,11 +20,12 @@ curl -fsSLO https://github.com/kaumnen/AIMS/releases/latest/download/compose.yam
   -O https://github.com/kaumnen/AIMS/releases/latest/download/compose.public.yaml \
   -O https://github.com/kaumnen/AIMS/releases/latest/download/Caddyfile
 echo "EXAMPLE_API_KEY=<your key>" > .env
+echo "AIMS_KEYS=EXAMPLE_API_KEY=https://api.example.com/v1" >> .env
 docker compose up -d
 docker compose exec server aims open --no-open
 ```
 
-The last command prints a sign-in link for http://localhost:8484. AIMS ships no models. Add them under **Settings** > **Models** > **Add a model**, or in the project config under **Settings** > **Config**. [Models](models.md) has the fields. The runner reads the keys from `.env`.
+The last command prints a sign-in link for http://localhost:8484. AIMS ships no models. Add them under **Settings** > **Models** > **Add a model**, or in the project config under **Settings** > **Config**. [Models](models.md) has the fields. The runner reads the keys and `AIMS_KEYS` from `.env`. After you edit `.env`, run `docker compose up -d` again. `docker compose restart` keeps the old values.
 
 | Service | Role |
 | --- | --- |
@@ -43,6 +44,7 @@ The last command prints a sign-in link for http://localhost:8484. AIMS ships no 
 | `.env` variable | Default | Meaning |
 | --- | --- | --- |
 | The variables named in `api_key_env` | | The model API keys, for the runner |
+| `AIMS_KEYS` | | The URLs each key may go to, such as `EXAMPLE_API_KEY=https://api.example.com/v1`. See [Keys](models.md#keys). |
 | `AIMS_SITE` | `http://localhost:8484` | The address people open |
 | `AIMS_AUDIT` | `auto` | The runner's audit: `auto`, `kernel` or `snapshot` |
 | `AIMS_IMAGE` | The release's image, pinned by digest | The AIMS image |
@@ -126,8 +128,11 @@ Then start a runner on another Docker host, with the server's version:
 ```sh
 uv tool install aims-bench==<version>
 export AIMS_TOKEN=<runner token> EXAMPLE_API_KEY=<your key>
+export AIMS_KEYS=EXAMPLE_API_KEY=https://api.example.com/v1
 aims runner --server https://<your AIMS_SITE>
 ```
+
+The runner tells the control plane its `AIMS_KEYS` entries, never the keys. It gets only the jobs those entries allow.
 
 Or run it as a container:
 
@@ -138,7 +143,7 @@ docker run -d --name aims-runner --restart unless-stopped --user root --stop-tim
   ghcr.io/kaumnen/aims:<version> runner --server https://<your AIMS_SITE>
 ```
 
-`runner.env` holds `AIMS_TOKEN` and the model keys. `--stop-timeout 180` gives the runner the same 3 minutes to stop as Compose. Docker's default is 10 seconds.
+`runner.env` holds `AIMS_TOKEN`, the model keys and `AIMS_KEYS`, without quotes. `docker run --env-file` keeps quotes as part of a value. `--stop-timeout 180` gives the runner the same 3 minutes to stop as Compose. Docker's default is 10 seconds.
 
 > [!IMPORTANT]
 > A runner stops when the control plane answers 401 or 403 five times in a row, as for a wrong or revoked token. It stops its runs as for a first Ctrl-C and exits 1 with the reason. A container with a restart policy starts again and stops the same way. Give it a valid token or remove it.

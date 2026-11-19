@@ -112,12 +112,16 @@ The control plane keeps an audit log in `server.sqlite`. It records each change 
 - **Add a model** in the app reads a model server's list of models from the control plane, with no key. `aims models add` does the same from its own machine. The read may go to any http or https URL, loopback and private ones too, for local model servers. It follows no redirects.
 - That read refuses a host when any address it resolves to is link-local or a cloud metadata service, such as `169.254.169.254`. The check runs as each connection opens. The connection then goes only to the addresses it checked. Through a proxy, the proxy resolves the host again. A name that the control plane or the CLI's machine cannot resolve goes to the proxy unchecked.
 - An operator sees the HTTP status or the error. From a list of models they see the count and up to 20 ids like the one they typed. They never see the body.
-- The guard covers only this read. The model check and every run call a profile's URL with its key, from a runner or the CLI's machine.
+- The guard covers only this read. The model check and every run call a profile's URL with its key, from a runner or the CLI's machine. A key goes only to the URLs that `AIMS_KEYS` lists for it.
 
 ## Secrets and data
 
 - Model API keys stay on the runner, in its environment. With Compose they go in `.env`.
-- The control plane sees only the names of those variables.
+- `AIMS_KEYS` on the runner lists the URLs each key may go to. AIMS sends a key nowhere else. It reads no other env var for a model's URL or key. See [Keys](https://github.com/kaumnen/AIMS/blob/main/docs/models.md#keys).
+- Only the environment and `--key` set `AIMS_KEYS`. No config layer and no edit in the app can change it.
+- A profile with a `base_url` and no key needs no entry. The runner calls its URL without a key.
+- The control plane sees the names of the listed variables and the URLs listed for them. It never sees a key.
+- A profile URL with a user name or password is refused, since runs record the URL.
 - The agent can read a scenario's `env` values. Never put real credentials there.
 - Runs hold full prompts, model output and file contents. They are stored unencrypted in the data directories.
 
@@ -159,6 +163,7 @@ Check these before you deploy. Each line sums up a rule above.
 
 - [ ] Runners on a dedicated machine or VM
 - [ ] No other secrets or production access on runner hosts
+- [ ] `AIMS_KEYS` lists only each key's own provider URLs
 - [ ] Control plane on loopback or behind TLS
 - [ ] Operator tokens only for people you trust
 - [ ] No real credentials in scenario `env`

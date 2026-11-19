@@ -2,6 +2,7 @@
 
 - [Profiles](#profiles)
 - [Profile fields](#profile-fields)
+- [Keys](#keys)
 - [List prices](#list-prices)
 - [Add a model](#add-a-model)
 - [Headers and extra fields](#headers-and-extra-fields)
@@ -20,7 +21,7 @@ backend = "chat"
 base_url = "https://api.example.com/v1"
 model = "vendor/model-name"
 weights = "vendor/model-name"
-api_key_env = "MY_API_KEY"
+api_key_env = "EXAMPLE_API_KEY"
 reasoning = "none"
 price = { input = 1.00, cached = 0.10, output = 4.00 }
 
@@ -39,8 +40,8 @@ judge = "my-monitor"
 - `aims scenario check` passes with unset roles. It notes each one and skips the estimate.
 - `extends = "<profile>"` starts a profile from another one.
 - A table named after a profile of a lower config layer merges into it key by key.
-- Keys come from the environment only. A profile names the variable, never the key.
-- `aims models list` shows the profiles, the roles, the source of each price and which keys are set.
+- Keys come from the environment only. A profile names the variable, never the key. `AIMS_KEYS` lists the URLs each key may go to. See [Keys](#keys).
+- `aims models list` shows the profiles, the roles and the source of each price. It says whether each profile can be called: `ready`, the `AIMS_KEYS` entry it needs or the variable that is not set.
 
 ## Profile fields
 
@@ -50,7 +51,7 @@ judge = "my-monitor"
 | `base_url` or `base_url_env` | The API's address, or the variable that holds it. Set exactly one. |
 | `model` | The model's id at the provider |
 | `weights` | The trained model behind it. Profiles that serve one model share it. The monitor refuses to watch an agent on its own weights. |
-| `api_key_env` | The variable that holds the key. Leave it out for a server that takes none. |
+| `api_key_env` | The variable that holds the key. Leave it out for a server that takes none. [`AIMS_KEYS`](#keys) lists where the key may go. |
 | `reasoning` | What the model sends of its reasoning: `none`, `summary` or `full` |
 | `effort` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max` |
 | `effort_kwarg` | `chat` only. A chat template argument that carries the effort instead of `reasoning_effort`. |
@@ -71,6 +72,53 @@ judge = "my-monitor"
 | `retries` | `attempts`, `backoff`, `max`, `rate_limited`. See [Rate limits](#rate-limits). |
 
 A scenario can override `effort`, `max_output_tokens` and `sampling` for one of its agents.
+
+## Keys
+
+A profile's key goes only to the URLs that the `AIMS_KEYS` env var lists for it:
+
+```sh
+export EXAMPLE_API_KEY=<your key>
+export AIMS_KEYS=EXAMPLE_API_KEY=https://api.example.com/v1
+```
+
+Commas separate the entries. A name may repeat for more URLs. Each profile needs the entry that fits how it reads its URL and key:
+
+| The profile sets | Entry | Meaning |
+| --- | --- | --- |
+| `base_url` and `api_key_env` | `KEY=URL` | The key may go to that URL and the paths under it. |
+| `base_url_env` and `api_key_env` | `KEY=env:VAR` | The key may go to the URL in `VAR`. |
+| `base_url_env` only | `env:VAR` | AIMS may read the URL in `VAR`. |
+| `base_url` only | None | AIMS calls the URL without a key. |
+
+Here `KEY` and `VAR` stand for the variables the profile names.
+
+- AIMS reads no other env var for a model's URL or key.
+- A URL entry covers only profiles with a `base_url`. An `env:` entry covers only profiles that read that variable.
+- The scheme, host and port must match. The path matches whole segments, so `/v1` does not cover `/v10`.
+- An entry with a user name, password, query, fragment or `%` in its URL is refused.
+- A profile URL with a user name or password is refused too, since the run records the URL.
+- A variable is a key or a URL variable, never both.
+- Names that start with `AIMS_` are AIMS's own. No profile can read or send them.
+- In an env file, write the value without quotes. `docker run --env-file` keeps quotes as part of it.
+
+`--key <entry>` adds an entry for one command. Repeat it for more. `aims run`, `aims monitor`, `aims score`, `aims models check`, `aims models add`, `aims runner` and `aims ui` take it. The runner that `aims ui` starts gets the entries too.
+
+A call whose entry is missing fails before any request. The error names the entry, the same whether the variable is set or not:
+
+```text
+error: profile my-agent: AIMS_KEYS lacks EXAMPLE_API_KEY=https://api.example.com/v1; add it there or pass --key EXAMPLE_API_KEY=https://api.example.com/v1
+```
+
+Config files cannot set `AIMS_KEYS`. No config layer and no edit in the app can change it.
+
+### Runners
+
+- A runner reads `AIMS_KEYS` when it starts. Restart it after a change. With Compose, run `docker compose up -d` after you edit `.env`. `docker compose restart` keeps the old value.
+- A runner tells the control plane its entries whose variables are set. It sends names and URLs, never values.
+- The control plane offers a runner only the jobs whose profiles its entries allow. The runner checks again before each call.
+- A new run, model check, review or score that no runner allows is refused with the entry to add. A queued job waits and names the entry it needs.
+- **Settings** > **Models** shows each profile's entry and the runners that allow it. **Settings** > **Runners** lists each runner's entries.
 
 ## List prices
 
@@ -138,7 +186,7 @@ aims models add example/model-name --base-url https://api.example.com/v1 --key-e
 
 1. It checks the id against the server's list of models, read without a key, when the server has one. It skips a host on a link-local or cloud metadata address, with a note.
 2. A LiteLLM row picked with `--litellm` gives the price key, the context size and the output cap.
-3. It sends the model a few small requests, as `aims models check` does. It sets `reasoning` to what the model sent.
+3. It sends the model a few small requests, as `aims models check` does. It sets `reasoning` to what the model sent. These need the profile's entry in [`AIMS_KEYS`](#keys).
 4. It prints the profile to stdout and its notes to stderr.
 
 The values here are placeholders:
@@ -170,14 +218,15 @@ max_output_tokens = 16384
 | `--unset <key>` | Removes a field the draft sets. Repeatable. |
 | `--write` | Adds the profile to the project's `aims.toml`. Makes the file when there is none. Refuses a name that is taken. |
 | `--role <role>` | Also sets a role under `[roles]`: `agent`, `sweep` or `judge`. Repeatable. Needs `--write`. Sweep and judge need structured output. Names the profile that had the role. |
-| `--no-check` | Skips the check. `reasoning` stays a guess. |
+| `--key <entry>` | Adds an entry to `AIMS_KEYS` for the check. Repeatable. |
+| `--no-check` | Skips the check. `reasoning` stays a guess. Needs no `AIMS_KEYS` entry. |
 | `--config <path>` | An `aims.toml` to use instead of the project's |
 | `--runs-dir <dir>` | Where the check is recorded as a run. `runs` by default. |
 
 > [!NOTE]
 > The server may bill the check's few small calls. When a test fails, the command writes nothing and exits 1. Fix the profile with `--set` or pass `--no-check`. A model without tool calls fails the `tools` test, so add it with `--no-check`.
 
-Operators can do the same in the app under **Settings** > **Models** > **Add a model**. The profile text can be edited first. The app saves the profile, then sets the ticked roles once its check passes. A later check does not set them. A profile whose check failed can be removed from its row.
+Operators can do the same in the app under **Settings** > **Models** > **Add a model**. The profile text can be edited first. The check runs on a runner whose `AIMS_KEYS` allows the profile. When no runner does, Add and check saves nothing and names the entry. The app saves the profile, then sets the ticked roles once its check passes. A later check does not set them. A profile whose check failed can be removed from its row.
 
 Then run with it:
 

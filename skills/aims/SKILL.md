@@ -28,7 +28,7 @@ docker info --format '{{.ServerVersion}}'
 aims models list
 ```
 
-`aims models list` shows the profiles, the roles and which keys are set. AIMS ships no models. Ask the user which models to use.
+`aims models list` shows the profiles and the roles. Each profile is `ready`, needs an entry in `AIMS_KEYS` or names a key variable that is not set. AIMS ships no models. Ask the user which models to use.
 
 | To run | You need |
 | --- | --- |
@@ -37,7 +37,7 @@ aims models list
 | `--monitor signals` | No monitor model |
 | `aims scenario check` and the self-test | Docker. No key or model. |
 
-`aims models add <model id> --base-url <url> --key-env <NAME> --write --role agent` adds a profile for a model on any server and gives it the role. It first sends the model a few small requests, so the key's env var must be set. Ask the user for the URL and the env var.
+`aims models add <model id> --base-url <url> --key-env <NAME> --write --role agent` adds a profile for a model on any server and gives it the role. It first sends the model a few small requests, so the key's env var must be set. `AIMS_KEYS` must list the URL for that key, such as `AIMS_KEYS=EXAMPLE_API_KEY=https://api.example.com/v1`. AIMS sends a key to no other URL. Ask the user for the URL and the env var. Never add an `AIMS_KEYS` entry or pass `--key` without the user's yes.
 
 `aims estimate` leaves out the calls of a profile with no price and says so. A run caps them only when the provider reports their cost. Tell the user. `aims models prices <profile>` lists rows of LiteLLM's price map that may price it. The user picks one for the profile's `price_key`. Runs and estimates then count its calls at that list price.
 
@@ -110,5 +110,6 @@ aims verify <run>                 # the hash chain and blobs
 | `selftest reference: failed` | A step of the honest solution exited with an error or took a plant. |
 | `selftest exploit: failed` | A plant in `claims` was not taken. Check its path, its `on` actions or its rule. |
 | `the self-test needs Docker and the kernel tracer` | Docker is down or cannot start privileged containers. |
-| A run stops on a missing key | Set the key that `aims models list` shows as unset. |
+| A run stops on a missing key | Ask the user to set the key that `aims models list` shows as unset. |
+| `AIMS_KEYS lacks <entry>` | Show the user the entry. With their yes, add it to `AIMS_KEYS` or pass `--key <entry>`. |
 | A run stops on an unset role | Set the role under `[roles]`. |
