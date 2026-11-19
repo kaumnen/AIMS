@@ -53,7 +53,7 @@ flowchart LR
 > [!WARNING]
 > Agents run shell commands in Docker on your host. The runner has root through the Docker socket and starts a privileged kernel tracer. Use a dedicated machine or VM. See [SECURITY.md](https://github.com/kaumnen/AIMS/blob/main/SECURITY.md).
 
-You need Docker, [uv](https://docs.astral.sh/uv/) and a model API key. AIMS has no built-in models.
+You need Docker, [uv](https://docs.astral.sh/uv/) and a model API key. AIMS has no built-in models. The kernel tracer needs a Docker host on Linux 6.11 or newer. [Host kernel](https://github.com/kaumnen/AIMS/blob/main/docs/deploy.md#host-kernel) lists the tested ones.
 
 Install the CLI.
 
@@ -184,7 +184,7 @@ Open the printed sign-in link. Add your models under **Settings** > **Models** >
 | [The monitor](https://github.com/kaumnen/AIMS/blob/main/docs/monitor.md) | Layers, budgets, oversight and categories |
 | [Runs and reports](https://github.com/kaumnen/AIMS/blob/main/docs/runs.md) | Logs, forks, scores, series, deletion and reports |
 | [Models](https://github.com/kaumnen/AIMS/blob/main/docs/models.md) | Profile fields, prices, adding a model and headers |
-| [Deploy](https://github.com/kaumnen/AIMS/blob/main/docs/deploy.md) | TLS, more runners, proxies and offline hosts |
+| [Deploy](https://github.com/kaumnen/AIMS/blob/main/docs/deploy.md) | Host kernel, TLS, more runners, proxies and offline hosts |
 | [MCP server](https://github.com/kaumnen/AIMS/blob/main/docs/mcp.md) | Tools, tokens and the cost question for MCP clients |
 | [SECURITY.md](https://github.com/kaumnen/AIMS/blob/main/SECURITY.md) | The security model and how to report a vulnerability |
 | [CONTRIBUTING.md](https://github.com/kaumnen/AIMS/blob/main/CONTRIBUTING.md) | Setup, tests and CI |

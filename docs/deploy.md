@@ -1,6 +1,7 @@
 # Deploy
 
 - [Docker Compose](#docker-compose)
+- [Host kernel](#host-kernel)
 - [Public address](#public-address)
 - [More runners](#more-runners)
 - [Proxies](#proxies)
@@ -49,6 +50,58 @@ The last command prints a sign-in link for http://localhost:8484. AIMS ships no 
 
 > [!NOTE]
 > Keep the named volumes from `compose.yaml`. The server runs as uid 10001. A new named volume takes that owner from the image. A host directory does not.
+
+## Host kernel
+
+The kernel tracer runs on the kernel of the runner's Docker host. It needs:
+
+- Linux 6.11 or newer
+- An x86_64 or aarch64 CPU
+- BTF type data in `/sys/kernel/btf/vmlinux`
+- cgroup v2
+- Rootful Docker, since the tracer runs privileged in the host's PID namespace
+- No kernel lockdown in `confidentiality` mode
+
+The runner checks the first four when it starts the tracer. To check a host yourself:
+
+```sh
+docker info --format '{{.KernelVersion}} {{.Architecture}} {{.CgroupVersion}}'
+ls /sys/kernel/btf/vmlinux
+```
+
+| Host | Kernel | CPU | Kernel audit |
+| --- | --- | --- | --- |
+| Ubuntu 26.04 | 7.0 | x86_64 | Yes |
+| Ubuntu 24.04 with the HWE kernel | 6.11, 6.14, 6.17, 7.0 | x86_64 | Yes |
+| Debian 13 | 6.12 | x86_64 | Yes |
+| Docker Desktop on a Mac with Apple silicon | 7.0 | aarch64 | Yes |
+| Ubuntu 24.04 | 6.8 | x86_64 | No, the kernel is too old |
+
+On each host marked Yes the full test suite passed with the tracer.
+
+Kernels from 6.11 to 7.0 that the table does not list are untested. aarch64 is tested on 7.0 only. On a kernel newer than 7.0 the runner warns that the tracer was not tested there.
+
+> [!TIP]
+> Ubuntu 24.04 ships Linux 6.8. Its HWE kernel is new enough:
+>
+> ```sh
+> sudo apt install linux-generic-hwe-24.04
+> sudo reboot
+> ```
+
+On a host that cannot run the tracer, the audit setting decides:
+
+| `--audit` or `AIMS_AUDIT` | What happens |
+| --- | --- |
+| `auto` | The runner logs why and uses snapshot audit. It takes no kernel runs or self-tests. |
+| `kernel` | The runner refuses to start. |
+| `snapshot` | The tracer never starts. |
+
+For example:
+
+```text
+kernel audit unavailable, using snapshot audit: needs Linux 6.11 or newer; the Docker host runs 6.8.0-147-generic
+```
 
 ## Public address
 
