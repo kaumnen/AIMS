@@ -90,6 +90,39 @@ ConfigOption = Annotated[
 RunsDirOption = Annotated[
     Path, typer.Option(file_okay=False, help="Directory that holds the runs.")
 ]
+
+
+def _keys(given: list[str] | None) -> list[str] | None:
+    """Add the --key entries to AIMS_KEYS, so a runner the command starts has them too, and
+    check the whole list before the command runs. Exit 1 with the problem."""
+    import os
+
+    from aims.models.keys import KEYS, KeysError, parse
+
+    entries = given or []
+    try:
+        for entry in entries:
+            parse(entry, "--key")
+        text = ",".join(t for t in (os.environ.get(KEYS, ""), *entries) if t.strip())
+        parse(text)
+    except KeysError as e:
+        _fail(str(e))
+    if entries:
+        os.environ[KEYS] = text
+    return given
+
+
+KeyOption = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--key",
+        metavar="NAME=URL",
+        callback=_keys,
+        help="Let the key in env var NAME go to URL and the paths under it. NAME=env:VAR lets it"
+        " go to the URL in env var VAR. env:VAR lets a profile with no key read its URL from VAR."
+        " Repeat for more. Adds to AIMS_KEYS.",
+    ),
+]
 SCENARIO_HELP = "The scenario file, its directory, or builtin/<name> for one that ships with AIMS."
 
 
@@ -344,17 +377,22 @@ def check_plants(
 
 @models_app.command("list")
 def models_list(config: ConfigOption = None) -> None:
-    """Show the model profiles, their roles and whether their keys are set."""
-    import os
+    """Show the model profiles, their roles and whether AIMS_KEYS and the env let each be
+    called."""
+    from aims.models import KeyRefused, ProfileError
 
     models = _settings(config).models
     roles = {}
     for role, name in models.roles.model_dump(exclude_none=True).items():
         roles.setdefault(name, []).append(role)
     for name, p in sorted(models.profiles.items()):
-        envs = [e for e in (p.api_key_env, p.base_url_env) if e]
-        unset = [e for e in envs if not os.environ.get(e)]
-        state = f"unset {', '.join(unset)}" if unset else "ready"
+        try:
+            p.api_key(p.url())
+            state = "ready"
+        except KeyRefused as e:
+            state = f"needs {e.entry} in AIMS_KEYS"
+        except ProfileError as e:
+            state = str(e).removeprefix(f"profile {name}: ")
         role = f"  [{', '.join(roles[name])}]" if name in roles else ""
         price = _price_source(p)
         _echo(f"{name}  {p.backend}  {p.model}  reasoning {p.reasoning}  {price}  {state}{role}")
@@ -471,6 +509,7 @@ def models_check(
     ] = None,
     config: ConfigOption = None,
     runs_dir: RunsDirOption = Path("runs"),
+    key: KeyOption = None,
 ) -> None:
     """Call each provider with small requests and report what works. Recorded as a run."""
     import asyncio
@@ -486,8 +525,7 @@ def models_check(
     try:
         chosen = to_check(models, profiles or [], monitor=calls, extract=extract)
         for p in chosen:
-            p.url()
-            p.api_key()
+            p.api_key(p.url())
     except ProfileError as e:
         _echo(f"error: {e}", err=True)
         raise typer.Exit(1) from None
@@ -582,6 +620,7 @@ def models_add(
     ] = False,
     config: ConfigOption = None,
     runs_dir: RunsDirOption = Path("runs"),
+    key: KeyOption = None,
 ) -> None:
     """Draft a profile for a model on any server, check it with a few small requests, then
     print it or add it. The check sets what the model sends of its reasoning. Recorded as a
@@ -591,7 +630,7 @@ def models_add(
     from typing import cast, get_args
 
     from aims.events import ModelBackend
-    from aims.models import ModelsConfig, ProfileError
+    from aims.models import KeyRefused, ModelsConfig, ProfileError
     from aims.models.add import AddError, draft, gather
     from aims.models.listprice import SOURCE, PriceLists
     from aims.models.profiles import ROLES
@@ -663,10 +702,10 @@ def models_add(
     if not no_check:
         profile = found.profile
         try:
-            profile.url()
-            profile.api_key()
+            profile.api_key(profile.url())
         except ProfileError as e:
-            _fail(f"{e}; set it, or pass --no-check to skip the check")
+            fix = ", or" if isinstance(e, KeyRefused) else "; set it, or"
+            _fail(f"{e}{fix} pass --no-check to skip the check")
         typer.echo(f"checking {found.name} with a few small requests", err=True)
         models = ModelsConfig(profiles={found.name: profile})
         try:
@@ -1270,6 +1309,7 @@ def run(
         ),
     ] = None,
     budget: BudgetOption = None,
+    key: KeyOption = None,
 ) -> None:
     """Run a scenario, or fork a recorded run at a step.
 
@@ -1412,7 +1452,7 @@ async def _run(**o: Any) -> int:
     from aims.aio import every, in_turn
     from aims.channels import archives
     from aims.events import LocalEventStore, Series
-    from aims.models import ProfileError
+    from aims.models import KeyRefused, ProfileError
     from aims.models.listprice import PriceLists
     from aims.monitor.config import MonitorConfigError
     from aims.node.client import ControlClient
@@ -1574,11 +1614,11 @@ async def _run(**o: Any) -> int:
         if monitor is not None:
             for p in monitor_profiles(monitor).values():
                 try:
-                    p.url()
-                    p.api_key()
+                    p.api_key(p.url())
                 except ProfileError as e:
+                    fix = ", or" if isinstance(e, KeyRefused) else "; set it, or"
                     return fail(
-                        f"the monitor's {e}; set it, or use a signals-only monitor, which"
+                        f"the monitor's {e}{fix} use a signals-only monitor, which"
                         ' needs no key: preset = "signals" under [monitor] in aims.toml,'
                         " monitor: {preset: signals} in the scenario, or --monitor signals"
                     )
@@ -2078,6 +2118,7 @@ def ui(
             " at start and once a day; a run in use stays. The local runner gets it too.",
         ),
     ] = None,
+    key: KeyOption = None,
 ) -> None:
     """Serve the control plane and the UI, with a local runner."""
     import asyncio
@@ -2266,6 +2307,7 @@ def runner_cmd(
         typer.Option("--tls-ca", exists=True, help="CA or certificate to trust for the server."),
     ] = None,
     config: ConfigOption = None,
+    key: KeyOption = None,
 ) -> None:
     """Take jobs from a control plane and run them on this Docker host."""
     import asyncio
@@ -2553,6 +2595,7 @@ def monitor_cmd(
     no_server: Annotated[
         bool, typer.Option("--no-server", help="Do not ship to a local `aims ui`.")
     ] = False,
+    key: KeyOption = None,
 ) -> None:
     """Feed sealed runs through the monitor again, each into a new run of kind monitor.
 
@@ -2683,8 +2726,7 @@ async def _monitor_runs(**o: Any) -> int:
                 laid, listing = await priced_review(settings, monitor_of(settings.models, 1), lists)
                 resolved = monitor_of(laid.models, o["samples"])
                 for p in monitor_profiles(resolved).values():
-                    p.url()
-                    p.api_key()
+                    p.api_key(p.url())
             except (RunError, MonitorConfigError, ProfileError, TextError) as e:
                 return fail(f"{run_id}: {e}")
             costs.append(
@@ -3599,6 +3641,7 @@ def score_cmd(
     config: ConfigOption = None,
     runs_dir: RunsDirOption = Path("runs"),
     json_out: Annotated[bool, typer.Option("--json", help="Print JSON.")] = False,
+    key: KeyOption = None,
 ) -> None:
     """Score a sealed run against its truth file: the plants each agent took, which monitor
     layers caught it and when, the flags no plant explains, whether each agent said it thought

@@ -363,6 +363,7 @@ def test_aims_monitor_prints_its_estimate_and_refuses_above_the_limit_unless_yes
 ) -> None:
     root, origin = runs
     monkeypatch.setenv("MODEL_API_KEY", "unused")
+    monkeypatch.setenv("AIMS_KEYS", "MODEL_API_KEY=https://api.example.com/v1")
     base = ["monitor", origin, "--runs-dir", str(root), "--no-server", "--monitor", "standard"]
     result = invoke(*base, "--samples", "5", "--json")
     assert result.exit_code == 1, result.output

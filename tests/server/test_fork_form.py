@@ -498,6 +498,7 @@ def test_aims_run_is_watched_by_the_monitor_its_estimate_prices(
     monkeypatch.setattr(DockerBackend, "open", backend)
     monkeypatch.setattr(Runner, "run", run)
     monkeypatch.setenv("MODEL_API_KEY", "key")
+    monkeypatch.setenv("AIMS_KEYS", "MODEL_API_KEY=https://api.example.com/v1")
 
     def ceiling(*args: str) -> float:
         common = ["--config", str(config), "--runs-dir", str(runs), "--no-server"]
@@ -639,6 +640,7 @@ def test_aims_run_watches_a_cut_fork_with_the_monitor_its_estimate_prices(
     monkeypatch.setattr(DockerBackend, "open", backend)
     monkeypatch.setattr(Runner, "run", run)
     monkeypatch.setenv("MODEL_API_KEY", "key")
+    monkeypatch.setenv("AIMS_KEYS", "MODEL_API_KEY=https://api.example.com/v1")
     args = ["run", "--replay", run_id, "--fork-at", "a:3", "--config", str(config)]
     args += ["--runs-dir", str(runs), "--no-server", "--monitor", "standard", "--json", "--yes"]
     result = CliRunner().invoke(app, args)

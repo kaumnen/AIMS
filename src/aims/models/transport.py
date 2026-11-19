@@ -2,12 +2,27 @@ import base64
 import contextvars
 import json
 import time
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Iterable, Sequence
 from dataclasses import dataclass, field
 
 import httpx2
 
 DROPPED_HEADERS = frozenset({"openai-organization", "openai-project"})
+# The headers the OpenAI SDK sets for a request, besides its x-stainless- ones. It also adds
+# headers from the env, such as OPENAI_CUSTOM_HEADERS, an Authorization header among them.
+SDK_HEADERS = frozenset(
+    {
+        "accept",
+        "accept-encoding",
+        "authorization",
+        "connection",
+        "content-length",
+        "content-type",
+        "host",
+        "transfer-encoding",
+        "user-agent",
+    }
+)
 UNRECORDED_HEADERS = frozenset({"set-cookie"})
 
 
@@ -59,17 +74,24 @@ def decode_chunks(data: bytes) -> list[tuple[int, bytes]]:
 
 class Recorder(httpx2.AsyncBaseTransport):
     """Sends through `inner` and records the exchange of the attempt the caller set in
-    `current`. Asks for an identity encoding so recorded bytes read as sent."""
+    `current`. Asks for an identity encoding so recorded bytes read as sent. A request carries
+    only the SDK's own headers, those named in `headers` and `key` as its bearer token."""
 
-    def __init__(self, inner: httpx2.AsyncBaseTransport) -> None:
+    def __init__(
+        self, inner: httpx2.AsyncBaseTransport, *, key: str = "none", headers: Iterable[str] = ()
+    ) -> None:
         self.inner = inner
+        self.authorization = f"Bearer {key}"
+        self.allowed = SDK_HEADERS | {name.lower() for name in headers}
 
     async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
         exchange = current.get()
         if exchange is None:
             raise RuntimeError("model requests must go through ModelClient")
-        for name in DROPPED_HEADERS:
-            request.headers.pop(name, None)
+        for name in {name.lower() for name in request.headers}:
+            if name not in self.allowed and not name.startswith("x-stainless-"):
+                del request.headers[name]
+        request.headers["authorization"] = self.authorization
         request.headers["accept-encoding"] = "identity"
         exchange.sent = time.monotonic()
         response = await self.inner.handle_async_request(request)

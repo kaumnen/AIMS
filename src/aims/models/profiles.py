@@ -18,6 +18,7 @@ from pydantic import (
 )
 
 from aims.events import ModelBackend, ReasoningKind
+from aims.models.keys import KEYS, VIA, Keys, KeysError, keys, own, place
 from aims.models.transport import DROPPED_HEADERS
 from aims.stored import STORED, Known
 
@@ -28,6 +29,17 @@ Role = Literal["agent", "sweep", "judge"]
 
 class ProfileError(Exception):
     pass
+
+
+class KeyRefused(ProfileError):
+    """AIMS_KEYS does not let a profile read its URL var or send its key to its URL. `entry`
+    is the AIMS_KEYS entry that would."""
+
+    def __init__(self, profile: str, entry: str) -> None:
+        super().__init__(
+            f"profile {profile}: {KEYS} lacks {entry}; add it there or pass --key {entry}"
+        )
+        self.entry = entry
 
 
 def _is_url(value: str) -> bool:
@@ -41,9 +53,19 @@ def _is_url(value: str) -> bool:
         return False
 
 
-def _url(value: str) -> str:
+def _userinfo(value: str) -> bool:
+    return bool(httpx2.URL(value).userinfo)
+
+
+_USERINFO = "a user name or password, which the run would record; put the key in api_key_env"
+
+
+def _url(value: str, info: ValidationInfo) -> str:
     if not _is_url(value):
         raise ValueError(f"{value!r} is not an http or https URL")
+    # a run recorded before the check still reads back
+    if info.context != STORED and _userinfo(value):
+        raise ValueError(f"the URL holds {_USERINFO}")
     return value.rstrip("/")
 
 
@@ -212,6 +234,9 @@ class Profile(_Strict):
     """How to reach one model. `weights` names the trained model behind it, so two profiles
     that serve the same model under different terms share it."""
 
+    # A field's error leaves out what it was given, such as a password in a URL.
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
+
     name: str
     backend: ModelBackend
     base_url: Url | None = None
@@ -283,28 +308,60 @@ class Profile(_Strict):
     def group(self) -> str:
         return self.limits.group or self.name
 
+    def _keys(self, env: Mapping[str, str]) -> Keys:
+        """The AIMS_KEYS of `env`, once neither of the profile's env vars is one of AIMS's own."""
+        for name in (self.base_url_env, self.api_key_env):
+            if name is not None and own(name):
+                raise ProfileError(
+                    f"profile {self.name}: {name} starts with AIMS_, which AIMS keeps for its own"
+                    " variables; name another variable"
+                )
+        try:
+            return keys(env)
+        except KeysError as e:
+            raise ProfileError(str(e)) from None
+
     def url(self, env: Mapping[str, str] = os.environ) -> str:
+        """The URL to call. A URL var is read only when AIMS_KEYS lists it, so the answer for
+        one it does not list is the same whether the var is set or not."""
         if self.base_url is not None:
             return self.base_url
-        assert self.base_url_env is not None
-        value = env.get(self.base_url_env)
+        var = self.base_url_env
+        assert var is not None
+        if var not in self._keys(env).urls:
+            key = self.api_key_env
+            raise KeyRefused(self.name, f"{VIA}{var}" if key is None else f"{key}={VIA}{var}")
+        value = env.get(var)
         if not value:
-            raise ProfileError(f"profile {self.name}: {self.base_url_env} is not set")
+            raise ProfileError(f"profile {self.name}: {var} is not set")
         # the variable may hold a secret, so the error names it and never tells its value
         if not _is_url(value):
-            raise ProfileError(
-                f"profile {self.name}: {self.base_url_env} does not hold an http or https URL"
-            )
+            raise ProfileError(f"profile {self.name}: {var} does not hold an http or https URL")
+        if _userinfo(value):
+            raise ProfileError(f"profile {self.name}: {var} holds {_USERINFO}")
         return value.rstrip("/")
 
-    def api_key(self, env: Mapping[str, str] = os.environ) -> str | None:
-        if self.api_key_env is None:
+    def api_key(self, url: str, env: Mapping[str, str] = os.environ) -> str | None:
+        """The key to send to `url`, None for a profile with no key. The key's var is read only
+        once AIMS_KEYS lets it go to `url`, so the answer for one it does not let is the same
+        whether the var is set or not."""
+        name = self.api_key_env
+        if name is None:
             return None
-        value = env.get(self.api_key_env)
+        allowed = self._keys(env)
+        if place(url) is None:
+            raise ProfileError(
+                f"profile {self.name}: AIMS sends no key to a URL with a user name, password,"
+                " query, fragment or % in its path"
+            )
+        if not allowed.lets(name, url, env):
+            to = f"{VIA}{self.base_url_env}" if self.base_url is None else self.base_url
+            raise KeyRefused(self.name, f"{name}={to}")
+        value = env.get(name)
         if not value:
-            raise ProfileError(f"profile {self.name}: {self.api_key_env} is not set")
+            raise ProfileError(f"profile {self.name}: {name} is not set")
         if problem := _unsendable(value):
-            raise ProfileError(f"profile {self.name}: {self.api_key_env} holds {problem}")
+            raise ProfileError(f"profile {self.name}: {name} holds {problem}")
         return value
 
     def apply(self, overrides: Overrides | None) -> Profile:

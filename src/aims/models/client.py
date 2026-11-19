@@ -269,11 +269,10 @@ class ModelClient:
             api_key = "replay"
         else:
             inner = self._transport or Outbound()
-            api_key = profile.api_key(self.env) or "none"
+            api_key = profile.api_key(url, self.env) or "none"
         timeout = httpx2.Timeout(connect=t.connect, read=t.stall, write=t.stall, pool=t.wall)
-        http = httpx2.AsyncClient(
-            transport=Recorder(inner), timeout=timeout, follow_redirects=False
-        )
+        recorder = Recorder(inner, key=api_key, headers=profile.headers)
+        http = httpx2.AsyncClient(transport=recorder, timeout=timeout, follow_redirects=False)
         client = AsyncOpenAI(
             api_key=api_key,
             base_url=url,

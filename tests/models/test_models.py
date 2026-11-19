@@ -1074,7 +1074,8 @@ async def test_a_rate_limit_pauses_every_profile_on_the_account(store: LocalEven
         profiles={p.name: p for p in (first, other, same)},
         roles=Roles(agent="first", sweep="first", judge="first"),
     )
-    env = {"KEY_A": "a", "KEY_B": "b"}
+    keys = "KEY_A=http://model.invalid/v1,KEY_B=http://model.invalid/v1"
+    env = {"KEY_A": "a", "KEY_B": "b", "AIMS_KEYS": keys}
     transport = httpx2.MockTransport(handler)
     limiters = Limiters()
     agent = ModelClient(store, run_id, models, transport=transport, env=env, limiters=limiters)
@@ -1238,9 +1239,10 @@ agent = "local"
     assert (local.backend, local.model, local.api_key_env) == ("chat", "served-model", "LOCAL_KEY")
     assert local.base_url_env is None
     served = models.get("served")
-    with pytest.raises(ProfileError, match="SERVED_URL"):
-        served.url({})
-    assert served.url({"SERVED_URL": "https://x.example/v1/"}) == "https://x.example/v1"
+    listed = {"AIMS_KEYS": "env:SERVED_URL"}
+    with pytest.raises(ProfileError, match="SERVED_URL is not set"):
+        served.url(listed)
+    assert served.url(listed | {"SERVED_URL": "https://x.example/v1/"}) == "https://x.example/v1"
     assert models.role("agent").name == "local"
     assert models.role("judge").name == "monitor-model"
     assert models.snapshot(["local"]) == {"local": local.model_dump(mode="json")}
@@ -1261,6 +1263,7 @@ agent = "local"
 
 CANARY = "CANARY-7f3a"
 KEY = f"sk-{CANARY}"
+LISTED = {"AIMS_KEYS": "TEST_KEY=http://model.invalid/v1"}
 
 
 def told(e: BaseException) -> str:
@@ -1290,7 +1293,7 @@ def holding(root: Path, text: str) -> list[Path]:
 def test_an_env_url_that_is_not_one_is_refused_without_its_value(value: str) -> None:
     p = profile(base_url=None, base_url_env="SERVED_URL")
     with pytest.raises(ProfileError) as info:
-        p.url({"SERVED_URL": value})
+        p.url({"SERVED_URL": value, "AIMS_KEYS": "env:SERVED_URL"})
     assert str(info.value) == "profile test: SERVED_URL does not hold an http or https URL"
     assert info.value.__context__ is None
     assert CANARY not in told(info.value)
@@ -1316,7 +1319,7 @@ def test_a_key_an_http_header_cannot_carry_is_refused_without_its_value(
 ) -> None:
     p = profile(api_key_env="TEST_KEY")
     with pytest.raises(ProfileError) as info:
-        p.api_key({"TEST_KEY": value})
+        p.api_key(p.url(), {"TEST_KEY": value} | LISTED)
     assert str(info.value).startswith(
         f"profile test: TEST_KEY holds {problem}, which an HTTP header cannot carry"
     )
@@ -1327,9 +1330,9 @@ def test_a_key_an_http_header_cannot_carry_is_refused_without_its_value(
 def test_a_key_an_http_header_can_carry_is_used_as_it_is() -> None:
     p = profile(api_key_env="TEST_KEY")
     for value in [KEY, "sk-a b\tc", "sk-'\"=+/~"]:
-        assert p.api_key({"TEST_KEY": value}) == value
+        assert p.api_key(p.url(), {"TEST_KEY": value} | LISTED) == value
     with pytest.raises(ProfileError) as info:
-        p.api_key({"TEST_KEY": f"{KEY}\r"})
+        p.api_key(p.url(), {"TEST_KEY": f"{KEY}\r"} | LISTED)
     assert str(info.value) == (
         "profile test: TEST_KEY holds a carriage return at character 15, which an HTTP header"
         " cannot carry (a file with Windows line ends adds one to each value)"
@@ -1353,6 +1356,7 @@ async def test_a_value_aims_cannot_send_stays_out_of_the_run_log(
     is sent. Neither the error nor any file of the run tells the value."""
     for name, value in env.items():
         monkeypatch.setenv(name, value)
+    monkeypatch.setenv("AIMS_KEYS", "env:CANARY_URL,CANARY_KEY=http://models.example/v1")
     p = profile(**{"stream": False, "base_url": "http://models.example/v1"} | fields)
     root = tmp_path / "runs"
     async with serving(Server()) as proxy:
@@ -1418,6 +1422,7 @@ reasoning = "none"
 """
     )
     root = tmp_path / "runs"
+    monkeypatch.setenv("AIMS_KEYS", "CANARY_KEY=env:CANARY_URL")
     for env, problem in [
         (
             {"CANARY_URL": f"http://[{CANARY}]/v1", "CANARY_KEY": "k"},
@@ -2265,7 +2270,7 @@ async def test_profile_headers_go_out_beside_the_sdks_own(
         run_id,
         config(p),
         transport=httpx2.MockTransport(handler),
-        env={"TEST_KEY": "sk-test"},
+        env={"TEST_KEY": "sk-test"} | LISTED,
     ) as mc:
         reply = await mc.call("test", PROMPT)
     assert reply.status == "completed"

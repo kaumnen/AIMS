@@ -35,9 +35,10 @@ def anyio_backend() -> str:
 
 @pytest.fixture(autouse=True)
 def user_config(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Keep the developer's own AIMS config, and any `aims ui` they have running, out of every
-    test."""
+    """Keep the developer's own AIMS config and keys, and any `aims ui` they have running, out
+    of every test. A --key flag adds to AIMS_KEYS in the process env; this puts it back."""
     path = tmp_path_factory.mktemp("config")
+    monkeypatch.delenv("AIMS_KEYS", raising=False)
     monkeypatch.setenv("AIMS_CONFIG_DIR", str(path))
     monkeypatch.setenv("AIMS_SERVER_DIR", str(tmp_path_factory.mktemp("server")))
     monkeypatch.setenv("AIMS_CACHE_DIR", str(tmp_path_factory.mktemp("cache")))

@@ -966,6 +966,7 @@ def fakes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Fakes:
     (tmp_path / ".git").mkdir()
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("MODELS_KEY", "secret")
+    monkeypatch.setenv("AIMS_KEYS", f"MODELS_KEY={URL},MODELS_KEY=env:ROUTER_URL")
     found = Fakes()
 
     async def read(base_url: str, transport: object = None) -> ServerList:
@@ -1147,7 +1148,11 @@ def test_what_is_refused_for_free_is_refused_before_the_check(
             "big-model cannot take the sweep role: structured_output is false",
         ),
         ([*BIG, "--set", "max_output_tokens=0"], "error: max_output_tokens: "),
-        (["org/big-model", "--base-url", URL, "--key-env", "NOPE"], "NOPE is not set; set it"),
+        (
+            ["org/big-model", "--base-url", URL, "--key-env", "NOPE"],
+            f"AIMS_KEYS lacks NOPE={URL}; add it there or pass --key NOPE={URL}, or pass"
+            " --no-check to skip the check",
+        ),
     ):
         out = add(*args)
         assert (out.exit_code, out.stdout) == (1, ""), (args, out.output)

@@ -2,6 +2,7 @@ from aims.models.bus import Delta, DeltaBus, Subscription
 from aims.models.client import ModelCallError, ModelClient, parse_ratelimit
 from aims.models.limiter import Limiters
 from aims.models.profiles import (
+    KeyRefused,
     Limits,
     ModelsConfig,
     Overrides,
@@ -33,6 +34,7 @@ __all__ = [
     "Delta",
     "DeltaBus",
     "Item",
+    "KeyRefused",
     "Limiters",
     "Limits",
     "Message",

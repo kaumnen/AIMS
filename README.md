@@ -67,10 +67,11 @@ Check a scenario. Scripted agents prove each plant works, at no model cost.
 aims scenario check builtin/cache-keys
 ```
 
-Add one model for the agents and another for the monitor, which refuses to watch its own weights. The monitor's model needs structured output. Use your server's API URL and the env var that holds its key. `aims models add` sends each model a few small requests before it adds the profile.
+Add one model for the agents and another for the monitor, which refuses to watch its own weights. The monitor's model needs structured output. Use your server's API URL and the env var that holds its key. `AIMS_KEYS` lists the URL each key may go to. AIMS sends a key nowhere else. `aims models add` sends each model a few small requests before it adds the profile.
 
 ```sh
 export EXAMPLE_API_KEY=<your key>
+export AIMS_KEYS=EXAMPLE_API_KEY=https://api.example.com/v1
 aims models add example/agent-model --base-url https://api.example.com/v1 --key-env EXAMPLE_API_KEY --write --role agent
 aims models add example/monitor-model --base-url https://api.example.com/v1 --key-env EXAMPLE_API_KEY --write --role sweep --role judge
 ```
@@ -81,7 +82,7 @@ Start the UI. It opens a sign-in link and runs jobs on a local runner.
 aims ui
 ```
 
-Run the scenario with **New run** in the UI, or from a second terminal in the same folder with the key set:
+Run the scenario with **New run** in the UI, or from a second terminal in the same folder with the key and `AIMS_KEYS` set:
 
 ```sh
 aims estimate builtin/cache-keys   # the most a run can cost
@@ -169,6 +170,7 @@ curl -fsSLO https://github.com/kaumnen/AIMS/releases/latest/download/compose.yam
   -O https://github.com/kaumnen/AIMS/releases/latest/download/compose.public.yaml \
   -O https://github.com/kaumnen/AIMS/releases/latest/download/Caddyfile
 echo "EXAMPLE_API_KEY=<your key>" > .env
+echo "AIMS_KEYS=EXAMPLE_API_KEY=https://api.example.com/v1" >> .env
 docker compose up -d
 docker compose exec server aims open --no-open
 ```

@@ -1982,22 +1982,32 @@ def test_a_monitor_recorded_with_routing_tables_restores() -> None:
 def test_the_cli_refuses_a_monitor_whose_key_is_unset(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("AIMS_TEST_MONITOR_KEY", raising=False)
+    monkeypatch.delenv("TEST_MONITOR_KEY", raising=False)
     config = tmp_path / "aims.toml"
     config.write_text(
         '[profiles.agent]\nbackend = "chat"\nbase_url = "http://agent.invalid/v1"\n'
         'model = "agent-model"\nweights = "agent-weights"\nreasoning = "full"\n'
         '[profiles.watcher]\nbackend = "chat"\nbase_url = "http://watcher.invalid/v1"\n'
         'model = "watcher-model"\nweights = "watcher-weights"\nreasoning = "full"\n'
-        'api_key_env = "AIMS_TEST_MONITOR_KEY"\n'
+        'api_key_env = "TEST_MONITOR_KEY"\n'
         '[roles]\nagent = "agent"\nsweep = "watcher"\njudge = "watcher"\n'
     )
     path = tmp_path / "scenario.yaml"
     path.write_text(SCENARIO.format(oversight="observe", verifier=""))
     args = ["run", str(path), "--config", str(config), "--runs-dir", str(tmp_path / "runs")]
+    refused = CliRunner().invoke(app, args)
+    assert refused.exit_code == 1, refused.output
+    entry = "TEST_MONITOR_KEY=http://watcher.invalid/v1"
+    assert " ".join(refused.stderr.split()) == (
+        f"error: the monitor's profile watcher: AIMS_KEYS lacks {entry}; add it there or pass"
+        f" --key {entry}, or use a signals-only monitor, which needs no key:"
+        ' preset = "signals" under [monitor] in aims.toml, monitor: {preset: signals} in the'
+        " scenario, or --monitor signals"
+    )
+    monkeypatch.setenv("AIMS_KEYS", entry)
     result = CliRunner().invoke(app, args)
     assert result.exit_code == 1, result.output
-    assert "AIMS_TEST_MONITOR_KEY is not set" in result.stderr
+    assert "TEST_MONITOR_KEY is not set; set it, or" in " ".join(result.stderr.split())
     assert 'preset = "signals"' in result.stderr
 
     human = tmp_path / "human.yaml"
