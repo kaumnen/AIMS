@@ -13,7 +13,7 @@ import pytest
 from cp import CP, control_plane
 from test_cli_monitor import job_until, node, until
 from test_monitor_api import call, claim, flag, started
-from test_server import FakeRunner, ship, sse
+from test_server import MODEL_KEYS, FakeRunner, ship, sse
 
 from aims.events import Draft, LocalEventStore, RunFinished, RunInfo, RunStarted
 from aims.events.chain import Head as LogHead
@@ -113,7 +113,7 @@ async def test_a_score_job_queues_for_runners_that_take_it(
         r = await c.post(url, json={"awareness": False})
         assert (r.status_code, r.json()["code"]) == (422, "kind")
 
-        scorer = ScoreRunner(cp, "scorer", envs=["MODEL_API_KEY"])
+        scorer = ScoreRunner(cp, "scorer", keys=MODEL_KEYS)
         await scorer.connect()
         try:
             r = await c.post(url, json={"awareness": False, "answer": False})
@@ -121,7 +121,7 @@ async def test_a_score_job_queues_for_runners_that_take_it(
             (score_id,) = r.json()["run_ids"]
             offer = await scorer.next(OfferMessage)
             assert offer.run_id == score_id
-            assert offer.needs == {"envs": [], "kernel": False, "kind": "score"}
+            assert offer.needs == {"keys": [], "kernel": False, "kind": "score"}
             job = await cp.state.db.job(score_id)
             assert job is not None
             spec = ScoreJob.model_validate(job.payload)
@@ -149,7 +149,7 @@ async def test_a_score_job_queues_for_runners_that_take_it(
             profile = aware.profile()
             assert profile is not None
             assert profile.name == "classify"
-            assert aware.envs() == ["MODEL_API_KEY"]
+            assert aware.keys() == ["MODEL_API_KEY=http://model.invalid/v1"]
         finally:
             await scorer.close()
 
@@ -377,7 +377,7 @@ async def test_a_score_job_carries_its_checks_and_the_plants_a_scenario_adds(
     (scenarios / "other").mkdir()
     (scenarios / "other" / "scenario.yaml").write_text(RULED.replace("name: control", "name: x"))
     url = f"/api/runs/{origin}/score"
-    scorer = ScoreRunner(cp, "scorer", envs=["MODEL_API_KEY"])
+    scorer = ScoreRunner(cp, "scorer", keys=MODEL_KEYS)
     await scorer.connect()
     try:
         async with cp.client(cp.operator) as c:
@@ -432,6 +432,7 @@ async def test_a_runner_scores_a_job_with_the_checks_and_plants_it_carries(
     monkeypatch.setattr(scoring, "_awareness", awareness)
     monkeypatch.setattr(scoring, "_answer", answer)
     monkeypatch.setenv("MODEL_API_KEY", "set")
+    monkeypatch.setenv("AIMS_KEYS", "MODEL_API_KEY=http://model.invalid/v1")
 
     async def scored_by(run_id: str) -> RunInfo:
         async with asyncio.timeout(30):
@@ -527,6 +528,7 @@ async def test_a_runners_first_stop_ends_a_score_job_at_once(
     monkeypatch.setattr(scoring, "check_run", check)
     monkeypatch.setattr(scoring, "_awareness", awareness)
     monkeypatch.setenv("MODEL_API_KEY", "set")
+    monkeypatch.setenv("AIMS_KEYS", "MODEL_API_KEY=http://model.invalid/v1")
     stop = asyncio.Event()
     async with node(cp, tmp_path / "node", stop=stop) as n:
         async with cp.client(cp.operator) as c:
@@ -695,7 +697,7 @@ async def test_a_runs_detail_lists_its_scores_and_an_operator_gets_an_estimate(
     origin, score = await scored(cp, local, fake, monkeypatch)
     async with cp.client(cp.viewer) as viewer, cp.client(cp.operator) as c:
         assert (await viewer.get(f"/api/runs/{origin}")).json()["score_runs"] == []
-        scorer = ScoreRunner(cp, "scorer", envs=["MODEL_API_KEY"])
+        scorer = ScoreRunner(cp, "scorer", keys=MODEL_KEYS)
         await scorer.connect()
         try:
             r = await c.post(f"/api/runs/{origin}/score", json={})

@@ -1,6 +1,7 @@
 import ast
 import asyncio
 import contextlib
+import dataclasses
 import gzip
 import hashlib
 import inspect
@@ -18,10 +19,11 @@ import threading
 import time
 import typing
 import uuid
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Generator, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Generator, Sequence
 from compression import zstd
 from pathlib import Path
-from typing import Any, Literal
+from types import SimpleNamespace
+from typing import Any, Literal, cast
 from unittest.mock import patch
 
 import httpx2
@@ -47,9 +49,11 @@ from aims.events import (
 )
 from aims.events.blobs import decode
 from aims.models import DeltaBus
+from aims.models.keys import KeysError, parse
 from aims.node import shipper as shipper_module
 from aims.node.client import FEED, ApiError, ControlClient
 from aims.node.link import Link
+from aims.node.service import Node, NodeOptions
 from aims.node.shipper import WARN_AFTER, Shipper
 from aims.prompts import Prompts
 from aims.run.job import Job
@@ -57,6 +61,7 @@ from aims.run.runner import resolve_texts
 from aims.scenario import load
 from aims.server import api, dispatch, edit_api, runner_api
 from aims.server import app as app_module
+from aims.server import db as sdb
 from aims.server.app import create_app
 from aims.server.auth import HEADERS
 from aims.server.db import UI_TOKEN
@@ -100,13 +105,19 @@ def call(n: int) -> Draft:
     return Draft(ToolCall(call_id=f"c{n}", name="shell", arguments="{}"), "a1")
 
 
+# What a runner allows to call the keyed profiles of the tests: tests/profiles.toml and the
+# profiles that extend tests/cp.py's scripted one read MODEL_API_KEY.
+MODEL_KEYS = ["MODEL_API_KEY=https://api.example.com/v1", "MODEL_API_KEY=http://model.invalid/v1"]
+
+
 class FakeRunner:
     """A runner without Docker: it says hello, reads its stream and ships runs it makes."""
 
-    def __init__(self, cp: CP, name: str = "fake", *, envs: list[str] | None = None) -> None:
+    def __init__(self, cp: CP, name: str = "fake", *, keys: list[str] | None = None) -> None:
+        """`keys` are the AIMS_KEYS entries it says it allows with their variables set."""
         self.client = ControlClient(cp.url, cp.runner, runner=name)
         self.name = name
-        self.envs = envs or []
+        self.keys = keys or []
         self.feed: asyncio.Queue[Any] = asyncio.Queue()
         self.task: asyncio.Task[None] | None = None
         self.last_id: str | None = None
@@ -117,16 +128,14 @@ class FakeRunner:
             version=__version__,
             arch="arm64",
             tracer=TracerHealth(alive=True),
-            envs=self.envs,
+            keys=self.keys,
             slots=2,
             jobs=jobs or [],
         )
 
     async def connect(self) -> None:
         await self.client.hello(self.hello_body())
-        await self.client.status(
-            RunnerStatus(tracer=TracerHealth(alive=True), free=2, envs=self.envs)
-        )
+        await self.client.status(RunnerStatus(tracer=TracerHealth(alive=True), free=2))
         ready = asyncio.Event()
 
         async def read() -> None:
@@ -632,7 +641,7 @@ async def test_a_job_is_offered_claimed_run_and_done(
     (run_id,) = await start_run(cp)
     offer = await fake.next(OfferMessage)
     assert offer.run_id == run_id
-    assert offer.needs == {"envs": [], "kernel": True}
+    assert offer.needs == {"keys": [], "kernel": True}
     thief = FakeRunner(cp, "thief")
     assert await thief.client.claim(run_id) is None
     await thief.client.aclose()
@@ -947,7 +956,7 @@ async def test_a_viewer_gets_nothing_of_a_job_of_a_kind_this_version_does_not_kn
         assert (r.status_code, r.json()["state"]) == (202, "cancelled"), r.text
 
 
-@pytest.mark.parametrize("needs", [{"envs": 5}, {"envs": [1, "KEY"]}, ["kernel"], None])
+@pytest.mark.parametrize("needs", [{"keys": 5}, {"keys": [1, "KEY"]}, ["kernel"], None])
 async def test_a_job_whose_needs_this_version_cannot_read_breaks_no_list_and_no_queue(
     cp: CP, fake: FakeRunner, needs: Any
 ) -> None:
@@ -1007,8 +1016,13 @@ async def test_a_run_needs_a_runner_with_its_keys(cp: CP, fake: FakeRunner) -> N
                 "confirm": True,
             },
         )
-        assert (r.status_code, r.json()["code"]) == (422, "envs")
-        assert "AIMS_TEST_KEY_THAT_IS_NOT_SET" in r.json()["detail"]
+        assert (r.status_code, r.json()["code"]) == (422, "keys")
+        # the monitor's profile reads a key too
+        assert r.json()["detail"] == (
+            "no runner allows MODEL_API_KEY=https://api.example.com/v1,"
+            " TEST_KEY_THAT_IS_NOT_SET=http://model.invalid/v1; add them to a runner's AIMS_KEYS"
+            " and set their variables there"
+        )
 
 
 async def test_commands_reach_the_runner_and_unacked_ones_come_again(
@@ -1962,7 +1976,7 @@ async def test_a_selftest_is_queued_for_a_runner_that_runs_it(cp: CP) -> None:
         job = await cp.state.db.job(run_id)
         assert job is not None
         assert job.payload["kind"] == "selftest"
-        assert job.needs == {"envs": [], "kernel": True, "kind": "selftest"}
+        assert job.needs == {"keys": [], "kernel": True, "kind": "selftest"}
         listed = (await c.get("/api/runs", params={"kind": "selftest"})).json()["items"]
         assert [(x["run_id"], x["kind"], x["scenario"]) for x in listed] == [
             (run_id, "selftest", "cache-keys")
@@ -2982,53 +2996,169 @@ def late_profile(name: str, key: str) -> str:
     return f'\n[profiles.{name}]\nextends = "scripted"\napi_key_env = "{key}"\n'
 
 
+LATE_KEYS = "LATE_KEY=http://model.invalid/v1,UNSET_KEY=http://model.invalid/v1,env:UNSET_URL"
+
+
 @contextlib.asynccontextmanager
-async def late_runner(
-    cp: CP, local: LocalEventStore
-) -> AsyncGenerator[Callable[[], Awaitable[list[str] | None]]]:
-    """A runner that said hello before the config named the keys it holds, and what it says
-    it holds once its stream is open."""
+async def late_runner(cp: CP, local: LocalEventStore) -> AsyncGenerator[Link]:
+    """A real runner link, connected, that reads AIMS_KEYS and its vars from the process env."""
     link = Link(ControlClient(cp.url, cp.runner, runner="late"), local, DeltaBus())
     await link.start()
 
-    async def envs() -> list[str] | None:
+    async def streaming() -> bool:
         conn = cp.state.runners.get("late")
-        return None if conn is None or not conn.streams else conn.envs
+        return conn is not None and conn.streams > 0
 
     try:
-        await until(envs, [])
-        yield envs
+        await until(streaming, True)
+        yield link
     finally:
         await link.close()
 
 
-async def test_a_runner_reports_a_key_as_soon_as_the_server_saves_a_profile_naming_it(
+async def test_a_runner_reports_the_entries_it_allows_with_their_variables_set(
     cp: CP, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("AIMS_TEST_KEY_ADDED", "x")
-    # no heartbeat comes in the test's time, so only the save can tell the runner
+    monkeypatch.setenv("AIMS_KEYS", LATE_KEYS)
+    monkeypatch.setenv("LATE_KEY", "sk-CANARY-late")
+    monkeypatch.setenv("UNLISTED_KEY", "sk-CANARY-unlisted")
+    monkeypatch.delenv("UNSET_KEY", raising=False)
+    monkeypatch.delenv("UNSET_URL", raising=False)
+    # no heartbeat comes in the test's time: what routes is the hello alone
     monkeypatch.setattr("aims.node.link.HEARTBEAT_S", 60)
-    async with late_runner(cp, local) as envs, cp.client(cp.operator) as c:
+    async with late_runner(cp, local), cp.client(cp.operator) as c:
+        assert cp.state.runners["late"].hello.keys == ["LATE_KEY=http://model.invalid/v1"]
+        # a profile saved after the hello routes to it at once, with nothing sent to the runner
         layer = (await c.get("/api/config/project")).json()
+        text = layer["text"] + late_profile("added", "LATE_KEY")
+        text += late_profile("unset", "UNSET_KEY") + late_profile("unlisted", "UNLISTED_KEY")
         r = await c.put(
-            "/api/config/project",
-            json={"text": layer["text"] + late_profile("added", "AIMS_TEST_KEY_ADDED")},
-            headers={"If-Match": f'"{layer["etag"]}"'},
+            "/api/config/project", json={"text": text}, headers={"If-Match": f'"{layer["etag"]}"'}
         )
         assert r.status_code == 200, r.text
-        await until(envs, ["AIMS_TEST_KEY_ADDED"])
+        models = {p["name"]: p for p in (await c.get("/api/models")).json()["profiles"]}
+        assert models["added"]["entry"] == "LATE_KEY=http://model.invalid/v1"
+        assert models["added"]["runners"] == ["late"]
+        assert models["unset"]["runners"] == []
+        assert models["unlisted"]["runners"] == []
+        assert models["scripted"]["entry"] is None
+        assert models["scripted"]["runners"] == ["late"]
+        runners = (await c.get("/api/runners")).json()
+        assert [r["keys"] for r in runners if r["name"] == "late"] == [
+            ["LATE_KEY=http://model.invalid/v1"]
+        ]
+    # what the control plane holds of the runner names no var AIMS_KEYS does not list
+    hello = await cp.state.db.runner("late")
+    assert hello is not None
+    assert "UNLISTED" not in json.dumps(hello.info)
+    assert "CANARY" not in json.dumps(hello.info)
 
 
-async def test_a_runner_reports_a_key_a_hand_edit_names_at_its_next_heartbeat(
-    cp: CP, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("held", [True, False])
+def test_a_runner_says_the_same_whether_a_var_aims_keys_does_not_list_is_set_or_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, held: bool
 ) -> None:
-    monkeypatch.setenv("AIMS_TEST_KEY_BY_HAND", "x")
-    monkeypatch.setattr("aims.node.link.HEARTBEAT_S", 0.2)
-    async with late_runner(cp, local) as envs:
-        text = await asyncio.to_thread(cp.project.read_text)
-        added = late_profile("by-hand", "AIMS_TEST_KEY_BY_HAND")
-        await asyncio.to_thread(cp.project.write_text, text + added)
-        await until(envs, ["AIMS_TEST_KEY_BY_HAND"], within=5)
+    monkeypatch.setenv("AIMS_KEYS", LATE_KEYS)
+    monkeypatch.setenv("LATE_KEY", "x")
+    if held:
+        monkeypatch.setenv("UNLISTED_KEY", "x")
+    else:
+        monkeypatch.delenv("UNLISTED_KEY", raising=False)
+    link = Link(ControlClient("http://cp.invalid", "t", runner="r"), cast(Any, None), DeltaBus())
+    assert link.hello().keys == ["LATE_KEY=http://model.invalid/v1"]
+    assert link.allowed.allows("LATE_KEY=http://model.invalid/v1/x")
+    assert not link.allowed.allows("UNLISTED_KEY=http://model.invalid/v1")
+
+
+def test_a_runner_with_an_aims_keys_it_cannot_read_fails_at_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AIMS_KEYS", "K=sk-CANARY")
+    with pytest.raises(KeysError) as info:
+        Link(ControlClient("http://cp.invalid", "t", runner="r"), cast(Any, None), DeltaBus())
+    assert "CANARY" not in str(info.value)
+
+
+@pytest.mark.parametrize("keys", [["K=sk-CANARY"], ["K=http://a.invalid,L=http://b.invalid"]])
+async def test_a_hello_with_entries_aims_cannot_read_is_refused(cp: CP, keys: list[str]) -> None:
+    body = FakeRunner(cp, "odd").hello_body().model_dump(mode="json") | {"keys": keys}
+    headers = {"Authorization": f"Bearer {cp.runner}", "X-Aims-Runner": "odd"}
+    async with cp.client() as c:
+        r = await c.post("/runner/v1/hello", json=body, headers=headers)
+    assert r.status_code == 422, r.text
+    assert "odd" not in cp.state.runners
+
+
+async def test_a_job_goes_only_to_a_runner_that_allows_every_entry_it_needs(cp: CP) -> None:
+    both = ["A=https://a.example/v1", "B=https://b.example/v1"]
+    one = FakeRunner(cp, "one", keys=both[:1])
+    other = FakeRunner(cp, "other", keys=both[1:])
+    await one.connect()
+    await other.connect()
+    try:
+        conns = [cp.state.runners["one"], cp.state.runners["other"]]
+        assert api.keys_reason(both, conns, "connected runner") == (
+            "no connected runner allows all of A=https://a.example/v1, B=https://b.example/v1"
+            " at once"
+        )
+        assert api.keys_reason([*both, "C=env:U"], conns, "runner") == (
+            "no runner allows C=env:U; add it to a runner's AIMS_KEYS and set its variables there"
+        )
+        assert api.keys_reason(["C=env:U", "D=env:U"], conns, "runner") == (
+            "no runner allows C=env:U, D=env:U; add them to a runner's AIMS_KEYS and set their"
+            " variables there"
+        )
+        # an entry AIMS_KEYS cannot hold needs another fix
+        assert api.keys_reason(
+            ["AIMS_X=https://a.example/v1", "E=https://e.example/v1?q"], conns, "runner"
+        ) == (
+            "no runner can allow AIMS_X=https://a.example/v1, E=https://e.example/v1?q, which"
+            " AIMS_KEYS cannot hold; give the profile another key name or URL"
+        )
+        row = sdb.Job(
+            run_id="r",
+            group=None,
+            parallel=None,
+            state="queued",
+            payload={},
+            needs={"keys": [f"{both[0]}/chat"]},
+            target=None,
+            runner=None,
+            offered_at=None,
+            tried=[],
+            token=None,
+            created=0.0,
+            updated=0.0,
+            reason=None,
+        )
+        assert [dispatch.can_take(c, row) for c in conns] == [True, False]
+        # a row queued before needs held keys goes to any runner: its call checks the key
+        old = dataclasses.replace(row, needs={"envs": ["A"], "kernel": False})
+        assert old.wants().keys is None
+        assert [dispatch.can_take(c, old) for c in conns] == [True, True]
+    finally:
+        await one.close()
+        await other.close()
+
+
+async def test_a_runner_takes_only_the_offers_its_own_aims_keys_allows(tmp_path: Path) -> None:
+    claimed: list[str] = []
+
+    async def claim(of: str) -> None:
+        claimed.append(of)
+
+    made = Node(NodeOptions(url="http://cp", token="t", name="n", data=tmp_path))
+    link = SimpleNamespace(
+        client=SimpleNamespace(claim=claim), allowed=parse("K=https://a.example/v1")
+    )
+    made._open = cast(Any, SimpleNamespace(link=link))
+    # the control plane would not offer these; the runner checks again all the same
+    await made._offer(OfferMessage(run_id="other", needs={"keys": ["K=https://b.example/v1"]}))
+    await made._offer(OfferMessage(run_id="url-var", needs={"keys": ["K=env:U"]}))
+    await made._offer(OfferMessage(run_id="odd", needs={"keys": "K=https://a.example/v1"}))
+    await made._offer(OfferMessage(run_id="ok", needs={"keys": ["K=https://a.example/v1/x"]}))
+    await made._offer(OfferMessage(run_id="old", needs={"envs": ["K"]}))
+    assert claimed == ["ok", "old"]
 
 
 async def test_closing_a_link_stops_its_shippers(local: LocalEventStore) -> None:

@@ -19,7 +19,7 @@ from cp import CP, control_plane
 from scripted import profile
 from test_monitor_api import call, started
 from test_score_api import RECORD, ScoreRunner
-from test_server import FakeRunner, ship
+from test_server import MODEL_KEYS, FakeRunner, ship
 
 from aims.events import (
     Draft,
@@ -47,6 +47,12 @@ from aims.server import api, score_api
 from aims.wire import MonitorJob, OfferMessage
 
 pytestmark = pytest.mark.anyio
+
+# why a job whose profile reads MODEL_API_KEY waits when no runner allows it
+NO_KEY = (
+    "no runner allows MODEL_API_KEY=https://api.example.com/v1; add it to a runner's AIMS_KEYS"
+    " and set its variables there"
+)
 
 VARIANTS = """\
 version: 1
@@ -222,7 +228,7 @@ async def test_runs_above_the_confirm_limit_need_confirm(cp: CP) -> None:
 async def test_a_run_asked_to_score_is_scored_once_its_truth_arrives(
     cp: CP, local: LocalEventStore
 ) -> None:
-    fake = ScoreRunner(cp, "scorer", envs=["MODEL_API_KEY"])
+    fake = ScoreRunner(cp, "scorer", keys=MODEL_KEYS)
     await fake.connect()
     try:
         async with cp.client(cp.operator) as c:
@@ -471,7 +477,7 @@ async def test_a_run_that_cannot_be_scored_says_why(cp: CP, local: LocalEventSto
             "done",
             None,
         )
-        assert run["reason"] == "no runner has MODEL_API_KEY set"
+        assert run["reason"] == NO_KEY
         assert [r["run_id"] for r in listed] == [score]
         async with cp.client(cp.viewer) as c:
             assert (await c.get(f"/api/runs/{score}")).status_code == 403
@@ -501,7 +507,7 @@ async def test_a_score_waits_while_the_index_does_not_hold_its_run(
     """Another process rebuilds the index as the truth file arrives: the run's log is here and
     the index lacks it for a moment. The score waits for it, then queues."""
     monkeypatch.setattr(score_api, "INDEXED_POLL_S", 0.01)
-    fake = ScoreRunner(cp, "scorer", envs=["MODEL_API_KEY"])
+    fake = ScoreRunner(cp, "scorer", keys=MODEL_KEYS)
     await fake.connect()
     try:
         run_id = await shipped_for_score(cp, local, fake)
@@ -531,7 +537,7 @@ async def test_a_score_that_waited_too_long_for_the_index_says_why(
 ) -> None:
     monkeypatch.setattr(score_api, "INDEXED_POLL_S", 0.01)
     monkeypatch.setattr(score_api, "INDEXED_WAIT_S", 0.1)
-    fake = ScoreRunner(cp, "scorer", envs=["MODEL_API_KEY"])
+    fake = ScoreRunner(cp, "scorer", keys=MODEL_KEYS)
     await fake.connect()
     try:
         run_id = await shipped_for_score(cp, local, fake)
@@ -558,7 +564,7 @@ async def test_a_score_that_fails_to_queue_keeps_the_truth_file(
         raise KeyError("options")
 
     monkeypatch.setattr(score_api, "queue_score", broken)
-    fake = ScoreRunner(cp, "scorer", envs=["MODEL_API_KEY"])
+    fake = ScoreRunner(cp, "scorer", keys=MODEL_KEYS)
     await fake.connect()
     try:
         async with cp.client(cp.operator) as c:
@@ -617,9 +623,7 @@ async def test_a_truth_upload_the_index_refused_scores_the_run_once_on_its_retry
         assert info.variant == "v1"
         # no runner has the classifier's key, so the score ends before it starts
         scores = await cp.state.db.jobs_page(before=None, limit=10, kind="score")
-        assert [(j.payload["origin"], j.reason) for j in scores] == [
-            (run_id, "no runner has MODEL_API_KEY set")
-        ]
+        assert [(j.payload["origin"], j.reason) for j in scores] == [(run_id, NO_KEY)]
     finally:
         await fake.close()
 

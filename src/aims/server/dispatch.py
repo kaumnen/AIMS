@@ -36,7 +36,7 @@ def can_take(conn: Connected, job: Job) -> bool:
         return False
     if needs.kernel and not conn.tracer_alive:
         return False
-    return set(needs.envs or []) <= set(conn.envs)
+    return needs.keys is None or conn.allows(needs.keys)
 
 
 def pick(state: ServerState, job: Job) -> Connected | None:

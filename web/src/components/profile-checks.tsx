@@ -56,9 +56,9 @@ export function ProfileChecks({
                     : `The fork calls ${ran.join(", ")} as the run recorded it; the check calls ${p.model}.`}
                 </span>
               )}
-              {p.runners.length === 0 && p.envs.length > 0 && (
-                <span className="text-foreground block">
-                  No connected runner has {p.envs.join(" and ")}.
+              {p.runners.length === 0 && p.entry !== null && (
+                <span className="text-foreground block break-all">
+                  No connected runner allows {p.entry}.
                 </span>
               )}
             </p>

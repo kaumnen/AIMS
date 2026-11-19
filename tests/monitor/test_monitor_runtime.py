@@ -1866,7 +1866,7 @@ async def test_a_reward_json_nested_too_deep_is_scored_as_unreadable(
 
 def test_a_job_carries_its_monitor(tmp_path: Path) -> None:
     bundle = scenario(tmp_path)
-    keyed = WATCHER.model_copy(update={"api_key_env": "AIMS_TEST_MONITOR_KEY"})
+    keyed = WATCHER.model_copy(update={"api_key_env": "TEST_MONITOR_KEY"})
     watch = watched()
     watch = ResolvedMonitor(
         config=watch.config,
@@ -1882,7 +1882,7 @@ def test_a_job_carries_its_monitor(tmp_path: Path) -> None:
     job = Job.model_validate_json(job.model_dump_json())
     assert job.monitor == watch.snapshot()
     assert set(job.models) == {"watcher"}
-    assert "AIMS_TEST_MONITOR_KEY" in job.envs()
+    assert job.keys() == [f"TEST_MONITOR_KEY={WATCHER.base_url}"]
     restored = job.watch()
     assert restored is not None
     assert restored.identity == watch.identity

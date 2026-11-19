@@ -231,6 +231,7 @@ const profileInfo = (name: string) => ({
   reasoning: "summary",
   roles: [],
   envs: ["MODEL_API_KEY"],
+  entry: "MODEL_API_KEY=https://api.example.com/v1",
   runners: ["local"],
   price: null,
   price_key: null,

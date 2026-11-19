@@ -13,6 +13,7 @@ from typing import Any, cast
 import httpx2
 import pytest
 from cp import CP, control_plane, start, stop, write_project
+from test_cli_monitor import job_until, node
 from test_listprice import BODY
 from test_server import FakeRunner, ship
 
@@ -32,10 +33,11 @@ from aims.models.listprice import PriceLists
 from aims.node import service
 from aims.node.service import Node, NodeOptions
 from aims.run.job import Job
-from aims.server import edit_api
+from aims.server import api, edit_api
 from aims.server.app import create_app
+from aims.server.db import OPEN_STATES
 from aims.server.state import close_state, open_state
-from aims.wire import OfferMessage, RunnerStatus, TracerHealth
+from aims.wire import OfferMessage
 
 pytestmark = pytest.mark.anyio
 LOOKUP = "/api/models/lookup"
@@ -369,7 +371,7 @@ async def test_a_project_file_that_cannot_take_the_table_stays_as_it_was(cp: CP)
 
 
 async def runner(cp: CP, name: str = "fake") -> FakeRunner:
-    fake = FakeRunner(cp, name, envs=["EXAMPLE_KEY"])
+    fake = FakeRunner(cp, name, keys=[f"EXAMPLE_KEY={BASE}"])
     await fake.connect()
     return fake
 
@@ -663,28 +665,27 @@ async def test_a_check_job_that_never_ran_reads_as_failed(cp: CP) -> None:
     assert cp.state.config.settings().models.roles.agent == "scripted"
 
 
-async def test_a_check_waits_for_a_runner_with_the_new_key_then_sets_the_roles(
-    cp: CP, local: LocalEventStore
-) -> None:
-    # the runner is up before the profile exists, so it has not said it holds the key
-    fake = FakeRunner(cp)
-    await fake.connect()
+async def test_a_checked_add_is_refused_at_once_when_no_runner_allows_its_key(cp: CP) -> None:
+    bare = FakeRunner(cp, "bare")
+    await bare.connect()
+    keyed = await runner(cp, "keyed")
     try:
-        run_id = await add(cp, await toml(cp), roles=["agent"])
-        found = await outcome(cp)
-        assert found is not None
-        assert (found["run_id"], found["outcome"]) == (run_id, None)
-        assert found["waiting"] == "no connected runner has EXAMPLE_KEY set"
-        assert "EXAMPLE_KEY" in cp.state.runners["fake"].told
-        fake.envs = ["EXAMPLE_KEY"]
-        await fake.client.status(
-            RunnerStatus(tracer=TracerHealth(alive=True), free=2, envs=fake.envs)
-        )
-        job = await play_check(fake, local)
+        before = cp.project.read_bytes()
+        text = await toml(cp)
+        async with cp.client(cp.operator) as c:
+            r = await c.post(ADD, json={"toml": text, "roles": ["agent"], "runner": "bare"})
+            assert (r.status_code, r.json()["code"]) == (422, "keys")
+            assert r.json()["detail"] == (
+                "no runner allows EXAMPLE_KEY=https://api.example.com/v1; add it to a runner's"
+                " AIMS_KEYS and set its variables there"
+            )
+            assert cp.project.read_bytes() == before
+            # with no runner named, the one that allows it will take the check
+            r = await c.post(ADD, json={"toml": text, "roles": ["agent"]})
+            assert r.status_code == 200, r.text
     finally:
-        await fake.close()
-    assert job.run_id == run_id
-    assert cp.state.config.settings().models.roles.agent == NAME
+        await bare.close()
+        await keyed.close()
 
 
 @pytest.mark.parametrize(
@@ -771,18 +772,26 @@ async def test_the_roles_still_follow_the_check_after_a_restart(tmp_path: Path) 
         assert second.state.config.settings().models.get(NAME).reasoning == "full"
 
 
-async def test_runners_learn_the_key_of_an_added_profile(cp: CP) -> None:
-    fake = FakeRunner(cp)
-    await fake.connect()
-    try:
-        assert "EXAMPLE_KEY" not in cp.state.runners["fake"].told
-        text = await toml(cp)
+async def test_a_runner_refuses_a_key_its_aims_keys_does_not_allow_in_a_job_queued_before(
+    cp: CP, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a row queued before needs held keys goes to any runner: the call's own check holds the key
+    monkeypatch.setattr(
+        Job, "needs", lambda self: {"envs": ["TEST_KEY_THAT_IS_NOT_SET"], "kernel": False}
+    )
+    monkeypatch.setattr(api, "_check_runner", lambda *a, **kw: None)
+    monkeypatch.setenv("TEST_KEY_THAT_IS_NOT_SET", "sk-CANARY-old-row")
+    monkeypatch.setenv("AIMS_KEYS", "OTHER_KEY=http://model.invalid/v1")
+    async with node(cp, tmp_path / "node"):
         async with cp.client(cp.operator) as c:
-            r = await c.post(ADD, json={"toml": text, "check": False})
-            assert r.status_code == 200, r.text
-        assert "EXAMPLE_KEY" in cp.state.runners["fake"].told
-    finally:
-        await fake.close()
+            r = await c.post("/api/models/check", json={"profiles": ["keyed"]})
+            assert r.status_code == 202, r.text
+            (run_id,) = r.json()["run_ids"]
+        await job_until(cp, run_id, lambda j: j.state not in OPEN_STATES)
+        async with cp.client(cp.viewer) as c:
+            events = (await c.get(f"/api/runs/{run_id}/events")).text
+    assert "AIMS_KEYS lacks TEST_KEY_THAT_IS_NOT_SET=http://model.invalid/v1" in events
+    assert "CANARY" not in events
 
 
 async def test_a_profile_added_after_the_roles_can_be_patched(cp: CP) -> None:

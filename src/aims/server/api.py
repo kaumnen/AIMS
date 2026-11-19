@@ -57,6 +57,7 @@ from aims.events.store import is_run_id
 from aims.models import Price, Profile, ProfileError
 from aims.models.add import AddError, draft, gather, suggest
 from aims.models.check import Verdict, to_check
+from aims.models.keys import listable
 from aims.models.listprice import SOURCE, Listing, ListPrice, PriceLists, survey
 from aims.models.profiles import Role as ModelRole
 from aims.monitor import sweep_texts
@@ -111,7 +112,7 @@ from aims.server.codings import allowed
 from aims.server.files import Source, Sources
 from aims.server.problems import TITLES, ProblemError, ProblemException, responses
 from aims.server.runner_api import JOBS, send
-from aims.server.state import FileCache, ServerState
+from aims.server.state import Connected, FileCache, ServerState
 from aims.text import NoLoneSurrogate, Utf8, scrub
 from aims.tools import UnknownTool, registry
 from aims.wire import (
@@ -321,6 +322,24 @@ def _run_id(run_id: str) -> str:
     return run_id
 
 
+def keys_reason(entries: Sequence[str], runners: Sequence[Connected], who: str) -> str:
+    """Why none of `runners` allows all of `entries`, and the fix."""
+    missing = [e for e in entries if not any(c.allows([e]) for c in runners)]
+    unlistable = [e for e in missing if not listable(e)]
+    if unlistable:
+        return (
+            f"no runner can allow {', '.join(unlistable)}, which AIMS_KEYS cannot hold; give the"
+            " profile another key name or URL"
+        )
+    if not missing:
+        return f"no {who} allows all of {', '.join(entries)} at once"
+    it, its = ("them", "their") if len(missing) > 1 else ("it", "its")
+    return (
+        f"no {who} allows {', '.join(missing)}; add {it} to a runner's AIMS_KEYS and set"
+        f" {its} variables there"
+    )
+
+
 def queue_reason(state: ServerState, job: sdb.Job) -> str | None:
     """Why the job has not started. Raises ValidationError for a job whose needs this version
     cannot read."""
@@ -337,9 +356,9 @@ def queue_reason(state: ServerState, job: sdb.Job) -> str | None:
     kind = needs.kind
     if kind is not None and not any(kind in c.hello.kinds for c in live):
         return f"no connected runner runs {kind} jobs"
-    envs = set(needs.envs or [])
-    if envs and not any(envs <= set(c.envs) for c in live):
-        return f"no connected runner has {', '.join(sorted(envs))} set"
+    entries = needs.keys or []
+    if entries and not any(c.allows(entries) for c in live):
+        return keys_reason(entries, live, "connected runner")
     if needs.kernel and not any(c.tracer_alive for c in live):
         return "no connected runner has the kernel tracer up"
     if not any(c.free() > 0 for c in live):
@@ -903,8 +922,13 @@ class Started(Out):
 
 
 def _check_runner(
-    state: ServerState, runner: str | None, jobs: Sequence[Job | MonitorJob | ScoreJob]
+    state: ServerState,
+    runner: str | None,
+    jobs: Sequence[Job | MonitorJob | ScoreJob],
+    keys: Sequence[str] = (),
 ) -> None:
+    """Raise unless some runner, `runner` when one is named, can take each of `jobs`, and
+    allows every AIMS_KEYS entry of `keys`."""
     known = list(state.runners.values())
     if runner is not None:
         if runner not in state.runners:
@@ -915,14 +939,11 @@ def _check_runner(
     kind = jobs[0].kind if jobs else None
     if kind in ("monitor", "score", "selftest") and not any(kind in c.hello.kinds for c in known):
         raise ProblemException(422, "Invalid request", f"no runner runs {kind} jobs", code="kind")
-    envs = set(jobs[0].envs()) if jobs else set()
-    if envs and not any(envs <= set(c.envs) for c in known):
-        raise ProblemException(
-            422,
-            "Invalid request",
-            f"no runner has {', '.join(sorted(envs))} set",
-            code="envs",
-        )
+    for entries in {tuple(j.keys()) for j in jobs} | {tuple(keys)}:
+        if entries and not any(c.allows(entries) for c in known):
+            raise ProblemException(
+                422, "Invalid request", keys_reason(entries, known, "runner"), code="keys"
+            )
 
 
 async def _queue(
@@ -1948,6 +1969,7 @@ class ProfileInfo(Out):
     reasoning: str
     roles: list[str]
     envs: list[str]
+    entry: str | None = None
     runners: list[str]
     check: ProfileCheck | None = None
     price: Price | None = None
@@ -1964,8 +1986,8 @@ class ModelsInfo(Out):
 
 @router.get("/models", tags=["models"])
 async def list_models(principal: Viewer, state: State) -> ModelsInfo:
-    """Profiles, their roles, which runners have the variables each one reads, and each
-    profile's newest model check."""
+    """Profiles, their roles, the AIMS_KEYS entry each one needs, the runners that allow it
+    with its variables set, and each profile's newest model check."""
     models = state.config.settings().models
     roles: dict[str, list[str]] = {}
     for role, name in models.roles.model_dump(exclude_none=True).items():
@@ -1975,7 +1997,8 @@ async def list_models(principal: Viewer, state: State) -> ModelsInfo:
     out = []
     for name, p in sorted(models.profiles.items()):
         envs = [e for e in (p.api_key_env, p.base_url_env) if e]
-        ready = [c.name for c in state.runners.values() if set(envs) <= set(c.envs)]
+        entry = p.entry()
+        ready = [c.name for c in state.runners.values() if entry is None or c.allows([entry])]
         out.append(
             ProfileInfo(
                 name=name,
@@ -1985,6 +2008,7 @@ async def list_models(principal: Viewer, state: State) -> ModelsInfo:
                 reasoning=p.reasoning,
                 roles=roles.get(name, []),
                 envs=envs,
+                entry=entry,
                 runners=sorted(ready),
                 check=checks.get(name),
                 price=p.price,

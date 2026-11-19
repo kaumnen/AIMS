@@ -97,8 +97,8 @@ class JobAdd(_Strict):
 
 class Job(_Strict):
     """`monitor` is the resolved monitor's snapshot, None for a run without one; its profiles
-    are in `models` too, so a runner offers their keys. `add` is set on the check of a profile
-    the app added."""
+    are in `models` too, so the runner that takes it must allow their keys. `add` is set on the
+    check of a profile the app added."""
 
     kind: JobKind = "scenario"
     run_id: str
@@ -129,21 +129,19 @@ class Job(_Strict):
             out.append(self.folder)
         return out
 
-    def envs(self) -> list[str]:
-        """The environment variables its profiles read, which the runner must have set. A
-        self-test calls no model: every agent in it is scripted."""
+    def keys(self) -> list[str]:
+        """The AIMS_KEYS entries its profiles need, which the runner must allow with their
+        variables set. A self-test calls no model: every agent in it is scripted."""
         if self.kind == "selftest":
             return []
-        names: set[str] = set()
-        for p in (*self.profiles.values(), *self.models.values()):
-            names.update(e for e in (p.api_key_env, p.base_url_env) if e)
-        return sorted(names)
+        entries = {p.entry() for p in (*self.profiles.values(), *self.models.values())}
+        return sorted(e for e in entries if e is not None)
 
     def needs(self) -> dict[str, JsonValue]:
         """What a runner must offer to take it. A self-test needs the kernel tracer whatever
         `audit` says: its plants are proved on what the tracer saw."""
         out: dict[str, JsonValue] = {
-            "envs": list(self.envs()),
+            "keys": list(self.keys()),
             "kernel": self.kind == "selftest"
             or (self.kind == "scenario" and self.audit == "kernel"),
         }

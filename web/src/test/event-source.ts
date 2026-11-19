@@ -44,7 +44,7 @@ export function runnerInfo(over: Partial<RunnerInfo> = {}): RunnerInfo {
     version: null,
     arch: null,
     tracer: { alive: true, detail: null, restarts: 0 },
-    envs: [],
+    keys: [],
     slots: 2,
     free: 2,
     running: [],

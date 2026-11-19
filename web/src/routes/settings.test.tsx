@@ -51,6 +51,7 @@ const profile = (over: Partial<ProfileInfo>): ProfileInfo => ({
   reasoning: "medium",
   roles: ["agent"],
   envs: ["META_API_KEY"],
+  entry: "META_API_KEY=https://api.example.com/v1",
   runners: ["local"],
   check: null,
   price: { input: 1.25, cached: 0.15, output: 4.25 },
@@ -279,7 +280,14 @@ beforeEach(() => {
       return Response.json({
         profiles: [
           profile({ check: checked }),
-          profile({ name: "gamma", roles: [], envs: ["GAMMA_KEY"], runners: [], price: null }),
+          profile({
+            name: "gamma",
+            roles: [],
+            envs: ["GAMMA_KEY"],
+            entry: "GAMMA_KEY=env:GAMMA_URL",
+            runners: [],
+            price: null,
+          }),
           ...more,
         ],
         roles: modelRoles,
@@ -381,10 +389,10 @@ test("a check of a model profile follows its run", async () => {
   const table = await screen.findByRole("table");
   const alpha = within(table).getByText("alpha").closest("tr") as HTMLElement;
   expect(within(alpha).getByText("agent")).toBeTruthy();
-  expect(within(alpha).getByText("set on local")).toBeTruthy();
+  expect(within(alpha).getByText("allowed on local")).toBeTruthy();
   expect(within(alpha).getByText("never checked")).toBeTruthy();
   const gamma = within(table).getByText("gamma").closest("tr") as HTMLElement;
-  expect(within(gamma).getByText("no connected runner has them")).toBeTruthy();
+  expect(within(gamma).getByText("no connected runner allows it")).toBeTruthy();
 
   fireEvent.click(within(alpha).getByRole("button", { name: "Check alpha" }));
   expect(await within(alpha).findByText("checking")).toBeTruthy();

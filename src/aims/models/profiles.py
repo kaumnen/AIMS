@@ -308,6 +308,14 @@ class Profile(_Strict):
     def group(self) -> str:
         return self.limits.group or self.name
 
+    def entry(self) -> str | None:
+        """The AIMS_KEYS entry a runner needs to make this profile's calls, None for a profile
+        that reads no env var."""
+        key, var = self.api_key_env, self.base_url_env
+        if var is not None:
+            return f"{VIA}{var}" if key is None else f"{key}={VIA}{var}"
+        return None if key is None else f"{key}={self.base_url}"
+
     def _keys(self, env: Mapping[str, str]) -> Keys:
         """The AIMS_KEYS of `env`, once neither of the profile's env vars is one of AIMS's own."""
         for name in (self.base_url_env, self.api_key_env):
@@ -329,8 +337,7 @@ class Profile(_Strict):
         var = self.base_url_env
         assert var is not None
         if var not in self._keys(env).urls:
-            key = self.api_key_env
-            raise KeyRefused(self.name, f"{VIA}{var}" if key is None else f"{key}={VIA}{var}")
+            raise KeyRefused(self.name, str(self.entry()))
         value = env.get(var)
         if not value:
             raise ProfileError(f"profile {self.name}: {var} is not set")
@@ -343,8 +350,9 @@ class Profile(_Strict):
 
     def api_key(self, url: str, env: Mapping[str, str] = os.environ) -> str | None:
         """The key to send to `url`, None for a profile with no key. The key's var is read only
-        once AIMS_KEYS lets it go to `url`, so the answer for one it does not let is the same
-        whether the var is set or not."""
+        once AIMS_KEYS lets it go to this profile: by its URL var when it reads one, else by
+        `url`, its base_url. So the answer for a key it does not let is the same whether the var
+        is set or not."""
         name = self.api_key_env
         if name is None:
             return None
@@ -354,9 +362,9 @@ class Profile(_Strict):
                 f"profile {self.name}: AIMS sends no key to a URL with a user name, password,"
                 " query, fragment or % in its path"
             )
-        if not allowed.lets(name, url, env):
-            to = f"{VIA}{self.base_url_env}" if self.base_url is None else self.base_url
-            raise KeyRefused(self.name, f"{name}={to}")
+        var = self.base_url_env
+        if not (allowed.lets(name, var=var) if var is not None else allowed.lets(name, url=url)):
+            raise KeyRefused(self.name, str(self.entry()))
         value = env.get(name)
         if not value:
             raise ProfileError(f"profile {self.name}: {name} is not set")

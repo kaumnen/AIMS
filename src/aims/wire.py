@@ -2,14 +2,15 @@
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
 
 from aims.events import Event, HoldInfo, Label, OperatorActionKind, ResumeThen, RunKind
 from aims.models import Profile
+from aims.models.keys import reported
 from aims.monitor.setup import ResolvedMonitor
 from aims.run.job import Job, JobOptions
 
-RUNNER_API = 1
+RUNNER_API = 2
 HEARTBEAT_S = 10.0
 STALE_S = 60.0
 CLAIM_S = 10.0
@@ -42,32 +43,35 @@ BASE_KINDS: tuple[JobKindName, ...] = ("scenario", "models.check")
 
 
 class RunnerHello(_Wire):
-    """`kinds` are the job kinds the runner can run; it is offered no other."""
+    """`kinds` are the job kinds the runner can run; it is offered no other. `keys` are the
+    entries of its AIMS_KEYS whose variables it has set: names and URLs, never values. It is
+    offered only jobs whose profiles they allow."""
 
     name: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9._@-]+$")
     version: str
     api: int = RUNNER_API
     arch: str
     tracer: TracerHealth
-    envs: list[str] = Field(default_factory=list)
+    keys: list[str] = Field(default_factory=list)
     slots: int = Field(default=2, ge=0)
     jobs: list[str] = Field(default_factory=list)
     kinds: list[JobKindName] = Field(default_factory=lambda: list(BASE_KINDS))
 
+    @field_validator("keys")
+    @classmethod
+    def _keys(cls, value: list[str]) -> list[str]:
+        reported(value)
+        return value
+
 
 class HelloReply(_Wire):
-    """`envs` names the variables the control plane's profiles read; the runner reports which
-    of them it has set, never their values."""
-
     name: str
     heartbeat_s: float = HEARTBEAT_S
     requeued: list[str] = Field(default_factory=list)
-    envs: list[str] = Field(default_factory=list)
 
 
 class RunnerStatus(_Wire):
     tracer: TracerHealth
-    envs: list[str] = Field(default_factory=list)
     free: int = Field(ge=0)
     running: list[str] = Field(default_factory=list)
     jobs: list[str] = Field(default_factory=list)
@@ -102,15 +106,7 @@ class OfferMessage(_Wire):
     needs: dict[str, JsonValue] = Field(default_factory=dict)
 
 
-class EnvsMessage(_Wire):
-    """The env names the config now wants a runner to say it has, sent when they change after
-    its hello."""
-
-    kind: Literal["envs"] = "envs"
-    envs: list[str]
-
-
-RunnerFeed = Annotated[CommandMessage | OfferMessage | EnvsMessage, Field(discriminator="kind")]
+RunnerFeed = Annotated[CommandMessage | OfferMessage, Field(discriminator="kind")]
 
 
 class Ack(_Wire):
@@ -146,16 +142,14 @@ class MonitorJob(_Wire):
     def blobs(self) -> list[str]:
         return []
 
-    def envs(self) -> list[str]:
+    def keys(self) -> list[str]:
+        """The AIMS_KEYS entries its profiles need."""
         m = self.resolved()
-        names: set[str] = set()
-        for p in (*m.sweeps.values(), m.review, m.judge):
-            if p is not None:
-                names.update(e for e in (p.api_key_env, p.base_url_env) if e)
-        return sorted(names)
+        entries = {p.entry() for p in (*m.sweeps.values(), m.review, m.judge) if p is not None}
+        return sorted(e for e in entries if e is not None)
 
     def needs(self) -> dict[str, JsonValue]:
-        return {"envs": list(self.envs()), "kernel": False, "kind": self.kind}
+        return {"keys": list(self.keys()), "kernel": False, "kind": self.kind}
 
 
 class ScoreJob(_Wire):
@@ -188,12 +182,14 @@ class ScoreJob(_Wire):
     def blobs(self) -> list[str]:
         return []
 
-    def envs(self) -> list[str]:
+    def keys(self) -> list[str]:
+        """The AIMS_KEYS entry its classifier needs."""
         p = self.profile()
-        return [] if p is None else sorted(e for e in (p.api_key_env, p.base_url_env) if e)
+        entry = None if p is None else p.entry()
+        return [] if entry is None else [entry]
 
     def needs(self) -> dict[str, JsonValue]:
-        return {"envs": list(self.envs()), "kernel": False, "kind": self.kind}
+        return {"keys": list(self.keys()), "kernel": False, "kind": self.kind}
 
 
 AnyJob = Annotated[Job | MonitorJob | ScoreJob, Field(discriminator="kind")]
@@ -314,7 +310,7 @@ class RunnerInfo(_Wire):
     version: str | None = None
     arch: str | None = None
     tracer: TracerHealth | None = None
-    envs: list[str] = Field(default_factory=list)
+    keys: list[str] = Field(default_factory=list)
     slots: int = 0
     free: int = 0
     running: list[str] = Field(default_factory=list)

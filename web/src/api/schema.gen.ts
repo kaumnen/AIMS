@@ -165,8 +165,8 @@ export interface paths {
         };
         /**
          * List Models
-         * @description Profiles, their roles, which runners have the variables each one reads, and each
-         *     profile's newest model check.
+         * @description Profiles, their roles, the AIMS_KEYS entry each one needs, the runners that allow it
+         *     with its variables set, and each profile's newest model check.
          */
         get: operations["list_models"];
         put?: never;
@@ -190,9 +190,9 @@ export interface paths {
          * Add Model
          * @description Add a profile to the project file, as `aims models add --write` does: at its end, or
          *     above [roles] when that table ends it. A name that a profile has already is refused, as is
-         *     a role the profile does not fit. The merged layers must load first. Runners are told the
-         *     env vars it reads. With `check` a runner must have said hello. The check is recorded as a
-         *     run; `GET /models` says how the add went once it ends.
+         *     a role the profile does not fit. The merged layers must load first. With `check` a runner
+         *     must have said hello and allow the AIMS_KEYS entry the profile needs. The check is recorded
+         *     as a run; `GET /models` says how the add went once it ends.
          */
         post: operations["add_model"];
         delete?: never;
@@ -2861,20 +2861,6 @@ export interface components {
             run_id: string;
         };
         /**
-         * EnvsMessage
-         * @description The env names the config now wants a runner to say it has, sent when they change after
-         *     its hello.
-         */
-        EnvsMessage: {
-            /** Envs */
-            envs: string[];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            kind: "envs";
-        };
-        /**
          * Estimate
          * @description The cost of `samples` runs of each variant in `parts`. `confirm` says `aims run` asks
          *     before it starts: no cap bounds the cost, whatever past runs cost, or the high figure, or
@@ -3982,14 +3968,8 @@ export interface components {
             /** Version */
             version: string;
         };
-        /**
-         * HelloReply
-         * @description `envs` names the variables the control plane's profiles read; the runner reports which
-         *     of them it has set, never their values.
-         */
+        /** HelloReply */
         HelloReply: {
-            /** Envs */
-            envs: string[];
             /**
              * Heartbeat S
              * @default 10
@@ -4115,8 +4095,8 @@ export interface components {
         /**
          * Job
          * @description `monitor` is the resolved monitor's snapshot, None for a run without one; its profiles
-         *     are in `models` too, so a runner offers their keys. `add` is set on the check of a profile
-         *     the app added.
+         *     are in `models` too, so the runner that takes it must allow their keys. `add` is set on the
+         *     check of a profile the app added.
          */
         Job: {
             add?: components["schemas"]["JobAdd"] | null;
@@ -6132,6 +6112,8 @@ export interface components {
             /** Backend */
             backend: string;
             check: components["schemas"]["ProfileCheck"] | null;
+            /** Entry */
+            entry: string | null;
             /** Envs */
             envs: string[];
             /** Model */
@@ -7020,7 +7002,7 @@ export interface components {
             /** Verdict Severity */
             verdict_severity: number | null;
         };
-        RunnerFeed: components["schemas"]["CommandMessage"] | components["schemas"]["OfferMessage"] | components["schemas"]["EnvsMessage"];
+        RunnerFeed: components["schemas"]["CommandMessage"] | components["schemas"]["OfferMessage"];
         /** RunnerHealthMessage */
         RunnerHealthMessage: {
             /**
@@ -7032,20 +7014,22 @@ export interface components {
         };
         /**
          * RunnerHello
-         * @description `kinds` are the job kinds the runner can run; it is offered no other.
+         * @description `kinds` are the job kinds the runner can run; it is offered no other. `keys` are the
+         *     entries of its AIMS_KEYS whose variables it has set: names and URLs, never values. It is
+         *     offered only jobs whose profiles they allow.
          */
         RunnerHello: {
             /**
              * Api
-             * @default 1
+             * @default 2
              */
             api?: number;
             /** Arch */
             arch: string;
-            /** Envs */
-            envs?: string[];
             /** Jobs */
             jobs?: string[];
+            /** Keys */
+            keys?: string[];
             /** Kinds */
             kinds?: ("scenario" | "models.check" | "monitor" | "score" | "selftest")[];
             /** Name */
@@ -7068,13 +7052,13 @@ export interface components {
              * @default false
              */
             connected: boolean;
-            /** Envs */
-            envs: string[];
             /**
              * Free
              * @default 0
              */
             free: number;
+            /** Keys */
+            keys: string[];
             /** Kinds */
             kinds: ("scenario" | "models.check" | "monitor" | "score" | "selftest")[];
             /**
@@ -7104,8 +7088,6 @@ export interface components {
         };
         /** RunnerStatus */
         RunnerStatus: {
-            /** Envs */
-            envs?: string[];
             /** Free */
             free: number;
             /** Jobs */
@@ -15799,7 +15781,6 @@ export const costFiguresTierValues: ReadonlyArray<FlattenedDeepRequired<componen
 export const deltaMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["DeltaMessage"]["kind"]> = ["delta"];
 export const deltasDroppedMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["DeltasDroppedMessage"]["kind"]> = ["deltas_dropped"];
 export const endMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EndMessage"]["kind"]> = ["end"];
-export const envsMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EnvsMessage"]["kind"]> = ["envs"];
 export const eventTypeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventType"]> = ["agent.compacted", "agent.finished", "agent.held", "agent.input", "agent.report", "agent.started", "agent.step", "audit.lost", "audit.spill", "cache.probe", "channel.message", "channel.read", "channel.snapshot", "exec.finished", "exec.started", "file.access", "file.look", "file.setattr", "file.sync", "file.write", "file.xattr", "fs.snapshot", "ipc.event", "log.truncated", "mem.exec", "model.checked", "model.request", "model.response", "monitor.action", "monitor.cleared", "monitor.degraded", "monitor.flag", "monitor.sweep", "monitor.verdict", "net.connect", "net.listen", "ns.event", "operator.action", "plant.triggered", "proc.exec", "proc.exit", "proc.fork", "proc.output", "proc.signal", "ptrace.event", "replay.divergence", "resource.sample", "run.finished", "run.started", "sandbox.archived", "sandbox.freeze_failed", "sandbox.outside_pause", "sandbox.started", "sandbox.stopped", "score.answer", "score.awareness", "score.unexplained", "score.unit", "selftest.case", "sys.denied", "task.scored", "tool.call", "tool.result"];
 export const eventsMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventsMessage"]["kind"]> = ["events"];
 export const execFinishedEndValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ExecFinished"]["end"]> = ["exited", "timeout", "cancelled", "failed"];

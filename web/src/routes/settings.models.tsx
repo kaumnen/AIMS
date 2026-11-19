@@ -264,15 +264,15 @@ function Row({
         <Price p={p} prices={prices} />
       </td>
       <td className="py-1.5 pr-4 max-md:hidden">
-        {p.envs.length === 0 ? (
+        {p.entry === null ? (
           <span className="text-muted-foreground">none needed</span>
         ) : (
           <>
-            <span className="font-mono">{p.envs.join(", ")}</span>
+            <span className="font-mono break-all">{p.entry}</span>
             <span className={cn("block", p.runners.length > 0 && "text-muted-foreground")}>
               {p.runners.length > 0
-                ? `set on ${p.runners.join(", ")}`
-                : "no connected runner has them"}
+                ? `allowed on ${p.runners.join(", ")}`
+                : "no connected runner allows it"}
             </span>
           </>
         )}

@@ -267,7 +267,7 @@ def test_a_selftest_job_needs_the_tracer_and_a_runner_that_runs_it(tmp_path: Pat
     bundle = load(write(tmp_path / "s"))
     job = selftest_job(bundle, Prompts(), folder="f" * 64)
     assert job.kind == "selftest"
-    assert job.needs() == {"envs": [], "kernel": True, "kind": "selftest"}
+    assert job.needs() == {"keys": [], "kernel": True, "kind": "selftest"}
     assert job.profiles == {"agent": st.SCRIPTED}
 
 

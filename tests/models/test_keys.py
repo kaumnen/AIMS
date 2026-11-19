@@ -29,7 +29,7 @@ from aims.models import (
 )
 from aims.models.check import record_check
 from aims.models.client import REPLAY_URL
-from aims.models.keys import KEYS, Keys, KeysError, parse, place
+from aims.models.keys import KEYS, Keys, KeysError, parse, place, reported
 from aims.models.types import Message
 from aims.stored import STORED
 
@@ -80,7 +80,7 @@ def config(p: Profile) -> ModelsConfig:
     ],
 )
 def test_a_key_goes_to_its_url_and_the_paths_under_it(url: str) -> None:
-    assert parse(f"K={URL}").lets("K", url, {})
+    assert parse(f"K={URL}").lets("K", url=url)
 
 
 @pytest.mark.parametrize(
@@ -108,7 +108,7 @@ def test_a_key_goes_to_its_url_and_the_paths_under_it(url: str) -> None:
     ],
 )
 def test_a_key_goes_nowhere_else(url: str) -> None:
-    assert not parse(f"K={URL}").lets("K", url, {})
+    assert not parse(f"K={URL}").lets("K", url=url)
 
 
 def test_scheme_host_and_port_match_as_listed() -> None:
@@ -116,34 +116,34 @@ def test_scheme_host_and_port_match_as_listed() -> None:
         "LOCAL=http://localhost:8000/v1,ROOT=https://root.example,SIX=http://[::1]:8080/v1,"
         "IDN=https://bücher.example/v1,PORT=https://a.example:443"
     )
-    assert keys.lets("LOCAL", "http://localhost:8000/v1", {})
-    assert not keys.lets("LOCAL", "https://localhost:8000/v1", {})
-    assert not keys.lets("LOCAL", "http://localhost/v1", {})
-    assert keys.lets("ROOT", "https://root.example/any/path", {})
-    assert keys.lets("SIX", "http://[::1]:8080/v1/chat", {})
-    assert keys.lets("IDN", "https://xn--bcher-kva.example/v1", {})
-    assert keys.lets("PORT", "https://a.example/x", {})
-    assert not keys.lets("ROOT", URL, {})
-    assert not keys.lets("NONE", "https://root.example", {})
+    assert keys.lets("LOCAL", url="http://localhost:8000/v1")
+    assert not keys.lets("LOCAL", url="https://localhost:8000/v1")
+    assert not keys.lets("LOCAL", url="http://localhost/v1")
+    assert keys.lets("ROOT", url="https://root.example/any/path")
+    assert keys.lets("SIX", url="http://[::1]:8080/v1/chat")
+    assert keys.lets("IDN", url="https://xn--bcher-kva.example/v1")
+    assert keys.lets("PORT", url="https://a.example/x")
+    assert not keys.lets("ROOT", url=URL)
+    assert not keys.lets("NONE", url="https://root.example")
 
 
 def test_a_name_may_repeat_and_spaces_and_empty_entries_are_ignored() -> None:
     keys = parse(f" K={URL} , ,K=https://b.example/v2, env:U ,")
-    assert keys.lets("K", URL, {})
-    assert keys.lets("K", "https://b.example/v2/x", {})
+    assert keys.lets("K", url=URL)
+    assert keys.lets("K", url="https://b.example/v2/x")
     assert keys.urls == {"U"}
     assert parse("") == Keys()
 
 
-def test_a_key_bound_to_a_url_var_goes_to_the_url_it_holds() -> None:
-    keys = parse("K=env:ROUTER_URL")
+def test_a_key_bound_to_a_url_var_goes_only_to_profiles_that_read_it() -> None:
+    keys = parse(f"K=env:ROUTER_URL,L={URL}")
     assert keys.urls == {"ROUTER_URL"}
-    assert keys.lets("K", URL, {"ROUTER_URL": f"{URL}/"})
-    assert keys.lets("K", f"{URL}/chat", {"ROUTER_URL": URL})
-    assert not keys.lets("K", URL, {})
-    assert not keys.lets("K", URL, {"ROUTER_URL": "https://other.example/v1"})
-    assert not keys.lets("K", URL, {"ROUTER_URL": "https://u:p@api.example.com/v1"})
-    assert not keys.lets("K", URL, {"ROUTER_URL": f"{URL}?x=1"})
+    assert keys.lets("K", var="ROUTER_URL")
+    assert not keys.lets("K", var="OTHER_URL")
+    assert not keys.lets("L", var="ROUTER_URL")
+    # the entries are exact: a URL entry never covers a URL var, nor the other way round
+    assert not keys.lets("K", url=URL)
+    assert keys.lets("L", url=URL)
 
 
 @pytest.mark.parametrize(
@@ -244,6 +244,113 @@ def test_aims_never_reads_its_own_vars_for_a_model(fields: dict[str, Any], held:
     q = profile(base_url=None, base_url_env="AIMS_TOKEN")
     with pytest.raises(ProfileError, match="AIMS_TOKEN starts with AIMS_"):
         q.url({"AIMS_TOKEN": URL})
+
+
+@pytest.mark.parametrize(
+    ("fields", "listed", "entry"),
+    [
+        # a URL var holding the listed URL is still a URL var: its entry names the var
+        ({"base_url": None, "base_url_env": "U"}, f"K={URL},env:U", "K=env:U"),
+        # a written base_url equal to what a listed URL var holds still needs its own entry
+        ({}, "K=env:U", f"K={URL}"),
+        # an entry for another URL var does not cover this one
+        ({"base_url": None, "base_url_env": "U"}, "K=env:V,env:U", "K=env:U"),
+    ],
+)
+def test_an_entry_covers_only_the_profiles_it_names(
+    fields: dict[str, Any], listed: str, entry: str
+) -> None:
+    p = profile(api_key_env="K", **fields)
+    env = {KEYS: listed, "K": KEY, "U": URL, "V": URL}
+    assert p.entry() == entry
+    with pytest.raises(KeyRefused) as info:
+        p.api_key(p.url(env), env)
+    assert info.value.entry == entry
+    fixed = {**env, KEYS: f"{listed},{entry}"}
+    assert p.api_key(p.url(fixed), fixed) == KEY
+
+
+@pytest.mark.parametrize(
+    ("fields", "entry"),
+    [
+        ({}, None),
+        ({"api_key_env": "K"}, f"K={URL}"),
+        ({"api_key_env": "K", "base_url": None, "base_url_env": "U"}, "K=env:U"),
+        ({"base_url": None, "base_url_env": "U"}, "env:U"),
+    ],
+)
+def test_a_profile_names_the_entry_it_needs(fields: dict[str, Any], entry: str | None) -> None:
+    p = profile(**fields)
+    assert p.entry() == entry
+    if entry is not None:
+        assert parse(entry).allows(entry)
+
+
+def test_a_runner_reports_the_entries_whose_vars_it_has_set_and_never_a_value() -> None:
+    keys = parse(f"K={URL},K=https://b.example/v2,L={URL},M=env:U,N=env:W,env:X,env:Y")
+    env = {"K": KEY, "M": KEY, "N": KEY, "U": CANARY, "X": CANARY, "L": ""}
+    report = keys.report(env)
+    assert report == [
+        f"K={URL}",
+        "K=https://b.example/v2",
+        "M=env:U",
+        "env:U",
+        "env:X",
+    ]
+    assert CANARY not in "".join(report)
+    # the control plane reads the report as the runner reads its own list
+    assert reported(report) == parse(",".join(report))
+    assert reported(report).allows(f"K={URL}/chat")
+    assert reported(report).allows("M=env:U")
+    assert not reported(report).allows(f"L={URL}")
+    assert not reported(report).allows("N=env:W")
+    assert not reported(report).allows("env:Y")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "https://api.example.com/v1",
+        "https://API.example.com:443/v1/",
+        "https://api.example.com./v1",
+        "http://[::1]:8080",
+        "https://bücher.example",
+    ],
+)
+def test_a_reported_url_reads_back_as_the_same_place(text: str) -> None:
+    keys = parse(f"K={text}")
+    back = reported(keys.report({"K": KEY}))
+    assert back.places["K"] == keys.places["K"]
+    assert back.covers(keys)
+    assert keys.covers(back)
+
+
+@pytest.mark.parametrize(
+    ("listed", "entry", "allowed"),
+    [
+        (f"K={URL}", f"K={URL}/x", True),
+        (f"K={URL}/x", f"K={URL}", False),
+        (f"K={URL}", "K=https://api.example.com/v10", False),
+        (f"K={URL}", "K=https://api.example.com.evil.test/v1", False),
+        ("K=env:U", "K=env:U", True),
+        ("env:U", "K=env:U", False),
+        ("K=env:U", "env:U", True),
+        ("K=env:U", "env:V", False),
+        (f"K={URL}", f"K={URL},L={URL}", False),
+        (f"K={URL}", "K=nonsense", False),
+        (f"K={URL}", "", True),
+    ],
+)
+def test_allows_matches_places_never_text(listed: str, entry: str, allowed: bool) -> None:
+    assert parse(listed).allows(entry) is allowed
+
+
+def test_a_report_with_an_entry_aims_cannot_read_is_refused() -> None:
+    with pytest.raises(KeysError):
+        reported([f"K={URL},L={URL}"])
+    with pytest.raises(KeysError):
+        reported([f"K={KEY}"])
+    assert reported([]) == Keys()
 
 
 def test_a_profile_with_a_url_and_no_key_needs_no_list() -> None:

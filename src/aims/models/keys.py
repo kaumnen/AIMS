@@ -1,14 +1,17 @@
 """AIMS_KEYS: which env vars AIMS reads for a model call and where it may send each key.
 
-Entries are separated by commas. `NAME=URL` lets the key in env var NAME go to URL and the
-paths under it. `NAME=env:VAR` lets it go to the URL that env var VAR holds. `env:VAR` lets a
-profile with no key read its URL from VAR. A name may repeat for more URLs. AIMS reads no
-other env var for a model's URL or key, so a profile cannot name one to learn whether it is
-set.
+Entries are separated by commas. `NAME=URL` lets the key in env var NAME go to a profile whose
+base_url is URL or a path under it. `NAME=env:VAR` lets it go to a profile that reads its URL
+from env var VAR. `env:VAR` lets a profile with no key read its URL from VAR. A name may repeat
+for more URLs. AIMS reads no other env var for a model's URL or key, so a profile cannot name
+one to learn whether it is set.
+
+A runner tells the control plane the entries whose variables it has set, never their values,
+and the control plane offers it only jobs whose profiles those entries allow.
 """
 
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from functools import lru_cache
 
@@ -33,12 +36,13 @@ def own(name: str) -> bool:
 @dataclass(frozen=True, slots=True)
 class Place:
     """Where a URL leads, as AIMS compares it: the scheme, the host in ASCII without a trailing
-    dot, the port and the segments of the path."""
+    dot, the port and the segments of the path. `text` is the URL as written."""
 
     scheme: str
     host: str
     port: int
     path: tuple[str, ...]
+    text: str = field(default="", compare=False)
 
     def holds(self, other: Place) -> bool:
         """Whether `other` is this place or a path under it."""
@@ -66,31 +70,53 @@ def place(url: str) -> Place | None:
     segments = u.path.split("/")[1:]
     if segments and not segments[-1]:
         segments.pop()
-    return Place(u.scheme, host, u.port or _PORTS[u.scheme], tuple(segments))
+    return Place(u.scheme, host, u.port or _PORTS[u.scheme], tuple(segments), url)
 
 
 @dataclass(frozen=True, slots=True)
 class Keys:
     """A read AIMS_KEYS. `places` holds the URLs each key may go to, `via` the URL vars whose
-    URL it may go to, `urls` every URL var AIMS may read."""
+    profiles it may go to, `urls` every URL var AIMS may read."""
 
     places: Mapping[str, tuple[Place, ...]] = field(default_factory=dict)
     via: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     urls: frozenset[str] = frozenset()
 
-    def lets(self, name: str, url: str, env: Mapping[str, str]) -> bool:
-        """Whether the key in `name` may go to `url`. The URL vars it may go to are read from
-        `env`."""
-        to = place(url)
-        if to is None:
-            return False
-        if any(p.holds(to) for p in self.places.get(name, ())):
-            return True
-        for var in self.via.get(name, ()):
-            at = place(env.get(var, ""))
-            if at is not None and at.holds(to):
-                return True
-        return False
+    def lets(self, name: str, *, url: str | None = None, var: str | None = None) -> bool:
+        """Whether the key in `name` may go to a profile that reads its URL from `var`, or else
+        whose base_url is `url`."""
+        if var is not None:
+            return var in self.via.get(name, ())
+        to = place(url or "")
+        return to is not None and any(p.holds(to) for p in self.places.get(name, ()))
+
+    def covers(self, other: Keys) -> bool:
+        """Whether this list allows each entry of `other`."""
+        return (
+            other.urls <= self.urls
+            and all(self.lets(k, var=v) for k, vs in other.via.items() for v in vs)
+            and all(
+                any(q.holds(p) for q in self.places.get(k, ()))
+                for k, ps in other.places.items()
+                for p in ps
+            )
+        )
+
+    def allows(self, entry: str) -> bool:
+        """Whether this list allows `entry`, the one entry a profile needs."""
+        return listable(entry) and self.covers(parse(entry))
+
+    def report(self, env: Mapping[str, str]) -> list[str]:
+        """The entries whose variables `env` has set, as a runner reports them: names and
+        URLs, never values."""
+        out: set[str] = {f"{VIA}{v}" for v in self.urls if env.get(v)}
+        for name, ps in self.places.items():
+            if env.get(name):
+                out.update(f"{name}={p.text}" for p in ps)
+        for name, vs in self.via.items():
+            if env.get(name):
+                out.update(f"{name}={VIA}{v}" for v in vs if env.get(v))
+        return sorted(out)
 
 
 def _name(text: str, at: str) -> str:
@@ -153,3 +179,25 @@ def parse(text: str, what: str = KEYS) -> Keys:
 def keys(env: Mapping[str, str]) -> Keys:
     """The AIMS_KEYS of `env`. Raises KeysError when it cannot be read."""
     return parse(env.get(KEYS, ""))
+
+
+def listable(entry: str) -> bool:
+    """Whether AIMS_KEYS can hold `entry`, the one entry a profile needs. It cannot hold one
+    with a comma, an AIMS_ name or a URL AIMS sends no key to."""
+    if "," in entry:
+        return False
+    try:
+        parse(entry)
+    except KeysError:
+        return False
+    return True
+
+
+def reported(entries: Iterable[str]) -> Keys:
+    """The entries a runner reported, read as one list. Raises KeysError for one AIMS cannot
+    read."""
+    entries = list(entries)
+    for e in entries:
+        if "," in e:
+            raise KeysError("a reported entry holds a comma")
+    return parse(",".join(entries), "the reported entries")

@@ -37,7 +37,7 @@ output = 2.0
 
 [profiles.keyed]
 extends = "scripted"
-api_key_env = "AIMS_TEST_KEY_THAT_IS_NOT_SET"
+api_key_env = "TEST_KEY_THAT_IS_NOT_SET"
 
 [roles]
 agent = "scripted"

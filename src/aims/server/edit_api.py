@@ -74,7 +74,6 @@ from aims.server.files import (
     writing,
 )
 from aims.server.problems import ProblemError, ProblemException, responses
-from aims.server.runner_api import tell_envs
 from aims.server.state import ServerState
 from aims.text import NoLoneSurrogate, Utf8
 
@@ -254,7 +253,6 @@ async def _save(
         await asyncio.to_thread(_validate, state, layer, text)
         with writing(path):
             await asyncio.to_thread(write_atomic, path, data)
-    tell_envs(state)
     body = _file(layer, path, data)
     return Response(
         body.model_dump_json(), media_type="application/json", headers={"ETag": quoted(etag(data))}
@@ -306,9 +304,9 @@ async def add_model(
 ) -> ModelAdded:
     """Add a profile to the project file, as `aims models add --write` does: at its end, or
     above [roles] when that table ends it. A name that a profile has already is refused, as is
-    a role the profile does not fit. The merged layers must load first. Runners are told the
-    env vars it reads. With `check` a runner must have said hello. The check is recorded as a
-    run; `GET /models` says how the add went once it ends."""
+    a role the profile does not fit. The merged layers must load first. With `check` a runner
+    must have said hello and allow the AIMS_KEYS entry the profile needs. The check is recorded
+    as a run; `GET /models` says how the add went once it ends."""
     roles = [r for r in ROLES if r in body.roles]
     try:
         name, table = one_profile(body.toml)
@@ -325,7 +323,8 @@ async def add_model(
     if name in state.config.settings().models.profiles:
         raise taken
     if body.check:
-        _check_runner(state, body.runner, [])
+        entry = profile.entry()
+        _check_runner(state, body.runner, [], [entry] if entry is not None else [])
     path = _path(state, "project")
     async with _lock(path):
         if name in state.config.settings().models.profiles:
@@ -345,7 +344,6 @@ async def add_model(
         profiles, set_roles = _held(text)
         with writing(path):
             await asyncio.to_thread(write_atomic, path, text.encode())
-    tell_envs(state)
     if not body.check:
         return ModelAdded(name=name, path=str(path))
     # The file holds the profile now, so what follows answers 200 whatever happens.

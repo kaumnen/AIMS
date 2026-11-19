@@ -279,11 +279,13 @@ class Runner:
 
 
 class Needs(BaseModel):
-    """What a job needs of the runner that takes it: one that runs jobs of `kind`, has each
-    env var of `envs` set and, with `kernel`, the kernel tracer up."""
+    """What a job needs of the runner that takes it: one that runs jobs of `kind`, allows each
+    AIMS_KEYS entry of `keys` with its variables set and, with `kernel`, has the kernel tracer
+    up. `keys` is None in a row queued before runners reported their entries: any runner may
+    take it, and the runner's own check refuses a key its AIMS_KEYS does not allow."""
 
     kind: str | None = None
-    envs: list[str] | None = None
+    keys: list[str] | None = None
     kernel: bool | None = None
 
 

@@ -8,7 +8,7 @@ from typing import Any
 import httpx2
 import pytest
 from cp import CP, control_plane
-from test_server import FakeRunner, ship, until
+from test_server import MODEL_KEYS, FakeRunner, ship, until
 
 from aims.events import Draft, LocalEventStore, RunFinished, RunStarted, ToolCall
 from aims.events.payloads import FlagReview, MonitorFlag, MonitorVerdict
@@ -291,7 +291,7 @@ async def test_monitor_runs_queue_for_runners_that_take_them(
         r = await c.post(url, json={"signals_only": True, "judge_only": True})
         assert r.status_code == 422
 
-        mon = MonitorRunner(cp, "mon", envs=["MODEL_API_KEY"])
+        mon = MonitorRunner(cp, "mon", keys=MODEL_KEYS)
         await mon.connect()
         try:
             r = await c.post(url, json={"profile": "nope"})
@@ -308,7 +308,7 @@ async def test_monitor_runs_queue_for_runners_that_take_them(
             (signals,) = r.json()["run_ids"]
             offer = await mon.next(OfferMessage)
             assert offer.run_id == signals
-            assert offer.needs == {"envs": [], "kernel": False, "kind": "monitor"}
+            assert offer.needs == {"keys": [], "kernel": False, "kind": "monitor"}
             with pytest.raises(TimeoutError):
                 await fake.next(OfferMessage, within=0.5)
             job = await cp.state.db.job(signals)
@@ -344,7 +344,7 @@ async def test_monitor_runs_queue_for_runners_that_take_them(
                 + '\n[profiles.distant]\nextends = "keyed"\nmodel = "n"\nweights = "v"\n'
             )
             r = await c.post(url, json={"samples": 2, "profile": "distant"})
-            assert (r.status_code, r.json()["code"]) == (422, "envs")
+            assert (r.status_code, r.json()["code"]) == (422, "keys")
             r = await c.post(url, json={"samples": 2, "preset": "research"})
             assert r.status_code == 202, r.text
             started_ = r.json()
@@ -354,7 +354,7 @@ async def test_monitor_runs_queue_for_runners_that_take_them(
             assert job is not None
             spec = MonitorJob.model_validate(job.payload)
             assert spec.mode == "full"
-            assert spec.envs() == ["MODEL_API_KEY"]
+            assert spec.keys() == ["MODEL_API_KEY=https://api.example.com/v1"]
             resolved = spec.resolved()
             assert resolved.config.preset == "research"
             assert resolved.judge is not None
@@ -436,7 +436,7 @@ async def test_a_review_has_an_estimate_a_cost_guard_and_counts_as_listed(
         r = await c.get(url, params={"preset": "standard", "samples": 5})
         assert r.json()["confirm"] is True
 
-        mon = MonitorRunner(cp, "mon", envs=["MODEL_API_KEY"])
+        mon = MonitorRunner(cp, "mon", keys=MODEL_KEYS)
         await mon.connect()
         try:
             listed = (await c.get("/api/runs", params={"kind": "scenario"})).json()["items"]
@@ -575,7 +575,7 @@ async def test_a_stored_job_with_a_lone_surrogate_is_claimed_as_text(
     cp: CP, local: LocalEventStore, fake: FakeRunner
 ) -> None:
     origin = await pushed(cp, local, fake, flagged())
-    keyed = FakeRunner(cp, "keyed", envs=["MODEL_API_KEY"])
+    keyed = FakeRunner(cp, "keyed", keys=MODEL_KEYS)
     await keyed.connect()
     db = cp.state.db
     try:

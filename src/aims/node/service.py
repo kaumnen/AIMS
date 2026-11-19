@@ -291,8 +291,13 @@ class Node:
         needs = offer.needs
         if needs.get("kernel") and not self.tracer().alive:
             return
-        wanted = needs.get("envs") or []
-        if not isinstance(wanted, list) or any(not os.environ.get(str(n)) for n in wanted):
+        # the same check the control plane made on what this runner reported; a job queued
+        # before needs held keys goes on, and the call's own check refuses a key not allowed
+        wanted = needs.get("keys")
+        if wanted is not None and (
+            not isinstance(wanted, list)
+            or not all(self.ctx.link.allowed.allows(str(e)) for e in wanted)
+        ):
             return
         self.claimed[offer.run_id] = None
         try:

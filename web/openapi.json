@@ -3035,31 +3035,6 @@
         "title": "EndMessage",
         "type": "object"
       },
-      "EnvsMessage": {
-        "additionalProperties": false,
-        "description": "The env names the config now wants a runner to say it has, sent when they change after\nits hello.",
-        "properties": {
-          "envs": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Envs",
-            "type": "array"
-          },
-          "kind": {
-            "const": "envs",
-            "default": "envs",
-            "title": "Kind",
-            "type": "string"
-          }
-        },
-        "required": [
-          "kind",
-          "envs"
-        ],
-        "title": "EnvsMessage",
-        "type": "object"
-      },
       "Estimate": {
         "description": "The cost of `samples` runs of each variant in `parts`. `confirm` says `aims run` asks\nbefore it starts: no cap bounds the cost, whatever past runs cost, or the high figure, or\nwithout one the ceiling, is above `confirm_above_usd`. `listed` holds the list prices laid\non profiles with no price of their own, and `unlisted` says by profile why one that names a\nkey got none. `lines` is the estimate in words.",
         "properties": {
@@ -6097,15 +6072,7 @@
       },
       "HelloReply": {
         "additionalProperties": false,
-        "description": "`envs` names the variables the control plane's profiles read; the runner reports which\nof them it has set, never their values.",
         "properties": {
-          "envs": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Envs",
-            "type": "array"
-          },
           "heartbeat_s": {
             "default": 10.0,
             "title": "Heartbeat S",
@@ -6126,8 +6093,7 @@
         "required": [
           "name",
           "heartbeat_s",
-          "requeued",
-          "envs"
+          "requeued"
         ],
         "title": "HelloReply",
         "type": "object"
@@ -6434,7 +6400,7 @@
       },
       "Job": {
         "additionalProperties": false,
-        "description": "`monitor` is the resolved monitor's snapshot, None for a run without one; its profiles\nare in `models` too, so a runner offers their keys. `add` is set on the check of a profile\nthe app added.",
+        "description": "`monitor` is the resolved monitor's snapshot, None for a run without one; its profiles\nare in `models` too, so the runner that takes it must allow their keys. `add` is set on the\ncheck of a profile the app added.",
         "properties": {
           "add": {
             "anyOf": [
@@ -11250,6 +11216,17 @@
               }
             ]
           },
+          "entry": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry"
+          },
           "envs": {
             "items": {
               "type": "string"
@@ -11317,6 +11294,7 @@
           "reasoning",
           "roles",
           "envs",
+          "entry",
           "runners",
           "check",
           "price",
@@ -13632,7 +13610,6 @@
         "discriminator": {
           "mapping": {
             "command": "#/components/schemas/CommandMessage",
-            "envs": "#/components/schemas/EnvsMessage",
             "offer": "#/components/schemas/OfferMessage"
           },
           "propertyName": "kind"
@@ -13643,9 +13620,6 @@
           },
           {
             "$ref": "#/components/schemas/OfferMessage"
-          },
-          {
-            "$ref": "#/components/schemas/EnvsMessage"
           }
         ]
       },
@@ -13671,10 +13645,10 @@
       },
       "RunnerHello": {
         "additionalProperties": false,
-        "description": "`kinds` are the job kinds the runner can run; it is offered no other.",
+        "description": "`kinds` are the job kinds the runner can run; it is offered no other. `keys` are the\nentries of its AIMS_KEYS whose variables it has set: names and URLs, never values. It is\noffered only jobs whose profiles they allow.",
         "properties": {
           "api": {
-            "default": 1,
+            "default": 2,
             "title": "Api",
             "type": "integer"
           },
@@ -13682,18 +13656,18 @@
             "title": "Arch",
             "type": "string"
           },
-          "envs": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Envs",
-            "type": "array"
-          },
           "jobs": {
             "items": {
               "type": "string"
             },
             "title": "Jobs",
+            "type": "array"
+          },
+          "keys": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Keys",
             "type": "array"
           },
           "kinds": {
@@ -13759,17 +13733,17 @@
             "title": "Connected",
             "type": "boolean"
           },
-          "envs": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Envs",
-            "type": "array"
-          },
           "free": {
             "default": 0,
             "title": "Free",
             "type": "integer"
+          },
+          "keys": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Keys",
+            "type": "array"
           },
           "kinds": {
             "items": {
@@ -13849,7 +13823,7 @@
           "version",
           "arch",
           "tracer",
-          "envs",
+          "keys",
           "slots",
           "free",
           "running",
@@ -13865,13 +13839,6 @@
       "RunnerStatus": {
         "additionalProperties": false,
         "properties": {
-          "envs": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Envs",
-            "type": "array"
-          },
           "free": {
             "minimum": 0.0,
             "title": "Free",
@@ -18963,7 +18930,7 @@
     },
     "/api/models": {
       "get": {
-        "description": "Profiles, their roles, which runners have the variables each one reads, and each\nprofile's newest model check.",
+        "description": "Profiles, their roles, the AIMS_KEYS entry each one needs, the runners that allow it\nwith its variables set, and each profile's newest model check.",
         "operationId": "list_models",
         "responses": {
           "200": {
@@ -19015,7 +18982,7 @@
     },
     "/api/models/add": {
       "post": {
-        "description": "Add a profile to the project file, as `aims models add --write` does: at its end, or\nabove [roles] when that table ends it. A name that a profile has already is refused, as is\na role the profile does not fit. The merged layers must load first. Runners are told the\nenv vars it reads. With `check` a runner must have said hello. The check is recorded as a\nrun; `GET /models` says how the add went once it ends.",
+        "description": "Add a profile to the project file, as `aims models add --write` does: at its end, or\nabove [roles] when that table ends it. A name that a profile has already is refused, as is\na role the profile does not fit. The merged layers must load first. With `check` a runner\nmust have said hello and allow the AIMS_KEYS entry the profile needs. The check is recorded\nas a run; `GET /models` says how the add went once it ends.",
         "operationId": "add_model",
         "requestBody": {
           "content": {

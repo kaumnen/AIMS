@@ -14,7 +14,7 @@ from cp import CONFIG, CP, control_plane
 from cp import SCENARIO as CONTROL
 from test_cli_monitor import backend
 from test_fork_whole import step
-from test_server import FakeRunner, push_forged, ship
+from test_server import MODEL_KEYS, FakeRunner, push_forged, ship
 from typer.testing import CliRunner
 
 from aims.cli import app
@@ -274,7 +274,7 @@ async def test_runs_and_forks_are_watched_by_the_monitor_their_estimate_prices(
         cp, local, "http://model.invalid/v1", budget={"every": {"steps": 2000}}
     )
     # the standard monitor calls the built-in sweep profile, which reads MODEL_API_KEY
-    keyed = FakeRunner(cp, "keyed", envs=["MODEL_API_KEY"])
+    keyed = FakeRunner(cp, "keyed", keys=MODEL_KEYS)
     await keyed.client.hello(keyed.hello_body())
     await keyed.client.aclose()
 
@@ -360,7 +360,7 @@ async def test_a_fork_is_watched_over_the_full_scenario_its_estimate_prices(
     )
     await local.create_run(first, blobs=prepared.bundle.blobs(), run_id=run_id)
     await local.append(run_id, [Draft(RunFinished(status="completed"))])
-    keyed = FakeRunner(cp, "keyed", envs=["MODEL_API_KEY"])
+    keyed = FakeRunner(cp, "keyed", keys=MODEL_KEYS)
     await keyed.client.hello(keyed.hello_body())
     await ship(local, keyed.client, run_id)
     await keyed.client.aclose()
@@ -660,7 +660,7 @@ async def test_the_control_plane_queues_a_cut_fork_with_the_monitor_its_estimate
     for each agent's live steps."""
     cp.project.write_text(SWITCHED)
     run_id = await switched(local, cp.project)
-    keyed = FakeRunner(cp, "keyed", envs=["MODEL_API_KEY"])
+    keyed = FakeRunner(cp, "keyed", keys=MODEL_KEYS)
     await keyed.client.hello(keyed.hello_body())
     await ship(local, keyed.client, run_id)
     await keyed.client.aclose()

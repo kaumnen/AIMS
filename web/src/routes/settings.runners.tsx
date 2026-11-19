@@ -141,8 +141,8 @@ function Row({ r, seenAgo }: { r: RunnerInfo; seenAgo: number | null }) {
       </td>
       <td className="py-1.5 pr-4 max-md:hidden">{r.kinds.join(", ")}</td>
       <td className="py-1.5 pr-4 max-lg:hidden">
-        {r.envs.length > 0 ? (
-          <span className="font-mono">{r.envs.join(", ")}</span>
+        {r.keys.length > 0 ? (
+          <span className="font-mono break-all">{r.keys.join(", ")}</span>
         ) : (
           <span className="text-muted-foreground">none</span>
         )}

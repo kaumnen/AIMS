@@ -150,6 +150,7 @@ beforeEach(() => {
             reasoning: "summary",
             roles: ["agent"],
             envs: ["MODEL_API_KEY"],
+            entry: "MODEL_API_KEY=https://api.example.com/v1",
             runners: ["local"],
             price: { input: 1.25, cached: 0.15, output: 4.25 },
             price_key: null,
@@ -170,6 +171,7 @@ beforeEach(() => {
             reasoning: "summary",
             roles: [],
             envs: ["OTHER_KEY"],
+            entry: "OTHER_KEY=https://other.example/v1",
             runners: [],
             check: null,
             price: null,
@@ -288,7 +290,9 @@ test("the form shows the scenario, its oversight, model checks and the estimate"
   await pick(form, "Profile", /beta/);
   expect(await form.findByText("beta (agent): never checked")).toBeTruthy();
   expect(form.queryByText(/^alpha/)).toBeNull();
-  expect(form.getByText("No connected runner has OTHER_KEY.")).toBeTruthy();
+  expect(
+    form.getByText("No connected runner allows OTHER_KEY=https://other.example/v1."),
+  ).toBeTruthy();
 });
 
 test("the estimate shows each warning once and in bold, as the CLI prints it", async () => {

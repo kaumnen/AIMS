@@ -13,6 +13,7 @@ from aims.config import ConfigError, Layers, Settings, layers, load
 from aims.events import Event, LocalEventStore
 from aims.models import Delta, DeltaBus, ProfileError
 from aims.models.add import ServerLists
+from aims.models.keys import Keys, KeysError, reported
 from aims.models.listprice import PriceLists
 from aims.monitor.config import MonitorConfigError
 from aims.prompts import TextError
@@ -25,7 +26,6 @@ from aims.server.problems import ProblemException
 from aims.wire import (
     STALE_S,
     CommandMessage,
-    EnvsMessage,
     OfferMessage,
     RunnerHello,
     RunnerInfo,
@@ -147,13 +147,11 @@ class Connected:
     status: RunnerStatus | None = None
     seen: float = field(default_factory=time.time)
     streams: int = 0
-    feed: asyncio.Queue[CommandMessage | OfferMessage | EnvsMessage | None] = field(
+    feed: asyncio.Queue[CommandMessage | OfferMessage | None] = field(
         default_factory=lambda: asyncio.Queue(10_000)
     )
     offered: set[str] = field(default_factory=set)
     local: bool = False
-    # the env names it was last told to say it has
-    told: list[str] = field(default_factory=list)
 
     @property
     def stale(self) -> bool:
@@ -165,8 +163,17 @@ class Connected:
         return tracer.alive
 
     @property
-    def envs(self) -> list[str]:
-        return self.status.envs if self.status is not None else self.hello.envs
+    def keys(self) -> Keys:
+        """The AIMS_KEYS entries it reported with their variables set."""
+        try:
+            return reported(self.hello.keys)
+        except KeysError:
+            return Keys()
+
+    def allows(self, entries: Collection[str]) -> bool:
+        """Whether it allows every AIMS_KEYS entry of `entries`."""
+        keys = self.keys
+        return all(keys.allows(e) for e in entries)
 
     def free(self) -> int:
         if self.status is not None:
@@ -182,7 +189,7 @@ class Connected:
             version=self.hello.version,
             arch=self.hello.arch,
             tracer=status.tracer if status is not None else self.hello.tracer,
-            envs=self.envs,
+            keys=list(self.hello.keys),
             slots=self.hello.slots,
             free=self.free(),
             running=status.running if status is not None else [],

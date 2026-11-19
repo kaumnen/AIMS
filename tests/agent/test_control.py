@@ -663,7 +663,7 @@ async def test_a_job_runs_as_its_run_id(
     job = Job.model_validate_json(job.model_dump_json())
     blobs = {hashlib.sha256(b).hexdigest(): b for b in bundle.blobs()}
     assert set(job.blobs()) <= set(blobs)
-    assert job.needs() == {"envs": [], "kernel": False}
+    assert job.needs() == {"keys": [], "kernel": False}
     script = Script(call("submit", answer="ok"))
     bench = Bench(store, backend, models(profile(name="unused")), transport=script.transport())
     runner = runner_for(bench, job, bundle_of(job, blobs))

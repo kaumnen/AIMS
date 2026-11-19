@@ -118,9 +118,9 @@ KeyOption = Annotated[
         "--key",
         metavar="NAME=URL",
         callback=_keys,
-        help="Let the key in env var NAME go to URL and the paths under it. NAME=env:VAR lets it"
-        " go to the URL in env var VAR. env:VAR lets a profile with no key read its URL from VAR."
-        " Repeat for more. Adds to AIMS_KEYS.",
+        help="Let the key in env var NAME go to a profile whose base_url is URL or a path under"
+        " it. NAME=env:VAR lets it go to a profile that reads its URL from env var VAR. env:VAR"
+        " lets a profile with no key read its URL from VAR. Repeat for more. Adds to AIMS_KEYS.",
     ),
 ]
 SCENARIO_HELP = "The scenario file, its directory, or builtin/<name> for one that ships with AIMS."

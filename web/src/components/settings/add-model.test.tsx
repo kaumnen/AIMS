@@ -33,6 +33,7 @@ const profile = (over: Partial<ProfileInfo>): ProfileInfo => ({
   reasoning: "none",
   roles: ["agent"],
   envs: ["EXAMPLE_API_KEY"],
+  entry: "EXAMPLE_API_KEY=https://api.example.com/v1",
   runners: ["local"],
   check: null,
   price: null,

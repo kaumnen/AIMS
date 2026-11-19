@@ -14,6 +14,7 @@ from aims import __version__
 from aims.aio import shielded, stopped
 from aims.events import LocalEventStore, RunCorrupt
 from aims.models import Delta, DeltaBus
+from aims.models.keys import keys, reported
 from aims.node.client import FEED, ApiError, ControlClient
 from aims.node.shipper import Backoff, Shipper, Streak
 from aims.run.runner import RunError, Runner
@@ -23,7 +24,6 @@ from aims.wire import (
     Ack,
     CommandMessage,
     Deltas,
-    EnvsMessage,
     Head,
     JobKindName,
     OfferMessage,
@@ -66,7 +66,8 @@ class Link:
     ) -> None:
         """`on_deleted` gets each run the control plane deleted, to drop the local copy.
         `on_refused` gets the last of `REFUSED_MAX` answers 401 or 403 in a row to the hello or
-        the stream; the link then stops asking for commands and offers."""
+        the stream; the link then stops asking for commands and offers. Raises KeysError when
+        AIMS_KEYS cannot be read."""
         self.client = client
         self.on_deleted = on_deleted
         self.on_refused = on_refused
@@ -74,7 +75,9 @@ class Link:
         self.store = store
         self.bus = bus
         self.slots = slots
-        self.wanted: list[str] = []
+        # the entries of AIMS_KEYS whose variables are set, read once: the env stays as it is
+        self.keys = keys(os.environ).report(os.environ)
+        self.allowed = reported(self.keys)
         self.tracer = tracer
         self.on_offer = on_offer
         self.jobs = jobs
@@ -94,7 +97,7 @@ class Link:
             version=__version__,
             arch=arch(),
             tracer=self.tracer(),
-            envs=set_envs(self.wanted),
+            keys=self.keys,
             slots=self.slots,
             jobs=self._held(),
             kinds=list(self.kinds),
@@ -104,7 +107,6 @@ class Link:
         held = self._held()
         return RunnerStatus(
             tracer=self.tracer(),
-            envs=set_envs(self.wanted),
             free=max(0, self.slots - len(held)),
             running=held,
             jobs=sorted(self.jobs()),
@@ -267,8 +269,6 @@ class Link:
         while True:
             try:
                 reply = await self.client.hello(self.hello())
-                if self._want(reply.envs):
-                    await self._report()
                 if reply.requeued:
                     log.info("the control plane took back jobs %s", ", ".join(reply.requeued))
                 async with self.client.stream(self._last_id) as source:
@@ -278,15 +278,12 @@ class Link:
                     refused = False
                     denied = 0
                     async for sse in source:
-                        if sse.event not in ("command", "offer", "envs"):
+                        if sse.event not in ("command", "offer"):
                             continue
                         message = FEED.validate_json(sse.data)
                         if isinstance(message, CommandMessage):
                             self._last_id = sse.id or self._last_id
                             self._spawn(self._command(message))
-                        elif isinstance(message, EnvsMessage):
-                            if self._want(message.envs):
-                                self._spawn(self._report())
                         elif self.on_offer is not None:
                             self._spawn(self.on_offer(message))
             except asyncio.CancelledError:
@@ -311,18 +308,6 @@ class Link:
             else:
                 self.connected.clear()
                 await backoff.wait()
-
-    def _want(self, envs: list[str]) -> bool:
-        """Take `envs` as the names to say it has; True when they changed."""
-        if sorted(envs) == self.wanted:
-            return False
-        self.wanted = sorted(envs)
-        return True
-
-    async def _report(self) -> None:
-        """Send the status now, so the control plane hears of the names it asked about."""
-        with contextlib.suppress(ApiError, httpx2.TransportError, OSError):
-            await self.client.status(self.status())
 
     async def _heartbeat(self) -> None:
         while True:
@@ -415,8 +400,3 @@ class Link:
                 )
                 with contextlib.suppress(ApiError, httpx2.TransportError, OSError):
                     await self.client.post_deltas(body)
-
-
-def set_envs(names: list[str]) -> list[str]:
-    """Which of `names` are set here; names only, never values."""
-    return sorted(n for n in set(names) if os.environ.get(n))
