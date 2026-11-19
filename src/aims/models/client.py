@@ -554,6 +554,18 @@ async def _within[T](seconds: float, step: Awaitable[T]) -> T:
         raise _Stalled(f"nothing arrived for {seconds:g} s") from None
 
 
+# h11 puts a header it refuses in its error, and the Authorization header holds the key.
+_REFUSED_HEADER = re.compile(r"Illegal header (?:value|name)")
+
+
+def _told(e: BaseException) -> str:
+    """The text of `e`, cut before a header the HTTP client refused."""
+    text = str(e)
+    if m := _REFUSED_HEADER.search(text):
+        return f"{text[: m.end()]} (not shown)"
+    return text
+
+
 def _classify(
     exc: Exception,
 ) -> tuple[str, ModelError, bool, BaseException | None, int | None]:
@@ -573,15 +585,15 @@ def _classify(
     for e in cause_chain(exc):
         match e:
             case httpx2.ReadTimeout():
-                return f"no bytes for the stall timeout: {e}", "stall", True, None, None
+                return f"no bytes for the stall timeout: {_told(e)}", "stall", True, None, None
             case httpx2.TimeoutException():
-                return f"{type(e).__name__}: {e}", "timeout", True, None, None
+                return f"{type(e).__name__}: {_told(e)}", "timeout", True, None, None
             case httpx2.ConnectError():
-                return f"cannot connect: {e}", "connect", True, None, None
+                return f"cannot connect: {_told(e)}", "connect", True, None, None
             case httpx2.ProtocolError():
-                return f"{type(e).__name__}: {e}", "protocol", True, None, None
+                return f"{type(e).__name__}: {_told(e)}", "protocol", True, None, None
             case httpx2.TransportError():
-                return f"{type(e).__name__}: {e}", "read", True, None, None
+                return f"{type(e).__name__}: {_told(e)}", "read", True, None, None
     if isinstance(exc, openai.APIError) and not isinstance(exc, openai.APIConnectionError):
         # An error chunk in a stream that began with HTTP 200; its body is the error object.
         body = exc.body
@@ -589,7 +601,7 @@ def _classify(
         code = code if isinstance(code, int) and not isinstance(code, bool) else None
         label = "provider error" if code is None else f"provider error {code}"
         return f"{label}: {scrub(exc.message)}", "provider", _retry_code(code), None, code
-    return f"{type(exc).__name__}: {exc}", "protocol", False, None, None
+    return f"{type(exc).__name__}: {_told(exc)}", "protocol", False, None, None
 
 
 def _retry_code(code: int | None) -> bool:

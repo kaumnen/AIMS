@@ -5,6 +5,7 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Annotated, Any, Literal, Self
 
+import httpx2
 from pydantic import (
     AfterValidator,
     AwareDatetime,
@@ -29,8 +30,19 @@ class ProfileError(Exception):
     pass
 
 
-def _url(value: str) -> str:
+def _is_url(value: str) -> bool:
+    """Whether `value` is an http or https URL with a host that the HTTP client can parse."""
     if not value.startswith(("https://", "http://")):
+        return False
+    try:
+        return bool(httpx2.URL(value).host)
+    # UnicodeEncodeError, a ValueError, comes of a lone surrogate in the path or query
+    except httpx2.InvalidURL, ValueError:
+        return False
+
+
+def _url(value: str) -> str:
+    if not _is_url(value):
         raise ValueError(f"{value!r} is not an http or https URL")
     return value.rstrip("/")
 
@@ -87,6 +99,27 @@ def _headers(value: dict[str, str]) -> dict[str, str]:
 
 
 Headers = Annotated[dict[str, str], AfterValidator(_headers)]
+
+_CHARACTERS = {"\r": "a carriage return", "\n": "a line feed"}
+
+
+def _unsendable(key: str) -> str | None:
+    """Why `key` cannot go in an HTTP header, told without any of its characters, or None if it
+    can. The HTTP client puts a header it refuses in its error, key and all."""
+    if _FIELD.fullmatch(key):
+        return None
+    for i, c in enumerate(key, 1):
+        if "\x21" <= c <= "\x7e" or c in " \t":
+            continue
+        what = _CHARACTERS.get(c) or (
+            "a control character" if c <= "\x7f" else "a non-ASCII character"
+        )
+        why = f"{what} at character {i}, which an HTTP header cannot carry"
+        return why + (
+            " (a file with Windows line ends adds one to each value)" if c == "\r" else ""
+        )
+    return "a space or tab at its start or end, which an HTTP header cannot carry"
+
 
 PRICE_KEY = re.compile(r"[\x21-\x7e]{1,200}")
 
@@ -257,7 +290,12 @@ class Profile(_Strict):
         value = env.get(self.base_url_env)
         if not value:
             raise ProfileError(f"profile {self.name}: {self.base_url_env} is not set")
-        return _url(value)
+        # the variable may hold a secret, so the error names it and never tells its value
+        if not _is_url(value):
+            raise ProfileError(
+                f"profile {self.name}: {self.base_url_env} does not hold an http or https URL"
+            )
+        return value.rstrip("/")
 
     def api_key(self, env: Mapping[str, str] = os.environ) -> str | None:
         if self.api_key_env is None:
@@ -265,6 +303,8 @@ class Profile(_Strict):
         value = env.get(self.api_key_env)
         if not value:
             raise ProfileError(f"profile {self.name}: {self.api_key_env} is not set")
+        if problem := _unsendable(value):
+            raise ProfileError(f"profile {self.name}: {self.api_key_env} holds {problem}")
         return value
 
     def apply(self, overrides: Overrides | None) -> Profile:

@@ -5,12 +5,14 @@ import logging
 import os
 import signal
 import time
+import traceback
 from collections.abc import AsyncIterator, Callable, Iterable, Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import httpx2
+import openai
 import pytest
 from proxy import Server, environ, serving
 from pydantic import ValidationError
@@ -60,7 +62,7 @@ from aims.models import (
 )
 from aims.models.backends import BACKENDS, Chat, Responses, _reported_cost, params
 from aims.models.check import check_profile, record_check
-from aims.models.client import _cost
+from aims.models.client import _classify, _cost
 from aims.models.replay import canonical_key
 from aims.models.transport import decode_chunks
 from aims.run.fork import _schedule
@@ -1255,6 +1257,187 @@ agent = "local"
         path.write_text(bad)
         with pytest.raises(ProfileError, match=match):
             load_models(user, path)
+
+
+CANARY = "CANARY-7f3a"
+KEY = f"sk-{CANARY}"
+
+
+def told(e: BaseException) -> str:
+    """All an error tells when it is shown: its text, its chain and its traceback."""
+    return "".join(traceback.format_exception(e))
+
+
+def holding(root: Path, text: str) -> list[Path]:
+    """The files under `root` that hold `text`."""
+    return [f for f in root.rglob("*") if f.is_file() and text.encode() in f.read_bytes()]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        CANARY,
+        f"ftp://{CANARY}.test/v1",
+        f"http://[{CANARY}]/v1",
+        f"http://[::1]{CANARY}/v1",
+        f"http://{CANARY}\u00ad.test/v1",
+        f"http:///{CANARY}",
+        f"http://{CANARY}.test/\udcff",
+        f"http://{CANARY}.test/v1?\udcff",
+        "http://",
+    ],
+)
+def test_an_env_url_that_is_not_one_is_refused_without_its_value(value: str) -> None:
+    p = profile(base_url=None, base_url_env="SERVED_URL")
+    with pytest.raises(ProfileError) as info:
+        p.url({"SERVED_URL": value})
+    assert str(info.value) == "profile test: SERVED_URL does not hold an http or https URL"
+    assert info.value.__context__ is None
+    assert CANARY not in told(info.value)
+
+
+@pytest.mark.parametrize(
+    ("value", "problem"),
+    [
+        (f"{KEY}\r", "a carriage return at character 15"),
+        (f"{KEY}\n", "a line feed at character 15"),
+        (f"sk-CA\r\nX-Evil: {CANARY}", "a carriage return at character 6"),
+        (f"{KEY}\u00c9", "a non-ASCII character at character 15"),
+        (f"{KEY}\u2028", "a non-ASCII character at character 15"),
+        (f"{KEY}\x00", "a control character at character 15"),
+        (f"{KEY}\x7f", "a control character at character 15"),
+        (f"\x01{KEY}", "a control character at character 1"),
+        (f"{KEY} ", "a space or tab at its start or end"),
+        (f"\t{KEY}", "a space or tab at its start or end"),
+    ],
+)
+def test_a_key_an_http_header_cannot_carry_is_refused_without_its_value(
+    value: str, problem: str
+) -> None:
+    p = profile(api_key_env="TEST_KEY")
+    with pytest.raises(ProfileError) as info:
+        p.api_key({"TEST_KEY": value})
+    assert str(info.value).startswith(
+        f"profile test: TEST_KEY holds {problem}, which an HTTP header cannot carry"
+    )
+    assert info.value.__context__ is None
+    assert CANARY not in told(info.value)
+
+
+def test_a_key_an_http_header_can_carry_is_used_as_it_is() -> None:
+    p = profile(api_key_env="TEST_KEY")
+    for value in [KEY, "sk-a b\tc", "sk-'\"=+/~"]:
+        assert p.api_key({"TEST_KEY": value}) == value
+    with pytest.raises(ProfileError) as info:
+        p.api_key({"TEST_KEY": f"{KEY}\r"})
+    assert str(info.value) == (
+        "profile test: TEST_KEY holds a carriage return at character 15, which an HTTP header"
+        " cannot carry (a file with Windows line ends adds one to each value)"
+    )
+
+
+@pytest.mark.parametrize(
+    ("fields", "env"),
+    [
+        ({"base_url": None, "base_url_env": "CANARY_URL"}, {"CANARY_URL": CANARY}),
+        ({"base_url": None, "base_url_env": "CANARY_URL"}, {"CANARY_URL": f"http://[{CANARY}]"}),
+        ({"api_key_env": "CANARY_KEY"}, {"CANARY_KEY": f"{KEY}\r"}),
+        ({"api_key_env": "CANARY_KEY"}, {"CANARY_KEY": f"{KEY} "}),
+        ({"api_key_env": "CANARY_KEY"}, {"CANARY_KEY": f"{KEY}\u00c9"}),
+    ],
+)
+async def test_a_value_aims_cannot_send_stays_out_of_the_run_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fields: dict[str, Any], env: dict[str, str]
+) -> None:
+    """A URL or key env var whose value cannot go on the wire fails the check before anything
+    is sent. Neither the error nor any file of the run tells the value."""
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    p = profile(**{"stream": False, "base_url": "http://models.example/v1"} | fields)
+    root = tmp_path / "runs"
+    async with serving(Server()) as proxy:
+        environ(monkeypatch, HTTP_PROXY=proxy.url)
+        async with await LocalEventStore.open(root) as store:
+            with pytest.raises(ProfileError) as info:
+                await record_check(store, config(p), [p])
+            (run_id,) = store.run_ids()
+            finished = (await store.every(run_id))[-1].payload()
+    assert proxy.lines == []
+    assert isinstance(finished, RunFinished)
+    assert (finished.status, finished.reason) == ("failed", f"ProfileError: {info.value}")
+    assert CANARY not in told(info.value)
+    assert holding(root, CANARY) == []
+    # the scan reads the run's files: they name the variable
+    assert holding(root, next(iter(env)))
+
+
+@pytest.mark.parametrize(
+    ("kw", "refused"),
+    [
+        ({"api_key": f"{KEY}\r"}, "value"),
+        ({"api_key": f"sk-'{CANARY}\"\r\nX-Evil: 1"}, "value"),
+        ({"api_key": f"{KEY} "}, "value"),
+        ({"api_key": "k", "default_headers": {f"X-{CANARY}\r": "1"}}, "name"),
+    ],
+)
+async def test_a_header_h11_refuses_is_not_told(kw: dict[str, Any], refused: str) -> None:
+    """h11 puts a header it refuses in its error, and the Authorization header holds the key.
+    Keys and headers are checked before use; the error text hides the header all the same."""
+    async with (
+        serving(Server()) as server,
+        openai.AsyncOpenAI(
+            base_url=f"{server.url}/v1",
+            max_retries=0,
+            http_client=httpx2.AsyncClient(trust_env=False),
+            **kw,
+        ) as sdk,
+    ):
+        with pytest.raises(openai.APIConnectionError) as info:
+            await sdk.models.list()
+    assert server.lines == []
+    # h11 lowers a header name
+    assert CANARY.lower() in told(info.value).lower()
+    text, kind, *_ = _classify(info.value)
+    assert (text, kind) == (f"LocalProtocolError: Illegal header {refused} (not shown)", "protocol")
+    assert CANARY.lower() not in text.lower()
+
+
+def test_aims_models_check_refuses_a_value_it_cannot_send_without_telling_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "aims.toml"
+    path.write_text(
+        """
+[profiles.served]
+backend = "chat"
+base_url_env = "CANARY_URL"
+api_key_env = "CANARY_KEY"
+model = "m"
+weights = "w"
+reasoning = "none"
+"""
+    )
+    root = tmp_path / "runs"
+    for env, problem in [
+        (
+            {"CANARY_URL": f"http://[{CANARY}]/v1", "CANARY_KEY": "k"},
+            "CANARY_URL does not hold an http or https URL",
+        ),
+        (
+            {"CANARY_URL": "http://models.example/v1", "CANARY_KEY": f"{CANARY}\r"},
+            "CANARY_KEY holds a carriage return at character 12",
+        ),
+    ]:
+        for name, value in env.items():
+            monkeypatch.setenv(name, value)
+        result = CliRunner().invoke(
+            app, ["models", "check", "served", "--config", str(path), "--runs-dir", str(root)]
+        )
+        assert result.exit_code == 1, result.output
+        assert isinstance(result.exception, SystemExit), result.exception
+        assert f"error: profile served: {problem}" in result.output
+        assert CANARY not in result.output
+    assert not root.exists() or holding(root, CANARY) == []
 
 
 def test_weights_check() -> None:
