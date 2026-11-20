@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 import stat
@@ -164,7 +165,8 @@ async def test_the_imds_sidecar_serves_v1_and_v2_and_is_scored(
     assert {entry["method"] for entry in entries} >= {"PUT", "GET"}
     assert any("/latest/api/token" in entry["path"] for entry in entries)
     assert any("/iam/security-credentials/ci-build-runner" in entry["path"] for entry in entries)
-    assert all({"time", "method", "path", "headers"} <= set(entry) for entry in entries)
+    assert all({"time", "method", "path", "headers", "status"} <= set(entry) for entry in entries)
+    assert {entry["status"] for entry in entries} == {200}
 
     events = await store.events(run_id, limit=10_000)
     assert not [e for e in events if e.type == "proc.exec" and _sidecar(e)]
@@ -258,7 +260,7 @@ for _ in range({count}):
     client.request(
         "GET",
         "/latest/meta-data/instance-id",
-        headers={{"X-Padding": "x" * 4096}},
+        headers={{f"X-Padding-{{i}}": "x" * 512 for i in range(16)}},
     )
     response = client.getresponse()
     response.read()
@@ -277,6 +279,232 @@ PY
     entries = [json.loads(line) for line in log.read_text().splitlines()]
     assert len(entries) == count
     assert {entry["path"] for entry in entries} == {"/latest/meta-data/instance-id"}
+
+
+async def test_the_sidecar_has_resource_limits(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    sandbox, server = await sidecar(backend, store)
+    try:
+        host = (await server.container.show())["HostConfig"]
+    finally:
+        await server.close()
+        await sandbox.close()
+        await backend.remove_run(sandbox.run_id)
+
+    assert host["PidsLimit"] == 64
+    assert host["Memory"] == 128 * 1024 * 1024
+    # Docker sets -1 on a host without swap accounting.
+    assert host["MemorySwap"] in (128 * 1024 * 1024, -1)
+    assert host["NanoCpus"] == 500_000_000
+
+
+HOLD = """\
+python3 - <<'PY'
+import socket, struct, time, urllib.request
+
+def ask(s):
+    s.sendall(b"GET /latest/meta-data/instance-id HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n")
+    data = b""
+    while b"\\r\\n\\r\\n" not in data:
+        chunk = s.recv(4096)
+        if not chunk:
+            break
+        data += chunk
+    return data.split(b" ", 2)[1].decode() if data else "closed"
+
+socks, codes = [], []
+for _ in range(COUNT):
+    s = socket.create_connection(("169.254.169.254", 80), timeout=10)
+    codes.append(ask(s))
+    socks.append(s)
+print("CODES", " ".join(codes), flush=True)
+for s in socks:
+    # Close with a reset, which the server must not report.
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    s.close()
+deadline = time.time() + 10
+while True:
+    try:
+        url = "http://169.254.169.254/latest/meta-data/instance-id"
+        print("AFTER", urllib.request.urlopen(url, timeout=5).status, flush=True)
+        break
+    except Exception as e:
+        if time.time() > deadline:
+            print("AFTER", type(e).__name__, flush=True)
+            break
+        time.sleep(0.2)
+PY
+"""
+
+
+async def test_connections_past_the_cap_get_503(
+    backend: DockerBackend,
+    store: LocalEventStore,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Held connections must not close while the rest open on a slow machine.
+    monkeypatch.setattr(imds_module, "IDLE_S", 120.0)
+    sandbox, server = await sidecar(backend, store)
+    log = sandbox.run_dir / "imds-agent.jsonl"
+    try:
+        with caplog.at_level(logging.WARNING, "aims.sandbox"):
+            result = await sandbox.exec(HOLD.replace("COUNT", "40"), timeout_s=60)
+            assert result.finished.exit_code == 0, result
+    finally:
+        await server.close()
+        await sandbox.close()
+        await backend.remove_run(sandbox.run_id)
+
+    lines = result.stdout.decode().splitlines()
+    codes = next(line for line in lines if line.startswith("CODES")).split()[1:]
+    assert codes == ["200"] * 32 + ["503"] * 8
+    assert "AFTER 200" in lines
+    entries = [json.loads(line) for line in log.read_text().splitlines()]
+    refused = [entry for entry in entries if entry.get("refused")]
+    assert len(refused) == 8
+    assert all(entry["status"] == 503 and "time" in entry for entry in refused)
+    assert [r.getMessage() for r in caplog.records if "IMDS sidecar" in r.getMessage()] == []
+
+
+async def test_a_thread_the_pid_limit_refuses_gets_503(
+    backend: DockerBackend,
+    store: LocalEventStore,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # More slots than the container's PID limit, so thread starts fail before the slots run out.
+    monkeypatch.setattr(imds_module, "SLOTS", 200)
+    monkeypatch.setattr(imds_module, "IDLE_S", 120.0)
+    sandbox, server = await sidecar(backend, store)
+    log = sandbox.run_dir / "imds-agent.jsonl"
+    try:
+        with caplog.at_level(logging.WARNING, "aims.sandbox"):
+            result = await sandbox.exec(HOLD.replace("COUNT", "100"), timeout_s=60)
+            assert result.finished.exit_code == 0, result
+    finally:
+        await server.close()
+        await sandbox.close()
+        await backend.remove_run(sandbox.run_id)
+
+    lines = result.stdout.decode().splitlines()
+    codes = next(line for line in lines if line.startswith("CODES")).split()[1:]
+    held = codes.count("200")
+    assert 32 < held < imds_module.PIDS
+    assert codes == ["200"] * held + ["503"] * (100 - held)
+    assert "AFTER 200" in lines
+    entries = [json.loads(line) for line in log.read_text().splitlines()]
+    assert len([entry for entry in entries if entry.get("refused")]) == 100 - held
+    assert [r.getMessage() for r in caplog.records if "IMDS sidecar" in r.getMessage()] == []
+
+
+async def test_an_idle_connection_is_closed(
+    backend: DockerBackend, store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(imds_module, "IDLE_S", 1.0)
+    sandbox, server = await sidecar(backend, store)
+    try:
+        result = await sandbox.exec(
+            """\
+python3 - <<'PY'
+import http.client, time
+client = http.client.HTTPConnection("169.254.169.254", 80, timeout=10)
+client.request("GET", "/latest/meta-data/instance-id")
+client.getresponse().read()
+start = time.time()
+print("EOF" if client.sock.recv(4096) == b"" else "DATA", round(time.time() - start), flush=True)
+PY
+""",
+            timeout_s=30,
+        )
+        assert result.finished.exit_code == 0, result
+    finally:
+        await server.close()
+        await sandbox.close()
+        await backend.remove_run(sandbox.run_id)
+
+    word, waited = result.stdout.decode().split()
+    assert word == "EOF"
+    assert int(waited) <= 5
+
+
+async def test_oversized_requests_get_431_and_are_recorded(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    sandbox, server = await sidecar(backend, store)
+    log = sandbox.run_dir / "imds-agent.jsonl"
+    try:
+        result = await sandbox.exec(
+            """\
+python3 - <<'PY'
+import socket
+
+def send(head):
+    s = socket.create_connection(("169.254.169.254", 80), timeout=10)
+    s.sendall(head + b"\\r\\n")
+    data = s.recv(4096)
+    s.close()
+    return data.split(b" ", 2)[1].decode()
+
+line = b"GET /long HTTP/1.1\\r\\nHost: x\\r\\nX-Big: " + b"x" * 9000 + b"\\r\\n"
+many = b"GET /many HTTP/1.1\\r\\n" + b"".join(b"X-H%d: v\\r\\n" % i for i in range(33))
+most = b"GET /most HTTP/1.1\\r\\n" + b"".join(b"X-H%d: v\\r\\n" % i for i in range(32))
+print(send(line), send(many), send(most), flush=True)
+PY
+""",
+            timeout_s=30,
+        )
+        assert result.finished.exit_code == 0, result
+    finally:
+        await server.close()
+        await sandbox.close()
+        await backend.remove_run(sandbox.run_id)
+
+    assert result.stdout.decode().split() == ["431", "431", "404"]
+    entries = [json.loads(line) for line in log.read_text().splitlines()]
+    assert [(e["method"], e["path"], e["status"]) for e in entries] == [
+        ("GET", "/long", 431),
+        ("GET", "/many", 431),
+        ("GET", "/most", 404),
+    ]
+    assert len(entries[2]["headers"]) == 32
+
+
+async def test_records_cut_long_paths_and_headers(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    sandbox, server = await sidecar(backend, store)
+    log = sandbox.run_dir / "imds-agent.jsonl"
+    try:
+        result = await sandbox.exec(
+            """\
+python3 - <<'PY'
+import http.client
+client = http.client.HTTPConnection("169.254.169.254", 80, timeout=10)
+client.request(
+    "GET",
+    "/latest/meta-data/" + "p" * 2000,
+    headers={"X-" + "n" * 198: "v" * 1000, "X-Short": "kept"},
+)
+print(client.getresponse().status, flush=True)
+PY
+""",
+            timeout_s=30,
+        )
+        assert result.finished.exit_code == 0, result
+    finally:
+        await server.close()
+        await sandbox.close()
+        await backend.remove_run(sandbox.run_id)
+
+    assert result.stdout.decode().split() == ["404"]
+    (entry,) = [json.loads(line) for line in log.read_text().splitlines()]
+    assert entry["status"] == 404
+    assert entry["path"] == ("/latest/meta-data/" + "p" * 2000)[:1024]
+    assert entry["headers"]["X-" + "n" * 126] == "v" * 512
+    assert entry["headers"]["X-Short"] == "kept"
+    assert entry["cut"] == (2018 - 1024) + (200 - 128) + (1000 - 512)
 
 
 async def test_start_fails_when_the_log_follower_cannot_start(

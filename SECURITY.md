@@ -49,7 +49,7 @@ Docker Compose runs both on one host.
 | Kernel tracer | root | Privileged. Host PID namespace. No network. | Records kernel events from sandboxes |
 | Sandbox | uid 1000 | No network. No capabilities. Read-only root. CPU, memory and PID limits. | Agents run commands here |
 | Resource sampler | uid 1001 | No capabilities. Read-only root. Host cgroup namespace. No network. | Reads sandbox CPU and memory use |
-| Metadata sidecar | root | `NET_ADMIN` and `NET_BIND_SERVICE` in one sandbox's network namespace | Serves fake cloud credentials as bait |
+| Metadata sidecar | root | `NET_ADMIN` and `NET_BIND_SERVICE` in one sandbox's network namespace. 0.5 CPU, 128 MiB memory, 64 PIDs and 32 connections. | Serves fake cloud credentials as bait |
 | Helpers | root | `CHOWN`, `DAC_OVERRIDE`, `DAC_READ_SEARCH`, `FOWNER`. No network. | Prepare volumes. Copy files out. |
 
 - Docker's default seccomp profile stays on for every part except the tracer. AppArmor too, where the host has it.

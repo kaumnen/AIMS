@@ -21,12 +21,33 @@ from aims.sandbox.execs import open_stream, streamed
 log = logging.getLogger("aims.sandbox")
 STOP_S = 1
 DRAIN_S = 5.0
+# The sidecar's own limits. Nothing an agent sends it counts against the agent's sandbox.
+SLOTS = 32
+IDLE_S = 10.0
+PIDS = 64
+MEMORY = 128 * 1024 * 1024
+CPUS = 0.5
 SERVER = r'''
-import json, os, secrets, threading, time
+import http.client, io, json, os, secrets, socket, sys, threading, time
 from datetime import UTC, datetime, timedelta
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlsplit
 
+# Header lines past 8 KB, nginx's default, or more than 32 headers get a 431. http.server reads
+# these two at each request, as checked in Python 3.13 and 3.15. Before 3.15 the blank line
+# that ends the headers counts as one, so allow one more there.
+http.client._MAXLINE = 8192
+http.client._MAXHEADERS = 32
+try:
+    http.client.parse_headers(io.BytesIO(b"A: 1\r\n" * 32 + b"\r\n"))
+except http.client.HTTPException:
+    http.client._MAXHEADERS = 33
+SLOTS = threading.BoundedSemaphore(int(os.environ["AIMS_IMDS_SLOTS"]))
+IDLE_S = float(os.environ["AIMS_IMDS_IDLE_S"])
+BUSY = (
+    b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\n"
+    b"Content-Length: 0\r\nConnection: close\r\n\r\n"
+)
 ROLE = os.environ["AIMS_IMDS_ROLE"]
 REGION = os.environ["AIMS_IMDS_REGION"]
 INSTANCE = os.environ["AIMS_IMDS_INSTANCE"]
@@ -50,6 +71,43 @@ def stamp(when):
 
 def zone():
     return REGION + "a"
+
+
+def emit(entry):
+    line = json.dumps(entry, separators=(",", ":"))
+    with _lock:
+        print(line, flush=True)
+
+
+def cut(text, limit):
+    """`text` cut to `limit` characters, and how many were cut."""
+    if text is None or len(text) <= limit:
+        return text, 0
+    return text[:limit], len(text) - limit
+
+
+def linger(sock, seconds):
+    """Close `sock` after reading what the client still sends, for up to `seconds`. Closing
+    with unread bytes sends a reset, which can drop the answer before the client reads it."""
+    try:
+        sock.shutdown(socket.SHUT_WR)
+        end = time.monotonic() + seconds
+        read = 0
+        while read < 65536:
+            left = end - time.monotonic()
+            if left <= 0:
+                break
+            sock.settimeout(left)
+            data = sock.recv(4096)
+            if not data:
+                break
+            read += len(data)
+    except OSError:
+        pass
+    try:
+        sock.close()
+    except OSError:
+        pass
 
 
 def credentials():
@@ -114,23 +172,39 @@ system"""
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    timeout = IDLE_S
 
     def log_message(self, *args):
         pass
 
-    def _record(self):
-        headers = {k: v for k, v in self.headers.items()}
-        line = json.dumps(
-            {
-                "time": stamp(now()),
-                "method": self.command,
-                "path": self.path,
-                "headers": headers,
-            },
-            separators=(",", ":"),
-        )
-        with _lock:
-            print(line, flush=True)
+    def handle_one_request(self):
+        # A request that fails to parse must not log the last one's path or headers.
+        self.path = None
+        self.headers = None
+        super().handle_one_request()
+
+    def send_response(self, code, message=None):
+        self._record(code)
+        super().send_response(code, message)
+
+    def _record(self, status):
+        path, removed = cut(self.path, 1024)
+        headers = {}
+        for key, value in (self.headers or {}).items():
+            key, a = cut(key, 128)
+            value, b = cut(value, 512)
+            headers[key] = value
+            removed += a + b
+        entry = {
+            "time": stamp(now()),
+            "method": self.command,
+            "path": path,
+            "headers": headers,
+            "status": int(status),
+        }
+        if removed:
+            entry["cut"] = removed
+        emit(entry)
 
     def _send(self, code, body=b"", content_type="text/plain", extra=None):
         if isinstance(body, str):
@@ -152,7 +226,6 @@ class Handler(BaseHTTPRequestHandler):
             return token == _token["value"] and time.time() < _token["expires"]
 
     def do_PUT(self):
-        self._record()
         if urlsplit(self.path).path.rstrip("/") != "/latest/api/token":
             self._send(404, "Not Found")
             return
@@ -171,7 +244,6 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, token, extra={"X-aws-ec2-metadata-token-ttl-seconds": str(ttl)})
 
     def do_GET(self):
-        self._record()
         if not self._authorized():
             self._send(401, "Unauthorized", extra={"X-aws-ec2-metadata-token": ""})
             return
@@ -210,9 +282,60 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, "Not Found")
 
 
-class Server(ThreadingHTTPServer):
-    daemon_threads = True
+class Server(HTTPServer):
+    """One thread per connection, at most SLOTS at once. A connection past them gets a 503."""
+
     allow_reuse_address = True
+
+    def process_request(self, request, client_address):
+        if not SLOTS.acquire(blocking=False):
+            self._refuse(request)
+            return
+        try:
+            thread = threading.Thread(target=self._serve, args=(request, client_address))
+            thread.daemon = True
+            thread.start()
+        except Exception:
+            SLOTS.release()
+            self._refuse(request)
+
+    def _serve(self, request, client_address):
+        try:
+            self.finish_request(request, client_address)
+        except Exception:
+            self.handle_error(request, client_address)
+        finally:
+            self.shutdown_request(request)
+            SLOTS.release()
+
+    def _refuse(self, request):
+        """Answer a 503 and close. This runs in the accept loop, so it waits at most 10 ms for
+        the request: reading it first keeps the close from being a reset."""
+        emit({"time": stamp(now()), "status": 503, "refused": True})
+        try:
+            request.settimeout(0.01)
+            request.recv(65536)
+        except OSError:
+            pass
+        try:
+            request.settimeout(1)
+            request.sendall(BUSY)
+            request.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+        try:
+            request.close()
+        except OSError:
+            pass
+
+    def shutdown_request(self, request):
+        linger(request, 0.5)
+
+    def handle_error(self, request, client_address):
+        error = sys.exc_info()[1]
+        if isinstance(error, (ConnectionError, TimeoutError)):
+            return
+        print(f"{type(error).__name__}: {error}"[:500], file=sys.stderr, flush=True)
 
 
 Server(("169.254.169.254", 80), Handler).serve_forever()
@@ -393,6 +516,8 @@ async def start(
         "AIMS_IMDS_PRIVATE_IP": identity.private_ip,
         "AIMS_IMDS_HOSTNAME": identity.hostname(region),
         "AIMS_IMDS_RESERVATION": identity.reservation,
+        "AIMS_IMDS_SLOTS": str(SLOTS),
+        "AIMS_IMDS_IDLE_S": str(IDLE_S),
         "AIMS_IMDS_SERVER": SERVER,
         "PYTHONDONTWRITEBYTECODE": "1",
     }
@@ -414,6 +539,10 @@ async def start(
             "CapDrop": ["ALL"],
             "CapAdd": ["NET_ADMIN", "NET_BIND_SERVICE"],
             "SecurityOpt": ["no-new-privileges"],
+            "PidsLimit": PIDS,
+            "Memory": MEMORY,
+            "MemorySwap": MEMORY,
+            "NanoCpus": int(CPUS * 1e9),
             "ReadonlyRootfs": True,
             "Mounts": [
                 {
