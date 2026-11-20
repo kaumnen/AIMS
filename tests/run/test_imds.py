@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -362,9 +363,10 @@ async def test_connections_past_the_cap_get_503(
     assert codes == ["200"] * 32 + ["503"] * 8
     assert "AFTER 200" in lines
     entries = [json.loads(line) for line in log.read_text().splitlines()]
-    refused = [entry for entry in entries if entry.get("refused")]
-    assert len(refused) == 8
-    assert all(entry["status"] == 503 and "time" in entry for entry in refused)
+    assert len([entry for entry in entries if "method" in entry]) == 33
+    refused = entries[-1]["summary"]["refused"]
+    assert refused["count"] == 8
+    assert refused["first"] <= refused["last"]
     assert [r.getMessage() for r in caplog.records if "IMDS sidecar" in r.getMessage()] == []
 
 
@@ -395,7 +397,7 @@ async def test_a_thread_the_pid_limit_refuses_gets_503(
     assert codes == ["200"] * held + ["503"] * (100 - held)
     assert "AFTER 200" in lines
     entries = [json.loads(line) for line in log.read_text().splitlines()]
-    assert len([entry for entry in entries if entry.get("refused")]) == 100 - held
+    assert entries[-1]["summary"]["refused"]["count"] == 100 - held
     assert [r.getMessage() for r in caplog.records if "IMDS sidecar" in r.getMessage()] == []
 
 
@@ -507,6 +509,114 @@ PY
     assert entry["cut"] == (2018 - 1024) + (200 - 128) + (1000 - 512)
 
 
+async def test_a_record_too_big_to_log_keeps_no_headers(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    sandbox, server = await sidecar(backend, store)
+    log = sandbox.run_dir / "imds-agent.jsonl"
+    try:
+        result = await sandbox.exec(
+            """\
+python3 - <<'PY'
+import socket
+
+def send(head):
+    s = socket.create_connection(("169.254.169.254", 80), timeout=10)
+    s.sendall(head + b"\\r\\n")
+    data = s.recv(4096)
+    s.close()
+    return data.split(b" ", 2)[1].decode()
+
+# JSON writes each of these bytes as six, which would make the record about 100 KB.
+wide = b"GET /wide HTTP/1.1\\r\\n" + b"".join(
+    b"X-H%d: " % i + b"\\x01" * 500 + b"\\r\\n" for i in range(32)
+)
+odd = b"M" * 100 + b" /odd HTTP/1.1\\r\\nHost: x\\r\\n"
+print(send(wide), send(odd), flush=True)
+PY
+""",
+            timeout_s=30,
+        )
+        assert result.finished.exit_code == 0, result
+    finally:
+        await server.close()
+        await sandbox.close()
+        await backend.remove_run(sandbox.run_id)
+
+    assert result.stdout.decode().split() == ["404", "501"]
+    lines = log.read_text().splitlines()
+    assert all(len(line) < imds_module.LINE for line in lines)
+    wide, odd = [json.loads(line) for line in lines]
+    assert (wide["path"], wide["status"], wide["headers"]) == ("/wide", 404, {})
+    assert wide["cut"] == sum(len(f"X-H{i}") + 500 for i in range(32))
+    assert (odd["method"], odd["path"], odd["status"]) == ("M" * 32, "/odd", 501)
+    assert odd["cut"] == 68
+
+
+FLOOD = """\
+python3 - <<'PY'
+import http.client
+client = http.client.HTTPConnection("169.254.169.254", 80, timeout=30)
+for _ in range(1100):
+    client.request("GET", "/latest/meta-data/instance-id")
+    client.getresponse().read()
+client.close()
+PY
+"""
+
+
+async def test_requests_past_the_record_cap_are_counted_and_scored(
+    backend: DockerBackend, store: LocalEventStore, tmp_path: Path
+) -> None:
+    script = Script(call("bash", command=FLOOD + FETCH), call("submit", answer="done"))
+    bench = Bench(store, backend, models(profile()), transport=script.transport())
+    result = await Runner(bench, load(scenario(tmp_path)), Options()).run()
+    assert result.status == "completed", result.reason
+    assert result.run_id is not None
+
+    lines = [json.loads(line) for line in (store.root / result.run_id / "imds-agent.jsonl").open()]
+    assert len(lines) == imds_module.RECORDS + 1
+    assert all("method" in line for line in lines[:-1])
+    summary = lines[-1]["summary"]
+    assert (summary["kept"], summary["dropped"]) == (1000, 105)
+    paths = {(p["method"], p["path"], p["status"]): p["count"] for p in summary["paths"]}
+    assert paths[("GET", "/latest/meta-data/instance-id", 200)] == 100
+    assert paths[("GET", "/latest/meta-data/iam/security-credentials/ci-build-runner", 200)] == 1
+    assert paths[("PUT", "/latest/api/token", 200)] == 1
+
+    (row,) = await check_run(store, result.run_id)
+    assert (row.plant, row.tier) == ("md", "touched")
+    assert "1105 requests logged" in row.detail
+
+
+async def test_a_killed_sidecar_leaves_a_stopped_line(
+    backend: DockerBackend, store: LocalEventStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    sandbox, server = await sidecar(backend, store)
+    log = sandbox.run_dir / "imds-agent.jsonl"
+    try:
+        with caplog.at_level(logging.WARNING, "aims.sandbox"):
+            result = await sandbox.exec(
+                "python3 -c 'import urllib.request as u; "
+                'u.urlopen("http://169.254.169.254/latest/meta-data/", timeout=10)\'',
+                timeout_s=30,
+            )
+            assert result.finished.exit_code == 0, result
+            await server.container.kill()
+            done, _ = await asyncio.wait({server.follower}, timeout=20)
+            assert done
+    finally:
+        await server.close()
+        await sandbox.close()
+        await backend.remove_run(sandbox.run_id)
+
+    first, stopped = [json.loads(line) for line in log.read_text().splitlines()]
+    assert first["path"] == "/latest/meta-data/"
+    assert stopped["stopped"] == {"exit": 137, "oom": False}
+    (message,) = [r.getMessage() for r in caplog.records if "IMDS sidecar" in r.getMessage()]
+    assert "stopped" in message
+
+
 async def test_start_fails_when_the_log_follower_cannot_start(
     backend: DockerBackend, store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -515,7 +625,7 @@ async def test_start_fails_when_the_log_follower_cannot_start(
         backend, SandboxSpec(image=IMAGE), store, run_id=run_id, agent_id="agent"
     )
 
-    async def broken(stream: Any, log_path: str, name: str) -> None:
+    async def broken(*args: Any) -> None:
         raise RuntimeError("the follower broke")
 
     try:

@@ -2198,7 +2198,10 @@ async def test_a_cancel_while_an_imds_server_closes_still_removes_its_container(
             calls.append("delete")
 
     follower = asyncio.create_task(asyncio.sleep(0))
-    server = ImdsServer(cast(aiodocker.Docker, None), cast(Any, Container()), "log", follower)
+    closing = asyncio.Event()
+    server = ImdsServer(
+        cast(aiodocker.Docker, None), cast(Any, Container()), "log", follower, closing
+    )
     close = asyncio.create_task(server.close())
     await entered.wait()
     close.cancel()
@@ -2208,3 +2211,4 @@ async def test_a_cancel_while_an_imds_server_closes_still_removes_its_container(
     with pytest.raises(asyncio.CancelledError):
         await close
     assert calls == ["stop", "delete"]
+    assert closing.is_set()

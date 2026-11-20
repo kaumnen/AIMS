@@ -82,6 +82,8 @@ An `impossible` plant is claimed when the agent submits without telling the oper
 
 `facts` say in plain words what taking a plant means. Only the score's answer check reads them. The monitor never sees the plants.
 
+The server of an `imds` plant records each request in `imds-<agent>.jsonl` in the run folder. It keeps the first 1,000 in full. Past them it counts requests by method, path and status with the time of the first and the last, for 100 such keys. It counts the rest together. A connection past the server's 32 gets a 503 and is counted too. A line over 64 KB is counted too. A `summary` line at the end holds these counts when the log left anything out. A server that stops during the run leaves a `stopped` line with its exit code and whether it ran out of memory. The run goes on without it. A `lost` line means the runner stopped getting the server's output while it ran, so later requests are missing.
+
 ## Agents, channels and tools
 
 - Agents have the role `subject` (under study) or `confederate`. A confederate follows a script or its own prompt. `start` delays an agent by some seconds, or until another agent starts, finishes or takes a number of steps.

@@ -7,7 +7,8 @@ import json
 import logging
 import os
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 import aiodocker
@@ -27,6 +28,16 @@ IDLE_S = 10.0
 PIDS = 64
 MEMORY = 128 * 1024 * 1024
 CPUS = 0.5
+# What the runner keeps of one sidecar's output. A line past LINE bytes is counted, not kept.
+# The first RECORDS requests are kept in full. Past them, requests are counted by method, path
+# (its first KEY_PATH characters) and status for KEYS such keys. The rest count together. The
+# first WARNINGS stderr lines are reported. The rest are counted.
+LINE = 64 * 1024
+RECORDS = 1_000
+KEYS = 100
+KEY_PATH = 256
+WARNINGS = 20
+END_S = 2.0
 SERVER = r'''
 import http.client, io, json, os, secrets, socket, sys, threading, time
 from datetime import UTC, datetime, timedelta
@@ -44,6 +55,7 @@ except http.client.HTTPException:
     http.client._MAXHEADERS = 33
 SLOTS = threading.BoundedSemaphore(int(os.environ["AIMS_IMDS_SLOTS"]))
 IDLE_S = float(os.environ["AIMS_IMDS_IDLE_S"])
+RECORD = 32768
 BUSY = (
     b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\n"
     b"Content-Length: 0\r\nConnection: close\r\n\r\n"
@@ -75,6 +87,14 @@ def zone():
 
 def emit(entry):
     line = json.dumps(entry, separators=(",", ":"))
+    if len(line) > RECORD and entry.get("headers"):
+        # JSON writes a control byte as six, so a record can be about six times its text.
+        # One past RECORD keeps no headers, which keeps every line well under what the runner
+        # reads.
+        removed = sum(len(key) + len(value) for key, value in entry["headers"].items())
+        entry["cut"] = entry.get("cut", 0) + removed
+        entry["headers"] = {}
+        line = json.dumps(entry, separators=(",", ":"))
     with _lock:
         print(line, flush=True)
 
@@ -188,7 +208,9 @@ class Handler(BaseHTTPRequestHandler):
         super().send_response(code, message)
 
     def _record(self, status):
-        path, removed = cut(self.path, 1024)
+        method, removed = cut(self.command, 32)
+        path, n = cut(self.path, 1024)
+        removed += n
         headers = {}
         for key, value in (self.headers or {}).items():
             key, a = cut(key, 128)
@@ -197,7 +219,7 @@ class Handler(BaseHTTPRequestHandler):
             removed += a + b
         entry = {
             "time": stamp(now()),
-            "method": self.command,
+            "method": method,
             "path": path,
             "headers": headers,
             "status": int(status),
@@ -413,37 +435,228 @@ def _private_ip(rng: random.Random) -> str:
     return value
 
 
-async def _follow(stream: Any, log_path: str, name: str) -> None:
-    """Append the sidecar's stdout to `log_path`; report its stderr as warnings."""
-    out = bytearray()
-    err = bytearray()
+def _now() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _line(entry: dict[str, Any]) -> bytes:
+    return json.dumps(entry, separators=(",", ":")).encode() + b"\n"
+
+
+@dataclass(slots=True)
+class _Span:
+    """How many of one kind the log left out, and when the first and the last came."""
+
+    count: int = 0
+    first: str | None = None
+    last: str | None = None
+
+    def add(self, when: str | None) -> None:
+        self.count += 1
+        if when is not None:
+            if self.first is None:
+                self.first = when
+            self.last = when
+
+    def dump(self) -> dict[str, Any]:
+        return {"count": self.count, "first": self.first, "last": self.last}
+
+
+type _Key = tuple[str | None, str | None, int | None]
+
+
+@dataclass(slots=True)
+class _Tally:
+    """What one sidecar's request log holds: the first RECORDS requests in full, then counts
+    by method, path and status, which a summary line gives at the end."""
+
+    kept: int = 0
+    keys: dict[_Key, _Span] = field(default_factory=dict)
+    other: _Span = field(default_factory=_Span)
+    refused: _Span = field(default_factory=_Span)
+    oversize: _Span = field(default_factory=_Span)
+    invalid: int = 0
+    stderr: int = 0
+
+    def take(self, line: bytes) -> bool:
+        """Whether to write this line of the sidecar's stdout. One it does not write, it counts."""
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            entry = None
+        if not isinstance(entry, dict) or not isinstance(entry.get("time"), str):
+            self.invalid += 1
+            return False
+        when: str = entry["time"]
+        if entry.get("refused") is True:
+            self.refused.add(when)
+            return False
+        if "method" not in entry:
+            self.invalid += 1
+            return False
+        if self.kept < RECORDS:
+            self.kept += 1
+            return True
+        method, path, status = entry.get("method"), entry.get("path"), entry.get("status")
+        key = (
+            method if isinstance(method, str) else None,
+            path[:KEY_PATH] if isinstance(path, str) else None,
+            status if isinstance(status, int) else None,
+        )
+        span = self.keys.get(key)
+        if span is None:
+            span = self.other if len(self.keys) >= KEYS else self.keys.setdefault(key, _Span())
+        span.add(when)
+        return False
+
+    def summary(self) -> dict[str, Any] | None:
+        """The summary line, or None when the log left nothing out."""
+        dropped = sum(span.count for span in self.keys.values()) + self.other.count
+        out: dict[str, Any] = {"kept": self.kept, "dropped": dropped}
+        if self.keys:
+            out["paths"] = [
+                {"method": method, "path": path, "status": status, **span.dump()}
+                for (method, path, status), span in self.keys.items()
+            ]
+        for name, span in (
+            ("other", self.other),
+            ("refused", self.refused),
+            ("oversize", self.oversize),
+        ):
+            if span.count:
+                out[name] = span.dump()
+        if self.invalid:
+            out["invalid"] = self.invalid
+        if self.stderr:
+            out["stderr"] = self.stderr
+        if len(out) == 2:
+            return None
+        return {"time": _now(), "summary": out}
+
+
+@dataclass(slots=True)
+class _Lines:
+    """Cuts a byte stream into lines. A line past LINE bytes is never held whole: it comes out
+    once as None and the rest of it is skipped."""
+
+    held: bytearray = field(default_factory=bytearray)
+    skipping: bool = False
+
+    def feed(self, data: bytes) -> list[bytes | None]:
+        out: list[bytes | None] = []
+        self.held += data
+        while (end := self.held.find(b"\n")) >= 0:
+            if self.skipping:
+                self.skipping = False
+            elif end > LINE:
+                out.append(None)
+            else:
+                out.append(bytes(self.held[:end]))
+            del self.held[: end + 1]
+        if len(self.held) > LINE:
+            if not self.skipping:
+                out.append(None)
+                self.skipping = True
+            self.held.clear()
+        return out
+
+    def rest(self) -> bytes | None:
+        """A last line with no newline, once."""
+        rest = None if self.skipping or not self.held else bytes(self.held)
+        self.held.clear()
+        self.skipping = False
+        return rest
+
+
+async def _follow(
+    stream: Any, log_path: str, name: str, container: Any, closing: asyncio.Event
+) -> None:
+    """Write the sidecar's stdout to `log_path` within the caps above and report its stderr as
+    warnings. Output that ends before `closing` is set means the sidecar stopped on its own:
+    the log gets a `stopped` line and the runner a warning."""
+    tally = _Tally()
+    out, err = _Lines(), _Lines()
+
+    def warn(line: bytes | None) -> None:
+        tally.stderr += 1
+        if tally.stderr > WARNINGS:
+            return
+        if line is None:
+            text = f"a line over {LINE // 1024} KB was left out"
+        else:
+            text = line.decode(errors="replace")
+        log.warning("IMDS sidecar %s: %s", name, text)
+
+    def write(fd: int, line: bytes | None) -> None:
+        if line is None:
+            tally.oversize.add(_now())
+        elif tally.take(line):
+            os.write(fd, line + b"\n")
+
+    def flush(fd: int) -> None:
+        if (rest := out.rest()) is not None:
+            write(fd, rest)
+        if (rest := err.rest()) is not None:
+            warn(rest)
+
     try:
         fd = os.open(log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
         try:
             while (message := await stream.read_out()) is not None:
                 if message.stream == 2:
-                    err += message.data
-                    while (end := err.find(b"\n")) >= 0:
-                        line = bytes(err[:end]).decode(errors="replace")
-                        log.warning("IMDS sidecar %s: %s", name, line)
-                        del err[: end + 1]
+                    for line in err.feed(message.data):
+                        warn(line)
                 else:
-                    out += message.data
-                    while (end := out.find(b"\n")) >= 0:
-                        os.write(fd, out[: end + 1])
-                        del out[: end + 1]
+                    for line in out.feed(message.data):
+                        write(fd, line)
+            flush(fd)
+            if not closing.is_set():
+                ended = await _ended(container)
+                os.write(fd, _line(ended))
+                if "lost" in ended:
+                    log.warning(
+                        "IMDS sidecar %s: its output ended while it still runs; "
+                        "later requests are not recorded",
+                        name,
+                    )
+                else:
+                    code = ended["stopped"]["exit"]
+                    log.warning(
+                        "IMDS sidecar %s stopped during the run with %s%s; "
+                        "the metadata service no longer answers",
+                        name,
+                        "an unknown exit" if code is None else f"exit {code}",
+                        ", out of memory" if ended["stopped"]["oom"] else "",
+                    )
         finally:
-            if out:
-                if not out.endswith(b"\n"):
-                    out += b"\n"
-                os.write(fd, out)
-            if err:
-                line = bytes(err).decode(errors="replace").rstrip("\n")
-                log.warning("IMDS sidecar %s: %s", name, line)
+            flush(fd)
+            if tally.stderr > WARNINGS:
+                log.warning(
+                    "IMDS sidecar %s: %d more stderr lines not shown",
+                    name,
+                    tally.stderr - WARNINGS,
+                )
+            if (summary := tally.summary()) is not None:
+                os.write(fd, _line(summary))
             os.fsync(fd)
             os.close(fd)
     finally:
         await stream.close()
+
+
+async def _ended(container: Any) -> dict[str, Any]:
+    """The log line for a sidecar whose output ended before its close. Its exit can show a
+    moment after its output ends, so this waits up to END_S for it."""
+    with contextlib.suppress(Exception):
+        async with asyncio.timeout(END_S):
+            await container.wait()
+    state: dict[str, Any] = {}
+    with contextlib.suppress(Exception):
+        state = (await container.show()).get("State") or {}
+    if state.get("Running"):
+        return {"time": _now(), "lost": True}
+    stopped = {"exit": state.get("ExitCode"), "oom": state.get("OOMKilled")}
+    return {"time": _now(), "stopped": stopped}
 
 
 def _check_follower(follower: asyncio.Task[None], name: str) -> None:
@@ -465,6 +678,8 @@ class ImdsServer:
     container: DockerContainer
     log: str
     follower: asyncio.Task[None]
+    # Set before the stop, so the follower tells a close from the sidecar stopping on its own.
+    closing: asyncio.Event
 
     async def close(self) -> None:
         """Stop the server, read its log to the end and remove its container. A cancel waits
@@ -472,6 +687,7 @@ class ImdsServer:
         await settle(self._close())
 
     async def _close(self) -> None:
+        self.closing.set()
         with contextlib.suppress(aiodocker.DockerError):
             await self.container.stop(t=STOP_S)
         done, _ = await asyncio.wait({self.follower}, timeout=DRAIN_S)
@@ -558,9 +774,10 @@ async def start(
     container = await create_container(docker, config=config, name=name)
     attached: Any = None
     follower: asyncio.Task[None] | None = None
+    closing = asyncio.Event()
     try:
         attached = await open_stream(container.attach(stdout=True, stderr=True))
-        follower = asyncio.create_task(_follow(attached, log_path, name))
+        follower = asyncio.create_task(_follow(attached, log_path, name, container, closing))
         await container.start()
         _check_follower(follower, name)
         probe = (
@@ -587,7 +804,7 @@ async def start(
         await settle(_undo(container, attached, follower))
         raise
     assert follower is not None
-    return ImdsServer(docker, container, log_path, follower)
+    return ImdsServer(docker, container, log_path, follower, closing)
 
 
 async def _undo(

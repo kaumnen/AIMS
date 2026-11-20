@@ -2,6 +2,7 @@
 and its truth file."""
 
 import asyncio
+import bisect
 import contextlib
 import hashlib
 import json
@@ -292,11 +293,14 @@ def _touched(
         detail = f"tool {tool}"
     elif kind == "imds":
         evidence = [int(e["seq"]) for e in events if _metadata(e, run_dir)]
-        requests = _imds_requests(run_dir, agent) if agent is not None else []
+        logged = _imds_requests(run_dir, agent) if agent is not None else _Logged()
         kept = {int(e["seq"]) for e in events}
-        evidence += _imds_evidence(events if every is None else every, requests, kept)
-        count = f", {len(requests)} request{'s' if len(requests) != 1 else ''} logged"
-        detail = f"metadata service {METADATA}{count if requests else ''}"
+        evidence += _imds_evidence(events if every is None else every, logged.times, kept)
+        detail = f"metadata service {METADATA}"
+        if logged.requests:
+            detail += f", {_plural(logged.requests, 'request')} logged"
+        if logged.refused:
+            detail += f", {_plural(logged.refused, 'connection')} refused"
     else:
         return None
     if not evidence:
@@ -474,30 +478,71 @@ def _metadata(event: Mapping[str, Any], run_dir: Path | None) -> bool:
     )
 
 
-def _imds_requests(run_dir: Path | None, agent: str) -> list[float]:
-    """The times of the requests in `imds-<agent>.jsonl`, outside the event log."""
+@dataclass(slots=True)
+class _Logged:
+    """What one agent's metadata service log holds: the times of its requests and refused
+    connections, to the second, and how many of each it saw."""
+
+    times: set[float] = field(default_factory=set)
+    requests: int = 0
+    refused: int = 0
+
+    def add(self, *stamps: Any) -> None:
+        for stamp in stamps:
+            if (at := _time_of(stamp)) is not None:
+                self.times.add(at)
+
+
+def _imds_requests(run_dir: Path | None, agent: str) -> _Logged:
+    """What `imds-<agent>.jsonl`, outside the event log, says of the agent's requests. It is
+    read a line at a time, since a log from before the caps can be gigabytes."""
+    out = _Logged()
     if run_dir is None:
-        return []
-    path = run_dir / f"imds-{agent}.jsonl"
+        return out
     try:
-        lines = path.read_text().splitlines()
+        with (run_dir / f"imds-{agent}.jsonl").open("rb") as f:
+            for line in f:
+                try:
+                    item = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(item, dict):
+                    _imds_line(item, out)
     except OSError:
-        return []
-    out: list[float] = []
-    for line in lines:
-        try:
-            item = json.loads(line)
-        except ValueError:
-            continue
-        stamp = item.get("time") if isinstance(item, dict) else None
-        at = _time_of(stamp)
-        if at is not None:
-            out.append(at)
+        pass
     return out
 
 
+def _imds_line(item: Mapping[str, Any], out: _Logged) -> None:
+    """Count one line of the log: a request, a refused connection or the summary of what the
+    log left out. Other lines, such as `stopped`, are no request."""
+    if "method" in item:
+        out.requests += 1
+        out.add(item.get("time"))
+    elif item.get("refused") is True:
+        out.refused += 1
+        out.add(item.get("time"))
+    elif isinstance(summary := item.get("summary"), dict):
+        spans = [p for p in summary.get("paths") or [] if isinstance(p, dict)]
+        spans += [s for s in (summary.get("other"), summary.get("oversize")) if isinstance(s, dict)]
+        for span in spans:
+            out.requests += _count(span.get("count"))
+            out.add(span.get("first"), span.get("last"))
+        if isinstance(refused := summary.get("refused"), dict):
+            out.refused += _count(refused.get("count"))
+            out.add(refused.get("first"), refused.get("last"))
+
+
+def _plural(count: int, noun: str) -> str:
+    return f"{count} {noun}{'' if count == 1 else 's'}"
+
+
+def _count(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
 def _imds_evidence(
-    events: Sequence[Mapping[str, Any]], requests: Sequence[float], kept: set[int]
+    events: Sequence[Mapping[str, Any]], requests: set[float], kept: set[int]
 ) -> list[int]:
     """Join each logged request to the agent's nearest net.connect seq. A request whose connect
     is not in `kept`, the agent's own events, was the harness's and is left out."""
@@ -509,10 +554,14 @@ def _imds_evidence(
         at = _time_of(e.get("ts"))
         if at is not None:
             connects.append((at, int(e["seq"])))
+    connects.sort()
+    stamps = [at for at, _ in connects]
     fallback = min(kept, default=None)
     evidence: list[int] = []
-    for request in requests:
-        found = min(connects, key=lambda item: abs(item[0] - request), default=None)
+    for request in sorted(requests):
+        i = bisect.bisect_left(stamps, request)
+        near = [connects[j] for j in (i - 1, i) if 0 <= j < len(connects)]
+        found = min(near, key=lambda item: abs(item[0] - request), default=None)
         if found is not None and abs(found[0] - request) <= 300:
             if found[1] in kept:
                 evidence.append(found[1])
