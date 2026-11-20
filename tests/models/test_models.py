@@ -1061,10 +1061,19 @@ def test_a_window_holds_what_the_provider_says_is_gone() -> None:
 async def test_a_rate_limit_pauses_every_profile_on_the_account(store: LocalEventStore) -> None:
     run_id = await new_run(store)
     error = json.dumps({"error": {"message": "slow down"}}).encode()
+    arrived: list[float] = []
+
+    def at(answer: Callable[[], httpx2.Response]) -> Callable[[], httpx2.Response]:
+        def timed() -> httpx2.Response:
+            arrived.append(time.monotonic())
+            return answer()
+
+        return timed
+
     handler, sent = scripted(
-        lambda: stream([error], 429, retry_after="0.5", content_type="application/json"),
-        lambda: stream(sse(CHAT_EVENTS)),
-        lambda: stream(sse(CHAT_EVENTS)),
+        at(lambda: stream([error], 429, retry_after="0.5", content_type="application/json")),
+        at(lambda: stream(sse(CHAT_EVENTS))),
+        at(lambda: stream(sse(CHAT_EVENTS))),
     )
     once = Retries(attempts=1, backoff=0, max=1, rate_limited=0)
     first = profile(name="first", api_key_env="KEY_A", retries=once)
@@ -1089,8 +1098,11 @@ async def test_a_rate_limit_pauses_every_profile_on_the_account(store: LocalEven
     queued = {r.profile: r.queued_ms for r in requests}
     assert queued["first"] < 250
     assert queued["other"] < 250
-    assert queued["same"] >= 250
     assert len(sent) == 3
+    # The pause starts after the 429 arrives and lasts its Retry-After, so this holds on a slow
+    # host too. What `same` waits in the queue is only what the pause has left.
+    limited, _, same_sent = arrived
+    assert same_sent - limited >= 0.5
 
 
 async def test_rate_limit_retries_do_not_count_toward_attempts(store: LocalEventStore) -> None:
