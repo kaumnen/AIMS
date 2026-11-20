@@ -793,8 +793,9 @@ async def test_a_monitor_job_whose_run_a_forced_delete_took_is_cancelled_and_dro
         poke.set()
         async with asyncio.timeout(20):
             await cut.wait()
-        await until(lambda: asyncio.sleep(0, (data / "runs" / run_id).exists()), False, 20)
-        assert await n.ctx.store.run(run_id) is None
+        # the store renames the folder away before it deletes the index row
+        await until(lambda: n.ctx.store.run(run_id), None, 20)
+        assert not (data / "runs" / run_id).exists()
         await until(lambda: asyncio.sleep(0, bool(n.claimed)), False, 20)
     assert await cp.state.store.run(run_id) is None
     assert not (cp.state.store.root / run_id).exists()
