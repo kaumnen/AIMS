@@ -308,6 +308,9 @@ class Server(HTTPServer):
     """One thread per connection, at most SLOTS at once. A connection past them gets a 503."""
 
     allow_reuse_address = True
+    # socketserver's default listen queue of 5 dropped connects that came at once, and the
+    # client sent each again after 1 s. 128 holds a burst well past SLOTS.
+    request_queue_size = 128
 
     def process_request(self, request, client_address):
         if not SLOTS.acquire(blocking=False):

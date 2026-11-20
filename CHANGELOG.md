@@ -104,6 +104,7 @@ Notable changes to AIMS, newest first. The format follows [Keep a Changelog](htt
 - A refused `mkfifo`, `mknod`, `chown` or `fchown` on a read-only mount was not recorded. A refused FIFO is an `ipc.event` with `errno`. Another refused node is a `denied` `file.access`. A refused chown is a `file.setattr` with `errno`.
 - The path of a unix socket in an `ipc.event` kept the caller's memory after the name's NUL. A glibc name lookup passes the whole address, so each one logged two connects with stack bytes. The path now ends at the NUL, as the kernel reads it.
 - A path deeper than 12 names lost its leading part in deletes, renames, links, mkdirs, symlinks, writes, metadata and extended attribute changes, FIFOs, cache and sync calls. The tracer now follows such a walk for up to 60 names in extra records. A walk cut inside a volume that still holds the volume's last two names maps to the sandbox path. It showed the host's path under Docker's volumes folder. With these records and the extras above, the tracer takes about 8 s longer to start on a Mac: 18.5 s, up from 10.8 s. File calls deeper than 12 names cost about half again as much.
+- The metadata sidecar of an `imds` plant queues up to 128 new connections. It queued 5, so connects that came at once were dropped and sent again after 1 s. In a test of 32 clients at once, 100 of 160 connects took over 0.9 s. With requests of about 313 KB, 21 of 160 ended in a reset. With a queue of 128 neither happened.
 
 ### Security
 

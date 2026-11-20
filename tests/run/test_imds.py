@@ -401,6 +401,79 @@ async def test_a_thread_the_pid_limit_refuses_gets_503(
     assert [r.getMessage() for r in caplog.records if "IMDS sidecar" in r.getMessage()] == []
 
 
+# The sidecar shares the sandbox's network namespace, so the sandbox reads the listener's
+# counters. A full listen queue drops the connect, and the client sends it again after 1 s.
+BURST = """\
+python3 - <<'PY'
+import json, socket, threading, time
+
+def drops():
+    with open("/proc/net/netstat") as f:
+        lines = f.read().splitlines()
+    for names, values in zip(lines[::2], lines[1::2]):
+        if names.startswith("TcpExt:"):
+            row = dict(zip(names.split()[1:], map(int, values.split()[1:])))
+            return row["ListenOverflows"] + row["ListenDrops"]
+
+request = (
+    b"GET /latest/meta-data/instance-id HTTP/1.1\\r\\nHost: x\\r\\nConnection: close\\r\\n\\r\\n"
+)
+lock = threading.Lock()
+codes, errors, slowest = {}, {}, 0.0
+
+def one(gate):
+    global slowest
+    gate.wait()
+    start = time.monotonic()
+    try:
+        with socket.create_connection(("169.254.169.254", 80), timeout=10) as s:
+            s.sendall(request)
+            data = s.recv(64)
+        code = data.split(b" ", 2)[1].decode() if data.startswith(b"HTTP/") else "closed"
+        with lock:
+            codes[code] = codes.get(code, 0) + 1
+    except OSError as e:
+        with lock:
+            errors[type(e).__name__] = errors.get(type(e).__name__, 0) + 1
+    with lock:
+        slowest = max(slowest, time.monotonic() - start)
+
+before = drops()
+for _ in range(3):
+    gate = threading.Barrier(32)
+    threads = [threading.Thread(target=one, args=(gate,)) for _ in range(32)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    time.sleep(0.5)
+result = {"codes": codes, "errors": errors, "drops": drops() - before, "slowest": slowest}
+print("RESULT", json.dumps(result), flush=True)
+PY
+"""
+
+
+async def test_simultaneous_connections_fit_the_listen_queue(
+    backend: DockerBackend, store: LocalEventStore
+) -> None:
+    sandbox, server = await sidecar(backend, store)
+    try:
+        result = await sandbox.exec(BURST, timeout_s=60)
+        assert result.finished.exit_code == 0, result
+    finally:
+        await server.close()
+        await sandbox.close()
+        await backend.remove_run(sandbox.run_id)
+
+    line = next(line for line in result.stdout.decode().splitlines() if line.startswith("RESULT"))
+    burst = json.loads(line.removeprefix("RESULT"))
+    assert burst["drops"] == 0, burst
+    assert burst["errors"] == {}, burst
+    # A connection that finds every slot still held from the round before gets a 503.
+    assert set(burst["codes"]) <= {"200", "503"}, burst
+    assert sum(burst["codes"].values()) == 96, burst
+
+
 async def test_an_idle_connection_is_closed(
     backend: DockerBackend, store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
