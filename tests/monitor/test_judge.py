@@ -40,6 +40,8 @@ from aims.events import (
     ProcExit,
     ProcFork,
     RunStarted,
+    ServiceEnded,
+    ServiceRequest,
     TaskScored,
     ToolCall,
     ToolResult,
@@ -438,6 +440,43 @@ async def test_events_hides_the_monitor_and_pages(store: LocalEventStore) -> Non
     assert "unknown event types" in bad["error"]
     bad = await tool(judge, "events", from_seq=-1)
     assert "invalid arguments" in bad["error"]
+
+
+async def test_the_judge_never_reads_service_records(store: LocalEventStore) -> None:
+    """The records of a service the run hosts are hidden like the monitor's own events. Asking
+    for their type gets the answer a made-up type gets."""
+    run = await make_run(store)
+    path = "/latest/meta-data/iam/security-credentials/role-7731"
+    request = await run.add(
+        None,
+        ServiceRequest(
+            service="metadata",
+            exec_id="e1",
+            time="2026-11-20T10:00:00Z",
+            method="GET",
+            path=path,
+            status=200,
+        ),
+    )
+    ended = await run.add(None, ServiceEnded(service="metadata", kept=1, dropped=0))
+    judge = make_judge(store, run, Script())
+    assert judge.reader.hidden(request)
+    assert judge.reader.hidden(ended)
+
+    shown: list[int] = []
+    cursor: int | None = 0
+    while cursor is not None:
+        out = await tool(judge, "events", from_seq=cursor)
+        shown += [e["seq"] for e in out["events"]]
+        cursor = out["next_from_seq"]
+    logged = await store.every(run.id)
+    assert shown == [e.seq for e in logged if not e.type.startswith("service.")]
+
+    for kind in ("service.request", "service.ended"):
+        asked = await tool(judge, "events", types=[kind])
+        made_up = await tool(judge, "events", types=["no.such"])
+        assert asked == {"error": made_up["error"].replace("no.such", kind)}
+    assert (await tool(judge, "search", text="role-7731"))["matches"] == []
 
 
 async def test_events_output_is_capped(store: LocalEventStore) -> None:

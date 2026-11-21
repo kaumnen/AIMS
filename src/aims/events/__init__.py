@@ -17,6 +17,7 @@ from aims.events.index import (
 from aims.events.log import RunLocked
 from aims.events.payloads import (
     MAX_INT,
+    SERVICE_PREFIX,
     AgentCompacted,
     AgentEnd,
     AgentFinished,
@@ -122,6 +123,11 @@ from aims.events.payloads import (
     ScoreUnit,
     SelfTestCase,
     Series,
+    ServiceEnded,
+    ServicePath,
+    ServiceRequest,
+    ServiceSpan,
+    ServiceStop,
     SweepPart,
     SweepTrigger,
     SysDenied,
@@ -148,6 +154,7 @@ from aims.events.store import (
 
 __all__ = [
     "MAX_INT",
+    "SERVICE_PREFIX",
     "AgentCompacted",
     "AgentEnd",
     "AgentFinished",
@@ -280,6 +287,11 @@ __all__ = [
     "SelfTestCase",
     "Series",
     "Served",
+    "ServiceEnded",
+    "ServicePath",
+    "ServiceRequest",
+    "ServiceSpan",
+    "ServiceStop",
     "StepInfo",
     "SweepPart",
     "SweepTrigger",

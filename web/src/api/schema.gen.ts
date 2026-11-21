@@ -2942,7 +2942,7 @@ export interface components {
             next: string | null;
         };
         /** @enum {string} */
-        EventType: "agent.compacted" | "agent.finished" | "agent.held" | "agent.input" | "agent.report" | "agent.started" | "agent.step" | "audit.lost" | "audit.spill" | "cache.probe" | "channel.message" | "channel.read" | "channel.snapshot" | "exec.finished" | "exec.started" | "file.access" | "file.look" | "file.setattr" | "file.sync" | "file.write" | "file.xattr" | "fs.snapshot" | "ipc.event" | "log.truncated" | "mem.exec" | "model.checked" | "model.request" | "model.response" | "monitor.action" | "monitor.cleared" | "monitor.degraded" | "monitor.flag" | "monitor.sweep" | "monitor.verdict" | "net.connect" | "net.listen" | "ns.event" | "operator.action" | "plant.triggered" | "proc.exec" | "proc.exit" | "proc.fork" | "proc.output" | "proc.signal" | "ptrace.event" | "replay.divergence" | "resource.sample" | "run.finished" | "run.started" | "sandbox.archived" | "sandbox.freeze_failed" | "sandbox.outside_pause" | "sandbox.started" | "sandbox.stopped" | "score.answer" | "score.awareness" | "score.degraded" | "score.unexplained" | "score.unit" | "selftest.case" | "sys.denied" | "task.scored" | "tool.call" | "tool.result";
+        EventType: "agent.compacted" | "agent.finished" | "agent.held" | "agent.input" | "agent.report" | "agent.started" | "agent.step" | "audit.lost" | "audit.spill" | "cache.probe" | "channel.message" | "channel.read" | "channel.snapshot" | "exec.finished" | "exec.started" | "file.access" | "file.look" | "file.setattr" | "file.sync" | "file.write" | "file.xattr" | "fs.snapshot" | "ipc.event" | "log.truncated" | "mem.exec" | "model.checked" | "model.request" | "model.response" | "monitor.action" | "monitor.cleared" | "monitor.degraded" | "monitor.flag" | "monitor.sweep" | "monitor.verdict" | "net.connect" | "net.listen" | "ns.event" | "operator.action" | "plant.triggered" | "proc.exec" | "proc.exit" | "proc.fork" | "proc.output" | "proc.signal" | "ptrace.event" | "replay.divergence" | "resource.sample" | "run.finished" | "run.started" | "sandbox.archived" | "sandbox.freeze_failed" | "sandbox.outside_pause" | "sandbox.started" | "sandbox.stopped" | "score.answer" | "score.awareness" | "score.degraded" | "score.unexplained" | "score.unit" | "selftest.case" | "service.ended" | "service.request" | "sys.denied" | "task.scored" | "tool.call" | "tool.result";
         /** @description Each event type and the schema of its `data`. */
         EventTypes: {
             "agent.compacted": components["schemas"]["AgentCompacted"];
@@ -3005,6 +3005,8 @@ export interface components {
             "score.unexplained": components["schemas"]["ScoreUnexplained"];
             "score.unit": components["schemas"]["ScoreUnit"];
             "selftest.case": components["schemas"]["SelfTestCase"];
+            "service.ended": components["schemas"]["ServiceEnded"];
+            "service.request": components["schemas"]["ServiceRequest"];
             "sys.denied": components["schemas"]["SysDenied"];
             "task.scored": components["schemas"]["TaskScored"];
             "tool.call": components["schemas"]["ToolCall"];
@@ -7870,6 +7872,176 @@ export interface components {
             providers: {
                 [key: string]: number;
             };
+        };
+        /**
+         * ServiceEnded
+         * @description The end of a service's record, written once when the runner stops reading it. The first
+         *     `kept` requests are `service.request` events. `dropped` counts the rest: by method, start of
+         *     path and status in `paths`, then together in `other` past 100 such keys. `refused` counts
+         *     every connection the service turned away while busy, `oversize` lines too long to read,
+         *     `invalid` lines that held no request and `stderr` the service's error lines. `unwritten`
+         *     counts requests the log did not take. `stopped` says how the service ended when it stopped
+         *     before the run did. `lost` means its output ended while it still ran. `incomplete` means the
+         *     runner stopped reading before the output ended.
+         */
+        ServiceEnded: {
+            /** Dropped */
+            dropped: number;
+            /**
+             * Incomplete
+             * @default false
+             */
+            incomplete: boolean;
+            /**
+             * Invalid
+             * @default 0
+             */
+            invalid: number;
+            /** Kept */
+            kept: number;
+            /**
+             * Lost
+             * @default false
+             */
+            lost: boolean;
+            /** @default null */
+            other: components["schemas"]["ServiceSpan"] | null;
+            /** @default null */
+            oversize: components["schemas"]["ServiceSpan"] | null;
+            /** Paths */
+            paths: components["schemas"]["ServicePath"][];
+            /** @default null */
+            refused: components["schemas"]["ServiceSpan"] | null;
+            /** Service */
+            service: string;
+            /**
+             * Stderr
+             * @default 0
+             */
+            stderr: number;
+            /** @default null */
+            stopped: components["schemas"]["ServiceStop"] | null;
+            /**
+             * Unwritten
+             * @default 0
+             */
+            unwritten: number;
+        };
+        /**
+         * ServicePath
+         * @description Requests left out that share a method, the start of a path and a status.
+         */
+        ServicePath: {
+            /** Count */
+            count: number;
+            /**
+             * First
+             * @default null
+             */
+            first?: string | null;
+            /**
+             * Last
+             * @default null
+             */
+            last?: string | null;
+            /**
+             * Method
+             * @default null
+             */
+            method?: string | null;
+            /**
+             * Path
+             * @default null
+             */
+            path?: string | null;
+            /**
+             * Status
+             * @default null
+             */
+            status?: number | null;
+        };
+        /**
+         * ServiceRequest
+         * @description One request to a service the runner hosts beside the agent's sandbox, such as the cloud
+         *     metadata service at 169.254.169.254. `time` is the service's clock, to the second.
+         *     `exec_id` is the exec that ran when the runner got the record, None between execs. `cut`
+         *     counts the characters cut from the method, the path and the headers. A record over 32 KB
+         *     keeps no headers. The body of the answer is never recorded. `refused` marks the first
+         *     connection in an exec that the service turned away while busy: its status is 503 and it
+         *     has no method or path. Later ones in the same exec are only counted.
+         */
+        ServiceRequest: {
+            /**
+             * Cut
+             * @default 0
+             */
+            cut: number;
+            /**
+             * Exec Id
+             * @default null
+             */
+            exec_id: string | null;
+            /** Headers */
+            headers: {
+                [key: string]: string;
+            };
+            /**
+             * Method
+             * @default null
+             */
+            method: string | null;
+            /**
+             * Path
+             * @default null
+             */
+            path: string | null;
+            /**
+             * Refused
+             * @default false
+             */
+            refused: boolean;
+            /** Service */
+            service: string;
+            /** Status */
+            status: number;
+            /** Time */
+            time: string;
+        };
+        /**
+         * ServiceSpan
+         * @description How many of one kind a service's record left out, with the times of the first and the
+         *     last.
+         */
+        ServiceSpan: {
+            /** Count */
+            count: number;
+            /**
+             * First
+             * @default null
+             */
+            first?: string | null;
+            /**
+             * Last
+             * @default null
+             */
+            last?: string | null;
+        };
+        /**
+         * ServiceStop
+         * @description How a service that stopped on its own ended: its exit code and whether it ran out of
+         *     memory, None when unknown.
+         */
+        ServiceStop: {
+            /**
+             * Exit
+             * @default null
+             */
+            exit?: number | null;
+            /**
+             * Oom
+             * @default null
+             */
+            oom?: boolean | null;
         };
         /**
          * SessionStart
@@ -15839,7 +16011,7 @@ export const costFiguresTierValues: ReadonlyArray<FlattenedDeepRequired<componen
 export const deltaMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["DeltaMessage"]["kind"]> = ["delta"];
 export const deltasDroppedMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["DeltasDroppedMessage"]["kind"]> = ["deltas_dropped"];
 export const endMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EndMessage"]["kind"]> = ["end"];
-export const eventTypeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventType"]> = ["agent.compacted", "agent.finished", "agent.held", "agent.input", "agent.report", "agent.started", "agent.step", "audit.lost", "audit.spill", "cache.probe", "channel.message", "channel.read", "channel.snapshot", "exec.finished", "exec.started", "file.access", "file.look", "file.setattr", "file.sync", "file.write", "file.xattr", "fs.snapshot", "ipc.event", "log.truncated", "mem.exec", "model.checked", "model.request", "model.response", "monitor.action", "monitor.cleared", "monitor.degraded", "monitor.flag", "monitor.sweep", "monitor.verdict", "net.connect", "net.listen", "ns.event", "operator.action", "plant.triggered", "proc.exec", "proc.exit", "proc.fork", "proc.output", "proc.signal", "ptrace.event", "replay.divergence", "resource.sample", "run.finished", "run.started", "sandbox.archived", "sandbox.freeze_failed", "sandbox.outside_pause", "sandbox.started", "sandbox.stopped", "score.answer", "score.awareness", "score.degraded", "score.unexplained", "score.unit", "selftest.case", "sys.denied", "task.scored", "tool.call", "tool.result"];
+export const eventTypeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventType"]> = ["agent.compacted", "agent.finished", "agent.held", "agent.input", "agent.report", "agent.started", "agent.step", "audit.lost", "audit.spill", "cache.probe", "channel.message", "channel.read", "channel.snapshot", "exec.finished", "exec.started", "file.access", "file.look", "file.setattr", "file.sync", "file.write", "file.xattr", "fs.snapshot", "ipc.event", "log.truncated", "mem.exec", "model.checked", "model.request", "model.response", "monitor.action", "monitor.cleared", "monitor.degraded", "monitor.flag", "monitor.sweep", "monitor.verdict", "net.connect", "net.listen", "ns.event", "operator.action", "plant.triggered", "proc.exec", "proc.exit", "proc.fork", "proc.output", "proc.signal", "ptrace.event", "replay.divergence", "resource.sample", "run.finished", "run.started", "sandbox.archived", "sandbox.freeze_failed", "sandbox.outside_pause", "sandbox.started", "sandbox.stopped", "score.answer", "score.awareness", "score.degraded", "score.unexplained", "score.unit", "selftest.case", "service.ended", "service.request", "sys.denied", "task.scored", "tool.call", "tool.result"];
 export const eventsMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventsMessage"]["kind"]> = ["events"];
 export const execFinishedEndValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ExecFinished"]["end"]> = ["exited", "timeout", "cancelled", "failed"];
 export const execStartedAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ExecStarted"]["audit"]> = ["kernel", "snapshot"];

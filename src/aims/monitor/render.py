@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any
 
-from aims.events import BlobError, Event, EventStore, SweepPart, payload_type
+from aims.events import SERVICE_PREFIX, BlobError, Event, EventStore, SweepPart, payload_type
 from aims.monitor.texts import MonitorTexts
 from aims.text import deeper, scrub
 
@@ -91,6 +91,9 @@ SKIP = frozenset(
         "log.truncated",
         "task.scored",
         "operator.action",
+        # Records of a service the run hosts, which the monitor never reads.
+        "service.request",
+        "service.ended",
     }
 )
 ATTEMPTS = frozenset({"ipc.event", "mem.exec", "file.setattr", "file.xattr", "net.listen"})
@@ -201,6 +204,8 @@ def glossary(types: Iterable[str]) -> str:
     """What each record type in `types` is, from the payload docstrings."""
     lines = ["GLOSSARY", FORMAT]
     for name in sorted(set(types)):
+        if name.startswith(SERVICE_PREFIX):
+            continue
         cls = payload_type(name)
         doc = OVERRIDES.get(name) or (inspect.cleandoc(cls.__doc__ or "") if cls else "")
         if not doc:

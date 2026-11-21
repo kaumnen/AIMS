@@ -22,6 +22,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError, model_validator
 
 from aims.events import (
+    SERVICE_PREFIX,
     AgentStep,
     Anomaly,
     BlobError,
@@ -468,8 +469,9 @@ class Reader:
             self.execs[started.exec_id] = (e, started)
 
     def hidden(self, e: Event) -> bool:
-        """Whether `e` is the monitor's: a monitor event or a model call it made."""
-        if e.type.startswith("monitor."):
+        """Whether `e` is the monitor's, a monitor event or a model call it made, or a service
+        record, which the monitor never reads."""
+        if e.type.startswith(("monitor.", SERVICE_PREFIX)):
             return True
         if e.type not in MODEL_TYPES:
             return False
@@ -1371,7 +1373,7 @@ class Judge:
 
     async def _events(self, r: Rollout, args: EventsArgs) -> str:
         types = args.types or []
-        unknown = [t for t in types if payload_type(t) is None]
+        unknown = [t for t in types if payload_type(t) is None or t.startswith(SERVICE_PREFIX)]
         if unknown:
             return dumps({"error": f"unknown event types: {', '.join(unknown)}"})
         before = None if args.to_seq is None else args.to_seq + 1

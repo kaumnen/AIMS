@@ -3294,6 +3294,8 @@
           "score.unexplained",
           "score.unit",
           "selftest.case",
+          "service.ended",
+          "service.request",
           "sys.denied",
           "task.scored",
           "tool.call",
@@ -3484,6 +3486,12 @@
           "selftest.case": {
             "$ref": "#/components/schemas/SelfTestCase"
           },
+          "service.ended": {
+            "$ref": "#/components/schemas/ServiceEnded"
+          },
+          "service.request": {
+            "$ref": "#/components/schemas/ServiceRequest"
+          },
           "sys.denied": {
             "$ref": "#/components/schemas/SysDenied"
           },
@@ -3558,6 +3566,8 @@
           "score.unexplained",
           "score.unit",
           "selftest.case",
+          "service.ended",
+          "service.request",
           "sys.denied",
           "task.scored",
           "tool.call",
@@ -15900,6 +15910,355 @@
           "providers"
         ],
         "title": "Served",
+        "type": "object"
+      },
+      "ServiceEnded": {
+        "additionalProperties": false,
+        "description": "The end of a service's record, written once when the runner stops reading it. The first\n`kept` requests are `service.request` events. `dropped` counts the rest: by method, start of\npath and status in `paths`, then together in `other` past 100 such keys. `refused` counts\nevery connection the service turned away while busy, `oversize` lines too long to read,\n`invalid` lines that held no request and `stderr` the service's error lines. `unwritten`\ncounts requests the log did not take. `stopped` says how the service ended when it stopped\nbefore the run did. `lost` means its output ended while it still ran. `incomplete` means the\nrunner stopped reading before the output ended.",
+        "properties": {
+          "dropped": {
+            "minimum": 0,
+            "title": "Dropped",
+            "type": "integer"
+          },
+          "incomplete": {
+            "default": false,
+            "title": "Incomplete",
+            "type": "boolean"
+          },
+          "invalid": {
+            "default": 0,
+            "minimum": 0,
+            "title": "Invalid",
+            "type": "integer"
+          },
+          "kept": {
+            "minimum": 0,
+            "title": "Kept",
+            "type": "integer"
+          },
+          "lost": {
+            "default": false,
+            "title": "Lost",
+            "type": "boolean"
+          },
+          "other": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ServiceSpan"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "oversize": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ServiceSpan"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "paths": {
+            "items": {
+              "$ref": "#/components/schemas/ServicePath"
+            },
+            "title": "Paths",
+            "type": "array"
+          },
+          "refused": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ServiceSpan"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "service": {
+            "title": "Service",
+            "type": "string"
+          },
+          "stderr": {
+            "default": 0,
+            "minimum": 0,
+            "title": "Stderr",
+            "type": "integer"
+          },
+          "stopped": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ServiceStop"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "unwritten": {
+            "default": 0,
+            "minimum": 0,
+            "title": "Unwritten",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "service",
+          "kept",
+          "dropped",
+          "paths",
+          "other",
+          "refused",
+          "oversize",
+          "invalid",
+          "stderr",
+          "unwritten",
+          "stopped",
+          "lost",
+          "incomplete"
+        ],
+        "title": "ServiceEnded",
+        "type": "object"
+      },
+      "ServicePath": {
+        "additionalProperties": false,
+        "description": "Requests left out that share a method, the start of a path and a status.",
+        "properties": {
+          "count": {
+            "minimum": 0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "first": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "First"
+          },
+          "last": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Last"
+          },
+          "method": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Method"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Path"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Status"
+          }
+        },
+        "required": [
+          "count"
+        ],
+        "title": "ServicePath",
+        "type": "object"
+      },
+      "ServiceRequest": {
+        "additionalProperties": false,
+        "description": "One request to a service the runner hosts beside the agent's sandbox, such as the cloud\nmetadata service at 169.254.169.254. `time` is the service's clock, to the second.\n`exec_id` is the exec that ran when the runner got the record, None between execs. `cut`\ncounts the characters cut from the method, the path and the headers. A record over 32 KB\nkeeps no headers. The body of the answer is never recorded. `refused` marks the first\nconnection in an exec that the service turned away while busy: its status is 503 and it\nhas no method or path. Later ones in the same exec are only counted.",
+        "properties": {
+          "cut": {
+            "default": 0,
+            "minimum": 0,
+            "title": "Cut",
+            "type": "integer"
+          },
+          "exec_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Exec Id"
+          },
+          "headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Headers",
+            "type": "object"
+          },
+          "method": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Method"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Path"
+          },
+          "refused": {
+            "default": false,
+            "title": "Refused",
+            "type": "boolean"
+          },
+          "service": {
+            "title": "Service",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "integer"
+          },
+          "time": {
+            "title": "Time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service",
+          "exec_id",
+          "time",
+          "method",
+          "path",
+          "headers",
+          "status",
+          "cut",
+          "refused"
+        ],
+        "title": "ServiceRequest",
+        "type": "object"
+      },
+      "ServiceSpan": {
+        "additionalProperties": false,
+        "description": "How many of one kind a service's record left out, with the times of the first and the\nlast.",
+        "properties": {
+          "count": {
+            "minimum": 0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "first": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "First"
+          },
+          "last": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Last"
+          }
+        },
+        "required": [
+          "count"
+        ],
+        "title": "ServiceSpan",
+        "type": "object"
+      },
+      "ServiceStop": {
+        "additionalProperties": false,
+        "description": "How a service that stopped on its own ended: its exit code and whether it ran out of\nmemory, None when unknown.",
+        "properties": {
+          "exit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Exit"
+          },
+          "oom": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Oom"
+          }
+        },
+        "title": "ServiceStop",
         "type": "object"
       },
       "SessionStart": {

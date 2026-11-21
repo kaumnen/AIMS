@@ -52,6 +52,8 @@ TYPES = {
     "ns.event",
     "audit.lost",
     "audit.spill",
+    "service.request",
+    "service.ended",
     "resource.sample",
     "monitor.flag",
     "monitor.sweep",

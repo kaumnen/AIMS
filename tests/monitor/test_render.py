@@ -35,6 +35,8 @@ from aims.events import (
     ProcOutput,
     PtraceEvent,
     RunStarted,
+    ServiceEnded,
+    ServiceRequest,
     SweepPart,
     ToolCall,
     ToolResult,
@@ -805,6 +807,41 @@ async def test_the_glossary_explains_the_types_shown_and_marks_attempts() -> Non
     assert "A program the kernel did start" in entries["proc.exec"]
     assert "`" not in text
     assert MemExec.__doc__ is not None
+
+
+async def test_service_records_leave_what_a_sweep_shows_as_it_was(
+    run: Run, store: LocalEventStore
+) -> None:
+    """A trajectory fed the records of a service the run hosts renders the same as one never
+    fed them. The glossary never explains them."""
+    plain = Trajectory(run.run_id, AGENT, store, KEY)
+    path = "/latest/meta-data/iam/security-credentials/role"
+    await run.preamble()
+    await run.step(1, command="python3 fetch.py")
+    await run.add(
+        ServiceRequest(
+            service="metadata",
+            exec_id="e1",
+            time="2026-11-20T10:00:00Z",
+            method="GET",
+            path=path,
+            status=200,
+        )
+    )
+    await run.step(2)
+    await run.add(ServiceEnded(service="metadata", kept=1, dropped=0))
+    for event in run.events:
+        if not event.type.startswith("service."):
+            plain.add(event)
+    evidence: list[SweepPart] = ["evidence"]
+    for parts in (FULL, evidence):
+        seen = await run.trajectory.render(parts, texts=TEXTS)
+        assert seen == await plain.render(parts, texts=TEXTS)
+        assert path not in seen.text
+    window = await run.trajectory.window(FULL, texts=TEXTS, first_step=2)
+    assert window == await plain.window(FULL, texts=TEXTS, first_step=2)
+    shown = {"proc.exec", "tool.call"}
+    assert glossary(shown | {"service.request", "service.ended"}) == glossary(shown)
 
 
 async def test_the_recorded_run_renders_with_its_frames(tmp_path: Path) -> None:

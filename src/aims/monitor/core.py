@@ -12,6 +12,7 @@ from typing import Any, Literal, Protocol
 
 from aims.agent import GatePoint
 from aims.events import (
+    SERVICE_PREFIX,
     Draft,
     Event,
     EventStore,
@@ -270,7 +271,9 @@ class Monitor:
             self._seen = max(self._seen, events[-1].seq)
         batch: list[Event] = []
         for e in events:
-            if e.type.startswith("monitor."):
+            # Service records hold what the agent did with a service the run hosts, which the
+            # score checks the monitor against.
+            if e.type.startswith(("monitor.", SERVICE_PREFIX)):
                 continue
             if e.type == "model.request":
                 if e.data.get("role") is not None:

@@ -348,15 +348,12 @@ class DockerBackend:
         canary: dict[str, str] | None,
         identity: Identity,
     ) -> Any:
-        """Start this agent's metadata sidecar in the sandbox's network namespace."""
+        """Start this agent's metadata sidecar in the sandbox's network namespace. Its
+        requests are logged as events of the audited `sandbox`."""
         inner = getattr(sandbox, "sandbox", None)
         if not isinstance(inner, DockerSandbox):
             raise SandboxError("the IMDS sidecar needs a Docker sandbox")
         run_id = sandbox.run_id
-        log_path = sandbox.run_dir / f"imds-{agent_id}.jsonl"
-        fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        os.close(fd)
-        os.chmod(log_path, 0o600)
         labels = {**self._labels, "aims.run": run_id, "aims.agent": agent_id}
         return await start_imds_server(
             self.docker,
@@ -368,7 +365,7 @@ class DockerBackend:
             role=role,
             region=region,
             canary=canary,
-            log_path=str(log_path),
+            sink=sandbox,
             identity=identity,
         )
 

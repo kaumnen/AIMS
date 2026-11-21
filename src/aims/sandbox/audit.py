@@ -149,7 +149,7 @@ _UNKNOWN = "\0unknown"
 LATE_DROP = "kernel records dropped past the audit caps outside a running exec"
 UNWRITTEN = "kernel records the run log did not take"
 # What the store raises for an event it cannot hold, before it writes anything.
-_REFUSED = (ValueError, RecursionError, ChainError)
+REFUSED = (ValueError, RecursionError, ChainError)
 
 
 class SandboxStoppedError(Exception):
@@ -516,6 +516,17 @@ class AuditedSandbox:
     @property
     def run_dir(self) -> Path:
         return Path(cast(Any, self._store).root) / self._run_id
+
+    @property
+    def exec_id(self) -> str | None:
+        """The exec running now, None between execs."""
+        return self._open
+
+    async def append(self, payloads: Sequence[Payload]) -> None:
+        """Log `payloads` as events of this sandbox's agent, after the kernel records kept so
+        far. Raises what the store raises for them: one of REFUSED when it refused the batch
+        before writing it."""
+        await self._append(payloads)
 
     def share(self, folder: SharedFolder, *, writes: bool) -> None:
         """Feed `folder`, a shared volume this sandbox mounts, every event this sandbox logs,
@@ -897,7 +908,7 @@ class AuditedSandbox:
         """
         try:
             events = await self._store.append(self._run_id, [*kept, *own])
-        except _REFUSED:
+        except REFUSED:
             if not kept:
                 raise
         except Exception:
@@ -909,7 +920,7 @@ class AuditedSandbox:
         for draft in kept:
             try:
                 events = await self._store.append(self._run_id, [draft])
-            except _REFUSED as e:
+            except REFUSED as e:
                 log.warning("the run log refused a %s record: %s", draft.payload.type, e)
                 self._unwritten(1)
             else:

@@ -5,16 +5,26 @@ import contextlib
 import hashlib
 import json
 import logging
-import os
 import random
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Protocol
 
 import aiodocker
 from aiodocker.containers import DockerContainer
+from pydantic import ValidationError
 
 from aims.aio import settle
+from aims.events import (
+    Payload,
+    ServiceEnded,
+    ServicePath,
+    ServiceRequest,
+    ServiceSpan,
+    ServiceStop,
+)
+from aims.sandbox.audit import FLUSH_N, FLUSH_S, REFUSED
 from aims.sandbox.base import TOOLBOX
 from aims.sandbox.containers import create_container, remove_container
 from aims.sandbox.execs import open_stream, streamed
@@ -29,9 +39,10 @@ PIDS = 64
 MEMORY = 128 * 1024 * 1024
 CPUS = 0.5
 # What the runner keeps of one sidecar's output. A line past LINE bytes is counted, not kept.
-# The first RECORDS requests are kept in full. Past them, requests are counted by method, path
-# (its first KEY_PATH characters) and status for KEYS such keys. The rest count together. The
-# first WARNINGS stderr lines are reported. The rest are counted.
+# The first RECORDS requests are logged in full. Past them, requests are counted by method,
+# path (its first KEY_PATH characters) and status for KEYS such keys. The rest count together.
+# The first WARNINGS stderr lines are reported. The rest are counted.
+SERVICE = "metadata"
 LINE = 64 * 1024
 RECORDS = 1_000
 KEYS = 100
@@ -442,13 +453,18 @@ def _now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _line(entry: dict[str, Any]) -> bytes:
-    return json.dumps(entry, separators=(",", ":")).encode() + b"\n"
+class Sink(Protocol):
+    """Where the follower logs its events: the agent's audited sandbox."""
+
+    @property
+    def exec_id(self) -> str | None: ...
+
+    async def append(self, payloads: Sequence[Payload]) -> None: ...
 
 
 @dataclass(slots=True)
 class _Span:
-    """How many of one kind the log left out, and when the first and the last came."""
+    """How many of one kind the record left out, with the times of the first and the last."""
 
     count: int = 0
     first: str | None = None
@@ -461,8 +477,10 @@ class _Span:
                 self.first = when
             self.last = when
 
-    def dump(self) -> dict[str, Any]:
-        return {"count": self.count, "first": self.first, "last": self.last}
+    def dump(self) -> ServiceSpan | None:
+        if not self.count:
+            return None
+        return ServiceSpan(count=self.count, first=self.first, last=self.last)
 
 
 type _Key = tuple[str | None, str | None, int | None]
@@ -470,10 +488,13 @@ type _Key = tuple[str | None, str | None, int | None]
 
 @dataclass(slots=True)
 class _Tally:
-    """What one sidecar's request log holds: the first RECORDS requests in full, then counts
-    by method, path and status, which a summary line gives at the end."""
+    """What one sidecar's record holds: the first RECORDS requests as events, then counts by
+    method, path and status, which the closing event gives. Every refused connection is
+    counted. The first in each exec is an event too, so a flood adds at most one event per
+    exec. `refusals` holds the execs that had one."""
 
     kept: int = 0
+    refusals: set[str | None] = field(default_factory=set)
     keys: dict[_Key, _Span] = field(default_factory=dict)
     other: _Span = field(default_factory=_Span)
     refused: _Span = field(default_factory=_Span)
@@ -481,60 +502,87 @@ class _Tally:
     invalid: int = 0
     stderr: int = 0
 
-    def take(self, line: bytes) -> bool:
-        """Whether to write this line of the sidecar's stdout. One it does not write, it counts."""
+    def take(self, line: bytes, exec_id: str | None) -> ServiceRequest | None:
+        """The event for this line of the sidecar's stdout, or None for a line it only counts.
+        `exec_id` is the exec running as the line came."""
         try:
             entry = json.loads(line)
         except ValueError:
             entry = None
         if not isinstance(entry, dict) or not isinstance(entry.get("time"), str):
             self.invalid += 1
-            return False
+            return None
         when: str = entry["time"]
         if entry.get("refused") is True:
             self.refused.add(when)
-            return False
+            if exec_id in self.refusals:
+                return None
+            self.refusals.add(exec_id)
+            return ServiceRequest(
+                service=SERVICE, exec_id=exec_id, time=when, status=503, refused=True
+            )
         if "method" not in entry:
             self.invalid += 1
-            return False
+            return None
         if self.kept < RECORDS:
+            try:
+                request = ServiceRequest(
+                    service=SERVICE,
+                    exec_id=exec_id,
+                    time=when,
+                    method=entry.get("method"),
+                    path=entry.get("path"),
+                    headers=entry.get("headers") or {},
+                    status=entry.get("status"),
+                    cut=entry.get("cut", 0),
+                )
+            except ValidationError:
+                self.invalid += 1
+                return None
             self.kept += 1
-            return True
+            return request
         method, path, status = entry.get("method"), entry.get("path"), entry.get("status")
         key = (
             method if isinstance(method, str) else None,
             path[:KEY_PATH] if isinstance(path, str) else None,
-            status if isinstance(status, int) else None,
+            status if isinstance(status, int) and not isinstance(status, bool) else None,
         )
         span = self.keys.get(key)
         if span is None:
             span = self.other if len(self.keys) >= KEYS else self.keys.setdefault(key, _Span())
         span.add(when)
-        return False
+        return None
 
-    def summary(self) -> dict[str, Any] | None:
-        """The summary line, or None when the log left nothing out."""
-        dropped = sum(span.count for span in self.keys.values()) + self.other.count
-        out: dict[str, Any] = {"kept": self.kept, "dropped": dropped}
-        if self.keys:
-            out["paths"] = [
-                {"method": method, "path": path, "status": status, **span.dump()}
-                for (method, path, status), span in self.keys.items()
-            ]
-        for name, span in (
-            ("other", self.other),
-            ("refused", self.refused),
-            ("oversize", self.oversize),
-        ):
-            if span.count:
-                out[name] = span.dump()
-        if self.invalid:
-            out["invalid"] = self.invalid
-        if self.stderr:
-            out["stderr"] = self.stderr
-        if len(out) == 2:
-            return None
-        return {"time": _now(), "summary": out}
+    def ended(
+        self, *, unwritten: int, stopped: ServiceStop | None, lost: bool, incomplete: bool
+    ) -> ServiceEnded:
+        """The event that closes the record."""
+        paths = [
+            ServicePath(
+                method=method,
+                path=path,
+                status=status,
+                count=span.count,
+                first=span.first,
+                last=span.last,
+            )
+            for (method, path, status), span in self.keys.items()
+        ]
+        return ServiceEnded(
+            service=SERVICE,
+            kept=self.kept,
+            dropped=sum(span.count for span in self.keys.values()) + self.other.count,
+            paths=paths,
+            other=self.other.dump(),
+            refused=self.refused.dump(),
+            oversize=self.oversize.dump(),
+            invalid=self.invalid,
+            stderr=self.stderr,
+            unwritten=unwritten,
+            stopped=stopped,
+            lost=lost,
+            incomplete=incomplete,
+        )
 
 
 @dataclass(slots=True)
@@ -571,14 +619,81 @@ class _Lines:
         return rest
 
 
+@dataclass(slots=True)
+class _Writer:
+    """Logs the follower's events in batches, every FLUSH_S or at FLUSH_N, apart from its reads.
+    A read that waited on the log would back up the sidecar's output. The sidecar would then
+    stop answering while it waits to print."""
+
+    sink: Sink
+    name: str
+    queue: list[Payload] = field(default_factory=list)
+    wake: asyncio.Event = field(default_factory=asyncio.Event)
+    done: bool = False
+    unwritten: int = 0
+    warned: bool = False
+
+    def put(self, payload: Payload) -> None:
+        self.queue.append(payload)
+        if len(self.queue) in (1, FLUSH_N):
+            self.wake.set()
+
+    def stop(self) -> None:
+        self.done = True
+        self.wake.set()
+
+    async def run(self) -> None:
+        while not self.done:
+            await self.wake.wait()
+            self.wake.clear()
+            if not self.done and len(self.queue) < FLUSH_N:
+                with contextlib.suppress(TimeoutError):
+                    async with asyncio.timeout(FLUSH_S):
+                        await self.wake.wait()
+                self.wake.clear()
+            await self.flush()
+
+    async def flush(self) -> None:
+        """Log what is queued. A batch the log refuses goes in one event at a time, so an
+        event it cannot hold costs only itself. What it does not take counts as unwritten."""
+        batch, self.queue = self.queue, []
+        if not batch:
+            return
+        try:
+            await self.sink.append(batch)
+            return
+        except REFUSED:
+            pass
+        except Exception as e:
+            self._lost(len(batch), e)
+            return
+        for payload in batch:
+            try:
+                await self.sink.append([payload])
+            except Exception as e:
+                self._lost(1, e)
+
+    def _lost(self, count: int, error: Exception) -> None:
+        self.unwritten += count
+        show = log.debug if self.warned else log.warning
+        show("the run log did not take %d records of IMDS sidecar %s: %s", count, self.name, error)
+        self.warned = True
+
+
 async def _follow(
-    stream: Any, log_path: str, name: str, container: Any, closing: asyncio.Event
+    stream: Any, sink: Sink, name: str, container: Any, closing: asyncio.Event
 ) -> None:
-    """Write the sidecar's stdout to `log_path` within the caps above and report its stderr as
-    warnings. Output that ends before `closing` is set means the sidecar stopped on its own:
-    the log gets a `stopped` line and the runner a warning."""
+    """Log the sidecar's stdout as `service.request` events within the caps above and report
+    its stderr as warnings. One `service.ended` event closes the record, also when the follower
+    is cancelled. Output that ends before `closing` is set means the sidecar stopped on its
+    own: that event says so and the runner warns."""
     tally = _Tally()
     out, err = _Lines(), _Lines()
+    writer = _Writer(sink, name)
+    flusher = asyncio.create_task(writer.run())
+    stopped: ServiceStop | None = None
+    lost = False
+    read = False
 
     def warn(line: bytes | None) -> None:
         tally.stderr += 1
@@ -590,20 +705,31 @@ async def _follow(
             text = line.decode(errors="replace")
         log.warning("IMDS sidecar %s: %s", name, text)
 
-    def write(fd: int, line: bytes | None) -> None:
+    def take(line: bytes | None) -> None:
         if line is None:
             tally.oversize.add(_now())
-        elif tally.take(line):
-            os.write(fd, line + b"\n")
+        elif (request := tally.take(line, sink.exec_id)) is not None:
+            writer.put(request)
 
-    def flush(fd: int) -> None:
-        if (rest := out.rest()) is not None:
-            write(fd, rest)
-        if (rest := err.rest()) is not None:
-            warn(rest)
+    def rest() -> None:
+        if (line := out.rest()) is not None:
+            take(line)
+        if (line := err.rest()) is not None:
+            warn(line)
+
+    async def end() -> None:
+        writer.stop()
+        await asyncio.wait({flusher})
+        await writer.flush()
+        ended = tally.ended(
+            unwritten=writer.unwritten, stopped=stopped, lost=lost, incomplete=not read
+        )
+        try:
+            await sink.append([ended])
+        except Exception as e:
+            log.warning("the run log did not take the end of IMDS sidecar %s: %s", name, e)
 
     try:
-        fd = os.open(log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
         try:
             while (message := await stream.read_out()) is not None:
                 if message.stream == 2:
@@ -611,45 +737,42 @@ async def _follow(
                         warn(line)
                 else:
                     for line in out.feed(message.data):
-                        write(fd, line)
-            flush(fd)
+                        take(line)
+            read = True
+            rest()
             if not closing.is_set():
-                ended = await _ended(container)
-                os.write(fd, _line(ended))
-                if "lost" in ended:
+                stopped = await _ended(container)
+                if stopped is None:
+                    lost = True
                     log.warning(
                         "IMDS sidecar %s: its output ended while it still runs; "
                         "later requests are not recorded",
                         name,
                     )
                 else:
-                    code = ended["stopped"]["exit"]
                     log.warning(
                         "IMDS sidecar %s stopped during the run with %s%s; "
                         "the metadata service no longer answers",
                         name,
-                        "an unknown exit" if code is None else f"exit {code}",
-                        ", out of memory" if ended["stopped"]["oom"] else "",
+                        "an unknown exit" if stopped.exit is None else f"exit {stopped.exit}",
+                        ", out of memory" if stopped.oom else "",
                     )
         finally:
-            flush(fd)
+            rest()
             if tally.stderr > WARNINGS:
                 log.warning(
                     "IMDS sidecar %s: %d more stderr lines not shown",
                     name,
                     tally.stderr - WARNINGS,
                 )
-            if (summary := tally.summary()) is not None:
-                os.write(fd, _line(summary))
-            os.fsync(fd)
-            os.close(fd)
+            await settle(end())
     finally:
         await stream.close()
 
 
-async def _ended(container: Any) -> dict[str, Any]:
-    """The log line for a sidecar whose output ended before its close. Its exit can show a
-    moment after its output ends, so this waits up to END_S for it."""
+async def _ended(container: Any) -> ServiceStop | None:
+    """How a sidecar whose output ended before its close stopped, None when it still runs. Its
+    exit can show a moment after its output ends, so this waits up to END_S for it."""
     with contextlib.suppress(Exception):
         async with asyncio.timeout(END_S):
             await container.wait()
@@ -657,9 +780,12 @@ async def _ended(container: Any) -> dict[str, Any]:
     with contextlib.suppress(Exception):
         state = (await container.show()).get("State") or {}
     if state.get("Running"):
-        return {"time": _now(), "lost": True}
-    stopped = {"exit": state.get("ExitCode"), "oom": state.get("OOMKilled")}
-    return {"time": _now(), "stopped": stopped}
+        return None
+    code, oom = state.get("ExitCode"), state.get("OOMKilled")
+    return ServiceStop(
+        exit=code if isinstance(code, int) and not isinstance(code, bool) else None,
+        oom=oom if isinstance(oom, bool) else None,
+    )
 
 
 def _check_follower(follower: asyncio.Task[None], name: str) -> None:
@@ -679,13 +805,13 @@ class ImdsServer:
 
     docker: aiodocker.Docker
     container: DockerContainer
-    log: str
+    name: str
     follower: asyncio.Task[None]
     # Set before the stop, so the follower tells a close from the sidecar stopping on its own.
     closing: asyncio.Event
 
     async def close(self) -> None:
-        """Stop the server, read its log to the end and remove its container. A cancel waits
+        """Stop the server, read its output to the end and remove its container. A cancel waits
         for that and is raised then."""
         await settle(self._close())
 
@@ -697,7 +823,7 @@ class ImdsServer:
         if not done:
             log.warning(
                 "the IMDS log follower for %s did not finish; some output may be missing",
-                self.log,
+                self.name,
             )
             self.follower.cancel()
         try:
@@ -705,7 +831,7 @@ class ImdsServer:
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            log.warning("the IMDS log follower for %s stopped: %s", self.log, e)
+            log.warning("the IMDS log follower for %s stopped: %s", self.name, e)
         with contextlib.suppress(aiodocker.DockerError):
             await self.container.delete(force=True)
 
@@ -721,10 +847,11 @@ async def start(
     role: str,
     region: str,
     canary: dict[str, str] | None,
-    log_path: str,
+    sink: Sink,
     identity: Identity,
 ) -> ImdsServer:
-    """Start the sidecar and wait until its listener is up."""
+    """Start the sidecar and wait until its listener is up. Its requests go to `sink` as
+    events."""
     env = {
         "AIMS_IMDS_ROLE": role,
         "AIMS_IMDS_REGION": region,
@@ -780,7 +907,7 @@ async def start(
     closing = asyncio.Event()
     try:
         attached = await open_stream(container.attach(stdout=True, stderr=True))
-        follower = asyncio.create_task(_follow(attached, log_path, name, container, closing))
+        follower = asyncio.create_task(_follow(attached, sink, name, container, closing))
         await container.start()
         _check_follower(follower, name)
         probe = (
@@ -807,7 +934,7 @@ async def start(
         await settle(_undo(container, attached, follower))
         raise
     assert follower is not None
-    return ImdsServer(docker, container, log_path, follower, closing)
+    return ImdsServer(docker, container, name, follower, closing)
 
 
 async def _undo(

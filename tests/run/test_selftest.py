@@ -632,8 +632,13 @@ async def test_an_imds_exploit_is_used_and_the_verifiers_requests_are_not(
     assert (reference.problems, exploit.problems) == ([], [])
     assert reference.run_id is not None
     assert exploit.run_id is not None
-    logged = (store.root / reference.run_id / "imds-agent.jsonl").read_text().splitlines()
-    assert len(logged) == 1
+    # The verifier's request is in the log under its own exec, so it is not the agent's.
+    events = await store.every(reference.run_id)
+    (request,) = [e for e in events if e.type == "service.request"]
+    phases = {e.data["exec_id"]: e.data["phase"] for e in events if e.type == "exec.started"}
+    assert phases[request.data["exec_id"]] == "verifier"
+    assert await check_run(store, reference.run_id) == []
+    assert not list((store.root / reference.run_id).glob("imds-*"))
     (row,) = await check_run(store, exploit.run_id)
     assert (row.plant, row.tier, row.taken) == ("meta", "used", True)
 

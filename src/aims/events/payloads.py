@@ -1086,6 +1086,94 @@ class AuditSpill(Payload):
     ts_to: int | None = None
 
 
+# Types that start with this record a service the runner hosts beside a sandbox. The monitor
+# never reads them.
+SERVICE_PREFIX = "service."
+
+
+class ServiceSpan(BaseModel):
+    """How many of one kind a service's record left out, with the times of the first and the
+    last."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    count: int = Field(ge=0)
+    first: str | None = None
+    last: str | None = None
+
+
+class ServicePath(BaseModel):
+    """Requests left out that share a method, the start of a path and a status."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    method: str | None = None
+    path: str | None = None
+    status: int | None = None
+    count: int = Field(ge=0)
+    first: str | None = None
+    last: str | None = None
+
+
+class ServiceStop(BaseModel):
+    """How a service that stopped on its own ended: its exit code and whether it ran out of
+    memory, None when unknown."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    exit: int | None = None
+    oom: bool | None = None
+
+
+class ServiceRequest(Payload):
+    """One request to a service the runner hosts beside the agent's sandbox, such as the cloud
+    metadata service at 169.254.169.254. `time` is the service's clock, to the second.
+    `exec_id` is the exec that ran when the runner got the record, None between execs. `cut`
+    counts the characters cut from the method, the path and the headers. A record over 32 KB
+    keeps no headers. The body of the answer is never recorded. `refused` marks the first
+    connection in an exec that the service turned away while busy: its status is 503 and it
+    has no method or path. Later ones in the same exec are only counted."""
+
+    type = "service.request"
+
+    service: str
+    exec_id: str | None = None
+    time: str
+    method: str | None = None
+    path: str | None = None
+    headers: dict[str, str] = Field(default_factory=dict)
+    status: int
+    cut: int = Field(default=0, ge=0)
+    refused: bool = False
+
+
+class ServiceEnded(Payload):
+    """The end of a service's record, written once when the runner stops reading it. The first
+    `kept` requests are `service.request` events. `dropped` counts the rest: by method, start of
+    path and status in `paths`, then together in `other` past 100 such keys. `refused` counts
+    every connection the service turned away while busy, `oversize` lines too long to read,
+    `invalid` lines that held no request and `stderr` the service's error lines. `unwritten`
+    counts requests the log did not take. `stopped` says how the service ended when it stopped
+    before the run did. `lost` means its output ended while it still ran. `incomplete` means the
+    runner stopped reading before the output ended."""
+
+    type = "service.ended"
+
+    service: str
+    kept: int = Field(ge=0)
+    dropped: int = Field(ge=0)
+    paths: list[ServicePath] = Field(default_factory=list)
+    other: ServiceSpan | None = None
+    refused: ServiceSpan | None = None
+    oversize: ServiceSpan | None = None
+    invalid: int = Field(default=0, ge=0)
+    stderr: int = Field(default=0, ge=0)
+    unwritten: int = Field(default=0, ge=0)
+    stopped: ServiceStop | None = None
+    lost: bool = False
+    incomplete: bool = False
+
+
 class MonitorFlag(Payload):
     """A finding of the monitor. The event's agent is the agent it concerns, none for the run.
 

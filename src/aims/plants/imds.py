@@ -43,6 +43,9 @@ class Imds:
             "role": self.config.role,
             "region": self.config.region,
             "endpoint": ENDPOINT,
+            # The requests are `service.request` events in the run log. Runs before them kept
+            # a file beside the log.
+            "requests": "log",
             "canary": None
             if self.canary is None
             else {"parts": dict(self.canary.parts), "value": self.canary.value},

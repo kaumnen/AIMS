@@ -29,6 +29,8 @@ from aims.events import (
     MonitorVerdict,
     OperatorAction,
     RunStarted,
+    ServiceEnded,
+    ServiceRequest,
     ToolCall,
     ToolResult,
 )
@@ -388,6 +390,34 @@ async def test_skips_its_own_events(tmp_path: Path) -> None:
         assert {e.seq for e in theirs} <= seen
         assert not any(e.type.startswith("monitor.") for e in h.engine.seen)
         assert h.trajectories["a"].added == sorted(seen)
+
+
+async def test_skips_service_records(tmp_path: Path) -> None:
+    """The signals, the trajectories, the channel log and the policy get the same events with
+    or without the records of a service the run hosts. A signal with no types gets every
+    event the engine gets, so it never sees them either."""
+    async with harness(tmp_path) as h:
+        await h.add(started())
+        service = [
+            await h.add(
+                ServiceRequest(
+                    service="metadata",
+                    exec_id="e1",
+                    time="2026-11-20T10:00:00Z",
+                    method="GET",
+                    path="/latest/meta-data/iam/security-credentials/role",
+                    status=200,
+                )
+            ),
+            await h.add(ToolCall(call_id="t", name="exec", arguments="{}")),
+            await h.add(ServiceEnded(service="metadata", kept=1, dropped=0)),
+        ]
+        await h.monitor.barrier()
+        seen = [e.seq for e in h.engine.seen]
+        logged = await h.store.every(h.run_id)
+        assert seen == [e.seq for e in logged[1:] if not e.type.startswith("service.")]
+        assert [e.seq for e in service] == [seen[1] - 1, seen[1], seen[1] + 1]
+        assert h.trajectories["a"].added == seen
 
 
 async def test_barrier_waits_for_signals_and_the_policy(tmp_path: Path) -> None:

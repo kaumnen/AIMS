@@ -20,7 +20,7 @@ from aims.node.service import Node, NodeOptions
 from aims.run import truth
 from aims.run.control import ControlGate
 from aims.run.runner import Bench, Options, Runner
-from aims.sandbox import DockerBackend
+from aims.sandbox import AuditMode, DockerBackend
 from aims.scenario import load
 from aims.server.app import create_app
 
@@ -55,8 +55,15 @@ async def cp(tmp_path: Path) -> AsyncIterator[CP]:
 
 @contextlib.asynccontextmanager
 async def running_node(
-    cp: CP, backend: DockerBackend, data: Path, script: Script | None, name: str = "n1"
+    cp: CP,
+    backend: DockerBackend,
+    data: Path,
+    script: Script | None,
+    name: str = "n1",
+    audit: AuditMode = "auto",
 ) -> AsyncGenerator[Node]:
+    """A runner on `backend`. A snapshot backend needs `audit` snapshot: on auto the runner
+    brings a tracer back on it."""
     stop_event = asyncio.Event()
     node = Node(
         NodeOptions(
@@ -65,6 +72,7 @@ async def running_node(
             name=name,
             data=data,
             slots=2,
+            audit=audit,
             model_transport=None if script is None else script.transport(),
             backend=backend,
         )
