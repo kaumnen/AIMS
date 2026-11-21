@@ -93,6 +93,8 @@ A model then checks:
 
 The model is the first profile whose weights no agent of the run runs, from `[monitor] extract`, then the `sweep` role. When none fits, the score skips these checks and says why.
 
+These checks stop at the score's spend cap, $1 by default. `budget_usd` under `[score]` changes it. `--budget-usd` changes it for one score. `aims score` prints its estimate first. Past `confirm_above_usd` it asks, as `aims run` does.
+
 ## Many runs
 
 ```sh

@@ -9,7 +9,7 @@ from typing import Any, cast
 
 import pytest
 from cp import CP, control_plane
-from scripted import profile
+from scripted import Script, profile, say
 from test_score_api import planted
 from test_scoring import oracle, words
 from test_server import FakeRunner
@@ -285,3 +285,123 @@ async def _api(cp: CP, origin: str) -> None:
     profile = queued.profile()
     assert profile is not None
     assert (profile.name, queued.checks_off) == ("classify", None)
+
+
+# What a score costs on the command line. The classifier answers from a script. Nothing opens
+# a Docker backend.
+
+# A classifier whose output cap alone could cost $10 a call, a priced agent and a threshold of
+# $1: the score's spend cap bounds it.
+COSTLY = (
+    PROFILES.replace(
+        "[profiles.agent]\n",
+        "[profiles.agent]\nprice = { input = 1.0, cached = 0.1, output = 2.0 }\n",
+    )
+    + table(
+        "classify",
+        "w-classify",
+        "max_output_tokens = 1000000",
+        "price = { input = 10.0, cached = 1.0, output = 10.0 }",
+        "stream = false",
+        "retries = { attempts = 1, backoff = 0, max = 0 }",
+    )
+    + '[roles]\nagent = "agent"\n\n[monitor]\nextract = ["classify"]\n\n'
+    + "[estimate]\nconfirm_above_usd = 1\n"
+)
+
+
+@pytest.fixture
+def costly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, str, Script]:
+    import asyncio
+
+    from aims.sandbox import DockerBackend
+
+    async def make() -> str:
+        async with await LocalEventStore.open(tmp_path / "runs") as s:
+            return await run_on(s, "w-agent")
+
+    run = asyncio.run(make())
+    toml = tmp_path / "aims.toml"
+    toml.write_text(COSTLY)
+    oracle(monkeypatch, [])
+    no = json.dumps({"finding": "no", "quote": "", "frames": []})
+    script = Script(*[say(no)] * 10)
+    real = scoring.score_sealed
+
+    async def scripted(*args: Any, **kwargs: Any) -> Any:
+        return await real(*args, **kwargs, transport=script.transport())
+
+    async def no_docker(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("no Docker backend here")
+
+    monkeypatch.setattr(scoring, "score_sealed", scripted)
+    monkeypatch.setattr(DockerBackend, "open", no_docker)
+    return toml, run, script
+
+
+def test_aims_score_asks_past_the_threshold_and_refuses_without_a_terminal(
+    tmp_path: Path, costly: tuple[Path, str, Script]
+) -> None:
+    toml, run, script = costly
+    base = ["score", run, "--config", str(toml), "--runs-dir", str(tmp_path / "runs")]
+    # a cap of $5 is past the threshold of $1: with no terminal it refuses and calls nothing
+    out = CliRunner().invoke(app, [*base, "--budget-usd", "5"], input="n\n")
+    assert out.exit_code == 1, out.output
+    said = flat(out.stderr)
+    assert "No past scores to go by. Stops at $5.00, its spend cap." in said
+    assert "the caps allow $5.00, above confirm_above_usd $1.00; pass --yes to start anyway" in said
+    assert script.requests == []
+    out = CliRunner().invoke(app, [*base, "--budget-usd", "5", "--yes", "--json"])
+    assert out.exit_code == 0, out.output
+    shown = json.loads(out.stdout)
+    assert (shown["estimate"]["budget_usd"], shown["estimate"]["confirm"]) == (5, True)
+    assert shown["stopped"] is None
+    assert len(script.requests) == 1
+    # the call gets the output its cap leaves room for, not the profile's million
+    assert 0 < script.requests[0]["max_tokens"] < 1_000_000
+    # the config's cap of $1 is not past the threshold, so nothing asks
+    out = CliRunner().invoke(app, [*base, "--json"], input="n\n")
+    assert out.exit_code == 0, out.output
+    e = json.loads(out.stdout)["estimate"]
+    assert (e["budget_usd"], e["ceiling_usd"], e["confirm"]) == (1.0, 1.0, False)
+    assert len(script.requests) == 2
+    assert script.requests[1]["max_tokens"] < script.requests[0]["max_tokens"]
+    # a cap of 0 starts no call; the score says the checks stopped
+    out = CliRunner().invoke(app, [*base, "--budget-usd", "0"])
+    assert out.exit_code == 0, out.output
+    assert "warning: the checks stopped: the score spent $0.0000 of its $0" in flat(out.stderr)
+    assert len(script.requests) == 2
+
+
+def test_aims_run_counts_the_score_it_makes(
+    tmp_path: Path, costly: tuple[Path, str, Script]
+) -> None:
+    toml, _, script = costly
+    scenario = tmp_path / "scenario" / "scenario.yaml"
+    args = ["run", str(scenario), "--config", str(toml), "--no-server", "--monitor", "signals"]
+    args += ["--runs-dir", str(tmp_path / "runs"), "--json"]
+    out = CliRunner().invoke(app, args)
+    assert out.exit_code == 1, out.output
+    assert "pass --yes to start anyway" in flat(out.stderr)
+    first = json.loads(out.stdout.splitlines()[0])
+    assert (first["type"], first["confirm"]) == ("estimate", True)
+    line = "Score: checks on classify. No past scores to go by. Stops at $1.00, its spend cap."
+    assert line in first["lines"]
+    assert first["parts"][0]["score"]["ceiling_usd"] == 1.0
+    out = CliRunner().invoke(app, [*args, "--no-score"])
+    first = json.loads(out.stdout.splitlines()[0])
+    assert first["parts"][0]["score"] is None
+    assert not any(x.startswith("Score:") for x in first["lines"])
+    assert script.requests == []
+
+
+def test_the_score_and_estimate_commands_take_the_cost_flags() -> None:
+    import typer.core
+    import typer.main
+
+    command = typer.main.get_command(app)
+    assert isinstance(command, typer.core.TyperGroup)
+    params = {c: {p.name: p for p in command.commands[c].params} for c in ("score", "estimate")}
+    assert params["score"]["yes"].default is False
+    assert params["score"]["budget_usd"].default is None
+    assert params["estimate"]["score"].default is True

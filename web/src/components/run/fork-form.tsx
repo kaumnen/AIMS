@@ -14,7 +14,7 @@ import { modelsQuery, type Preset, presets } from "@/api/launch";
 import type { RunDetail, StepInfo } from "@/api/run";
 import { isProblem } from "@/api/session";
 import { BudgetSection } from "@/components/budget";
-import { EstimateLines } from "@/components/estimate-lines";
+import { Cost } from "@/components/estimate-lines";
 import { CountInput, DEFAULT, Field, Pick, problemText } from "@/components/form";
 import { up, useRunners } from "@/components/health";
 import { OversightNote } from "@/components/oversight-note";
@@ -282,29 +282,13 @@ export default function ForkForm({
         stale={estimate.isPending || estimate.isPlaceholderData}
         recorded={ran}
       />
-      <section aria-label="Cost estimate" aria-live="polite" className="flex flex-col gap-1">
-        <h3 className="font-medium">Cost</h3>
-        {estimate.isPending ? (
-          <p className="text-muted-foreground">Estimating</p>
-        ) : estimate.isError ? (
-          <p className="text-muted-foreground">
-            No estimate: {isProblem(estimate.error) ? problemText(estimate.error) : "it failed."}
-          </p>
-        ) : (
-          <EstimateLines lines={estimate.data.lines.slice(1)} stale={estimate.isPlaceholderData} />
-        )}
-        {why && (
-          <label className="flex items-start gap-2 font-medium">
-            <input
-              type="checkbox"
-              checked={confirm}
-              onChange={(e) => setConfirmed(e.target.checked ? key : null)}
-              className="accent-foreground mt-0.5"
-            />
-            {why} Start anyway.
-          </label>
-        )}
-      </section>
+      <Cost
+        estimate={estimate}
+        skip={1}
+        why={why}
+        yes={confirm}
+        onYes={(yes) => setConfirmed(yes ? key : null)}
+      />
       {problem && <p className="text-flag">{problem}</p>}
       <DialogFooter>
         <Button variant="ghost" size="sm" onClick={onDone}>

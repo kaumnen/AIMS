@@ -2653,7 +2653,7 @@
         "type": "object"
       },
       "CostFigures": {
-        "description": "One run's cost in USD at list prices. `ceiling_usd` is what the caps allow, None when no\ncap applies; `stepped` says it counts one last step past a cost cap, which is checked before\neach step. `typical_usd` is the median of `runs` matching past runs, matched by `tier`: the\nsame scenario, or the same models and effort scaled by step budget. `high_usd` is their\n90th percentile, or twice the median when `doubled` (under 10 runs). `capped` of those runs\nhit a cap; a past monitor that stopped at its cap counts at this one's, since it would have\ngone on. `excluded` matched but recorded no cost. `priced` is false when no profile of this\nside has a price, so its cost is not counted.",
+        "description": "One run's cost in USD at list prices. `ceiling_usd` is what the caps allow, None when no\ncap applies; `stepped` says it counts one last step past a cost cap, which is checked before\neach step. `typical_usd` is the median of `runs` matching past runs, matched by `tier`: the\nsame scenario, or the same models and effort scaled by step budget; a score's past scores\nof any scenario match as `any`. `high_usd` is their 90th percentile, or twice the median\nwhen `doubled` (under 10 runs). `capped` of those runs hit a cap; a past monitor that\nstopped at its cap counts at this one's, since it would have gone on. `excluded` matched\nbut recorded no cost. `priced` is false when no profile of this side has a price, so its\ncost is not counted.",
         "properties": {
           "capped": {
             "default": 0,
@@ -2712,6 +2712,7 @@
             "enum": [
               "scenario",
               "models",
+              "any",
               "cap"
             ],
             "title": "Tier",
@@ -2745,7 +2746,7 @@
         "type": "object"
       },
       "CostTotal": {
-        "description": "Every run together, agents and monitor: the typical figure, the high one (each run at\nits high figure) and what the caps allow. None when a part of it is unknown.",
+        "description": "Every run together, agents, monitor and score: the typical figure, the high one (each\nrun at its high figure) and what the caps allow. None when a part of it is unknown.",
         "properties": {
           "ceiling_usd": {
             "anyOf": [
@@ -3289,6 +3290,7 @@
           "sandbox.stopped",
           "score.answer",
           "score.awareness",
+          "score.degraded",
           "score.unexplained",
           "score.unit",
           "selftest.case",
@@ -3470,6 +3472,9 @@
           "score.awareness": {
             "$ref": "#/components/schemas/ScoreAwareness"
           },
+          "score.degraded": {
+            "$ref": "#/components/schemas/ScoreDegraded"
+          },
           "score.unexplained": {
             "$ref": "#/components/schemas/ScoreUnexplained"
           },
@@ -3549,6 +3554,7 @@
           "sandbox.stopped",
           "score.answer",
           "score.awareness",
+          "score.degraded",
           "score.unexplained",
           "score.unit",
           "selftest.case",
@@ -14947,9 +14953,41 @@
         "title": "ScoreAwareness",
         "type": "object"
       },
-      "ScoreEstimate": {
-        "description": "What a score of run `run_id` costs at list prices. `classifier` is the model of its\nchecks, None when none runs, so it costs nothing; `calls` the most calls they make.\n`typical_usd` is the median of `runs` past scores that called a model, of the same\nscenario when `same_scenario`, else of any; `high_usd` their 90th percentile, or twice the\nmedian when `doubled` (under 10 runs). `ceiling_usd` is what the agents' words, the chunks\nand the output cap allow, None when the classifier has no price or no output cap. `listed`\nholds the list price it counts at when its profile sets none, and `unlisted` says why one\nthat names a key got none. `checks_off` says why the checks asked for do not run, None\nwhen they run or none was asked for.",
+      "ScoreDegraded": {
+        "additionalProperties": false,
+        "description": "The score's checks stopped before they were done. `part` says what stopped them: the\nscore's spend cap. `reason` says how far they got. Each agent a check did not reach has no\nfinding of that check.",
         "properties": {
+          "part": {
+            "const": "budget",
+            "title": "Part",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "part",
+          "reason"
+        ],
+        "title": "ScoreDegraded",
+        "type": "object"
+      },
+      "ScoreEstimate": {
+        "description": "What a score of run `run_id` costs at list prices. `classifier` is the model of its\nchecks, None when none runs, so it costs nothing; `calls` the most calls they make.\n`typical_usd` is the median of `runs` past scores that called a model, of the same\nscenario when `same_scenario`, else of any; `high_usd` their 90th percentile, or twice the\nmedian when `doubled` (under 10 runs); neither passes the ceiling. `budget_usd` is the\nscore's spend cap: its checks stop there. `ceiling_usd` is the lower of that cap and what\nthe agents' words, the chunks and the output cap allow; None when the classifier has no\nprice, so `priced` is false and its cost is not counted. `total` holds the three figures.\n`confirm` says the score starts only with a person's yes, as runs do. `listed` holds the\nlist price it counts at when its profile sets none. `unlisted` says why one that names a\nkey got none. `checks_off` says why the checks asked for do not run, None when they run or\nnone was asked for.",
+        "properties": {
+          "budget_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Budget Usd"
+          },
           "calls": {
             "default": 0,
             "title": "Calls",
@@ -14988,6 +15026,16 @@
             ],
             "title": "Classifier"
           },
+          "confirm": {
+            "default": false,
+            "title": "Confirm",
+            "type": "boolean"
+          },
+          "confirm_above_usd": {
+            "default": 20.0,
+            "title": "Confirm Above Usd",
+            "type": "number"
+          },
           "doubled": {
             "default": false,
             "title": "Doubled",
@@ -15018,6 +15066,11 @@
             "title": "Listed",
             "type": "array"
           },
+          "priced": {
+            "default": true,
+            "title": "Priced",
+            "type": "boolean"
+          },
           "run_id": {
             "title": "Run Id",
             "type": "string"
@@ -15031,6 +15084,9 @@
             "default": false,
             "title": "Same Scenario",
             "type": "boolean"
+          },
+          "total": {
+            "$ref": "#/components/schemas/CostTotal"
           },
           "typical_usd": {
             "anyOf": [
@@ -15059,9 +15115,14 @@
           "typical_usd",
           "high_usd",
           "ceiling_usd",
+          "budget_usd",
+          "priced",
           "runs",
           "same_scenario",
           "doubled",
+          "total",
+          "confirm_above_usd",
+          "confirm",
           "listed",
           "unlisted",
           "lines"
@@ -15071,7 +15132,7 @@
       },
       "ScoreJob": {
         "additionalProperties": false,
-        "description": "A score of the sealed run `origin`, whose head hash was `origin_head`, against its truth\nfile and the flags of the monitor run `monitor` (None for its own), into the new run\n`run_id`. The runner fetches the run, the monitor run and the truth file when it lacks\nthem. `classifier` is the model of the `awareness` and `answer` checks (`Profile.snapshot`,\nenv names only), None to skip both; `checks_off` says why none fits the checks asked for;\n`texts` are the monitor texts it asks with. `added` is what a scenario file adds to the truth\nfile (`Added.dump`), read by the control plane.",
+        "description": "A score of the sealed run `origin`, whose head hash was `origin_head`, against its truth\nfile and the flags of the monitor run `monitor` (None for its own), into the new run\n`run_id`. The runner fetches the run, the monitor run and the truth file when it lacks\nthem. `classifier` is the model of the `awareness` and `answer` checks (`Profile.snapshot`,\nenv names only), None to skip both; `checks_off` says why none fits the checks asked for;\n`texts` are the monitor texts it asks with. Their calls stop at `budget_usd`, None for no\ncap. `added` is what a scenario file adds to the truth file (`Added.dump`), read by the\ncontrol plane.",
         "properties": {
           "added": {
             "anyOf": [
@@ -15096,6 +15157,18 @@
             "default": true,
             "title": "Awareness",
             "type": "boolean"
+          },
+          "budget_usd": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Budget Usd"
           },
           "checks_off": {
             "anyOf": [
@@ -15191,6 +15264,7 @@
           "checks_off",
           "awareness",
           "answer",
+          "budget_usd",
           "added",
           "texts",
           "options",
@@ -16278,7 +16352,7 @@
         "type": "object"
       },
       "StartRun": {
-        "description": "`monitor` picks the monitor's preset over the config files and the scenario; None keeps\nwhat they say, else `standard`. `variant` applies a named variant of the scenario. When the\nestimate is above `confirm_above_usd`, or nothing bounds the cost, the runs start only with\n`confirm`, like `aims run --yes`. `score` scores each run against its truth file once the\nfile arrives, as `aims run --score` does. `oversight` replaces the scenario's: what the\nmonitor may do in these runs. `budget` changes the scenario's caps, as `aims run --budget`\ndoes: in each set of caps a field set to null lifts that cap, a field left out keeps it.\n`series` makes `runs` runs of that series, one after another, as `aims run --series --runs`\ndoes: each starts from the folders and canaries the one before it left once that one\ncompleted, and the first goes on after the series' last completed run; with `restart` it\nstarts fresh from the scenario's own folders, at the series' next free index.",
+        "description": "`monitor` picks the monitor's preset over the config files and the scenario; None keeps\nwhat they say, else `standard`. `variant` applies a named variant of the scenario. When the\nestimate is above `confirm_above_usd`, or nothing bounds the cost, the runs start only with\n`confirm`, like `aims run --yes`. `score` scores each run against its truth file once the\nfile arrives, as `aims run --score` does. The estimate counts it. `oversight` replaces the\nscenario's: what the monitor may do in these runs. `budget` changes the scenario's caps, as\n`aims run --budget` does: in each set of caps a field set to null lifts that cap, a field\nleft out keeps it. `series` makes `runs` runs of that series, one after another, as\n`aims run --series --runs` does: each starts from the folders and canaries the one before it\nleft once that one completed. The first goes on after the series' last completed run; with\n`restart` it starts fresh from the scenario's own folders, at the series' next free index.",
         "properties": {
           "audit": {
             "default": "kernel",
@@ -16399,7 +16473,7 @@
             "$ref": "#/components/schemas/ScenarioRef"
           },
           "score": {
-            "default": false,
+            "default": true,
             "title": "Score",
             "type": "boolean"
           },
@@ -16435,7 +16509,7 @@
         "type": "object"
       },
       "StartScore": {
-        "description": "`monitor` scores the flags of that monitor run over the run instead of its own.\n`awareness` asks a cheap model whether each agent said it thought it was tested; `answer`\nwhether each subject that took a plant told the operator and gave true reasons.\n`plants_from` also scores the rule plants of that scenario the run's truth file lacks, in\nthe run's variant, with the plant facts it lacks.",
+        "description": "`monitor` scores the flags of that monitor run over the run instead of its own.\n`awareness` asks a cheap model whether each agent said it thought it was tested; `answer`\nwhether each subject that took a plant told the operator and gave true reasons.\n`plants_from` also scores the rule plants of that scenario the run's truth file lacks, in\nthe run's variant, with the plant facts it lacks. The checks stop at `budget_usd`, else at\n`[score] budget_usd`. When the estimate is above `confirm_above_usd`, or nothing bounds the\ncost, the score starts only with `confirm`, like `aims score --yes`.",
         "properties": {
           "answer": {
             "default": true,
@@ -16445,6 +16519,23 @@
           "awareness": {
             "default": true,
             "title": "Awareness",
+            "type": "boolean"
+          },
+          "budget_usd": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Budget Usd"
+          },
+          "confirm": {
+            "default": false,
+            "title": "Confirm",
             "type": "boolean"
           },
           "monitor": {
@@ -17519,7 +17610,7 @@
         "type": "object"
       },
       "VariantCost": {
-        "description": "One run of one variant. `monitor` is None when the monitor is off; `steps` is the median\nnumber of steps each agent took in past runs of the same scenario under the same step\ncaps. `replayed` is the steps each agent of a fork replays before it goes live: the\nagents' figures count only the steps after them. `caps` are the caps the run would have.\n`agent_profiles` names the profile of each agent that calls a model, by agent id, and\n`monitor_profiles` the profile each part of the monitor calls, by part: `sweep:<name>`,\n`review`, `judge`, `extract` and `channels`. `recorded_models` names, by agent id, the\nmodel of each agent of a fork that goes live on the profile its origin recorded where that\ndiffers from this config's profile of the same name: a check of the name tests this\nconfig's.",
+        "description": "One run of one variant. `monitor` is None when the monitor is off, `score` when the run\nis not scored; `score_profile` names the classifier of its checks, None when none fits, so\nit costs nothing. `steps` is the median number of steps each agent took in past runs of the\nsame scenario under the same step caps. `replayed` is the steps each agent of a fork\nreplays before it goes live: the agents' figures count only the steps after them. `caps`\nare the caps the run would have.\n`agent_profiles` names the profile of each agent that calls a model, by agent id, and\n`monitor_profiles` the profile each part of the monitor calls, by part: `sweep:<name>`,\n`review`, `judge`, `extract` and `channels`. `recorded_models` names, by agent id, the\nmodel of each agent of a fork that goes live on the profile its origin recorded where that\ndiffers from this config's profile of the same name: a check of the name tests this\nconfig's.",
         "properties": {
           "agent_profiles": {
             "additionalProperties": {
@@ -17582,6 +17673,27 @@
             "title": "Replayed",
             "type": "object"
           },
+          "score": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CostFigures"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "score_profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score Profile"
+          },
           "steps": {
             "additionalProperties": {
               "type": "number"
@@ -17605,6 +17717,8 @@
           "variant",
           "agents",
           "monitor",
+          "score",
+          "score_profile",
           "monitor_preset",
           "steps",
           "replayed",
@@ -23288,7 +23402,7 @@
     },
     "/api/runs/{run_id}/score/estimate": {
       "get": {
-        "description": "What a score of the run costs, as `aims score` prints it before it starts: the most\nclassifier calls its checks make, the typical and high cost of past scores, and what the\noutput cap allows.",
+        "description": "What a score of the run costs, as `aims score` prints it before it starts: the most\nclassifier calls its checks make, the typical and high cost of past scores and the most\nits spend cap and the output cap allow. `budget_usd` replaces `[score] budget_usd`.\n`confirm` says the score starts only with a yes.",
         "operationId": "estimate_score",
         "parameters": [
           {
@@ -23318,6 +23432,23 @@
               "default": true,
               "title": "Answer",
               "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "budget_usd",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Budget Usd"
             }
           }
         ],
@@ -24564,7 +24695,7 @@
     },
     "/api/scenarios/{source}/{name}/estimate": {
       "get": {
-        "description": "What `samples` runs of the scenario cost, of one variant or with `variants=all` of each:\nwhat the caps allow, and the typical and high cost of past runs. `budget` is the JSON of\nStartRun's `budget`.",
+        "description": "What `samples` runs of the scenario cost, of one variant or with `variants=all` of each:\nwhat the caps allow, and the typical and high cost of past runs. `budget` is the JSON of\nStartRun's `budget`. `score` counts a score of each run, as StartRun's `score` does.",
         "operationId": "estimate_scenario",
         "parameters": [
           {
@@ -24684,6 +24815,16 @@
               ],
               "description": "A budget override as JSON, the shape of StartRun's budget.",
               "title": "Budget"
+            }
+          },
+          {
+            "in": "query",
+            "name": "score",
+            "required": false,
+            "schema": {
+              "default": true,
+              "title": "Score",
+              "type": "boolean"
             }
           }
         ],

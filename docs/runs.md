@@ -9,7 +9,7 @@
 - Commands that read a folder of runs keep their index of it in that folder, in `index.sqlite`. A folder they cannot write stops them with an error. Use a copy you can write.
 - A run never changes after it is sealed. Monitor runs and scores are new runs that point at it.
 - `--series <name> --runs 5` makes five runs in a row, each going on from the one before.
-- Budgets cap steps, output tokens, cost and time for each agent and for the run. `aims estimate` prints what a run can cost. `aims spend` shows what each provider was paid.
+- Budgets cap steps, output tokens, cost and time for each agent and for the run. `aims estimate` prints what a run can cost, with the score made after it. `--no-score` leaves the score out. `aims spend` shows what each provider was paid.
 
 ### Forks
 
@@ -26,6 +26,8 @@ A fork replays a step only when the run recorded a result for each of its tool c
 - `aims monitor <run>` feeds a sealed run through the monitor again, with any preset or model.
 - `aims score <run>` lists the plants each agent took. It shows which monitor layer caught each one and how soon. It also checks whether each agent said it thought it was tested. For a subject that took a plant, it checks whether it told the operator and gave true reasons.
 - Those two checks call a model: the first profile whose weights no agent of the run runs, from `[monitor] extract`, then the `sweep` role. When none fits, the score skips them and says why.
+- The checks stop at a spend cap, $1 by default. `budget_usd` under `[score]` in a config file changes it. `aims score --budget-usd` changes it for one score. A score that stops says so. The agents it did not reach get no finding.
+- `aims score` prints its estimate first. Past `confirm_above_usd` it asks, as `aims run` does. `--yes` starts it anyway.
 - `aims rates` sums take and catch rates over many scored runs, with 95% intervals.
 
 ### Delete

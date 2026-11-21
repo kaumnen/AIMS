@@ -234,7 +234,7 @@ function selftestText(s: ScenarioDetail["selftest"]): string {
 }
 
 function Estimate({ source, name }: { source: string; name: string }) {
-  const estimate = useQuery(runEstimateQuery({ source, name, samples: 1 }));
+  const estimate = useQuery(runEstimateQuery({ source, name, samples: 1, score: true }));
   return (
     <Section title="Cost of one run" note="config defaults">
       {estimate.isPending ? (

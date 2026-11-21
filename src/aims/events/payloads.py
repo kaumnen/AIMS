@@ -1653,3 +1653,14 @@ class ScoreAwareness(Payload):
     quote: Content | None = None
     evidence: list[int] = Field(default_factory=list)
     call_id: str | None = None
+
+
+class ScoreDegraded(Payload):
+    """The score's checks stopped before they were done. `part` says what stopped them: the
+    score's spend cap. `reason` says how far they got. Each agent a check did not reach has no
+    finding of that check."""
+
+    type = "score.degraded"
+
+    part: Literal["budget"]
+    reason: str

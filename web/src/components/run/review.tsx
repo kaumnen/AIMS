@@ -13,6 +13,7 @@ import {
 } from "@/api/review";
 import { reviewsQuery, type RunSummary } from "@/api/runs";
 import { isProblem } from "@/api/session";
+import { Cost } from "@/components/estimate-lines";
 import { CountInput, DEFAULT, Field, Pick, problemText } from "@/components/form";
 import { up, useRunners } from "@/components/health";
 import { Button } from "@/components/ui/button";
@@ -29,7 +30,6 @@ import { Input } from "@/components/ui/input";
 import { usd } from "@/lib/format";
 import { confirmWhy } from "@/lib/launch";
 import { useOperator } from "@/lib/use-operator";
-import { cn } from "@/lib/utils";
 
 const MAX_SAMPLES = 100;
 
@@ -219,33 +219,12 @@ function ReviewForm({ runId, onDone }: { runId: string; onDone: (id?: string) =>
           </Field>
         </div>
       </div>
-      <section aria-label="Cost estimate" aria-live="polite" className="flex flex-col gap-1">
-        <h3 className="font-medium">Cost</h3>
-        {estimate.isPending ? (
-          <p className="text-muted-foreground">Estimating</p>
-        ) : estimate.isError ? (
-          <p className="text-muted-foreground">
-            No estimate: {isProblem(estimate.error) ? problemText(estimate.error) : "it failed."}
-          </p>
-        ) : (
-          <ul className={cn("flex flex-col gap-0.5", estimate.isPlaceholderData && "opacity-60")}>
-            {estimate.data.lines.map((line) => (
-              <li key={line}>{line}</li>
-            ))}
-          </ul>
-        )}
-        {why && (
-          <label className="flex items-start gap-2 font-medium">
-            <input
-              type="checkbox"
-              checked={confirm}
-              onChange={(e) => setConfirmed(e.target.checked ? key : null)}
-              className="accent-foreground mt-0.5"
-            />
-            {why} Start anyway.
-          </label>
-        )}
-      </section>
+      <Cost
+        estimate={estimate}
+        why={why}
+        yes={confirm}
+        onYes={(yes) => setConfirmed(yes ? key : null)}
+      />
       {problem && <p className="text-flag">{problem}</p>}
       <DialogFooter>
         <Button variant="ghost" size="sm" onClick={() => onDone()}>

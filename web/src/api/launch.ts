@@ -57,20 +57,32 @@ export interface EstimateAsk {
   profile?: string | undefined;
   monitor?: Preset | undefined;
   budget?: BudgetOverride | undefined;
+  score: boolean;
 }
 
 // The previous estimate stays on screen while a changed field is estimated again.
 export function runEstimateQuery(ask: EstimateAsk) {
-  const { source, name, variant, samples, profile, monitor } = ask;
+  const { source, name, variant, samples, profile, monitor, score } = ask;
   const budget = ask.budget ? JSON.stringify(ask.budget) : undefined;
   return queryOptions({
-    queryKey: ["estimate", source, name, variant, samples, profile, monitor, budget] as const,
+    queryKey: [
+      "estimate",
+      source,
+      name,
+      variant,
+      samples,
+      profile,
+      monitor,
+      budget,
+      score,
+    ] as const,
     queryFn: async ({ signal }) => {
       const { data, error } = await client.GET("/api/scenarios/{source}/{name}/estimate", {
         params: {
           path: { source, name },
           query: {
             samples,
+            score,
             ...(variant ? { variant } : {}),
             ...(profile ? { profile } : {}),
             ...(monitor ? { monitor } : {}),

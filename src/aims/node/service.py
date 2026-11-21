@@ -558,6 +558,7 @@ class Node:
                 awareness=job.awareness,
                 answer=job.answer,
                 checks_off=job.checks_off,
+                budget_usd=job.budget_usd,
             )
         except ScoreError as e:
             raise RunError(str(e)) from None

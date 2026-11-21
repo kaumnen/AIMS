@@ -899,8 +899,9 @@ export interface paths {
         /**
          * Estimate Score
          * @description What a score of the run costs, as `aims score` prints it before it starts: the most
-         *     classifier calls its checks make, the typical and high cost of past scores, and what the
-         *     output cap allows.
+         *     classifier calls its checks make, the typical and high cost of past scores and the most
+         *     its spend cap and the output cap allow. `budget_usd` replaces `[score] budget_usd`.
+         *     `confirm` says the score starts only with a yes.
          */
         get: operations["estimate_score"];
         put?: never;
@@ -1125,7 +1126,7 @@ export interface paths {
          * Estimate Scenario
          * @description What `samples` runs of the scenario cost, of one variant or with `variants=all` of each:
          *     what the caps allow, and the typical and high cost of past runs. `budget` is the JSON of
-         *     StartRun's `budget`.
+         *     StartRun's `budget`. `score` counts a score of each run, as StartRun's `score` does.
          */
         get: operations["estimate_scenario"];
         put?: never;
@@ -2686,11 +2687,12 @@ export interface components {
          * @description One run's cost in USD at list prices. `ceiling_usd` is what the caps allow, None when no
          *     cap applies; `stepped` says it counts one last step past a cost cap, which is checked before
          *     each step. `typical_usd` is the median of `runs` matching past runs, matched by `tier`: the
-         *     same scenario, or the same models and effort scaled by step budget. `high_usd` is their
-         *     90th percentile, or twice the median when `doubled` (under 10 runs). `capped` of those runs
-         *     hit a cap; a past monitor that stopped at its cap counts at this one's, since it would have
-         *     gone on. `excluded` matched but recorded no cost. `priced` is false when no profile of this
-         *     side has a price, so its cost is not counted.
+         *     same scenario, or the same models and effort scaled by step budget; a score's past scores
+         *     of any scenario match as `any`. `high_usd` is their 90th percentile, or twice the median
+         *     when `doubled` (under 10 runs). `capped` of those runs hit a cap; a past monitor that
+         *     stopped at its cap counts at this one's, since it would have gone on. `excluded` matched
+         *     but recorded no cost. `priced` is false when no profile of this side has a price, so its
+         *     cost is not counted.
          */
         CostFigures: {
             /**
@@ -2732,14 +2734,14 @@ export interface components {
              * @default cap
              * @enum {string}
              */
-            tier: "scenario" | "models" | "cap";
+            tier: "scenario" | "models" | "any" | "cap";
             /** Typical Usd */
             typical_usd: number | null;
         };
         /**
          * CostTotal
-         * @description Every run together, agents and monitor: the typical figure, the high one (each run at
-         *     its high figure) and what the caps allow. None when a part of it is unknown.
+         * @description Every run together, agents, monitor and score: the typical figure, the high one (each
+         *     run at its high figure) and what the caps allow. None when a part of it is unknown.
          */
         CostTotal: {
             /** Ceiling Usd */
@@ -2940,7 +2942,7 @@ export interface components {
             next: string | null;
         };
         /** @enum {string} */
-        EventType: "agent.compacted" | "agent.finished" | "agent.held" | "agent.input" | "agent.report" | "agent.started" | "agent.step" | "audit.lost" | "audit.spill" | "cache.probe" | "channel.message" | "channel.read" | "channel.snapshot" | "exec.finished" | "exec.started" | "file.access" | "file.look" | "file.setattr" | "file.sync" | "file.write" | "file.xattr" | "fs.snapshot" | "ipc.event" | "log.truncated" | "mem.exec" | "model.checked" | "model.request" | "model.response" | "monitor.action" | "monitor.cleared" | "monitor.degraded" | "monitor.flag" | "monitor.sweep" | "monitor.verdict" | "net.connect" | "net.listen" | "ns.event" | "operator.action" | "plant.triggered" | "proc.exec" | "proc.exit" | "proc.fork" | "proc.output" | "proc.signal" | "ptrace.event" | "replay.divergence" | "resource.sample" | "run.finished" | "run.started" | "sandbox.archived" | "sandbox.freeze_failed" | "sandbox.outside_pause" | "sandbox.started" | "sandbox.stopped" | "score.answer" | "score.awareness" | "score.unexplained" | "score.unit" | "selftest.case" | "sys.denied" | "task.scored" | "tool.call" | "tool.result";
+        EventType: "agent.compacted" | "agent.finished" | "agent.held" | "agent.input" | "agent.report" | "agent.started" | "agent.step" | "audit.lost" | "audit.spill" | "cache.probe" | "channel.message" | "channel.read" | "channel.snapshot" | "exec.finished" | "exec.started" | "file.access" | "file.look" | "file.setattr" | "file.sync" | "file.write" | "file.xattr" | "fs.snapshot" | "ipc.event" | "log.truncated" | "mem.exec" | "model.checked" | "model.request" | "model.response" | "monitor.action" | "monitor.cleared" | "monitor.degraded" | "monitor.flag" | "monitor.sweep" | "monitor.verdict" | "net.connect" | "net.listen" | "ns.event" | "operator.action" | "plant.triggered" | "proc.exec" | "proc.exit" | "proc.fork" | "proc.output" | "proc.signal" | "ptrace.event" | "replay.divergence" | "resource.sample" | "run.finished" | "run.started" | "sandbox.archived" | "sandbox.freeze_failed" | "sandbox.outside_pause" | "sandbox.started" | "sandbox.stopped" | "score.answer" | "score.awareness" | "score.degraded" | "score.unexplained" | "score.unit" | "selftest.case" | "sys.denied" | "task.scored" | "tool.call" | "tool.result";
         /** @description Each event type and the schema of its `data`. */
         EventTypes: {
             "agent.compacted": components["schemas"]["AgentCompacted"];
@@ -2999,6 +3001,7 @@ export interface components {
             "sandbox.stopped": components["schemas"]["SandboxStopped"];
             "score.answer": components["schemas"]["ScoreAnswer"];
             "score.awareness": components["schemas"]["ScoreAwareness"];
+            "score.degraded": components["schemas"]["ScoreDegraded"];
             "score.unexplained": components["schemas"]["ScoreUnexplained"];
             "score.unit": components["schemas"]["ScoreUnit"];
             "selftest.case": components["schemas"]["SelfTestCase"];
@@ -7462,18 +7465,38 @@ export interface components {
             quote: string | components["schemas"]["BlobRef"] | null;
         };
         /**
+         * ScoreDegraded
+         * @description The score's checks stopped before they were done. `part` says what stopped them: the
+         *     score's spend cap. `reason` says how far they got. Each agent a check did not reach has no
+         *     finding of that check.
+         */
+        ScoreDegraded: {
+            /**
+             * Part
+             * @constant
+             */
+            part: "budget";
+            /** Reason */
+            reason: string;
+        };
+        /**
          * ScoreEstimate
          * @description What a score of run `run_id` costs at list prices. `classifier` is the model of its
          *     checks, None when none runs, so it costs nothing; `calls` the most calls they make.
          *     `typical_usd` is the median of `runs` past scores that called a model, of the same
          *     scenario when `same_scenario`, else of any; `high_usd` their 90th percentile, or twice the
-         *     median when `doubled` (under 10 runs). `ceiling_usd` is what the agents' words, the chunks
-         *     and the output cap allow, None when the classifier has no price or no output cap. `listed`
-         *     holds the list price it counts at when its profile sets none, and `unlisted` says why one
-         *     that names a key got none. `checks_off` says why the checks asked for do not run, None
-         *     when they run or none was asked for.
+         *     median when `doubled` (under 10 runs); neither passes the ceiling. `budget_usd` is the
+         *     score's spend cap: its checks stop there. `ceiling_usd` is the lower of that cap and what
+         *     the agents' words, the chunks and the output cap allow; None when the classifier has no
+         *     price, so `priced` is false and its cost is not counted. `total` holds the three figures.
+         *     `confirm` says the score starts only with a person's yes, as runs do. `listed` holds the
+         *     list price it counts at when its profile sets none. `unlisted` says why one that names a
+         *     key got none. `checks_off` says why the checks asked for do not run, None when they run or
+         *     none was asked for.
          */
         ScoreEstimate: {
+            /** Budget Usd */
+            budget_usd: number | null;
             /**
              * Calls
              * @default 0
@@ -7486,6 +7509,16 @@ export interface components {
             /** Classifier */
             classifier: string | null;
             /**
+             * Confirm
+             * @default false
+             */
+            confirm: boolean;
+            /**
+             * Confirm Above Usd
+             * @default 20
+             */
+            confirm_above_usd: number;
+            /**
              * Doubled
              * @default false
              */
@@ -7496,6 +7529,11 @@ export interface components {
             lines: string[];
             /** Listed */
             listed: components["schemas"]["ListedPrice"][];
+            /**
+             * Priced
+             * @default true
+             */
+            priced: boolean;
             /** Run Id */
             run_id: string;
             /**
@@ -7508,6 +7546,7 @@ export interface components {
              * @default false
              */
             same_scenario: boolean;
+            total: components["schemas"]["CostTotal"];
             /** Typical Usd */
             typical_usd: number | null;
             /** Unlisted */
@@ -7522,8 +7561,9 @@ export interface components {
          *     `run_id`. The runner fetches the run, the monitor run and the truth file when it lacks
          *     them. `classifier` is the model of the `awareness` and `answer` checks (`Profile.snapshot`,
          *     env names only), None to skip both; `checks_off` says why none fits the checks asked for;
-         *     `texts` are the monitor texts it asks with. `added` is what a scenario file adds to the truth
-         *     file (`Added.dump`), read by the control plane.
+         *     `texts` are the monitor texts it asks with. Their calls stop at `budget_usd`, None for no
+         *     cap. `added` is what a scenario file adds to the truth file (`Added.dump`), read by the
+         *     control plane.
          */
         ScoreJob: {
             /** Added */
@@ -7540,6 +7580,8 @@ export interface components {
              * @default true
              */
             awareness: boolean;
+            /** Budget Usd */
+            budget_usd: number | null;
             /** Checks Off */
             checks_off: string | null;
             /** Classifier */
@@ -8006,13 +8048,13 @@ export interface components {
          *     what they say, else `standard`. `variant` applies a named variant of the scenario. When the
          *     estimate is above `confirm_above_usd`, or nothing bounds the cost, the runs start only with
          *     `confirm`, like `aims run --yes`. `score` scores each run against its truth file once the
-         *     file arrives, as `aims run --score` does. `oversight` replaces the scenario's: what the
-         *     monitor may do in these runs. `budget` changes the scenario's caps, as `aims run --budget`
-         *     does: in each set of caps a field set to null lifts that cap, a field left out keeps it.
-         *     `series` makes `runs` runs of that series, one after another, as `aims run --series --runs`
-         *     does: each starts from the folders and canaries the one before it left once that one
-         *     completed, and the first goes on after the series' last completed run; with `restart` it
-         *     starts fresh from the scenario's own folders, at the series' next free index.
+         *     file arrives, as `aims run --score` does. The estimate counts it. `oversight` replaces the
+         *     scenario's: what the monitor may do in these runs. `budget` changes the scenario's caps, as
+         *     `aims run --budget` does: in each set of caps a field set to null lifts that cap, a field
+         *     left out keeps it. `series` makes `runs` runs of that series, one after another, as
+         *     `aims run --series --runs` does: each starts from the folders and canaries the one before it
+         *     left once that one completed. The first goes on after the series' last completed run; with
+         *     `restart` it starts fresh from the scenario's own folders, at the series' next free index.
          */
         StartRun: {
             /**
@@ -8060,7 +8102,7 @@ export interface components {
             scenario: components["schemas"]["ScenarioRef"];
             /**
              * Score
-             * @default false
+             * @default true
              */
             score?: boolean;
             /** Series */
@@ -8074,7 +8116,9 @@ export interface components {
          *     `awareness` asks a cheap model whether each agent said it thought it was tested; `answer`
          *     whether each subject that took a plant told the operator and gave true reasons.
          *     `plants_from` also scores the rule plants of that scenario the run's truth file lacks, in
-         *     the run's variant, with the plant facts it lacks.
+         *     the run's variant, with the plant facts it lacks. The checks stop at `budget_usd`, else at
+         *     `[score] budget_usd`. When the estimate is above `confirm_above_usd`, or nothing bounds the
+         *     cost, the score starts only with `confirm`, like `aims score --yes`.
          */
         StartScore: {
             /**
@@ -8087,6 +8131,13 @@ export interface components {
              * @default true
              */
             awareness?: boolean;
+            /** Budget Usd */
+            budget_usd?: number | null;
+            /**
+             * Confirm
+             * @default false
+             */
+            confirm?: boolean;
             /** Monitor */
             monitor?: string | null;
             plants_from?: components["schemas"]["ScenarioRef"] | null;
@@ -8505,10 +8556,12 @@ export interface components {
         };
         /**
          * VariantCost
-         * @description One run of one variant. `monitor` is None when the monitor is off; `steps` is the median
-         *     number of steps each agent took in past runs of the same scenario under the same step
-         *     caps. `replayed` is the steps each agent of a fork replays before it goes live: the
-         *     agents' figures count only the steps after them. `caps` are the caps the run would have.
+         * @description One run of one variant. `monitor` is None when the monitor is off, `score` when the run
+         *     is not scored; `score_profile` names the classifier of its checks, None when none fits, so
+         *     it costs nothing. `steps` is the median number of steps each agent took in past runs of the
+         *     same scenario under the same step caps. `replayed` is the steps each agent of a fork
+         *     replays before it goes live: the agents' figures count only the steps after them. `caps`
+         *     are the caps the run would have.
          *     `agent_profiles` names the profile of each agent that calls a model, by agent id, and
          *     `monitor_profiles` the profile each part of the monitor calls, by part: `sweep:<name>`,
          *     `review`, `judge`, `extract` and `channels`. `recorded_models` names, by agent id, the
@@ -8538,6 +8591,9 @@ export interface components {
             replayed: {
                 [key: string]: number;
             };
+            score: components["schemas"]["CostFigures"] | null;
+            /** Score Profile */
+            score_profile: string | null;
             /** Steps */
             steps: {
                 [key: string]: number;
@@ -12131,6 +12187,7 @@ export interface operations {
             query?: {
                 awareness?: boolean;
                 answer?: boolean;
+                budget_usd?: number | null;
             };
             header?: never;
             path: {
@@ -13123,6 +13180,7 @@ export interface operations {
                 monitor?: ("off" | "signals" | "standard" | "research") | null;
                 /** @description A budget override as JSON, the shape of StartRun's budget. */
                 budget?: string | null;
+                score?: boolean;
             };
             header?: never;
             path: {
@@ -15777,11 +15835,11 @@ export const commandInfoStateValues: ReadonlyArray<FlattenedDeepRequired<compone
 export const commandInfoThenAnyOf0Values: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CommandInfo"]["then"]> = ["continue", "kill", "inject", "deny"];
 export const commandMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CommandMessage"]["kind"]> = ["command"];
 export const configFileLayerValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ConfigFile"]["layer"]> = ["user", "project"];
-export const costFiguresTierValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CostFigures"]["tier"]> = ["scenario", "models", "cap"];
+export const costFiguresTierValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["CostFigures"]["tier"]> = ["scenario", "models", "any", "cap"];
 export const deltaMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["DeltaMessage"]["kind"]> = ["delta"];
 export const deltasDroppedMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["DeltasDroppedMessage"]["kind"]> = ["deltas_dropped"];
 export const endMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EndMessage"]["kind"]> = ["end"];
-export const eventTypeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventType"]> = ["agent.compacted", "agent.finished", "agent.held", "agent.input", "agent.report", "agent.started", "agent.step", "audit.lost", "audit.spill", "cache.probe", "channel.message", "channel.read", "channel.snapshot", "exec.finished", "exec.started", "file.access", "file.look", "file.setattr", "file.sync", "file.write", "file.xattr", "fs.snapshot", "ipc.event", "log.truncated", "mem.exec", "model.checked", "model.request", "model.response", "monitor.action", "monitor.cleared", "monitor.degraded", "monitor.flag", "monitor.sweep", "monitor.verdict", "net.connect", "net.listen", "ns.event", "operator.action", "plant.triggered", "proc.exec", "proc.exit", "proc.fork", "proc.output", "proc.signal", "ptrace.event", "replay.divergence", "resource.sample", "run.finished", "run.started", "sandbox.archived", "sandbox.freeze_failed", "sandbox.outside_pause", "sandbox.started", "sandbox.stopped", "score.answer", "score.awareness", "score.unexplained", "score.unit", "selftest.case", "sys.denied", "task.scored", "tool.call", "tool.result"];
+export const eventTypeValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventType"]> = ["agent.compacted", "agent.finished", "agent.held", "agent.input", "agent.report", "agent.started", "agent.step", "audit.lost", "audit.spill", "cache.probe", "channel.message", "channel.read", "channel.snapshot", "exec.finished", "exec.started", "file.access", "file.look", "file.setattr", "file.sync", "file.write", "file.xattr", "fs.snapshot", "ipc.event", "log.truncated", "mem.exec", "model.checked", "model.request", "model.response", "monitor.action", "monitor.cleared", "monitor.degraded", "monitor.flag", "monitor.sweep", "monitor.verdict", "net.connect", "net.listen", "ns.event", "operator.action", "plant.triggered", "proc.exec", "proc.exit", "proc.fork", "proc.output", "proc.signal", "ptrace.event", "replay.divergence", "resource.sample", "run.finished", "run.started", "sandbox.archived", "sandbox.freeze_failed", "sandbox.outside_pause", "sandbox.started", "sandbox.stopped", "score.answer", "score.awareness", "score.degraded", "score.unexplained", "score.unit", "selftest.case", "sys.denied", "task.scored", "tool.call", "tool.result"];
 export const eventsMessageKindValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["EventsMessage"]["kind"]> = ["events"];
 export const execFinishedEndValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ExecFinished"]["end"]> = ["exited", "timeout", "cancelled", "failed"];
 export const execStartedAuditValues: ReadonlyArray<FlattenedDeepRequired<components>["schemas"]["ExecStarted"]["audit"]> = ["kernel", "snapshot"];

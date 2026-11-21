@@ -15,9 +15,11 @@ import {
   startScore,
 } from "@/api/score";
 import { isProblem } from "@/api/session";
+import { Cost } from "@/components/estimate-lines";
 import { Meter, statusLabel } from "@/components/runs/cells";
 import { categoryLabel } from "@/components/runs/filters";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -26,6 +28,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { started, usd } from "@/lib/format";
+import { confirmWhy } from "@/lib/launch";
 import { listedNote } from "@/lib/listed";
 import { presetText, reaches } from "@/lib/monitor";
 import {
@@ -218,9 +221,18 @@ function ScoreForm({
   const [awareness, setAwareness] = useState(true);
   const [answer, setAnswer] = useState(true);
   const [rules, setRules] = useState("");
+  const [budget, setBudget] = useState("");
+  const [confirmed, setConfirmed] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  const estimate = useQuery(scoreEstimateQuery(run.run_id, awareness, answer));
+  const cap = budget === "" ? NaN : Number(budget);
+  const budgetUsd = cap >= 0 ? cap : undefined;
+  const asking = scoreEstimateQuery(run.run_id, awareness, answer, budgetUsd);
+  const estimate = useQuery(asking);
+  // A yes holds only for the estimate it was given to.
+  const key = JSON.stringify(asking.queryKey);
+  const why = estimate.data ? confirmWhy(estimate.data) : null;
+  const confirm = confirmed === key;
   const scenarios = useQuery(scenariosQuery);
   const same = (scenarios.data ?? []).filter((s) => s.title === run.scenario && !s.error);
   const watchItems = [
@@ -244,6 +256,8 @@ function ScoreForm({
       const ids = await startScore(run.run_id, {
         awareness,
         answer,
+        confirm,
+        budget_usd: budgetUsd ?? null,
         ...(watch === LIVE ? {} : { monitor: watch }),
         ...(source && name ? { plants_from: { source, name } } : {}),
       });
@@ -310,16 +324,31 @@ function ScoreForm({
           </Select>
         </label>
       )}
-      <p className="text-muted-foreground" aria-live="polite">
-        {estimate.isPending
-          ? "Estimating"
-          : estimate.isError
-            ? "No estimate."
-            : estimate.data.lines.join(" ")}
-      </p>
+      <label className="flex flex-col gap-1">
+        <span className="text-muted-foreground">Spend cap of the checks, USD</span>
+        <Input
+          type="number"
+          min={0}
+          step="0.5"
+          placeholder="From config"
+          value={budget}
+          className="h-7 md:text-sm"
+          onChange={(e) => setBudget(e.currentTarget.value)}
+        />
+      </label>
+      <Cost
+        estimate={estimate}
+        why={why}
+        yes={confirm}
+        onYes={(yes) => setConfirmed(yes ? key : null)}
+      />
       {problem && <p className="text-flag">{problem}</p>}
       <div className="flex gap-2">
-        <Button size="sm" disabled={busy} onClick={() => void submit()}>
+        <Button
+          size="sm"
+          disabled={busy || estimate.isPending || (why !== null && !confirm)}
+          onClick={() => void submit()}
+        >
           Start score
         </Button>
         <Button size="sm" variant="ghost" onClick={onCancel}>

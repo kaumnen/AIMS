@@ -11,8 +11,10 @@ from typing import Annotated
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
 
+from aims.config import Settings
 from aims.events import Label, LabelKind
 from aims.models import ProfileError
+from aims.models.listprice import Listing
 from aims.monitor.offline import origin_agents
 from aims.monitor.setup import extractor_for
 from aims.monitor.texts import resolve
@@ -28,6 +30,7 @@ from aims.run.scoring import (
     classifier_candidates,
     estimate_sealed,
     priced_score,
+    scores_confirm,
     unfinished,
 )
 from aims.server import audit
@@ -60,13 +63,17 @@ class StartScore(BaseModel):
     `awareness` asks a cheap model whether each agent said it thought it was tested; `answer`
     whether each subject that took a plant told the operator and gave true reasons.
     `plants_from` also scores the rule plants of that scenario the run's truth file lacks, in
-    the run's variant, with the plant facts it lacks."""
+    the run's variant, with the plant facts it lacks. The checks stop at `budget_usd`, else at
+    `[score] budget_usd`. When the estimate is above `confirm_above_usd`, or nothing bounds the
+    cost, the score starts only with `confirm`, like `aims score --yes`."""
 
     monitor: Utf8 | None = None
     awareness: bool = True
     answer: bool = True
     plants_from: ScenarioRef | None = None
     runner: Utf8 | None = None
+    budget_usd: float | None = Field(default=None, ge=0, strict=True, allow_inf_nan=False)
+    confirm: bool = False
 
 
 @router.post(
@@ -84,7 +91,27 @@ async def score_run(
     """Queue a score of a sealed run against its truth file. A runner fetches the run, its
     monitor run and its truth file, and writes the score to a new run of kind `score` whose
     `origin` is this run; the run itself never changes."""
-    started = await queue_score(state, principal.name, _run_id(run_id), body, sources)
+    run_id = _run_id(run_id)
+    job, settings, listing = await score_job(state, run_id, body, sources)
+    if not body.confirm:
+        try:
+            cost = await estimate_sealed(
+                state.store,
+                settings,
+                run_id,
+                awareness=body.awareness,
+                answer=body.answer,
+                listing=listing,
+                budget_usd=job.budget_usd,
+            )
+        except (ScoreError, ProfileError, TextError) as e:
+            raise ProblemException(422, "Cannot score", str(e), code="score") from None
+        why = scores_confirm(cost)
+        if why is not None:
+            raise ProblemException(
+                409, "Confirm the cost", f"{why}; set confirm to start anyway", code="confirm"
+            )
+    started = await _queue(state, principal.name, [job], runner=body.runner, parallel=None)
     note.detail = audit.runs(started.run_ids)
     return started
 
@@ -169,6 +196,16 @@ async def queue_score(
     body: StartScore,
     sources: Sources | None = None,
 ) -> Started:
+    """Queue the score `body` asks for with no question of its cost, as a run's own score."""
+    job, _, _ = await score_job(state, run_id, body, sources)
+    return await _queue(state, token, [job], runner=body.runner, parallel=None)
+
+
+async def score_job(
+    state: ServerState, run_id: str, body: StartScore, sources: Sources | None = None
+) -> tuple[ScoreJob, Settings, Listing]:
+    """The job of the score `body` asks for, checked, with the settings its classifier's list
+    price is laid on and the listing it came from."""
     info = await state.store.run(run_id)
     head = await state.store.head(run_id) if info is not None else None
     if info is None or head is None:
@@ -210,7 +247,7 @@ async def queue_score(
     settings = state.config.settings()
     try:
         # the classifier's list price goes on it before the job is made, so the runner gets it
-        settings, _ = await priced_score(
+        settings, listing = await priced_score(
             state.store,
             settings,
             run_id,
@@ -240,11 +277,12 @@ async def queue_score(
         checks_off=off,
         awareness=body.awareness,
         answer=body.answer,
+        budget_usd=settings.score_budget_usd if body.budget_usd is None else body.budget_usd,
         added=None if added is None else added.dump(),
         texts=texts.snapshot(),
         config_files=settings.layers.digests(),
     )
-    return await _queue(state, token, [job], runner=body.runner, parallel=None)
+    return job, settings, listing
 
 
 @router.get("/runs/{run_id}/score/estimate", tags=["score"], responses=responses(404, 503))
@@ -254,10 +292,12 @@ async def estimate_score(
     state: State,
     awareness: bool = True,
     answer: bool = True,
+    budget_usd: Annotated[float | None, Query(ge=0, allow_inf_nan=False)] = None,
 ) -> ScoreEstimate:
     """What a score of the run costs, as `aims score` prints it before it starts: the most
-    classifier calls its checks make, the typical and high cost of past scores, and what the
-    output cap allows."""
+    classifier calls its checks make, the typical and high cost of past scores and the most
+    its spend cap and the output cap allow. `budget_usd` replaces `[score] budget_usd`.
+    `confirm` says the score starts only with a yes."""
     run_id = _run_id(run_id)
     if await state.store.run(run_id) is None:
         raise _no_run(state, run_id)
@@ -271,7 +311,13 @@ async def estimate_score(
             lists=state.prices,
         )
         return await estimate_sealed(
-            state.store, settings, run_id, awareness=awareness, answer=answer, listing=listing
+            state.store,
+            settings,
+            run_id,
+            awareness=awareness,
+            answer=answer,
+            listing=listing,
+            budget_usd=budget_usd,
         )
     except (ScoreError, ProfileError, TextError) as e:
         raise ProblemException(422, "Cannot estimate", str(e), code="estimate") from None

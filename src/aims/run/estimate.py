@@ -36,8 +36,8 @@ from aims.events.store import TRUTH
 from aims.models import Profile, ProfileError
 from aims.models.listprice import SOURCE, Listing, ListPrice, PriceLists, laid, priced
 from aims.models.profiles import Price
-from aims.monitor.config import Preset
-from aims.monitor.setup import ResolvedMonitor, planned_steps
+from aims.monitor.config import Preset, merge
+from aims.monitor.setup import ResolvedMonitor, extractor_for, planned_steps
 from aims.run.fork import Origin, fork_agents, fork_profiles, recorded_models
 from aims.run.job import monitor_for
 from aims.run.runner import Fork, agent_profile
@@ -48,7 +48,7 @@ from aims.wire import MonitorMode
 
 log = logging.getLogger("aims.run")
 
-Tier = Literal["scenario", "models", "cap"]
+Tier = Literal["scenario", "models", "any", "cap"]
 MonitorKey = tuple[str, tuple[tuple[str, str | None], ...]]
 MIN_RUNS = 10
 CACHED_SHARE = 0.9
@@ -83,11 +83,12 @@ class CostFigures(_Out):
     """One run's cost in USD at list prices. `ceiling_usd` is what the caps allow, None when no
     cap applies; `stepped` says it counts one last step past a cost cap, which is checked before
     each step. `typical_usd` is the median of `runs` matching past runs, matched by `tier`: the
-    same scenario, or the same models and effort scaled by step budget. `high_usd` is their
-    90th percentile, or twice the median when `doubled` (under 10 runs). `capped` of those runs
-    hit a cap; a past monitor that stopped at its cap counts at this one's, since it would have
-    gone on. `excluded` matched but recorded no cost. `priced` is false when no profile of this
-    side has a price, so its cost is not counted."""
+    same scenario, or the same models and effort scaled by step budget; a score's past scores
+    of any scenario match as `any`. `high_usd` is their 90th percentile, or twice the median
+    when `doubled` (under 10 runs). `capped` of those runs hit a cap; a past monitor that
+    stopped at its cap counts at this one's, since it would have gone on. `excluded` matched
+    but recorded no cost. `priced` is false when no profile of this side has a price, so its
+    cost is not counted."""
 
     typical_usd: float | None = None
     high_usd: float | None = None
@@ -121,10 +122,12 @@ class RunCaps(_Out):
 
 
 class VariantCost(_Out):
-    """One run of one variant. `monitor` is None when the monitor is off; `steps` is the median
-    number of steps each agent took in past runs of the same scenario under the same step
-    caps. `replayed` is the steps each agent of a fork replays before it goes live: the
-    agents' figures count only the steps after them. `caps` are the caps the run would have.
+    """One run of one variant. `monitor` is None when the monitor is off, `score` when the run
+    is not scored; `score_profile` names the classifier of its checks, None when none fits, so
+    it costs nothing. `steps` is the median number of steps each agent took in past runs of the
+    same scenario under the same step caps. `replayed` is the steps each agent of a fork
+    replays before it goes live: the agents' figures count only the steps after them. `caps`
+    are the caps the run would have.
     `agent_profiles` names the profile of each agent that calls a model, by agent id, and
     `monitor_profiles` the profile each part of the monitor calls, by part: `sweep:<name>`,
     `review`, `judge`, `extract` and `channels`. `recorded_models` names, by agent id, the
@@ -135,6 +138,8 @@ class VariantCost(_Out):
     variant: str | None = None
     agents: CostFigures
     monitor: CostFigures | None = None
+    score: CostFigures | None = None
+    score_profile: str | None = None
     monitor_preset: Preset | None = None
     steps: dict[str, float] = Field(default_factory=dict)
     replayed: dict[str, int] = Field(default_factory=dict)
@@ -145,8 +150,8 @@ class VariantCost(_Out):
 
 
 class CostTotal(_Out):
-    """Every run together, agents and monitor: the typical figure, the high one (each run at
-    its high figure) and what the caps allow. None when a part of it is unknown."""
+    """Every run together, agents, monitor and score: the typical figure, the high one (each
+    run at its high figure) and what the caps allow. None when a part of it is unknown."""
 
     typical_usd: float | None = None
     high_usd: float | None = None
@@ -316,11 +321,13 @@ class Past:
 @dataclass(slots=True)
 class History:
     """The runs on record: the scenario runs an estimate can match, what each provider was
-    paid in every run, and each model's cached input share over the calls that reported it."""
+    paid in every run and each model's cached input share over the calls that reported it.
+    `scores` holds the scenario and cost of each completed score that called a model."""
 
     runs: list[Past] = field(default_factory=list)
     spend: dict[str, float] = field(default_factory=dict)
     shares: dict[str, float] = field(default_factory=dict)
+    scores: list[tuple[str, float]] = field(default_factory=list)
 
     def share(self, model: str, watch: bool = False) -> float:
         """The cached share of `model`'s input: what its past calls reported, else the one
@@ -334,7 +341,8 @@ class Plan:
     agent id and the resolved monitor, None when it is off. `done` is the steps each agent of a
     fork replays, which cost nothing; the monitor watches them all the same. `recorded` is the
     model of each agent of a fork that goes live on a recorded profile unlike this config's of
-    the same name, by agent id."""
+    the same name, by agent id. With `score` the run is scored after it seals by `classifier`,
+    None when none fits, its calls capped at `score_budget`."""
 
     scenario: Scenario
     profiles: Mapping[str, Profile]
@@ -342,6 +350,9 @@ class Plan:
     variant: str | None = None
     done: Mapping[str, int] = field(default_factory=dict)
     recorded: Mapping[str, str] = field(default_factory=dict)
+    score: bool = False
+    classifier: Profile | None = None
+    score_budget: float | None = None
 
 
 @dataclass(slots=True)
@@ -403,6 +414,8 @@ async def history(store: LocalEventStore) -> History:
     while page := await store.runs(limit=PAGE, before=before):
         before = page[-1].run_id
         for info in page:
+            if info.kind == "score" and info.status == "completed" and info.cost_usd:
+                out.scores.append((info.scenario, info.cost_usd))
             kept = rows.get(info.run_id)
             run = _Run.load(kept[1]) if kept is not None and kept[0] == info.head else None
             if run is None:
@@ -540,10 +553,11 @@ def plan(
     profile: str | None = None,
     preset: Preset | None = None,
     budget: BudgetOverride | None = None,
+    score: bool = False,
 ) -> Plan:
     """The plan of one run of `bundle` with these settings and caps, the monitor resolved as
-    `aims run` resolves it. Raises ProfileError, MonitorConfigError, TextError or
-    BudgetError."""
+    `aims run` resolves it, scored after it seals with `score`. Raises ProfileError,
+    MonitorConfigError, TextError or BudgetError."""
     scenario = budgets.apply(bundle.scenario, budget)
     profiles = {a.id: agent_profile(settings.models, a, profile) for a in scenario.agents}
     monitor = monitor_for(
@@ -555,7 +569,14 @@ def plan(
         preset=preset,
         budget=budget,
     )
-    return Plan(scenario, profiles, monitor, bundle.variant)
+    p = Plan(scenario, profiles, monitor, bundle.variant)
+    return _scored(p, settings, list(profiles.values())) if score else p
+
+
+def _scored(p: Plan, settings: Settings, agents: Sequence[Profile]) -> Plan:
+    """Plan `p` scored after it seals by the classifier a score of a run by `agents` calls."""
+    classifier = score_classifier(settings, agents)
+    return replace(p, score=True, classifier=classifier, score_budget=settings.score_budget_usd)
 
 
 def plan_fork(
@@ -565,18 +586,20 @@ def plan_fork(
     *,
     preset: Preset | None = None,
     budget: BudgetOverride | None = None,
+    score: bool = False,
 ) -> Plan:
     """The plan of `fork` of `origin`, its live profiles and monitor resolved as the fork
-    resolves them, `budget` laid over the origin's. Raises RunError, ProfileError,
-    MonitorConfigError, TextError or BudgetError."""
+    resolves them, `budget` laid over the origin's, scored after it seals with `score`. Raises
+    RunError, ProfileError, MonitorConfigError, TextError or BudgetError."""
     bundle = origin.full_bundle or origin.bundle
     merged = origin.fork_budget(budget)
     scenario = budgets.apply(bundle.scenario, merged)
+    agents = fork_agents(settings.models, origin, fork)
     monitor = monitor_for(
         settings.models,
         settings.prompts,
         bundle.scenario,
-        fork_agents(settings.models, origin, fork),
+        agents,
         layers=settings.monitor,
         preset=preset,
         budget=merged,
@@ -584,7 +607,8 @@ def plan_fork(
     done = {a.id: fork.at(a.id) for a in scenario.agents if not a.scripted}
     profiles = fork_profiles(settings.models, origin, fork)
     recorded = recorded_models(settings.models, origin, fork)
-    return Plan(scenario, profiles, monitor, bundle.variant, done, recorded)
+    p = Plan(scenario, profiles, monitor, bundle.variant, done, recorded)
+    return _scored(p, settings, agents) if score else p
 
 
 async def estimate_runs(
@@ -597,12 +621,16 @@ async def estimate_runs(
     samples: int = 1,
     budget: BudgetOverride | None = None,
     listing: Listing | None = None,
+    score: bool = False,
 ) -> Estimate:
-    """The estimate of `samples` runs of each bundle, one bundle per variant, under `budget`:
-    what `aims run`, `aims estimate`, `aims scenario check` and the UI's run launcher show.
-    `settings` are those `priced_runs` gave, with the list prices of `listing` laid, as the runs
-    get them."""
-    plans = [plan(settings, b, profile=profile, preset=preset, budget=budget) for b in bundles]
+    """The estimate of `samples` runs of each bundle, one bundle per variant, under `budget`,
+    each scored after it seals with `score`: what `aims run`, `aims estimate`, `aims scenario
+    check` and the UI's run launcher show. `settings` are those `priced_runs` gave, with the
+    list prices of `listing` laid, as the runs get them."""
+    plans = [
+        plan(settings, b, profile=profile, preset=preset, budget=budget, score=score)
+        for b in bundles
+    ]
     return estimate(
         found,
         plans,
@@ -621,12 +649,16 @@ async def priced_runs(
     preset: Preset | None = None,
     budget: BudgetOverride | None = None,
     lists: PriceLists | None = None,
+    score: bool = False,
 ) -> tuple[Settings, Listing]:
     """`settings` with list prices from `lists` laid on the profiles that name a key and set
     no price, and the listing they came from. The map is read only when a profile that runs of
-    `bundles` call needs it. Runs and their estimate both resolve their profiles from these.
-    Raises as `plan` does."""
-    plans = [plan(settings, b, profile=profile, preset=preset, budget=budget) for b in bundles]
+    `bundles` call needs it, their score's classifier too with `score`. Runs and their
+    estimate both resolve their profiles from these. Raises as `plan` does."""
+    plans = [
+        plan(settings, b, profile=profile, preset=preset, budget=budget, score=score)
+        for b in bundles
+    ]
     return await _priced(settings, plans, lists)
 
 
@@ -638,9 +670,10 @@ async def priced_fork(
     preset: Preset | None = None,
     budget: BudgetOverride | None = None,
     lists: PriceLists | None = None,
+    score: bool = False,
 ) -> tuple[Settings, Listing]:
     """`priced_runs` for forks like `fork` of `origin`. Raises as `plan_fork` does."""
-    p = plan_fork(settings, origin, fork, preset=preset, budget=budget)
+    p = plan_fork(settings, origin, fork, preset=preset, budget=budget, score=score)
     return await _priced(settings, [p], lists)
 
 
@@ -657,7 +690,9 @@ async def priced_review(
 async def _priced(
     settings: Settings, plans: Sequence[Plan], lists: PriceLists | None
 ) -> tuple[Settings, Listing]:
-    called = [q for p in plans for q in [*_model_agents(p), *_monitor_profiles(p.monitor)]]
+    called = [
+        q for p in plans for q in [*_model_agents(p), *_monitor_profiles(p.monitor), *_scorer(p)]
+    ]
     models, found = await priced(settings.models, called, lists)
     return replace(settings, models=models), found
 
@@ -672,12 +707,13 @@ async def estimate_fork(
     samples: int = 1,
     budget: BudgetOverride | None = None,
     listing: Listing | None = None,
+    score: bool = False,
 ) -> Estimate:
-    """The estimate of `samples` forks like `fork` of `origin`, `budget` over the origin's:
-    what `aims run --replay` and the UI's fork dialog show. `settings` and `listing` are those
-    `priced_fork` gave. Raises RunError, ProfileError, MonitorConfigError, TextError or
-    BudgetError."""
-    p = plan_fork(settings, origin, fork, preset=preset, budget=budget)
+    """The estimate of `samples` forks like `fork` of `origin`, `budget` over the origin's,
+    each scored after it seals with `score`: what `aims run --replay` and the UI's fork dialog
+    show. `settings` and `listing` are those `priced_fork` gave. Raises RunError, ProfileError,
+    MonitorConfigError, TextError or BudgetError."""
+    p = plan_fork(settings, origin, fork, preset=preset, budget=budget, score=score)
     return estimate(
         found,
         [p],
@@ -719,6 +755,8 @@ def estimate(
         sides = [(part.agents, shares[0])]
         if part.monitor is not None:
             sides.append((part.monitor, shares[1]))
+        if part.score is not None:
+            sides.append((part.score, {profile_provider(q): 1.0 for q in _scorer(p)}))
         for figures, by_provider in sides:
             if not figures.priced:
                 continue
@@ -736,6 +774,11 @@ def estimate(
                     high[name] += figures.high_usd * share * samples
         watched = _watch_profiles(p.monitor)
         acting = {prof.model for prof in _model_agents(p)}
+        for prof in _scorer(p):
+            if prof.price is None:
+                unpriced.add(prof.name)
+            else:
+                priced = True
         for prof in [*_model_agents(p), *watched]:
             if prof.price is None:
                 unpriced.add(prof.name)
@@ -832,7 +875,7 @@ def profile_provider(p: Profile) -> str:
 def _plan_providers(plans: Iterable[Plan]) -> set[str]:
     out: set[str] = set()
     for p in plans:
-        for prof in [*_model_agents(p), *_watch_profiles(p.monitor)]:
+        for prof in [*_model_agents(p), *_watch_profiles(p.monitor), *_scorer(p)]:
             out.add(profile_provider(prof))
     return out
 
@@ -895,6 +938,8 @@ def _part(found: History, p: Plan) -> tuple[VariantCost, tuple[dict[str, float],
         variant=p.variant,
         agents=agents,
         monitor=monitor,
+        score=_score_side(found, p),
+        score_profile=None if p.classifier is None else p.classifier.name,
         monitor_preset=preset,
         steps=steps,
         replayed=dict(p.done),
@@ -904,6 +949,34 @@ def _part(found: History, p: Plan) -> tuple[VariantCost, tuple[dict[str, float],
         recorded_models=dict(p.recorded),
     )
     return part, (agent_shares, watch_shares)
+
+
+def _score_side(found: History, p: Plan) -> CostFigures | None:
+    """What the score of a run of plan `p` costs: the median and high of the past scores of the
+    same scenario, else of any, none past its spend cap, which is its ceiling. None when the
+    run is not scored."""
+    if not p.score:
+        return None
+    if p.classifier is None:
+        return CostFigures(typical_usd=0.0, high_usd=0.0, ceiling_usd=0.0)
+    if p.classifier.price is None:
+        return CostFigures(priced=False)
+    ceiling = p.score_budget
+    same = [cost for scenario, cost in found.scores if scenario == p.scenario.name]
+    costs = same or [cost for _, cost in found.scores]
+    if not costs:
+        return CostFigures(ceiling_usd=ceiling)
+    typical, high, doubled = spread(costs)
+    if ceiling is not None:
+        typical, high = min(typical, ceiling), min(high, ceiling)
+    return CostFigures(
+        typical_usd=typical,
+        high_usd=high,
+        ceiling_usd=ceiling,
+        tier="scenario" if same else "any",
+        runs=len(costs),
+        doubled=doubled,
+    )
 
 
 def _caps(s: Scenario, monitor: float | None) -> RunCaps:
@@ -1157,9 +1230,14 @@ def _model_agents(p: Plan) -> list[Profile]:
 
 
 def _called(p: Plan) -> list[Profile]:
-    """The profiles whose prices the estimate of `p` counts: its agents' and those of the
-    monitor's sweeps, review and judge."""
-    return [*_model_agents(p), *_watch_profiles(p.monitor)]
+    """The profiles whose prices the estimate of `p` counts: its agents', its score's
+    classifier and those of the monitor's sweeps, review and judge."""
+    return [*_model_agents(p), *_watch_profiles(p.monitor), *_scorer(p)]
+
+
+def _scorer(p: Plan) -> list[Profile]:
+    """The classifier the score of a run of `p` calls, when it is scored and one fits."""
+    return [p.classifier] if p.score and p.classifier is not None else []
 
 
 def _watch_profiles(m: ResolvedMonitor | None) -> list[Profile]:
@@ -1245,6 +1323,8 @@ def describe(e: Estimate) -> list[str]:
             lines.append(indent + "Monitor: signals only, no model calls.")
         else:
             lines.append(indent + _side_line("Monitor", part.monitor))
+        if part.score is not None:
+            lines.append(indent + _score_line(part, part.score))
     lines.append(_total_line(e, count))
     if e.rates and any(_history(p) for p in e.parts):
         rates = ", ".join(
@@ -1331,12 +1411,36 @@ def _side_line(name: str, f: CostFigures) -> str:
     return " ".join(words)
 
 
+def _score_line(part: VariantCost, f: CostFigures) -> str:
+    if part.score_profile is None:
+        return "Score: no model fits its checks, so it costs nothing."
+    if not f.priced:
+        return f"Score: {part.score_profile} has no list price, so not counted."
+    words = [f"Score: checks on {part.score_profile}."]
+    if f.typical_usd is not None and f.high_usd is not None:
+        runs = "1 past score" if f.runs == 1 else f"{f.runs} past scores"
+        of = "of this scenario" if f.tier == "scenario" else "of any scenario"
+        words.append(f"Typically {usd(f.typical_usd)} (median of {runs} {of}).")
+        if f.doubled:
+            words.append(
+                f"1 in 10 may exceed {usd(f.high_usd)} (twice the median, under {MIN_RUNS})."
+            )
+        else:
+            words.append(f"1 in 10 exceeds {usd(f.high_usd)}.")
+    else:
+        words.append("No past scores to go by.")
+    if f.ceiling_usd is not None:
+        words.append(f"Stops at {usd(f.ceiling_usd)}, its spend cap.")
+    return " ".join(words)
+
+
 def _calls_priced(part: VariantCost) -> bool:
     """Whether a side of `part` that calls a model has a price, so its cost is counted."""
     watched = (
         part.monitor is not None and part.monitor_preset in MODEL_PRESETS and part.monitor.priced
     )
-    return part.agents.priced or watched
+    scored = part.score is not None and part.score_profile is not None and part.score.priced
+    return part.agents.priced or watched or scored
 
 
 def _total_line(e: Estimate, count: int) -> str:
@@ -1594,6 +1698,77 @@ def reviews_confirm(found: Sequence[ReviewEstimate]) -> str | None:
     if capped:
         return f"the caps allow {usd(figure)}, above confirm_above_usd {usd(limit)}"
     return f"the high estimate {usd(figure)} is above confirm_above_usd {usd(limit)}"
+
+
+# Scores
+
+
+class ScoreEstimate(_Out):
+    """What a score of run `run_id` costs at list prices. `classifier` is the model of its
+    checks, None when none runs, so it costs nothing; `calls` the most calls they make.
+    `typical_usd` is the median of `runs` past scores that called a model, of the same
+    scenario when `same_scenario`, else of any; `high_usd` their 90th percentile, or twice the
+    median when `doubled` (under 10 runs); neither passes the ceiling. `budget_usd` is the
+    score's spend cap: its checks stop there. `ceiling_usd` is the lower of that cap and what
+    the agents' words, the chunks and the output cap allow; None when the classifier has no
+    price, so `priced` is false and its cost is not counted. `total` holds the three figures.
+    `confirm` says the score starts only with a person's yes, as runs do. `listed` holds the
+    list price it counts at when its profile sets none. `unlisted` says why one that names a
+    key got none. `checks_off` says why the checks asked for do not run, None when they run or
+    none was asked for."""
+
+    run_id: str
+    classifier: str | None = None
+    checks_off: str | None = None
+    calls: int = 0
+    typical_usd: float | None = None
+    high_usd: float | None = None
+    ceiling_usd: float | None = None
+    budget_usd: float | None = None
+    priced: bool = True
+    runs: int = 0
+    same_scenario: bool = False
+    doubled: bool = False
+    total: CostTotal = Field(default_factory=CostTotal)
+    confirm_above_usd: float = CONFIRM_ABOVE_USD
+    confirm: bool = False
+    listed: list[ListedPrice] = Field(default_factory=list)
+    unlisted: dict[str, str] = Field(default_factory=dict)
+    lines: list[str] = Field(default_factory=list)
+
+
+def scores_confirm(e: ScoreEstimate) -> str | None:
+    """Why the score of `e` needs a person's yes before it starts, None when it does not: its
+    high figure, or without one its ceiling, is above `confirm_above_usd`. A priced classifier
+    with neither asks, since nothing bounds its cost."""
+    if e.classifier is None or not e.priced:
+        return None
+    t, limit = e.total, usd(e.confirm_above_usd)
+    if t.high_usd is not None:
+        if t.high_usd <= e.confirm_above_usd:
+            return None
+        return f"the high estimate {usd(t.high_usd)} is above confirm_above_usd {limit}"
+    if t.ceiling_usd is None:
+        return "no cap bounds the cost and no past scores give an estimate"
+    if t.ceiling_usd <= e.confirm_above_usd:
+        return None
+    return f"the caps allow {usd(t.ceiling_usd)}, above confirm_above_usd {limit}"
+
+
+def classifier_candidates(settings: Settings) -> list[str]:
+    """The profiles a score's awareness and answer checks may run on, first first: those of
+    `[monitor] extract`, then the sweep role's."""
+    names = list(merge(*settings.monitor).extract)
+    sweep = settings.models.roles.sweep
+    if sweep is not None and sweep not in names:
+        names.append(sweep)
+    return names
+
+
+def score_classifier(settings: Settings, agents: Sequence[Profile]) -> Profile | None:
+    """The classifier a score of a run by `agents` calls: the first of `classifier_candidates`
+    whose weights none of them runs. None when none fits."""
+    return extractor_for(settings.models, classifier_candidates(settings), agents)
 
 
 MODEL_PRESETS = ("standard", "research")

@@ -79,6 +79,7 @@ TYPES = {
     "score.unexplained",
     "score.answer",
     "score.awareness",
+    "score.degraded",
     "selftest.case",
 }
 RESERVED_TAGS: set[str] = set()

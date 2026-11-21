@@ -158,8 +158,9 @@ class ScoreJob(_Wire):
     `run_id`. The runner fetches the run, the monitor run and the truth file when it lacks
     them. `classifier` is the model of the `awareness` and `answer` checks (`Profile.snapshot`,
     env names only), None to skip both; `checks_off` says why none fits the checks asked for;
-    `texts` are the monitor texts it asks with. `added` is what a scenario file adds to the truth
-    file (`Added.dump`), read by the control plane."""
+    `texts` are the monitor texts it asks with. Their calls stop at `budget_usd`, None for no
+    cap. `added` is what a scenario file adds to the truth file (`Added.dump`), read by the
+    control plane."""
 
     kind: Literal["score"] = "score"
     run_id: str
@@ -171,6 +172,7 @@ class ScoreJob(_Wire):
     checks_off: str | None = None
     awareness: bool = True
     answer: bool = True
+    budget_usd: float | None = Field(default=None, ge=0)
     added: dict[str, JsonValue] | None = None
     texts: dict[str, JsonValue] = Field(default_factory=dict)
     options: JobOptions = Field(default_factory=JobOptions)

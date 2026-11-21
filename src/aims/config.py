@@ -11,6 +11,7 @@ A scenario overrides all of them for its agents. A missing file adds nothing; no
 
 `[credits]` maps a provider to the USD of credit it holds, for `aims spend` and the cost estimate.
 `[estimate] confirm_above_usd` is the estimate past which `aims run` asks before it starts.
+`[score] budget_usd` is the most one score spends on its classifier calls; its checks stop there.
 `[images] keep_days` is how many days a scenario image no container uses stays after its last use.
 `[audit] keep_days` is how many days the control plane keeps a row of its audit log; 0 keeps all.
 """
@@ -51,11 +52,13 @@ TABLES = frozenset(
         "monitor",
         "credits",
         "estimate",
+        "score",
         "images",
         "audit",
     }
 )
 CONFIRM_ABOVE_USD = 20.0
+SCORE_BUDGET_USD = 1.0
 AUDIT_KEEP_DAYS = 90.0
 # The most days a `keep_days` or `--keep-days` may say: about a century, so the date it reaches
 # back to stays one a timestamp holds.
@@ -120,6 +123,7 @@ class Settings:
     monitor: tuple[dict[str, Any], ...] = ()
     credits: dict[str, float] = field(default_factory=dict)
     confirm_above_usd: float = CONFIRM_ABOVE_USD
+    score_budget_usd: float = SCORE_BUDGET_USD
     image_keep_days: float = KEEP_DAYS
     audit_keep_days: float = AUDIT_KEEP_DAYS
 
@@ -156,6 +160,7 @@ def load_layers(found: Layers) -> Settings:
     monitor: list[dict[str, Any]] = []
     credits: dict[str, float] = {}
     confirm = CONFIRM_ABOVE_USD
+    score = SCORE_BUDGET_USD
     keep = KEEP_DAYS
     audit = AUDIT_KEEP_DAYS
     for path in files:
@@ -167,6 +172,7 @@ def load_layers(found: Layers) -> Settings:
         paths.extend(_scenario_paths(path, data.get("scenarios")))
         credits |= _credits(path, data.get("credits"))
         confirm = _confirm(path, data.get("estimate"), confirm)
+        score = _score(path, data.get("score"), score)
         keep = _keep_days(path, "images", data.get("images"), keep)
         audit = _keep_days(path, "audit", data.get("audit"), audit)
         if "monitor" in data:
@@ -190,6 +196,7 @@ def load_layers(found: Layers) -> Settings:
         monitor=tuple(monitor),
         credits=credits,
         confirm_above_usd=confirm,
+        score_budget_usd=score,
         image_keep_days=keep,
         audit_keep_days=audit,
     )
@@ -232,6 +239,18 @@ def _confirm(path: Path, table: object, current: float) -> float:
     value = table.get("confirm_above_usd", current)
     if not _amount(value):
         raise ConfigError(f"{path}: [estimate] confirm_above_usd must be a USD amount of 0 or more")
+    return float(value)
+
+
+def _score(path: Path, table: object, current: float) -> float:
+    """`[score] budget_usd`: the most one score spends on its classifier calls."""
+    if table is None:
+        return current
+    if not isinstance(table, dict) or set(table) - {"budget_usd"}:
+        raise ConfigError(f"{path}: [score] takes only `budget_usd`")
+    value = table.get("budget_usd", current)
+    if not _amount(value):
+        raise ConfigError(f"{path}: [score] budget_usd must be a USD amount of 0 or more")
     return float(value)
 
 
@@ -324,6 +343,9 @@ STARTER = """\
 
 # [estimate]
 # confirm_above_usd = 20
+
+# [score]
+# budget_usd = 1
 
 # [images]
 # keep_days = 30

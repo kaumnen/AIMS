@@ -1120,9 +1120,10 @@ def _echo_estimate(
     samples: int = 1,
     json_out: bool = False,
     budget: Any = None,
+    score: bool = True,
 ) -> None:
-    """Print the cost estimate of `samples` runs of each bundle under `budget`, from the runs
-    under `runs_dir`."""
+    """Print the cost estimate of `samples` runs of each bundle under `budget`, each scored
+    with `score`, from the runs under `runs_dir`."""
     import asyncio
 
     from aims.models import ProfileError
@@ -1135,7 +1136,13 @@ def _echo_estimate(
 
     async def main() -> Estimate:
         laid, listing = await priced_runs(
-            settings, bundles, profile=profile, preset=preset, budget=budget, lists=PriceLists()
+            settings,
+            bundles,
+            profile=profile,
+            preset=preset,
+            budget=budget,
+            lists=PriceLists(),
+            score=score,
         )
         return await estimate_runs(
             await load_history(runs_dir),
@@ -1146,6 +1153,7 @@ def _echo_estimate(
             samples=samples,
             budget=budget,
             listing=listing,
+            score=score,
         )
 
     try:
@@ -1582,6 +1590,7 @@ async def _run(**o: Any) -> int:
                     preset=o["monitor"],
                     budget=o["budget"],
                     lists=lists,
+                    score=o["score"],
                 )
                 models = settings.models
                 agents = fork_agents(models, origin, fork_base)
@@ -1593,6 +1602,7 @@ async def _run(**o: Any) -> int:
                     preset=o["monitor"],
                     budget=budget,
                     lists=lists,
+                    score=o["score"],
                 )
                 models = settings.models
                 agents = [agent_profile(models, a, o["profile"]) for a in bundle.scenario.agents]
@@ -1634,6 +1644,7 @@ async def _run(**o: Any) -> int:
                     samples=o["samples"],
                     budget=o["budget"],
                     listing=listing,
+                    score=o["score"],
                 )
             else:
                 cost = await estimate_runs(
@@ -1645,6 +1656,7 @@ async def _run(**o: Any) -> int:
                     samples=o["samples"] * o.get("runs", 1),
                     budget=budget,
                     listing=listing,
+                    score=o["score"],
                 )
         except (MonitorConfigError, ProfileError, TextError, RunError, KeyError) as e:
             err.print("[yellow]no cost estimate:[/]", shown(e))
@@ -1817,6 +1829,9 @@ async def _run(**o: Any) -> int:
                     scored = await score_sealed(store, settings, run_id, run_id=score_id)
                     if scored.checks_off is not None:
                         err.print(f"[yellow]score of run {run_id}:[/]", shown(scored.checks_off))
+                    if scored.stopped is not None:
+                        stopped = f"the checks stopped: {scored.stopped}"
+                        err.print(f"[yellow]score of run {run_id}:[/]", shown(stopped))
                 except ScoreError as e:
                     err.print(f"[yellow]run {run_id} was not scored:[/]", shown(e))
                 except Exception as e:
@@ -3638,6 +3653,19 @@ def score_cmd(
             callback=_scenario,
         ),
     ] = None,
+    budget_usd: Annotated[
+        float | None,
+        typer.Option(
+            "--budget-usd",
+            min=0,
+            callback=_finite,
+            help="Spend cap of the checks, in USD, instead of \\[score] budget_usd. They stop"
+            " there.",
+        ),
+    ] = None,
+    yes: Annotated[
+        bool, typer.Option("--yes", help="Start even when the cost estimate is above the limit.")
+    ] = False,
     config: ConfigOption = None,
     runs_dir: RunsDirOption = Path("runs"),
     json_out: Annotated[bool, typer.Option("--json", help="Print JSON.")] = False,
@@ -3648,10 +3676,12 @@ def score_cmd(
     it was tested, and whether each subject that took a plant told the operator and gave true
     reasons. Writes a run of kind score; the run itself never changes."""
     import asyncio
+    import sys
     import uuid
 
     from aims.events import LocalEventStore
     from aims.models.listprice import PriceLists
+    from aims.run.estimate import ask_why, scores_confirm
     from aims.run.runner import RunError
     from aims.run.scoring import (
         ScoreError,
@@ -3667,7 +3697,7 @@ def score_cmd(
     cost: ScoreEstimate | None = None
     score_id = str(uuid.uuid7())
 
-    async def main() -> ScoreResult:
+    async def main() -> ScoreResult | str:
         nonlocal cost
         async with await LocalEventStore.open(runs_dir) as store:
             try:
@@ -3690,10 +3720,18 @@ def score_cmd(
                         awareness=awareness,
                         answer=answer,
                         listing=listing,
+                        budget_usd=budget_usd,
                     )
                     if not json_out:
                         for line in cost.lines:
                             _echo(line, err=True)
+                    refused = ask_why(
+                        None if yes else scores_confirm(cost),
+                        tty=sys.stdin.isatty() and sys.stderr.isatty(),
+                        ask=lambda q: typer.confirm(q, default=False, err=True),
+                    )
+                    if refused is not None:
+                        return refused
                     return await score_sealed(
                         store,
                         laid,
@@ -3703,6 +3741,7 @@ def score_cmd(
                         answer=answer,
                         plants_from=plants_from,
                         run_id=score_id,
+                        budget_usd=budget_usd,
                     )
             except asyncio.CancelledError:
                 await _stopped(store, score_id, "score run")
@@ -3715,6 +3754,9 @@ def score_cmd(
     except (ScoreError, RunError, KeyError) as e:
         _echo(f"error: {e}", err=True)
         raise typer.Exit(EXIT_FAILED) from None
+    if isinstance(result, str):
+        _echo(f"error: {result}", err=True)
+        raise typer.Exit(EXIT_FAILED)
     if json_out:
         out = {
             "run_id": result.run_id,
@@ -3725,10 +3767,13 @@ def score_cmd(
             "answers": {a: x.model_dump(mode="json") for a, x in result.answers.items()},
             "plants": [t.model_dump(mode="json") for t in result.triggered],
             "checks_off": result.checks_off,
+            "stopped": result.stopped,
             "estimate": None if cost is None else cost.model_dump(mode="json"),
         }
         typer.echo(json_text(out))
         return
+    if result.stopped is not None:
+        _echo(f"warning: the checks stopped: {result.stopped}", err=True)
     typer.echo(f"score run {result.run_id}")
     if result.added:
         _echo(f"added rule plants: {', '.join(result.added)}")
@@ -3970,6 +4015,13 @@ def estimate_cmd(
     monitor: MonitorPresetOption = None,
     json_out: Annotated[bool, typer.Option("--json", help="Print JSON.")] = False,
     budget: BudgetOption = None,
+    score: Annotated[
+        bool,
+        typer.Option(
+            "--score/--no-score",
+            help="Count a score of each run, as aims run makes by default.",
+        ),
+    ] = True,
 ) -> None:
     """Estimate what runs of a scenario cost: what the caps allow, and the typical and high
     cost of past runs of the same scenario or models."""
@@ -4001,6 +4053,7 @@ def estimate_cmd(
         samples=samples,
         json_out=json_out,
         budget=caps,
+        score=score,
     )
 
 

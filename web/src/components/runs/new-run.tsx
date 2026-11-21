@@ -8,7 +8,7 @@ import { type ScenarioInfo, scenariosQuery } from "@/api/scenarios";
 import { seriesQuery } from "@/api/series";
 import { isProblem, whoami } from "@/api/session";
 import { BudgetSection } from "@/components/budget";
-import { EstimateLines } from "@/components/estimate-lines";
+import { Cost } from "@/components/estimate-lines";
 import { CountInput, DEFAULT, Field, Pick, problemText } from "@/components/form";
 import { up, useRunners } from "@/components/health";
 import { OversightNote } from "@/components/oversight-note";
@@ -108,6 +108,7 @@ function NewRunForm({ onDone, initial }: { onDone: () => void; initial: string }
     profile: profile || undefined,
     monitor: (monitor || undefined) as Preset | undefined,
     budget,
+    score,
   });
   const estimate = useQuery({ ...asking, enabled: scenario !== undefined });
   // A yes holds only for what it was given to; any change that moves the estimate asks again.
@@ -345,29 +346,13 @@ function NewRunForm({ onDone, initial }: { onDone: () => void; initial: string }
         </div>
       </div>
       <ProfileChecks uses={uses} stale={estimate.isPending || estimate.isPlaceholderData} />
-      <section aria-label="Cost estimate" aria-live="polite" className="flex flex-col gap-1">
-        <h3 className="font-medium">Cost</h3>
-        {estimate.isPending ? (
-          <p className="text-muted-foreground">Estimating</p>
-        ) : estimate.isError ? (
-          <p className="text-muted-foreground">
-            No estimate: {isProblem(estimate.error) ? problemText(estimate.error) : "it failed."}
-          </p>
-        ) : (
-          <EstimateLines lines={estimate.data.lines.slice(1)} stale={estimate.isPlaceholderData} />
-        )}
-        {why && (
-          <label className="flex items-start gap-2 font-medium">
-            <input
-              type="checkbox"
-              checked={confirm}
-              onChange={(e) => setConfirmed(e.target.checked ? asked : null)}
-              className="accent-foreground mt-0.5"
-            />
-            {why} Start anyway.
-          </label>
-        )}
-      </section>
+      <Cost
+        estimate={estimate}
+        skip={1}
+        why={why}
+        yes={confirm}
+        onYes={(yes) => setConfirmed(yes ? asked : null)}
+      />
       {problem && <p className="text-flag">{problem}</p>}
       <DialogFooter>
         <Button variant="ghost" size="sm" onClick={onDone}>

@@ -452,7 +452,7 @@ beforeEach(() => {
     if (path === "/api/runs" && q.get("kind") === "score") {
       return Response.json({ items: q.get("origin") === BEE5 ? scores : [], next: null });
     }
-    if (path === `/api/runs/${BEE5}/score/estimate`) return Response.json(ESTIMATE);
+    if (path === `/api/runs/${BEE5}/score/estimate`) return Response.json(scoreEstimate(q));
     if (path === `/api/runs/${BEE5}/score` && request.method === "POST") {
       posted.push({ path, body: (await request.json()) as Record<string, unknown> });
       scores = [score(QUEUED, { status: "queued", state: "queued", started_at: null })];
@@ -1383,6 +1383,13 @@ const ESTIMATE = {
   lines: ["Score: checks on beta, up to 2 calls. Cannot exceed $0.0118."],
 };
 
+// A spend cap past the $20 limit needs a yes, as the server decides it with no past scores.
+function scoreEstimate(q: URLSearchParams) {
+  const cap = Number(q.get("budget_usd") ?? 1);
+  const total = { typical_usd: null, high_usd: null, ceiling_usd: cap };
+  return { ...ESTIMATE, budget_usd: cap, total, confirm: cap > 20, confirm_above_usd: 20 };
+}
+
 const score = (runId: string, over: Partial<RunSummary> = {}): RunSummary =>
   run(runId, {
     kind: "score",
@@ -1680,14 +1687,63 @@ test("a score starts on the monitor the panel shows, after its estimate", async 
     "Review · standard",
   );
   fireEvent.click(form.getByRole("checkbox", { name: /said it thought it was tested/ }));
-  fireEvent.click(form.getByRole("button", { name: "Start score" }));
+  const start = form.getByRole("button", { name: "Start score" });
+  // it waits for the estimate of the checks asked for
+  await waitFor(() => expect(start.hasAttribute("disabled")).toBe(false));
+  fireEvent.click(start);
   await waitFor(() =>
     expect(router.state.location.search).toEqual({ tab: "score", score: QUEUED }),
   );
   expect(posted).toEqual([
-    { path: `/api/runs/${BEE5}/score`, body: { awareness: false, answer: true, monitor: REVIEW } },
+    {
+      path: `/api/runs/${BEE5}/score`,
+      body: { awareness: false, answer: true, confirm: false, budget_usd: null, monitor: REVIEW },
+    },
   ]);
   expect(await screen.findByText("Queued: waiting for a runner that scores.")).toBeTruthy();
+});
+
+test("a score past the limit starts only after its yes, with its spend cap", async () => {
+  withReview();
+  renderAt(`/runs/${BEE5}?tab=score`);
+  expect(await screen.findByText("Not scored yet.")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Score" }));
+  const form = within(screen.getByRole("region", { name: "New score" }));
+  const cap = form.getByRole("spinbutton", { name: "Spend cap of the checks, USD" });
+  fireEvent.change(cap, { target: { value: "50" } });
+  const yes = await form.findByRole("checkbox", {
+    name: "The caps allow $50.00, above the $20.00 limit. Start anyway.",
+  });
+  const start = form.getByRole("button", { name: "Start score" });
+  expect(start.hasAttribute("disabled")).toBe(true);
+  fireEvent.click(yes);
+  await waitFor(() => expect(start.hasAttribute("disabled")).toBe(false));
+  // a yes holds only for the estimate it was given to
+  fireEvent.change(cap, { target: { value: "60" } });
+  await waitFor(() => expect(start.hasAttribute("disabled")).toBe(true));
+  fireEvent.click(
+    await form.findByRole("checkbox", {
+      name: "The caps allow $60.00, above the $20.00 limit. Start anyway.",
+    }),
+  );
+  await waitFor(() => expect(start.hasAttribute("disabled")).toBe(false));
+  fireEvent.click(start);
+  await waitFor(() => expect(posted.length).toBe(1));
+  expect(posted[0]).toEqual({
+    path: `/api/runs/${BEE5}/score`,
+    body: { awareness: true, answer: true, confirm: true, budget_usd: 60, monitor: REVIEW },
+  });
+});
+
+test("a score whose checks stopped at its spend cap says so under its plants", async () => {
+  withScore();
+  const log = scoreLog(SCORE);
+  const reason = "the score spent $1.0000 of its $1";
+  const stop = { ...log[0]!, seq: 6, type: "score.degraded", data: { part: "budget", reason } };
+  log.splice(-1, 0, stop);
+  scoreEvents = { ...scoreEvents, [SCORE]: log };
+  renderAt(`/runs/${BEE5}?tab=score`);
+  expect(await screen.findByText(`The checks stopped: ${reason}.`)).toBeTruthy();
 });
 
 test("a review starts from the monitor panel after its estimate, and the panel shows it", async () => {

@@ -37,7 +37,7 @@ from aims.events import (
     ScoreUnit,
     ToolCall,
 )
-from aims.models import ModelClient
+from aims.models import Message, ModelClient, Prompt
 from aims.monitor.texts import resolve
 from aims.prompts import Prompts
 from aims.run import rates, scoring, truth
@@ -750,6 +750,84 @@ async def test_a_failing_classifier_leaves_the_score_whole(
     assert events[-1].data["status"] == "completed"
 
 
+async def test_the_checks_stop_at_the_score_s_spend_cap(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each check call gets the output its cap leaves room for. None starts once less than
+    MIN_OUTPUT fits. The stop is recorded and every agent keeps its unit."""
+    other = Draft(
+        ModelResponse(call_id="b0", attempt=1, status="completed", latency_ms=1, text="hi"), "b"
+    )
+    roles = {"a": "subject", "b": "subject"}
+    run_id = await sealed(store, [*await words(store, 3), other], roles=roles)
+    oracle(monkeypatch, [])
+    monkeypatch.setattr(scoring, "CHUNK_TOKENS", 1)
+    # each call writes 400 tokens at $2 per million: $0.0008
+    no = json.dumps({"finding": "no", "quote": "", "frames": []})
+    turn = say(no) | {"usage": {"prompt_tokens": 0, "completion_tokens": 400}}
+    script = Script(*[turn] * 10)
+    p = profile(name="cheap", model="cheap", price={"input": 0.0, "cached": 0.0, "output": 2.0})
+
+    def build(score_id: str) -> Classifier:
+        client = ModelClient(store, score_id, models(p), transport=script.transport(), env={})
+        return Classifier(profile=p, client=client, texts=TEXTS)
+
+    result = await score_run(store, run_id, classifier=build, budget_usd=0.0025)
+    # $0.0025 holds 1250 tokens, then 850; after two calls 0.0009 holds fewer than 512
+    assert [r["max_tokens"] for r in script.requests] == [1250, 850]
+    assert result.cost_usd == pytest.approx(0.0016)
+    assert result.stopped == "the score spent $0.0016 of its $0.0025"
+    assert set(result.awareness) == {"a"}
+    assert set(result.units) == {"a", "b"}
+    assert result.units["b"].eval_aware is None
+    (began,) = await store.events(result.run_id, types=["run.started"], limit=1)
+    assert cast(dict[str, Any], began.data["config"])["budget_usd"] == 0.0025
+    (stop,) = await store.events(result.run_id, types=["score.degraded"], limit=10)
+    assert stop.data == {"part": "budget", "reason": result.stopped}
+    events = await store.events(result.run_id, limit=100)
+    assert events[-1].data["status"] == "completed"
+    # a cap of 0 makes no call at all
+    script.requests.clear()
+    none = await score_run(store, run_id, classifier=build, budget_usd=0)
+    assert script.requests == []
+    assert none.stopped == "the score spent $0.0000 of its $0"
+    assert none.awareness == {}
+    # with no cap every call is made, with the profile's own output limit
+    free = await score_run(store, run_id, classifier=build)
+    assert free.stopped is None
+    assert len(script.requests) == 4
+    assert all("max_tokens" not in r for r in script.requests)
+    # under a roomy cap a profile with no output cap gets the planned output, so the cap holds
+    script.requests.clear()
+    roomy = await score_run(store, run_id, classifier=build, budget_usd=1.0)
+    assert roomy.stopped is None
+    assert [r["max_tokens"] for r in script.requests] == [scoring.PLANNED_OUTPUT] * 4
+
+
+def test_the_purse_keeps_a_lower_output_cap_and_holds_an_unpriced_call_by_its_cost() -> None:
+    prompt = Prompt(items=[Message(role="user", content="x")])
+    capped = profile(max_output_tokens=100)
+    purse = scoring.Purse(1.0)
+    assert purse.room(capped, prompt) is None
+    assert purse.stopped is None
+    # room for fewer than MIN_OUTPUT tokens still fits a profile capped lower than that, until
+    # it holds less than that cap
+    small = profile(max_output_tokens=100, price={"input": 0.0, "cached": 0.0, "output": 1.0})
+    purse = scoring.Purse(0.0002)
+    assert purse.room(small, prompt) is None
+    assert purse.stopped is None
+    purse.spent = 0.00011
+    assert purse.room(small, prompt) is None
+    assert purse.stopped == "the score spent $0.0001 of its $0.0002"
+    unpriced = profile(price=None)
+    purse = scoring.Purse(0.001)
+    assert purse.room(unpriced, prompt) is None
+    assert purse.stopped is None
+    purse.spent = 0.001
+    assert purse.room(unpriced, prompt) is None
+    assert purse.stopped == "the score spent $0.0010 of its $0.001"
+
+
 @pytest.mark.parametrize("cancels", [1, 2])
 async def test_a_cancelled_score_is_sealed_as_cancelled(
     store: LocalEventStore, monkeypatch: pytest.MonkeyPatch, cancels: int
@@ -977,7 +1055,18 @@ async def test_the_estimate_counts_the_calls_the_words_take_and_past_scores(
 
     await past("other", 0.5)
     e = await scoring.estimate_score(store, run_id, cheap, TEXTS, awareness=False)
-    assert (e.calls, e.runs, e.same_scenario, e.typical_usd) == (1, 1, False, 0.5)
+    assert (e.calls, e.runs, e.same_scenario) == (1, 1, False)
+    # a past score that cost more than this one can is counted at its ceiling
+    assert e.ceiling_usd is not None
+    assert e.ceiling_usd < 0.5
+    assert e.typical_usd == e.high_usd == e.ceiling_usd
+    # the spend cap lowers the ceiling and the past scores with it
+    capped = await scoring.estimate_score(
+        store, run_id, cheap, TEXTS, awareness=False, budget_usd=0.001
+    )
+    assert capped.ceiling_usd == capped.typical_usd == capped.high_usd == 0.001
+    assert capped.total.ceiling_usd == 0.001
+    assert "Stops at $0.0010, its spend cap." in capped.lines[0]
     await past("s", 0.01)
     await past("s", 0.04)
     e = await scoring.estimate_score(store, run_id, cheap, TEXTS)

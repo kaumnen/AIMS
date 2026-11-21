@@ -56,6 +56,7 @@ from aims.run.estimate import (
     guard,
     history,
     load_history,
+    needs_confirm,
     plan,
     project,
     project_run,
@@ -1286,6 +1287,112 @@ def test_providers_are_named_by_their_domain() -> None:
     assert provider(None, "local-model") == "local"
 
 
+# The score of each run
+
+
+async def scored(store: LocalEventStore, scenario: str, cost: float) -> None:
+    """A completed score of a run of `scenario` whose classifier cost `cost`."""
+    started = RunStarted(scenario=scenario, oversight="observe", agents=[], kind="score")
+    made = await store.create_run(started)
+    reply = ModelResponse(call_id="c", attempt=1, status="completed", latency_ms=1, cost_usd=cost)
+    await store.append(made, [Draft(reply), Draft(RunFinished(status="completed"))])
+
+
+@pytest.mark.anyio
+async def test_a_scored_run_counts_its_score_at_its_spend_cap(
+    tmp_path: Path, store: LocalEventStore
+) -> None:
+    settings, path = write(tmp_path)
+    bundle = load_scenario(path)
+    bare = await estimate_runs(History(), settings, [bundle], samples=2)
+    assert bare.parts[0].score is None
+    e = await estimate_runs(History(), settings, [bundle], samples=2, score=True)
+    part = e.parts[0]
+    # the sweep role classifies, as no extract profile is set
+    assert part.score_profile == "watcher"
+    assert part.score is not None
+    assert (part.score.ceiling_usd, part.score.typical_usd) == (1.0, None)
+    assert bare.total.ceiling_usd is not None
+    assert e.total.ceiling_usd == pytest.approx(bare.total.ceiling_usd + 2 * 1.0)
+    assert e.total.typical_usd is None
+    line = "  Score: checks on watcher. No past scores to go by. Stops at $1.00, its spend cap."
+    assert line in e.lines
+    assert "another" in {c.provider for c in e.credits}
+
+    # past scores of the scenario give the typical and high figures, each under the cap
+    await scored(store, "elsewhere", 0.5)
+    found = await history(store)
+    e = await estimate_runs(found, settings, [bundle], score=True)
+    assert e.parts[0].score is not None
+    assert (e.parts[0].score.tier, e.parts[0].score.typical_usd) == ("any", 0.5)
+    await scored(store, "s", 0.01)
+    await scored(store, "s", 0.04)
+    e = await estimate_runs(await history(store), settings, [bundle], score=True)
+    figures = e.parts[0].score
+    assert figures is not None
+    assert (figures.tier, figures.runs, figures.doubled) == ("scenario", 2, True)
+    assert figures.typical_usd == pytest.approx(0.02)
+    assert e.lines[3] == (
+        "Score: checks on watcher. Typically $0.0200 (median of 2 past scores of this"
+        " scenario). 1 in 10 may exceed $0.0400 (twice the median, under 10). Stops at $1.00, its"
+        " spend cap."
+    )
+    capped = replace(settings, score_budget_usd=0.25)
+    e = await estimate_runs(found, capped, [bundle], score=True)
+    assert e.parts[0].score is not None
+    assert e.parts[0].score.typical_usd == e.parts[0].score.ceiling_usd == 0.25
+
+
+@pytest.mark.anyio
+async def test_a_score_past_the_threshold_asks_though_the_agents_stay_under(
+    tmp_path: Path,
+) -> None:
+    config = CONFIG + "[estimate]\nconfirm_above_usd = 1.5\n"
+    settings, path = write(tmp_path, config=config)
+    bundle = load_scenario(path)
+    # the agents' caps allow $1.02, the score's $1 more
+    assert not (await estimate_runs(History(), settings, [bundle])).confirm
+    e = await estimate_runs(History(), settings, [bundle], score=True)
+    assert e.total.ceiling_usd == pytest.approx(10 * STEP + 1.0)
+    assert needs_confirm(e) == "the caps allow $2.02, above confirm_above_usd $1.50"
+
+
+@pytest.mark.anyio
+async def test_a_score_with_no_priced_classifier_counts_nothing(tmp_path: Path) -> None:
+    served = CONFIG.replace('sweep = "watcher"', 'sweep = "served"')
+    settings, path = write(tmp_path, config=served)
+    bundle = load_scenario(path)
+    e = await estimate_runs(History(), settings, [bundle], score=True)
+    assert e.parts[0].score is not None
+    assert not e.parts[0].score.priced
+    assert "Score: served has no list price, so not counted." in e.lines
+    assert "served" in e.unpriced
+    # a classifier on the agent's weights does not fit, so the score calls no model
+    same = CONFIG.replace('sweep = "watcher"', 'sweep = "agent"')
+    settings, path = write(tmp_path, config=same)
+    e = await estimate_runs(History(), settings, [load_scenario(path)], score=True)
+    assert e.parts[0].score_profile is None
+    assert e.parts[0].score is not None
+    assert e.parts[0].score.ceiling_usd == 0.0
+    assert "Score: no model fits its checks, so it costs nothing." in e.lines
+
+
+@pytest.mark.anyio
+async def test_a_fork_from_the_command_line_counts_its_score(tmp_path: Path) -> None:
+    settings, path = write(tmp_path)
+    bundle = load_scenario(path)
+    agent = settings.models.get("agent")
+    origin = Origin(
+        run_id="origin", bundle=bundle, schedules={"a": [(None, agent)]}, texts={}, steps={"a": 9}
+    )
+    fork = fork_of(origin, 5)
+    assert (await estimate_fork(History(), settings, origin, fork)).parts[0].score is None
+    e = await estimate_fork(History(), settings, origin, fork, score=True)
+    assert e.parts[0].score is not None
+    assert e.parts[0].score.ceiling_usd == 1.0
+    assert e.parts[0].score_profile == "watcher"
+
+
 # The guard
 
 
@@ -1350,9 +1457,15 @@ def test_aims_estimate_and_spend_print_the_same_figures(tmp_path: Path) -> None:
     out = runner.invoke(app, ["estimate", str(path), *config])
     assert out.exit_code == 0, out.output
     found = asyncio.run(load_history(tmp_path / "runs"))
-    expected = asyncio.run(estimate_runs(found, settings, [load_scenario(path)]))
+    expected = asyncio.run(estimate_runs(found, settings, [load_scenario(path)], score=True))
     assert out.stdout.splitlines() == expected.lines
     assert expected.lines[1].startswith("Agents: typically $0.30 (median of 1 run).")
+    # like aims run, it counts a score of each run unless told not to
+    assert expected.lines[3].startswith("Score: checks on watcher. No past scores to go by.")
+    bare = runner.invoke(app, ["estimate", str(path), *config, "--no-score"])
+    unscored = asyncio.run(estimate_runs(found, settings, [load_scenario(path)]))
+    assert bare.stdout.splitlines() == unscored.lines
+    assert not any(line.startswith("Score:") for line in unscored.lines)
     many = runner.invoke(app, ["estimate", str(path), *config, "--variants", "all", "--json"])
     assert many.exit_code == 0, many.output
     data = json.loads(many.stdout)
@@ -1417,8 +1530,15 @@ async def test_the_api_estimates_a_scenario_and_shows_spend(cp: CP) -> None:
         r = await c.get("/api/scenarios/project/control/estimate", params={"samples": 2})
         assert r.status_code == 200, r.text
         data = r.json()
-        expected = await estimate_runs(await history(cp.state.store), settings, [bundle], samples=2)
+        found = await history(cp.state.store)
+        expected = await estimate_runs(found, settings, [bundle], samples=2, score=True)
         assert data == expected.model_dump(mode="json")
+        r = await c.get(
+            "/api/scenarios/project/control/estimate", params={"samples": 2, "score": False}
+        )
+        unscored = await estimate_runs(found, settings, [bundle], samples=2)
+        assert r.json() == unscored.model_dump(mode="json")
+        assert unscored.parts[0].score is None
         assert data["parts"][0]["agents"]["typical_usd"] == pytest.approx(0.2)
         assert data["parts"][0]["steps"] == {"a": 3.0}
         both = await c.get(

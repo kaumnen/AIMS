@@ -159,6 +159,14 @@ def merged(settings: Settings) -> str:
     estimate.add("confirm_above_usd", _value(settings.confirm_above_usd, confirm))
     doc.add("estimate", estimate)
 
+    cap = BUILTIN
+    for source, data in files:
+        if "budget_usd" in data.get("score", {}):
+            cap = source
+    score = tomlkit.table()
+    score.add("budget_usd", _value(settings.score_budget_usd, cap))
+    doc.add("score", score)
+
     keep = BUILTIN
     for source, data in files:
         if "keep_days" in data.get("images", {}):

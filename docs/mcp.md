@@ -93,7 +93,9 @@ Some things stay with the CLI and the UI: deleting runs, tokens, config, models,
 
 ## Costs
 
-`run`, `fork` and `monitor` first fetch the estimate. When it needs a yes, as `aims run` would ask, the tool asks the person through the client with the estimate in words. A client that cannot ask gets the estimate as an error. Nothing starts. `confirm_above_usd` in `aims.toml` sets the threshold.
+`run`, `fork`, `monitor` and `score` first fetch the estimate. When it needs a yes, as `aims run` would ask, the tool asks the person through the client with the estimate in words. A client that cannot ask gets the estimate as an error. Nothing starts. `confirm_above_usd` under `[estimate]` in a config file sets the threshold.
+
+A run's estimate counts the score made after it seals, so that score asks nothing more. `score` takes `budget_usd`, the most its checks spend. `budget_usd` under `[score]` sets the default.
 
 > [!NOTE]
 > The question goes out as an MCP elicitation. The client decides how to show it. Use a client that shows elicitations to you.

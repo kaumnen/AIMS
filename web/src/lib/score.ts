@@ -27,7 +27,8 @@ export interface Score {
   // The monitor run whose flags it scored; null for the run's own.
   monitor: string | null;
   added: string[];
-  // Why the awareness and answer checks asked for did not run; null when they ran or were off.
+  // Why the awareness and answer checks asked for did not run or stopped early; null when they
+  // ran through or were off.
   checksOff: string | null;
   units: UnitRow[];
   plants: PlantRow[];
@@ -87,6 +88,9 @@ export function readScore(events: readonly Event[]): Score {
         break;
       case "score.unexplained":
         out.unexplained.push({ ...(d as unknown as Unexplained), agent: e.agent_id });
+        break;
+      case "score.degraded":
+        out.checksOff = `The checks stopped: ${String(d["reason"])}.`;
         break;
       case "run.finished":
         if (d["status"] === "failed") out.failed = String(d["reason"] ?? "failed");

@@ -284,6 +284,23 @@ async def test_a_key_only_the_extractor_names_is_laid(tmp_path: Path) -> None:
     assert e.unpriced == []
 
 
+async def test_a_scored_run_lays_the_list_price_of_its_classifier(tmp_path: Path) -> None:
+    """Under a monitor that calls no model, the score's classifier is the only profile that
+    names the key: a scored run lays its list price, so the score counts its calls."""
+    config = CONFIG + EXTRACT + '\n[monitor]\nextract = ["extract-only"]\n'
+    settings, path = write(tmp_path, config=config)
+    bundle = load_scenario(path)
+    source = Source()
+    plain, _ = await priced_runs(settings, [bundle], lists=source.lists(tmp_path))
+    assert plain.models.get("extract-only").price is None
+    laid, listing = await priced_runs(settings, [bundle], lists=source.lists(tmp_path), score=True)
+    assert laid.models.get("extract-only").price == Price(input=1.0, cached=1.0, output=2.0)
+    e = await estimate_runs(History(), laid, [bundle], listing=listing, score=True)
+    assert e.parts[0].score_profile == "extract-only"
+    assert [x.profile for x in e.listed] == ["extract-only"]
+    assert e.unpriced == []
+
+
 async def test_a_profile_with_its_own_price_keeps_it_and_nothing_is_read(tmp_path: Path) -> None:
     source = Source()
     _, e = await run(tmp_path, source.lists(tmp_path), profile="both")
@@ -604,7 +621,8 @@ def test_aims_run_lays_the_list_price_before_it_estimates(tmp_path: Path) -> Non
     asyncio.run(lists.get())
     _, path = write(tmp_path, config=CONFIG_LISTED + "\n[estimate]\nconfirm_above_usd = 0.01\n")
     config = ["--config", str(tmp_path / "aims.toml"), "--runs-dir", str(tmp_path / "runs")]
-    out = CliRunner().invoke(app, ["run", str(path), *config, "--profile", "listed", "--json"])
+    args = ["run", str(path), *config, "--profile", "listed", "--json", "--no-score"]
+    out = CliRunner().invoke(app, args)
     # the caps bound the run at the list price, past the threshold, so it asks and stops
     assert out.exit_code != 0
     assert "the caps allow $1.02, above confirm_above_usd" in out.output

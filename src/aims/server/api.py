@@ -836,13 +836,13 @@ class StartRun(BaseModel):
     what they say, else `standard`. `variant` applies a named variant of the scenario. When the
     estimate is above `confirm_above_usd`, or nothing bounds the cost, the runs start only with
     `confirm`, like `aims run --yes`. `score` scores each run against its truth file once the
-    file arrives, as `aims run --score` does. `oversight` replaces the scenario's: what the
-    monitor may do in these runs. `budget` changes the scenario's caps, as `aims run --budget`
-    does: in each set of caps a field set to null lifts that cap, a field left out keeps it.
-    `series` makes `runs` runs of that series, one after another, as `aims run --series --runs`
-    does: each starts from the folders and canaries the one before it left once that one
-    completed, and the first goes on after the series' last completed run; with `restart` it
-    starts fresh from the scenario's own folders, at the series' next free index."""
+    file arrives, as `aims run --score` does. The estimate counts it. `oversight` replaces the
+    scenario's: what the monitor may do in these runs. `budget` changes the scenario's caps, as
+    `aims run --budget` does: in each set of caps a field set to null lifts that cap, a field
+    left out keeps it. `series` makes `runs` runs of that series, one after another, as
+    `aims run --series --runs` does: each starts from the folders and canaries the one before it
+    left once that one completed. The first goes on after the series' last completed run; with
+    `restart` it starts fresh from the scenario's own folders, at the series' next free index."""
 
     scenario: ScenarioRef
     variant: Utf8 | None = None
@@ -850,7 +850,7 @@ class StartRun(BaseModel):
     runs: int = Field(default=1, ge=1, le=100)
     restart: bool = False
     confirm: bool = False
-    score: bool = False
+    score: bool = True
     oversight: Oversight | None = None
     budget: BudgetOverride | None = None
     samples: int = Field(default=1, ge=1, le=100)
@@ -1059,6 +1059,7 @@ async def start_runs(
             preset=body.monitor,
             budget=body.budget,
             lists=state.prices,
+            score=body.score,
         )
     except BudgetError as e:
         raise ProblemException(422, "Invalid budget", str(e), code="budget") from None
@@ -1103,6 +1104,7 @@ async def start_runs(
                     samples=body.samples * body.runs,
                     budget=body.budget,
                     listing=listing,
+                    score=body.score,
                 )
             except ProfileError, MonitorConfigError, TextError:
                 cost = None

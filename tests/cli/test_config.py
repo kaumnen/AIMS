@@ -157,6 +157,9 @@ def test_keep_days_is_finite_and_at_most_a_century(tmp_path: Path, table: str) -
         ("[credits]\nmeta = inf\n", r"\[credits\] maps each provider to a USD amount"),
         ("[credits]\nmeta = nan\n", r"\[credits\] maps each provider to a USD amount"),
         ("[estimate]\nconfirm_above_usd = inf\n", r"\[estimate\] confirm_above_usd must be"),
+        ("[score]\nbudget_usd = inf\n", r"\[score\] budget_usd must be a USD amount"),
+        ("[score]\nbudget_usd = -1\n", r"\[score\] budget_usd must be a USD amount"),
+        ("[score]\nother = 1\n", r"\[score\] takes only `budget_usd`"),
     ],
 )
 def test_an_amount_is_finite(tmp_path: Path, text: str, problem: str) -> None:
@@ -250,7 +253,7 @@ def test_merged_settings_name_the_source_of_each_value(tmp_path: Path) -> None:
     project.write_text(
         '[profiles."theirs"]\nextends = "mine"\nmax_output_tokens = 99\n'
         '[roles]\nagent = "theirs"\n[monitor]\npreset = "signals"\n'
-        "[credits]\nother = 5\n[estimate]\nconfirm_above_usd = 3\n"
+        "[credits]\nother = 5\n[estimate]\nconfirm_above_usd = 3\n[score]\nbudget_usd = 2.5\n"
         '[scenarios]\npaths = ["more"]\n'
     )
     settings = load(project, {"AIMS_CONFIG_DIR": str(user)})
@@ -284,6 +287,8 @@ def test_merged_settings_name_the_source_of_each_value(tmp_path: Path) -> None:
         "other = 5.0  # this project",
     ]
     assert _section(text, "[estimate]") == ["confirm_above_usd = 3.0  # this project"]
+    assert settings.score_budget_usd == 2.5
+    assert _section(text, "[score]") == ["budget_usd = 2.5  # this project"]
     assert _section(text, "[images]") == ["keep_days = 7.0  # this machine"]
     assert _section(text, "[audit]") == ["keep_days = 365.0  # this machine"]
     assert _section(text, "[scenarios]") == [

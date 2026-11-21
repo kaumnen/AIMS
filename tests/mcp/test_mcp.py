@@ -14,18 +14,21 @@ import pytest
 from cp import CP, control_plane
 from mcp import Client, StdioServerParameters
 from mcp import types as mt
-from test_monitor_api import MonitorRunner, call, flagged, live, pushed, seal
-from test_scoring import took
-from test_server import FakeRunner, push_forged
+from test_monitor_api import MonitorRunner, call, flagged, live, pushed, seal, started
+from test_score_api import ScoreRunner
+from test_scoring import took, words
+from test_server import MODEL_KEYS, FakeRunner, push_forged, ship
 from typer.testing import CliRunner
 
 from aims.cli import app
-from aims.events import LocalEventStore
+from aims.events import Draft, LocalEventStore, RunFinished
+from aims.mcp import server as mcp_server
 from aims.mcp.client import Api
 from aims.mcp.server import build
 from aims.report import texts as report_texts
+from aims.run import truth
 from aims.server import api as routes
-from aims.wire import Ack, CommandMessage
+from aims.wire import Ack, CommandMessage, OfferMessage, ScoreJob
 
 pytestmark = pytest.mark.anyio
 
@@ -148,6 +151,9 @@ async def test_reads_come_alone_and_actions_only_with_act(cp: CP) -> None:
         # the person's answer is the server's to get, never the model's to give
         assert "answer" not in run.input_schema["properties"]
         assert "confirm" not in run.input_schema["properties"]
+        score = next(t for t in tools if t.name == "score")
+        assert {"confirmed", "confirm"}.isdisjoint(score.input_schema["properties"])
+        assert score.input_schema["properties"]["answer"]["default"] is True
         control = next(t for t in tools if t.name == "control")
         assert control.input_schema["properties"]["action"]["enum"] == [
             "pause",
@@ -365,6 +371,146 @@ async def test_resume_leaves_a_monitors_pause_to_the_person(
         assert (said["action"], said["state"]) == ("resume", "failed")
         assert said["outcome"] == f"failed: {refused}"
     await seal(local, run_id, task)
+
+
+# A classifier on other weights than the agent's, priced so a score of a run with words could
+# pass $100: the score's spend cap bounds it.
+CLASSIFIER = """
+[profiles.classify]
+extends = "scripted"
+weights = "w-classify"
+api_key_env = "MODEL_API_KEY"
+max_output_tokens = 100000
+
+[profiles.classify.price]
+input = 1000.0
+cached = 100.0
+output = 1000.0
+
+[monitor]
+extract = ["classify"]
+"""
+RECORD: dict[str, Any] = {"roles": {"a": "subject"}, "plants": {"p1": {}}, "variant": None}
+
+
+@pytest.fixture
+async def scorer(cp: CP) -> AsyncIterator[FakeRunner]:
+    cp.project.write_text(cp.project.read_text() + CLASSIFIER)
+    runner = ScoreRunner(cp, "scorer", keys=MODEL_KEYS)
+    await runner.connect()
+    yield runner
+    await runner.close()
+
+
+async def with_words(
+    cp: CP, local: LocalEventStore, runner: FakeRunner, run_id: str | None = None
+) -> str:
+    """A sealed run of the control scenario whose agent said three things, with a truth file,
+    shipped by `runner`."""
+    first, blobs = started(cp)
+    first = first.model_copy(update={"truth": truth.digest(RECORD)})
+    run_id = await local.create_run(first, blobs=blobs, run_id=run_id)
+    truth.write(local.root / run_id, RECORD)
+    await local.append(run_id, [*await words(local, 3), Draft(RunFinished(status="completed"))])
+    await ship(local, runner.client, run_id)
+    return run_id
+
+
+async def score_jobs(cp: CP) -> list[ScoreJob]:
+    rows = await cp.state.db.jobs_page(before=None, limit=50, kind="score")
+    return [ScoreJob.model_validate(j.payload) for j in rows]
+
+
+async def test_a_costly_score_starts_only_after_the_persons_yes(
+    cp: CP, local: LocalEventStore, scorer: FakeRunner
+) -> None:
+    run_id = await with_words(cp, local, scorer)
+    costly = {"run_id": run_id, "budget_usd": 50}
+    no = Person(NO)
+    async with client(cp, cp.operator, act=True, person=no) as c:
+        found = data(await c.call_tool("score", costly))
+    assert found == {"started": False, "reason": "the person did not confirm the cost"}
+    (question,) = no.asked
+    assert question == (
+        "Score: checks on classify, up to 1 call. No past scores to go by. Stops at $50.00, its"
+        " spend cap.\nThe caps allow $50.00, above confirm_above_usd $20.00. Start anyway?"
+    )
+    assert await score_jobs(cp) == []
+
+    yes = Person(YES)
+    async with client(cp, cp.operator, act=True, person=yes) as c:
+        found = data(await c.call_tool("score", costly))
+        # under the config's spend cap of $1 nothing asks
+        cheap = data(await c.call_tool("score", {"run_id": run_id}))
+    assert yes.asked == no.asked
+    assert found["started"]
+    assert cheap["started"]
+    jobs = {j.run_id: j for j in await score_jobs(cp)}
+    (asked,) = found["run_ids"]
+    (unasked,) = cheap["run_ids"]
+    assert (jobs[asked].budget_usd, jobs[unasked].budget_usd) == (50, 1.0)
+    profile = jobs[asked].profile()
+    assert profile is not None
+    assert profile.name == "classify"
+
+
+async def test_a_client_that_cannot_ask_starts_no_costly_score(
+    cp: CP, local: LocalEventStore, scorer: FakeRunner
+) -> None:
+    run_id = await with_words(cp, local, scorer)
+    async with client(cp, cp.operator, act=True) as c:
+        said = error(await c.call_tool("score", {"run_id": run_id, "budget_usd": 50}))
+    assert said.startswith("Score: checks on classify")
+    assert "This MCP client cannot ask the person, so nothing started." in said
+    assert await score_jobs(cp) == []
+
+
+async def test_a_score_whose_cost_changed_since_its_estimate_does_not_start(
+    cp: CP, local: LocalEventStore, scorer: FakeRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = await with_words(cp, local, scorer)
+    # the estimate the tool read needed no yes; the control plane decides again as it starts
+    monkeypatch.setattr(mcp_server, "why_confirm", lambda found, kind="run": None)
+    async with client(cp, cp.operator, act=True, person=Person(YES)) as c:
+        said = error(await c.call_tool("score", {"run_id": run_id, "budget_usd": 50}))
+    assert said.startswith("409 Confirm the cost: the caps allow $50.00")
+    assert "The cost changed since the estimate. Call the tool again to see it." in said
+    assert await score_jobs(cp) == []
+
+
+async def test_a_run_counts_its_score_so_the_score_after_it_asks_nothing(
+    cp: CP, local: LocalEventStore, scorer: FakeRunner
+) -> None:
+    person = Person(NO)
+    async with client(cp, cp.operator, act=True, person=person) as c:
+        body = {"scenario": "project/control", "monitor": "signals"}
+        cost = data(await c.call_tool("estimate", body))
+        bare = data(await c.call_tool("estimate", {**body, "score": False}))
+        found = data(await c.call_tool("run", body))
+        costly = data(await c.call_tool("run", {**body, "samples": COSTLY}))
+    # the run's estimate counts its score at the score's spend cap
+    assert cost["parts"][0]["score"]["ceiling_usd"] == 1.0
+    assert bare["parts"][0]["score"] is None
+    assert cost["total"]["ceiling_usd"] == pytest.approx(bare["total"]["ceiling_usd"] + 1.0)
+    line = "Score: checks on classify. No past scores to go by. Stops at $1.00, its spend cap."
+    assert line in cost["lines"]
+    assert costly == {"started": False, "reason": "the person did not confirm the cost"}
+    (question,) = person.asked
+    assert f"\n  {line}\n" in question
+    (run_id,) = found["run_ids"]
+    row = await cp.state.db.job(run_id)
+    assert row is not None
+    assert row.payload["options"]["score"] is True
+    # the runner runs it; its truth file reaches the control plane as it ships
+    offer = await scorer.next(OfferMessage)
+    assert offer.run_id == run_id
+    assert await scorer.client.claim(run_id) is not None
+    await with_words(cp, local, scorer, run_id=run_id)
+    # the control plane queues the score the run's estimate counted, with no question
+    (job,) = await score_jobs(cp)
+    assert (job.origin, job.awareness, job.answer, job.budget_usd) == (run_id, True, True, 1.0)
+    assert job.classifier is not None
+    assert len(person.asked) == 1
 
 
 def test_the_command_says_how_to_add_the_extra(monkeypatch: pytest.MonkeyPatch) -> None:

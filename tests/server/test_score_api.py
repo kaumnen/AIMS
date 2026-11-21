@@ -13,6 +13,7 @@ import pytest
 from cp import CP, control_plane
 from test_cli_monitor import job_until, node, until
 from test_monitor_api import call, claim, flag, started
+from test_scoring import words
 from test_server import MODEL_KEYS, FakeRunner, ship, sse
 
 from aims.events import Draft, LocalEventStore, RunFinished, RunInfo, RunStarted
@@ -152,6 +153,67 @@ async def test_a_score_job_queues_for_runners_that_take_it(
             assert aware.keys() == ["MODEL_API_KEY=http://model.invalid/v1"]
         finally:
             await scorer.close()
+
+
+async def spoken(cp: CP, local: LocalEventStore, runner: FakeRunner) -> str:
+    """A sealed run whose agent said three things, with a truth file, shipped by `runner`."""
+    first, blobs = started(cp)
+    first = first.model_copy(update={"truth": truth.digest(RECORD)})
+    run_id = await local.create_run(first, blobs=blobs)
+    truth.write(local.root / run_id, RECORD)
+    await local.append(run_id, [*await words(local, 3), Draft(RunFinished(status="completed"))])
+    await ship(local, runner.client, run_id)
+    return run_id
+
+
+async def test_a_score_past_the_threshold_starts_only_with_confirm(
+    cp: CP, local: LocalEventStore, fake: FakeRunner
+) -> None:
+    # a classifier whose output cap could pass $100 on this run: the spend cap bounds it
+    costly = 'weights = "w-classify"\nmax_output_tokens = 100000\n'
+    costly += "price = { input = 1000.0, cached = 100.0, output = 1000.0 }\n"
+    cp.project.write_text(cp.project.read_text().replace('weights = "w-classify"\n', costly))
+    origin = await spoken(cp, local, fake)
+    blank = await planted(cp, local, fake, record=None)
+    url = f"/api/runs/{origin}/score"
+    scorer = ScoreRunner(cp, "scorer", keys=MODEL_KEYS)
+    await scorer.connect()
+    try:
+        async with cp.client(cp.operator) as c:
+            # the run is checked before the cost
+            r = await c.post(f"/api/runs/{blank}/score", json={"budget_usd": 50})
+            assert (r.status_code, r.json()["code"]) == (409, "truth")
+            e = (await c.get(f"{url}/estimate", params={"budget_usd": 50})).json()
+            assert (e["budget_usd"], e["ceiling_usd"], e["confirm"]) == (50, 50, True)
+            assert e["confirm_above_usd"] == 20
+            assert e["total"] == {"typical_usd": None, "high_usd": None, "ceiling_usd": 50}
+            r = await c.post(url, json={"budget_usd": 50})
+            assert (r.status_code, r.json()["code"]) == (409, "confirm")
+            assert r.json()["detail"] == (
+                "the caps allow $50.00, above confirm_above_usd $20.00; set confirm to start anyway"
+            )
+            assert await cp.state.db.jobs() == []
+            r = await c.post(url, json={"budget_usd": 50, "confirm": True})
+            assert r.status_code == 202, r.text
+            # under the config's cap of $1 it starts with no confirm
+            e = (await c.get(f"{url}/estimate")).json()
+            assert (e["budget_usd"], e["ceiling_usd"], e["confirm"]) == (1.0, 1.0, False)
+            r = await c.post(url, json={})
+            assert r.status_code == 202, r.text
+            # a cap the config sets counts the same
+            cp.project.write_text(cp.project.read_text() + "\n[score]\nbudget_usd = 30\n")
+            r = await c.post(url, json={})
+            assert (r.status_code, r.json()["code"]) == (409, "confirm")
+            r = await c.post(url, json={"budget_usd": -1, "confirm": True})
+            assert r.status_code == 422
+            # a run with no words makes no call, so its score costs nothing
+            quiet = await planted(cp, local, fake)
+            e = (await c.get(f"/api/runs/{quiet}/score/estimate", params={"budget_usd": 50})).json()
+            assert (e["calls"], e["ceiling_usd"], e["confirm"]) == (0, 0.0, False)
+    finally:
+        await scorer.close()
+    jobs = [ScoreJob.model_validate(j.payload) for j in await cp.state.db.jobs()]
+    assert sorted(j.budget_usd or 0 for j in jobs) == [1.0, 50]
 
 
 async def test_a_runner_scores_a_run_another_store_holds(

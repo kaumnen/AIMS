@@ -17,6 +17,7 @@ export const scoreTypes = [
   "score.unit",
   "score.answer",
   "score.awareness",
+  "score.degraded",
   "score.unexplained",
   "run.finished",
 ];
@@ -71,12 +72,21 @@ export function labelsQuery(runId: string) {
   });
 }
 
-export function scoreEstimateQuery(runId: string, awareness: boolean, answer: boolean) {
+// `budget` replaces the config's spend cap of the checks.
+export function scoreEstimateQuery(
+  runId: string,
+  awareness: boolean,
+  answer: boolean,
+  budget?: number,
+) {
   return queryOptions({
-    queryKey: ["runs", "score-estimate", runId, awareness, answer] as const,
+    queryKey: ["runs", "score-estimate", runId, awareness, answer, budget] as const,
     queryFn: async ({ signal }) => {
       const { data, error } = await client.GET("/api/runs/{run_id}/score/estimate", {
-        params: { ...path(runId), query: { awareness, answer } },
+        params: {
+          ...path(runId),
+          query: { awareness, answer, ...(budget === undefined ? {} : { budget_usd: budget }) },
+        },
         signal,
       });
       if (error) throw error;

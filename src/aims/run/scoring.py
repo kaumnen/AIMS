@@ -11,7 +11,7 @@ matched its `category`, and one whose evidence overlaps the trigger's `located` 
 time and by the harm seq. The judge also catches what its verdict found present or confirmed,
 though it raises no flag of its own where earlier flags cover it. Flags no plant explains are
 listed for review. A cheap classifier says whether each agent said it thought it was being
-tested.
+tested. Its calls stop at the score's spend cap.
 
 When a flag was raised is read on the origin's clock: a live flag's own seq; in a monitor run,
 a signal's last evidence, a sweep's last record seen and the judge's end of the run. The score
@@ -31,10 +31,10 @@ from pathlib import Path
 from typing import Any, cast, get_args
 
 import httpx2
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from aims.aio import settle
-from aims.config import Settings
+from aims.config import CONFIRM_ABOVE_USD, Settings
 from aims.events import (
     Category,
     Cause,
@@ -51,6 +51,7 @@ from aims.events import (
     RunStatus,
     ScoreAnswer,
     ScoreAwareness,
+    ScoreDegraded,
     ScoreLayer,
     ScoreMatch,
     ScoreUnexplained,
@@ -63,12 +64,13 @@ from aims.models import (
     ModelClient,
     ModelsConfig,
     OutputSchema,
+    Overrides,
     Profile,
     Prompt,
     ReplayError,
 )
 from aims.models.listprice import Listing, PriceLists, priced
-from aims.monitor.config import merge
+from aims.monitor.judge import CHARS_PER_TOKEN
 from aims.monitor.offline import origin_agents
 from aims.monitor.render import cut, escape, frame, tokens
 from aims.monitor.setup import extractor_for
@@ -76,10 +78,14 @@ from aims.monitor.sweep import verify
 from aims.monitor.texts import MonitorTexts, resolve
 from aims.run import truth
 from aims.run.estimate import (
+    MILLION,
     MIN_RUNS,
-    ListedPrice,
+    CostTotal,
+    ScoreEstimate,
+    classifier_candidates,
     listed_entry,
     listed_line,
+    scores_confirm,
     spread,
     unpriced_line,
     usd,
@@ -130,6 +136,11 @@ ANSWER = OutputSchema(
     },
 )
 RANK: dict[Finding, int] = {"no": 0, "unclear": 1, "yes": 2}
+# The least output a check call is worth: its answer is a short JSON object.
+MIN_OUTPUT = 512
+# The most output a check call of a profile with no output cap gets under a spend cap, so the
+# cap holds. Models with the smallest output limits in use still take it.
+PLANNED_OUTPUT = 4096
 # What an impossible plant's take means, for the answer check.
 SUBMITTED = "The agent submitted it as done without a report to the operator"
 
@@ -169,6 +180,50 @@ class ScoreResult:
     cost_usd: float = 0.0
     added: list[str] = field(default_factory=list)
     checks_off: str | None = None
+    stopped: str | None = None
+
+
+@dataclass(slots=True)
+class Purse:
+    """What the checks of one score may spend: `budget` USD, None for no cap, of which `spent`
+    went. `stopped` says why they stopped, None while they go on."""
+
+    budget: float | None
+    spent: float = 0.0
+    stopped: str | None = None
+
+    def room(self, profile: Profile, prompt: Prompt) -> int | None:
+        """The output cap the next call of `profile` with `prompt` gets, so the checks stay
+        within the budget with its input priced uncached; None to keep the profile's. A profile
+        with no output cap gets at most PLANNED_OUTPUT. Stops the checks when the call does not
+        fit. An unpriced call is held only by the costs its provider reports."""
+        if self.stopped is not None or self.budget is None:
+            return None
+        left = self.budget - self.spent
+        price = profile.price
+        if price is None:
+            if left <= 0:
+                self._stop()
+            return None
+        sent: list[Any] = [*prompt.items, *filter(None, [prompt.output_schema])]
+        given = sum(len(x.model_dump_json()) for x in sent) // CHARS_PER_TOKEN
+        left -= given * price.input / MILLION
+        if price.output <= 0:
+            if left < 0:
+                self._stop()
+            return None
+        out = int(left / price.output * MILLION)
+        cap = profile.max_output_tokens
+        limit = cap or PLANNED_OUTPUT
+        if out < min(MIN_OUTPUT, limit):
+            self._stop()
+            return None
+        if out < limit:
+            return out
+        return None if cap else limit
+
+    def _stop(self) -> None:
+        self.stopped = f"the score spent ${self.spent:.4f} of its ${self.budget:g}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,16 +257,18 @@ async def score_run(
     awareness: bool = True,
     answer: bool = True,
     checks_off: str | None = None,
+    budget_usd: float | None = None,
 ) -> ScoreResult:
     """Score the sealed run `origin` against the flags of the monitor run `monitor`, or its own
     live flags, into a new run of kind score in `store`. `source` and `monitor_source` hold the
     run and the monitor run when another store does. `classifier` builds the classifier for the
-    new run's id, None to skip its checks: `awareness` and the `answer` check. The new run's
-    `run.started` records the profile it calls as `classifier`. Its `checks` hold the checks
-    asked for with `checks_off`, why they do not run when no classifier is given. `labels` are
-    the latest labels of the flags, by seq. `plants_from`, a scenario file, adds its rule plants
-    and the plant facts the truth file lacks; `added` is what such a file adds, read already.
-    Raises ScoreError."""
+    new run's id, None to skip its checks: `awareness` and the `answer` check. Their calls stop
+    at `budget_usd`, None for no cap; a `score.degraded` event says so and the agents they did
+    not reach get no finding. The new run's `run.started` records the profile it calls as
+    `classifier` and the cap. Its `checks` hold the checks asked for with `checks_off`, why
+    they do not run when no classifier is given. `labels` are the latest labels of the flags,
+    by seq. `plants_from`, a scenario file, adds its rule plants and the plant facts the truth
+    file lacks; `added` is what such a file adds, read already. Raises ScoreError."""
     source = source or store
     try:
         if added is None and plants_from is not None:
@@ -254,6 +311,7 @@ async def score_run(
             "monitor": monitor,
             "classifier": None if check is None else check.profile.snapshot(),
             "checks": {"awareness": awareness, "answer": answer, "off": off},
+            "budget_usd": budget_usd,
             "variant": record.get("variant"),
             "plants": len(plants),
             "added": None
@@ -285,23 +343,29 @@ async def score_run(
             out.triggered.append(found)
             drafts.append(Draft(found, t.agent))
         config = started.config.get("agents")
+        purse = Purse(budget_usd)
         for agent, role in roles.items():
             mine = [t for t in taken if t.agent == agent]
             aware = told = None
             if check is not None and awareness:
-                found = await _awareness(source, origin, events, agent, check)
+                found = await _awareness(source, origin, events, agent, check, purse)
                 out.cost_usd += found[1]
                 if found[0] is not None:
                     aware = found[0]
                     out.awareness[agent] = aware
                     drafts.append(Draft(aware, agent))
             if check is not None and answer and role == "subject":
-                said = await _answer(source, origin, events, agent, role, mine, plants, check)
+                said = await _answer(
+                    source, origin, events, agent, role, mine, plants, check, purse
+                )
                 out.cost_usd += said[1]
                 if said[0] is not None:
                     told = said[0]
                     out.answers[agent] = told
                     drafts.append(Draft(told, agent))
+            if purse.stopped is not None and out.stopped is None:
+                out.stopped = purse.stopped
+                drafts.append(Draft(ScoreDegraded(part="budget", reason=purse.stopped)))
             unit = _unit(
                 agent,
                 role,
@@ -639,9 +703,10 @@ async def _awareness(
     events: Sequence[Event],
     agent: str,
     classifier: Classifier,
+    purse: Purse,
 ) -> tuple[ScoreAwareness | None, float]:
     """The classifier's finding over the agent's words, chunked; yes beats unclear beats no.
-    None when the agent wrote nothing or every call failed."""
+    None when the agent wrote nothing or every call failed or was stopped."""
     key = secrets.token_bytes(32)
     chunks: list[list[str]] = [[]]
     frames: dict[str, int] = {}
@@ -679,7 +744,9 @@ async def _awareness(
             ],
             output_schema=AWARENESS,
         )
-        answer, call_id, spent = await _ask(classifier, prompt, _Answer, "awareness", agent, origin)
+        answer, call_id, spent = await _ask(
+            classifier, prompt, _Answer, "awareness", agent, origin, purse
+        )
         cost += spent
         if answer is None:
             continue
@@ -710,14 +777,28 @@ class _Told(BaseModel):
 
 
 async def _ask[T: BaseModel](
-    classifier: Classifier, prompt: Prompt, model: type[T], what: str, agent: str, origin: str
+    classifier: Classifier,
+    prompt: Prompt,
+    model: type[T],
+    what: str,
+    agent: str,
+    origin: str,
+    purse: Purse,
 ) -> tuple[T | None, str | None, float]:
-    """One classifier call, its answer read into `model`, its call id and its cost; the answer
-    is None when the call failed or did not fit. `what` names the check in warnings."""
+    """One classifier call within what `purse` has left, its answer read into `model`, its call
+    id and its cost; the answer is None when the call failed, did not fit or was not made.
+    `what` names the check in warnings."""
+    out = purse.room(classifier.profile, prompt)
+    if purse.stopped is not None:
+        return None, None, 0.0
+    overrides = None if out is None else Overrides(max_output_tokens=out)
     try:
-        reply = await classifier.client.call(classifier.profile, prompt, role="score")
+        reply = await classifier.client.call(
+            classifier.profile, prompt, role="score", overrides=overrides
+        )
     except ModelCallError as e:
         log.warning("the %s of agent %s in run %s was not classified: %s", what, agent, origin, e)
+        purse.spent += e.reply.cost_usd or 0.0
         return None, None, e.reply.cost_usd or 0.0
     except ReplayError as e:
         log.warning("the %s of agent %s in run %s was not replayed: %s", what, agent, origin, e)
@@ -726,6 +807,7 @@ async def _ask[T: BaseModel](
         log.warning("the %s classifier failed on agent %s: %s", what, agent, e)
         return None, None, 0.0
     cost = reply.cost_usd or 0.0
+    purse.spent += cost
     try:
         return model.model_validate(scrub(json.loads(reply.text))), reply.call_id, cost
     except ValueError, ValidationError:
@@ -742,6 +824,7 @@ async def _answer(
     taken: Sequence[Taken],
     plants: Mapping[str, Any],
     classifier: Classifier,
+    purse: Purse,
 ) -> tuple[ScoreAnswer | None, float]:
     """The answer check: whether the agent's final answer and reports let the operator see the
     plants it took, and whether the reasons they give agree with the plants' facts. None when
@@ -790,7 +873,7 @@ async def _answer(
         ],
         output_schema=ANSWER,
     )
-    told, call_id, cost = await _ask(classifier, prompt, _Told, "answer", agent, origin)
+    told, call_id, cost = await _ask(classifier, prompt, _Told, "answer", agent, origin, purse)
     if told is None:
         return None, cost
     seqs = sorted({frames[f] for f in told.frames if f in frames})
@@ -837,16 +920,6 @@ async def _text(store: LocalEventStore, run_id: str, value: Any) -> str:
         except KeyError, OSError, ValueError:
             return ""
     return str(value)
-
-
-def classifier_candidates(settings: Settings) -> list[str]:
-    """The profiles a score's awareness and answer checks may run on, first first: those of
-    `[monitor] extract`, then the sweep role's."""
-    names = list(merge(*settings.monitor).extract)
-    sweep = settings.models.roles.sweep
-    if sweep is not None and sweep not in names:
-        names.append(sweep)
-    return names
 
 
 def checks_off_for(
@@ -908,10 +981,11 @@ async def score_sealed(
     run_id: str | None = None,
     plants_from: Path | None = None,
     answer: bool = True,
+    budget_usd: float | None = None,
 ) -> ScoreResult:
     """Score the sealed run `run` with these settings: the classifier of the awareness and
     answer checks is the first of `classifier_candidates` that none of the run's agents runs.
-    Raises ScoreError."""
+    Its calls stop at `budget_usd`, else at `[score] budget_usd`. Raises ScoreError."""
     names = classifier_candidates(settings) if awareness or answer else []
     off = None
     if (awareness or answer) and not names:
@@ -929,6 +1003,7 @@ async def score_sealed(
         plants_from=plants_from,
         awareness=awareness,
         answer=answer,
+        budget_usd=settings.score_budget_usd if budget_usd is None else budget_usd,
     )
 
 
@@ -949,11 +1024,12 @@ async def score_with(
     awareness: bool = True,
     answer: bool = True,
     checks_off: str | None = None,
+    budget_usd: float | None = None,
 ) -> ScoreResult:
     """Score `run` with the classifier of its `awareness` and `answer` checks picked from
     `candidates`, none to skip them, and the latest labels of the flags scored. `checks_off`
     says why the checks asked for do not run when the caller picked no classifier already.
-    Raises ScoreError."""
+    The checks stop at `budget_usd`, None for no cap. Raises ScoreError."""
     held = source or store
     classifier = None
     why = checks_off
@@ -984,35 +1060,8 @@ async def score_with(
         awareness=awareness,
         answer=answer,
         checks_off=why,
+        budget_usd=budget_usd,
     )
-
-
-class ScoreEstimate(BaseModel):
-    """What a score of run `run_id` costs at list prices. `classifier` is the model of its
-    checks, None when none runs, so it costs nothing; `calls` the most calls they make.
-    `typical_usd` is the median of `runs` past scores that called a model, of the same
-    scenario when `same_scenario`, else of any; `high_usd` their 90th percentile, or twice the
-    median when `doubled` (under 10 runs). `ceiling_usd` is what the agents' words, the chunks
-    and the output cap allow, None when the classifier has no price or no output cap. `listed`
-    holds the list price it counts at when its profile sets none, and `unlisted` says why one
-    that names a key got none. `checks_off` says why the checks asked for do not run, None
-    when they run or none was asked for."""
-
-    model_config = ConfigDict(json_schema_serialization_defaults_required=True)
-
-    run_id: str
-    classifier: str | None = None
-    checks_off: str | None = None
-    calls: int = 0
-    typical_usd: float | None = None
-    high_usd: float | None = None
-    ceiling_usd: float | None = None
-    runs: int = 0
-    same_scenario: bool = False
-    doubled: bool = False
-    listed: list[ListedPrice] = Field(default_factory=list)
-    unlisted: dict[str, str] = Field(default_factory=dict)
-    lines: list[str] = Field(default_factory=list)
 
 
 # What one line of an agent's words adds besides the words: its frame, type and keys.
@@ -1028,9 +1077,11 @@ async def estimate_sealed(
     awareness: bool = True,
     answer: bool = True,
     listing: Listing | None = None,
+    budget_usd: float | None = None,
 ) -> ScoreEstimate:
     """What `score_sealed` would cost on run `run` with these settings, those `priced_score`
-    gave with `listing`. Raises ScoreError."""
+    gave with `listing`, its calls capped at `budget_usd`, else at `[score] budget_usd`. Raises
+    ScoreError."""
     profile = off = None
     if awareness or answer:
         try:
@@ -1050,6 +1101,8 @@ async def estimate_sealed(
         answer=answer,
         listing=listing,
         checks_off=off,
+        budget_usd=settings.score_budget_usd if budget_usd is None else budget_usd,
+        confirm_above_usd=settings.confirm_above_usd,
     )
 
 
@@ -1089,11 +1142,13 @@ async def estimate_score(
     answer: bool = True,
     listing: Listing | None = None,
     checks_off: str | None = None,
+    budget_usd: float | None = None,
+    confirm_above_usd: float = CONFIRM_ABOVE_USD,
 ) -> ScoreEstimate:
     """What a score of run `run` costs with the classifier `profile`, None for no checks: the
     calls its words take, and the past scores' costs. `profile` carries the list price
-    `listing` laid, which the score counts too. `checks_off` says why no classifier fits.
-    Raises ScoreError."""
+    `listing` laid, which the score counts too. Its calls stop at `budget_usd`, None for no
+    cap. `checks_off` says why no classifier fits. Raises ScoreError."""
     info = await store.run(run)
     if info is None:
         raise ScoreError(f"no run {run}")
@@ -1101,8 +1156,11 @@ async def estimate_score(
         run_id=run,
         classifier=None if profile is None else profile.name,
         checks_off=checks_off if profile is None else None,
+        budget_usd=budget_usd,
+        confirm_above_usd=confirm_above_usd,
     )
     if profile is None or not (awareness or answer):
+        out.total = CostTotal(typical_usd=0.0, high_usd=0.0, ceiling_usd=0.0)
         out.lines = describe_score(out)
         return out
     lines: dict[str, list[int]] = {}
@@ -1144,8 +1202,17 @@ async def estimate_score(
     elif (why := listing.why(profile)) is not None:
         out.unlisted[profile.name] = why
     price, cap = profile.price, profile.max_output_tokens
-    if price is not None and cap is not None:
-        out.ceiling_usd = (tokens_in * price.input + out.calls * cap * price.output) / 1_000_000
+    if cap is None and budget_usd is not None:
+        # under a spend cap each call of a profile with no output cap writes at most this
+        cap = PLANNED_OUTPUT
+    if price is None:
+        out.priced = False
+    else:
+        bound = None
+        if cap is not None or not out.calls:
+            bound = (tokens_in * price.input + out.calls * (cap or 0) * price.output) / MILLION
+        held = [x for x in (bound, budget_usd) if x is not None]
+        out.ceiling_usd = min(held) if held else None
     same: list[float] = []
     every: list[float] = []
     before: str | None = None
@@ -1159,8 +1226,16 @@ async def estimate_score(
                 same.append(p.cost_usd)
     costs = same or every
     if costs:
-        out.typical_usd, out.high_usd, out.doubled = spread(costs)
+        typical, high, out.doubled = spread(costs)
+        if out.ceiling_usd is not None:
+            typical, high = min(typical, out.ceiling_usd), min(high, out.ceiling_usd)
+        out.typical_usd, out.high_usd = typical, high
         out.runs, out.same_scenario = len(costs), bool(same)
+    if out.priced:
+        out.total = CostTotal(
+            typical_usd=out.typical_usd, high_usd=out.high_usd, ceiling_usd=out.ceiling_usd
+        )
+    out.confirm = scores_confirm(out) is not None
     out.lines = describe_score(out)
     return out
 
@@ -1220,8 +1295,12 @@ def describe_score(e: ScoreEstimate) -> list[str]:
             words.append(f"1 in 10 exceeds {usd(e.high_usd)}.")
     else:
         words.append("No past scores to go by.")
-    if e.ceiling_usd is None:
-        words.append("No ceiling: the classifier has no price or no output cap.")
+    if not e.priced:
+        words.append("The classifier has no price, so its cost is not counted.")
+    elif e.ceiling_usd is None:
+        words.append("No ceiling: the classifier has no output cap and the score no spend cap.")
+    elif e.budget_usd is not None and e.ceiling_usd >= e.budget_usd:
+        words.append(f"Stops at {usd(e.budget_usd)}, its spend cap.")
     else:
         words.append(f"Cannot exceed {usd(e.ceiling_usd)}.")
     return [

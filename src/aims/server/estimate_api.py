@@ -67,10 +67,11 @@ async def estimate_scenario(
     profile: str | None = None,
     monitor: Preset | None = None,
     budget: BudgetQuery = None,
+    score: bool = True,
 ) -> Estimate:
     """What `samples` runs of the scenario cost, of one variant or with `variants=all` of each:
     what the caps allow, and the typical and high cost of past runs. `budget` is the JSON of
-    StartRun's `budget`."""
+    StartRun's `budget`. `score` counts a score of each run, as StartRun's `score` does."""
     caps = _budget(budget)
     if variant is not None and variants is not None:
         raise ProblemException(422, "Invalid request", "give variant or variants, not both")
@@ -90,7 +91,13 @@ async def estimate_scenario(
         ) from None
     try:
         settings, listing = await priced_runs(
-            settings, bundles, profile=profile, preset=monitor, budget=caps, lists=state.prices
+            settings,
+            bundles,
+            profile=profile,
+            preset=monitor,
+            budget=caps,
+            lists=state.prices,
+            score=score,
         )
         return await estimate_runs(
             await state.history(),
@@ -101,6 +108,7 @@ async def estimate_scenario(
             samples=samples,
             budget=caps,
             listing=listing,
+            score=score,
         )
     except BudgetError as e:
         raise ProblemException(422, "Invalid budget", str(e), code="budget") from None

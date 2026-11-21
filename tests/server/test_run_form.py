@@ -232,10 +232,11 @@ async def test_a_run_asked_to_score_is_scored_once_its_truth_arrives(
     await fake.connect()
     try:
         async with cp.client(cp.operator) as c:
-            r = await c.post("/api/runs", json=body(score=True))
+            # a run is scored unless told not to, as aims run and the MCP run tool do
+            r = await c.post("/api/runs", json=body())
             assert r.status_code == 202, r.text
             (run_id,) = r.json()["run_ids"]
-            plain = (await c.post("/api/runs", json=body())).json()["run_ids"][0]
+            plain = (await c.post("/api/runs", json=body(score=False))).json()["run_ids"][0]
         for _ in range(2):
             offer = await fake.next(OfferMessage)
             assert await fake.client.claim(offer.run_id) is not None

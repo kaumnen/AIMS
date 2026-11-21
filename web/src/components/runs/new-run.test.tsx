@@ -19,6 +19,7 @@ let posted: Record<string, unknown>[];
 let checks: string[][];
 let budgets: (string | null)[];
 let samplesAsked: number[];
+let scoreAsked: (string | null)[];
 let seriesFound: Record<string, SeriesInfo>;
 let seriesPost: Response | null;
 // an estimate answers only once this settles
@@ -103,6 +104,8 @@ function estimate(
         variant: null,
         agents: {} as Estimate["parts"][number]["agents"],
         monitor: null,
+        score: null,
+        score_profile: null,
         monitor_preset: "standard",
         steps: {},
         replayed: {},
@@ -128,6 +131,7 @@ beforeEach(() => {
   checks = [];
   budgets = [];
   samplesAsked = [];
+  scoreAsked = [];
   seriesFound = {};
   seriesPost = null;
   estimateGate = null;
@@ -185,6 +189,7 @@ beforeEach(() => {
       const budget = url.searchParams.get("budget");
       budgets.push(budget);
       samplesAsked.push(Number(url.searchParams.get("samples") ?? 1));
+      scoreAsked.push(url.searchParams.get("score"));
       const q = url.searchParams;
       return Response.json(
         estimate(
@@ -382,7 +387,10 @@ test("a run starts with the chosen options and opens", async () => {
   // ticked, as aims run scores by default
   const score = form.getByRole("checkbox", { name: /Score each run/ }) as HTMLInputElement;
   expect(score.checked).toBe(true);
+  // the estimate counts the score while it is ticked
+  expect(scoreAsked.at(-1)).toBe("true");
   fireEvent.click(score);
+  await waitFor(() => expect(scoreAsked.at(-1)).toBe("false"));
   fireEvent.click(form.getByRole("button", { name: "Start run" }));
   await waitFor(() => expect(router.state.location.pathname).toBe(`/runs/${NEW}`));
   expect(posted).toEqual([
