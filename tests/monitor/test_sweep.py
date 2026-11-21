@@ -22,15 +22,19 @@ from aims.events import (
     MonitorSweep,
     RunStarted,
 )
-from aims.models import ModelClient
+from aims.models import ModelClient, Profile, Retries
+from aims.models.purse import Purse
+from aims.models.types import NO_ROOM as NO_RETRY
 from aims.monitor import judge_texts, sweep_texts
 from aims.monitor.config import EVIDENCE_LANE, FULL_LANE, SweepConfig
 from aims.monitor.render import frame
 from aims.monitor.sweep import (
     EVALUATE,
     EXTRACT,
+    NO_ROOM,
     PROPOSAL,
     WINDOW,
+    NoRoom,
     Score,
     Sweeper,
     SweepError,
@@ -58,8 +62,10 @@ def scripted(answer: Answer, n: int = 20) -> Script:
     return Script(*([turn] * n))
 
 
-def sweeper(run: Run, script: Script, **config: Any) -> Sweeper:
-    p = profile()
+def sweeper(
+    run: Run, script: Script, *, p: Profile | None = None, purse: Purse | None = None, **config: Any
+) -> Sweeper:
+    p = p or profile()
     return Sweeper(
         run_id=run.run_id,
         agent_id="a1",
@@ -70,6 +76,7 @@ def sweeper(run: Run, script: Script, **config: Any) -> Sweeper:
         store=run.store,
         trajectory=run.trajectory,
         task=TASK,
+        purse=purse,
     )
 
 
@@ -555,6 +562,84 @@ async def test_score_counts_the_cost_of_an_answer_it_cannot_use(run: Run) -> Non
         with pytest.raises(SweepError) as failed:
             await s.score("ls")
         assert failed.value.cost_usd == pytest.approx(0.00012)
+
+
+# A call of `PLANNED` is planned at its output cap alone: 500 tokens at $2 per million, $0.001.
+PLANNED = profile(
+    max_output_tokens=500,
+    price={"input": 0.0, "cached": 0.0, "output": 2.0},
+    retries=Retries(attempts=4, backoff=0, max=0),
+)
+LANES = [EVIDENCE_LANE.model_dump(), FULL_LANE.model_dump()]
+
+
+def quiet(name: str, body: dict[str, Any]) -> dict[str, Any]:
+    return {"summary": "fine", "quotes": []}
+
+
+async def test_a_lane_the_budget_has_no_room_for_is_not_sent_and_not_failed(run: Run) -> None:
+    script = scripted(quiet)
+    purse = Purse(0.0015, keep=0.0006)
+    s = sweeper(run, script, p=PLANNED, purse=purse, lanes=LANES, window=False)
+    result = await s.sweep("every")
+    sweeps, flags = await written(result)
+    assert (result.no_room, result.failed, flags, script.requests) == (True, False, [], [])
+    assert [x.error for x in sweeps] == [f"sweep_extract: {NO_ROOM} on scripted"] * 2
+    assert (s.reviewed("evidence"), s.reviewed("full"), purse.held) == (-1, -1, 0.0)
+
+
+async def test_lanes_under_way_at_once_hold_the_budget_together(
+    run: Run, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two lanes ask at once. The budget holds one call at its planned $0.001, so the second
+    waits for the first to settle at what it cost, then fits."""
+    held: list[float] = []
+    hold = Purse.hold
+
+    async def watched(self: Purse, *args: Any) -> Any:
+        got = await hold(self, *args)
+        held.append(self.held)
+        return got
+
+    monkeypatch.setattr(Purse, "hold", watched)
+    script = scripted(quiet)
+    purse = Purse(0.0015)
+    s = sweeper(run, script, p=PLANNED, purse=purse, lanes=LANES, window=False)
+    result = await s.sweep("every")
+    assert (result.no_room, result.failed, len(script.requests)) == (False, False, 2)
+    assert held == [0.001, 0.001]
+    assert (purse.spent, purse.held) == (pytest.approx(2 * 0.00002), 0.0)
+    assert result.cost_usd == pytest.approx(purse.spent)
+
+
+async def test_a_billed_failure_is_tried_again_only_while_the_budget_has_room(run: Run) -> None:
+    """A failed attempt billed $0.001 leaves no room for another full one under $0.0015: the
+    lane stops with no room, not as a failure. A failure that cost nothing is tried again."""
+    billed = {"finish": "error", "usage": {"prompt_tokens": 0, "completion_tokens": 500}}
+    ok = say(json.dumps({"summary": "fine", "quotes": []}))
+    lanes = [EVIDENCE_LANE.model_dump()]
+    script = Script(billed, ok)
+    purse = Purse(0.0015)
+    s = sweeper(run, script, p=PLANNED, purse=purse, lanes=lanes, window=False)
+    result = await s.sweep("every")
+    sweeps, _ = await written(result)
+    assert (result.no_room, result.failed, len(script.requests)) == (True, False, 1)
+    assert sweeps[0].error is not None
+    assert sweeps[0].error.endswith(NO_RETRY)
+    assert (purse.spent, result.cost_usd) == (0.001, pytest.approx(0.001))
+
+    busy = Script({"status": 503, "error": "busy"}, ok)
+    purse = Purse(0.0015)
+    s = sweeper(run, busy, p=PLANNED, purse=purse, lanes=lanes, window=False)
+    result = await s.sweep("every")
+    assert (result.no_room, result.failed, len(busy.requests)) == (False, False, 2)
+
+
+async def test_a_review_score_with_no_room_raises_no_room_with_its_cost(run: Run) -> None:
+    s = sweeper(run, scripted(quiet), p=PLANNED, purse=Purse(0.0009))
+    with pytest.raises(NoRoom, match=NO_ROOM) as raised:
+        await s.score("ls")
+    assert raised.value.cost_usd == 0
 
 
 async def test_quote_checks_normalise_whitespace_and_escapes() -> None:

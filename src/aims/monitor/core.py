@@ -25,6 +25,7 @@ from aims.events import (
     logged_events,
 )
 from aims.models import ModelClient, Profile, Prompt
+from aims.models.purse import Purse
 from aims.monitor.channels import NAME as CHANNELS
 from aims.monitor.channels import ChannelLog, ChannelSweeper
 from aims.monitor.config import FailureMode, SweepConfig
@@ -34,7 +35,7 @@ from aims.monitor.render import Trajectory
 from aims.monitor.review import Reviewer, ReviewResult
 from aims.monitor.setup import ResolvedMonitor
 from aims.monitor.signals import SignalEngine
-from aims.monitor.sweep import Sweeper, SweepResult
+from aims.monitor.sweep import NO_ROOM, Sweeper, SweepResult
 from aims.scenario import Budget, Scenario
 
 log = logging.getLogger("aims.monitor")
@@ -187,6 +188,9 @@ class Monitor:
         self._engine = engine_factory(self.config, scenario, run_id=self.source, store=store)
         self._budgets = {a.id: a.budget for a in scenario.agents}
         self.policy = Policy(self.config.policy, self.mode, self._budgets)
+        # Sweeps and reviews send a call only when the budget has room for it beside the
+        # judge's reserve; the judge gets what they leave.
+        self._purse = Purse(monitor.budget_usd, keep=monitor.judge_reserve_usd)
         self._reviewer = Reviewer(
             config=self.config.review,
             texts=monitor.texts,
@@ -194,6 +198,7 @@ class Monitor:
             store=store,
             source=self.source,
             key=self._key,
+            purse=self._purse,
         )
         self._agents: dict[str, _Agent] = {}
         self._trajectories: dict[str, Trajectory] = {}
@@ -238,7 +243,6 @@ class Monitor:
         self._cut = False
         self._judging: asyncio.Future[Any] | None = None
         self._closed = False
-        self._spent = 0.0
         self._flags: list[Event] = []
         self._sweep_events: list[Event] = []
         self._actions: list[Event] = []
@@ -247,7 +251,7 @@ class Monitor:
     @property
     def cost_usd(self) -> float:
         """What the monitor's sweeps, reviews and judge have cost so far."""
-        return self._spent
+        return self._purse.spent
 
     @property
     def flags(self) -> list[Event]:
@@ -372,7 +376,7 @@ class Monitor:
         await self.barrier()
         if self._cut:
             return
-        left = self.monitor.budget_usd - self._spent
+        left = self.monitor.budget_usd - self._purse.counted - self._purse.held
         if left <= 0:
             await self._degrade("judge", "the monitor budget is spent", "skip")
             return
@@ -401,12 +405,12 @@ class Monitor:
             async with asyncio.timeout(within + JUDGE_GRACE_S):
                 result: JudgeResult = await running
         except TimeoutError:
-            self._spent += getattr(judge, "cost_usd", 0.0)
+            self._purse.add_cost(getattr(judge, "cost_usd", 0.0))
             reason = f"the judge ran past its {config.timeout_s:g} s timeout"
             await self._degrade("judge", reason, "skip")
             return
         except asyncio.CancelledError:
-            self._spent += getattr(judge, "cost_usd", 0.0)
+            self._purse.add_cost(getattr(judge, "cost_usd", 0.0))
             task = asyncio.current_task()
             if self._cut and task is not None and not task.cancelling():
                 await self._degrade("judge", "an operator stop cut the judge short", "skip")
@@ -414,13 +418,13 @@ class Monitor:
             await asyncio.shield(self._degrade("judge", "the judge was cancelled", "skip"))
             raise
         except Exception as e:
-            self._spent += getattr(judge, "cost_usd", 0.0)
+            self._purse.add_cost(getattr(judge, "cost_usd", 0.0))
             log.exception("the judge of run %s failed", self.run_id)
             await self._degrade("judge", "the judge failed", "skip", f"{type(e).__name__}: {e}")
             return
         finally:
             self._judging = None
-        self._spent += result.cost_usd
+        self._purse.add_cost(result.cost_usd)
         drafts = list(result.flags)
         if result.verdict is not None:
             drafts.append(self._with_taint(result.verdict))
@@ -766,7 +770,6 @@ class Monitor:
             log.exception("sweep %s of %s failed", name, agent_id or "the run")
             error = f"{type(e).__name__}: {e}"
             result = SweepResult(failed=True)
-        self._spent += result.cost_usd
         self._last_cost[key] = result.cost_usd
         written = await self._append([*result.sweeps, *result.flags])
         self._sweep_events.extend(e for e in written if e.type == "monitor.sweep")
@@ -776,7 +779,7 @@ class Monitor:
             self._failures += 1
             if self._failures == FAILURES:
                 await self._sweeps_failed(error or _sweep_error(written))
-        else:
+        elif not result.no_room:
             self._failures = 0
             self._covered[key] = max(self._covered.get(key, 0), steps)
             self._swept_seq[key] = max(self._swept_seq.get(key, -1), last_seq)
@@ -794,6 +797,8 @@ class Monitor:
                         self._request([(agent, "channel", None)])
         for d in self.policy.decide(flags):
             await self._act(d)
+        if result.no_room:
+            await self._out_of_budget(_sweep_error(written) or NO_ROOM)
 
     def _visible(self, agent_id: str) -> int:
         """The last seq a sweep of `agent_id` can see: its trajectory leaves out the verifier,
@@ -816,6 +821,7 @@ class Monitor:
                 store=self.store,
                 log=self._channel_log,
                 tasks=tasks,
+                purse=self._purse,
             )
         return self._channel_sweeper
 
@@ -851,23 +857,35 @@ class Monitor:
             trajectory=self._trajectory(agent_id),
             task=self.scenario.task_for(agent_id).instruction,
             extractor=self.monitor.extract,
+            purse=self._purse,
         )
 
     def _may_spend(self, estimate: float = 0.0) -> bool:
+        """Whether the sweeps and reviews may go on with `estimate` USD more, beside what was
+        counted and the judge's reserve. Each of their calls is still sent only when the budget
+        has room for it."""
         limit = self.monitor.budget_usd - self.monitor.judge_reserve_usd
-        return self._spent + estimate < limit
+        return self._purse.counted + estimate < limit
 
-    async def _out_of_budget(self) -> None:
+    async def _out_of_budget(self, refused: str | None = None) -> None:
+        """Go on with signals only. `refused` says which sweep call the budget had no room
+        for, None when the next sweep was not started."""
         if self._signals_only:
             return
         self._signals_only = True
         self._pending.clear()
         self._notify_swept()
-        reserve = self.monitor.judge_reserve_usd
-        reason = f"the monitor spent ${self._spent:.4f} of its ${self.monitor.budget_usd:g}"
+        reserve, purse = self.monitor.judge_reserve_usd, self._purse
+        reason = f"the monitor spent ${purse.spent:.4f} of its ${self.monitor.budget_usd:g}"
         if reserve:
             reason += f", ${reserve:g} of it kept for the judge"
-        await self._degrade("budget", reason, "signals_only")
+        if purse.unseen:
+            reason += f"; failed calls with no cost reported may add ${purse.unseen:.4f}"
+        if purse.sized:
+            reason += f"; answers with no token counts count at ${purse.sized:.4f}"
+        if refused is not None:
+            reason += "; the next sweep call did not fit at its output cap"
+        await self._degrade("budget", reason, "signals_only", refused)
 
     def _on_failure(self) -> FailureMode:
         then = self.config.policy.on_monitor_failure
@@ -1080,7 +1098,7 @@ class Monitor:
         held_id = self.actuator.held_call(agent_id)
         held = None if held_id is None else st.calls.get(held_id)
         sample = self.actuator.next_prompt(agent_id) if self.config.review.resamples else None
-        result = await self._reviewer.review(
+        return await self._reviewer.review(
             flags,
             scorer=self._scorer(agent_id, flags),
             cutoffs=cutoffs,
@@ -1089,8 +1107,6 @@ class Monitor:
             sample=sample,
             allowed=self._may_spend,
         )
-        self._spent += result.cost_usd
-        return result
 
     async def _flagged_calls(self, agent_id: str, flags: Sequence[Event]) -> list[Event]:
         """The tool calls the flags cite; else the agent's calls in the steps they cite. Read

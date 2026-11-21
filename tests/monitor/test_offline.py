@@ -2,6 +2,7 @@
 a scripted judge, and the invariant that a signals-only re-run reproduces the live flags."""
 
 import asyncio
+import dataclasses
 import json
 import shutil
 import uuid
@@ -20,8 +21,11 @@ from aims.events import (
     Draft,
     Event,
     LocalEventStore,
+    ModelRequest,
+    ModelResponse,
     MonitorAction,
     MonitorFlag,
+    MonitorSweep,
     NetConnect,
     Payload,
     RunFinished,
@@ -45,6 +49,7 @@ from aims.monitor.offline import (
     origin_agents,
 )
 from aims.monitor.setup import ResolvedMonitor
+from aims.monitor.sweep import NO_ROOM
 from aims.prompts import Prompts
 from aims.run.job import JobOptions, monitor_for
 from aims.run.runner import RunError, resolve_texts
@@ -91,10 +96,18 @@ def records(body: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
-def monitor_model(*, importance: int = 4) -> Script:
-    """Sweeps quote the first rendered tool call and score it; the judge gives a verdict."""
+def monitor_model(*, importance: int = 4, output: int | None = None) -> Script:
+    """Sweeps quote the first rendered tool call and score it; the judge gives a verdict. With
+    `output`, each answer reports its request at 4 characters a token and `output` tokens."""
 
     def turn(body: dict[str, Any]) -> dict[str, Any]:
+        answer = respond(body)
+        if output is not None:
+            sent = len(json.dumps(body)) // 4
+            answer["usage"] = {"prompt_tokens": sent, "completion_tokens": output}
+        return answer
+
+    def respond(body: dict[str, Any]) -> dict[str, Any]:
         if "response_format" not in body:
             return call("verdict", **verdict())
         match body["response_format"]["json_schema"]["name"]:
@@ -209,11 +222,57 @@ async def test_sweeps_and_the_judge_rerun_a_recorded_run(
     assert {e.data["mode"] for e in actions} == {origin.bundle.scenario.oversight}
     (judged,) = await of_type(store, run_id, "monitor.verdict")
     assert judged.data["summary"] == "The agent fixed the code."
+    answers = [payload_of(e, ModelResponse) for e in await of_type(store, run_id, "model.response")]
     assert result.cost_usd > 0
+    assert result.cost_usd == pytest.approx(sum(a.cost_usd or 0.0 for a in answers))
     assert (await store.verify(run_id)).ok
     after = await store.run(origin_id)
     assert after is not None
     assert after.head == info.head
+
+
+async def test_sweep_calls_stay_within_the_budget_and_leave_the_judge_its_reserve(
+    recorded: tuple[LocalEventStore, str],
+) -> None:
+    """Each sweep call is sent only while the budget has room for it at its output cap beside
+    the judge's reserve, so even the first sweep cannot spend past it. Running out of room is
+    no sweep failure: the monitor goes on with signals only, the judge gets what is left, and
+    each call's cost is counted once."""
+    store, origin_id = recorded
+    origin, _ = await monitored(store, origin_id)
+    m = models(WATCHER)
+    resolved = offline_monitor(m, Prompts(), origin.bundle.scenario, origin_agents(origin))
+    reserve = resolved.judge_reserve_usd
+    resolved = dataclasses.replace(resolved, budget_usd=reserve + 0.03)
+    # Each call costs its request and 8,000 output tokens, about $0.017 at $2 per million.
+    script = monitor_model(output=8000)
+    result = await monitor_offline(
+        store, origin, resolved, models=m, transport=script.transport(), mode="full"
+    )
+    assert result.status == "completed", result.reason
+    asked = [
+        payload_of(e, ModelRequest) for e in await of_type(store, result.run_id, "model.request")
+    ]
+    roles = {r.call_id: r.role or "" for r in asked}
+    cost = {"sweep": 0.0, "judge": 0.0}
+    for e in await of_type(store, result.run_id, "model.response"):
+        answered = payload_of(e, ModelResponse)
+        cost[roles[answered.call_id]] += answered.cost_usd or 0.0
+    assert 0 < cost["sweep"] <= 0.03
+    assert cost["judge"] > 0
+    assert result.cost_usd == pytest.approx(cost["sweep"] + cost["judge"])
+    degraded = [
+        (e.data["part"], e.data["then"])
+        for e in await of_type(store, result.run_id, "monitor.degraded")
+    ]
+    assert degraded == [("budget", "signals_only")]
+    (stop,) = await of_type(store, result.run_id, "monitor.degraded")
+    assert str(stop.data["reason"]).endswith("; the next sweep call did not fit at its output cap")
+    assert NO_ROOM in str(stop.data["detail"])
+    sweeps = [
+        payload_of(e, MonitorSweep) for e in await of_type(store, result.run_id, "monitor.sweep")
+    ]
+    assert any(NO_ROOM in (x.error or "") for x in sweeps)
 
 
 async def test_judge_only_runs_no_signal_and_no_sweep(

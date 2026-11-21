@@ -38,6 +38,7 @@ from aims.models import (
     ReplayError,
     Reply,
 )
+from aims.models.purse import Purse
 from aims.monitor.config import Lane, SweepConfig
 from aims.monitor.render import Rendered, Trajectory, escape, glossary
 from aims.monitor.texts import MonitorTexts
@@ -136,6 +137,20 @@ class SweepError(Exception):
         self.cost_usd = cost_usd
 
 
+class NoRoom(Exception):
+    """The monitor budget had no room for a call, so it was not sent, or none to try a failed
+    one again. A sweep that meets it leaves the monitor with signals only and does not count as
+    failed. `cost_usd` is what the calls made before cost."""
+
+    def __init__(self, message: str, *, cost_usd: float = 0.0) -> None:
+        super().__init__(message)
+        self.cost_usd = cost_usd
+
+
+# Why a call was not sent.
+NO_ROOM = "the monitor budget has no room for the call"
+
+
 class _Loose(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -180,12 +195,14 @@ class _Proposal(_Loose):
 @dataclass(slots=True)
 class SweepResult:
     """What one sweep found: a `monitor.sweep` draft per lane, then the `monitor.flag` drafts
-    of its verified hits. `failed` is true when every lane failed."""
+    of its verified hits. `failed` is true when every lane failed, `no_room` when the monitor
+    budget had no room for a call of a lane."""
 
     sweeps: list[Draft] = field(default_factory=list)
     flags: list[Draft] = field(default_factory=list)
     cost_usd: float = 0.0
     failed: bool = False
+    no_room: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,24 +284,41 @@ async def ask(
     calls: _Calls,
     *,
     role: ModelRole = "sweep",
+    purse: Purse | None = None,
 ) -> dict[str, Any]:
-    """One structured call: `system` then `body`, answered as a JSON object. Raises
-    SweepError."""
+    """One structured call: `system` then `body`, answered as a JSON object, sent only when
+    `purse` has room for it and tried again only while it has room. Raises SweepError, and
+    NoRoom when there is no room."""
     prompt = Prompt(
         items=[Message(role="system", content=system), Message(role="user", content=body)],
         output_schema=schema,
     )
+    hold = None if purse is None else await purse.hold(profile, prompt)
+    if purse is not None and hold is None:
+        raise NoRoom(f"{schema.name}: {NO_ROOM} on {profile.name}")
     try:
-        reply = await client.call(profile, prompt, role=role)
+        reply = await client.call(
+            profile, prompt, role=role, cap=None if hold is None else hold.cap
+        )
+        if hold is not None:
+            hold.settle(reply)
     except ModelCallError as e:
+        if hold is not None:
+            hold.settle(e.reply)
         calls.add(e.reply)
         r = e.reply
-        raise SweepError(
+        failed = (
             f"{schema.name}: the call on {r.profile} failed after {r.attempts} attempt(s):"
             f" {r.error}"
-        ) from None
+        )
+        if e.no_room:
+            raise NoRoom(failed) from None
+        raise SweepError(failed) from None
     except ReplayError as e:
         raise SweepError(f"{schema.name}: {e}") from None
+    finally:
+        if hold is not None:
+            hold.settle()
     calls.add(reply)
     try:
         value = scrub(json.loads(reply.text))
@@ -301,7 +335,8 @@ class Sweeper:
 
     The extract call runs on `extractor` when one is set, a cheaper model than `profile`, which
     evaluates. With `config.escalate`, the window is scored on the extractor first and on
-    `profile` only when that score falls inside the band."""
+    `profile` only when that score falls inside the band. With a `purse`, each call is sent
+    only when the monitor budget has room for it."""
 
     def __init__(
         self,
@@ -316,9 +351,11 @@ class Sweeper:
         trajectory: Trajectory,
         task: str,
         extractor: Profile | None = None,
+        purse: Purse | None = None,
     ) -> None:
         self.run_id = run_id
         self.agent_id = agent_id
+        self.purse = purse
         self.config = config
         self.profile = profile
         self.extractor = None
@@ -380,7 +417,7 @@ class Sweeper:
         lanes = []
         for i, (lane, rendered) in enumerate(zip(self.config.lanes, renders, strict=True)):
             j = first[rendered.text]
-            sweep, flags, cost = done[j]
+            sweep, flags, cost, short = done[j]
             if i != j:
                 sweep = sweep.model_copy(
                     update={"lane": lane.name, "parts": list(lane.parts), "cost_usd": 0.0}
@@ -389,18 +426,21 @@ class Sweeper:
                 cost = 0.0
                 if sweep.error is None:
                     self._reviewed[lane.name] = upto
-            lanes.append((sweep, flags, cost))
+            lanes.append((sweep, flags, cost, short))
         result = SweepResult()
-        for sweep, flags, cost in lanes:
+        for sweep, flags, cost, short in lanes:
             result.sweeps.append(Draft(sweep, self.agent_id))
             result.flags.extend(Draft(f, self.agent_id) for f in flags)
             result.cost_usd += cost
-        result.failed = all(sweep.error is not None for sweep, _, _ in lanes)
+            result.no_room |= short
+        errors = all(sweep.error is not None for sweep, _, _, _ in lanes)
+        result.failed = errors and not result.no_room
         return result
 
     async def score(self, proposal: str, *, role: str = "review") -> Score:
         """Score one proposed next action, rendered as text, in the evidence lane with the
-        trajectory as context. Used by the autonomous review of a pause. Raises SweepError."""
+        trajectory as context. Used by the autonomous review of a pause. Raises SweepError, and
+        NoRoom when the monitor budget has no room for the call."""
         rendered = await self.trajectory.render(
             ["evidence"], texts=self.texts, collapse_tokens=self.config.collapse_tokens
         )
@@ -419,8 +459,8 @@ class Sweeper:
         try:
             value = await self._ask(body, PROPOSAL, calls, role=cast(ModelRole, role))
             parsed = _parse(_Proposal, value)
-        except SweepError as e:
-            raise SweepError(str(e), cost_usd=calls.cost_usd) from None
+        except (SweepError, NoRoom) as e:
+            raise type(e)(str(e), cost_usd=calls.cost_usd) from None
         return Score(
             importance=_clamp(parsed.importance, 1, 5),
             suspicion=_clamp(parsed.suspicion, 0, 100),
@@ -436,7 +476,7 @@ class Sweeper:
         coalesced: int,
         upto: int,
         lead: str | None,
-    ) -> tuple[MonitorSweep, list[MonitorFlag], float]:
+    ) -> tuple[MonitorSweep, list[MonitorFlag], float, bool]:
         start = time.monotonic()
         calls = _Calls()
         flags: list[MonitorFlag] = []
@@ -445,12 +485,15 @@ class Sweeper:
         escalated = False
         summary = ""
         error: str | None = None
+        short = False
         try:
             windowed = self._window(lane, rendered, calls, upto) if self.config.window else None
             extracted, scored = await asyncio.gather(
                 self._extract(rendered, calls, lead), windowed or _none(), return_exceptions=True
             )
-            for outcome in (extracted, scored):
+            # No room stops the monitor's sweeps, so it comes before a failed call.
+            outcomes = sorted((extracted, scored), key=lambda o: not isinstance(o, NoRoom))
+            for outcome in outcomes:
                 if isinstance(outcome, BaseException):
                     raise outcome
             assert isinstance(extracted, _Extract)
@@ -472,6 +515,9 @@ class Sweeper:
             log.warning(
                 "sweep %s lane %s of %s failed: %s", self.config.name, lane.name, self.agent_id, e
             )
+        except NoRoom as e:
+            error, short = str(e), True
+            flags = []
         else:
             self._reviewed[lane.name] = upto
         scores = [s for s in (history, window) if s is not None]
@@ -500,7 +546,7 @@ class Sweeper:
             duration_ms=int((time.monotonic() - start) * 1000),
             error=error,
         )
-        return sweep, flags, calls.cost_usd
+        return sweep, flags, calls.cost_usd, short
 
     async def _extract(self, rendered: Rendered, calls: _Calls, lead: str | None) -> _Extract:
         instruction = self.texts["extract"].format(
@@ -618,7 +664,9 @@ class Sweeper:
         profile: Profile | None = None,
     ) -> dict[str, Any]:
         profile = profile or self.profile
-        return await ask(self.client, profile, self._system, body, schema, calls, role=role)
+        return await ask(
+            self.client, profile, self._system, body, schema, calls, role=role, purse=self.purse
+        )
 
 
 def _parse[T: BaseModel](cls: type[T], value: dict[str, Any]) -> T:

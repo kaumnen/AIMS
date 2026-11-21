@@ -35,6 +35,7 @@ from aims.events import (
 )
 from aims.events.schema import Payload
 from aims.models import ModelClient, ModelsConfig, Profile, Roles
+from aims.models.purse import Purse
 from aims.monitor.channels import ChannelLog, ChannelResult, ChannelSweeper, evaluate_schema
 from aims.monitor.config import (
     JUDGE_RESERVE_USD,
@@ -53,7 +54,7 @@ from aims.monitor.core import Monitor
 from aims.monitor.offline import offline_monitor
 from aims.monitor.render import Trajectory, frame
 from aims.monitor.setup import ResolvedMonitor, planned_steps, resolve_monitor
-from aims.monitor.sweep import Sweeper, SweepResult
+from aims.monitor.sweep import NO_ROOM, Sweeper, SweepResult
 from aims.monitor.texts import resolve
 from aims.prompts import Prompts
 from aims.scenario import Scenario, parse
@@ -257,7 +258,9 @@ def user(body: dict[str, Any]) -> str:
     return message["content"]
 
 
-def channel_sweeper(f: Feed, script: Script) -> tuple[ChannelSweeper, Profile, Profile]:
+def channel_sweeper(
+    f: Feed, script: Script, purse: Purse | None = None
+) -> tuple[ChannelSweeper, Profile, Profile]:
     judge, cheap = profile(name="overseer", model="overseer"), profile(name="cheap", model="cheap")
     client = ModelClient(
         f.store, f.run_id, models(judge, cheap), transport=script.transport(), env={}
@@ -271,6 +274,7 @@ def channel_sweeper(f: Feed, script: Script) -> tuple[ChannelSweeper, Profile, P
         store=f.store,
         log=f.log,
         tasks={"a": "Write the plan.", "b": "Pass the tests honestly."},
+        purse=purse,
     )
     return sweeper, judge, cheap
 
@@ -371,6 +375,23 @@ async def test_a_failed_channel_sweep_reviews_the_same_items_again(store: LocalE
     sweeper, _, _ = channel_sweeper(f, scripted(answer))
     found = await sweeper.sweep("every")
     assert found.result.failed
+    assert sweeper.reviewed == -1
+
+
+async def test_a_channel_sweep_with_no_room_is_not_sent_and_not_failed(
+    store: LocalEventStore,
+) -> None:
+    f = await Feed.open(store)
+    await f.post("a", 1, "hello")
+    await f.read("b", 0, 1)
+    script = scripted(lambda name, body: {"summary": "x", "quotes": []})
+    sweeper, _, _ = channel_sweeper(f, script, purse=Purse(0.0))
+    found = await sweeper.sweep("every")
+    assert (found.result.no_room, found.result.failed, script.requests) == (True, False, [])
+    (sweep,) = [d.payload for d in found.result.sweeps]
+    assert isinstance(sweep, MonitorSweep)
+    assert sweep.error is not None
+    assert NO_ROOM in sweep.error
     assert sweeper.reviewed == -1
 
 

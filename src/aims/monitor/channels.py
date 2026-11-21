@@ -32,6 +32,7 @@ from aims.events import (
     SweepTrigger,
 )
 from aims.models import ModelClient, OutputSchema, Profile
+from aims.models.purse import Purse
 from aims.monitor.config import ChannelSweepConfig
 from aims.monitor.render import (
     ARGUMENT_DEPTH,
@@ -50,6 +51,7 @@ from aims.monitor.sweep import (
     CATEGORY_NAMES,
     EXTRACT,
     QUOTE_CHARS,
+    NoRoom,
     SweepError,
     SweepResult,
     _Calls,
@@ -465,7 +467,8 @@ class ChannelResult:
 
 class ChannelSweeper:
     """The channel sweep of one run. The extract call runs on `extractor`, the evaluate call
-    on `profile`; calls go through `client` with role `sweep` and no agent id."""
+    on `profile`; calls go through `client` with role `sweep` and no agent id. With a `purse`,
+    each call is sent only when the monitor budget has room for it."""
 
     def __init__(
         self,
@@ -478,8 +481,10 @@ class ChannelSweeper:
         store: EventStore,
         log: ChannelLog,
         tasks: dict[str, str],
+        purse: Purse | None = None,
     ) -> None:
         self.config = config
+        self.purse = purse
         self.profile = profile
         self.extractor = (
             profile
@@ -519,6 +524,7 @@ class ChannelSweeper:
         suspicion: int | None = None
         summary = ""
         error: str | None = None
+        short = False
         try:
             body = "\n\n".join(
                 [rendered.text, glossary(rendered.types), self.texts["channel_extract"]]
@@ -566,6 +572,9 @@ class ChannelSweeper:
             error = str(e)
             flags, leads, suspicion = [], {}, None
             log.warning("the channel sweep failed: %s", e)
+        except NoRoom as e:
+            error, short = str(e), True
+            flags, leads, suspicion = [], {}, None
         else:
             self.reviewed = upto
         sweep = MonitorSweep(
@@ -591,20 +600,24 @@ class ChannelSweeper:
             error=error,
         )
         result = SweepResult(
-            sweeps=[Draft(sweep)], flags=flags, cost_usd=calls.cost_usd, failed=error is not None
+            sweeps=[Draft(sweep)],
+            flags=flags,
+            cost_usd=calls.cost_usd,
+            failed=error is not None and not short,
+            no_room=short,
         )
         return ChannelResult(result, leads)
 
     async def _extract(self, body: str, calls: _Calls) -> _Extract:
         """The extract call on the extractor, again on the sweep model when that fails."""
         try:
-            value = await ask(self.client, self.extractor, self._system, body, EXTRACT, calls)
+            value = await self._ask(self.extractor, body, EXTRACT, calls)
             return _parse(_Extract, value)
         except SweepError as e:
             if self.extractor is self.profile:
                 raise
             log.warning("the channel extract on the extractor failed, again: %s", e)
-        value = await ask(self.client, self.profile, self._system, body, EXTRACT, calls)
+        value = await self._ask(self.profile, body, EXTRACT, calls)
         return _parse(_Extract, value)
 
     async def _evaluate(self, quotes: Iterable[Any], rendered: Rendered, calls: _Calls) -> Any:
@@ -630,7 +643,12 @@ class ChannelSweeper:
                 self.texts["channel_evaluate"],
             ]
         )
-        return await ask(self.client, self.profile, self._system, body, self._schema, calls)
+        return await self._ask(self.profile, body, self._schema, calls)
+
+    async def _ask(
+        self, profile: Profile, body: str, schema: OutputSchema, calls: _Calls
+    ) -> dict[str, Any]:
+        return await ask(self.client, profile, self._system, body, schema, calls, purse=self.purse)
 
 
 def _merge(out: _Lines, other: _Lines) -> None:

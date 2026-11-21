@@ -37,13 +37,14 @@ from aims.events import (
 from aims.events import store as store_module
 from aims.events.schema import Payload
 from aims.models import Message, ModelClient, Profile, Prompt, ToolSpec
+from aims.models.purse import Purse
 from aims.monitor import core, review_texts
 from aims.monitor.config import MonitorConfig
 from aims.monitor.core import HumanRequest, Monitor
 from aims.monitor.judge import Judge, JudgeResult
 from aims.monitor.render import frame
 from aims.monitor.setup import ResolvedMonitor
-from aims.monitor.sweep import Score, SweepError, SweepResult
+from aims.monitor.sweep import NoRoom, Score, SweepError, SweepResult
 from aims.monitor.texts import MonitorTexts
 from aims.scenario import Scenario
 
@@ -126,8 +127,11 @@ class Sweeps:
 
 
 class FakeSweeper:
+    """Charges the monitor's purse with what its results cost, as a real sweeper's calls do."""
+
     def __init__(self, sweeps: Sweeps, **kw: Any) -> None:
         self.s = sweeps
+        self.purse: Purse | None = kw.get("purse")
         self.agent_id = kw["agent_id"]
         self.name = kw["config"].name
         self.profile = kw["profile"]
@@ -145,14 +149,26 @@ class FakeSweeper:
             s.leads.append((self.agent_id, lead))
             if s.gate is not None:
                 await s.gate.wait()
-            return s.result(self, trigger)
+            result = s.result(self, trigger)
+            self._charge(result.cost_usd)
+            return result
         finally:
             s.active -= 1
 
     async def score(self, proposal: str, *, role: str = "review") -> Score:
         assert role == "review"
         self.s.proposals.append(proposal)
-        return self.s.score(proposal)
+        try:
+            score = self.s.score(proposal)
+        except (SweepError, NoRoom) as e:
+            self._charge(e.cost_usd)
+            raise
+        self._charge(score.cost_usd)
+        return score
+
+    def _charge(self, usd: float) -> None:
+        if self.purse is not None:
+            self.purse.add_cost(usd)
 
 
 class FakeActuator:
@@ -703,6 +719,54 @@ async def test_budget_stops_sweeps_before_the_judge_reserve(tmp_path: Path) -> N
         [degraded] = await h.of("monitor.degraded")
         assert degraded.data["part"] == "budget"
         assert degraded.data["then"] == "signals_only"
+
+
+async def test_a_sweep_with_no_room_goes_on_with_signals_only_and_frees_the_hold(
+    tmp_path: Path,
+) -> None:
+    """No room for a sweep call stops the sweeps on the budget, never as a failed sweep, so
+    the agents are not paused, and a hold waiting on the sweep goes on."""
+    config = sweep_config(every=1, hold=True) | {"policy": {"pause_timeout_s": 30}}
+    async with harness(tmp_path, config=config) as h:
+        # one failed sweep, then one with no room: two failures in a row would pause
+        h.sweeps.result = lambda sweeper, trigger: SweepResult(failed=True, cost_usd=0.01)
+        await h.add(started())
+        await step(h, 1)
+        await h.monitor.barrier()
+        await h.until(lambda: not h.monitor._pending and h.monitor._running is None)
+        h.sweeps.gate = asyncio.Event()
+        h.sweeps.result = lambda sweeper, trigger: SweepResult(no_room=True, cost_usd=0.02)
+        await step(h, 2)
+        await h.monitor.barrier()
+        holding = asyncio.create_task(
+            h.monitor.hold(GatePoint("before_tool", h.run_id, "a", 2, "c2"))
+        )
+        await asyncio.sleep(0.05)
+        assert not holding.done()
+        h.sweeps.gate.set()
+        await asyncio.wait_for(holding, 1)
+        for n in range(3, 5):
+            await step(h, n)
+            await h.monitor.barrier()
+        assert len(h.sweeps.calls) == 2
+        assert h.actuator.kinds() == []
+        [degraded] = await h.of("monitor.degraded")
+        assert (degraded.data["part"], degraded.data["then"]) == ("budget", "signals_only")
+        assert str(degraded.data["reason"]).endswith("did not fit at its output cap")
+        assert h.monitor.cost_usd == pytest.approx(0.03)
+
+
+async def test_a_review_call_with_no_room_keeps_the_flags(tmp_path: Path) -> None:
+    def short(proposal: str) -> Score:
+        raise NoRoom("sweep_proposal: no room", cost_usd=0.0)
+
+    config = sweep_config(every=1) | {"policy": {"pause_timeout_s": 0.3}}
+    async with harness(tmp_path, config=config) as h:
+        h.sweeps.score = short
+        await swept_pause(h)
+        await h.until(lambda: len(h.actuator.log) == 2)
+        assert h.actuator.kinds() == ["pause", "kill"]
+        assert "the monitor budget had no room for 1 of 1 review calls" in h.actuator.log[-1][2]
 
 
 async def test_hold_waits_for_the_sweep_of_the_step(tmp_path: Path) -> None:

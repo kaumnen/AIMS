@@ -8,15 +8,21 @@ from typing import Any, Protocol
 
 from aims.events import Event, EventStore, ToolCall
 from aims.models import ModelCallError, ModelClient, Profile, Prompt, Reply
+from aims.models.purse import Purse
 from aims.monitor.config import ReviewConfig
 from aims.monitor.policy import Cutoffs
 from aims.monitor.render import escape, frame
-from aims.monitor.sweep import Score
+from aims.monitor.sweep import NoRoom, Score
 from aims.monitor.texts import MonitorTexts
 
 log = logging.getLogger("aims.monitor")
 
 ARGUMENTS_CAP = 16_384
+
+
+# A review call's score, None when it gave none, what it cost and whether the monitor budget
+# had no room for it.
+type _Scored = tuple[Score | None, float, bool]
 
 
 class Scorer(Protocol):
@@ -64,8 +70,9 @@ class Reviewer:
     `config.resamples` hidden samples of the agent's next step, drawn from its own profile and
     prompt, never run, each scored, all stay below the pause cutoff. A sample is scored by its
     tool calls, else by its text; one with neither counts as importance 1. Any review call that
-    fails keeps the flags. A resample at the kill cutoff confirms them. Flagged calls carry the
-    frame ids the trajectory renders them under, made with the run's secret `key`.
+    fails keeps the flags, as does one the monitor budget in `purse` has no room for. A
+    resample at the kill cutoff confirms them. Flagged calls carry the frame ids the trajectory
+    renders them under, made with the run's secret `key`.
     """
 
     def __init__(
@@ -77,8 +84,10 @@ class Reviewer:
         store: EventStore,
         source: str,
         key: bytes,
+        purse: Purse | None = None,
     ) -> None:
         self.config = config
+        self.purse = purse
         self.texts = texts
         self.client = client
         self.store = store
@@ -110,7 +119,7 @@ class Reviewer:
         if held is not None:
             proposals.append(await self._proposal("review_held", [held]))
         rescored = len(proposals)
-        jobs: list[asyncio.Task[tuple[Score | None, float]]] = []
+        jobs: list[asyncio.Task[_Scored]] = []
         async with asyncio.TaskGroup() as tg:
             for text in proposals:
                 jobs.append(tg.create_task(self._score(scorer, text)))
@@ -118,9 +127,10 @@ class Reviewer:
                 for _ in range(self.config.resamples):
                     jobs.append(tg.create_task(self._resample(scorer, *sample)))
         results = [j.result() for j in jobs]
-        scores = [s for s, _ in results if s is not None]
-        failed = sum(1 for s, _ in results if s is None)
-        resampled = [s for s, _ in results[rescored:] if s is not None]
+        scores = [s for s, _, _ in results if s is not None]
+        short = sum(1 for _, _, x in results if x)
+        failed = sum(1 for s, _, x in results if s is None and not x)
+        resampled = [s for s, _, _ in results[rescored:] if s is not None]
         top = max((s.importance for s in scores), default=0)
         suspicions = [s.suspicion for s in scores]
         out: dict[str, Any] = {
@@ -130,7 +140,7 @@ class Reviewer:
             "scored": len(scores),
             "resamples": len(resampled),
             "failed": failed,
-            "cost_usd": sum(c for _, c in results),
+            "cost_usd": sum(c for _, c, _ in results),
         }
         kill = cutoffs.kill
         sample_top = max((s.importance for s in resampled), default=0)
@@ -139,6 +149,9 @@ class Reviewer:
             return ReviewResult(False, reason, confirmed=True, **out)
         if failed:
             return ReviewResult(False, f"{failed} of {len(results)} review calls failed", **out)
+        if short:
+            reason = f"the monitor budget had no room for {short} of {len(results)} review calls"
+            return ReviewResult(False, reason, **out)
         if sample is None and self.config.resamples:
             return ReviewResult(False, "the agent has no next step to resample", **out)
         pause = cutoffs.pause
@@ -152,25 +165,41 @@ class Reviewer:
         reason = f"{len(scores)} review scores stayed below importance {pause}"
         return ReviewResult(True, reason, **out)
 
-    async def _score(self, scorer: Scorer, proposal: str | None) -> tuple[Score | None, float]:
+    async def _score(self, scorer: Scorer, proposal: str | None) -> _Scored:
         if proposal is None:
-            return None, 0.0
+            return None, 0.0, False
         try:
             score = await scorer.score(proposal, role="review")
+        except NoRoom as e:
+            log.info("a review score was not sent: %s", e)
+            return None, e.cost_usd, True
         except Exception as e:
             log.warning("a review score failed: %s: %s", type(e).__name__, e)
-            return None, getattr(e, "cost_usd", 0.0)
-        return score, score.cost_usd
+            return None, getattr(e, "cost_usd", 0.0), False
+        return score, score.cost_usd, False
 
-    async def _resample(
-        self, scorer: Scorer, profile: Profile, prompt: Prompt
-    ) -> tuple[Score | None, float]:
+    async def _resample(self, scorer: Scorer, profile: Profile, prompt: Prompt) -> _Scored:
+        purse = self.purse
+        hold = None if purse is None else await purse.hold(profile, prompt)
+        if purse is not None and hold is None:
+            log.info("a review resample was not sent: the monitor budget has no room for it")
+            return None, 0.0, True
         try:
-            reply = await self.client.call(profile, prompt, role="review")
+            reply = await self.client.call(
+                profile, prompt, role="review", cap=None if hold is None else hold.cap
+            )
+            if hold is not None:
+                hold.settle(reply)
         except Exception as e:
             log.warning("a review resample failed: %s: %s", type(e).__name__, e)
-            cost = e.reply.cost_usd if isinstance(e, ModelCallError) else None
-            return None, cost or 0.0
+            if not isinstance(e, ModelCallError):
+                return None, 0.0, False
+            if hold is not None:
+                hold.settle(e.reply)
+            return None, e.reply.cost_usd or 0.0, e.no_room
+        finally:
+            if hold is not None:
+                hold.settle()
         cost = reply.cost_usd or 0.0
         if reply.tool_calls:
             text = self.texts["review_resample"].format(calls=_sampled(reply))
@@ -178,9 +207,9 @@ class Reviewer:
             said = escape({"text": _cap(reply.text)})
             text = self.texts["review_resample_text"].format(text=said)
         else:
-            return Score(importance=1, suspicion=0, call_id=reply.call_id), cost
-        score, more = await self._score(scorer, text)
-        return score, cost + more
+            return Score(importance=1, suspicion=0, call_id=reply.call_id), cost, False
+        score, more, short = await self._score(scorer, text)
+        return score, cost + more, short
 
     async def _proposal(self, text: str, calls: Sequence[Event]) -> str | None:
         try:
