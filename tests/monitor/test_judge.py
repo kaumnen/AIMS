@@ -900,8 +900,11 @@ async def test_a_score_with_many_metrics_is_shortened_in_the_brief(store: LocalE
     assert score["metrics"][MORE_KEYS] == 896
 
 
-async def test_a_reply_without_token_counts_is_charged_by_its_size(store: LocalEventStore) -> None:
-    """A provider that sends no usage: the calls still count against the rollout's share."""
+async def test_a_reply_without_token_counts_counts_by_its_size_against_the_share(
+    store: LocalEventStore,
+) -> None:
+    """A provider that sends no usage: the calls still count against the rollout's share, by
+    their size. The judge's cost stays what providers reported."""
     run = await make_run(store)
     none: dict[str, Any] = {"usage": {}}
     script = Script(call("events") | none, say(json.dumps(verdict())) | none)
@@ -913,7 +916,10 @@ async def test_a_reply_without_token_counts_is_charged_by_its_size(store: LocalE
     responses = await store.events(run.id, types=["model.response"])
     assert [e.data["cost_usd"] for e in responses] == [None, None]
     sent = sum(len(json.dumps(body)) for body in script.requests) // (CHARS_PER_TOKEN * 2)
-    assert result.cost_usd > sent * price.input / 1_000_000 > 0
+    assert result.cost_usd == 0
+    [rollout] = judge._rollouts
+    assert rollout.sized > sent * price.input / 1_000_000 > 0
+    assert rollout.left == pytest.approx(rollout.budget - rollout.sized)
     counted = make_judge(store, run, Script(call("events"), say(json.dumps(verdict()))))
     with_usage = await counted.run(flags=[], sweeps=[])
     assert with_usage.cost_usd == pytest.approx(2 * (100 * price.input + 10 * price.output) / 1e6)

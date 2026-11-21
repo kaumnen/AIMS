@@ -192,13 +192,20 @@ class ScoreResult:
 class Purse:
     """What the checks of one score may spend: `budget` USD, None for no cap, of which `spent`
     went. `unseen` is what failed calls that may have been billed with no cost reported count
-    at, against the budget only. `stopped` says why the checks stopped, None while they go
-    on."""
+    at, `sized` what answers that came with no token counts count at by their size, both
+    against the budget only. `stopped` says why the checks stopped, None while they go on."""
 
     budget: float | None
     spent: float = 0.0
     unseen: float = 0.0
+    sized: float = 0.0
     stopped: str | None = None
+
+    @property
+    def counted(self) -> float:
+        """What the checks count against the budget: what they spent, what failed calls with
+        no cost reported and answers with no token counts count at."""
+        return self.spent + self.unseen + self.sized
 
     def room(self, profile: Profile, prompt: Prompt) -> int | None:
         """The output cap the next call of `profile` with `prompt` gets, so the checks stay
@@ -207,7 +214,7 @@ class Purse:
         fit. An unpriced call is held only by the costs its provider reports."""
         if self.stopped is not None or self.budget is None:
             return None
-        left = self.budget - self.spent - self.unseen
+        left = self.budget - self.counted
         price = profile.price
         if price is None:
             if left <= 0:
@@ -238,7 +245,7 @@ class Purse:
         given, planned = _input(price, prompt), profile.max_output_tokens
 
         def fits(owed: float) -> bool:
-            left = budget - self.spent - self.unseen - owed
+            left = budget - self.counted - owed
             left -= given
             if price.output <= 0 or planned is None:
                 return left >= 0
@@ -248,12 +255,13 @@ class Purse:
         return SpendCap(attempt_usd=attempt, fits=fits)
 
     def charge(self, reply: Reply, *, no_room: bool = False) -> None:
-        """Add what `reply` cost and what its unseen attempts count at. The checks stop once a
-        call had no room to be tried again, or past the budget, which only an unpriced call or
-        a provider's own figure can bring."""
+        """Add what `reply` cost and what its unseen attempts and an answer with no token
+        counts count at. The checks stop once a call had no room to be tried again, or past the
+        budget, which an unpriced call, a provider's own figure or an answer's size can bring."""
         self.spent = round(self.spent + (reply.cost_usd or 0.0), 10)
         self.unseen = round(self.unseen + reply.unseen_usd, 10)
-        over = self.budget is not None and self.spent + self.unseen > self.budget
+        self.sized = round(self.sized + reply.sized_usd, 10)
+        over = self.budget is not None and self.counted > self.budget
         if self.stopped is None and (no_room or over):
             self._stop()
 
@@ -261,6 +269,8 @@ class Purse:
         self.stopped = f"the score spent ${self.spent:.4f} of its ${self.budget:g}"
         if self.unseen:
             self.stopped += f"; failed calls with no cost reported may add ${self.unseen:.4f}"
+        if self.sized:
+            self.stopped += f"; answers with no token counts count at ${self.sized:.4f}"
 
 
 def _input(price: Price, prompt: Prompt) -> float:

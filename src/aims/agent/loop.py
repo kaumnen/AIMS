@@ -82,7 +82,9 @@ class _End(Exception):
 
 @dataclass(slots=True)
 class Totals:
-    """What the steps so far used. A reply with no price leaves `cost_complete` false."""
+    """What the steps so far used. A reply with no price leaves `cost_complete` false.
+    `sized_usd` is what answers that came with no token counts count at by their size,
+    against the cost caps only."""
 
     steps: int = 0
     input_tokens: int = 0
@@ -90,6 +92,7 @@ class Totals:
     output_tokens: int = 0
     reasoning_tokens: int = 0
     cost_usd: float = 0.0
+    sized_usd: float = 0.0
     cost_complete: bool = True
 
     def add(self, reply: Reply, *, step: bool) -> None:
@@ -103,6 +106,12 @@ class Totals:
             self.cost_complete = False
         else:
             self.cost_usd += reply.cost_usd
+        self.sized_usd += reply.sized_usd
+
+    @property
+    def counted_usd(self) -> float:
+        """What the cost caps count: the cost and what answers with no token counts count at."""
+        return self.cost_usd + self.sized_usd
 
     def usage(self) -> ModelUsage:
         return ModelUsage(
@@ -226,8 +235,11 @@ def _over(
         return "budget_steps", f"{scope} limit of {steps} steps reached"
     if tokens is not None and t.output_tokens >= tokens:
         return "budget_output_tokens", f"{scope} limit of {tokens} output tokens reached"
-    if cost is not None and t.cost_usd >= cost:
-        return "budget_cost", f"{scope} limit of {cost:g} USD reached"
+    if cost is not None and t.counted_usd >= cost:
+        detail = f"{scope} limit of {cost:g} USD reached"
+        if t.sized_usd:
+            detail += f"; answers with no token counts count at ${t.sized_usd:.4f}"
+        return "budget_cost", detail
     return None
 
 
@@ -632,7 +644,10 @@ class Agent:
     def _charge(self, reply: Reply, *, step: bool) -> None:
         self.totals.add(reply, step=step)
         self.run_budget.totals.add(reply, step=step)
-        if reply.cost_usd is None and not self._cost_warned:
+        # Only an answer shows a missing price: a failed call may have no cost on a priced
+        # profile, and a priced answer with no token counts is counted by its size.
+        answered = reply.status in ("completed", "incomplete")
+        if answered and reply.cost_usd is None and not reply.sized_usd and not self._cost_warned:
             caps = self._budget().cost_usd or self._limits().cost_usd
             if caps is not None:
                 self._cost_warned = True
@@ -658,7 +673,7 @@ class Agent:
         used = {
             "steps": (self.totals.steps, b.steps),
             "output_tokens": (self.totals.output_tokens, b.output_tokens),
-            "cost_usd": (self.totals.cost_usd, b.cost_usd),
+            "cost_usd": (self.totals.counted_usd, b.cost_usd),
         }
         for name, (value, limit) in used.items():
             if limit is None or self.warned.get(name) == limit or value < b.warn_at * limit:

@@ -739,6 +739,53 @@ async def test_a_retry_under_a_spend_cap_runs_only_while_it_fits(
     assert (first.cost_usd, first.retry) == (None, fits)
 
 
+@pytest.mark.parametrize(
+    ("usage", "limit", "price", "sized"),
+    [
+        (False, None, True, True),
+        (False, 5, True, True),
+        (True, None, True, False),
+        (False, None, False, False),
+    ],
+)
+async def test_an_answer_with_no_token_counts_is_sized_against_caps_only(
+    store: LocalEventStore, usage: bool, limit: int | None, price: bool, sized: bool
+) -> None:
+    """With no counts and no cost, a priced answer counts at its size: the request it
+    answered, every token uncached, and its provider items, longer than its 42 characters of
+    text, reasoning and tool call, at most the output cap. Its recorded cost stays empty."""
+    run_id = await new_run(store)
+    events = CHAT_EVENTS if usage else CHAT_EVENTS[:-1]
+    handler, sent = scripted(lambda: stream(sse(events)))
+    p = profile(max_output_tokens=limit) if price else profile(max_output_tokens=limit, price=None)
+    async with client(store, run_id, p, handler) as mc:
+        reply = await mc.call("test", PROMPT)
+    if not sized:
+        assert reply.sized_usd == 0
+        return
+    assert reply.cost_usd is None
+    [body] = sent
+    items = json.dumps(reply.turn.native, ensure_ascii=False, separators=(",", ":"))
+    assert len(items) > 42
+    made = min(-(-len(items) // 3), limit or len(items))
+    assert reply.sized_usd == pytest.approx((len(body) // 3 * 1.0 + made * 2.0) / 1e6)
+    response = payloads(await model_events(store, run_id))[1]
+    assert (response.status, response.cost_usd) == ("completed", None)
+
+
+async def test_a_replayed_answer_with_no_token_counts_is_not_sized(
+    store: LocalEventStore,
+) -> None:
+    source = await new_run(store)
+    handler, _ = scripted(lambda: stream(sse(CHAT_EVENTS[:-1])))
+    async with client(store, source, profile(), handler) as mc:
+        assert (await mc.call("test", PROMPT)).sized_usd > 0
+    recording = await Recording.load(store, source)
+    run_id = await new_run(store)
+    async with client(store, run_id, profile(), handler, replay=recording) as mc:
+        assert (await mc.call("test", PROMPT)).sized_usd == 0
+
+
 @pytest.mark.parametrize("failure", ["connect", "status"])
 async def test_an_attempt_the_provider_did_not_take_owes_nothing(
     store: LocalEventStore, failure: str

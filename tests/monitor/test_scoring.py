@@ -943,6 +943,31 @@ async def test_a_failure_the_provider_did_not_take_is_retried_at_a_tight_cap(
     assert result.awareness["a"].finding == "no"
 
 
+async def test_answers_with_no_token_counts_count_against_the_score_s_cap_by_size(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each answer comes with no usage and 1,544 characters of text, 530 tokens with the keys
+    of its message, at $2 per million. The cap holds two of them, then less than MIN_OUTPUT
+    fits. The score's cost stays $0."""
+    run_id = await sealed(store, await words(store, 3))
+    oracle(monkeypatch, [])
+    monkeypatch.setattr(scoring, "CHUNK_TOKENS", 1)
+    no = json.dumps({"finding": "no", "quote": "x" * 1500, "frames": []})
+    assert len(no) == 1544
+    script = Script(*[say(no) | {"usage": None}] * 10)
+    p = profile(name="cheap", model="cheap", price={"input": 0.0, "cached": 0.0, "output": 2.0})
+
+    def build(score_id: str) -> Classifier:
+        client = ModelClient(store, score_id, models(p), transport=script.transport(), env={})
+        return Classifier(profile=p, client=client, texts=TEXTS)
+
+    result = await score_run(store, run_id, classifier=build, budget_usd=0.0025, answer=False)
+    assert [r["max_tokens"] for r in script.requests] == [1250, 720]
+    assert result.cost_usd == 0
+    sized = "; answers with no token counts count at $0.0021"
+    assert result.stopped == f"the score spent $0.0000 of its $0.0025{sized}"
+
+
 def test_the_purse_counts_unseen_attempts_against_its_budget_only() -> None:
     prompt = Prompt(items=[Message(role="user", content="x")])
     capped = profile(max_output_tokens=100, price={"input": 0.0, "cached": 0.0, "output": 1.0})

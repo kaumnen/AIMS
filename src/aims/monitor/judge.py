@@ -734,6 +734,9 @@ class Rollout:
     # What failed calls that may have been billed with no cost reported count at, against the
     # budget only.
     owed: float = 0.0
+    # What answers that came with no token counts count at by their size, against the budget
+    # only.
+    sized: float = 0.0
     context: int = 0
     mark: int = 0
     # Whether the call `context` counts sent the verdict schema, not the tool specs.
@@ -749,14 +752,20 @@ class Rollout:
     def label(self) -> str:
         return f"{self.name} (blind)" if self.blind else self.name
 
-    def charge(self, reply: Reply, prompt: Prompt | None = None, unpriced: float = 0.0) -> None:
-        """Add what `reply` cost, and `unpriced` for an attempt of it that came with no price,
-        and what its unseen attempts count at to `owed`. With the `prompt` it answered, its
-        token counts become the context the next call builds on: `context` counts the items
-        before `mark`. A reply without counts leaves both as they were, so the items since are
-        counted by size."""
-        self.cost += (reply.cost_usd or 0.0) + unpriced
+    @property
+    def left(self) -> float:
+        """What the rollout's share has left once what it spent, `owed` and `sized` count."""
+        return self.budget - self.cost - self.owed - self.sized
+
+    def charge(self, reply: Reply, prompt: Prompt | None = None) -> None:
+        """Add what `reply` cost, what its unseen attempts count at to `owed` and what an answer
+        with no token counts counts at to `sized`. With the `prompt` it answered, its token
+        counts become the context the next call builds on: `context` counts the items before
+        `mark`. A reply without counts leaves both as they were, so the items since are counted
+        by size."""
+        self.cost += reply.cost_usd or 0.0
         self.owed += reply.unseen_usd
+        self.sized += reply.sized_usd
         usage = reply.usage
         if prompt is None or usage.input_tokens is None:
             return
@@ -1134,7 +1143,7 @@ class Judge:
         # the schema the exploring call did not send.
         explored = RESULT_TOKENS + self._tokens(self._force()) + FORMAT_TOKENS
         while True:
-            left = r.budget - r.cost - r.owed
+            left = r.left
             context = self._context(r, items, specs, forced=forced)
             out = plan = None
             if not forced:
@@ -1160,6 +1169,8 @@ class Judge:
                 r.error = "the judge budget ran out before a verdict"
                 if r.owed:
                     r.error += f"; failed calls with no cost reported count at ${r.owed:.4f}"
+                if r.sized:
+                    r.error += f"; answers with no token counts count at ${r.sized:.4f}"
                 return
             if forced:
                 tries += 1
@@ -1240,7 +1251,7 @@ class Judge:
             recorded=r.calls.append,
             cap=cap,
         )
-        r.charge(reply, prompt, self._unpriced(prompt, reply))
+        r.charge(reply, prompt)
         return reply
 
     def _cap(
@@ -1258,27 +1269,6 @@ class Judge:
             return room is None or planned is None or room >= planned
 
         return SpendCap(attempt_usd=round(attempt, 10), fits=fits)
-
-    def _unpriced(self, prompt: Prompt, reply: Reply) -> float:
-        """What the answer of `reply` is taken to have cost when it came without token counts,
-        so with no price: its size at the profile's prices, every input token uncached. A
-        provider that leaves the counts out would else explore for free, past the rollout's
-        share. 0 for an answer with counts, a profile with no price, and a replayed answer."""
-        price, usage = self.profile.price, reply.usage
-        given, made = usage.input_tokens, usage.output_tokens
-        if price is None or self.client.replay is not None:
-            return 0.0
-        if given is not None and made is not None and min(given, made) >= 0:
-            return 0.0
-        if given is None or given < 0:
-            beside: list[ToolSpec | OutputSchema] = list(prompt.tools)
-            if prompt.output_schema is not None:
-                beside.append(prompt.output_schema)
-            sent = [*prompt.items, *beside]
-            given = sum(len(x.model_dump_json()) for x in sent) // CHARS_PER_TOKEN
-        if made is None or made < 0:
-            made = -(-len(reply.turn.model_dump_json()) // CHARS_PER_TOKEN)
-        return (given * price.input + made * price.output) / MILLION
 
     def _context(
         self, r: Rollout, items: Sequence[Item], specs: Sequence[ToolSpec], *, forced: bool
@@ -1333,7 +1323,7 @@ class Judge:
     def _fits(self, r: Rollout, items: Sequence[Item], specs: Sequence[ToolSpec]) -> bool:
         """Whether the forced verdict calls after `items` still get their planned output."""
         context = self._context(r, [*items, self._force()], specs, forced=True)
-        left = r.budget - r.cost - r.owed
+        left = r.left
         out = self._room(left, context, later=FORCE_TRIES - 1, grow=self._refusal())
         return out is None or out >= self._verdict()
 

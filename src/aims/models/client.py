@@ -39,7 +39,7 @@ from aims.models.profiles import ModelsConfig, Overrides, Price, Profile, Profil
 from aims.models.replay import Pace, Recording, Replayer, ReplayError, ReplayWall, canonical_key
 from aims.models.replay import chain as cause_chain
 from aims.models.transport import Exchange, Recorder, current, encode_chunks
-from aims.models.types import NO_ROOM, Prompt, Reply, SpendCap
+from aims.models.types import CHARS_PER_TOKEN, NO_ROOM, Prompt, Reply, SpendCap
 from aims.net import Outbound
 from aims.text import scrub
 
@@ -235,6 +235,9 @@ class ModelClient:
                 retry = retry and not no_room
             if no_room and not (outcome.error or "").endswith(NO_ROOM):
                 outcome.error = f"{outcome.error}; {NO_ROOM}"
+            sized = 0.0
+            if outcome.status in ("completed", "incomplete"):
+                sized = self._sized(profile, content, outcome.assembled, cost[0])
             reply = await settle(
                 self._finish(
                     profile,
@@ -247,6 +250,7 @@ class ModelClient:
                     spent,
                     cost,
                     unseen,
+                    sized,
                 )
             )
             spent = reply.cost_usd
@@ -450,9 +454,10 @@ class ModelClient:
         spent: float | None,
         priced: tuple[float | None, CostSource | None],
         unseen: float,
+        sized: float = 0.0,
     ) -> Reply:
         """Log the attempt with its own `priced` cost; the reply adds `spent`, what the attempts
-        before it cost, and carries `unseen`."""
+        before it cost, and carries `unseen` and `sized`."""
         a = o.assembled
         ex = o.exchange
         datas: list[bytes] = []
@@ -524,6 +529,7 @@ class ModelClient:
             usage=a.usage,
             cost_usd=_plus(spent, cost),
             unseen_usd=unseen,
+            sized_usd=sized,
             error=o.error,
         )
 
@@ -539,6 +545,30 @@ class ModelClient:
         if cost is None:
             return None, None
         return cost, "list" if profile.listed is not None else "price"
+
+    def _sized(self, profile: Profile, content: bytes, a: Assembled, cost: float | None) -> float:
+        """What a live answer of a priced profile that came with no cost and without token
+        counts is taken to cost by its size, every input token uncached: the request it answered
+        for a missing input count; for a missing output count its text, reasoning and tool
+        calls, or its provider items when longer, as encrypted reasoning makes them, at most the
+        output cap sent. 0 for an answer with a cost or with no price."""
+        price, usage = profile.price, a.usage
+        if cost is not None or price is None or self.replay is not None:
+            return 0.0
+        given, made = usage.input_tokens, usage.output_tokens
+        if given is None or given < 0:
+            given = len(content) // CHARS_PER_TOKEN
+        if made is None or made < 0:
+            size = len(a.text) + len(a.reasoning)
+            size += sum(len(c.name) + len(c.arguments) for c in a.tool_calls)
+            if a.native:
+                size = max(
+                    size, len(json.dumps(a.native, ensure_ascii=False, separators=(",", ":")))
+                )
+            made = -(-size // CHARS_PER_TOKEN)
+            if profile.max_output_tokens is not None:
+                made = min(made, profile.max_output_tokens)
+        return round((given * price.input + made * price.output) / 1_000_000, 10)
 
     def _unseen(self, o: _Outcome, cost: float | None) -> bool:
         """Whether a failed live attempt may have been billed with no cost reported. A provider

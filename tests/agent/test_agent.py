@@ -397,6 +397,34 @@ async def test_step_and_cost_budgets_end_the_agent(store: LocalEventStore) -> No
     assert finished.detail == "run limit of 0.0002 USD reached"
 
 
+async def test_answers_with_no_token_counts_count_against_the_cost_cap_by_size(
+    store: LocalEventStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A priced profile whose answers come with no usage: each step counts at its size, so the
+    cost cap ends the agent though its recorded cost stays $0, and its stop says so. Only a
+    profile with no price is warned about, not a failed call with no cost."""
+    free = call("bash", command="true") | {"usage": None}
+    agent, _ = await make_agent(store, Script(*[free] * 6), budget=Budget(cost_usd=0.0001))
+    finished = await agent.run()
+    assert (finished.reason, finished.steps, finished.cost_usd) == ("budget_cost", 1, 0)
+    sized = agent.totals.sized_usd
+    assert sized > 0.0001
+    assert finished.detail == (
+        f"agent limit of 0.0001 USD reached; answers with no token counts count at ${sized:.4f}"
+    )
+    busy = Script({"status": 503, "error": "busy"})
+    agent, _ = await make_agent(store, busy, budget=Budget(cost_usd=0.0001))
+    assert (await agent.run()).reason == "model_error"
+    assert "not enforced" not in caplog.text
+    unpriced = profile(price=None)
+    agent, _ = await make_agent(
+        store, Script(*[free] * 2), p=unpriced, budget=Budget(steps=2, cost_usd=0.0001)
+    )
+    finished = await agent.run()
+    assert (finished.reason, finished.steps) == ("budget_steps", 2)
+    assert "has no price, so the cost limit of agent" in caplog.text
+
+
 async def test_the_wall_budget_cancels_a_slow_step(store: LocalEventStore) -> None:
     def slow(command: str, stdin: bytes | None) -> tuple[bytes, int]:
         raise AssertionError("not reached")

@@ -307,6 +307,7 @@ Under a spend cap, the judge and the score retry a failed call only when another
 | `service_tier` | The tier the answer names |
 
 - Budgets and `aims spend` count the recorded cost.
+- An answer with no token counts and no cost has no recorded cost. The agent and run cost caps, the score's spend cap and the judge's budget still count it at its size, at the profile's price with every input token uncached. Its size is the request and the answer as the provider sent it, at most the output cap. A stop at a cap says what such answers count at. A profile with no price counts nothing.
 - The run page and the report say how much of a run's cost is at a list price, with each key and date. The run API gives the amount in `listed_usd`. The run detail lists it by profile in `listed`.
 - The estimate counts a past call at the cost its provider reported. Other past calls and the calls to come are priced at the profile's price or list price. A router can bill above the list price. Four test calls through one router cost 2.8 to 3.4 times the list price.
 - A step in the app names its provider. The report lists the providers of each model with their answer counts. The live view notes it when a second provider answers a model.
