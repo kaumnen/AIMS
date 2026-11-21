@@ -166,25 +166,47 @@ async def test_io_uring_is_refused_when_the_daemon_allows_it(
         return await create(docker, config=config, name=name)
 
     monkeypatch.setattr(docker_module, "create_container", unconfined)
+    x86 = backend.arch == "x86_64"
+    # io_uring_setup, io_uring_enter and io_uring_register, then their neighbours 424 and 428.
+    # Without the filter, enter and register on fd -1 fail with EBADF or EINVAL, never EPERM.
+    # The neighbours fail with EBADF.
+    # On x86_64 the three calls also go through x32 and through int 0x80.
     command = (
-        "grep Seccomp_filters /proc/self/status | tr -s '\\t' ' '; python3 -c \"import ctypes\n"
-        "libc = ctypes.CDLL(None, use_errno=True)\n"
-        'print(libc.syscall(425, 1, ctypes.create_string_buffer(120)), ctypes.get_errno())"'
+        "grep Seccomp_filters /proc/self/status | tr -s '\\t' ' '; python3 - <<'EOF'\n"
+        + (INT80 if x86 else "import ctypes\nlibc = ctypes.CDLL(None, use_errno=True)\n")
+        + "libc.syscall.restype = ctypes.c_long\n"
+        "def call(nr, *args):\n"
+        "    return libc.syscall(nr, *args), ctypes.get_errno()\n"
+        "params = ctypes.create_string_buffer(120)\n"
+        "def uring(bit):\n"
+        "    return (*call(bit | 425, 1, params), *call(bit | 426, -1, 1, 0, 0, None, 0),"
+        " *call(bit | 427, -1, 0, None, 0))\n"
+        "print(*uring(0), *call(424, -1, 0, None, 0), *call(428, -1, b'x', 0))\n"
+        + ("print(*uring(0x40000000), *(int80(nr, -1) for nr in (425, 426, 427)))\n" if x86 else "")
+        + "EOF"
     )
     run_id, sb = await sandbox(backend, store)
     try:
-        result = await sb.exec(command, timeout_s=10)
+        result = await sb.exec(command, timeout_s=20)
     finally:
         await sb.close()
 
-    # One filter: the daemon applied none, so the refusal is aims-exec's own.
-    assert result.stdout == b"Seccomp_filters: 1\n-1 1\n"
-    denied = [
-        p
+    # One filter: the daemon applied none, so each refusal is aims-exec's own.
+    lines = [b"Seccomp_filters: 1", b"-1 1 -1 1 -1 1 -1 9 -1 9"]
+    if x86:
+        lines.append(b"-1 1 -1 1 -1 1 -1 -1 -1")
+    assert result.stdout.splitlines() == lines, result.stderr
+    denied = Counter(
+        (p.syscall, p.errno)
         for p in (e.payload() for e in await events(store, run_id, "sys.denied"))
         if isinstance(p, SysDenied) and p.exec_id == result.finished.exec_id
-    ]
-    assert [(p.syscall, p.errno) for p in denied] == [("io_uring_setup", 1)]
+    )
+    each = 3 if x86 else 1
+    assert denied == {
+        ("io_uring_setup", 1): each,
+        ("io_uring_enter", 1): each,
+        ("io_uring_register", 1): each,
+    }
 
 
 def mine(evs: list[Event], exec_id: str, kind: type[Any]) -> list[Any]:
