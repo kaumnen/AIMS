@@ -1182,9 +1182,11 @@ class DockerVolumeView:
                 "Cmd": ["true"],
                 "Labels": {**self._labels, "aims.role": "helper"},
                 "NetworkDisabled": True,
+                # Never started: the daemon writes the files. Locked down as the other helpers.
                 "HostConfig": {
                     "NetworkMode": "none",
                     "CapDrop": ["ALL"],
+                    "SecurityOpt": ["no-new-privileges"],
                     "Mounts": [{"Type": "volume", "Source": self.name, "Target": "/v"}],
                     "LogConfig": {"Type": "none"},
                 },

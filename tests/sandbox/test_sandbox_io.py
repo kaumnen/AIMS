@@ -605,6 +605,41 @@ async def test_a_put_archive_cancelled_in_its_create_call_leaves_no_helper(
         await scrub(backend, run_id)
 
 
+async def test_the_put_archive_helper_is_locked_down_never_starts_and_goes(
+    backend: DockerBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = f"test-{uuid.uuid4().hex[:12]}"
+    name = f"aims-{run_id}-shared"
+    await backend.docker.volumes.create({"Name": name, "Labels": {"aims.run": run_id}})
+    view = await backend.volume(run_id, Mount(volume="shared", target="/shared"))
+    seen: list[dict[str, Any]] = []
+    put = DockerContainer.put_archive
+
+    async def inspected_put(self: DockerContainer, path: str, data: bytes) -> bool:
+        seen.append(await self.show())
+        return await put(self, path, data)
+
+    monkeypatch.setattr(DockerContainer, "put_archive", inspected_put)
+    data = io.BytesIO()
+    with tarfile.open(fileobj=data, mode="w"):
+        pass
+    try:
+        before = await leftovers(backend, run_id)
+        await view.put_archive(data.getvalue())
+        assert await leftovers(backend, run_id) == before
+    finally:
+        await view.close()
+        await scrub(backend, run_id)
+
+    [info] = seen
+    host = info["HostConfig"]
+    assert info["Config"]["Labels"]["aims.role"] == "helper"
+    assert info["State"]["Status"] == "created"
+    assert host["CapDrop"] == ["ALL"]
+    assert host["NetworkMode"] == "none"
+    assert host["SecurityOpt"] == ["no-new-privileges"]
+
+
 async def test_a_reader_cancelled_before_its_delete_is_sent_still_goes(
     backend: DockerBackend, monkeypatch: pytest.MonkeyPatch
 ) -> None:
