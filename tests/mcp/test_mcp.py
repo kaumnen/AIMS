@@ -4,6 +4,7 @@ operator see, the cost question before runs that spend and the server over stdio
 import asyncio
 import contextlib
 import os
+import re
 import sys
 from collections.abc import AsyncGenerator, AsyncIterator
 from pathlib import Path
@@ -22,6 +23,7 @@ from aims.cli import app
 from aims.events import LocalEventStore
 from aims.mcp.client import Api
 from aims.mcp.server import build
+from aims.report import texts as report_texts
 from aims.server import api as routes
 from aims.wire import Ack, CommandMessage
 
@@ -115,6 +117,16 @@ def text(result: mt.CallToolResult) -> str:
     return "\n".join(c.text for c in result.content if isinstance(c, mt.TextContent))
 
 
+def unbuilt(report: str) -> str:
+    """The Markdown report with the time on its Built line masked. Each read builds the report
+    anew, so two reads can differ in that time when a second passes between them."""
+    label = re.escape(report_texts.PIN_LABELS["built"])
+    when = r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC"
+    masked, n = re.subn(rf"^(- \*\*{label}:\*\* .* at ){when}$", r"\1<time>", report, flags=re.M)
+    assert n == 1, report
+    return masked
+
+
 def error(result: mt.CallToolResult) -> str:
     """The text of a tool error, after the name of the tool the SDK puts first."""
     assert result.is_error, text(result)
@@ -167,7 +179,8 @@ async def test_a_read_gives_what_the_api_gives(
         verified = data(await c.call_tool("verify", {"run_id": run_id}))
         assert verified["ok"]
         report = text(await c.call_tool("report", {"run_id": run_id}))
-        assert report == (await api.get(f"/api/runs/{run_id}/report?format=md")).text
+        md = (await api.get(f"/api/runs/{run_id}/report?format=md")).text
+        assert unbuilt(report) == unbuilt(md)
         listed = data(await c.call_tool("scenarios", {}))
         assert {(s["source"], s["name"]) for s in listed} >= {("project", "control")}
         shown = data(await c.call_tool("scenario_show", {"scenario": "project/control"}))
