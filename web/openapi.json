@@ -10201,7 +10201,7 @@
       },
       "Plants": {
         "additionalProperties": false,
-        "description": "Ground truth, for operators. `error` says why the plants could not be read.",
+        "description": "Ground truth, for operators. `error` says why the plants could not be read. `gaps` say\nin words what the check of the run could not count, as the score saw it once there is\none.",
         "properties": {
           "error": {
             "anyOf": [
@@ -10213,6 +10213,13 @@
               }
             ],
             "title": "Error"
+          },
+          "gaps": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Gaps",
+            "type": "array"
           },
           "rows": {
             "items": {

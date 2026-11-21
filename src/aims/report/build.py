@@ -1,5 +1,6 @@
 """Gather a run's report from its log, its monitor runs, its score runs and its labels."""
 
+import asyncio
 import bisect
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
@@ -57,7 +58,7 @@ from aims.report.model import (
     Unit,
     Warning,
 )
-from aims.run.score import CheckError, check_run
+from aims.run.score import CheckError, check_run, gaps_at
 
 PAGE = 1000
 NOT_REPORTED = frozenset({"monitor", "score", "models.check", "selftest"})
@@ -437,7 +438,10 @@ async def _plants(
             )
             for e, u in _of(events, ScoreUnit)
         ]
-        return Plants(rows=rows, units=units, score=info.run_id)
+        first = events[0].payload() if events else None
+        held = first.config.get("gaps") if isinstance(first, RunStarted) else None
+        gaps = [str(g) for g in held] if isinstance(held, list) else []
+        return Plants(rows=rows, units=units, score=info.run_id, gaps=gaps)
     if not sealed:
         return Plants(error="the run is not sealed yet")
     try:
@@ -458,7 +462,8 @@ async def _plants(
                 detail=t.detail,
             )
             for t in taken
-        ]
+        ],
+        gaps=await asyncio.to_thread(gaps_at, store.root / run_id),
     )
 
 

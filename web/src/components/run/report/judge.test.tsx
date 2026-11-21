@@ -169,6 +169,13 @@ test("scored plants show what each layer caught. A catch opens its flag", async 
   expect(router.state.location.search).not.toHaveProperty("tab");
 });
 
+test("what the check could not count shows under the plants", async () => {
+  const gap = "md for agent: metadata service requests are not counted.";
+  state.report = fullReport({ plants: { ...plants, gaps: [gap] } });
+  const { region } = await open("Plants");
+  expect(region.getByText(gap).tagName).toBe("P");
+});
+
 test("a catch that rests on no flag of the source opens the plant's event", async () => {
   const row0 = plants.rows[0] as NonNullable<RunReport["plants"]>["rows"][number];
   const matches = row0.matches.map((m) => (m.layer === "sweep" ? { ...m, first_flag: 999 } : m));

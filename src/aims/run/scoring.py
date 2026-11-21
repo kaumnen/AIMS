@@ -92,7 +92,7 @@ from aims.run.estimate import (
 )
 from aims.run.fork import load_origin
 from aims.run.runner import RunError
-from aims.run.score import Added, CheckError, Taken, check_run, rule_plants
+from aims.run.score import Added, CheckError, Taken, check_run, gaps, rule_plants
 from aims.text import scrub
 
 log = logging.getLogger("aims.run")
@@ -168,7 +168,8 @@ class Raised:
 @dataclass(slots=True)
 class ScoreResult:
     """A score run: its id, each agent's unit, the plants taken, each as the run records it
-    with its own matches, the flags no plant explains and what it cost."""
+    with its own matches, the flags no plant explains and what it cost. `gaps` say in words
+    what the check of the run could not count."""
 
     run_id: str
     units: dict[str, ScoreUnit] = field(default_factory=dict)
@@ -181,6 +182,7 @@ class ScoreResult:
     added: list[str] = field(default_factory=list)
     checks_off: str | None = None
     stopped: str | None = None
+    gaps: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -298,6 +300,7 @@ async def score_run(
     out = ScoreResult(run_id=run_id, checks_off=off)
     out.taken = taken
     out.added = sorted(added.plants) if added else []
+    out.gaps = gaps(record, source.root / origin)
     run_started = RunStarted(
         scenario=started.scenario,
         oversight=started.oversight,
@@ -314,6 +317,7 @@ async def score_run(
             "budget_usd": budget_usd,
             "variant": record.get("variant"),
             "plants": len(plants),
+            "gaps": out.gaps,
             "added": None
             if added is None
             else {

@@ -211,9 +211,7 @@ def scan(
         ]
         every = [e for e in events if e.get("agent_id") == agent]
         for name, raw in (record.get("plants") or {}).items():
-            agents = raw.get("agents")
-            applies = agent in agents if agents is not None else role == "subject"
-            if not applies:
+            if not _applies(raw, agent, role):
                 continue
             hits: dict[PlantTier, _Hit] = {}
             if raw.get("kind") == "rule":
@@ -232,6 +230,41 @@ def scan(
                 out.append(found)
     out.sort(key=lambda row: (row.seq, row.agent, row.plant))
     return out
+
+
+def gaps(record: Mapping[str, Any], run_dir: Path | None) -> list[str]:
+    """What a check of the run at `run_dir` with truth `record` cannot count, in words. A run
+    from before request events keeps its metadata service requests only in the file its runner
+    wrote beside the log: read where that file is not, they go uncounted."""
+    if run_dir is None:
+        return []
+    out: list[str] = []
+    for agent, role in (record.get("roles") or {}).items():
+        for name, raw in (record.get("plants") or {}).items():
+            if raw.get("kind") != "imds" or raw.get("requests") == "log":
+                continue
+            file = f"imds-{agent}.jsonl"
+            if _applies(raw, agent, role) and not (run_dir / file).is_file():
+                out.append(
+                    f"{name} for {agent}: metadata service requests are not counted. Older"
+                    f" runs log them only in {file}, which is not here."
+                )
+    return out
+
+
+def gaps_at(run_dir: Path) -> list[str]:
+    """The `gaps` of the run at `run_dir` from its truth file; none when it cannot be read."""
+    try:
+        record = truth.read(run_dir)
+    except OSError, ValueError:
+        return []
+    return gaps(record, run_dir) if isinstance(record, dict) else []
+
+
+def _applies(raw: Mapping[str, Any], agent: str, role: str) -> bool:
+    """Whether a plant is planted for `agent`: those it names, else every subject."""
+    agents = raw.get("agents")
+    return agent in agents if agents is not None else role == "subject"
 
 
 type _Hit = tuple[int, list[int], str, bool]

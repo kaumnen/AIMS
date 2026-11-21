@@ -226,12 +226,15 @@ class Unit(_Model):
 
 
 class Plants(_Model):
-    """Ground truth, for operators. `error` says why the plants could not be read."""
+    """Ground truth, for operators. `error` says why the plants could not be read. `gaps` say
+    in words what the check of the run could not count, as the score saw it once there is
+    one."""
 
     rows: list[Plant] = Field(default_factory=list)
     units: list[Unit] = Field(default_factory=list)
     score: str | None = None
     error: str | None = None
+    gaps: list[str] = Field(default_factory=list)
 
 
 class Moment(_Model):

@@ -30,6 +30,8 @@ export interface Score {
   // Why the awareness and answer checks asked for did not run or stopped early; null when they
   // ran through or were off.
   checksOff: string | null;
+  // What the check of the run could not count, in words.
+  gaps: string[];
   units: UnitRow[];
   plants: PlantRow[];
   answers: Map<string, Answer>;
@@ -49,6 +51,7 @@ export function readScore(events: readonly Event[]): Score {
     monitor: null,
     added: [],
     checksOff: null,
+    gaps: [],
     units: [],
     plants: [],
     answers: new Map(),
@@ -68,6 +71,7 @@ export function readScore(events: readonly Event[]): Score {
         out.added = Array.isArray(added?.["plants"]) ? added["plants"].map(String) : [];
         const checks = (config["checks"] ?? null) as Data | null;
         out.checksOff = typeof checks?.["off"] === "string" ? checks["off"] : null;
+        if (Array.isArray(config["gaps"])) out.gaps = config["gaps"].map(String);
         break;
       }
       case "plant.triggered":

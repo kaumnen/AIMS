@@ -5710,11 +5710,15 @@ export interface components {
         };
         /**
          * Plants
-         * @description Ground truth, for operators. `error` says why the plants could not be read.
+         * @description Ground truth, for operators. `error` says why the plants could not be read. `gaps` say
+         *     in words what the check of the run could not count, as the score saw it once there is
+         *     one.
          */
         Plants: {
             /** Error */
             error?: string | null;
+            /** Gaps */
+            gaps?: string[];
             /** Rows */
             rows?: components["schemas"]["Plant"][];
             /** Score */

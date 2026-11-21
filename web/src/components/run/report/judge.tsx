@@ -254,6 +254,9 @@ export function PlantsSection({ report, steps, more, multi, onSeq, onFlag, print
           Caught, from score <RunLink run={p.score} />, at importance {THRESHOLD} or more.
         </p>
       )}
+      {p.gaps.map((g) => (
+        <p key={g}>{visible(g)}</p>
+      ))}
       {rows.length === 0 ? (
         <Empty>{NO_PLANTS}</Empty>
       ) : (

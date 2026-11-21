@@ -471,8 +471,13 @@ function ScoreView({
         onSeq={onSeq}
         onFlag={onFlag}
       />
-      {score.checksOff !== null && (
-        <p className="text-muted-foreground max-w-3xl">{visible(score.checksOff)}</p>
+      {[...score.gaps, score.checksOff].map(
+        (t) =>
+          t !== null && (
+            <p key={t} className="text-muted-foreground max-w-3xl">
+              {visible(t)}
+            </p>
+          ),
       )}
       {(score.answers.size > 0 || score.awareness.size > 0) && (
         <section aria-label="What the agents said" className="flex max-w-3xl flex-col gap-3">

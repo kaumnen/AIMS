@@ -351,7 +351,7 @@ def check_plants(
     import asyncio
 
     from aims.events import LocalEventStore
-    from aims.run.score import CheckError, check_run
+    from aims.run.score import CheckError, check_run, gaps_at
     from aims.terminal import json_text
 
     async def main() -> list[Any]:
@@ -363,6 +363,8 @@ def check_plants(
     except (CheckError, KeyError) as e:
         _echo(f"error: {e}", err=True)
         raise typer.Exit(EXIT_FAILED) from None
+    for gap in gaps_at(runs_dir / run):
+        _echo(f"warning: {gap}", err=True)
     if json_out:
         typer.echo(json_text([row.as_dict() for row in rows]))
         return
@@ -3768,12 +3770,15 @@ def score_cmd(
             "plants": [t.model_dump(mode="json") for t in result.triggered],
             "checks_off": result.checks_off,
             "stopped": result.stopped,
+            "gaps": result.gaps,
             "estimate": None if cost is None else cost.model_dump(mode="json"),
         }
         typer.echo(json_text(out))
         return
     if result.stopped is not None:
         _echo(f"warning: the checks stopped: {result.stopped}", err=True)
+    for gap in result.gaps:
+        _echo(f"warning: {gap}", err=True)
     typer.echo(f"score run {result.run_id}")
     if result.added:
         _echo(f"added rule plants: {', '.join(result.added)}")

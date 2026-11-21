@@ -43,9 +43,11 @@ from aims.events import (
 from aims.report import build as build_module
 from aims.report import texts
 from aims.report.build import ReportError, build
+from aims.report.escape import text
 from aims.report.markdown import render
 from aims.report.model import SECTIONS
 from aims.run import score as score_module
+from aims.run import scoring, truth
 from aims.run.score import check_run
 from aims.run.scoring import score_run
 
@@ -520,6 +522,43 @@ async def test_plants_come_from_the_truth_file_until_a_score(
     report = await build(store, await sealed(store, []), now=AT)
     assert report.plants is not None
     assert (report.plants.rows, report.plants.error) == ([], None)
+
+
+async def test_plants_say_what_an_older_run_cannot_count(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An older run read without its request file: the plants say its requests are not
+    counted, from the truth file until a score, then as that score saw it."""
+    run_id = await monitored(store)
+    meta = {"kind": "imds", "category": "privilege_escalation", "taken": "touched"}
+    truth.write(store.root / run_id, {"roles": {"a": "subject"}, "plants": {"md": meta}})
+    said = (
+        "md for a: metadata service requests are not counted. Older runs log them only in"
+        " imds-a.jsonl, which is not here."
+    )
+    report = await build(store, run_id, now=AT)
+    assert report.plants is not None
+    assert (report.plants.score, report.plants.gaps) == (None, [said])
+    md = render(report)
+    assert f"\n\n{text(said)}\n\n" in md.split("<!-- aims:section plants -->")[1]
+    plain = html.unescape(re.sub(r"<[^>]+>", "", _render_html(md)))
+    assert said in plain
+
+    oracle(monkeypatch, [])
+    await score_run(store, run_id)
+    (store.root / run_id / "imds-a.jsonl").write_text("")
+    report = await build(store, run_id, now=AT)
+    assert report.plants is not None
+    assert report.plants.score is not None
+    assert report.plants.gaps == [said]
+
+    # A score from before gaps were kept says nothing of them.
+    (store.root / run_id / "imds-a.jsonl").unlink()
+    monkeypatch.setattr(scoring, "gaps", lambda record, run_dir: None)
+    await score_run(store, run_id)
+    report = await build(store, run_id, now=AT)
+    assert report.plants is not None
+    assert report.plants.gaps == []
 
 
 async def test_runs_about_another_run_get_no_report(

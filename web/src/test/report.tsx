@@ -120,6 +120,7 @@ export function fullReport(over: Partial<RunReport> = {}): RunReport {
     plants: {
       score: SCORE,
       error: null,
+      gaps: [],
       rows: [
         {
           agent: "agent",

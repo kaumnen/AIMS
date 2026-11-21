@@ -1600,6 +1600,18 @@ test("a score whose checks had no model says why under its plants", async () => 
   expect(await screen.findByText(off)).toBeTruthy();
 });
 
+test("a score says under its plants what it could not count", async () => {
+  withScore();
+  const gap = "md for a: metadata service requests are not counted.";
+  const log = scoreLog(SCORE);
+  const started = log[0]!;
+  const config = (started.data as { config: Record<string, unknown> }).config;
+  log[0] = { ...started, data: { ...started.data, config: { ...config, gaps: [gap] } } };
+  scoreEvents = { ...scoreEvents, [SCORE]: log };
+  renderAt(`/runs/${BEE5}?tab=score`);
+  expect((await screen.findByText(gap)).tagName).toBe("P");
+});
+
 test("a score from before checks were recorded shows no reason", async () => {
   withScore();
   renderAt(`/runs/${BEE5}?tab=score`);
