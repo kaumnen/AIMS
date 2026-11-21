@@ -335,14 +335,14 @@ async def test_a_cancel_sent_to_a_selftest_stops_the_case_running(
                 r = await c.get(f"/api/runs/{case_id}/events", params=params)
                 return bool(r.json()["items"])
 
-            async def ended() -> bool:
-                return (await summary(run_id))["status"] != "running"
+            async def ended(of: str) -> bool:
+                return (await summary(of))["status"] != "running"
 
             await until(execs, 120)
             r = await c.post(f"/api/runs/{run_id}/cancel", json={"reason": "enough"})
             assert r.status_code == 202, r.text
             assert r.json()["delivered"]
-            await until(ended, 120)
+            await until(lambda: ended(run_id), 120)
             params = {"types": "run.finished"}
             (end,) = (await c.get(f"/api/runs/{run_id}/events", params=params)).json()["items"]
             assert (end["data"]["status"], end["data"]["reason"]) == (
@@ -350,8 +350,9 @@ async def test_a_cancel_sent_to_a_selftest_stops_the_case_running(
                 "reference was cancelled",
             )
             assert (await summary(run_id))["status"] == "cancelled"
-            nested = await summary(case_id)
-            assert nested["status"] == "cancelled"
+            # each run ships on its own, so the case's end can reach the server after this one's
+            await until(lambda: ended(case_id), 120)
+            assert (await summary(case_id))["status"] == "cancelled"
             commands = (await c.get(f"/api/runs/{run_id}/commands")).json()
             assert [x["outcome"] for x in commands] == ["done"]
             params = {"types": "selftest.case"}
