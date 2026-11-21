@@ -51,7 +51,7 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
-          version: "0.13.8"
+          version: "0.13.9"
           enable-cache: false
       - if: env.PUSH == 'true'
         run: test "${GITHUB_REF_NAME#v}" = "$(uv version --short)"
@@ -156,7 +156,7 @@ jobs:
           no-cache: true
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
-          version: "0.13.8"
+          version: "0.13.9"
           enable-cache: false
       - if: env.PUSH == 'true'
         run: test "${GITHUB_REF_NAME#v}" = "$(uv version --short)"
@@ -302,7 +302,7 @@ jobs:
           path: dist
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
-          version: "0.13.8"
+          version: "0.13.9"
           enable-cache: false
       - uses: astral-sh/attest-action@39b6ce43875c196a579e31635b11aa2a2036384a # v0.0.7
       - run: uv publish
