@@ -10,6 +10,7 @@
 - A run never changes after it is sealed. Monitor runs and scores are new runs that point at it.
 - `--series <name> --runs 5` makes five runs in a row, each going on from the one before.
 - Budgets cap steps, output tokens, cost and time for each agent and for the run. `aims estimate` prints what a run can cost, with the score made after it. `--no-score` leaves the score out. `aims spend` shows what each provider was paid.
+- A cost cap holds a call's retries, so a run cannot exceed its cost caps by more than a last step per agent. A step cap bounds the cost with every attempt the profile's `retries` give each call, since a provider may bill each failed one.
 
 ### Forks
 

@@ -294,7 +294,7 @@ A 429, or a failed call whose answer says how long to wait, pauses every profile
 
 A 429 retry with no wait counts toward `attempts`, so a profile with `backoff = 0` still stops.
 
-Under a spend cap, the judge and the score retry a failed call only when another full attempt fits what is left. A failed attempt with no cost, such as a timeout or a cut stream, counts against the cap at what the call was planned to cost, since a provider may bill an answer it did not deliver. The recorded cost stays what the provider reported. Agent, sweep and review calls retry as above, so their caps can be passed by a retry.
+Under a spend cap, the judge and the score retry a failed call only when another full attempt fits what is left. So do agents under their own cost cap and the run's. An agent plans an attempt at the output cap plus the prompt's size, at most a full context. What another agent's failed attempts may have cost counts against the run's cap while its call is tried again. A failed attempt the provider refused, such as a 503, costs nothing and is still tried again. A failed attempt with no cost, such as a timeout or a cut stream, counts against the cap at what the call was planned to cost, since a provider may bill an answer it did not deliver. The recorded cost stays what the provider reported. An agent whose call has no room to be tried again ends with `budget_cost`. Sweep and review calls retry as above, so the monitor's budget can be passed by a retry.
 
 ## What a run records
 

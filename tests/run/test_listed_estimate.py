@@ -15,6 +15,7 @@ from scripted import models, profile
 from test_estimate import (
     CONFIG,
     STEP,
+    TRIES,
     output_for,
     record,
     stepped,
@@ -184,7 +185,7 @@ async def test_a_profile_with_a_key_and_no_price_counts_at_its_list_price(tmp_pa
     assert e.unpriced == []
     assert e.parts[0].agents.priced
     # the step cap bounds the cost at the list price
-    assert e.parts[0].agents.ceiling_usd == pytest.approx(10 * STEP)
+    assert e.parts[0].agents.ceiling_usd == pytest.approx(10 * STEP * TRIES)
     [entry] = e.listed
     day = f"{entry.checked:%Y-%m-%d}"
     assert entry.model_copy(update={"checked": None}) == ListedPrice.model_construct(
@@ -397,7 +398,7 @@ async def test_a_fork_counts_its_live_steps_at_the_list_price(tmp_path: Path) ->
     e = await estimate_fork(History(), laid, origin, fork, listing=listing)
     assert [x.profile for x in e.listed] == ["listed"]
     # the five steps left at the list price
-    assert e.parts[0].agents.ceiling_usd == pytest.approx(5 * STEP)
+    assert e.parts[0].agents.ceiling_usd == pytest.approx(5 * STEP * TRIES)
     assert fork_profiles(laid.models, origin, fork)["a"].price == PRICE
 
 
@@ -412,7 +413,7 @@ async def test_a_fork_of_a_run_that_recorded_no_price_takes_today_s(tmp_path: Pa
     assert (live.price, live.price_key) == (PRICE, KEY)
     assert live.listed is not None
     e = await estimate_fork(History(), laid, origin, fork, listing=listing)
-    assert e.parts[0].agents.ceiling_usd == pytest.approx(5 * STEP)
+    assert e.parts[0].agents.ceiling_usd == pytest.approx(5 * STEP * TRIES)
     assert [x.profile for x in e.listed] == ["listed"]
 
 
@@ -625,10 +626,10 @@ def test_aims_run_lays_the_list_price_before_it_estimates(tmp_path: Path) -> Non
     out = CliRunner().invoke(app, args)
     # the caps bound the run at the list price, past the threshold, so it asks and stops
     assert out.exit_code != 0
-    assert "the caps allow $1.02, above confirm_above_usd" in out.output
+    assert "the caps allow $4.08, above confirm_above_usd" in out.output
     [line] = [json.loads(x) for x in out.stdout.splitlines() if '"estimate"' in x]
     assert [x["key"] for x in line["listed"]] == [KEY]
-    assert line["total"]["ceiling_usd"] == pytest.approx(10 * STEP)
+    assert line["total"]["ceiling_usd"] == pytest.approx(10 * STEP * TRIES)
 
 
 @pytest.mark.usefixtures("profiles")

@@ -1144,8 +1144,10 @@ def _step_cost(agent: AgentConfig, p: Profile, done: int = 0) -> float | None:
 
 def _agent_ceiling(agent: AgentConfig, p: Profile, done: int = 0) -> tuple[float | None, bool]:
     """What the agent's caps let it spend, and whether that counts one last step past its cost
-    cap. The step cap bounds the cost only when a call's cost is bounded; a fork's agent has
-    the steps it did not replay left, at least one."""
+    cap. The cost cap holds a call's retries, so past it only the last step counts. The step
+    cap bounds the cost only when a call's cost is bounded, with every attempt `retries` gives
+    a call, as a provider may bill each one that fails; a fork's agent has the steps it did not
+    replay left, at least one."""
     step = step_usd(p)
     last = _step_cost(agent, p, done)
     live = _live(agent, done)
@@ -1153,7 +1155,7 @@ def _agent_ceiling(agent: AgentConfig, p: Profile, done: int = 0) -> tuple[float
     if agent.budget.cost_usd is not None:
         caps.append((agent.budget.cost_usd + (last or 0.0), last is not None))
     if live is not None and step is not None:
-        caps.append((_calls(agent, live, done) * step, False))
+        caps.append((_calls(agent, live, done) * step * p.retries.attempts, False))
     if not caps:
         return None, False
     value, stepped = min(caps)
@@ -1186,10 +1188,11 @@ def _ceiling(p: Plan) -> tuple[float | None, bool]:
 
 
 def _run_steps(agent: AgentConfig, p: Plan, steps: int) -> float:
-    """The most `steps` steps of `agent` cost, its calls priced."""
-    step = step_usd(p.profiles[agent.id])
+    """The most `steps` steps of `agent` cost, its calls priced, each with every attempt."""
+    profile = p.profiles[agent.id]
+    step = step_usd(profile)
     assert step is not None
-    return _calls(agent, steps, p.done.get(agent.id, 0)) * step
+    return _calls(agent, steps, p.done.get(agent.id, 0)) * step * profile.retries.attempts
 
 
 def _uncapped(p: Plan) -> list[str]:

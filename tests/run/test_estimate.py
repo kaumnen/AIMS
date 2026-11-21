@@ -138,6 +138,9 @@ agents:
 
 # One call of the agent profile costs at most 100k input at $1 and 1k output at $2 per million.
 STEP = 0.102
+# A step cap bounds each call with its 4 attempts, the default retries, as a provider may bill
+# each one that fails.
+TRIES = 4
 
 
 def write(
@@ -319,7 +322,7 @@ async def test_the_default_agent_cap_bounds_a_run_with_one_last_step(tmp_path: P
 async def test_steps_and_context_bound_an_agent_below_its_cost_cap(tmp_path: Path) -> None:
     settings, path = write(tmp_path, budget="{steps: 10}", extra="limits: {cost_usd: 0.5}\n")
     e = await one(settings, History(), load_scenario(path))
-    assert e.parts[0].agents.ceiling_usd == pytest.approx(min(10 * STEP, 0.5 + STEP))
+    assert e.parts[0].agents.ceiling_usd == pytest.approx(min(10 * STEP * TRIES, 0.5 + STEP))
 
 
 @pytest.mark.anyio
@@ -331,12 +334,12 @@ async def test_an_agent_that_compacts_by_summary_pays_a_summary_call_after_its_k
     summary = "\n    compaction: {at: 0.5, strategy: summary, keep_recent: 1}"
     for budget, extra, ceiling in [
         ("{steps: 100, cost_usd: 1}", "", 1 + 2 * STEP),
-        ("{steps: 10, cost_usd: 50}", "", (10 + 8) * STEP),
-        ("{steps: 2, cost_usd: 50}", "", 2 * STEP),
+        ("{steps: 10, cost_usd: 50}", "", (10 + 8) * STEP * TRIES),
+        ("{steps: 2, cost_usd: 50}", "", 2 * STEP * TRIES),
         ("{steps: 2, cost_usd: 0.1}", "", 0.1 + STEP),
         ("{steps: 100, cost_usd: 50}", "limits: {cost_usd: 1}\n", 1 + 2 * STEP),
         ("{steps: 2, cost_usd: 50}", "limits: {cost_usd: 0.1}\n", 0.1 + STEP),
-        ("{steps: 100, cost_usd: 50}", "limits: {steps: 10}\n", (10 + 8) * STEP),
+        ("{steps: 100, cost_usd: 50}", "limits: {steps: 10}\n", (10 + 8) * STEP * TRIES),
     ]:
         settings, path = write(tmp_path, budget=budget + summary, extra=extra)
         e = await one(settings, History(), load_scenario(path))
@@ -356,7 +359,7 @@ async def test_the_run_step_cap_bounds_summary_calls_as_one_agent_taking_every_s
     settings, path = write(tmp_path, budget="{steps: 100, cost_usd: 50}", extra=extra)
     e = await one(settings, History(), load_scenario(path))
     # 11 steps with two agents: a summarizes before 7 of them
-    assert e.parts[0].agents.ceiling_usd == pytest.approx((11 + 7) * STEP)
+    assert e.parts[0].agents.ceiling_usd == pytest.approx((11 + 7) * STEP * TRIES)
 
 
 @pytest.mark.anyio
@@ -469,7 +472,8 @@ async def test_a_budget_override_moves_the_caps_the_ceiling_and_the_guard(tmp_pa
     settings, path = write(tmp_path, budget="{steps: 10}", extra="limits: {wall_s: 60}\n")
     bundle = load_scenario(path)
     e = await one(settings, History(), bundle, budget=parse_budget("steps=20, run.wall_s=none"))
-    assert e.parts[0].agents.ceiling_usd == pytest.approx(20 * STEP)
+    # 20 steps with every attempt cost more than the $5 cost cap and a last step
+    assert e.parts[0].agents.ceiling_usd == pytest.approx(5.0 + STEP)
     caps = e.parts[0].caps
     assert caps.agents["a"].model_dump() == {
         "steps": 20,
@@ -479,7 +483,7 @@ async def test_a_budget_override_moves_the_caps_the_ceiling_and_the_guard(tmp_pa
     }
     assert (caps.run.steps, caps.run.wall_s) == (None, None)
     plain = await one(settings, History(), bundle)
-    assert plain.parts[0].agents.ceiling_usd == pytest.approx(10 * STEP)
+    assert plain.parts[0].agents.ceiling_usd == pytest.approx(10 * STEP * TRIES)
     assert (plain.parts[0].caps.agents["a"].steps, plain.parts[0].caps.run.wall_s) == (10, 60)
     lifted = await one(
         settings, History(), bundle, budget=parse_budget("steps=none, cost_usd=none")
@@ -495,7 +499,7 @@ async def test_the_monitor_budget_is_its_ceiling(tmp_path: Path) -> None:
     monitor = e.parts[0].monitor
     assert monitor is not None
     assert monitor.ceiling_usd == 2.0
-    assert e.total.ceiling_usd == pytest.approx(10 * STEP + 2.0)
+    assert e.total.ceiling_usd == pytest.approx(10 * STEP * TRIES + 2.0)
 
 
 @pytest.mark.anyio
@@ -961,7 +965,7 @@ async def test_a_fork_pays_for_the_steps_after_its_cut_and_the_monitor_for_every
     agents, monitor = half.parts[0].agents, half.parts[0].monitor
     # later steps carry more context: the last half of the steps is 1 - (5/10)^2 of the cost
     assert agents.typical_usd == pytest.approx(0.4 * 0.75)
-    assert agents.ceiling_usd == pytest.approx(5 * STEP)
+    assert agents.ceiling_usd == pytest.approx(5 * STEP * TRIES)
     assert monitor == whole.parts[0].monitor
     assert half.parts[0].replayed == {"a": 5}
     assert half.lines[1] == (
@@ -971,7 +975,7 @@ async def test_a_fork_pays_for_the_steps_after_its_cut_and_the_monitor_for_every
     assert whole.lines[1].startswith("Agents:")
     end = estimate(found, [replace(base, done={"a": 12})])
     assert end.parts[0].agents.typical_usd == pytest.approx(0.4 * (1 - 0.9**2))
-    assert end.parts[0].agents.ceiling_usd == pytest.approx(STEP)
+    assert end.parts[0].agents.ceiling_usd == pytest.approx(STEP * TRIES)
 
 
 @pytest.mark.anyio
@@ -1249,7 +1253,7 @@ async def test_the_estimate_shows_the_credit_left_after_typical_and_high(
         " high one." in e.lines
     )
     assert (
-        "Total for 2 runs: typically $1.00, $2.00 if every run is high. Cannot exceed $2.04."
+        "Total for 2 runs: typically $1.00, $2.00 if every run is high. Cannot exceed $8.16."
         in (e.lines)
     )
 
@@ -1347,14 +1351,14 @@ async def test_a_scored_run_counts_its_score_at_its_spend_cap(
 async def test_a_score_past_the_threshold_asks_though_the_agents_stay_under(
     tmp_path: Path,
 ) -> None:
-    config = CONFIG + "[estimate]\nconfirm_above_usd = 1.5\n"
+    config = CONFIG + "[estimate]\nconfirm_above_usd = 4.5\n"
     settings, path = write(tmp_path, config=config)
     bundle = load_scenario(path)
-    # the agents' caps allow $1.02, the score's $1 more
+    # the agents' caps allow $4.08, the score's $1 more
     assert not (await estimate_runs(History(), settings, [bundle])).confirm
     e = await estimate_runs(History(), settings, [bundle], score=True)
-    assert e.total.ceiling_usd == pytest.approx(10 * STEP + 1.0)
-    assert needs_confirm(e) == "the caps allow $2.02, above confirm_above_usd $1.50"
+    assert e.total.ceiling_usd == pytest.approx(10 * STEP * TRIES + 1.0)
+    assert needs_confirm(e) == "the caps allow $5.08, above confirm_above_usd $4.50"
 
 
 @pytest.mark.anyio

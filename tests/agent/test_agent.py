@@ -34,7 +34,8 @@ from aims.events import (
     ToolCall,
     ToolResult,
 )
-from aims.models import Message, ModelClient, Profile, ToolOutput
+from aims.models import Message, ModelClient, Profile, Prompt, Retries, ToolOutput
+from aims.models.types import NO_ROOM
 from aims.prompts import AgentTexts, Prompts
 from aims.run.control import ControlGate
 from aims.run.estimate import _agent_ceiling, step_usd
@@ -423,6 +424,162 @@ async def test_answers_with_no_token_counts_count_against_the_cost_cap_by_size(
     finished = await agent.run()
     assert (finished.reason, finished.steps) == ("budget_steps", 2)
     assert "has no price, so the cost limit of agent" in caplog.text
+
+
+def retrying(**kw: Any) -> Profile:
+    """A profile whose calls cost at most $0.002 an attempt and are tried 4 times."""
+    base: dict[str, Any] = {"context_tokens": 1000, "max_output_tokens": 500}
+    return profile(retries=Retries(attempts=4, backoff=0, max=0), **(base | kw))
+
+
+# One full call of `retrying()`: 1000 input at $1 and 500 output at $2 per million.
+FULL = {"prompt_tokens": 1000, "completion_tokens": 500}
+BILLED = {"finish": "error", "usage": FULL}
+
+
+async def test_billed_retries_stay_within_the_estimate_s_ceiling(store: LocalEventStore) -> None:
+    """A step cap bounds a call with every attempt its profile gives it, as a provider may bill
+    each failed one."""
+    p = retrying()
+    ok = call("bash", command="true") | {"usage": FULL}
+    budget = Budget(steps=1)
+    agent, _ = await make_agent(store, Script(BILLED, BILLED, BILLED, ok), p=p, budget=budget)
+    finished = await agent.run()
+    ceiling, _ = _agent_ceiling(AgentConfig(budget=budget), p)
+    assert (finished.reason, finished.steps) == ("budget_steps", 1)
+    assert ceiling == pytest.approx(4 * 0.002)
+    assert finished.cost_usd == pytest.approx(ceiling)
+
+
+async def test_the_cost_cap_holds_a_call_s_billed_retries(store: LocalEventStore) -> None:
+    """A billed failure is tried again only when another full attempt fits what the cost cap
+    leaves, so the agent stays under its cap and one last step. A failure that cost nothing,
+    such as a 503, is tried again near the cap."""
+    p = retrying()
+    ok = call("bash", command="true") | {"usage": FULL}
+    script = Script(BILLED, BILLED, BILLED, ok, ok, ok)
+    budget = Budget(cost_usd=0.001)
+    agent, _ = await make_agent(store, script, p=p, budget=budget)
+    finished = await agent.run()
+    ceiling, _ = _agent_ceiling(AgentConfig(budget=budget), p)
+    assert ceiling == pytest.approx(0.001 + 0.002)
+    assert (finished.reason, finished.steps, len(script.requests)) == ("budget_cost", 0, 1)
+    assert finished.cost_usd == pytest.approx(0.002)
+    assert finished.detail is not None
+    assert finished.detail.startswith("agent limit of 0.001 USD: ")
+    assert finished.detail.endswith(NO_ROOM)
+
+    busy = Script({"status": 503, "error": "busy"}, ok, ok)
+    agent, _ = await make_agent(store, busy, p=p, budget=budget)
+    finished = await agent.run()
+    assert (finished.reason, finished.steps, len(busy.requests)) == ("budget_cost", 1, 2)
+    assert finished.detail == "agent limit of 0.001 USD reached"
+
+
+async def test_failed_attempts_with_no_cost_count_against_the_cost_cap(
+    store: LocalEventStore,
+) -> None:
+    """A failed attempt that may have been billed with no cost reported counts at what it was
+    planned to cost: the cap stops the agent a step sooner and its stop says so."""
+    p = retrying()
+    unseen = {"finish": "error", "usage": None}
+    ok = call("bash", command="true") | {"usage": FULL}
+    script = Script(unseen, ok, ok, ok, ok)
+    agent, _ = await make_agent(store, script, p=p, budget=Budget(cost_usd=0.0045))
+    finished = await agent.run()
+    owed = agent.totals.unseen_usd
+    assert 0.001 < owed <= 0.002
+    assert (finished.reason, finished.steps) == ("budget_cost", 2)
+    assert finished.cost_usd == pytest.approx(0.004)
+    assert finished.detail == (
+        f"agent limit of 0.0045 USD reached; failed calls with no cost reported may add ${owed:.4f}"
+    )
+    assert agent.run_budget.owed == {}
+
+
+async def test_a_summary_call_with_no_room_to_retry_ends_the_agent(store: LocalEventStore) -> None:
+    p = retrying(max_output_tokens=100)
+    full = {"prompt_tokens": 900, "completion_tokens": 10}
+
+    def reply(body: dict[str, Any]) -> dict[str, Any]:
+        if body["messages"][-1] == {"role": "user", "content": prompts.SUMMARY_REQUEST}:
+            return {"finish": "error", "usage": full}
+        return {**call("bash", command="true"), "usage": full}
+
+    script = Script(*[reply] * 10)
+    compaction = Compaction(at=0.5, strategy="summary", keep_recent=1)
+    budget = Budget(cost_usd=0.002)
+    agent, _ = await make_agent(store, script, p=p, budget=budget, compaction=compaction)
+    finished = await agent.run()
+    assert (finished.reason, finished.steps, len(script.requests)) == ("budget_cost", 2, 3)
+    assert finished.detail is not None
+    assert finished.detail.endswith(NO_ROOM)
+
+
+async def test_the_run_cost_cap_counts_what_another_agent_s_retries_owe(
+    store: LocalEventStore,
+) -> None:
+    """While one agent's call is tried again, what its failed attempts may have cost counts
+    against the run's cost cap for the others."""
+    p = retrying()
+    run_budget = RunBudget(Limits(cost_usd=0.01))
+    a, _ = await make_agent(store, Script(), p=p, run_budget=run_budget, id="a")
+    b, _ = await make_agent(store, Script(), p=p, run_budget=run_budget, id="b")
+    prompt = Prompt(items=[Message(role="user", content="hi")])
+    a_cap, b_cap = a._cap(p, prompt), b._cap(p, prompt)
+    assert a_cap is not None
+    assert b_cap is not None
+    assert a_cap.fits(0.006)
+    assert run_budget.owed == {"a": 0.006}
+    # 0.01 less a's 0.006 leaves no room for b's 0.0035 and another attempt
+    assert not b_cap.fits(0.0035)
+    del run_budget.owed["a"]
+    assert b_cap.fits(0.0035)
+    run_budget.owed = {"a": 0.006}
+    assert b._over_budget() is None
+    run_budget.totals.cost_usd = 0.004
+    assert b._over_budget() == (
+        "budget_cost",
+        "run limit of 0.01 USD reached; calls of other agents still being tried may have cost"
+        " $0.0060",
+    )
+    assert a._over_budget() is None
+
+
+async def test_two_agents_stay_under_the_run_cap_and_a_step_each(store: LocalEventStore) -> None:
+    p = retrying()
+    ok = call("bash", command="true") | {"usage": FULL}
+    run_budget = RunBudget(Limits(cost_usd=0.003))
+    a_script = Script(BILLED, BILLED, BILLED, BILLED, ok)
+    b_script = Script(*[ok] * 5)
+    a, _ = await make_agent(store, a_script, p=p, run_budget=run_budget, id="a")
+    b, _ = await make_agent(store, b_script, p=p, run_budget=run_budget, id="b")
+    a_done, b_done = await asyncio.gather(a.run(), b.run())
+    step = step_usd(p)
+    assert step is not None
+    assert (a_done.reason, b_done.reason) == ("budget_cost", "budget_cost")
+    assert run_budget.totals.cost_usd <= 0.003 + 2 * step
+    # a's billed failure has no room to be tried again, unless b spent the cap before it started
+    assert len(a_script.requests) <= 1
+    assert a_done.detail is not None
+    assert a_done.detail.startswith("run limit of 0.003 USD")
+    if a_script.requests:
+        assert a_done.detail.startswith("run limit of 0.003 USD: ")
+        assert a_done.detail.endswith(NO_ROOM)
+    assert run_budget.owed == {}
+
+
+def test_a_step_cap_bounds_every_attempt_of_each_call() -> None:
+    """32,768 tokens of context at $0.10 and 4,096 of output at $0.40 per million, with the
+    default caps of 100 steps and $5: the steps with every attempt bound it below the cost cap."""
+    p = profile(
+        context_tokens=32_768,
+        max_output_tokens=4_096,
+        price={"input": 0.1, "cached": 0.01, "output": 0.4},
+        retries=Retries(),
+    )
+    ceiling, stepped = _agent_ceiling(AgentConfig(), p)
+    assert (round(ceiling or 0, 2), stepped) == (1.97, False)
 
 
 async def test_the_wall_budget_cancels_a_slow_step(store: LocalEventStore) -> None:

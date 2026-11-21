@@ -1,10 +1,12 @@
 import asyncio
 import json
 import logging
+import math
 import re
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -39,10 +41,12 @@ from aims.models import (
     Prompt,
     ReplayError,
     Reply,
+    SpendCap,
     ToolOutput,
     ToolRequest,
     Turn,
 )
+from aims.models.types import CHARS_PER_TOKEN
 from aims.prompts import AgentTexts
 from aims.sandbox import AuditedSandbox
 from aims.scenario import AgentConfig, Budget, Limits, SandboxConfig
@@ -83,8 +87,9 @@ class _End(Exception):
 @dataclass(slots=True)
 class Totals:
     """What the steps so far used. A reply with no price leaves `cost_complete` false.
-    `sized_usd` is what answers that came with no token counts count at by their size,
-    against the cost caps only."""
+    `unseen_usd` is what failed attempts that may have been billed with no cost reported count
+    at, and `sized_usd` what answers that came with no token counts count at by their size,
+    both against the cost caps only."""
 
     steps: int = 0
     input_tokens: int = 0
@@ -92,6 +97,7 @@ class Totals:
     output_tokens: int = 0
     reasoning_tokens: int = 0
     cost_usd: float = 0.0
+    unseen_usd: float = 0.0
     sized_usd: float = 0.0
     cost_complete: bool = True
 
@@ -106,12 +112,14 @@ class Totals:
             self.cost_complete = False
         else:
             self.cost_usd += reply.cost_usd
+        self.unseen_usd += reply.unseen_usd
         self.sized_usd += reply.sized_usd
 
     @property
     def counted_usd(self) -> float:
-        """What the cost caps count: the cost and what answers with no token counts count at."""
-        return self.cost_usd + self.sized_usd
+        """What the cost caps count: the cost, what failed attempts with no cost reported and
+        answers with no token counts count at."""
+        return self.cost_usd + self.unseen_usd + self.sized_usd
 
     def usage(self) -> ModelUsage:
         return ModelUsage(
@@ -177,11 +185,14 @@ class PauseClock:
 
 class RunBudget:
     """The run's limits, charged by every agent of the run. The wall limit does not count the
-    stretches in which every running agent is paused."""
+    stretches in which every running agent is paused. `owed` holds what the failed attempts of
+    each agent's call still being tried may have cost, which the agent charges once the call
+    ends."""
 
     def __init__(self, limits: Limits) -> None:
         self.limits = limits
         self.totals = Totals()
+        self.owed: dict[str, float] = {}
         self.start = time.monotonic()
         self._agents: dict[str, tuple[PauseClock, Callable[[], None], Callable[[], None]]] = {}
         self._since: float | None = None
@@ -192,6 +203,10 @@ class RunBudget:
         or ends, which may move the run's deadline."""
         self._agents[agent_id] = (clock, on_change, clock.listen(self._changed))
         self._changed()
+
+    def owed_by_others(self, agent_id: str) -> float:
+        """What the calls still being tried of the agents other than `agent_id` may have cost."""
+        return sum(v for k, v in self.owed.items() if k != agent_id)
 
     def leave(self, agent_id: str) -> None:
         entry = self._agents.pop(agent_id, None)
@@ -229,18 +244,34 @@ class RunBudget:
 
 
 def _over(
-    t: Totals, steps: int | None, tokens: int | None, cost: float | None, scope: str
+    t: Totals,
+    steps: int | None,
+    tokens: int | None,
+    cost: float | None,
+    scope: str,
+    owed: float = 0.0,
 ) -> tuple[AgentEnd, str] | None:
+    """Which of the caps `t` reached, with `owed`, what other agents' calls still being tried
+    may have cost, counted against the cost cap."""
     if steps is not None and t.steps >= steps:
         return "budget_steps", f"{scope} limit of {steps} steps reached"
     if tokens is not None and t.output_tokens >= tokens:
         return "budget_output_tokens", f"{scope} limit of {tokens} output tokens reached"
-    if cost is not None and t.counted_usd >= cost:
-        detail = f"{scope} limit of {cost:g} USD reached"
-        if t.sized_usd:
-            detail += f"; answers with no token counts count at ${t.sized_usd:.4f}"
-        return "budget_cost", detail
+    if cost is not None and t.counted_usd + owed >= cost:
+        return "budget_cost", f"{scope} limit of {cost:g} USD reached" + _counted(t, owed)
     return None
+
+
+def _counted(t: Totals, owed: float = 0.0) -> str:
+    """What the cost caps count beside the cost, for the text of a stop."""
+    detail = ""
+    if t.unseen_usd:
+        detail += f"; failed calls with no cost reported may add ${t.unseen_usd:.4f}"
+    if t.sized_usd:
+        detail += f"; answers with no token counts count at ${t.sized_usd:.4f}"
+    if owed:
+        detail += f"; calls of other agents still being tried may have cost ${owed:.4f}"
+    return detail
 
 
 @dataclass(frozen=True, slots=True)
@@ -588,17 +619,25 @@ class Agent:
         self._open_profile = profile
         try:
             try:
-                reply = await client.call(profile, prompt, agent_id=self.id)
+                reply = await client.call(
+                    profile, prompt, agent_id=self.id, cap=self._cap(profile, prompt)
+                )
             except ReplayError:
                 if self._replaying() or not self._kept():
                     raise
                 self._left_recording = True
                 client, profile = self._model()
                 self._open_profile = profile
-                reply = await client.call(profile, prompt, agent_id=self.id)
+                reply = await client.call(
+                    profile, prompt, agent_id=self.id, cap=self._cap(profile, prompt)
+                )
+            finally:
+                self.run_budget.owed.pop(self.id, None)
         except ModelCallError as e:
             self._charge(e.reply, step=False)
             error = e.reply.error
+            if e.no_room:
+                raise _End("budget_cost", self._no_room(error)) from None
             if is_context_error(error):
                 raise _End("context_exhausted", error) from None
             raise _End("model_error", error) from None
@@ -662,9 +701,59 @@ class Agent:
         own = _over(self.totals, b.steps, b.output_tokens, b.cost_usd, "agent")
         limits = self._limits()
         run = _over(
-            self.run_budget.totals, limits.steps, limits.output_tokens, limits.cost_usd, "run"
+            self.run_budget.totals,
+            limits.steps,
+            limits.output_tokens,
+            limits.cost_usd,
+            "run",
+            self.run_budget.owed_by_others(self.id),
         )
         return own or run
+
+    def _left(self) -> list[tuple[float, str, float]]:
+        """What each cost cap leaves, with its scope and its limit: the agent's of what the
+        agent counted, the run's of what the run counted and what other agents' calls still
+        being tried may have cost."""
+        left: list[tuple[float, str, float]] = []
+        own, run = self._budget().cost_usd, self._limits().cost_usd
+        if own is not None:
+            left.append((own - self.totals.counted_usd, "agent", own))
+        if run is not None:
+            counted = self.run_budget.totals.counted_usd
+            left.append((run - counted - self.run_budget.owed_by_others(self.id), "run", run))
+        return left
+
+    def _cap(self, profile: Profile, prompt: Prompt) -> SpendCap | None:
+        """How a call of `profile` with `prompt` is tried again under the cost caps: only while
+        another attempt fits what the caps leave beside what its attempts so far may have cost.
+        An attempt is planned at the output cap plus the prompt's size, at most a full context,
+        uncached. The caps let the call start, so a retry after attempts that cost nothing
+        always fits. None with no price or no cost cap."""
+        price = profile.price
+        if price is None or not self._left():
+            return None
+        sent: list[Any] = [*prompt.items, *prompt.tools, *filter(None, [prompt.output_schema])]
+        given = sum(len(x.model_dump_json()) for x in sent) // CHARS_PER_TOKEN
+        if profile.context_tokens is not None:
+            given = min(given, profile.context_tokens)
+        made = profile.max_output_tokens or 0
+        attempt = round((given * price.input + made * price.output) / 1_000_000, 10)
+
+        def fits(owed: float) -> bool:
+            self.run_budget.owed[self.id] = owed
+            left = min((value for value, _, _ in self._left()), default=math.inf)
+            return owed + attempt <= max(left, attempt)
+
+        return SpendCap(attempt_usd=attempt, fits=fits)
+
+    def _no_room(self, error: str | None) -> str:
+        """The text of a stop when a failed call had no room under a cost cap to be tried
+        again: the cap with the least left, and the error."""
+        left = self._left()
+        if not left:
+            return error or "no room to try a failed call again"
+        _, scope, limit = min(left)
+        return f"{scope} limit of {limit:g} USD: {error}"
 
     def _warn_budget(self) -> None:
         b = self._budget()
@@ -933,11 +1022,17 @@ class Agent:
         request = Message(role="user", content=self.texts.summary_request)
         prompt = Prompt(items=[*self.items[:cut], request], tools=self.specs)
         try:
-            reply = await client.call(profile, prompt, agent_id=self.id)
+            reply = await client.call(
+                profile, prompt, agent_id=self.id, cap=self._cap(profile, prompt)
+            )
         except ModelCallError as e:
             self._charge(e.reply, step=False)
+            if e.no_room:
+                raise _End("budget_cost", self._no_room(e.reply.error)) from None
             log.warning("agent %s: summary call failed: %s", self.id, e)
             return None
+        finally:
+            self.run_budget.owed.pop(self.id, None)
         self._charge(reply, step=False)
         text = reply.text.strip()
         if not text:
