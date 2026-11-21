@@ -6,7 +6,7 @@ import re
 import shlex
 import tarfile
 from collections import Counter
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any, cast
 
@@ -46,7 +46,7 @@ from aims.sandbox import docker as docker_module
 from aims.sandbox import reader as reader_module
 from aims.sandbox.execs import exec_output
 from aims.sandbox.trace import ARGV_CAP, STRLEN
-from aims.sandbox.tracer import BACKING, SKIP_READ, parse_counts
+from aims.sandbox.tracer import BACKING, SKIP_READ, Tracer, parse_counts
 
 # These test the tracer itself, so they need the host to themselves.
 pytestmark = [pytest.mark.anyio, pytest.mark.docker, pytest.mark.serial]
@@ -79,11 +79,15 @@ async def store(tmp_path: Path) -> AsyncIterator[LocalEventStore]:
 
 
 @pytest.fixture
-def traced(backend: DockerBackend) -> None:
+def traced(backend: DockerBackend) -> Iterator[None]:
     if backend.tracer is None:
         if os.environ.get("AIMS_REQUIRE_TRACER"):
             pytest.fail("the kernel tracer did not start")
         pytest.skip("the kernel tracer is not available here")
+    before = backend.tracer.helper_errors
+    yield
+    # A failed helper call rides the records' ring with no number: the script makes none.
+    assert backend.tracer.helper_errors == before
 
 
 async def sandbox(
@@ -573,16 +577,34 @@ EVERY_CPU = "for c in $(seq 0 $(($(nproc) - 1))); do taskset -c $c true; done"
 SIGNAL_FLOOD = 4000
 
 
-async def flood(backend: DockerBackend, store: LocalEventStore, count: int) -> None:
+async def flood(
+    backend: DockerBackend, store: LocalEventStore, count: int, *, stopped: bool = False
+) -> None:
+    """Floods from `count` sandboxes, then a record on every cpu. With `stopped`, bpftrace is
+    stopped during the flood, so the ring fills for certain: a fast reader keeps up with it."""
     boxes = [(await sandbox(backend, store, f"a{i}"))[1] for i in range(count)]
+    tracer = backend.tracer
     try:
-        await asyncio.gather(*(sb.exec(FLOOD, timeout_s=120) for sb in boxes))
+        if stopped and tracer is not None:
+            await asyncio.gather(*(sb.exec("true", timeout_s=30) for sb in boxes))
+            await signal_bpftrace(tracer, "STOP")
+        try:
+            await asyncio.gather(*(sb.exec(FLOOD, timeout_s=120) for sb in boxes))
+        finally:
+            if stopped and tracer is not None:
+                await signal_bpftrace(tracer, "CONT")
         await asyncio.sleep(1.5)
         await asyncio.gather(*(sb.exec(EVERY_CPU, timeout_s=60) for sb in boxes))
         await asyncio.sleep(1.5)
     finally:
         for sb in boxes:
             await sb.close()
+
+
+async def signal_bpftrace(tracer: Tracer, signal: str) -> None:
+    assert tracer._container is not None
+    argv = ["sh", "-c", f"kill -{signal} {tracer._bpftrace}"]
+    await exec_output(tracer._container, argv, timeout_s=10)
 
 
 @pytest.mark.tracer
@@ -603,13 +625,14 @@ async def test_sequence_locates_every_lost_record(store: LocalEventStore) -> Non
     async with await DockerBackend.open(audit="kernel", ring_pages=8) as small:
         tracer = small.tracer
         assert tracer is not None
-        await flood(small, store, 3)
+        await flood(small, store, 3, stopped=True)
         # Every cpu ticks once a second, so a hole is found and ripe within two.
         await asyncio.sleep(2.5)
         tracer.settle()
 
     assert tracer.kernel_lost > 0
     assert tracer.located == tracer.kernel_lost
+    assert tracer.helper_errors == 0
 
 
 @pytest.mark.tracer
@@ -642,7 +665,15 @@ async def test_a_flood_is_lost_only_in_the_sandboxes_that_made_it(store: LocalEv
             assert kernel
             assert kernel.keys() <= seen.keys()
             assert all(n <= seen[k] for k, n in kernel.items())
-            await asyncio.gather(*(sb.exec(FLOOD, timeout_s=120) for _, sb in busy))
+            await asyncio.gather(*(sb.exec("true", timeout_s=30) for _, sb in busy))
+            # A fast reader keeps up with a flood, so bpftrace stops while it runs and the ring
+            # fills for certain. The records after it on every cpu put the holes mid-stream.
+            await signal_bpftrace(tracer, "STOP")
+            try:
+                await asyncio.gather(*(sb.exec(FLOOD, timeout_s=120) for _, sb in busy))
+            finally:
+                await signal_bpftrace(tracer, "CONT")
+            await asyncio.gather(*(sb.exec(EVERY_CPU, timeout_s=60) for _, sb in busy))
             await asyncio.sleep(3)
             await idle.exec("ls /work", timeout_s=30)
         finally:
@@ -655,6 +686,7 @@ async def test_a_flood_is_lost_only_in_the_sandboxes_that_made_it(store: LocalEv
     assert len(cgroups) == 3
     assert tracer.kernel_lost > 0
     assert tracer.located == tracer.kernel_lost
+    assert tracer.helper_errors == 0
     gaps = [
         e.data["count"]
         for run_id, _ in busy
