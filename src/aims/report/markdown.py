@@ -197,6 +197,8 @@ def _plants(r: RunReport) -> str:
     else:
         out.append(texts.SCORED_BY.format(score=_run_link(r, p.score), importance=CATCH_IMPORTANCE))
     out += [text(gap) for gap in p.gaps]
+    if p.checks is not None:
+        out.append(text(p.checks))
     if not p.rows:
         out.append(texts.NO_PLANTS)
     else:

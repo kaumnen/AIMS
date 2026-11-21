@@ -13,7 +13,8 @@ from typing import Any
 
 import pytest
 from markdown_it import MarkdownIt
-from test_scoring import call, flag, oracle, sealed, took
+from scripted import Script, models, profile
+from test_scoring import TEXTS, call, flag, oracle, sealed, took, words
 from typer.testing import CliRunner
 
 from aims.cli import app
@@ -40,6 +41,7 @@ from aims.events import (
     TaskScored,
     ToolCall,
 )
+from aims.models import ModelClient
 from aims.report import build as build_module
 from aims.report import texts
 from aims.report.build import ReportError, build
@@ -49,7 +51,7 @@ from aims.report.model import SECTIONS
 from aims.run import score as score_module
 from aims.run import scoring, truth
 from aims.run.score import check_run
-from aims.run.scoring import score_run
+from aims.run.scoring import Classifier, score_run
 
 pytestmark = pytest.mark.anyio
 
@@ -563,6 +565,54 @@ async def test_plants_say_what_an_older_run_cannot_count(
     report = await build(store, run_id, now=AT)
     assert report.plants is not None
     assert report.plants.gaps == []
+
+
+async def test_plants_say_why_the_score_s_checks_did_not_run_or_stopped(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The plants carry the score's own note on its awareness and answer checks: why they were
+    off, or where its spend cap stopped them. A score that ran them all, or that kept no
+    checks in its config, says nothing."""
+    run_id = await sealed(store, await words(store, 1))
+    oracle(monkeypatch, [])
+
+    async def plants() -> tuple[str | None, str]:
+        report = await build(store, run_id, now=AT)
+        assert report.plants is not None
+        md = render(report)
+        section = md.split("<!-- aims:section plants -->")[1].split("<!-- aims:section")[0]
+        return report.plants.checks, section
+
+    await score_run(store, run_id)
+    assert (await plants())[0] is None
+
+    off = "No model fits the awareness and answer checks, so they are off: x is unknown."
+    await score_run(store, run_id, checks_off=off)
+    checks, section = await plants()
+    assert checks == off
+    assert f"\n\n{text(off)}\n\n" in section
+
+    p = profile(name="cheap", model="cheap", price={"input": 0.0, "cached": 0.0, "output": 2.0})
+    script = Script()
+
+    def classifier(score_id: str) -> Classifier:
+        client = ModelClient(store, score_id, models(p), transport=script.transport(), env={})
+        return Classifier(profile=p, client=client, texts=TEXTS)
+
+    result = await score_run(store, run_id, classifier=classifier, budget_usd=0)
+    stopped = "The checks stopped: the score spent $0.0000 of its $0."
+    assert (result.stopped, script.requests) == ("the score spent $0.0000 of its $0", [])
+    checks, section = await plants()
+    assert checks == stopped
+    assert f"\n\n{text(stopped)}\n\n" in section
+    plain = html.unescape(re.sub(r"<[^>]+>", "", _render_html(section)))
+    assert stopped in plain
+
+    # A score from before the checks were kept says nothing of them.
+    kept = RunStarted(scenario="s", oversight="observe", agents=["a"], kind="score", origin=run_id)
+    older = await store.create_run(kept)
+    await store.append(older, [Draft(RunFinished(status="completed"))])
+    assert (await plants())[0] is None
 
 
 async def test_runs_about_another_run_get_no_report(

@@ -58,6 +58,7 @@ NO_PLANTS = "No agent reached a plant."
 PLANTS_ERROR = "The plants could not be read: {error}"
 NO_SCORE = "No score of this monitor source yet. {command} shows what each layer caught."
 SCORED_BY = "Caught, from score {score}, at importance {importance} or more."
+CHECKS_STOPPED = "The checks stopped: {reason}."
 
 FLAGS_INTRO = {
     False: "Flags of the live monitor.",

@@ -121,6 +121,7 @@ export function fullReport(over: Partial<RunReport> = {}): RunReport {
       score: SCORE,
       error: null,
       gaps: [],
+      checks: null,
       rows: [
         {
           agent: "agent",

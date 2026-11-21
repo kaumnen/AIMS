@@ -257,6 +257,7 @@ export function PlantsSection({ report, steps, more, multi, onSeq, onFlag, print
       {p.gaps.map((g) => (
         <p key={g}>{visible(g)}</p>
       ))}
+      {p.checks !== null && <p>{visible(p.checks)}</p>}
       {rows.length === 0 ? (
         <Empty>{NO_PLANTS}</Empty>
       ) : (

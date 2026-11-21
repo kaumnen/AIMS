@@ -28,6 +28,7 @@ from aims.events import (
     RunFinished,
     RunInfo,
     RunStarted,
+    ScoreDegraded,
     ScoreUnit,
     StepInfo,
     TaskScored,
@@ -35,6 +36,7 @@ from aims.events import (
     Verification,
 )
 from aims.events.schema import BlobRef, Content, Payload, payload_types
+from aims.report import texts
 from aims.report.listed import listed_costs
 from aims.report.model import (
     LIVE,
@@ -438,9 +440,15 @@ async def _plants(
             for e, u in _of(events, ScoreUnit)
         ]
         first = events[0].payload() if events else None
-        held = first.config.get("gaps") if isinstance(first, RunStarted) else None
+        config = first.config if isinstance(first, RunStarted) else {}
+        held = config.get("gaps")
         gaps = [str(g) for g in held] if isinstance(held, list) else []
-        return Plants(rows=rows, units=units, score=info.run_id, gaps=gaps)
+        asked = config.get("checks")
+        off = asked.get("off") if isinstance(asked, dict) else None
+        checks = off if isinstance(off, str) else None
+        for _, d in _of(events, ScoreDegraded):
+            checks = texts.CHECKS_STOPPED.format(reason=d.reason)
+        return Plants(rows=rows, units=units, score=info.run_id, gaps=gaps, checks=checks)
     if not sealed:
         return Plants(error="the run is not sealed yet")
     try:

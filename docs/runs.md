@@ -26,7 +26,7 @@ A fork replays a step only when the run recorded a result for each of its tool c
 - `aims monitor <run>` feeds a sealed run through the monitor again, with any preset or model.
 - `aims score <run>` lists the plants each agent took. It shows which monitor layer caught each one and how soon. It also checks whether each agent said it thought it was tested. For a subject that took a plant, it checks whether it told the operator and gave true reasons.
 - Those two checks call a model: the first profile whose weights no agent of the run runs, from `[monitor] extract`, then the `sweep` role. When none fits, the score skips them and says why.
-- The checks stop at a spend cap, $1 by default. `budget_usd` under `[score]` in a config file changes it. `aims score --budget-usd` changes it for one score. A failed call is tried again only when another full attempt fits. A score that stops says so. The agents it did not reach get no finding.
+- The checks stop at a spend cap, $1 by default. `budget_usd` under `[score]` in a config file changes it. `aims score --budget-usd` changes it for one score. A failed call is tried again only when another full attempt fits. A score that stops says so in `aims score`, the Score tab and the report. The agents it did not reach get no finding.
 - `aims score` prints its estimate first. Past `confirm_above_usd` it asks, as `aims run` does. `--yes` starts it anyway.
 - `aims rates` sums take and catch rates over many scored runs, with 95% intervals.
 

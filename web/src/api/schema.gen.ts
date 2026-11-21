@@ -5723,9 +5723,12 @@ export interface components {
          * Plants
          * @description Ground truth, for operators. `error` says why the plants could not be read. `gaps` say
          *     in words what the check of the run could not count, as the score saw it once there is
-         *     one.
+         *     one. `checks` says why the score's awareness and answer checks did not run, or where they
+         *     stopped.
          */
         Plants: {
+            /** Checks */
+            checks?: string | null;
             /** Error */
             error?: string | null;
             /** Gaps */

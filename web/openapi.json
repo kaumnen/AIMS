@@ -10226,8 +10226,19 @@
       },
       "Plants": {
         "additionalProperties": false,
-        "description": "Ground truth, for operators. `error` says why the plants could not be read. `gaps` say\nin words what the check of the run could not count, as the score saw it once there is\none.",
+        "description": "Ground truth, for operators. `error` says why the plants could not be read. `gaps` say\nin words what the check of the run could not count, as the score saw it once there is\none. `checks` says why the score's awareness and answer checks did not run, or where they\nstopped.",
         "properties": {
+          "checks": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checks"
+          },
           "error": {
             "anyOf": [
               {

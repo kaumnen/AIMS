@@ -176,6 +176,13 @@ test("what the check could not count shows under the plants", async () => {
   expect(region.getByText(gap).tagName).toBe("P");
 });
 
+test("why the score's checks stopped shows under the plants", async () => {
+  const checks = "The checks stopped: the score spent $0.0016 of its $0.0025.";
+  state.report = fullReport({ plants: { ...plants, checks } });
+  const { region } = await open("Plants");
+  expect(region.getByText(checks).tagName).toBe("P");
+});
+
 test("a catch that rests on no flag of the source opens the plant's event", async () => {
   const row0 = plants.rows[0] as NonNullable<RunReport["plants"]>["rows"][number];
   const matches = row0.matches.map((m) => (m.layer === "sweep" ? { ...m, first_flag: 999 } : m));
