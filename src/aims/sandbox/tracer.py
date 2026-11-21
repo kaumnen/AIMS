@@ -478,6 +478,7 @@ class Tracer:
                 "HostConfig": {
                     "CapDrop": ["ALL"],
                     "CapAdd": ["SYS_ADMIN", "BPF", "PERFMON"],
+                    "SecurityOpt": ["no-new-privileges"],
                     "Ulimits": [{"Name": "memlock", "Soft": -1, "Hard": -1}],
                     "Mounts": [
                         {"Type": "bind", "Source": p, "Target": p, "ReadOnly": True}

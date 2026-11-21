@@ -1861,7 +1861,7 @@ class Created(Exception):
 
 
 @pytest.mark.anyio
-async def test_the_tracer_container_has_three_capabilities_and_no_privileged_mode(
+async def test_the_tracer_container_keeps_three_capabilities_and_no_new_privileges(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     configs: list[dict[str, Any]] = []
@@ -1885,6 +1885,7 @@ async def test_the_tracer_container_has_three_capabilities_and_no_privileged_mod
     assert config["HostConfig"] == {
         "CapDrop": ["ALL"],
         "CapAdd": ["SYS_ADMIN", "BPF", "PERFMON"],
+        "SecurityOpt": ["no-new-privileges"],
         "Ulimits": [{"Name": "memlock", "Soft": -1, "Hard": -1}],
         "Mounts": [ro("/sys/kernel/tracing"), ro("/sys/kernel/debug")],
         "PidMode": "host",
