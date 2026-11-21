@@ -21,7 +21,7 @@ flowchart LR
   end
   subgraph runner_host [Runner host]
     runner[Runner<br/>root via Docker socket]
-    tracer[Kernel tracer<br/>privileged]
+    tracer[Kernel tracer<br/>root-level capabilities]
     sandbox[Sandboxes<br/>no network]
     runner -->|starts| tracer
     runner -->|starts| sandbox
@@ -37,7 +37,7 @@ flowchart LR
 Docker Compose runs both on one host.
 
 > [!WARNING]
-> The runner has root on its host through the Docker socket. The kernel tracer is a privileged container. Put runners on a dedicated machine or VM.
+> The runner has root on its host through the Docker socket. The kernel tracer's capabilities amount to root on the host too. Put runners on a dedicated machine or VM.
 
 ## Privileges
 
@@ -46,15 +46,15 @@ Docker Compose runs both on one host.
 | Control plane | uid 10001 | No Docker socket. No model keys. In Compose: no capabilities, read-only root. | API and UI |
 | Caddy | root | In Compose: `NET_BIND_SERVICE` only, read-only root. | TLS and proxy to the control plane |
 | Runner | root in Compose | Docker socket. `no-new-privileges` in Compose. | Starts every container below |
-| Kernel tracer | root | Privileged. Host PID namespace. No network. | Records kernel events from sandboxes |
+| Kernel tracer | root | `SYS_ADMIN`, `BPF` and `PERFMON` only. Host PID namespace. Read-only `/sys/kernel/tracing` and `/sys/kernel/debug` from the host. No network. | Records kernel events from sandboxes |
 | Sandbox | uid 1000 | No network. No capabilities. Read-only root. CPU, memory and PID limits. | Agents run commands here |
 | Resource sampler | uid 1001 | No capabilities. Read-only root. Host cgroup namespace. No network. | Reads sandbox CPU and memory use |
 | Metadata sidecar | root | `NET_ADMIN` and `NET_BIND_SERVICE` in one sandbox's network namespace. 0.5 CPU, 128 MiB memory, 64 PIDs and 32 connections. | Serves fake cloud credentials as bait |
 | Helpers | root | `CHOWN`, `DAC_OVERRIDE`, `DAC_READ_SEARCH`, `FOWNER`. No network. | Prepare volumes. Copy files out. |
 
-- Docker's default seccomp profile stays on for every part except the tracer. AppArmor too, where the host has it.
+- Docker's default seccomp profile stays on for every part. AppArmor too, where the host has it.
 - Commands in a sandbox also run under AIMS's own seccomp filter. It refuses io_uring, which Docker allows before 25.0 or with a custom profile, and every 32-bit or x32 call. Ops sent through io_uring and 32-bit calls can skip kernel records.
-- The tracer needs privileged mode for eBPF. It sees every process on the host. AIMS keeps only sandbox events.
+- The tracer needs `SYS_ADMIN`, `BPF` and `PERFMON` to load its eBPF programs and read their counts. These amount to root on the host. The tracer sees every process on the host. AIMS keeps only sandbox events.
 - A runner stopped with SIGKILL leaves its tracer and sandboxes running. Their volumes with the run's files stay too. The next AIMS start on that host removes them. To clean up a host you retire, remove the containers first, then the volumes:
 
   ```sh

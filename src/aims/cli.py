@@ -2059,7 +2059,7 @@ RunnerAuditOption = Annotated[
     str,
     typer.Option(
         help="auto (the kernel tracer if it starts), kernel (it must start) or snapshot"
-        " (never start the privileged tracer).",
+        " (never start the kernel tracer, which has root-level access to the host).",
     ),
 ]
 

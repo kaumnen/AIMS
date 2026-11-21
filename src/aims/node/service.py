@@ -89,7 +89,7 @@ class NodeOptions:
     image_keep_days: float = KEEP_DAYS
     verify: bool | str = True
     docker_url: str | None = None
-    # snapshot never starts the privileged kernel tracer
+    # snapshot never starts the kernel tracer
     audit: AuditMode = "auto"
     transport: httpx2.AsyncBaseTransport | None = None
     model_transport: httpx2.AsyncBaseTransport | None = None

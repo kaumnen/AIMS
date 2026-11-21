@@ -1464,6 +1464,32 @@ async def test_writable_root_records_each_change_once(
 
 @pytest.mark.tracer
 @pytest.mark.usefixtures("traced")
+async def test_the_tracer_keeps_three_capabilities_and_the_default_profiles(
+    backend: DockerBackend,
+) -> None:
+    assert backend.tracer is not None
+    container = backend.tracer._container
+    assert container is not None
+    assert (await container.show())["HostConfig"]["Privileged"] is False
+    read = (
+        "grep -E '^(CapEff|CapBnd|Seccomp):' /proc/self/status; "
+        "cat /proc/self/attr/apparmor/current 2>/dev/null "
+        "|| cat /proc/self/attr/current 2>/dev/null || echo"
+    )
+    out = (await exec_output(container, ["sh", "-c", read], timeout_s=10)).decode()
+    lines = out.replace("\0", "").splitlines()
+    status = dict(line.split(":\t", 1) for line in lines if ":\t" in line)
+    profile = " ".join(line for line in lines if ":\t" not in line).strip()
+    # SYS_ADMIN is bit 21, PERFMON 38 and BPF 39.
+    caps = f"{1 << 21 | 1 << 38 | 1 << 39:016x}"
+    assert status == {"CapEff": caps, "CapBnd": caps, "Seccomp": "2"}
+    options = (await backend.docker.system.info()).get("SecurityOptions") or []
+    if any(o.startswith("name=apparmor") for o in options):
+        assert profile == "docker-default (enforce)"
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
 async def test_the_backing_bit_follows_the_kernel(backend: DockerBackend) -> None:
     assert backend.tracer is not None
     container = backend.tracer._container

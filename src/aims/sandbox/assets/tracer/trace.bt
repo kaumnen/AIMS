@@ -261,8 +261,10 @@ tracepoint:oom:mark_victim {
 }
 
 // Overlayfs makes its upper-layer calls with overridden creds; cred == real_cred keeps only the
-// sandbox's own calls, not overlay's copy of them or its copy-up work. A pidfd passes the regular
-// file test from 6.9, so pidfs (magic 0x50494446) is skipped here and on release.
+// sandbox's own calls, not overlay's copy of them or its copy-up work. io_uring workers run ring
+// ops with the submitter's earlier creds, which this filter drops: it relies on aims-exec
+// refusing io_uring. A pidfd passes the regular file test from 6.9, so pidfs (magic 0x50494446)
+// is skipped here and on release.
 fentry:vmlinux:security_file_open /@sandbox[cgroup] && curtask->thread_pid->level > @base && curtask->cred == curtask->real_cred && (args.file->f_inode->i_mode & 0xF000) == 0x8000 && args.file->f_inode->i_sb->s_magic != 0x50494446/ {
   $p = path(args.file->f_path);
   if (args.file->f_mode & 2) {

@@ -51,7 +51,7 @@ flowchart LR
 ## Quick start
 
 > [!WARNING]
-> Agents run shell commands in Docker on your host. The runner has root through the Docker socket and starts a privileged kernel tracer. Use a dedicated machine or VM. See [SECURITY.md](https://github.com/kaumnen/AIMS/blob/main/SECURITY.md).
+> Agents run shell commands in Docker on your host. The runner has root through the Docker socket. It starts a kernel tracer whose capabilities amount to root on the host. Use a dedicated machine or VM. See [SECURITY.md](https://github.com/kaumnen/AIMS/blob/main/SECURITY.md).
 
 You need Docker, [uv](https://docs.astral.sh/uv/) and a model API key. AIMS has no built-in models. The kernel tracer needs a Docker host on Linux 6.11 or newer. [Host kernel](https://github.com/kaumnen/AIMS/blob/main/docs/deploy.md#host-kernel) lists the tested ones.
 

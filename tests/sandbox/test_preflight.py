@@ -10,7 +10,7 @@ import pytest
 
 from aims.sandbox import docker as docker_module
 from aims.sandbox.docker import DockerBackend, SandboxError
-from aims.sandbox.tracer import BTF, Tracer, TracerError, Unsupported, preflight
+from aims.sandbox.tracer import BTF, TRACEFS, Tracer, TracerError, Unsupported, preflight
 
 pytestmark = pytest.mark.anyio
 
@@ -21,6 +21,10 @@ DEBIAN_13 = "6.12.117+deb13-amd64"
 DOCKER_DESKTOP = "7.0.14-linuxkit"
 TOO_OLD = f"needs Linux 6.11 or newer; the Docker host runs {UBUNTU_GA}"
 NO_BTF = "needs a kernel built with BTF type data; the Docker host has no /sys/kernel/btf/vmlinux"
+NO_TRACEFS = (
+    "needs tracefs mounted at /sys/kernel/tracing; the Docker host has none there and the tracer"
+    " cannot mount it"
+)
 
 
 def info(
@@ -119,6 +123,36 @@ async def test_a_host_without_btf_type_data_is_unsupported(tmp_path: Path) -> No
 def test_a_host_with_btf_type_data_goes_on(tmp_path: Path) -> None:
     (tmp_path / "vmlinux").touch()
     ran = btf(tmp_path)
+    assert (ran.returncode, ran.stdout) == (0, "started\n")
+
+
+def tracefs(tmp_path: Path) -> subprocess.CompletedProcess[str]:
+    """The tracer script's tracefs check with `tmp_path` for /sys/kernel/tracing and a mount
+    that fails, as AppArmor makes it."""
+    mount = "mount -t tracefs nodev /sys/kernel/tracing"
+    assert mount in TRACEFS
+    script = TRACEFS.replace(mount, "false").replace("/sys/kernel/tracing/", f"{tmp_path}/")
+    return subprocess.run(
+        ["sh", "-c", script + "echo started"], capture_output=True, text=True, check=False
+    )
+
+
+async def test_a_host_without_tracefs_the_tracer_cannot_mount_is_unsupported(
+    tmp_path: Path,
+) -> None:
+    ran = tracefs(tmp_path)
+    assert ran.returncode == 1
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+    for line in ran.stdout.splitlines():
+        tracer._feed(line.encode())
+    error = tracer._ready.exception()
+    assert isinstance(error, Unsupported)
+    assert str(error) == NO_TRACEFS
+
+
+def test_a_host_with_tracefs_goes_on(tmp_path: Path) -> None:
+    (tmp_path / "available_filter_functions").touch()
+    ran = tracefs(tmp_path)
     assert (ran.returncode, ran.stdout) == (0, "started\n")
 
 

@@ -187,7 +187,7 @@ pythonpath = [
 strict = true
 markers = [
     "docker: needs a Docker daemon",
-    "tracer: needs the privileged kernel tracer",
+    "tracer: needs the kernel tracer",
     "serial: needs the machine to itself (floods the tracer or times CPU use); run apart from -n",
     "timing: holds a short wall-clock limit or was seen to fail on a busy machine; run apart from -n",
 ]

@@ -1856,6 +1856,43 @@ async def test_pmu_probe_failure_leaves_the_tracer_running(
     assert tracer.pmu is None
 
 
+class Created(Exception):
+    pass
+
+
+@pytest.mark.anyio
+async def test_the_tracer_container_has_three_capabilities_and_no_privileged_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configs: list[dict[str, Any]] = []
+
+    async def image(docker: object, name: str) -> str:
+        return f"aims-{name}:test"
+
+    async def create(docker: object, *, config: dict[str, Any], name: str | None = None) -> None:
+        configs.append(config)
+        raise Created
+
+    monkeypatch.setattr(tracer_module, "ensure_image", image)
+    monkeypatch.setattr(tracer_module, "create_container", create)
+    with pytest.raises(Created):
+        await Tracer(cast(aiodocker.Docker, None), {}, "t").start()
+
+    def ro(path: str) -> dict[str, Any]:
+        return {"Type": "bind", "Source": path, "Target": path, "ReadOnly": True}
+
+    [config] = configs
+    assert config["HostConfig"] == {
+        "CapDrop": ["ALL"],
+        "CapAdd": ["SYS_ADMIN", "BPF", "PERFMON"],
+        "Ulimits": [{"Name": "memlock", "Soft": -1, "Hard": -1}],
+        "Mounts": [ro("/sys/kernel/tracing"), ro("/sys/kernel/debug")],
+        "PidMode": "host",
+        "NetworkMode": "none",
+        "LogConfig": {"Type": "none"},
+    }
+
+
 # One reading of bpftrace's fdinfo on 7.0.14-linuxkit with a probe made to recurse: fds 12 and
 # 13 hold the programs, 15 and 16 their links.
 SKIP_READING = """\

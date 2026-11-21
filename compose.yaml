@@ -62,7 +62,7 @@ services:
         condition: service_completed_successfully
 
   # The Docker socket makes this service root on the host: it starts the sandboxes and the
-  # privileged kernel tracer.
+  # kernel tracer, whose capabilities amount to root on the host too.
   runner:
     <<: *aims
     user: root
@@ -73,7 +73,7 @@ services:
       - --server=http://server:8484
       - --token-file=/token/runner
       - --name=compose
-      # snapshot never starts the privileged kernel tracer
+      # snapshot never starts the kernel tracer, which has root-level access to the host
       - --audit=${AIMS_AUDIT:-auto}
     env_file:
       - path: .env

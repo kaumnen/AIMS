@@ -38,7 +38,7 @@ Four marks sort the tests by what they need:
 | Mark | Meaning |
 | --- | --- |
 | `docker` | Starts containers. Needs Docker. |
-| `tracer` | Starts the privileged kernel tracer. Needs Docker. |
+| `tracer` | Starts the kernel tracer. Needs Docker. |
 | `serial` | Needs the machine to itself. |
 | `timing` | Has a short time limit, so it fails on a busy machine. |
 

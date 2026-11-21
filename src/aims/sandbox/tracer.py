@@ -110,8 +110,9 @@ SKIP_READ = (
     r"""| sed 's/"0x//g; s/[",]//g; s/key:\[//; s/\]value:\[/:/; s/\]//'); """
     "u=$(cat /proc/uptime); echo C ${u%% *} $c"
 )
+# debugfs comes from the host through a read-only bind, empty when the host has none mounted.
 SKIPS = (
-    "p=$1; mountpoint -q /sys/kernel/debug "
+    'p=$1; [ -n "$(ls -A /sys/kernel/debug 2>/dev/null)" ] '
     "|| mount -t debugfs nodev /sys/kernel/debug 2>/dev/null; "
     # Only preemptible RCU defines __rcu_read_lock; without it a probe runs preemption off.
     "if grep -qw __rcu_read_lock /proc/kallsyms; then r=1; else r=0; fi; "
@@ -199,14 +200,24 @@ BTF = (
     + "needs a kernel built with BTF type data; the Docker host has no /sys/kernel/btf/vmlinux'"
     "; exit 1; }; "
 )
+# tracefs comes from the host's /sys/kernel/tracing through a read-only bind. Docker Desktop
+# keeps it under /sys/kernel/debug/tracing, so the script mounts one when the bind holds none.
+# AppArmor refuses that mount, so a host with AppArmor needs tracefs mounted there.
+TRACEFS = (
+    "a=/sys/kernel/tracing/available_filter_functions; "
+    "[ -e $a ] || mount -t tracefs nodev /sys/kernel/tracing 2>/dev/null; "
+    "[ -e $a ] || { echo '"
+    + UNSUPPORTED
+    + "needs tracefs mounted at /sys/kernel/tracing; the Docker host has none there and the"
+    " tracer cannot mount it'; exit 1; }; "
+)
 # The syscall probes follow calls by number, so the script keeps the numbers and ABI checks of the
 # host's architecture: its lines marked `//@<arch> `.
 SYSCALL_ARCH = 'u=$(uname -m); sed -i "s|^//@$u ||" $f; '
 # Kernels from 6.15 split pipe_write into anon_pipe_write and fifo_pipe_write, and 7.0 renamed
 # do_filp_open to do_file_open.
 TRACE = (
-    BTF + "mountpoint -q /sys/kernel/tracing || mount -t tracefs nodev /sys/kernel/tracing; "
-    "f=/tmp/trace.bt; cp /aims/trace.bt $f; a=/sys/kernel/tracing/available_filter_functions; "
+    BTF + TRACEFS + "f=/tmp/trace.bt; cp /aims/trace.bt $f; "
     "if grep -qx anon_pipe_write $a; then "
     "sed -i 's/^fentry:vmlinux:pipe_write /fentry:vmlinux:anon_pipe_write, "
     "fentry:vmlinux:fifo_pipe_write /' $f; fi; "
@@ -359,9 +370,11 @@ class _Held:
 
 
 class Tracer:
-    """A privileged bpftrace container that sees every process, file and socket call in sandboxes.
+    """A bpftrace container that sees every process, file and socket call in sandboxes.
 
-    One per backend. Records reach a sandbox once it registers its pid namespace.
+    One per backend. Records reach a sandbox once it registers its pid namespace. It runs in the
+    host pid namespace with SYS_ADMIN, BPF and PERFMON only, under Docker's default seccomp and
+    AppArmor profiles. Those capabilities still amount to root on the host.
     """
 
     def __init__(
@@ -448,8 +461,9 @@ class Tracer:
     async def start(self) -> None:
         image = await ensure_image(self._docker, "tracer")
         log.warning(
-            "starting %s, a privileged container with host pid access that traces sandbox "
-            "processes; --audit snapshot runs without it",
+            "starting %s, a container that traces sandbox processes from the host pid namespace "
+            "with SYS_ADMIN, BPF and PERFMON, which amount to root on the host; --audit snapshot "
+            "runs without it",
             self._name,
         )
         env = [] if self._ring_pages is None else [f"BPFTRACE_PERF_RB_PAGES={self._ring_pages}"]
@@ -459,8 +473,16 @@ class Tracer:
                 "Image": image,
                 "Env": env,
                 "Labels": {**self._labels, "aims.role": "tracer"},
+                # bpftool needs SYS_ADMIN to list programs and maps. Without SYS_RESOURCE bpftrace
+                # cannot raise its memlock limit and warns, so the limit is set here.
                 "HostConfig": {
-                    "Privileged": True,
+                    "CapDrop": ["ALL"],
+                    "CapAdd": ["SYS_ADMIN", "BPF", "PERFMON"],
+                    "Ulimits": [{"Name": "memlock", "Soft": -1, "Hard": -1}],
+                    "Mounts": [
+                        {"Type": "bind", "Source": p, "Target": p, "ReadOnly": True}
+                        for p in ("/sys/kernel/tracing", "/sys/kernel/debug")
+                    ],
                     "PidMode": "host",
                     "NetworkMode": "none",
                     "LogConfig": {"Type": "none"},

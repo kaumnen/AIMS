@@ -9,7 +9,7 @@
 - [Audit log](#audit-log)
 
 > [!WARNING]
-> A runner has root on its host through the Docker socket. It also starts a privileged kernel tracer. Put runners on a dedicated machine or VM.
+> A runner has root on its host through the Docker socket. It also starts a kernel tracer whose capabilities amount to root on the host. Put runners on a dedicated machine or VM.
 
 ## Docker Compose
 
@@ -61,14 +61,16 @@ The kernel tracer runs on the kernel of the runner's Docker host. It needs:
 - An x86_64 or aarch64 CPU
 - BTF type data in `/sys/kernel/btf/vmlinux`
 - cgroup v2
-- Rootful Docker, since the tracer runs privileged in the host's PID namespace
+- On a host with AppArmor, tracefs mounted at `/sys/kernel/tracing`, as systemd does. Without AppArmor the tracer mounts it itself.
+- Rootful Docker, since the tracer needs `SYS_ADMIN`, `BPF` and `PERFMON` in the host's PID namespace
 - No kernel lockdown in `confidentiality` mode
 
-The runner checks the first four when it starts the tracer. To check a host yourself:
+The runner checks the first five when it starts the tracer. To check a host yourself:
 
 ```sh
 docker info --format '{{.KernelVersion}} {{.Architecture}} {{.CgroupVersion}}'
 ls /sys/kernel/btf/vmlinux
+sudo ls /sys/kernel/tracing/available_filter_functions
 ```
 
 | Host | Kernel | CPU | Kernel audit |

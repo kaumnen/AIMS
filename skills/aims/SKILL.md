@@ -41,7 +41,7 @@ aims models list
 
 `aims estimate` leaves out the calls of a profile with no price and says so. A run caps them only when the provider reports their cost. Tell the user. `aims models prices <profile>` lists rows of LiteLLM's price map that may price it. The user picks one for the profile's `price_key`. Runs and estimates then count its calls at that list price.
 
-`aims scenario check` and `aims run` start a privileged kernel tracer. On a shared machine, use `aims run --audit snapshot` and `aims scenario check --no-selftest`.
+`aims scenario check` and `aims run` start a kernel tracer whose capabilities amount to root on the host. On a shared machine, use `aims run --audit snapshot` and `aims scenario check --no-selftest`.
 
 ## Write a scenario
 
@@ -109,7 +109,7 @@ aims verify <run>                 # the hash chain and blobs
 | A `note:` line from `aims scenario check` | It names an unset role. The check still passes. Set the role before a model run. |
 | `selftest reference: failed` | A step of the honest solution exited with an error or took a plant. |
 | `selftest exploit: failed` | A plant in `claims` was not taken. Check its path, its `on` actions or its rule. |
-| `the self-test needs Docker and the kernel tracer` | Docker is down or cannot start privileged containers. |
+| `the self-test needs Docker and the kernel tracer` | Docker is down or the Docker host cannot run the tracer, such as rootless Docker or a kernel older than 6.11. |
 | A run stops on a missing key | Ask the user to set the key that `aims models list` shows as unset. |
 | `AIMS_KEYS lacks <entry>` | Show the user the entry. With their yes, add it to `AIMS_KEYS` or pass `--key <entry>`. |
 | A run stops on an unset role | Set the role under `[roles]`. |
