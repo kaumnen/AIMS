@@ -39,7 +39,7 @@ from aims.models.profiles import ModelsConfig, Overrides, Price, Profile, Profil
 from aims.models.replay import Pace, Recording, Replayer, ReplayError, ReplayWall, canonical_key
 from aims.models.replay import chain as cause_chain
 from aims.models.transport import Exchange, Recorder, current, encode_chunks
-from aims.models.types import Prompt, Reply
+from aims.models.types import NO_ROOM, Prompt, Reply, SpendCap
 from aims.net import Outbound
 from aims.text import scrub
 
@@ -52,14 +52,15 @@ _RETRY_STATUS = frozenset({408, 409, 425, 429})
 
 class ModelCallError(Exception):
     """Every attempt of a model call failed. `reply` describes the last one, with the cost of
-    them all."""
+    them all. `no_room` says the call was not tried again since its spend cap had no room."""
 
-    def __init__(self, reply: Reply) -> None:
+    def __init__(self, reply: Reply, *, no_room: bool = False) -> None:
         super().__init__(
             f"model call {reply.call_id} on {reply.profile} failed after {reply.attempts}"
             f" attempt(s): {reply.error}"
         )
         self.reply = reply
+        self.no_room = no_room
 
 
 @dataclass(slots=True)
@@ -140,12 +141,15 @@ class ModelClient:
         overrides: Overrides | None = None,
         role: ModelRole | None = None,
         recorded: Callable[[str], None] | None = None,
+        cap: SpendCap | None = None,
     ) -> Reply:
         """One model call, retried per the profile. The reply's cost sums every attempt, since a
         failed one may have been billed. Raises ModelCallError when every attempt failed, and
         ReplayError when a replay has no answer for the request. `role` marks a call the
         monitor makes. `recorded` gets the call's id once its first `model.request` is in the
-        log, so a caller knows the id of a call that is then cancelled or raises."""
+        log, so a caller knows the id of a call that is then cancelled or raises. A live call
+        under a `cap` is tried again only when the cap says another attempt fits. A replay
+        stops where the recorded call did."""
         if isinstance(profile, str):
             profile = self.config.get(profile)
         if prompt.output_schema is not None and not profile.structured_output:
@@ -167,6 +171,7 @@ class ModelClient:
         request_params = params(profile, prompt)
         retries = profile.retries
         spent: float | None = None
+        unseen = 0.0
         attempt = counted = 0
         limited_since: float | None = None
         while True:
@@ -221,8 +226,28 @@ class ModelClient:
             if outcome.exchange.retry is not None:
                 # A replay retries where the recorded call did, whatever the rule says now.
                 retry = outcome.exchange.retry and outcome.reraise is None
+            cost = self._priced(profile, outcome.assembled)
+            if cap is not None and self._unseen(outcome, cost[0]):
+                unseen = round(unseen + cap.attempt_usd, 10)
+            no_room = outcome.exchange.no_room
+            if retry and cap is not None and self.replay is None:
+                no_room = not cap.fits(round((_plus(spent, cost[0]) or 0.0) + unseen, 10))
+                retry = retry and not no_room
+            if no_room and not (outcome.error or "").endswith(NO_ROOM):
+                outcome.error = f"{outcome.error}; {NO_ROOM}"
             reply = await settle(
-                self._finish(profile, backend, call_id, attempt, agent_id, outcome, retry, spent)
+                self._finish(
+                    profile,
+                    backend,
+                    call_id,
+                    attempt,
+                    agent_id,
+                    outcome,
+                    retry,
+                    spent,
+                    cost,
+                    unseen,
+                )
             )
             spent = reply.cost_usd
             asked = limited or outcome.ratelimit.retry_after_ms is not None
@@ -233,7 +258,7 @@ class ModelClient:
             if outcome.status in ("completed", "incomplete"):
                 return reply
             if not retry:
-                raise ModelCallError(reply)
+                raise ModelCallError(reply, no_room=no_room)
             await self._sleep(wait)
 
     def _cache_key(
@@ -423,9 +448,11 @@ class ModelClient:
         o: _Outcome,
         retry: bool,
         spent: float | None,
+        priced: tuple[float | None, CostSource | None],
+        unseen: float,
     ) -> Reply:
-        """Log the attempt with its own cost; the reply adds `spent`, what the attempts before
-        it cost."""
+        """Log the attempt with its own `priced` cost; the reply adds `spent`, what the attempts
+        before it cost, and carries `unseen`."""
         a = o.assembled
         ex = o.exchange
         datas: list[bytes] = []
@@ -448,17 +475,7 @@ class ModelClient:
         reasoning: Content | None = None
         if a.reasoning:
             reasoning = await self.store.content(self.run_id, a.reasoning)
-        # A replayed answer was paid for by the run it was recorded in. A live one costs what
-        # the provider reports, which a router knows per call and a price table does not.
-        cost: float | None = 0.0
-        cost_source: CostSource | None = None
-        if self.replay is None:
-            cost, cost_source = a.cost_usd, "provider"
-            if cost is None:
-                cost = _cost(profile.price, a.usage)
-                cost_source = None
-                if cost is not None:
-                    cost_source = "list" if profile.listed is not None else "price"
+        cost, cost_source = priced
         response = ModelResponse(
             call_id=call_id,
             attempt=attempt,
@@ -506,8 +523,32 @@ class ModelClient:
             finish_reason=a.finish_reason,
             usage=a.usage,
             cost_usd=_plus(spent, cost),
+            unseen_usd=unseen,
             error=o.error,
         )
+
+    def _priced(self, profile: Profile, a: Assembled) -> tuple[float | None, CostSource | None]:
+        """What one attempt cost and where the figure came from. A replayed answer was paid for
+        by the run it was recorded in. A live one costs what the provider reports, which a
+        router knows per call and a price table does not."""
+        if self.replay is not None:
+            return 0.0, None
+        if a.cost_usd is not None:
+            return a.cost_usd, "provider"
+        cost = _cost(profile.price, a.usage)
+        if cost is None:
+            return None, None
+        return cost, "list" if profile.listed is not None else "price"
+
+    def _unseen(self, o: _Outcome, cost: float | None) -> bool:
+        """Whether a failed live attempt may have been billed with no cost reported. A provider
+        may bill an answer it began, or the whole of it, when the answer does not arrive. One
+        that could not connect or answered with an error status did not take the request."""
+        if o.status != "error" or cost is not None or self.replay is not None:
+            return False
+        if o.error_kind == "connect":
+            return False
+        return o.exchange.status is None or o.exchange.status < 300
 
     def _wait(self, profile: Profile, attempt: int, limit: RateLimit) -> float:
         """Seconds before the attempt after `attempt`: the wait the provider asks for, else the

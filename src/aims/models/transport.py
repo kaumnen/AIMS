@@ -30,7 +30,8 @@ UNRECORDED_HEADERS = frozenset({"set-cookie"})
 class Exchange:
     """What went over the wire for one attempt. `chunks` are raw body bytes with the ms since
     the request was sent at which each arrived. A replayed attempt sets `origin` to the run
-    and event it came from, and `retry` to whether that call retried it."""
+    and event it came from, `retry` to whether that call retried it and `no_room` to whether
+    its spend cap left no room to."""
 
     sent: float | None = None
     status: int | None = None
@@ -39,6 +40,7 @@ class Exchange:
     eof: bool = False
     origin: tuple[str, int] | None = None
     retry: bool | None = None
+    no_room: bool = False
 
     def ms(self) -> int:
         return 0 if self.sent is None else int((time.monotonic() - self.sent) * 1000)

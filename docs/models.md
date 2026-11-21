@@ -294,6 +294,8 @@ A 429, or a failed call whose answer says how long to wait, pauses every profile
 
 A 429 retry with no wait counts toward `attempts`, so a profile with `backoff = 0` still stops.
 
+Under a spend cap, the judge and the score retry a failed call only when another full attempt fits what is left. A failed attempt with no cost, such as a timeout or a cut stream, counts against the cap at what the call was planned to cost, since a provider may bill an answer it did not deliver. The recorded cost stays what the provider reported. Agent, sweep and review calls retry as above, so their caps can be passed by a retry.
+
 ## What a run records
 
 | Field of a `model.response` event | Meaning |

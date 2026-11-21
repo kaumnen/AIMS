@@ -15,6 +15,7 @@ import secrets
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import partial
 from itertools import groupby
 from pathlib import PurePosixPath
 from typing import Annotated, Any, Literal
@@ -59,11 +60,13 @@ from aims.models import (
     Profile,
     Prompt,
     Reply,
+    SpendCap,
     ToolOutput,
     ToolRequest,
     ToolSpec,
     Turn,
 )
+from aims.models.types import CHARS_PER_TOKEN
 from aims.monitor import judge_texts
 from aims.monitor.config import CATEGORIES, JUDGE_MIN_OUTPUT, JudgeConfig
 from aims.monitor.texts import MonitorTexts
@@ -102,7 +105,6 @@ VERDICT_OUTPUT = 4096
 # Input tokens an exploring call keeps for the tool results it brings back: about one result at
 # TOOL_CHARS, such as a full blob read, as the prompt holds it.
 RESULT_TOKENS = 8192
-CHARS_PER_TOKEN = 3
 MILLION = 1_000_000
 BRIEF_FLAGS = 60
 BRIEF_SWEEPS = 30
@@ -729,6 +731,9 @@ class Rollout:
     tool_calls: int = 0
     calls: list[str] = field(default_factory=list)
     cost: float = 0.0
+    # What failed calls that may have been billed with no cost reported count at, against the
+    # budget only.
+    owed: float = 0.0
     context: int = 0
     mark: int = 0
     # Whether the call `context` counts sent the verdict schema, not the tool specs.
@@ -745,11 +750,13 @@ class Rollout:
         return f"{self.name} (blind)" if self.blind else self.name
 
     def charge(self, reply: Reply, prompt: Prompt | None = None, unpriced: float = 0.0) -> None:
-        """Add what `reply` cost, and `unpriced` for an attempt of it that came with no price.
-        With the `prompt` it answered, its token counts become the context the next call
-        builds on: `context` counts the items before `mark`. A reply without counts leaves both
-        as they were, so the items since are counted by size."""
+        """Add what `reply` cost, and `unpriced` for an attempt of it that came with no price,
+        and what its unseen attempts count at to `owed`. With the `prompt` it answered, its
+        token counts become the context the next call builds on: `context` counts the items
+        before `mark`. A reply without counts leaves both as they were, so the items since are
+        counted by size."""
         self.cost += (reply.cost_usd or 0.0) + unpriced
+        self.owed += reply.unseen_usd
         usage = reply.usage
         if prompt is None or usage.input_tokens is None:
             return
@@ -1127,11 +1134,12 @@ class Judge:
         # the schema the exploring call did not send.
         explored = RESULT_TOKENS + self._tokens(self._force()) + FORMAT_TOKENS
         while True:
-            left = r.budget - r.cost
+            left = r.budget - r.cost - r.owed
             context = self._context(r, items, specs, forced=forced)
-            out = None
+            out = plan = None
             if not forced:
-                out = self._room(left, context, later=FORCE_TRIES, grow=explored)
+                plan = partial(self._room, context=context, later=FORCE_TRIES, grow=explored)
+                out = plan(left)
                 late = self.clock() >= self._force_at
                 if full or late or r.tool_calls >= cap or (out is not None and out < 0):
                     forced = True
@@ -1142,12 +1150,16 @@ class Judge:
                     r.error = f"no valid verdict after {tries} forced calls"
                     return
                 later = FORCE_TRIES - tries - 1
-                out = self._room(left, context, later=later, grow=self._refusal())
+                plan = partial(self._room, context=context, later=later, grow=self._refusal())
+                out = plan(left)
                 if later and out is not None and out < self._verdict():
                     # Too little for every try left at its planned output: this one gets all.
-                    out = self._room(left, context, later=0)
+                    plan = partial(self._room, context=context, later=0)
+                    out = plan(left)
             if out is not None and out < MIN_OUTPUT:
                 r.error = "the judge budget ran out before a verdict"
+                if r.owed:
+                    r.error += f"; failed calls with no cost reported count at ${r.owed:.4f}"
                 return
             if forced:
                 tries += 1
@@ -1156,7 +1168,20 @@ class Judge:
                 prompt = Prompt(items=items, tools=specs)
             limit = self.profile.max_output_tokens
             capped = out is not None and (limit is None or out < limit)
-            reply = await self._call(r, prompt, out if capped else None)
+            spend = None
+            if out is not None and plan is not None:
+                spend = self._cap(plan, left, context, out if capped else limit)
+            try:
+                reply = await self._call(r, prompt, out if capped else None, spend)
+            except ModelCallError as e:
+                if not e.no_room:
+                    raise
+                # No room to try the call again: what is left goes to the verdict.
+                r.charge(e.reply)
+                if not forced:
+                    forced = True
+                    items.append(self._force())
+                continue
             at = len(items)
             completed = reply.status == "completed"
             items.append(reply.turn if completed else Turn(text=reply.text))
@@ -1197,15 +1222,42 @@ class Judge:
                 items[at] = Turn(text=reply.text)
                 r.seen, r.tool_calls, full = seen, used, True
 
-    async def _call(self, r: Rollout, prompt: Prompt, out: int | None = None) -> Reply:
+    async def _call(
+        self,
+        r: Rollout,
+        prompt: Prompt,
+        out: int | None = None,
+        cap: SpendCap | None = None,
+    ) -> Reply:
         """One call, linked from the rollout as soon as its request is in the log, so a call
-        that is cancelled or raises is linked too."""
+        that is cancelled or raises is linked too. `cap` holds its retries."""
         overrides = None if out is None else Overrides(max_output_tokens=out)
         reply = await self.client.call(
-            self.profile, prompt, role="judge", overrides=overrides, recorded=r.calls.append
+            self.profile,
+            prompt,
+            role="judge",
+            overrides=overrides,
+            recorded=r.calls.append,
+            cap=cap,
         )
         r.charge(reply, prompt, self._unpriced(prompt, reply))
         return reply
+
+    def _cap(
+        self, plan: Callable[[float], int | None], left: float, context: int, planned: int | None
+    ) -> SpendCap:
+        """How a call that `plan` gave `planned` output tokens of `left` dollars, reading
+        `context` tokens, is tried again: only while the plan still gives it as many once its
+        attempts so far may have cost `owed` dollars."""
+        price = self.profile.price
+        assert price is not None
+        attempt = (context * price.input + (planned or 0) * price.output) / MILLION
+
+        def fits(owed: float) -> bool:
+            room = plan(left - owed)
+            return room is None or planned is None or room >= planned
+
+        return SpendCap(attempt_usd=round(attempt, 10), fits=fits)
 
     def _unpriced(self, prompt: Prompt, reply: Reply) -> float:
         """What the answer of `reply` is taken to have cost when it came without token counts,
@@ -1281,7 +1333,7 @@ class Judge:
     def _fits(self, r: Rollout, items: Sequence[Item], specs: Sequence[ToolSpec]) -> bool:
         """Whether the forced verdict calls after `items` still get their planned output."""
         context = self._context(r, [*items, self._force()], specs, forced=True)
-        left = r.budget - r.cost
+        left = r.budget - r.cost - r.owed
         out = self._room(left, context, later=FORCE_TRIES - 1, grow=self._refusal())
         return out is None or out >= self._verdict()
 

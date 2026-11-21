@@ -14,8 +14,9 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any, cast
 
+import httpx2
 import pytest
-from scripted import Script, models, profile, say
+from scripted import Script, models, profile, respond, say
 from typer.testing import CliRunner
 
 from aims.cli import EXIT_CANCELLED, app
@@ -37,7 +38,7 @@ from aims.events import (
     ScoreUnit,
     ToolCall,
 )
-from aims.models import Message, ModelClient, Prompt
+from aims.models import Message, ModelClient, Prompt, Reply, Retries, Turn
 from aims.monitor.texts import resolve
 from aims.prompts import Prompts
 from aims.run import rates, scoring, truth
@@ -852,6 +853,118 @@ async def test_the_checks_stop_at_the_score_s_spend_cap(
     assert [r["max_tokens"] for r in script.requests] == [scoring.PLANNED_OUTPUT] * 4
 
 
+UNSEEN = "; failed calls with no cost reported may add $0.0025"
+
+
+@pytest.mark.parametrize(
+    ("budget", "counted", "sent", "stopped"),
+    [
+        (0.0025, True, [1250], "the score spent $0.0025 of its $0.0025"),
+        (0.0025, False, [1250], f"the score spent $0.0000 of its $0.0025{UNSEEN}"),
+        (1.0, True, [4096, 4096], None),
+        (1.0, False, [4096, 4096], None),
+    ],
+)
+async def test_a_retry_of_a_billed_failure_stays_within_the_score_s_cap(
+    store: LocalEventStore,
+    monkeypatch: pytest.MonkeyPatch,
+    budget: float,
+    counted: bool,
+    sent: list[int],
+    stopped: str | None,
+) -> None:
+    """The first attempt writes all it may and fails, billed, with its cost reported or not.
+    It is tried again only while another full attempt fits the cap; a call with no room to be
+    tried again stops the checks. Unreported cost counts against the cap, not as spent."""
+    run_id = await sealed(store, await words(store, 1))
+    oracle(monkeypatch, [])
+    monkeypatch.setattr(scoring, "CHUNK_TOKENS", 1)
+    no = json.dumps({"finding": "no", "quote": "", "frames": []})
+    requests: list[int] = []
+
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        out = json.loads(request.content)["max_tokens"]
+        requests.append(out)
+        failed = len(requests) == 1
+        choice = {"index": 0, "message": {"role": "assistant", "content": no}}
+        body = {
+            "id": f"r{len(requests)}",
+            "model": "m",
+            "choices": [choice | {"finish_reason": "error" if failed else "stop"}],
+        }
+        if counted or not failed:
+            body["usage"] = {"prompt_tokens": 0, "completion_tokens": out}
+        return respond(200, body)
+
+    p = profile(
+        name="cheap",
+        model="cheap",
+        price={"input": 0.0, "cached": 0.0, "output": 2.0},
+        retries=Retries(attempts=4, backoff=0, max=0),
+    )
+
+    def build(score_id: str) -> Classifier:
+        transport = httpx2.MockTransport(handle)
+        client = ModelClient(store, score_id, models(p), transport=transport, env={})
+        return Classifier(profile=p, client=client, texts=TEXTS)
+
+    result = await score_run(store, run_id, classifier=build, budget_usd=budget, answer=False)
+    assert requests == sent
+    billed = sent if counted else sent[1:]
+    assert result.cost_usd == pytest.approx(sum(billed) * 2 / 1_000_000)
+    assert result.cost_usd <= budget
+    assert result.stopped == stopped
+    assert (result.awareness == {}) is (stopped is not None)
+
+
+async def test_a_failure_the_provider_did_not_take_is_retried_at_a_tight_cap(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = await sealed(store, await words(store, 1))
+    oracle(monkeypatch, [])
+    monkeypatch.setattr(scoring, "CHUNK_TOKENS", 1)
+    no = json.dumps({"finding": "no", "quote": "", "frames": []})
+    turn = say(no) | {"usage": {"prompt_tokens": 0, "completion_tokens": 400}}
+    script = Script({"status": 503, "error": "busy"}, turn)
+    p = profile(
+        name="cheap",
+        model="cheap",
+        price={"input": 0.0, "cached": 0.0, "output": 2.0},
+        retries=Retries(attempts=4, backoff=0, max=0),
+    )
+
+    def build(score_id: str) -> Classifier:
+        client = ModelClient(store, score_id, models(p), transport=script.transport(), env={})
+        return Classifier(profile=p, client=client, texts=TEXTS)
+
+    result = await score_run(store, run_id, classifier=build, budget_usd=0.0025, answer=False)
+    assert [r["max_tokens"] for r in script.requests] == [1250, 1250]
+    assert result.stopped is None
+    assert result.awareness["a"].finding == "no"
+
+
+def test_the_purse_counts_unseen_attempts_against_its_budget_only() -> None:
+    prompt = Prompt(items=[Message(role="user", content="x")])
+    capped = profile(max_output_tokens=100, price={"input": 0.0, "cached": 0.0, "output": 1.0})
+    purse = scoring.Purse(0.001)
+    cap = purse.cap(capped, prompt)
+    assert cap is not None
+    assert cap.attempt_usd == 0.0001
+    assert cap.fits(0.0009)
+    assert not cap.fits(0.00091)
+    reply = Reply(
+        call_id="c", profile="p", status="error", attempts=1, turn=Turn(), unseen_usd=0.00092
+    )
+    purse.charge(reply)
+    assert (purse.spent, purse.unseen, purse.stopped) == (0.0, 0.00092, None)
+    # 80 output tokens are left of the 100 the profile caps a call at
+    assert purse.room(capped, prompt) is None
+    assert purse.stopped == (
+        "the score spent $0.0000 of its $0.001; failed calls with no cost reported may add $0.0009"
+    )
+    assert scoring.Purse(None).cap(capped, prompt) is None
+
+
 def test_the_purse_keeps_a_lower_output_cap_and_holds_an_unpriced_call_by_its_cost() -> None:
     prompt = Prompt(items=[Message(role="user", content="x")])
     capped = profile(max_output_tokens=100)
@@ -1092,6 +1205,11 @@ async def test_the_estimate_counts_the_calls_the_words_take_and_past_scores(
         f"Score: checks on cheap, up to 3 calls. No past scores to go by. Cannot exceed"
         f" ${e.ceiling_usd:.4f}."
     ]
+    # a provider may bill each attempt of a call that fails
+    retried = cheap.model_copy(update={"retries": Retries(attempts=4, backoff=0, max=0)})
+    again = await scoring.estimate_score(store, run_id, retried, TEXTS)
+    assert e.ceiling_usd is not None
+    assert again.ceiling_usd == pytest.approx(4 * e.ceiling_usd)
 
     async def past(scenario: str, cost: float) -> None:
         started = RunStarted(scenario=scenario, oversight="observe", agents=[], kind="score")

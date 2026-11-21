@@ -65,6 +65,7 @@ from aims.models.check import check_profile, record_check
 from aims.models.client import _classify, _cost
 from aims.models.replay import canonical_key
 from aims.models.transport import decode_chunks
+from aims.models.types import NO_ROOM, SpendCap
 from aims.run.fork import _schedule
 from aims.stored import STORED
 
@@ -707,6 +708,78 @@ async def test_the_wall_timeout_is_not_retried(store: LocalEventStore) -> None:
     assert (response.status, response.error_kind) == ("error", "wall")
 
 
+@pytest.mark.parametrize("fits", [True, False])
+async def test_a_retry_under_a_spend_cap_runs_only_while_it_fits(
+    store: LocalEventStore, fits: bool
+) -> None:
+    """A cut answer with no cost may have been billed: it counts at what the caller planned an
+    attempt to cost, and the cap decides the retry."""
+    run_id = await new_run(store)
+    cut = [*CHAT_EVENTS[:4], chunk({"content": ""}, "error", error={"message": "cut off"})]
+    handler, sent = scripted(lambda: stream(sse(cut)), lambda: stream(sse(CHAT_EVENTS)))
+    owed: list[float] = []
+
+    def check(value: float) -> bool:
+        owed.append(value)
+        return fits
+
+    cap = SpendCap(attempt_usd=0.001, fits=check)
+    async with client(store, run_id, profile(), handler) as mc:
+        if fits:
+            reply = await mc.call("test", PROMPT, cap=cap)
+            assert reply.attempts == 2
+        else:
+            with pytest.raises(ModelCallError) as info:
+                await mc.call("test", PROMPT, cap=cap)
+            assert info.value.no_room
+            reply = info.value.reply
+            assert reply.error == f"provider error: cut off; {NO_ROOM}"
+    assert (owed, reply.unseen_usd, len(sent)) == ([0.001], 0.001, 2 if fits else 1)
+    first = payloads(await model_events(store, run_id))[1]
+    assert (first.cost_usd, first.retry) == (None, fits)
+
+
+@pytest.mark.parametrize("failure", ["connect", "status"])
+async def test_an_attempt_the_provider_did_not_take_owes_nothing(
+    store: LocalEventStore, failure: str
+) -> None:
+    run_id = await new_run(store)
+    error = json.dumps({"error": {"message": "busy"}}).encode()
+    first: Callable[[], httpx2.Response] | Exception = httpx2.ConnectError("refused")
+    if failure == "status":
+        first = lambda: stream([error], 503, content_type="application/json")  # noqa: E731
+    handler, _ = scripted(first, lambda: stream(sse(CHAT_EVENTS)))
+    owed: list[float] = []
+
+    def check(value: float) -> bool:
+        owed.append(value)
+        return True
+
+    async with client(store, run_id, profile(), handler) as mc:
+        reply = await mc.call("test", PROMPT, cap=SpendCap(attempt_usd=0.001, fits=check))
+    assert (reply.attempts, reply.unseen_usd, owed) == (2, 0.0, [0.0])
+
+
+async def test_a_replay_stops_where_the_spend_cap_stopped_the_call(
+    store: LocalEventStore,
+) -> None:
+    source = await new_run(store)
+    cut = [*CHAT_EVENTS[:4], chunk({"content": ""}, "error", error={"message": "cut off"})]
+    handler, _ = scripted(lambda: stream(sse(cut)))
+    cap = SpendCap(attempt_usd=0.001, fits=lambda _: False)
+    async with client(store, source, profile(), handler) as mc:
+        with pytest.raises(ModelCallError):
+            await mc.call("test", PROMPT, cap=cap)
+    recording = await Recording.load(store, source)
+    run_id = await new_run(store)
+    async with client(store, run_id, profile(), handler, replay=recording) as mc:
+        with pytest.raises(ModelCallError) as info:
+            await mc.call("test", PROMPT)
+    assert info.value.no_room
+    assert info.value.reply.attempts == 1
+    assert info.value.reply.error == f"provider error: cut off; {NO_ROOM}"
+
+
 async def test_a_cancelled_call_records_what_arrived(store: LocalEventStore) -> None:
     run_id = await new_run(store)
     head = sse(CHAT_EVENTS[:4], done=False)
@@ -1187,7 +1260,8 @@ async def test_replay_retries_where_the_recorded_call_did(store: LocalEventStore
     run_id = await new_run(store)
     fewer = recorded.model_copy(update={"retries": Retries(attempts=2, backoff=0, max=0)})
     async with client(store, run_id, fewer, handler, replay=recording) as mc:
-        again = await mc.call("test", PROMPT)
+        # a replay retries where the recording did, whatever the caller's check says
+        again = await mc.call("test", PROMPT, cap=SpendCap(attempt_usd=0, fits=lambda _: False))
     assert (again.status, again.attempts, again.turn) == ("completed", 3, first.turn)
     assert recording.remaining() == 0
 

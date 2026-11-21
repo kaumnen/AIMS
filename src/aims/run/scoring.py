@@ -65,12 +65,15 @@ from aims.models import (
     ModelsConfig,
     OutputSchema,
     Overrides,
+    Price,
     Profile,
     Prompt,
     ReplayError,
+    Reply,
+    SpendCap,
 )
 from aims.models.listprice import Listing, PriceLists, priced
-from aims.monitor.judge import CHARS_PER_TOKEN
+from aims.models.types import CHARS_PER_TOKEN
 from aims.monitor.offline import origin_agents
 from aims.monitor.render import cut, escape, frame, tokens
 from aims.monitor.setup import extractor_for
@@ -188,10 +191,13 @@ class ScoreResult:
 @dataclass(slots=True)
 class Purse:
     """What the checks of one score may spend: `budget` USD, None for no cap, of which `spent`
-    went. `stopped` says why they stopped, None while they go on."""
+    went. `unseen` is what failed calls that may have been billed with no cost reported count
+    at, against the budget only. `stopped` says why the checks stopped, None while they go
+    on."""
 
     budget: float | None
     spent: float = 0.0
+    unseen: float = 0.0
     stopped: str | None = None
 
     def room(self, profile: Profile, prompt: Prompt) -> int | None:
@@ -201,15 +207,13 @@ class Purse:
         fit. An unpriced call is held only by the costs its provider reports."""
         if self.stopped is not None or self.budget is None:
             return None
-        left = self.budget - self.spent
+        left = self.budget - self.spent - self.unseen
         price = profile.price
         if price is None:
             if left <= 0:
                 self._stop()
             return None
-        sent: list[Any] = [*prompt.items, *filter(None, [prompt.output_schema])]
-        given = sum(len(x.model_dump_json()) for x in sent) // CHARS_PER_TOKEN
-        left -= given * price.input / MILLION
+        left -= _input(price, prompt)
         if price.output <= 0:
             if left < 0:
                 self._stop()
@@ -224,8 +228,46 @@ class Purse:
             return out
         return None if cap else limit
 
+    def cap(self, profile: Profile, prompt: Prompt) -> SpendCap | None:
+        """How a call of `profile`, as sent with its output cap, and `prompt` is tried again:
+        only while another attempt at that cap fits beside what its attempts so far may have
+        cost. None with no budget or no price."""
+        price, budget = profile.price, self.budget
+        if budget is None or price is None:
+            return None
+        given, planned = _input(price, prompt), profile.max_output_tokens
+
+        def fits(owed: float) -> bool:
+            left = budget - self.spent - self.unseen - owed
+            left -= given
+            if price.output <= 0 or planned is None:
+                return left >= 0
+            return int(left / price.output * MILLION) >= planned
+
+        attempt = round(given + (planned or 0) * price.output / MILLION, 10)
+        return SpendCap(attempt_usd=attempt, fits=fits)
+
+    def charge(self, reply: Reply, *, no_room: bool = False) -> None:
+        """Add what `reply` cost and what its unseen attempts count at. The checks stop once a
+        call had no room to be tried again, or past the budget, which only an unpriced call or
+        a provider's own figure can bring."""
+        self.spent = round(self.spent + (reply.cost_usd or 0.0), 10)
+        self.unseen = round(self.unseen + reply.unseen_usd, 10)
+        over = self.budget is not None and self.spent + self.unseen > self.budget
+        if self.stopped is None and (no_room or over):
+            self._stop()
+
     def _stop(self) -> None:
         self.stopped = f"the score spent ${self.spent:.4f} of its ${self.budget:g}"
+        if self.unseen:
+            self.stopped += f"; failed calls with no cost reported may add ${self.unseen:.4f}"
+
+
+def _input(price: Price, prompt: Prompt) -> float:
+    """What `prompt` costs as input at `price`, every token uncached, counted by its size."""
+    sent: list[Any] = [*prompt.items, *filter(None, [prompt.output_schema])]
+    given = sum(len(x.model_dump_json()) for x in sent) // CHARS_PER_TOKEN
+    return given * price.input / MILLION
 
 
 @dataclass(frozen=True, slots=True)
@@ -796,13 +838,14 @@ async def _ask[T: BaseModel](
     if purse.stopped is not None:
         return None, None, 0.0
     overrides = None if out is None else Overrides(max_output_tokens=out)
+    cap = purse.cap(classifier.profile.apply(overrides), prompt)
     try:
         reply = await classifier.client.call(
-            classifier.profile, prompt, role="score", overrides=overrides
+            classifier.profile, prompt, role="score", overrides=overrides, cap=cap
         )
     except ModelCallError as e:
         log.warning("the %s of agent %s in run %s was not classified: %s", what, agent, origin, e)
-        purse.spent += e.reply.cost_usd or 0.0
+        purse.charge(e.reply, no_room=e.no_room)
         return None, None, e.reply.cost_usd or 0.0
     except ReplayError as e:
         log.warning("the %s of agent %s in run %s was not replayed: %s", what, agent, origin, e)
@@ -811,7 +854,7 @@ async def _ask[T: BaseModel](
         log.warning("the %s classifier failed on agent %s: %s", what, agent, e)
         return None, None, 0.0
     cost = reply.cost_usd or 0.0
-    purse.spent += cost
+    purse.charge(reply)
     try:
         return model.model_validate(scrub(json.loads(reply.text))), reply.call_id, cost
     except ValueError, ValidationError:
@@ -1215,6 +1258,8 @@ async def estimate_score(
         bound = None
         if cap is not None or not out.calls:
             bound = (tokens_in * price.input + out.calls * (cap or 0) * price.output) / MILLION
+            # a provider may bill each attempt of a call that fails
+            bound *= profile.retries.attempts
         held = [x for x in (bound, budget_usd) if x is not None]
         out.ceiling_usd = min(held) if held else None
     same: list[float] = []

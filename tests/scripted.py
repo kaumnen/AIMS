@@ -70,7 +70,8 @@ def respond(status: int, value: Any) -> httpx2.Response:
 
 
 class Script:
-    """Answers each request with the next turn. `fail` turns answer with an HTTP error."""
+    """Answers each request with the next turn. `fail` turns answer with an HTTP error. A
+    `finish` turn ends with that finish reason, such as "error" for an answer that failed."""
 
     def __init__(self, *turns: Turn | Callable[[dict[str, Any]], Turn]) -> None:
         self.turns = list(turns)
@@ -104,6 +105,7 @@ class Script:
                 for t in turn.get("calls", [turn])
             ]
             finish = "tool_calls"
+        finish = turn.get("finish", finish)
         usage = turn.get("usage", {"prompt_tokens": 100, "completion_tokens": 10})
         return respond(
             200,

@@ -11,6 +11,7 @@ import rfc8785
 
 from aims.events import EventStore, ModelError, ModelRequest, ModelResponse
 from aims.models.transport import current, decode_chunks
+from aims.models.types import NO_ROOM
 
 Pace = Literal["instant", "recorded"]
 _DROP = frozenset({"content-length", "transfer-encoding", "connection"})
@@ -173,6 +174,7 @@ class Replayer(httpx2.AsyncBaseTransport):
         if exchange is not None:
             exchange.origin = (rec.run_id, rec.seq)
             exchange.retry = rec.retry
+            exchange.no_room = (rec.error or "").endswith(NO_ROOM)
         if rec.http_status is None:
             if self.pace == "recorded":
                 await asyncio.sleep(rec.latency_ms / 1000)

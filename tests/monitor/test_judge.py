@@ -46,7 +46,8 @@ from aims.events import (
     ToolCall,
     ToolResult,
 )
-from aims.models import ModelClient, Profile, Prompt, Reply, ToolRequest
+from aims.models import ModelClient, Profile, Prompt, Reply, Retries, ToolRequest
+from aims.models.types import NO_ROOM
 from aims.monitor import judge as judge_module
 from aims.monitor import judge_texts
 from aims.monitor.config import (
@@ -1575,6 +1576,95 @@ async def test_a_forced_call_counts_the_schema_it_sends(
     (_, _), (planned, sent) = calls
     specs = sum(len(s.model_dump_json()) for s in judge._specs(False)) // CHARS_PER_TOKEN
     assert sent <= planned <= sent + specs + 2
+
+
+@pytest.mark.parametrize("reported", [True, False])
+@pytest.mark.parametrize("tight", [True, False])
+async def test_a_billed_failure_is_retried_only_while_the_budget_holds_it(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch, tight: bool, reported: bool
+) -> None:
+    """The forced call fails after it wrote all it may, billed, with its cost reported or not.
+    Under a budget that pays for one such call a retry would pass it, so none is made; with
+    room the retry gives the verdict. Unreported cost counts against the budget only."""
+    run = await make_run(store)
+    answer = say(json.dumps(verdict(summary="forced")))
+
+    def billed(body: dict[str, Any]) -> dict[str, Any]:
+        failed = answer | {"finish": "error"}
+        if reported:
+            return failed | {"usage": {"prompt_tokens": 0, "completion_tokens": body["max_tokens"]}}
+        return failed | {"usage": None}
+
+    budget = 5.0
+    if tight:
+        probe = make_judge(store, run, Script(answer), clock=late_at_once())
+        calls = planned_contexts(probe, monkeypatch, counted)
+        await probe.run(flags=[], sweeps=[])
+        [(planned, _)] = calls
+        budget = (planned * 1.0 + MIN_OUTPUT * 2.0) / 1_000_000 + 1e-7
+    p = profile(max_output_tokens=16384, retries=Retries(attempts=2, backoff=0, max=0))
+    script = Script(billed, answer)
+    judge = make_judge(store, run, script, budget=budget, p=p, clock=late_at_once())
+    result = await judge.run(flags=[], sweeps=[])
+    assert result.cost_usd <= budget
+    if tight:
+        assert [r["max_tokens"] for r in script.requests] == [MIN_OUTPUT]
+        assert result.verdict is None
+        assert result.error is not None
+        assert "budget ran out" in result.error
+        events = await store.events(run.id, types=["model.response"], limit=10)
+        assert str(events[-1].data["error"]).endswith(NO_ROOM)
+        assert result.cost_usd == pytest.approx(MIN_OUTPUT * 2.0 / 1_000_000 * reported)
+    else:
+        assert len(script.requests) == 2
+        assert payload_of(result).summary == "forced"
+        # the verdict call reads 100 tokens and writes 10
+        failed = 16384 * 2.0 / 1_000_000 * reported
+        assert result.cost_usd == pytest.approx(failed + 120 / 1_000_000)
+
+
+@pytest.mark.parametrize("reported", [True, False])
+async def test_an_exploring_call_with_no_room_to_retry_goes_to_the_verdict(
+    store: LocalEventStore, reported: bool
+) -> None:
+    """The exploring call writes all it may and fails, billed, with its cost reported or not.
+    Its retry does not fit, so the room it kept for the verdict gives one."""
+    run = await make_run(store)
+    answer = say(json.dumps(verdict(summary="forced")))
+
+    def model(body: dict[str, Any]) -> dict[str, Any]:
+        if "tools" not in body:
+            return answer
+        usage = {"prompt_tokens": 0, "completion_tokens": body["max_tokens"]}
+        return call("events") | {"finish": "error", "usage": usage if reported else None}
+
+    retries = Retries(attempts=2, backoff=0, max=0)
+    p = profile(price=OVERSEER, max_output_tokens=16384, retries=retries)
+    script = Script(model, model)
+    judge = make_judge(store, run, script, budget=EXPLORE, p=p)
+    result = await judge.run(flags=[], sweeps=[])
+    assert ["tools" in r for r in script.requests] == [True, False]
+    assert script.requests[0]["max_tokens"] < 16384
+    assert payload_of(result).summary == "forced"
+    assert result.cost_usd <= EXPLORE
+
+
+async def test_a_failure_the_provider_did_not_take_is_retried_at_a_tight_budget(
+    store: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = await make_run(store)
+    answer = say(json.dumps(verdict(summary="forced")))
+    probe = make_judge(store, run, Script(answer), clock=late_at_once())
+    calls = planned_contexts(probe, monkeypatch, counted)
+    await probe.run(flags=[], sweeps=[])
+    [(planned, _)] = calls
+    budget = (planned * 1.0 + MIN_OUTPUT * 2.0) / 1_000_000 + 1e-7
+    p = profile(max_output_tokens=16384, retries=Retries(attempts=2, backoff=0, max=0))
+    script = Script({"status": 503, "error": "busy"}, answer)
+    judge = make_judge(store, run, script, budget=budget, p=p, clock=late_at_once())
+    result = await judge.run(flags=[], sweeps=[])
+    assert [r["max_tokens"] for r in script.requests] == [MIN_OUTPUT, MIN_OUTPUT]
+    assert payload_of(result).summary == "forced"
 
 
 async def test_budget_stop(store: LocalEventStore) -> None:

@@ -1,8 +1,15 @@
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from aims.events import ModelBackend, ModelStatus, ModelUsage, ReasoningKind
+
+# Characters per token for a size with no token count: few, so a count from it is high.
+CHARS_PER_TOKEN = 3
+# Ends the error of an attempt that was not tried again for lack of room in its spend cap.
+NO_ROOM = "no retry: the spend cap has no room for another attempt"
 
 
 class _Strict(BaseModel):
@@ -67,7 +74,8 @@ class Prompt(_Strict):
 
 class Reply(_Strict):
     """The outcome of a model call, from its last attempt. `cost_usd` sums every attempt that
-    had a price, None when none had one."""
+    had a price, None when none had one. `unseen_usd` is what the failed attempts that may
+    have been billed with no cost reported count at under the call's spend cap."""
 
     call_id: str
     profile: str
@@ -78,6 +86,7 @@ class Reply(_Strict):
     finish_reason: str | None = None
     usage: ModelUsage = Field(default_factory=ModelUsage)
     cost_usd: float | None = None
+    unseen_usd: float = 0.0
     error: str | None = None
 
     @property
@@ -87,3 +96,14 @@ class Reply(_Strict):
     @property
     def tool_calls(self) -> list[ToolRequest]:
         return self.turn.tool_calls
+
+
+@dataclass(frozen=True, slots=True)
+class SpendCap:
+    """How a call under a spend cap is tried again. `attempt_usd` is the most one attempt may
+    cost as its caller planned it: a failed attempt that may have been billed with no cost
+    reported counts at it. `fits(owed)` says whether another attempt fits once the attempts
+    so far may have cost `owed` USD."""
+
+    attempt_usd: float
+    fits: Callable[[float], bool]
