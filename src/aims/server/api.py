@@ -100,7 +100,7 @@ from aims.run.job import (
     selftest_job,
 )
 from aims.run.runner import Fork, RunError, agent_profile, check, text_problems
-from aims.run.score import CheckError, check_run
+from aims.run.score import CheckError, check_run, gaps_of
 from aims.scenario import Bundle, Scenario, ScenarioError, folder_tar, load, missing, parse
 from aims.scenario import budget as budgets
 from aims.scenario.budget import BudgetError, BudgetOverride
@@ -657,11 +657,19 @@ class PlantTaken(Out):
     inherited: bool
 
 
+class PlantCheck(Out):
+    """The plants each agent of a run took, in event order, as `aims check` lists them. `gaps`
+    say in words what the check could not count, as `aims check` warns."""
+
+    plants: list[PlantTaken]
+    gaps: list[str]
+
+
 @router.get("/runs/{run_id}/check", tags=["runs"], responses=responses(404, 409, 503))
-async def check_plants(run_id: str, principal: Operator, state: State) -> list[PlantTaken]:
-    """The plants each agent of a sealed run took, in event order, from its log and truth
-    file, as `aims check` gives them. Operators only. 409 while the run runs, or when its log
-    does not verify or its truth file is not here yet."""
+async def check_plants(run_id: str, principal: Operator, state: State) -> PlantCheck:
+    """The plants each agent of a sealed run took, from its log and truth file, with what the
+    check could not count. Operators only. 409 while the run runs, or when its log does not
+    verify or its truth file is not here yet."""
     run_id = _run_id(run_id)
     await _shown(state, principal, run_id)
     info = await state.store.run(run_id)
@@ -673,7 +681,10 @@ async def check_plants(run_id: str, principal: Operator, state: State) -> list[P
         rows = await check_run(state.store, run_id)
     except CheckError as e:
         raise ProblemException(409, "Cannot check", str(e), code="check") from None
-    return [PlantTaken.model_validate(row.as_dict()) for row in rows]
+    return PlantCheck(
+        plants=[PlantTaken.model_validate(row.as_dict()) for row in rows],
+        gaps=await gaps_of(state.store, run_id),
+    )
 
 
 class RunDetail(Out):

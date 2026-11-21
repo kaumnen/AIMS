@@ -92,7 +92,7 @@ from aims.run.estimate import (
 )
 from aims.run.fork import load_origin
 from aims.run.runner import RunError
-from aims.run.score import Added, CheckError, Taken, check_run, gaps, rule_plants
+from aims.run.score import Added, CheckError, Taken, check_run, gaps_of, rule_plants
 from aims.text import scrub
 
 log = logging.getLogger("aims.run")
@@ -300,7 +300,7 @@ async def score_run(
     out = ScoreResult(run_id=run_id, checks_off=off)
     out.taken = taken
     out.added = sorted(added.plants) if added else []
-    out.gaps = gaps(record, source.root / origin)
+    out.gaps = await gaps_of(source, origin)
     run_started = RunStarted(
         scenario=started.scenario,
         oversight=started.oversight,

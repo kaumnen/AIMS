@@ -1,6 +1,5 @@
 """Gather a run's report from its log, its monitor runs, its score runs and its labels."""
 
-import asyncio
 import bisect
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
@@ -58,7 +57,7 @@ from aims.report.model import (
     Unit,
     Warning,
 )
-from aims.run.score import CheckError, check_run, gaps_at
+from aims.run.score import CheckError, check_run, gaps_of
 
 PAGE = 1000
 NOT_REPORTED = frozenset({"monitor", "score", "models.check", "selftest"})
@@ -463,7 +462,7 @@ async def _plants(
             )
             for t in taken
         ],
-        gaps=await asyncio.to_thread(gaps_at, store.root / run_id),
+        gaps=await gaps_of(store, run_id),
     )
 
 

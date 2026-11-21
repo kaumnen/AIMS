@@ -209,9 +209,9 @@ def build(api: Api, *, act: bool = False) -> MCPServer:
         return await api.get(f"/runs/{seg(run_id)}")
 
     @mcp.tool(annotations=READ)
-    async def check(run_id: RunId) -> list[dict[str, Any]]:
-        """The plants each agent of a sealed run took, as `aims check` lists them. Needs an
-        operator token."""
+    async def check(run_id: RunId) -> dict[str, Any]:
+        """The plants each agent of a sealed run took, as `aims check` lists them, in `plants`.
+        `gaps` say what the check could not count. Needs an operator token."""
         return await api.get(f"/runs/{seg(run_id)}/check")
 
     @mcp.tool(annotations=READ)

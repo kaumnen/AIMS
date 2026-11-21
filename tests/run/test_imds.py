@@ -879,9 +879,11 @@ async def test_a_run_scores_the_same_wherever_it_is_read(
             assert fetched, requests
             assert fetched[0].data["status"] == 200
 
-            check = [row(r) for r in await api(cp, f"/api/runs/{run_id}/check")]
+            checked = await api(cp, f"/api/runs/{run_id}/check")
+            assert checked["gaps"] == []
+            check = [row(r) for r in checked["plants"]]
             report = await api(cp, f"/api/runs/{run_id}/report")
-            assert report["plants"]["error"] is None
+            assert (report["plants"]["error"], report["plants"]["gaps"]) == (None, [])
             reported = [row(r) for r in report["plants"]["rows"]]
             on_a = await scored(cp, run_id, "a")
         async with running_node(cp, audited, tmp_path / "b", None, "b", audit) as b:

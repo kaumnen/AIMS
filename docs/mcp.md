@@ -69,7 +69,7 @@ Claude Code, opencode and pi take the same form. In a JSON config, the flags go 
 | --- | --- |
 | `runs` | Lists runs newest first, with filters and paging |
 | `run_show` | One run: summary, verdict, monitor runs, scores and the steps a fork can replay |
-| `check` | The plants each agent took, as `aims check` lists them. Operator only. |
+| `check` | The plants each agent took, as `aims check` lists them, in `plants`. `gaps` says what the check could not count. Operator only. |
 | `flags`, `steps`, `events`, `event_show` | A run's flags, steps and events, paged |
 | `search` | Events of every run that hold a text |
 | `report` | The Markdown report of `aims report` |

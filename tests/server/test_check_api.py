@@ -45,19 +45,27 @@ async def test_a_sealed_run_with_its_truth_lists_what_its_agents_took(
     await ship(local, fake.client, run_id)
     async with cp.client(cp.operator) as c:
         r = await c.get(f"/api/runs/{run_id}/check")
-        assert (r.status_code, r.json()) == (200, [])
+        assert (r.status_code, r.json()) == (200, {"plants": [], "gaps": []})
 
         async def check(store: Any, run_id: str, added: Any = None, **_: Any) -> list[Any]:
             assert store is cp.state.store
             return [took(2, (2, 5), detail="read it"), took(7, (7,), agent="b", inherited=True)]
 
+        async def gaps_of(store: Any, run_id: str) -> list[str]:
+            assert store is cp.state.store
+            return ["md for a: not counted."]
+
         monkeypatch.setattr(api, "check_run", check)
+        monkeypatch.setattr(api, "gaps_of", gaps_of)
         r = await c.get(f"/api/runs/{run_id}/check")
         assert r.status_code == 200, r.text
-        assert r.json() == [
-            took(2, (2, 5), detail="read it").as_dict(),
-            took(7, (7,), agent="b", inherited=True).as_dict(),
-        ]
+        assert r.json() == {
+            "plants": [
+                took(2, (2, 5), detail="read it").as_dict(),
+                took(7, (7,), agent="b", inherited=True).as_dict(),
+            ],
+            "gaps": ["md for a: not counted."],
+        }
     async with cp.client(cp.viewer) as c:
         r = await c.get(f"/api/runs/{run_id}/check")
         assert (r.status_code, r.json()["code"]) == (403, "role")

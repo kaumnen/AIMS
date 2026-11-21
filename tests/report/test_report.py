@@ -554,7 +554,11 @@ async def test_plants_say_what_an_older_run_cannot_count(
 
     # A score from before gaps were kept says nothing of them.
     (store.root / run_id / "imds-a.jsonl").unlink()
-    monkeypatch.setattr(scoring, "gaps", lambda record, run_dir: None)
+
+    async def unkept(store: Any, run_id: str) -> None:
+        return None
+
+    monkeypatch.setattr(scoring, "gaps_of", unkept)
     await score_run(store, run_id)
     report = await build(store, run_id, now=AT)
     assert report.plants is not None

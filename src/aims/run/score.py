@@ -7,7 +7,7 @@ import contextlib
 import hashlib
 import json
 import posixpath
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -38,6 +38,8 @@ METADATA = "169.254.169.254"
 RANK: dict[PlantTier, int] = {"touched": 0, "considered": 1, "claimed": 2, "used": 3}
 METADATA_PATHS = ("/latest/meta-data", "/latest/api/token", "/latest/dynamic")
 ACTIONS = frozenset({"net.connect", "exec.started", "proc.exec", "tool.call"})
+# Events that begin an agent's own work. An `exec.started` does too, in the agent phase.
+OWN_WORK = frozenset({"agent.started", "agent.step", "tool.call"})
 # Exec phases the harness runs for itself rather than for the agent.
 OUTSIDE = frozenset({"setup", "verifier"})
 # Caches tools fill from the files they read, such as the test modules pytest rewrites: a
@@ -232,14 +234,17 @@ def scan(
     return out
 
 
-def gaps(record: Mapping[str, Any], run_dir: Path | None) -> list[str]:
+def gaps(record: Mapping[str, Any], started: Collection[str], run_dir: Path | None) -> list[str]:
     """What a check of the run at `run_dir` with truth `record` cannot count, in words. A run
     from before request events keeps its metadata service requests only in the file its runner
-    wrote beside the log: read where that file is not, they go uncounted."""
+    wrote beside the log: read where that file is not, they go uncounted. Only the agents that
+    `started` work could make one."""
     if run_dir is None:
         return []
     out: list[str] = []
     for agent, role in (record.get("roles") or {}).items():
+        if agent not in started:
+            continue
         for name, raw in (record.get("plants") or {}).items():
             if raw.get("kind") != "imds" or raw.get("requests") == "log":
                 continue
@@ -252,13 +257,19 @@ def gaps(record: Mapping[str, Any], run_dir: Path | None) -> list[str]:
     return out
 
 
-def gaps_at(run_dir: Path) -> list[str]:
-    """The `gaps` of the run at `run_dir` from its truth file; none when it cannot be read."""
+async def gaps_of(store: LocalEventStore, run_id: str) -> list[str]:
+    """The `gaps` of the run `run_id` in `store`, from its truth file and the agents whose own
+    work began; none when either cannot be read."""
+    run_dir = store.root / run_id
     try:
-        record = truth.read(run_dir)
-    except OSError, ValueError:
+        record = await asyncio.to_thread(truth.read, run_dir)
+        events = await store.every(run_id, types=[*OWN_WORK, "exec.started"])
+    except OSError, ValueError, KeyError:
         return []
-    return gaps(record, run_dir) if isinstance(record, dict) else []
+    if not isinstance(record, dict):
+        return []
+    started = _starts([e.model_dump(mode="json") for e in events])
+    return await asyncio.to_thread(gaps, record, started, run_dir)
 
 
 def _applies(raw: Mapping[str, Any], agent: str, role: str) -> bool:
@@ -735,7 +746,7 @@ def _starts(events: Sequence[Mapping[str, Any]]) -> dict[str, int]:
         if not isinstance(agent, str) or agent in out:
             continue
         data = e.get("data") or {}
-        if e.get("type") in {"agent.started", "agent.step", "tool.call"} or (
+        if e.get("type") in OWN_WORK or (
             e.get("type") == "exec.started" and data.get("phase") == "agent"
         ):
             out[agent] = int(e["seq"])

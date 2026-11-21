@@ -41,7 +41,7 @@ from aims.models import Message, ModelClient, Prompt
 from aims.monitor.texts import resolve
 from aims.prompts import Prompts
 from aims.run import rates, scoring, truth
-from aims.run.score import CheckError, Taken, rule_plants
+from aims.run.score import CheckError, Taken, gaps_of, rule_plants
 from aims.run.scoring import Classifier, ScoreError, flags, score_run
 from aims.terminal import AGAIN
 
@@ -272,11 +272,20 @@ async def test_a_score_says_what_an_older_run_cannot_count(store: LocalEventStor
     )
     run_id = await store.create_run(started)
     truth.write(store.root / run_id, record)
-    await store.append(run_id, [Draft(RunFinished(status="completed"))])
+    await store.append(run_id, [Draft(call(1), "a"), Draft(RunFinished(status="completed"))])
     said = (
         "md for a: metadata service requests are not counted. Older runs log them only in"
         " imds-a.jsonl, which is not here."
     )
+    assert await gaps_of(store, run_id) == [said]
+    # A run whose agent never began had no metadata server yet.
+    idle = await store.create_run(started)
+    truth.write(store.root / idle, record)
+    await store.append(idle, [Draft(RunFinished(status="completed"))])
+    assert await gaps_of(store, idle) == []
+    assert await gaps_of(store, "missing") == []
+    truth.path(store.root / idle).write_text("{")
+    assert await gaps_of(store, idle) == []
 
     result = await score_run(store, run_id)
     assert result.gaps == [said]

@@ -351,19 +351,19 @@ def check_plants(
     import asyncio
 
     from aims.events import LocalEventStore
-    from aims.run.score import CheckError, check_run, gaps_at
+    from aims.run.score import CheckError, check_run, gaps_of
     from aims.terminal import json_text
 
-    async def main() -> list[Any]:
+    async def main() -> tuple[list[Any], list[str]]:
         async with await LocalEventStore.open(runs_dir) as store:
-            return await check_run(store, run)
+            return await check_run(store, run), await gaps_of(store, run)
 
     try:
-        rows = asyncio.run(main())
+        rows, gaps = asyncio.run(main())
     except (CheckError, KeyError) as e:
         _echo(f"error: {e}", err=True)
         raise typer.Exit(EXIT_FAILED) from None
-    for gap in gaps_at(runs_dir / run):
+    for gap in gaps:
         _echo(f"warning: {gap}", err=True)
     if json_out:
         typer.echo(json_text([row.as_dict() for row in rows]))

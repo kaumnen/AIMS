@@ -239,8 +239,8 @@ async def test_check_lists_the_plants_taken(
             return [took(2, (2,))]
 
         monkeypatch.setattr(routes, "check_run", check)
-        rows = data(await c.call_tool("check", {"run_id": run_id}))
-        assert rows == [took(2, (2,)).as_dict()]
+        found = data(await c.call_tool("check", {"run_id": run_id}))
+        assert found == {"plants": [took(2, (2,)).as_dict()], "gaps": []}
 
 
 @pytest.mark.usefixtures("fake")

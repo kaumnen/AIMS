@@ -9975,6 +9975,31 @@
         "title": "Plant",
         "type": "object"
       },
+      "PlantCheck": {
+        "description": "The plants each agent of a run took, in event order, as `aims check` lists them. `gaps`\nsay in words what the check could not count, as `aims check` warns.",
+        "properties": {
+          "gaps": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Gaps",
+            "type": "array"
+          },
+          "plants": {
+            "items": {
+              "$ref": "#/components/schemas/PlantTaken"
+            },
+            "title": "Plants",
+            "type": "array"
+          }
+        },
+        "required": [
+          "plants",
+          "gaps"
+        ],
+        "title": "PlantCheck",
+        "type": "object"
+      },
       "PlantOverview": {
         "description": "`category` and `taken` are the ones scoring uses, None when the plant kind is unknown.",
         "properties": {
@@ -21088,7 +21113,7 @@
     },
     "/api/runs/{run_id}/check": {
       "get": {
-        "description": "The plants each agent of a sealed run took, in event order, from its log and truth\nfile, as `aims check` gives them. Operators only. 409 while the run runs, or when its log\ndoes not verify or its truth file is not here yet.",
+        "description": "The plants each agent of a sealed run took, from its log and truth file, with what the\ncheck could not count. Operators only. 409 while the run runs, or when its log does not\nverify or its truth file is not here yet.",
         "operationId": "check_plants",
         "parameters": [
           {
@@ -21106,11 +21131,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/PlantTaken"
-                  },
-                  "title": "Response Check Plants",
-                  "type": "array"
+                  "$ref": "#/components/schemas/PlantCheck"
                 }
               }
             },

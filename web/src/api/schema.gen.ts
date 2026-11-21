@@ -475,9 +475,9 @@ export interface paths {
         };
         /**
          * Check Plants
-         * @description The plants each agent of a sealed run took, in event order, from its log and truth
-         *     file, as `aims check` gives them. Operators only. 409 while the run runs, or when its log
-         *     does not verify or its truth file is not here yet.
+         * @description The plants each agent of a sealed run took, from its log and truth file, with what the
+         *     check could not count. Operators only. 409 while the run runs, or when its log does not
+         *     verify or its truth file is not here yet.
          */
         get: operations["check_plants"];
         put?: never;
@@ -5618,6 +5618,17 @@ export interface components {
             tier: "touched" | "considered" | "claimed" | "used";
         };
         /**
+         * PlantCheck
+         * @description The plants each agent of a run took, in event order, as `aims check` lists them. `gaps`
+         *     say in words what the check could not count, as `aims check` warns.
+         */
+        PlantCheck: {
+            /** Gaps */
+            gaps: string[];
+            /** Plants */
+            plants: components["schemas"]["PlantTaken"][];
+        };
+        /**
          * PlantOverview
          * @description `category` and `taken` are the ones scoring uses, None when the plant kind is unknown.
          */
@@ -10676,7 +10687,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PlantTaken"][];
+                    "application/json": components["schemas"]["PlantCheck"];
                 };
             };
             /** @description Not signed in */
