@@ -54,6 +54,7 @@ from aims.sandbox.trace import (
     EnvChunk,
     Gap,
     Garbled,
+    HelperError,
     Identity,
     Link,
     Mkdir,
@@ -785,6 +786,11 @@ def test_parse_rejects_bad_headers(text: str) -> None:
 
 def test_parse_other_output() -> None:
     assert parse(json.dumps({"type": "lost_events", "data": {"events": 7}})) == Dropped(7)
+    failed = {"helper": "map_delete_elem", "retcode": -2, "line": 352, "col": 3, "msg": "gone"}
+    assert parse(json.dumps({"type": "helper_error", **failed})) == HelperError(
+        "map_delete_elem", -2, 352, "gone"
+    )
+    assert parse(json.dumps({"type": "helper_error", "line": "x"})) == HelperError("", 0, 0, "")
     assert parse(json.dumps({"type": "attached_probes", "data": {"probes": 3}})) is None
     assert parse("ERROR: something broke") == Note("ERROR: something broke")
     assert parse("") is None
@@ -2045,6 +2051,29 @@ async def test_known_compile_warnings_stay_out_of_the_terminal(
         "tracer: else",
     ]
     assert quiet == [f"tracer: {t}" for t in ADDRSPACE]
+
+
+@pytest.mark.anyio
+async def test_failed_helper_calls_are_counted_and_each_kind_logged_once(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    tracer = Tracer(cast(aiodocker.Docker, None), {}, "t")
+
+    def failed(helper: str, line: int) -> str:
+        doc = {"type": "helper_error", "helper": helper, "retcode": -2, "line": line, "msg": "m"}
+        return json.dumps(doc)
+
+    with caplog.at_level(logging.WARNING, "aims.sandbox"):
+        for text in [failed("map_delete_elem", 9), failed("map_delete_elem", 9)]:
+            tracer._handle(text)
+        tracer._handle(failed("map_update_elem", 9))
+    assert tracer.helper_errors == 3
+    assert [r.getMessage() for r in caplog.records] == [
+        "tracer: map_delete_elem failed (-2) at line 9: m",
+        "tracer: map_update_elem failed (-2) at line 9: m",
+    ]
+    assert tracer._sequence.latest == 0
+    await tracer.stop()
 
 
 @pytest.mark.anyio

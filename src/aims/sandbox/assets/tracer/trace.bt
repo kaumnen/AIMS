@@ -3,6 +3,8 @@ config = { max_strlen = 384 }
 
 // Records are numbered per cgroup and cpu, so a hole names the sandbox that lost it. The
 // tracer's own records number under cgroup 0; R and Q leave the cgroup out of their header.
+// A delete checks its key first: bpftrace reports a failed one through the records' ring with
+// no number, so the ring dropping that report would count as a lost record no hole shows.
 
 BEGIN {
   @base = curtask->thread_pid->level;
@@ -14,7 +16,7 @@ BEGIN {
   while ($i * 380 < 16384) { @argv_chunk[$i] = $i * 380; $i++; }
   // Gives the lookup budget's map its type: second, lookups logged in it, lookups not logged.
   @lbud[0] = ((uint64)0, (uint64)0, (uint64)0);
-  delete(@lbud[0]);
+  if (has_key(@lbud, 0)) { delete(@lbud[0]); }
   // The calls the syscall probes follow, by number, each with its op: 1 shmget, 2 shmat,
   // 3 ptrace, 4 process_vm_writev, 5 process_vm_readv, 6 pidfd_getfd, 7 unshare, 8 setns,
   // 9 chdir, 10 fadvise64, 11 preadv2, 12 cachestat, 13 mincore, 14 fsync, 15 fdatasync,
@@ -179,7 +181,7 @@ fentry:vmlinux:security_bprm_check /curtask->thread_pid->level > @base/ {
 
 tracepoint:cgroup:cgroup_rmdir /@sandbox[args.id]/ {
   $id = (uint64)args.id;
-  delete(@sandbox[$id]);
+  if (has_key(@sandbox, $id)) { delete(@sandbox[$id]); }
   for ($kv : @seq) { if ((uint64)$kv.0.0 == $id) { delete(@seq, $kv.0); } }
 }
 
@@ -349,7 +351,7 @@ fentry:vmlinux:security_file_open /@sandbox[cgroup] && curtask->thread_pid->leve
 // f_flags. The link is the fd, or -1, -2 and -3 for cwd, root and exe. The tracer drops these
 // probes on a kernel without either function.
 fentry:vmlinux:proc_pid_get_link /@sandbox[cgroup] && curtask->thread_pid->level > @base && args.dentry != 0/ {
-  delete(@plink[tid]);
+  if (has_key(@plink, tid)) { delete(@plink[tid]); }
   $ei = (struct proc_inode *)((uint64)args.inode - offsetof(struct proc_inode, vfs_inode));
   $pp = $ei->pid;
   $pf = (uint64)$pp->tasks[0].first;
@@ -370,14 +372,14 @@ fentry:vmlinux:proc_pid_get_link /@sandbox[cgroup] && curtask->thread_pid->level
 
 fexit:vmlinux:nd_jump_link /@plink[tid].0 != 0/ {
   $m = @plink[tid];
-  if (retval == 0) { @plink[tid] = ($m.0, $m.1, $m.2, (uint64)args.path->dentry->d_inode); } else { delete(@plink[tid]); }
+  if (retval == 0) { @plink[tid] = ($m.0, $m.1, $m.2, (uint64)args.path->dentry->d_inode); } else { if (has_key(@plink, tid)) { delete(@plink[tid]); } }
 }
 
-fentry:vmlinux:do_filp_open /@plink[tid].0 != 0/ { delete(@plink[tid]); }
+fentry:vmlinux:do_filp_open /@plink[tid].0 != 0/ { if (has_key(@plink, tid)) { delete(@plink[tid]); } }
 
 fentry:vmlinux:security_file_open /@plink[tid].0 != 0 && curtask->cred == curtask->real_cred/ {
   $m = @plink[tid];
-  delete(@plink[tid]);
+  if (has_key(@plink, tid)) { delete(@plink[tid]); }
   $fi = args.file->f_inode;
   if ($m.3 == (uint64)$fi && ($fi->i_mode & 0xF000) != 0xC000) {
     $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
@@ -388,7 +390,7 @@ fentry:vmlinux:security_file_open /@plink[tid].0 != 0 && curtask->cred == curtas
 
 fexit:vmlinux:do_filp_open /@plink[tid].0 != 0/ {
   $m = @plink[tid];
-  delete(@plink[tid]);
+  if (has_key(@plink, tid)) { delete(@plink[tid]); }
   $f = (struct file *)retval;
   if ((int64)$f < -4095 || (int64)$f > 0) {
     $fi = $f->f_inode;
@@ -403,11 +405,11 @@ fexit:vmlinux:do_filp_open /@plink[tid].0 != 0/ {
 // A stat, access or chdir through such a link, logged by the lookup's exit as the open's is above,
 // with its op in place of the open's mode and the file's own name only. A readlink is left out:
 // it reads the link it names, not one it followed on the way.
-fentry:vmlinux:filename_lookup /@plink[tid].0 != 0/ { delete(@plink[tid]); }
+fentry:vmlinux:filename_lookup /@plink[tid].0 != 0/ { if (has_key(@plink, tid)) { delete(@plink[tid]); } }
 
 fexit:vmlinux:filename_lookup /@plink[tid].0 != 0/ {
   $m = @plink[tid];
-  delete(@plink[tid]);
+  if (has_key(@plink, tid)) { delete(@plink[tid]); }
   $op = @look[tid];
   if (retval == 0 && $op != 0 && $op != 3 && $m.3 == (uint64)args.path->dentry->d_inode) {
     $fi = args.path->dentry->d_inode;
@@ -417,7 +419,7 @@ fexit:vmlinux:filename_lookup /@plink[tid].0 != 0/ {
   }
 }
 
-tracepoint:sched:sched_process_exit /@plink[tid].0 != 0/ { delete(@plink[tid]); }
+tracepoint:sched:sched_process_exit /@plink[tid].0 != 0/ { if (has_key(@plink, tid)) { delete(@plink[tid]); } }
 
 // The last reference to a file, on every path: close(2) on 6.8+ never reaches filp_close, and an
 // exiting task releases its files after its X line. Overlay's backing files are skipped by
@@ -954,17 +956,17 @@ tracepoint:raw_syscalls:sys_enter /@sandbox[cgroup] && curtask->thread_pid->leve
     } else if ($op == 3) {
       @ptrace_req[tid] = (int64)$p0 + 1;
       @ptrace_pid[tid] = (int32)$p1;
-      delete(@ptrace_task[tid]);
+      if (has_key(@ptrace_task, tid)) { delete(@ptrace_task[tid]); }
     } else if ($op == 4) {
       @vmw[tid] = (int32)$p0 + 1;
-      delete(@ptrace_task[tid]);
+      if (has_key(@ptrace_task, tid)) { delete(@ptrace_task[tid]); }
     } else if ($op == 5) {
       @vmr[tid] = (int32)$p0 + 1;
-      delete(@ptrace_task[tid]);
+      if (has_key(@ptrace_task, tid)) { delete(@ptrace_task[tid]); }
     } else if ($op == 6) {
       @getfd[tid] = 1;
-      delete(@getfd_ns[tid]);
-      delete(@ptrace_task[tid]);
+      if (has_key(@getfd_ns, tid)) { delete(@getfd_ns[tid]); }
+      if (has_key(@ptrace_task, tid)) { delete(@ptrace_task[tid]); }
     } else if ($op == 7) {
       @unshare[tid] = $p0 + 1;
     } else if ($op == 8) {
@@ -976,7 +978,7 @@ tracepoint:raw_syscalls:sys_enter /@sandbox[cgroup] && curtask->thread_pid->leve
     } else if ($op >= 22 && $op <= 27) {
       // A call on a file descriptor names no path: the walk is the file's. The names are copied
       // at entry, as the kernel copies them, so a racing thread can change what is logged.
-      delete(@xl[tid]);
+      if (has_key(@xl, tid)) { delete(@xl[tid]); }
       @xo[tid] = 1; @xs[tid] = (uint64)0; @xf[tid] = 0; @xd[tid] = -100;
       if ($op == 23 || $op == 25 || $op == 27) { @xo[tid] = 2; }
       if ($op == 22 || $op == 24) { @xs[tid] = $p3; @xf[tid] = (int32)$p4; }
@@ -1037,7 +1039,7 @@ tracepoint:raw_syscalls:sys_enter /@sandbox[cgroup] && curtask->thread_pid->leve
 // A marked call's exit, when it is the call that marked the thread.
 tracepoint:raw_syscalls:sys_exit /@scx[tid].0 != 0/ {
   $mk = @scx[tid];
-  delete(@scx[tid]);
+  if (has_key(@scx, tid)) { delete(@scx[tid]); }
   if ($mk.1 == args.id) {
     $op = $mk.0;
     $r = args.ret;
@@ -1046,9 +1048,9 @@ tracepoint:raw_syscalls:sys_exit /@scx[tid].0 != 0/ {
       $tg = (int64)@ptrace_task[tid] - 1;
       if ($rq == 0) { $tg = curtask->real_parent->tgid; }
       $ns = @ptrace_pid[tid];
-      delete(@ptrace_req[tid]);
-      delete(@ptrace_pid[tid]);
-      delete(@ptrace_task[tid]);
+      if (has_key(@ptrace_req, tid)) { delete(@ptrace_req[tid]); }
+      if (has_key(@ptrace_pid, tid)) { delete(@ptrace_pid[tid]); }
+      if (has_key(@ptrace_task, tid)) { delete(@ptrace_task[tid]); }
       $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
       printf("K %llu %llu %llu %llu %d %lld %llu %lld %lld\n", nsecs(boot), cpu, $s, $g, curtask->tgid, $tg, $rq, $r, $ns);
     } else if ($op == 4 || $op == 5) {
@@ -1056,35 +1058,35 @@ tracepoint:raw_syscalls:sys_exit /@scx[tid].0 != 0/ {
       $kind = -1;
       if ($op == 5) { $vt = @vmr[tid] - 1; $kind = -2; }
       $tg = (int64)@ptrace_task[tid] - 1;
-      delete(@vmw[tid]);
-      delete(@vmr[tid]);
-      delete(@ptrace_task[tid]);
+      if (has_key(@vmw, tid)) { delete(@vmw[tid]); }
+      if (has_key(@vmr, tid)) { delete(@vmr[tid]); }
+      if (has_key(@ptrace_task, tid)) { delete(@ptrace_task[tid]); }
       $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
       printf("K %llu %llu %llu %llu %d %lld %lld %lld %lld\n", nsecs(boot), cpu, $s, $g, curtask->tgid, $tg, $kind, $r, $vt);
     } else if ($op == 6) {
       $tg = (int64)@ptrace_task[tid] - 1;
       $vt = @getfd_ns[tid];
-      delete(@getfd[tid]);
-      delete(@getfd_ns[tid]);
-      delete(@ptrace_task[tid]);
+      if (has_key(@getfd, tid)) { delete(@getfd[tid]); }
+      if (has_key(@getfd_ns, tid)) { delete(@getfd_ns[tid]); }
+      if (has_key(@ptrace_task, tid)) { delete(@ptrace_task[tid]); }
       $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
       printf("K %llu %llu %llu %llu %d %lld -3 %lld %lld\n", nsecs(boot), cpu, $s, $g, curtask->tgid, $tg, $r, $vt);
     } else if ($op == 7) {
       $nf = @unshare[tid] - 1;
-      delete(@unshare[tid]);
+      if (has_key(@unshare, tid)) { delete(@unshare[tid]); }
       if ($r == 0 && ($nf & 0x7E020080) != 0) {
         $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
         printf("J %llu %llu %llu %llu %d u %llu\n", nsecs(boot), cpu, $s, $g, curtask->tgid, $nf);
       }
     } else if ($op == 8) {
       $sf = @setns[tid] - 1;
-      delete(@setns[tid]);
+      if (has_key(@setns, tid)) { delete(@setns[tid]); }
       if ($r == 0) {
         $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
         printf("J %llu %llu %llu %llu %d n %llu\n", nsecs(boot), cpu, $s, $g, curtask->tgid, $sf);
       }
     } else if ($op == 9) {
-      delete(@look[tid]);
+      if (has_key(@look, tid)) { delete(@look[tid]); }
     } else if ($op >= 22 && $op <= 27) {
       // A refused extended attribute call, unless its inode hook logged it.
       if (@xl[tid] == 0 && ($r == -1 || $r == -13 || $r == -30)) {
@@ -1116,13 +1118,18 @@ tracepoint:raw_syscalls:sys_exit /@scx[tid].0 != 0/ {
           buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
           @xp[tid]);
       }
-      delete(@xo[tid]); delete(@xs[tid]); delete(@xf[tid]); delete(@xd[tid]); delete(@xp[tid]); delete(@xn[tid]); delete(@xl[tid]);
-      delete(@xo[tid]); delete(@xs[tid]); delete(@xf[tid]); delete(@xd[tid]); delete(@xp[tid]); delete(@xn[tid]); delete(@xl[tid]);
+      if (has_key(@xo, tid)) { delete(@xo[tid]); }
+      if (has_key(@xs, tid)) { delete(@xs[tid]); }
+      if (has_key(@xf, tid)) { delete(@xf[tid]); }
+      if (has_key(@xd, tid)) { delete(@xd[tid]); }
+      if (has_key(@xp, tid)) { delete(@xp[tid]); }
+      if (has_key(@xn, tid)) { delete(@xn[tid]); }
+      if (has_key(@xl, tid)) { delete(@xl[tid]); }
     }
   }
 }
 
-tracepoint:sched:sched_process_exit /@scx[tid].0 != 0/ { delete(@scx[tid]); }
+tracepoint:sched:sched_process_exit /@scx[tid].0 != 0/ { if (has_key(@scx, tid)) { delete(@scx[tid]); } }
 
 fentry:vmlinux:security_task_kill /@sandbox[cgroup] && curtask->thread_pid->level > @base
     && args.p->tgid != curtask->tgid && args.sig != 17/ {
@@ -1247,7 +1254,7 @@ fentry:vmlinux:security_inode_setxattr /@sandbox[cgroup] && curtask->thread_pid-
     str($xd->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
     str($xd->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
     str($xd->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
-  delete(@xn[tid]);
+  if (has_key(@xn, tid)) { delete(@xn[tid]); }
 }
 
 fentry:vmlinux:security_inode_removexattr /@sandbox[cgroup] && curtask->thread_pid->level > @base && curtask->cred == curtask->real_cred/ {
@@ -1293,7 +1300,7 @@ fentry:vmlinux:security_inode_removexattr /@sandbox[cgroup] && curtask->thread_p
     str($xd->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
     str($xd->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
     str($xd->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
-  delete(@xn[tid]);
+  if (has_key(@xn, tid)) { delete(@xn[tid]); }
 }
 
 fentry:vmlinux:security_inode_set_acl /@sandbox[cgroup] && curtask->thread_pid->level > @base && curtask->cred == curtask->real_cred/ {
@@ -1339,7 +1346,7 @@ fentry:vmlinux:security_inode_set_acl /@sandbox[cgroup] && curtask->thread_pid->
     str($xd->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
     str($xd->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
     str($xd->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
-  delete(@xn[tid]);
+  if (has_key(@xn, tid)) { delete(@xn[tid]); }
 }
 
 fentry:vmlinux:security_inode_remove_acl /@sandbox[cgroup] && curtask->thread_pid->level > @base && curtask->cred == curtask->real_cred/ {
@@ -1385,7 +1392,7 @@ fentry:vmlinux:security_inode_remove_acl /@sandbox[cgroup] && curtask->thread_pi
     str($xd->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
     str($xd->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
     str($xd->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
-  delete(@xn[tid]);
+  if (has_key(@xn, tid)) { delete(@xn[tid]); }
 }
 
 // Refused opens, with the kernel's copy of the name so a racing thread cannot change what is
@@ -1444,11 +1451,11 @@ fentry:vmlinux:security_inode_rename /@sandbox[cgroup] && curtask->thread_pid->l
 // -3 one to the walk it kept for that thread only when both match. A name the kernel could not
 // copy, such as an empty one, is never looked up.
 fentry:vmlinux:vfs_statx /@sandbox[cgroup] && curtask->thread_pid->level > @base/ { @look[tid] = 1; }
-fexit:vmlinux:vfs_statx /@look[tid] != 0/ { delete(@look[tid]); if (@getattr[tid] != 0) { delete(@getattr[tid]); } }
+fexit:vmlinux:vfs_statx /@look[tid] != 0/ { if (has_key(@look, tid)) { delete(@look[tid]); } if (@getattr[tid] != 0) { if (has_key(@getattr, tid)) { delete(@getattr[tid]); } } }
 fentry:vmlinux:do_faccessat /@sandbox[cgroup] && curtask->thread_pid->level > @base/ { @look[tid] = 2; }
-fexit:vmlinux:do_faccessat /@look[tid] != 0/ { delete(@look[tid]); }
+fexit:vmlinux:do_faccessat /@look[tid] != 0/ { if (has_key(@look, tid)) { delete(@look[tid]); } }
 fentry:vmlinux:do_readlinkat /@sandbox[cgroup] && curtask->thread_pid->level > @base/ { @look[tid] = 3; }
-fexit:vmlinux:do_readlinkat /@look[tid] != 0/ { delete(@look[tid]); }
+fexit:vmlinux:do_readlinkat /@look[tid] != 0/ { if (has_key(@look, tid)) { delete(@look[tid]); } }
 // chdir's mark is set and dropped by the syscall probes.
 
 fexit:vmlinux:filename_lookup /@look[tid] != 0 && retval == 0/ {
@@ -1526,7 +1533,7 @@ fexit:vmlinux:filename_lookup /@look[tid] != 0 && retval == 0/ {
 }
 
 fentry:vmlinux:security_inode_getattr /@getattr[tid] != 0 && curtask->cred == curtask->real_cred/ {
-  delete(@getattr[tid]);
+  if (has_key(@getattr, tid)) { delete(@getattr[tid]); }
   $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
   printf("j %llu %llu %llu %llu %d 1 %s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, path(args.path));
 }
@@ -1616,14 +1623,14 @@ tracepoint:sched:sched_process_exit /@lbud[pid].0 != 0 && *(int32 *)((uint64)cur
     $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
     printf("l %llu %llu %llu %llu %d %llu\n", nsecs(boot), cpu, $s, $g, curtask->tgid, $sk);
   }
-  delete(@lbud[pid]);
+  if (has_key(@lbud, pid)) { delete(@lbud[pid]); }
 }
 
 tracepoint:sched:sched_process_exit /@lfound[tid].0 != 0 || @lmissop[tid] != 0 || @lbase[tid].0 != 0 || @lkpar[tid].0 != 0/ {
-  if (@lkpar[tid].0 != 0) { delete(@lkpar[tid]); }
-  if (@lfound[tid].0 != 0) { delete(@lfound[tid]); }
-  if (@lmissop[tid] != 0) { delete(@lmissop[tid]); delete(@lmiss[tid]); }
-  if (@lbase[tid].0 != 0) { delete(@lbase[tid]); }
+  if (@lkpar[tid].0 != 0) { if (has_key(@lkpar, tid)) { delete(@lkpar[tid]); } }
+  if (@lfound[tid].0 != 0) { if (has_key(@lfound, tid)) { delete(@lfound[tid]); } }
+  if (@lmissop[tid] != 0) { if (has_key(@lmissop, tid)) { delete(@lmissop[tid]); } if (has_key(@lmiss, tid)) { delete(@lmiss[tid]); } }
+  if (@lbase[tid].0 != 0) { if (has_key(@lbase, tid)) { delete(@lbase[tid]); } }
 }
 
 // Refused unlink, rmdir, mkdir, rename, link and symlink calls. The read-only and parent permission
@@ -1660,7 +1667,7 @@ fexit:vmlinux:filename_unlinkat /@sandbox[cgroup] && curtask->thread_pid->level 
     buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
     buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
     @rn[tid]);
-  delete(@rn[tid]);
+  if (has_key(@rn, tid)) { delete(@rn[tid]); }
 }
 
 fexit:vmlinux:filename_rmdir /@sandbox[cgroup] && curtask->thread_pid->level > @base && (retval == -1 || retval == -13 || retval == -30)/ {
@@ -1691,7 +1698,7 @@ fexit:vmlinux:filename_rmdir /@sandbox[cgroup] && curtask->thread_pid->level > @
     buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
     buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
     @rn[tid]);
-  delete(@rn[tid]);
+  if (has_key(@rn, tid)) { delete(@rn[tid]); }
 }
 
 fexit:vmlinux:filename_mkdirat /@sandbox[cgroup] && curtask->thread_pid->level > @base && (retval == -1 || retval == -13 || retval == -30)/ {
@@ -1722,7 +1729,7 @@ fexit:vmlinux:filename_mkdirat /@sandbox[cgroup] && curtask->thread_pid->level >
     buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
     buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
     @rn[tid]);
-  delete(@rn[tid]);
+  if (has_key(@rn, tid)) { delete(@rn[tid]); }
 }
 
 fexit:vmlinux:filename_mknodat /@sandbox[cgroup] && curtask->thread_pid->level > @base && (retval == -1 || retval == -13 || retval == -30)/ {
@@ -1753,7 +1760,7 @@ fexit:vmlinux:filename_mknodat /@sandbox[cgroup] && curtask->thread_pid->level >
     buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
     buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
     @rn[tid]);
-  delete(@rn[tid]);
+  if (has_key(@rn, tid)) { delete(@rn[tid]); }
 }
 
 fexit:vmlinux:filename_renameat2 /@sandbox[cgroup] && curtask->thread_pid->level > @base && (retval == -1 || retval == -13 || retval == -30)/ {
@@ -1809,8 +1816,8 @@ fexit:vmlinux:filename_renameat2 /@sandbox[cgroup] && curtask->thread_pid->level
     buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
     buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
     @rn2[tid]);
-  delete(@rn[tid]);
-  delete(@rn2[tid]);
+  if (has_key(@rn, tid)) { delete(@rn[tid]); }
+  if (has_key(@rn2, tid)) { delete(@rn2[tid]); }
 }
 
 fexit:vmlinux:filename_linkat /@sandbox[cgroup] && curtask->thread_pid->level > @base && (retval == -1 || retval == -13 || retval == -30)/ {
@@ -1866,8 +1873,8 @@ fexit:vmlinux:filename_linkat /@sandbox[cgroup] && curtask->thread_pid->level > 
     buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
     buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
     @rn2[tid]);
-  delete(@rn[tid]);
-  delete(@rn2[tid]);
+  if (has_key(@rn, tid)) { delete(@rn[tid]); }
+  if (has_key(@rn2, tid)) { delete(@rn2[tid]); }
 }
 
 fexit:vmlinux:filename_symlinkat /@sandbox[cgroup] && curtask->thread_pid->level > @base && (retval == -1 || retval == -13 || retval == -30)/ {
@@ -1913,8 +1920,8 @@ fexit:vmlinux:filename_symlinkat /@sandbox[cgroup] && curtask->thread_pid->level
     buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
     buf($n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $n->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
     @rn2[tid]);
-  delete(@rn[tid]);
-  delete(@rn2[tid]);
+  if (has_key(@rn, tid)) { delete(@rn[tid]); }
+  if (has_key(@rn2, tid)) { delete(@rn2[tid]); }
 }
 
 /* before 7.0
@@ -1923,13 +1930,13 @@ fentry:vmlinux:do_mkdirat /@sandbox[cgroup] && curtask->thread_pid->level > @bas
 fentry:vmlinux:do_renameat2 /@sandbox[cgroup] && curtask->thread_pid->level > @base/ { @rn[tid] = str(*(uint64 *)args.from); @rn2[tid] = str(*(uint64 *)args.to); }
 fentry:vmlinux:do_linkat /@sandbox[cgroup] && curtask->thread_pid->level > @base/ { @rn[tid] = str(*(uint64 *)args.old); @rn2[tid] = str(*(uint64 *)args.new); }
 fentry:vmlinux:do_symlinkat /@sandbox[cgroup] && curtask->thread_pid->level > @base/ { @rn[tid] = str(*(uint64 *)args.from); @rn2[tid] = str(*(uint64 *)args.to); }
-fexit:vmlinux:do_unlinkat, fexit:vmlinux:do_rmdir /@sandbox[cgroup] && curtask->thread_pid->level > @base && retval != -1 && retval != -13 && retval != -30/ { delete(@rn[tid]); }
-fexit:vmlinux:do_mkdirat /@sandbox[cgroup] && curtask->thread_pid->level > @base && retval != -1 && retval != -13 && retval != -30/ { delete(@rn[tid]); }
-fexit:vmlinux:do_renameat2 /@sandbox[cgroup] && curtask->thread_pid->level > @base && retval != -1 && retval != -13 && retval != -30/ { delete(@rn[tid]); delete(@rn2[tid]); }
-fexit:vmlinux:do_linkat /@sandbox[cgroup] && curtask->thread_pid->level > @base && retval != -1 && retval != -13 && retval != -30/ { delete(@rn[tid]); delete(@rn2[tid]); }
-fexit:vmlinux:do_symlinkat /@sandbox[cgroup] && curtask->thread_pid->level > @base && retval != -1 && retval != -13 && retval != -30/ { delete(@rn[tid]); delete(@rn2[tid]); }
+fexit:vmlinux:do_unlinkat, fexit:vmlinux:do_rmdir /@sandbox[cgroup] && curtask->thread_pid->level > @base && retval != -1 && retval != -13 && retval != -30/ { if (has_key(@rn, tid)) { delete(@rn[tid]); } }
+fexit:vmlinux:do_mkdirat /@sandbox[cgroup] && curtask->thread_pid->level > @base && retval != -1 && retval != -13 && retval != -30/ { if (has_key(@rn, tid)) { delete(@rn[tid]); } }
+fexit:vmlinux:do_renameat2 /@sandbox[cgroup] && curtask->thread_pid->level > @base && retval != -1 && retval != -13 && retval != -30/ { if (has_key(@rn, tid)) { delete(@rn[tid]); } if (has_key(@rn2, tid)) { delete(@rn2[tid]); } }
+fexit:vmlinux:do_linkat /@sandbox[cgroup] && curtask->thread_pid->level > @base && retval != -1 && retval != -13 && retval != -30/ { if (has_key(@rn, tid)) { delete(@rn[tid]); } if (has_key(@rn2, tid)) { delete(@rn2[tid]); } }
+fexit:vmlinux:do_symlinkat /@sandbox[cgroup] && curtask->thread_pid->level > @base && retval != -1 && retval != -13 && retval != -30/ { if (has_key(@rn, tid)) { delete(@rn[tid]); } if (has_key(@rn2, tid)) { delete(@rn2[tid]); } }
 fentry:vmlinux:do_mknodat /@sandbox[cgroup] && curtask->thread_pid->level > @base/ { @rn[tid] = str(*(uint64 *)args.name); }
-fexit:vmlinux:do_mknodat /@sandbox[cgroup] && curtask->thread_pid->level > @base && retval != -1 && retval != -13 && retval != -30/ { delete(@rn[tid]); }
+fexit:vmlinux:do_mknodat /@sandbox[cgroup] && curtask->thread_pid->level > @base && retval != -1 && retval != -13 && retval != -30/ { if (has_key(@rn, tid)) { delete(@rn[tid]); } }
 before 7.0 */
 
 // Refused chmod, truncate and utimes calls, which the read-only check stops before the setattr
@@ -2102,7 +2109,7 @@ fexit:vmlinux:do_fchownat /@sandbox[cgroup] && curtask->thread_pid->level > @bas
       buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
       @ch[tid]);
   }
-  delete(@ch[tid]);
+  if (has_key(@ch, tid)) { delete(@ch[tid]); }
 }
 
 // A refused fchown, logged at the call's exit with the file its fd names. Some builds inline
@@ -2112,7 +2119,7 @@ fexit:vmlinux:do_fchownat /@sandbox[cgroup] && curtask->thread_pid->level > @bas
 //@x86_64 tracepoint:raw_syscalls:sys_exit /args.id == 93 && @fch[tid].0 != 0/ {
 //@aarch64 tracepoint:raw_syscalls:sys_exit /args.id == 55 && @fch[tid].0 != 0/ {
   $fc = @fch[tid];
-  delete(@fch[tid]);
+  if (has_key(@fch, tid)) { delete(@fch[tid]); }
   $r = args.ret;
   $fd = (int64)$fc.1;
   $fdt = curtask->files->fdt;
@@ -2163,7 +2170,7 @@ fexit:vmlinux:do_fchownat /@sandbox[cgroup] && curtask->thread_pid->level > @bas
   }
 }
 
-tracepoint:sched:sched_process_exit /@fch[tid].0 != 0/ { delete(@fch[tid]); }
+tracepoint:sched:sched_process_exit /@fch[tid].0 != 0/ { if (has_key(@fch, tid)) { delete(@fch[tid]); } }
 
 // A refused call, numbered as BEGIN's table numbers it.
 tracepoint:raw_syscalls:sys_exit /args.ret == -1 && @sandbox[cgroup]/ {

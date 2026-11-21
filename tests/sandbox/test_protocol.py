@@ -282,3 +282,14 @@ def test_the_syscall_numbers_match_the_names() -> None:
         exit_ = f"//@{arch} tracepoint:raw_syscalls:sys_exit /args.id == {fchown} && @fch[tid]"
         assert script.count(exit_) == 1, arch
     assert SYSCALL_ARCH in TRACE
+
+
+def test_every_delete_checks_its_key_first() -> None:
+    # bpftrace reports a delete of a key that is not there through the records' ring, where a
+    # dropped report counts as a lost record no hole shows. A loop over a map deletes keys it has.
+    script = (ASSETS / "tracer" / "trace.bt").read_text()
+    deletes = re.findall(r"delete\((@\w+)\[([^\]]+)\]\)", script)
+    guarded = re.findall(r"if \(has_key\((@\w+), ([^)]+)\)\) \{ delete\(\1\[\2\]\); \}", script)
+    assert deletes
+    assert sorted(guarded) == sorted(deletes)
+    assert re.findall(r"delete\(@\w+, ([^)]+)\)", script) == ["$kv.0", "$kv.0"]

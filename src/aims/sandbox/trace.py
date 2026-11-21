@@ -646,6 +646,18 @@ class Note:
     text: str
 
 
+@dataclass(frozen=True, slots=True)
+class HelperError:
+    """A BPF helper call of the script that failed, at a line of it. bpftrace sends these through
+    the records' ring without a sequence number, so one the ring drops is a loss no hole
+    shows: the script must not make them as a matter of course."""
+
+    helper: str
+    code: int
+    line: int
+    text: str
+
+
 Item = Ready | Tick | Raw | Kernel
 # The tracer's own records whose header has no cgroup: the heartbeat's printf must fit 32 bytes.
 UNGROUPED = frozenset({"R", "Q"})
@@ -666,7 +678,7 @@ def record(tag: str) -> Callable[[Parser], Parser]:
     return register
 
 
-def parse(line: str) -> Item | Dropped | Garbled | Note | None:
+def parse(line: str) -> Item | Dropped | Garbled | Note | HelperError | None:
     """Turn one line of `bpftrace -f json` output into an item.
 
     A record line is `TAG TS CPU SEQ CGROUP FIELDS...`: the kernel boot clock in ns, the cpu,
@@ -683,6 +695,14 @@ def parse(line: str) -> Item | Dropped | Garbled | Note | None:
     kind, data = doc.get("type"), doc.get("data")
     if kind == "lost_events" and isinstance(data, dict):
         return Dropped(int(data.get("events", 0)))
+    if kind == "helper_error":
+        code, at = doc.get("retcode"), doc.get("line")
+        return HelperError(
+            str(doc.get("helper", "")),
+            code if isinstance(code, int) else 0,
+            at if isinstance(at, int) else 0,
+            str(doc.get("msg", "")),
+        )
     if kind != "printf" or not isinstance(data, str):
         return None
     text = (

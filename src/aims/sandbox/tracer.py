@@ -52,6 +52,7 @@ from aims.sandbox.trace import (
     ExecPart,
     Gap,
     Garbled,
+    HelperError,
     Identity,
     Link,
     Mkdir,
@@ -413,6 +414,9 @@ class Tracer:
         self._drops: deque[tuple[int, int, int]] = deque()
         self.alive = False
         self.garbled = 0
+        # Helper calls of the script that failed, and the first of each kind, which is logged.
+        self.helper_errors = 0
+        self._helper_kinds: set[tuple[str, int, int]] = set()
         self.unhandled = 0
         self.unrouted = 0
         # Records of processes in no registered sandbox: the runtime's own setup in a sandbox's
@@ -806,6 +810,11 @@ class Tracer:
             case Dropped(count):
                 self.kernel_lost += count
                 self._drops.append((self._sequence.latest, self.kernel_lost, self._clock()))
+            case HelperError(helper, code, where, text):
+                self.helper_errors += 1
+                if (helper, code, where) not in self._helper_kinds:
+                    self._helper_kinds.add((helper, code, where))
+                    log.warning("tracer: %s failed (%d) at line %d: %s", helper, code, where, text)
             case Garbled(pid, text):
                 self.garbled += 1
                 route = self._lookup(pid) if pid is not None else None
