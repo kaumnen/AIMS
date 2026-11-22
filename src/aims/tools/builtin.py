@@ -131,8 +131,12 @@ class Edit(TextTool):
             "* `insert` adds `new_str` after line `insert_line` (0 puts it first).\n"
             "Relative paths are taken from {workdir}."
         ),
+        "empty": "{path} is empty.",
     }
-    placeholders: ClassVar[dict[str, frozenset[str]]] = {"description": frozenset({"workdir"})}
+    placeholders: ClassVar[dict[str, frozenset[str]]] = {
+        "description": frozenset({"workdir"}),
+        "empty": frozenset({"path"}),
+    }
 
     def spec(self, config: SandboxConfig) -> ToolSpec:
         return ToolSpec(
@@ -257,6 +261,8 @@ class Edit(TextTool):
         lines = text.split("\n")
         if lines and lines[-1] == "":
             lines.pop()
+        if not lines and view_range in (None, [1, -1]):
+            return ToolOutcome(self.text["empty"].format(path=path))
         start, end = 1, len(lines)
         if view_range is not None:
             start, end = view_range

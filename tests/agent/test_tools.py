@@ -109,6 +109,25 @@ async def test_edit_views_creates_and_replaces(ctx: ToolContext) -> None:
     assert writes[0].stdin == "one\ntwo\ntwo\n"
 
 
+async def test_edit_says_a_file_is_empty(ctx: ToolContext) -> None:
+    made = await ctx.sandbox.exec(": > /work/empty", timeout_s=5)
+    assert made.finished.exit_code == 0
+
+    async def view(texts: dict[str, str] | None = None, **kw: object) -> tuple[str, bool]:
+        (edit,) = load_tools(["edit"], {"edit": texts or {}})
+        args = EditArgs.model_validate({"command": "view", "path": "empty", **kw})
+        out = await edit.run(ctx, args)
+        return out.output, out.error
+
+    assert await view() == ("/work/empty is empty.", False)
+    assert await view(view_range=[1, -1]) == ("/work/empty is empty.", False)
+    assert await view(view_range=[1, 1]) == (
+        "view_range [1, 1] is outside the file's 0 lines.",
+        True,
+    )
+    assert await view({"empty": "No lines in {path}."}) == ("No lines in /work/empty.", False)
+
+
 async def test_bash_reports_streams_exit_and_timeout(ctx: ToolContext) -> None:
     (bash,) = load_tools(["bash"])
 
