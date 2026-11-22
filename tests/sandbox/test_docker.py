@@ -5,6 +5,7 @@ import os
 import re
 import shlex
 import tarfile
+import uuid
 from collections import Counter
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
@@ -12,6 +13,7 @@ from typing import Any, cast
 
 import aiodocker
 import pytest
+from aiodocker.containers import DockerContainer
 
 from aims.events import (
     MAX_INT,
@@ -44,9 +46,20 @@ from aims.sandbox import MASK_PROC, AuditedSandbox, DockerBackend, Mount, Sandbo
 from aims.sandbox import audit as audit_module
 from aims.sandbox import docker as docker_module
 from aims.sandbox import reader as reader_module
+from aims.sandbox.containers import create_container, remove_container
 from aims.sandbox.execs import exec_output
+from aims.sandbox.images import ensure_image
 from aims.sandbox.trace import ARGV_CAP, STRLEN
-from aims.sandbox.tracer import BACKING, SKIP_READ, Tracer, parse_counts
+from aims.sandbox.tracer import (
+    ATTACH_FAILED,
+    BACKING,
+    PROBES_PER_CALL,
+    SKIP_READ,
+    TRACEFS,
+    Tracer,
+    TracerError,
+    parse_counts,
+)
 
 # These test the tracer itself, so they need the host to themselves.
 pytestmark = [pytest.mark.anyio, pytest.mark.docker, pytest.mark.serial]
@@ -2922,3 +2935,84 @@ async def test_refused_changes_on_read_only_paths_are_recorded(
     assert any(p.errno == 30 and p.mtime_us == 978307200000000 for p in attrs)
     # Older kernels check for a read-only mount before the file's permissions.
     assert any(p.errno in (13, 30) and p.size == 0 and p.mode is None for p in attrs)
+
+
+# The kernel's cap on the fentry and fexit probes of one function, by count. A page of
+# trampoline code may cap them lower.
+TRAMPOLINE_LINKS = 38
+
+
+async def hold_lookups(backend: DockerBackend, image: str, count: int) -> DockerContainer | None:
+    """A container labelled as an AIMS tracer whose bpftrace holds `count` probes on
+    filename_lookup, or None when they do not all attach. BEGIN prints once all have."""
+    probes = "".join(
+        f" fexit:vmlinux:filename_lookup {{ @c[{i}] = count(); }}" for i in range(count)
+    )
+    program = 'BEGIN { printf("ready\\n"); }' + probes
+    container = await create_container(
+        backend.docker,
+        config={
+            "Image": image,
+            "Entrypoint": ["sh", "-c", TRACEFS + 'exec bpftrace -e "$1"', "sh", program],
+            "Labels": {**backend._labels, "aims.role": "tracer"},
+            "HostConfig": {
+                "CapDrop": ["ALL"],
+                "CapAdd": ["SYS_ADMIN", "BPF", "PERFMON"],
+                "SecurityOpt": ["no-new-privileges"],
+                "Ulimits": [{"Name": "memlock", "Soft": -1, "Hard": -1}],
+                "Mounts": [
+                    {"Type": "bind", "Source": p, "Target": p, "ReadOnly": True}
+                    for p in ("/sys/kernel/tracing", "/sys/kernel/debug")
+                ],
+                "PidMode": "host",
+                "NetworkMode": "none",
+            },
+        },
+        name=f"aims-holder-{uuid.uuid4().hex[:12]}",
+    )
+    try:
+        await container.start()
+        async with asyncio.timeout(60):
+            while True:
+                said = "".join(await container.log(stdout=True, stderr=True))
+                if "ready" in said:
+                    return container
+                if "ERROR" in said or not (await container.show())["State"]["Running"]:
+                    break
+                await asyncio.sleep(0.2)
+    except BaseException:
+        await remove_container(container)
+        raise
+    await remove_container(container)
+    return None
+
+
+@pytest.mark.tracer
+@pytest.mark.usefixtures("traced")
+async def test_a_tracer_with_no_room_on_a_call_says_how_many_others_run(
+    backend: DockerBackend,
+) -> None:
+    # The module's tracer holds its probes. A second holder takes all the room left on
+    # filename_lookup: as many probes as attach, so not one more fits.
+    image = await ensure_image(backend.docker, "tracer")
+    holder = None
+    for count in range(TRAMPOLINE_LINKS - PROBES_PER_CALL, 0, -1):
+        if (holder := await hold_lookups(backend, image, count)) is not None:
+            break
+    assert holder is not None
+    name = f"aims-tracer-{uuid.uuid4().hex[:12]}"
+    try:
+        tracer = Tracer(backend.docker, backend._labels, name, toolbox=backend._toolbox_volume)
+        with pytest.raises(TracerError) as caught:
+            await tracer.start()
+    finally:
+        await remove_container(holder)
+
+    text = str(caught.value)
+    assert ATTACH_FAILED.search(text), text
+    found = re.search(r"\((\d+) other AIMS tracers run on this Docker host; ", text)
+    # The module's tracer and the holder, with any other tracer on this host.
+    assert found is not None, text
+    assert int(found[1]) >= 2, text
+    query = json.dumps({"name": [name]})
+    assert await backend.docker.containers.list(all=True, filters=query) == []

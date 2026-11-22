@@ -2,6 +2,7 @@ import asyncio
 import gc
 import json
 import logging
+from types import SimpleNamespace
 from typing import Any, cast
 
 import aiodocker
@@ -89,10 +90,13 @@ from aims.sandbox.trace import (
     PIPEFS_MAGIC as PIPEFS,
 )
 from aims.sandbox.tracer import (
+    ATTACH_FAILED,
     OWN_GAP,
+    TRACERS_PER_HOST,
     UNHANDLED,
     UNKNOWN,
     Tracer,
+    crowd,
     parse_counts,
     parse_preemption,
     parse_probes,
@@ -2279,3 +2283,105 @@ async def test_a_cancel_while_an_imds_server_closes_still_removes_its_container(
         await close
     assert calls == ["stop", "delete"]
     assert closing.is_set()
+
+
+def test_an_attach_error_names_the_crowd() -> None:
+    assert ATTACH_FAILED.search("ERROR: Error attaching probe: fexit:vmlinux:filename_lookup")
+    assert ATTACH_FAILED.search("ERROR: Error attaching probe: fentry:vmlinux:filename_lookup")
+    assert ATTACH_FAILED.search("ERROR: Error attaching probe: tracepoint:sched:sched_process_exit")
+    assert not ATTACH_FAILED.search("ERROR: unknown function")
+    assert crowd(1).startswith("1 other AIMS tracer runs on this Docker host; ")
+    assert crowd(11) == (
+        "11 other AIMS tracers run on this Docker host; the kernel caps the probes on one kernel"
+        f" function or tracepoint, which leaves room for about {TRACERS_PER_HOST} tracers per host"
+    )
+    assert TRACERS_PER_HOST == 12
+
+
+ATTACH_ERROR = b"ERROR: Error attaching probe: fexit:vmlinux:filename_lookup\n"
+
+
+class FailingTrace:
+    """A trace exec whose bpftrace cannot attach a probe."""
+
+    def __init__(self) -> None:
+        self.said = [SimpleNamespace(stream=2, data=ATTACH_ERROR)]
+
+    def start(self, detach: bool = False) -> object:
+        trace = self
+
+        class Opening:
+            async def __aenter__(self) -> object:
+                return trace
+
+        return Opening()
+
+    async def read_out(self) -> object:
+        return self.said.pop(0) if self.said else None
+
+    async def close(self) -> None:
+        pass
+
+
+class CrowdedContainer:
+    id = "own"
+
+    async def start(self) -> None:
+        pass
+
+    async def exec(self, *args: object, **kwargs: object) -> FailingTrace:
+        return FailingTrace()
+
+    async def delete(self, force: bool = False) -> None:
+        pass
+
+
+class CrowdedContainers:
+    def __init__(self, running: tuple[str, ...] | Exception) -> None:
+        self.running = running
+        self.filters: object = None
+
+    async def create(self, **kwargs: object) -> CrowdedContainer:
+        return CrowdedContainer()
+
+    async def list(self, *, filters: str) -> tuple[object, ...]:
+        self.filters = json.loads(filters)
+        if isinstance(self.running, Exception):
+            raise self.running
+        return tuple(SimpleNamespace(id=i) for i in self.running)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("running", "hint"),
+    [
+        (("own", "a", "b"), " (2 other AIMS tracers run on this Docker host; "),
+        (("own",), None),
+        (aiodocker.DockerError(500, "down"), None),
+    ],
+)
+async def test_a_tracer_that_cannot_attach_counts_the_other_tracers(
+    monkeypatch: pytest.MonkeyPatch, running: tuple[str, ...] | Exception, hint: str | None
+) -> None:
+    async def image(*args: object) -> str:
+        return "tracer"
+
+    monkeypatch.setattr(tracer_module, "ensure_image", image)
+    containers = CrowdedContainers(running)
+    tracer = Tracer(cast(aiodocker.Docker, SimpleNamespace(containers=containers)), {}, "t")
+    with pytest.raises(tracer_module.TracerError) as caught:
+        await tracer.start()
+
+    text = str(caught.value)
+    assert text.startswith(ATTACH_ERROR.decode().strip())
+    if hint is None:
+        assert text == ATTACH_ERROR.decode().strip()
+    else:
+        assert hint in text
+        assert caught.value.__cause__ is not None
+        assert str(caught.value.__cause__) == ATTACH_ERROR.decode().strip()
+    assert containers.filters == {
+        "label": ["aims.managed=1", "aims.role=tracer"],
+        "status": ["running"],
+    }
+    assert tracer._container is None

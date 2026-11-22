@@ -93,6 +93,8 @@ Kernels from 6.11 to 7.0 that the table does not list are untested. aarch64 is t
 > sudo reboot
 > ```
 
+Each AIMS process that runs sandboxes starts its own tracer. A runner starts one for all its runs. Each `aims run` and each self-test of `aims scenario check` starts one of its own. About 12 tracers fit on one host with Linux 7.0, since the kernel caps the probes on one kernel function or tracepoint. The limit can differ with the kernel version and CPU. A tracer past that fails to start. Its error says how many other AIMS tracers run there.
+
 On a host that cannot run the tracer, the audit setting decides:
 
 | `--audit` or `AIMS_AUDIT` | What happens |

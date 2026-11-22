@@ -1,4 +1,5 @@
 import re
+from collections import Counter
 
 from aims.events.schema import _registry
 from aims.sandbox.base import TOOLBOX
@@ -12,7 +13,15 @@ from aims.sandbox.trace import (
     SYSCALLS,
     UNGROUPED,
 )
-from aims.sandbox.tracer import LOOKS, SYSCALL_ARCH, TRACE
+from aims.sandbox.tracer import (
+    LOOKS,
+    PROBES_PER_CALL,
+    PROBES_PER_TRACEPOINT,
+    SYSCALL_ARCH,
+    TRACE,
+    TRACED_ARCHES,
+    TRACERS_PER_HOST,
+)
 
 TAGS = set("RFBEXOWAUNCPD") | set("VGT") | set("Z") | set("Q") | set("IKSMHJL") | set("Y")
 TAGS |= set("abcdefghi") | set("rt") | set("o") | set("jklm") | set("nquwxy")
@@ -253,6 +262,28 @@ def test_the_lookup_probes_drop_cleanly() -> None:
     assert all(re.match(r"f(entry|exit):vmlinux:filename_lookup /", script[i]) for i in lookups)
     assert r"'/^f\(entry\|exit\):vmlinux:filename_lookup /,/^}/d'" in LOOKS
     assert LOOKS in TRACE
+
+
+def test_no_hook_takes_more_probes_than_the_tracer_says() -> None:
+    # The kernel caps the probes on one kernel function and on one tracepoint over every tracer
+    # on the host, so the most the script puts on one sets how many tracers fit there.
+    script = (ASSETS / "tracer" / "trace.bt").read_text()
+    for arch in TRACED_ARCHES:
+        calls: Counter[str] = Counter()
+        events: Counter[str] = Counter()
+        for line in re.sub(rf"(?m)^//@{arch} ", "", script).splitlines():
+            if not re.match(r"(fentry|fexit|tracepoint):", line):
+                continue
+            for point in re.split(r" [/{]", line, maxsplit=1)[0].split(","):
+                if point.strip().startswith("tracepoint:"):
+                    events[point.strip()] += 1
+                else:
+                    calls[point.strip().rsplit(":", 1)[1]] += 1
+        assert calls["filename_lookup"] == PROBES_PER_CALL, arch
+        assert max(calls.values()) == PROBES_PER_CALL, (arch, calls.most_common(5))
+        assert events["tracepoint:sched:sched_process_exit"] == PROBES_PER_TRACEPOINT, arch
+        assert max(events.values()) == PROBES_PER_TRACEPOINT, (arch, events.most_common(5))
+    assert TRACERS_PER_HOST == 12
 
 
 def test_the_lookup_budget_matches_the_script() -> None:

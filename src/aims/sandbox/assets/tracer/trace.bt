@@ -1459,77 +1459,156 @@ fexit:vmlinux:do_faccessat /@look[tid] != 0/ { if (has_key(@look, tid)) { delete
 fentry:vmlinux:do_readlinkat /@sandbox[cgroup] && curtask->thread_pid->level > @base/ { @look[tid] = 3; }
 fexit:vmlinux:do_readlinkat /@look[tid] != 0/ { if (has_key(@look, tid)) { delete(@look[tid]); } }
 // chdir's mark is set and dropped by the syscall probes.
+// One probe logs a found name, an absolute missed one and a relative missed one. The kernel caps
+// the probes on one function across every tracer on the host, so each probe here leaves room for
+// fewer tracers (PROBES_PER_CALL in tracer.py).
 
-fexit:vmlinux:filename_lookup /@look[tid] != 0 && retval == 0/ {
-  $op = @look[tid];
-  $d = args.path->dentry;
-  $h = *(uint64 *)((uint64)$d + offsetof(struct dentry, d_name));
-  $last = @lfound[tid];
-  $keep = 1;
-  if ($last.0 == $op && $last.1 == (uint64)$d && $last.2 == $h) { $keep = 0; }
-  $x = $d; $c1 = $d; $c2 = $d; $k = 0;
-  unroll(12) { if ($x != $x->d_parent) { $k++; $c2 = $c1; $c1 = $x; $x = $x->d_parent; } }
-  // Names are matched as little-endian words, which keeps the stack within its limit.
-  if ($keep && $x == $x->d_parent) {
-    $t = (uint64)$c1->d_name.name;
-    $t4 = *(uint32 *)$t;
-    if ($d->d_sb == curtask->fs->root.dentry->d_sb && $x == curtask->fs->root.dentry
-        && ($t4 == 0x727375 || ($t4 & 0xffffff) == 0x62696c || $t4 == 0x6e6962
-            || ($t4 == 0x6e696273 && *(uint8 *)($t + 4) == 0))) {
-      $keep = 0;
-    } else if ($d->d_sb->s_magic == 0x9fa0 && $k > 1) {
-      $pi = (struct proc_inode *)((uint64)$c1->d_inode - offsetof(struct proc_inode, vfs_inode));
-      $pf = (uint64)$pi->pid;
-      if ($pf != 0) {
-        $pt = (uint64)$pi->pid->tasks[0].first;
-        if ($pt != 0 && ((struct task_struct *)($pt - offsetof(struct task_struct, pid_links)))->tgid == curtask->tgid) {
-          // Kept: ns, cgroup, mountinfo and mounts.
-          $u = (uint64)$c2->d_name.name;
-          $u4 = *(uint32 *)$u;
-          if (($u4 & 0xffffff) != 0x736e
-              && !($u4 == 0x6f726763 && *(uint16 *)($u + 4) == 0x7075 && *(uint8 *)($u + 6) == 0)
-              && !($u4 == 0x6e756f6d && *(uint32 *)($u + 4) == 0x666e6974 && *(uint16 *)($u + 8) == 0x6f)
-              && !($u4 == 0x6e756f6d && *(uint16 *)($u + 4) == 0x7374 && *(uint8 *)($u + 6) == 0)) {
-            $keep = 0;
+fexit:vmlinux:filename_lookup /@look[tid] != 0/ {
+  if (retval == 0) {
+    $op = @look[tid];
+    $d = args.path->dentry;
+    $h = *(uint64 *)((uint64)$d + offsetof(struct dentry, d_name));
+    $last = @lfound[tid];
+    $keep = 1;
+    if ($last.0 == $op && $last.1 == (uint64)$d && $last.2 == $h) { $keep = 0; }
+    $x = $d; $c1 = $d; $c2 = $d; $k = 0;
+    unroll(12) { if ($x != $x->d_parent) { $k++; $c2 = $c1; $c1 = $x; $x = $x->d_parent; } }
+    // Names are matched as little-endian words, which keeps the stack within its limit.
+    if ($keep && $x == $x->d_parent) {
+      $t = (uint64)$c1->d_name.name;
+      $t4 = *(uint32 *)$t;
+      if ($d->d_sb == curtask->fs->root.dentry->d_sb && $x == curtask->fs->root.dentry
+          && ($t4 == 0x727375 || ($t4 & 0xffffff) == 0x62696c || $t4 == 0x6e6962
+              || ($t4 == 0x6e696273 && *(uint8 *)($t + 4) == 0))) {
+        $keep = 0;
+      } else if ($d->d_sb->s_magic == 0x9fa0 && $k > 1) {
+        $pi = (struct proc_inode *)((uint64)$c1->d_inode - offsetof(struct proc_inode, vfs_inode));
+        $pf = (uint64)$pi->pid;
+        if ($pf != 0) {
+          $pt = (uint64)$pi->pid->tasks[0].first;
+          if ($pt != 0 && ((struct task_struct *)($pt - offsetof(struct task_struct, pid_links)))->tgid == curtask->tgid) {
+            // Kept: ns, cgroup, mountinfo and mounts.
+            $u = (uint64)$c2->d_name.name;
+            $u4 = *(uint32 *)$u;
+            if (($u4 & 0xffffff) != 0x736e
+                && !($u4 == 0x6f726763 && *(uint16 *)($u + 4) == 0x7075 && *(uint8 *)($u + 6) == 0)
+                && !($u4 == 0x6e756f6d && *(uint32 *)($u + 4) == 0x666e6974 && *(uint16 *)($u + 8) == 0x6f)
+                && !($u4 == 0x6e756f6d && *(uint16 *)($u + 4) == 0x7374 && *(uint8 *)($u + 6) == 0)) {
+              $keep = 0;
+            }
           }
         }
       }
     }
-  }
-  if ($keep) {
-    $sec = nsecs(boot) / 1000000000;
-    $w = @lbud[pid];
-    if ($w.0 != $sec) { @lbud[pid] = ($sec, (uint64)1, $w.2); }
-    else if ($w.1 < 2000) { @lbud[pid] = ($sec, $w.1 + 1, $w.2); }
-    else { @lbud[pid] = ($sec, $w.1, $w.2 + 1); $keep = 0; }
-  }
-  if ($keep) {
-    @lfound[tid] = ($op, (uint64)$d, $h);
-    $pp = $d->d_parent;
-    $ph = *(uint64 *)((uint64)$pp + offsetof(struct dentry, d_name));
-    $lp = @lkpar[tid];
-    $rg = @rengen;
-    if ($op == 1) {
-      @getattr[tid] = 1;
-    } else if ($k > 0 && $lp.0 == (uint64)$pp && $lp.1 == $ph && $lp.2 == $rg) {
-      $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-      printf("k %llu %llu %llu %llu %d %d %d %u -3 %lu %lu %s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, tid, $op, $d->d_sb->s_dev, (uint64)$pp, $rg, str($d->d_name.name));
+    if ($keep) {
+      $sec = nsecs(boot) / 1000000000;
+      $w = @lbud[pid];
+      if ($w.0 != $sec) { @lbud[pid] = ($sec, (uint64)1, $w.2); }
+      else if ($w.1 < 2000) { @lbud[pid] = ($sec, $w.1 + 1, $w.2); }
+      else { @lbud[pid] = ($sec, $w.1, $w.2 + 1); $keep = 0; }
+    }
+    if ($keep) {
+      @lfound[tid] = ($op, (uint64)$d, $h);
+      $pp = $d->d_parent;
+      $ph = *(uint64 *)((uint64)$pp + offsetof(struct dentry, d_name));
+      $lp = @lkpar[tid];
+      $rg = @rengen;
+      if ($op == 1) {
+        @getattr[tid] = 1;
+      } else if ($k > 0 && $lp.0 == (uint64)$pp && $lp.1 == $ph && $lp.2 == $rg) {
+        $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+        printf("k %llu %llu %llu %llu %d %d %d %u -3 %lu %lu %s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, tid, $op, $d->d_sb->s_dev, (uint64)$pp, $rg, str($d->d_name.name));
+      } else {
+        if ($k > 0) { @lkpar[tid] = ((uint64)$pp, $ph, $rg); }
+        $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+        printf("k %llu %llu %llu %llu %d %d %d %u %d %lu %lu %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, tid, $op, $d->d_sb->s_dev, $k, (uint64)$pp, $rg,
+          str($d->d_name.name),
+          str($d->d_parent->d_name.name),
+          str($d->d_parent->d_parent->d_name.name),
+          str($d->d_parent->d_parent->d_parent->d_name.name),
+          str($d->d_parent->d_parent->d_parent->d_parent->d_name.name),
+          str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+          str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+          str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+          str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+          str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+          str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
+          str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
+      }
+    }
+  } else if ((uint64)args.name < 0xfffffffffffff001) {
+    if (*(uint8 *)*(uint64 *)args.name == 47) {
+      $op = @look[tid];
+      $n = str(*(uint64 *)args.name);
+      $e = $op * 4096 - (int64)retval;
+      $keep = 1;
+      if ((strncmp($n, "/usr/", 5) == 0 || strncmp($n, "/lib", 4) == 0 || strncmp($n, "/bin/", 5) == 0
+           || strncmp($n, "/sbin/", 6) == 0) && !strcontains($n, "/..")) {
+        $keep = 0;
+      } else if (strncmp($n, "/etc/ld.so.preload", 19) == 0) {
+        $keep = 0;
+      } else if (@lmissop[tid] == $e && strncmp(@lmiss[tid], $n, 384) == 0) {
+        $keep = 0;
+      }
+      if ($keep) {
+        $sec = nsecs(boot) / 1000000000;
+        $w = @lbud[pid];
+        if ($w.0 != $sec) { @lbud[pid] = ($sec, (uint64)1, $w.2); }
+        else if ($w.1 < 2000) { @lbud[pid] = ($sec, $w.1 + 1, $w.2); }
+        else { @lbud[pid] = ($sec, $w.1, $w.2 + 1); $keep = 0; }
+      }
+      if ($keep) {
+        @lmiss[tid] = $n; @lmissop[tid] = $e;
+        $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+        printf("m %llu %llu %llu %llu %d %d %d %d 0 -1 0 0 - %s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, tid, $op, -(int64)retval, $n);
+      }
     } else {
-      if ($k > 0) { @lkpar[tid] = ((uint64)$pp, $ph, $rg); }
-      $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-      printf("k %llu %llu %llu %llu %d %d %d %u %d %lu %lu %s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s/%s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, tid, $op, $d->d_sb->s_dev, $k, (uint64)$pp, $rg,
-        str($d->d_name.name),
-        str($d->d_parent->d_name.name),
-        str($d->d_parent->d_parent->d_name.name),
-        str($d->d_parent->d_parent->d_parent->d_name.name),
-        str($d->d_parent->d_parent->d_parent->d_parent->d_name.name),
-        str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-        str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-        str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-        str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-        str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-        str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name),
-        str($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name));
+      $op = @look[tid];
+      $n = str(*(uint64 *)args.name);
+      $e = $op * 4096 - (int64)retval;
+      $keep = @lmissop[tid] != $e || strncmp(@lmiss[tid], $n, 384) != 0;
+      if ($keep) {
+        $sec = nsecs(boot) / 1000000000;
+        $w = @lbud[pid];
+        if ($w.0 != $sec) { @lbud[pid] = ($sec, (uint64)1, $w.2); }
+        else if ($w.1 < 2000) { @lbud[pid] = ($sec, $w.1 + 1, $w.2); }
+        else { @lbud[pid] = ($sec, $w.1, $w.2 + 1); $keep = 0; }
+      }
+      if ($keep) {
+        @lmiss[tid] = $n; @lmissop[tid] = $e;
+        $d = curtask->fs->pwd.dentry; $k = -1;
+        if (args.dfd == -100) { $k = 0; } else {
+          $fdt = curtask->files->fdt;
+          if ((int64)args.dfd >= 0 && (uint64)args.dfd < (uint64)$fdt->max_fds) {
+            $f = *($fdt->fd + args.dfd);
+            if ($f != 0) { $d = (*(struct path *)((uint64)$f + offsetof(struct file, f_path))).dentry; $k = 0; }
+          }
+        }
+        $bh = *(uint64 *)((uint64)$d + offsetof(struct dentry, d_name));
+        $lb = @lbase[tid];
+        $rg = @rengen;
+        if ($k == 0 && $lb.0 == (uint64)$d && $lb.1 == $bh && $lb.2 == $rg) {
+          $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+          printf("m %llu %llu %llu %llu %d %d %d %d %u -3 %lu %lu - %s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, tid, $op, -(int64)retval, $d->d_sb->s_dev, (uint64)$d, $rg, $n);
+        } else {
+        if ($k == 0) { @lbase[tid] = ((uint64)$d, $bh, $rg); $x = $d; unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } } }
+        $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+        printf("m %llu %llu %llu %llu %d %d %d %d %u %d %lu %lu %rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx %s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, tid, $op, -(int64)retval, $d->d_sb->s_dev, $k, (uint64)$d, $rg,
+          buf($d->d_name.name, $d->d_name.len),
+          buf($d->d_parent->d_name.name, $d->d_parent->d_name.len),
+          buf($d->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_name.len),
+          buf($d->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_name.len),
+          buf($d->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_name.len),
+          buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+          buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+          buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+          buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+          buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+          buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+          buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
+          $n);
+        }
+      }
     }
   }
 }
@@ -1540,95 +1619,20 @@ fentry:vmlinux:security_inode_getattr /@getattr[tid] != 0 && curtask->cred == cu
   printf("j %llu %llu %llu %llu %d 1 %s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, path(args.path));
 }
 
-fexit:vmlinux:filename_lookup /@look[tid] != 0 && retval != 0 && (uint64)args.name < 0xfffffffffffff001 && *(uint8 *)*(uint64 *)args.name == 47/ {
-  $op = @look[tid];
-  $n = str(*(uint64 *)args.name);
-  $e = $op * 4096 - (int64)retval;
-  $keep = 1;
-  if ((strncmp($n, "/usr/", 5) == 0 || strncmp($n, "/lib", 4) == 0 || strncmp($n, "/bin/", 5) == 0
-       || strncmp($n, "/sbin/", 6) == 0) && !strcontains($n, "/..")) {
-    $keep = 0;
-  } else if (strncmp($n, "/etc/ld.so.preload", 19) == 0) {
-    $keep = 0;
-  } else if (@lmissop[tid] == $e && strncmp(@lmiss[tid], $n, 384) == 0) {
-    $keep = 0;
-  }
-  if ($keep) {
-    $sec = nsecs(boot) / 1000000000;
-    $w = @lbud[pid];
-    if ($w.0 != $sec) { @lbud[pid] = ($sec, (uint64)1, $w.2); }
-    else if ($w.1 < 2000) { @lbud[pid] = ($sec, $w.1 + 1, $w.2); }
-    else { @lbud[pid] = ($sec, $w.1, $w.2 + 1); $keep = 0; }
-  }
-  if ($keep) {
-    @lmiss[tid] = $n; @lmissop[tid] = $e;
-    $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-    printf("m %llu %llu %llu %llu %d %d %d %d 0 -1 0 0 - %s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, tid, $op, -(int64)retval, $n);
-  }
-}
-
-fexit:vmlinux:filename_lookup /@look[tid] != 0 && retval != 0 && (uint64)args.name < 0xfffffffffffff001 && *(uint8 *)*(uint64 *)args.name != 47/ {
-  $op = @look[tid];
-  $n = str(*(uint64 *)args.name);
-  $e = $op * 4096 - (int64)retval;
-  $keep = @lmissop[tid] != $e || strncmp(@lmiss[tid], $n, 384) != 0;
-  if ($keep) {
-    $sec = nsecs(boot) / 1000000000;
-    $w = @lbud[pid];
-    if ($w.0 != $sec) { @lbud[pid] = ($sec, (uint64)1, $w.2); }
-    else if ($w.1 < 2000) { @lbud[pid] = ($sec, $w.1 + 1, $w.2); }
-    else { @lbud[pid] = ($sec, $w.1, $w.2 + 1); $keep = 0; }
-  }
-  if ($keep) {
-    @lmiss[tid] = $n; @lmissop[tid] = $e;
-    $d = curtask->fs->pwd.dentry; $k = -1;
-    if (args.dfd == -100) { $k = 0; } else {
-      $fdt = curtask->files->fdt;
-      if ((int64)args.dfd >= 0 && (uint64)args.dfd < (uint64)$fdt->max_fds) {
-        $f = *($fdt->fd + args.dfd);
-        if ($f != 0) { $d = (*(struct path *)((uint64)$f + offsetof(struct file, f_path))).dentry; $k = 0; }
-      }
-    }
-    $bh = *(uint64 *)((uint64)$d + offsetof(struct dentry, d_name));
-    $lb = @lbase[tid];
-    $rg = @rengen;
-    if ($k == 0 && $lb.0 == (uint64)$d && $lb.1 == $bh && $lb.2 == $rg) {
-      $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-      printf("m %llu %llu %llu %llu %d %d %d %d %u -3 %lu %lu - %s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, tid, $op, -(int64)retval, $d->d_sb->s_dev, (uint64)$d, $rg, $n);
-    } else {
-    if ($k == 0) { @lbase[tid] = ((uint64)$d, $bh, $rg); $x = $d; unroll(12) { if ($x != $x->d_parent) { $k++; $x = $x->d_parent; } } }
-    $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-    printf("m %llu %llu %llu %llu %d %d %d %d %u %d %lu %lu %rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx/%rx %s\n", nsecs(boot), cpu, $s, $g, curtask->tgid, tid, $op, -(int64)retval, $d->d_sb->s_dev, $k, (uint64)$d, $rg,
-      buf($d->d_name.name, $d->d_name.len),
-      buf($d->d_parent->d_name.name, $d->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      buf($d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.name, $d->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_parent->d_name.len),
-      $n);
-    }
-  }
-}
-
 // A process logs at most 2000 lookups a second, all its threads together; the rest are only
 // counted, so a walk of a large tree stays cheap and cannot crowd out other records. The count
 // comes when its last thread exits. Its threads count at once, so the count is near, not exact.
-tracepoint:sched:sched_process_exit /@lbud[pid].0 != 0 && *(int32 *)((uint64)curtask->signal + offsetof(struct signal_struct, live)) == 0/ {
-  $sk = @lbud[pid].2;
-  if ($sk != 0) {
-    $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
-    printf("l %llu %llu %llu %llu %d %llu\n", nsecs(boot), cpu, $s, $g, curtask->tgid, $sk);
+// The same probe drops each exiting thread's lookup state. A tracepoint takes a capped number of
+// probes across every tracer on the host (PROBES_PER_TRACEPOINT in tracer.py).
+tracepoint:sched:sched_process_exit /@lbud[pid].0 != 0 || @lfound[tid].0 != 0 || @lmissop[tid] != 0 || @lbase[tid].0 != 0 || @lkpar[tid].0 != 0/ {
+  if (@lbud[pid].0 != 0 && *(int32 *)((uint64)curtask->signal + offsetof(struct signal_struct, live)) == 0) {
+    $sk = @lbud[pid].2;
+    if ($sk != 0) {
+      $g = cgroup; $s = @seq[$g, cpu] + 1; @seq[$g, cpu] = $s;
+      printf("l %llu %llu %llu %llu %d %llu\n", nsecs(boot), cpu, $s, $g, curtask->tgid, $sk);
+    }
+    if (has_key(@lbud, pid)) { delete(@lbud[pid]); }
   }
-  if (has_key(@lbud, pid)) { delete(@lbud[pid]); }
-}
-
-tracepoint:sched:sched_process_exit /@lfound[tid].0 != 0 || @lmissop[tid] != 0 || @lbase[tid].0 != 0 || @lkpar[tid].0 != 0/ {
   if (@lkpar[tid].0 != 0) { if (has_key(@lkpar, tid)) { delete(@lkpar[tid]); } }
   if (@lfound[tid].0 != 0) { if (has_key(@lfound, tid)) { delete(@lfound[tid]); } }
   if (@lmissop[tid] != 0) { if (has_key(@lmissop, tid)) { delete(@lmissop[tid]); } if (has_key(@lmiss, tid)) { delete(@lmiss[tid]); } }

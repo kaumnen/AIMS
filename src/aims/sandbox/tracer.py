@@ -143,6 +143,15 @@ SETTLE_S = 3.0
 KNOWN_WARNINGS = frozenset({"Addrspace mismatch"})
 DIAGNOSTIC = re.compile(r"\S+:\d+:\d+(?:-\d+)?: (WARNING|ERROR): (.*)")
 MARKER = re.compile(r"\s*[~^]+\s*")
+# The kernel caps the probes on one hook, counted over every tracer on the host: 38 fentry and
+# fexit probes on a kernel function, or fewer once their trampoline outgrows a page (36 on
+# filename_lookup, x86_64, Linux 7.0), and 64 on a tracepoint. trace.bt puts at most
+# PROBES_PER_CALL on one function and PROBES_PER_TRACEPOINT on one tracepoint, so about
+# TRACERS_PER_HOST tracers fit on a host. The next one fails to attach.
+PROBES_PER_CALL = 3
+PROBES_PER_TRACEPOINT = 5
+TRACERS_PER_HOST = min(36 // PROBES_PER_CALL, 64 // PROBES_PER_TRACEPOINT)
+ATTACH_FAILED = re.compile(r"Error attaching probe: ")
 # FMODE_BACKING is bit 24 from 6.14 and in stable trees that took that change (6.12.y did, 6.6.y
 # did not), else bit 25. Below 6.14 a backing file the tracer's own exec opens tells: bits 24 to
 # 26 of its mode are 1, 5 or 7 with bit 24 and 2 with bit 25. 3 fits both (6.6 sets bit 24 as
@@ -256,6 +265,15 @@ class TracerError(Exception):
 
 class Unsupported(TracerError):
     """The Docker host cannot run the tracer, so starting it again cannot help."""
+
+
+def crowd(others: int) -> str:
+    """Why a tracer may not attach when `others` other AIMS tracers run on its host."""
+    run = "tracer runs" if others == 1 else "tracers run"
+    return (
+        f"{others} other AIMS {run} on this Docker host; the kernel caps the probes on one kernel"
+        f" function or tracepoint, which leaves room for about {TRACERS_PER_HOST} tracers per host"
+    )
 
 
 def _release(version: tuple[int, int]) -> str:
@@ -502,9 +520,25 @@ class Tracer:
             self.alive = True
             await self._probe_pmu(self._container)
             await self._start_skips(self._container, trace)
-        except BaseException:
+        except BaseException as e:
+            own = self._container
             await self.stop()
+            if own is not None and isinstance(e, TracerError) and ATTACH_FAILED.search(str(e)):
+                others = await self._others(own.id)
+                if others:
+                    raise TracerError(f"{e} ({crowd(others)})") from e
             raise
+
+    async def _others(self, own: str) -> int:
+        """How many other AIMS tracers run on the Docker host, whose probes may have taken all
+        the room the kernel gives one function; 0 when Docker cannot say."""
+        query = {"label": ["aims.managed=1", "aims.role=tracer"], "status": ["running"]}
+        try:
+            found = await self._docker.containers.list(filters=json.dumps(query))
+        except Exception as e:
+            log.debug("could not count the other tracers: %s", e)
+            return 0
+        return sum(1 for c in found if c.id != own)
 
     async def _probe_pmu(self, container: DockerContainer) -> None:
         """Which hardware counters the host offers: event source devices and an attach attempt."""
