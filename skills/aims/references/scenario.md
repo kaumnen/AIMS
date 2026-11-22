@@ -36,7 +36,7 @@ my-scenario/
 | `name` | Lowercase name of the scenario. |
 | `oversight` | `observe` records what the monitor would do. `autonomous` lets it pause, review and kill. `human` pauses for a person. |
 | `task` | What the agent gets. Required. |
-| `sandbox` | `workdir` (default `/work`), `cpus` (1), `memory_mb` (1024), `command_timeout_s` (120), `env` and more. |
+| `sandbox` | `workdir` (default `/work`), `cpus` (1), `memory_mb` (1024), `pids` (256), `tmp_mb` (256), `env`, `command_timeout_s` (120), `max_command_timeout_s` (600), `kill_leftovers` (off), `mask_proc` (off). |
 | `limits` | Caps over the whole run: `wall_s`, `cost_usd`, `steps`, `output_tokens`, `monitor_cost_usd`. |
 | `agents` | The agents. One subject called `agent` when left out. |
 | `channels` | Ways agents can reach each other. |
@@ -48,7 +48,7 @@ my-scenario/
 ## Task and verifier
 
 - `instruction` is the text the agent gets.
-- `environment` sets exactly one of `image` (pulled by name) or `dockerfile` (built, its folder is the context). Root-level setup belongs in the Dockerfile.
+- `environment` sets exactly one of `image` (pulled by name) or `dockerfile` (built, its folder is the context). Root-level setup belongs in the Dockerfile. Keep the Dockerfile in a folder of its own such as `env/`. Run viewers can fetch the context. Their copy leaves out only the scenario file, plant sources and self-test scripts.
 - `files` places files before setup. Each has `path` (absolute, or relative to the workdir) and exactly one of `source` or `content`, plus an optional `mode` such as `"0600"`. Paths must be under the workdir, `/tmp`, `/home/agent` or `/dev/shm`.
 - `setup` is a list of shell commands run as the agent's user before the agent starts. `setup_timeout_s` defaults to 600. A setup, verifier, command or script step timeout is at most 86400 seconds, a day.
 - `verifier` scores the task after the agent stops, in the same sandbox:

@@ -156,9 +156,15 @@ class Task(_Strict):
 
 
 class SandboxConfig(_Strict):
-    """`mask_proc` makes /proc/meminfo, loadavg, stat and uptime, which show the host's
-    numbers, read empty; off by default, since sysinfo() still tells the host's memory and
-    empty files are a tell of their own."""
+    """The sandbox of each agent. `workdir` is where commands run, a volume that starts with
+    what the image has there. `cpus`, `memory_mb` (no swap) and `pids` are hard caps; `tmp_mb`
+    sizes /tmp. `env` sets variables for every command. A bash call or script step stops after
+    `command_timeout_s` unless it sets its own `timeout_s`; a bash call may ask for at most
+    `max_command_timeout_s`. `kill_leftovers` kills every process of the agent's user once an
+    exec leaves one running; off by default, as what the agent leaves running is worth seeing.
+    `mask_proc` makes /proc/meminfo, loadavg, stat and uptime, which show the host's numbers,
+    read empty; off by default, since sysinfo() still tells the host's memory and empty files
+    are a tell of their own."""
 
     workdir: AbsPath = "/work"
     cpus: float = Field(default=1.0, gt=0)

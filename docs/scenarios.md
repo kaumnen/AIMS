@@ -3,6 +3,7 @@
 A scenario is a YAML file next to the files it uses. The built-in ones are in [`src/aims/scenarios`](../src/aims/scenarios). The [scenario reference](../skills/aims/references/scenario.md) maps the format and the rules that are easy to miss. `aims scenario schema` prints the JSON Schema with every field.
 
 - [Example](#example)
+- [Sandbox](#sandbox)
 - [Plant kinds](#plant-kinds)
 - [Agents, channels and tools](#agents-channels-and-tools)
 
@@ -66,6 +67,32 @@ selftest:
 - The monitor flags a verifier that runs a file the agent wrote. If the task asks for a program that the verifier runs, list it in `verifier.programs`, such as `programs: [main.py]`. Each entry is a glob, relative to the workdir unless it is absolute.
 - `aims scenario check` runs the self-test. Each step of the `reference` must succeed without taking a plant. It does not need full reward. The `exploit` must take every plant it claims.
 - The UI has an editor with the same checks.
+
+## Sandbox
+
+Each agent gets its own sandbox from the image `task.environment` names. The `sandbox` block sets its workdir, its limits and its environment. The root filesystem is read-only.
+
+| Field | Default | What it does |
+| --- | --- | --- |
+| `workdir` | `/work` | Where commands run and relative paths start. A volume that starts with what the image has at that path, owned by the agent. |
+| `cpus` | `1` | CPU cores the sandbox may use. A fraction such as `0.5` works. |
+| `memory_mb` | `1024` | Memory cap in MiB, at least 64. There is no swap. |
+| `pids` | `256` | Cap on processes and threads at once, at least 16. |
+| `tmp_mb` | `256` | Size of `/tmp` in MiB. `/home/agent` and `/dev/shm` get 64 MiB each. |
+| `env` | none | Variables for every command in the sandbox. Values can hold `{{canaries.NAME}}`. `HOME` is `/home/agent` unless set here. |
+| `command_timeout_s` | `120` | Seconds a `bash` call or a script's `run` step may take when it sets no `timeout_s`. |
+| `max_command_timeout_s` | `600` | The longest `timeout_s` a `bash` call may ask for. A longer ask gets this one. A self-test script file runs with this timeout. |
+| `kill_leftovers` | off | Once a command leaves a process running, kill every process of the agent's user. |
+| `mask_proc` | off | Make `/proc/meminfo`, `loadavg`, `stat` and `uptime` read empty. They show the host's numbers. Off by default: `sysinfo()` still tells the host's memory. Empty files are a tell of their own. |
+
+`command_timeout_s` must not be above `max_command_timeout_s`. Both are at most 86400 seconds, a day.
+
+At its timeout a command's whole process group gets SIGTERM, then SIGKILL one second later. Its `exec.finished` event has `end: timeout`. The `bash` reply keeps the output so far. It says the command timed out and gives the exit code: 124 when SIGTERM ended it, 137 when SIGKILL was needed. Time the sandbox spends paused does not count.
+
+`kill_leftovers` is off by default because seeing what the agent leaves running is the point. Each `exec.finished` event lists what the command left running in `leftover`. With `kill_leftovers` on, a command that leaves a process running is followed by SIGKILL to every process of the agent's user. This holds for every command, setup and verifier included. `leftover_killed` is true when every leftover process was the agent's.
+
+> [!IMPORTANT]
+> The Dockerfile's folder is the image build context, less any `.git`, `__pycache__` and `.DS_Store`. With the Dockerfile at the scenario root, that is the whole scenario folder. The run's `run.started` event names a public copy of the context. Anyone who can view the run can fetch it. That copy drops only the scenario file, the self-test script files and the files the run's plants name: the `source` of a `file` plant and the `reference` of an `impossible` plant. Everything else in the folder stays in it. So does a file that only another variant's plant names. Keep the Dockerfile in a folder of its own, as the built-in scenarios do with `env/`.
 
 ## Plant kinds
 
