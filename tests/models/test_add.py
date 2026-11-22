@@ -17,6 +17,7 @@ from typing import Any
 import httpcore2
 import httpx2
 import pytest
+from proxy import environ
 from typer.testing import CliRunner
 
 from aims import net
@@ -70,6 +71,12 @@ ROWS: dict[str, Any] = {
     "embed-model": {"mode": "embedding", "input_cost_per_token": 1e-07},
 }
 PRICES = PriceList(ROWS, datetime(2026, 11, 16, tzinfo=UTC))
+
+
+@pytest.fixture(autouse=True)
+def no_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The developer's proxy variables stay out, in either case."""
+    environ(monkeypatch)
 
 
 def base_profile(**fields: Any) -> Profile:
