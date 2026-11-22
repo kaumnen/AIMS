@@ -106,7 +106,7 @@ class Policy:
             if self._in_a_row[agent] >= self.config.deny_consecutive:
                 reason = f"{self._in_a_row[agent]} denied tool calls in a row"
                 self._in_a_row[agent] = 0
-            if self._denied[agent] == self.config.deny_total:
+            if self._denied[agent] % self.config.deny_total == 0:
                 reason = reason or f"{self._denied[agent]} denied tool calls in all"
             if reason is not None:
                 return Decision("pause" if self.mode == "human" else "kill", (agent,), (), reason)

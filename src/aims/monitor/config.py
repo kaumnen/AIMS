@@ -237,8 +237,8 @@ class PolicyConfig(_Strict):
     """What flags make the monitor do. A pause in autonomous mode is reviewed and resumed or
     killed within `pause_timeout_s`; in human mode it waits `human_timeout_s` for a person, then
     kills. Both are at most 30 days. `on_monitor_failure` None continues in observe mode and
-    pauses otherwise. Denials past `deny_consecutive` in a row or `deny_total` in all trip the
-    breaker."""
+    pauses otherwise. `deny_consecutive` denials in a row trip the breaker. So does each
+    multiple of `deny_total` denials in all: 10, 20 and 30 for the default."""
 
     categories: dict[Category, CategoryPolicy] = Field(default_factory=dict)
     pause_timeout_s: float = Field(default=600, gt=0, le=MAX_HOLD_S)

@@ -96,7 +96,7 @@ Set these under `monitor.policy` in the scenario or in the `[monitor.policy]` ta
 | `pause_timeout_s` | 600 | Seconds an `autonomous` pause waits to be cleared before a kill. At most 30 days. |
 | `human_timeout_s` | 86400 | Seconds a `human` pause waits for a person before a kill. At most 30 days. |
 | `deny_consecutive` | 3 | Denied tool calls in a row that kill or pause the agent. |
-| `deny_total` | 10 | Denied tool calls in all that kill or pause the agent. |
+| `deny_total` | 10 | Denied tool calls in all that kill or pause the agent. Each further `deny_total` trips it again. |
 | `on_monitor_failure` | `continue` under `observe`, else `pause` | What two failed sweeps in a row do. |
 
 `monitor.review` sets the `autonomous` review: `resamples` (4, at most 16) and `profile` (the `sweep` role).

@@ -197,6 +197,17 @@ def test_breaker_total_and_human_pauses() -> None:
     assert decisions.index(tripped[0]) == 6
 
 
+def test_breaker_total_trips_again_at_each_multiple() -> None:
+    p = policy("human", deny_consecutive=100, deny_total=4)
+    decisions = [p.observe(denied(seq, yes=seq % 2 == 1)) for seq in range(1, 25)]
+    tripped = {i + 1: d.reason for i, d in enumerate(decisions) if d is not None}
+    assert tripped == {
+        7: "4 denied tool calls in all",
+        15: "8 denied tool calls in all",
+        23: "12 denied tool calls in all",
+    }
+
+
 def test_breaker_total_coinciding_with_in_a_row() -> None:
     p = policy(deny_consecutive=3, deny_total=6)
     decisions = [p.observe(denied(seq, yes=seq not in (10, 12))) for seq in range(1, 14)]
