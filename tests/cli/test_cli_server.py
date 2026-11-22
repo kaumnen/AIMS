@@ -1954,6 +1954,16 @@ async def test_aims_ui_shows_hidden_characters_of_its_url_and_server_log_as_text
     assert visible(rest) == rest
 
 
+def binds_ipv6_loopback() -> bool:
+    try:
+        with socket.socket(socket.AF_INET6) as s:
+            s.bind(("::1", 0))
+    except OSError:
+        return False
+    return True
+
+
+@pytest.mark.skipif(not binds_ipv6_loopback(), reason="needs IPv6 on loopback")
 async def test_aims_ui_answers_on_the_address_it_binds(tmp_path: Path) -> None:
     async with ui_process(tmp_path, "--no-runner", "--host", "::1") as (proc, _):
         local = json.loads((tmp_path / "server" / "server.json").read_text())
