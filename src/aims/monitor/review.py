@@ -224,7 +224,7 @@ class Reviewer:
             call = ToolCall.model_validate(e.data)
             arguments = call.arguments
             if not isinstance(arguments, str):
-                data = await self.store.get_blob(self.source, arguments.sha256)
+                data = await self.store.get_blob(self.source, arguments.sha256, arguments.size)
                 arguments = data.decode(errors="replace")
             record = {
                 "frame": frame(self.key, e.seq),

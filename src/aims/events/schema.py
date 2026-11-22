@@ -95,6 +95,11 @@ def is_blob_ref(value: object) -> bool:
     return isinstance(value, Mapping) and value.keys() == {"sha256", "size"}
 
 
+def stated_size(value: Mapping[str, Any]) -> int | None:
+    """The size a blob reference in event data states, None for any other mapping."""
+    return value["size"] if is_blob_ref(value) else None
+
+
 def blob_refs(value: Any) -> Iterator[str]:
     if is_blob_ref(value):
         yield value["sha256"]

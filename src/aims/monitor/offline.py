@@ -429,13 +429,13 @@ class OriginStore:
     async def put_blobs(self, run_id: str, datas: Sequence[bytes]) -> list[BlobRef]:
         return await self.store.put_blobs(self._at(run_id), datas)
 
-    async def get_blob(self, run_id: str, sha256: str) -> bytes:
+    async def get_blob(self, run_id: str, sha256: str, size: int | None = None) -> bytes:
         if run_id != self.origin:
-            return await self.store.get_blob(run_id, sha256)
+            return await self.store.get_blob(run_id, sha256, size)
         try:
-            return await self.source.get_blob(run_id, sha256)
+            return await self.source.get_blob(run_id, sha256, size)
         except BlobError, KeyError:
-            return await self.store.get_blob(self.run_id, sha256)
+            return await self.store.get_blob(self.run_id, sha256, size)
 
     async def content(self, run_id: str, text: str) -> Content:
         return await self.store.content(self._at(run_id), text)

@@ -292,7 +292,7 @@ class State:
             self._blobs.move_to_end(content.sha256)
             return cached[:limit]
         try:
-            data = await self.store.get_blob(self.run_id, content.sha256)
+            data = await self.store.get_blob(self.run_id, content.sha256, content.size)
         except Exception as e:
             log.warning("monitor could not read blob %s: %s", content.sha256, e)
             return ""
@@ -316,7 +316,7 @@ class State:
             if content.size <= TEXT_CAP:
                 return ""
             try:
-                data = await self.store.get_blob(self.run_id, content.sha256)
+                data = await self.store.get_blob(self.run_id, content.sha256, content.size)
             except Exception as e:
                 log.warning("monitor could not read blob %s: %s", content.sha256, e)
                 return ""
@@ -752,7 +752,7 @@ class State:
 
     async def _lines(self, ref: BlobRef) -> list[dict[str, JsonValue]]:
         try:
-            data = await self.store.get_blob(self.run_id, ref.sha256)
+            data = await self.store.get_blob(self.run_id, ref.sha256, ref.size)
         except Exception as e:
             log.warning("monitor could not read blob %s: %s", ref.sha256, e)
             return []

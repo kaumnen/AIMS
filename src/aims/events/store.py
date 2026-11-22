@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Protocol, Self
 
 from aims.aio import settle
-from aims.events.blobs import TEMP, BlobStore, BlobWriter, read_blob, stored_size
+from aims.events.blobs import TEMP, BlobStore, BlobWriter, holds_blob, stored_size
 from aims.events.chain import MAX_LINE, ChainError, Head, follow, seal
 from aims.events.disk import make_dir, sweep, sync_dir, write_all
 from aims.events.index import (
@@ -154,7 +154,7 @@ class EventStore(Protocol):
 
     async def put_blobs(self, run_id: str, datas: Sequence[bytes]) -> list[BlobRef]: ...
 
-    async def get_blob(self, run_id: str, sha256: str) -> bytes: ...
+    async def get_blob(self, run_id: str, sha256: str, size: int | None = None) -> bytes: ...
 
     async def content(self, run_id: str, text: str) -> Content: ...
 
@@ -1007,8 +1007,10 @@ class LocalEventStore:
             raise KeyError(f"run {run_id} has no blob {sha256}")
         return path
 
-    async def get_blob(self, run_id: str, sha256: str) -> bytes:
-        return await asyncio.to_thread(self._blobs(run_id).get, sha256)
+    async def get_blob(self, run_id: str, sha256: str, size: int | None = None) -> bytes:
+        """A blob's bytes. Pass the `size` its reference states: a blob that would decode past
+        it raises BlobError."""
+        return await asyncio.to_thread(self._blobs(run_id).get, sha256, size)
 
     async def content(self, run_id: str, text: str) -> Content:
         """Inline short text, store long text as a blob. A lone surrogate is written `\\ud800`."""
@@ -1821,7 +1823,7 @@ def verify_run(run_dir: Path, *, where: str | None = None) -> Verification:
         path = run_dir / BLOBS / sha256
         if not path.is_file():
             missing.append(sha256)
-        elif read_blob(path) is None:
+        elif not holds_blob(path):
             bad.append(sha256)
     return Verification(
         run_id=run_id,

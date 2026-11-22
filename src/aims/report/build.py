@@ -315,7 +315,7 @@ async def _content(store: LocalEventStore, run_id: str, value: Content | None) -
         return ""
     if isinstance(value, BlobRef):
         try:
-            data = await store.get_blob(run_id, value.sha256)
+            data = await store.get_blob(run_id, value.sha256, value.size)
         except BlobError as e:
             return f"({e})"
         return data.decode("utf-8", errors="replace")

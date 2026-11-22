@@ -23,6 +23,7 @@ from aims.events import (
     ToolCall,
     ToolResult,
 )
+from aims.events.schema import stated_size
 from aims.models import ModelClient, ModelsConfig, Profile, ProfileError, Recording
 from aims.prompts import Prompts
 from aims.run import truth
@@ -112,10 +113,10 @@ class Origin:
         return budgets.over(self.budget, budget, ids)
 
 
-async def _blob(store: EventStore, run_id: str, sha256: str) -> bytes:
+async def _blob(store: EventStore, run_id: str, sha256: str, size: int | None = None) -> bytes:
     """A blob of the origin. Raises RunError when the run or the blob is gone or damaged."""
     try:
-        return await store.get_blob(run_id, sha256)
+        return await store.get_blob(run_id, sha256, size)
     except KeyError:
         # a delete moves the run's folder away before it forgets the run's rows
         raise RunError(f"unknown run {run_id}") from None
@@ -125,7 +126,7 @@ async def _blob(store: EventStore, run_id: str, sha256: str) -> bytes:
 
 async def _text(store: EventStore, run_id: str, content: Content) -> str:
     if isinstance(content, BlobRef):
-        return (await _blob(store, run_id, content.sha256)).decode()
+        return (await _blob(store, run_id, content.sha256, content.size)).decode()
     return content
 
 
@@ -205,7 +206,7 @@ async def load_origin(store: EventStore, run_id: str, *, full: bool = True) -> O
         ref = snapshot.get(name)
         if isinstance(ref, dict):
             sha = str(ref["sha256"])
-            blobs[sha] = await _blob(store, run_id, sha)
+            blobs[sha] = await _blob(store, run_id, sha, stated_size(ref))
     try:
         bundle = from_snapshot(snapshot, blobs)
     except ScenarioError as e:
@@ -270,7 +271,7 @@ async def load_origin(store: EventStore, run_id: str, *, full: bool = True) -> O
     await _order(store, run_id, origin)
     for c in started.channels:
         if c.restored is not None:
-            origin.restored[c.name] = await _blob(store, run_id, c.restored.sha256)
+            origin.restored[c.name] = await _blob(store, run_id, c.restored.sha256, c.restored.size)
     return origin
 
 

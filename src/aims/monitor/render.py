@@ -35,6 +35,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from aims.events import SERVICE_PREFIX, BlobError, Event, EventStore, SweepPart, payload_type
+from aims.events.schema import stated_size
 from aims.monitor.texts import MonitorTexts
 from aims.text import deeper, scrub
 
@@ -865,7 +866,7 @@ class Trajectory:
                 if len(self._blobs) >= 64:
                     self._blobs.clear()
                 try:
-                    data = await self.store.get_blob(self.run_id, sha)
+                    data = await self.store.get_blob(self.run_id, sha, stated_size(value))
                 except BlobError, KeyError, OSError:
                     log.warning("trajectory of %s: blob %s does not read", self.agent_id, sha)
                     return f"(blob {sha} of {value.get('size')} bytes could not be read)"

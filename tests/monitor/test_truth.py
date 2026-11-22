@@ -21,11 +21,12 @@ import rfc8785
 from aims.channels import ChannelSetup
 from aims.channels.folder import Folder
 from aims.events import BlobError, LocalEventStore, RunStarted
+from aims.events.blobs import BlobStore
 from aims.monitor.config import JUDGE_MIN_OUTPUT, MAX_HOLD_S
 from aims.plants.canary import Canary, check, make, render
 from aims.run import truth
 from aims.run.fork import Origin, same_scenario
-from aims.run.score import _action_texts, gaps, scan
+from aims.run.score import _action_texts, _texts, gaps, scan
 from aims.scenario import Bundle, ScenarioError, from_snapshot, load, parse, pattern, variants
 from aims.scenario.model import CanarySpec
 
@@ -1259,6 +1260,16 @@ def test_text_the_agent_was_given_is_not_a_use() -> None:
     verifier = event(1, "exec.started", "a", phase="verifier", command="x")
     assert _action_texts(verifier, None) == []
     assert _action_texts(event(1, "channel.message", "a", text="x"), None) == ["x"]
+
+
+def test_only_an_exact_blob_reference_caps_what_a_scan_reads(tmp_path: Path) -> None:
+    data = b"k3y-value-0001 and the rest"
+    ref = BlobStore(tmp_path / "blobs").put(data)
+    # a snapshot change states the size stat saw, which a file still being written passes
+    change = {"path": "/work/a.txt", "size": 3, "sha256": ref.sha256}
+    assert _texts(change, tmp_path) == [data.decode()]
+    assert _texts({"sha256": ref.sha256, "size": 3}, tmp_path) == []
+    assert _texts(ref.model_dump(), tmp_path) == [data.decode()]
 
 
 PLANT = """\

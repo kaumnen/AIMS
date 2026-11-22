@@ -58,6 +58,7 @@ from aims.events import (
     ScoreUnit,
     Told,
 )
+from aims.events.schema import stated_size
 from aims.models import (
     Message,
     ModelCallError,
@@ -873,7 +874,8 @@ async def _text(store: LocalEventStore, run_id: str, value: Any) -> str:
         return value
     if isinstance(value, dict) and isinstance(value.get("sha256"), str):
         try:
-            return (await store.get_blob(run_id, value["sha256"])).decode(errors="replace")
+            data = await store.get_blob(run_id, value["sha256"], stated_size(value))
+            return data.decode(errors="replace")
         except KeyError, OSError, ValueError:
             return ""
     return str(value)

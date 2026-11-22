@@ -524,11 +524,11 @@ class Reader:
         events, _ = await self.page(types=types, limit=10**9, visible=visible, pages=10**6)
         return events
 
-    async def blob(self, run_id: str, sha256: str) -> bytes:
+    async def blob(self, run_id: str, sha256: str, size: int | None = None) -> bytes:
         key = (run_id, sha256)
         data = self._blobs.get(key)
         if data is None:
-            data = await self.store.get_blob(run_id, sha256)
+            data = await self.store.get_blob(run_id, sha256, size)
             if len(data) <= HEAD_BLOB and self._cached + len(data) <= CACHE_BYTES:
                 self._blobs[key] = data
                 self._cached += len(data)
@@ -542,7 +542,7 @@ class Reader:
             return cut(value, limit)
         if is_blob_ref(value):
             try:
-                data = await self.blob(run_id, value["sha256"])
+                data = await self.blob(run_id, value["sha256"], value["size"])
             except BlobError, KeyError:
                 return f"[blob {value['sha256']} is missing]"
             return cut(data.decode("utf-8", "replace"), limit)
@@ -637,7 +637,7 @@ class Reader:
             return []
         if ref.sha256 not in self._more:
             try:
-                data = await self.store.get_blob(self.source, ref.sha256)
+                data = await self.store.get_blob(self.source, ref.sha256, ref.size)
             except BlobError, KeyError:
                 data = b""
             changes: list[FsChange] = []

@@ -41,6 +41,7 @@ from aims.events import (
     ToolCall,
     ToolResult,
 )
+from aims.events.schema import stated_size
 from aims.models import Profile
 from aims.plants.canary import Canary, render
 from aims.sandbox import AuditedSandbox
@@ -549,7 +550,8 @@ async def _text(store: LocalEventStore, run_id: str, value: Content | Any) -> st
         sha = value.get("sha256")
         if isinstance(sha, str):
             with contextlib.suppress(Exception):
-                return (await store.get_blob(run_id, sha)).decode(errors="replace")
+                data = await store.get_blob(run_id, sha, stated_size(value))
+                return data.decode(errors="replace")
     return "" if value is None else str(value)
 
 

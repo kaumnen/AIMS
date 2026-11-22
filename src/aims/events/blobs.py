@@ -3,9 +3,11 @@ import hashlib
 import os
 import re
 import secrets
-from collections.abc import Sequence
+import sys
+from collections.abc import Iterable, Iterator, Sequence
 from compression import zstd
 from pathlib import Path
+from typing import IO
 
 from aims.events.disk import make_dir, sync_dir
 from aims.events.schema import BlobRef
@@ -23,12 +25,53 @@ TEMP = re.compile(r"\.[0-9a-f]{64}\.[0-9a-f]{8}")
 
 def decode(raw: bytes) -> bytes:
     """The bytes a blob file holds. Files are zstd frames; older ones are stored as is."""
-    if raw.startswith(ZSTD_MAGIC):
-        try:
-            return zstd.decompress(raw)
-        except zstd.ZstdError:
-            pass
-    return raw
+    data = _frames(raw) if raw.startswith(ZSTD_MAGIC) else None
+    return raw if data is None else data
+
+
+def _frames(raw: bytes, limit: int | None = None) -> bytes | None:
+    """What the zstd frames in `raw` decode to. None when they do not decode or would pass
+    `limit` bytes, of which no more than one past it are decoded."""
+    parts: list[bytes] = []
+    size = 0
+    try:
+        while raw:
+            frame = zstd.ZstdDecompressor()
+            room = -1 if limit is None else min(limit - size + 1, sys.maxsize)
+            part = frame.decompress(raw, max_length=room)
+            size += len(part)
+            if (limit is not None and size > limit) or not frame.eof:
+                return None
+            parts.append(part)
+            raw = frame.unused_data
+    except zstd.ZstdError:
+        return None
+    return b"".join(parts)
+
+
+def _decoded(chunks: Iterable[bytes]) -> Iterator[bytes]:
+    """What the zstd frames in `chunks` decode to, CHUNK bytes at a time. Raises ZstdError
+    when they are not whole frames."""
+    frame: zstd.ZstdDecompressor | None = None
+    for data in chunks:
+        while data or (frame is not None and not frame.needs_input):
+            if frame is None:
+                frame = zstd.ZstdDecompressor()
+            out = frame.decompress(data, max_length=CHUNK)
+            data = b""
+            if out:
+                yield out
+            if frame.eof:
+                data, frame = frame.unused_data, None
+    if frame is not None:
+        raise zstd.ZstdError("the data ends inside a frame")
+
+
+def _chunks(f: IO[bytes], seen: hashlib._Hash | None = None) -> Iterator[bytes]:
+    while data := f.read(CHUNK):
+        if seen is not None:
+            seen.update(data)
+        yield data
 
 
 def stored_size(path: Path) -> int:
@@ -40,17 +83,40 @@ def stored_size(path: Path) -> int:
             size = zstd.get_frame_info(head).decompressed_size
             if size is not None:
                 return size
-        return len(decode(path.read_bytes()))
+        with contextlib.suppress(zstd.ZstdError), path.open("rb") as f:
+            return sum(len(out) for out in _decoded(_chunks(f)))
     return path.stat().st_size
 
 
-def read_blob(path: Path) -> bytes | None:
-    """The bytes of the blob at `path` if they match the sha256 it is named by, else None."""
+def holds_blob(path: Path) -> bool:
+    """Whether the file at `path` holds the blob it is named by. Reads it a chunk at a time."""
+    raw = hashlib.sha256()
+    with path.open("rb") as f:
+        framed = f.read(len(ZSTD_MAGIC)) == ZSTD_MAGIC
+        f.seek(0)
+        chunks = _chunks(f, raw)
+        if framed:
+            decoded = hashlib.sha256()
+            with contextlib.suppress(zstd.ZstdError):
+                for out in _decoded(chunks):
+                    decoded.update(out)
+                if decoded.hexdigest() == path.name:
+                    return True
+        for _ in chunks:
+            pass
+    return raw.hexdigest() == path.name
+
+
+def read_blob(path: Path, size: int | None = None) -> bytes | None:
+    """The bytes of the blob at `path` if they match the sha256 it is named by, else None.
+    With `size`, also None when they are longer; no more than that is decoded."""
+    if size is not None and not (type(size) is int and size >= 0):
+        return None
     raw = path.read_bytes()
-    data = decode(raw)
-    if hashlib.sha256(data).hexdigest() == path.name:
+    data = _frames(raw, size) if raw.startswith(ZSTD_MAGIC) else None
+    if data is not None and hashlib.sha256(data).hexdigest() == path.name:
         return data
-    if data is not raw and hashlib.sha256(raw).hexdigest() == path.name:
+    if (size is None or len(raw) <= size) and hashlib.sha256(raw).hexdigest() == path.name:
         return raw
     return None
 
@@ -106,9 +172,10 @@ class BlobStore:
     def writer(self, sha256: str, *, limit: int) -> BlobWriter:
         return BlobWriter(self, sha256, limit=limit)
 
-    def get(self, sha256: str) -> bytes:
+    def get(self, sha256: str, size: int | None = None) -> bytes:
+        """The blob's bytes. With `size`, the most its reference says it holds."""
         try:
-            data = read_blob(self.path(sha256))
+            data = read_blob(self.path(sha256), size)
         except FileNotFoundError:
             raise BlobError(f"missing blob {sha256}") from None
         if data is None:

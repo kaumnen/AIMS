@@ -87,9 +87,11 @@ class Recording:
 
     async def _entry(self, seq: int, r: ModelResponse) -> Recorded:
         if r.stream is not None:
-            chunks = decode_chunks(await self.store.get_blob(self.run_id, r.stream.sha256))
+            stream = await self.store.get_blob(self.run_id, r.stream.sha256, r.stream.size)
+            chunks = decode_chunks(stream)
         elif r.body is not None and r.http_status is not None:
-            chunks = [(r.latency_ms, await self.store.get_blob(self.run_id, r.body.sha256))]
+            body = await self.store.get_blob(self.run_id, r.body.sha256, r.body.size)
+            chunks = [(r.latency_ms, body)]
         else:
             chunks = []
         return Recorded(

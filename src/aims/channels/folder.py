@@ -260,4 +260,4 @@ async def archives(store: EventStore, run_id: str) -> dict[str, bytes]:
         if len(batch) < PAGE:
             break
         after = batch[-1].seq
-    return {name: await store.get_blob(run_id, ref.sha256) for name, ref in refs.items()}
+    return {name: await store.get_blob(run_id, ref.sha256, ref.size) for name, ref in refs.items()}

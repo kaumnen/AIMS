@@ -12,7 +12,9 @@ import shutil
 import sqlite3
 import time
 import traceback
+import tracemalloc
 from collections.abc import AsyncIterator, Callable
+from compression import zstd
 from pathlib import Path
 from typing import Any
 
@@ -49,7 +51,7 @@ from aims.events import (
 from aims.events import chain as chain_module
 from aims.events import log as log_module
 from aims.events import store as store_module
-from aims.events.blobs import ZSTD_MAGIC, BlobStore
+from aims.events.blobs import ZSTD_MAGIC, BlobError, BlobStore, read_blob, stored_size
 from aims.events.chain import GENESIS, MAX_LINE, Head, digest, follow, seal
 from aims.events.disk import make_dir
 from aims.events.index import Index
@@ -69,6 +71,7 @@ from aims.run.runner import seal_unsealed
 pytestmark = pytest.mark.anyio
 
 STARTED = RunStarted(scenario="demo", oversight="observe", agents=["a1", "a2"])
+MIB = 1024 * 1024
 
 
 def call(n: int, arguments: str = "{}", agent: str = "a1") -> Draft:
@@ -1317,6 +1320,60 @@ async def test_blobs_are_compressed_on_disk(store: LocalEventStore) -> None:
         await store.append(run_id, [Draft(ToolCall(call_id="o", name="shell", arguments=old))])
     await store.append(run_id, [Draft(ToolCall(call_id="c", name="shell", arguments=ref)), call(2)])
     assert verify_run(store.root / run_id).ok
+
+
+def peak_of(read: Callable[[], object]) -> int:
+    """The most memory `read` held at once, as tracemalloc sees it."""
+    tracemalloc.start()
+    try:
+        read()
+        return tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+
+async def test_a_blob_read_decodes_no_more_than_its_reference_states(
+    store: LocalEventStore,
+) -> None:
+    run_id = await store.create_run(STARTED)
+    blobs = store.blobs(run_id)
+    make_dir(blobs.root)
+    big = bytes(64 * MIB)
+    sha = hashlib.sha256(b"x" + big).hexdigest()
+    blobs.path(sha).write_bytes(zstd.compress(b"x") + zstd.compress(big))
+    with pytest.raises(BlobError, match="does not match its hash"):
+        await store.get_blob(run_id, sha, size=10)
+    assert peak_of(lambda: read_blob(blobs.path(sha), 10)) < MIB
+    held = await store.get_blob(run_id, sha, size=1 + len(big))
+    assert held == b"x" + big
+    del held
+
+    # a blob stored as is may be a zstd frame itself
+    frame = zstd.compress(big)
+    raw = hashlib.sha256(frame).hexdigest()
+    blobs.path(raw).write_bytes(frame)
+    assert await store.get_blob(run_id, raw, size=len(frame)) == frame
+    assert peak_of(lambda: read_blob(blobs.path(raw), len(frame))) < MIB
+
+
+async def test_checking_and_sizing_a_blob_holds_none_of_it(store: LocalEventStore) -> None:
+    run_id = await store.create_run(STARTED)
+    blobs = store.blobs(run_id)
+    make_dir(blobs.root)
+    big = bytes(64 * MIB)
+    sha = hashlib.sha256(big).hexdigest()
+    streamed = zstd.ZstdCompressor()
+    frame = streamed.compress(big) + streamed.flush()
+    assert zstd.get_frame_info(frame).decompressed_size is None
+    blobs.path(sha).write_bytes(frame)
+    ref = BlobRef(sha256=sha, size=len(big))
+    await store.append(run_id, [Draft(ToolCall(call_id="c", name="shell", arguments=ref))])
+    assert peak_of(lambda: stored_size(blobs.path(sha))) < 8 * MIB
+    assert stored_size(blobs.path(sha)) == len(big)
+    assert peak_of(lambda: verify_run(store.root / run_id)) < 8 * MIB
+    assert verify_run(store.root / run_id).ok
+    blobs.path(sha).write_bytes(frame[:-4])
+    assert verify_run(store.root / run_id).bad_blobs == (sha,)
 
 
 async def test_temp_files_a_killed_write_left_go_once_no_write_can_own_them(

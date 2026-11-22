@@ -31,6 +31,7 @@ from aims.events import (
     MonitorSweep,
     SweepTrigger,
 )
+from aims.events.schema import stated_size
 from aims.models import ModelClient, OutputSchema, Profile
 from aims.models.purse import Purse
 from aims.monitor.config import ChannelSweepConfig
@@ -409,7 +410,7 @@ class ChannelLog:
                 if len(self._blobs) >= 64:
                     self._blobs.clear()
                 try:
-                    data = await self.store.get_blob(self.run_id, sha)
+                    data = await self.store.get_blob(self.run_id, sha, stated_size(value))
                 except BlobError, KeyError, OSError:
                     log.warning("channel log: blob %s does not read", sha)
                     return f"(blob {sha} of {value.get('size')} bytes could not be read)"

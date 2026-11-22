@@ -11,9 +11,17 @@ from cp import CP, control_plane
 from test_monitor_api import IDENTITY, flag, flagged, pushed
 from test_score_api import scored
 from test_scoring import took
-from test_server import FakeRunner, ship
+from test_server import FakeRunner, post_tar, run_tar, ship
 
-from aims.events import Draft, LocalEventStore, MonitorVerdict, RunFinished, RunStarted
+from aims.events import (
+    AgentFinished,
+    BlobRef,
+    Draft,
+    LocalEventStore,
+    MonitorVerdict,
+    RunFinished,
+    RunStarted,
+)
 from aims.report import build as build_module
 from aims.report import texts
 from aims.report.model import RunReport
@@ -262,3 +270,24 @@ async def test_a_run_names_the_list_price_of_its_calls(
         "List prices: 1 call of profile scripted (<$0.01) counts at row `vendor-x/listed-model`"
         " of LiteLLM's price map, copy checked 2026-11-15." in md
     )
+
+
+async def test_an_imported_blob_past_the_size_its_reference_states_is_not_read(
+    cp: CP, local: LocalEventStore
+) -> None:
+    imported = await local.create_run(
+        RunStarted(scenario="control", oversight="observe", agents=["a"])
+    )
+    ref = await local.put_blob(imported, b"y" * 20_000)
+    short = BlobRef(sha256=ref.sha256, size=10)
+    drafts = [
+        Draft(AgentFinished(reason="submitted", answer=short), "a"),
+        Draft(RunFinished(status="completed")),
+    ]
+    await local.append(imported, drafts)
+    assert (await post_tar(cp, run_tar(local.root / imported))).status_code == 201
+    async with cp.client(cp.operator) as c:
+        r = await c.get(url(imported))
+    assert r.status_code == 200, r.text
+    [answer] = RunReport.model_validate(r.json()).appendix.answers
+    assert answer.text == f"(blob {ref.sha256} does not match its hash)"
