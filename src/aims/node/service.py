@@ -29,7 +29,7 @@ from aims.events import (
     SelfTestCase,
 )
 from aims.events.blobs import decode
-from aims.events.chain import MAX_LINE
+from aims.events.log import next_lines
 from aims.events.schema import blob_refs
 from aims.events.store import TruthRefused, is_run_id
 from aims.models import ModelsConfig, load_models
@@ -747,17 +747,7 @@ def _data(line: bytes) -> object:
 
 
 def _batch(spool: IO[bytes]) -> list[bytes]:
-    """The next lines of a spooled log: at most INGEST_CHUNK, ending once INGEST_BYTES is
-    reached."""
-    lines: list[bytes] = []
-    size = 0
-    while len(lines) < INGEST_CHUNK and size < INGEST_BYTES:
-        line = spool.readline(MAX_LINE + 1)
-        if not line:
-            break
-        lines.append(line)
-        size += len(line)
-    return lines
+    return next_lines(spool, INGEST_CHUNK, INGEST_BYTES)
 
 
 def _copies(root: Path) -> list[str]:

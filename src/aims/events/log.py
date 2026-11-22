@@ -4,7 +4,7 @@ import os
 import time
 from collections.abc import Generator
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 from aims.events.chain import MAX_LINE, Head, follow
 from aims.events.disk import sync_dir, write_all
@@ -32,6 +32,20 @@ def read_lines(
         while line := f.readline(MAX_LINE + 1):
             event, head = follow(head, line, run_id=run_id)
             yield line, event, head
+
+
+def next_lines(file: IO[bytes], count: int, size: int) -> list[bytes]:
+    """The next lines of a spooled log: at most `count`, ending once `size` bytes are reached.
+    A line over MAX_LINE comes out cut, so the chain check refuses it."""
+    lines: list[bytes] = []
+    total = 0
+    while len(lines) < count and total < size:
+        line = file.readline(MAX_LINE + 1)
+        if not line:
+            break
+        lines.append(line)
+        total += len(line)
+    return lines
 
 
 def checkpoint_ok(path: Path, head: Head) -> bool:

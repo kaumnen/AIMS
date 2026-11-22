@@ -45,9 +45,11 @@ from aims.events import (
     RunFinished,
     RunStarted,
     ToolCall,
+    chain,
     split_lines,
 )
 from aims.events.blobs import decode
+from aims.events.chain import MAX_LINE
 from aims.models import DeltaBus
 from aims.models.keys import KeysError, parse
 from aims.node import shipper as shipper_module
@@ -2971,6 +2973,64 @@ async def test_an_import_into_a_directory_with_no_record_needs_a_run_there(
     await cp.state.store.ingest(unrecorded, log_of(local, unrecorded))
     r = await post_tar(cp, run_tar(local.root / unrecorded))
     assert r.status_code == 201, r.text
+
+
+async def test_an_import_holds_its_decoded_log_to_the_limit(
+    cp: CP, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(api, "IMPORT_LIMIT", 1024**2)
+    body = bytes(2 * 1024**2)
+    tar = io.BytesIO()
+    with tarfile.open(fileobj=tar, mode="w:gz") as t:
+        info = tarfile.TarInfo("r/events.jsonl")
+        info.size = len(body)
+        t.addfile(info, io.BytesIO(body))
+    assert len(tar.getvalue()) < 64 * 1024
+    r = await post_tar(cp, tar.getvalue())
+    assert r.status_code == 413, r.text
+    assert await asyncio.to_thread(os.listdir, cp.state.data / "tmp") == []
+    assert [p for p in cp.state.store.root.iterdir() if p.is_dir()] == []
+
+
+async def test_an_import_refuses_a_line_longer_than_a_log_line(
+    cp: CP, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = await local.create_run(STARTED)
+    with monkeypatch.context() as m:
+        m.setattr(chain, "MAX_LINE", 2 * MAX_LINE)
+        long = AgentInput(kind="inject", step=0, text="y" * MAX_LINE)
+        await local.append(run_id, [Draft(long, "a1")])
+    assert len(log_of(local, run_id)[1]) > MAX_LINE
+    r = await post_tar(cp, run_tar(local.root / run_id))
+    assert (r.status_code, r.json()["detail"]) == (
+        422,
+        f"a line is longer than {MAX_LINE} bytes",
+    ), r.text
+    assert not (cp.state.store.root / run_id).exists()
+
+
+@pytest.mark.parametrize("batch", [1, 600])
+async def test_an_import_ingested_in_small_batches_keeps_the_log_whole(
+    cp: CP, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch, batch: int
+) -> None:
+    monkeypatch.setattr(api, "IMPORT_BATCH", batch)
+    run_id, _ = await with_blob(local)
+    await local.append(run_id, [call(n) for n in range(5)])
+    await local.append(run_id, [Draft(RunFinished(status="completed"))])
+    sizes: list[int] = []
+    ingest = cp.state.store.ingest
+
+    async def counted(run: str, lines: Sequence[bytes]) -> object:
+        sizes.append(len(lines))
+        return await ingest(run, lines)
+
+    monkeypatch.setattr(cp.state.store, "ingest", counted)
+    r = await post_tar(cp, run_tar(local.root / run_id))
+    assert r.status_code == 201, r.text
+    assert log_of(cp.state.store, run_id) == log_of(local, run_id)
+    assert (await cp.state.store.verify(run_id)).ok
+    assert sum(sizes) == len(log_of(local, run_id)) == 8
+    assert max(sizes) == 1 if batch == 1 else 1 < max(sizes) < 8
 
 
 async def test_a_server_copy_longer_than_the_local_log_is_a_divergence(

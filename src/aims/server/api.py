@@ -48,10 +48,11 @@ from aims.events import (
     SampleWindow,
     Series,
     StepInfo,
-    split_lines,
 )
 from aims.events.blobs import ZSTD_MAGIC, BlobError, BlobStore
+from aims.events.chain import MAX_LINE
 from aims.events.index import BIND_MAX, monitor_of
+from aims.events.log import next_lines
 from aims.events.schema import blob_refs
 from aims.events.store import is_run_id
 from aims.models import Price, Profile, ProfileError
@@ -138,7 +139,10 @@ MAX_PAGE = 1000
 MAX_SAMPLES = 100
 MAX_STEPS = 500
 MAX_EXECS = 100
+# The most bytes an import uploads, also the most its log may hold once decoded
 IMPORT_LIMIT = 4 * 1024**3
+# The most bytes of log lines one ingest of an import takes
+IMPORT_BATCH = 4 * 1024 * 1024
 
 # Integers the index binds: a seq, a page cursor (-1 is before the first) and a time on the
 # kernel boot clock in µs.
@@ -1814,7 +1818,10 @@ async def import_run(
     request: Request, principal: Uploader, state: State, note: audit.Note
 ) -> Started:
     """Take a run directory as a tar (`events.jsonl` and `blobs/`), checked like ingest."""
-    with tempfile.TemporaryFile(dir=state.spool()) as tmp:
+    with (
+        tempfile.TemporaryFile(dir=state.spool()) as tmp,
+        tempfile.TemporaryFile(dir=state.spool()) as log,
+    ):
         size = 0
         async for chunk in request.stream():
             size += len(chunk)
@@ -1822,17 +1829,10 @@ async def import_run(
                 raise ProblemException(413, "Too large", f"an import is at most {IMPORT_LIMIT}")
             await asyncio.to_thread(tmp.write, chunk)
         try:
-            log = await asyncio.to_thread(_tar_log, tmp)
+            await asyncio.to_thread(_tar_log, tmp, log)
         except tarfile.TarError as e:
             raise ProblemException(422, "Invalid request", f"not a tar: {e}") from None
-        lines = split_lines(log)
-        if not lines:
-            raise ProblemException(422, "Invalid request", "the tar holds no events.jsonl")
-        try:
-            run_id = str(json.loads(lines[0])["run_id"])
-            wanted = {sha for line in lines for sha in blob_refs(json.loads(line)["data"])}
-        except ValueError, KeyError, TypeError:
-            raise ProblemException(422, "Invalid request", "a line is not an event") from None
+        run_id, wanted = await asyncio.to_thread(_log_scan, log)
         if not is_run_id(run_id):
             raise ProblemException(
                 422, "Invalid request", "the log does not name a valid run id", code="run_id"
@@ -1847,7 +1847,7 @@ async def import_run(
             # a runner may have shipped it first since the check above
             _not_shipped(run_id, meta)
             try:
-                await _take_import(state, run_id, tmp, lines, wanted)
+                await _take_import(state, run_id, tmp, log, wanted)
             except Exception:
                 if new:
                     await _drop_import(state, run_id)
@@ -1878,15 +1878,16 @@ def _not_shipped(run_id: str, meta: sdb.RunMeta | None) -> None:
 
 
 async def _take_import(
-    state: ServerState, run_id: str, tmp: IO[bytes], lines: list[bytes], wanted: set[str]
+    state: ServerState, run_id: str, tmp: IO[bytes], log: IO[bytes], wanted: set[str]
 ) -> None:
     try:
         await asyncio.to_thread(_tar_blobs, tmp, state.store.blobs(run_id), wanted)
     except (BlobError, tarfile.TarError) as e:
         raise ProblemException(422, "Invalid request", str(e), code="blob") from None
+    await asyncio.to_thread(log.seek, 0)
     try:
-        for i in range(0, len(lines), MAX_PAGE):
-            await state.store.ingest(run_id, lines[i : i + MAX_PAGE])
+        while lines := await asyncio.to_thread(next_lines, log, MAX_PAGE, IMPORT_BATCH):
+            await state.store.ingest(run_id, lines)
     except MissingBlobs as e:
         raise ProblemException(
             422, "Blobs missing", str(e), code="missing_blobs", missing=e.missing
@@ -1904,14 +1905,47 @@ async def _drop_import(state: ServerState, run_id: str) -> None:
         state.note_deleted(run_id, info.kind)
 
 
-def _tar_log(file: IO[bytes]) -> bytes:
+def _tar_log(file: IO[bytes], out: IO[bytes]) -> None:
+    """Copy the first `events.jsonl` in the tar to `out`, decoded. The tar may be compressed,
+    so the log is held to IMPORT_LIMIT as it decodes."""
     file.seek(0)
     with tarfile.open(fileobj=file, mode="r:*") as tar:
         for member in tar:
             f = tar.extractfile(member) if member.isfile() else None
-            if f is not None and Path(member.name).name == "events.jsonl":
-                return f.read()
-    return b""
+            if f is None or Path(member.name).name != "events.jsonl":
+                continue
+            size = 0
+            while chunk := f.read(1024 * 1024):
+                size += len(chunk)
+                if size > IMPORT_LIMIT:
+                    raise ProblemException(
+                        413, "Too large", f"the log of an import is at most {IMPORT_LIMIT}"
+                    )
+                out.write(chunk)
+            return
+
+
+def _log_scan(log: IO[bytes]) -> tuple[str, set[str]]:
+    """The run id the first line of a spooled log names and every blob its lines reference.
+    Reads one line at a time."""
+    log.seek(0)
+    run_id: str | None = None
+    wanted: set[str] = set()
+    while line := log.readline(MAX_LINE + 1):
+        if len(line) > MAX_LINE:
+            raise ProblemException(
+                422, "Invalid request", f"a line is longer than {MAX_LINE} bytes"
+            )
+        try:
+            event = json.loads(line)
+            if run_id is None:
+                run_id = str(event["run_id"])
+            wanted.update(blob_refs(event["data"]))
+        except ValueError, KeyError, TypeError:
+            raise ProblemException(422, "Invalid request", "a line is not an event") from None
+    if run_id is None:
+        raise ProblemException(422, "Invalid request", "the tar holds no events.jsonl")
+    return run_id, wanted
 
 
 def _tar_blobs(file: IO[bytes], blobs: BlobStore, wanted: set[str]) -> None:
