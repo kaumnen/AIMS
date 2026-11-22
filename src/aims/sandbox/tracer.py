@@ -94,10 +94,13 @@ READY_S = 120.0
 CONFIRM_S = 5.0
 PMU_S = 60
 SKIPS_S = 10
-# The kernel skips a probe while a run of the same probe is in progress on that cpu. With
-# preemptible RCU (Ubuntu's generic kernel, for one) that includes a run preempted midway, so
-# records go missing with no sequence hole. Each program's fd in bpftrace's fdinfo carries its
-# count.
+# The kernel skips a fentry, fexit or raw tracepoint probe while a run of the same probe is in
+# progress on that cpu. With preemptible RCU (Ubuntu's generic kernel, for one) that includes a
+# run preempted midway. It skips a tracepoint or kprobe probe while a BPF map call or a
+# tracepoint, kprobe or perf event program holds that cpu's one guard, as when a map call is
+# preempted midway. bpftrace makes such a call each time it reads its ring. Skipped runs leave
+# no sequence hole. Each program's fd in bpftrace's fdinfo carries its count. A profile or
+# interval probe is skipped with no count.
 # The kernel's count of each record stream follows as `C <uptime> <key hex>:<value hex>...`,
 # timed after the dump so every count was reached by then. The map is bpftrace's own, $m: every
 # tracer on the host has one by that name. The raw bytes are kept: bpftool's formatted keys
@@ -114,9 +117,11 @@ SKIP_READ = (
 SKIPS = (
     'p=$1; [ -n "$(ls -A /sys/kernel/debug 2>/dev/null)" ] '
     "|| mount -t debugfs nodev /sys/kernel/debug 2>/dev/null; "
-    # Only preemptible RCU defines __rcu_read_lock; without it a probe runs preemption off.
+    # Only preemptible RCU defines __rcu_read_lock; without it a probe runs preemption off. Only a
+    # kernel built to preempt defines preempt_schedule, which its mode can still turn off.
     "if grep -qw __rcu_read_lock /proc/kallsyms; then r=1; else r=0; fi; "
-    'echo "H $r $(cat /sys/kernel/debug/sched/preempt 2>/dev/null)"; '
+    "if grep -qw preempt_schedule /proc/kallsyms; then k=1; else k=0; fi; "
+    'echo "H $r $k $(cat /sys/kernel/debug/sched/preempt 2>/dev/null)"; '
     'echo "N $(bpftool -j prog show 2>/dev/null)"; '
     'm=$(for i in $(grep -h "^map_id:" /proc/$p/fdinfo/* 2>/dev/null | cut -f2 | sort -u); '
     'do bpftool map show id $i 2>/dev/null | grep -qw "name AT_seq" && echo $i; done); '
@@ -124,6 +129,8 @@ SKIPS = (
     f"while [ -d /proc/$p ]; do {SKIP_READ}; echo .; sleep 1; done"
 )
 PROBE_INDEX = re.compile(r"_\d+$")
+# Program types the kernel skips while a BPF map call or another such program holds the cpu.
+SHARED_GUARD = frozenset({"tracepoint", "kprobe"})
 # bpftrace prints a loss once its ring has drained, within a tick of the last record before it.
 # The hole shows at its stream's next record and expires at the first tick more than a second
 # after that. A stream's last records show in the next count reading, a second later at most,
@@ -376,6 +383,14 @@ class Route:
             self.window = (min(low, ts), max(high, ts))
 
 
+@dataclass(frozen=True, slots=True)
+class Probe:
+    """A tracer program: bpftrace's name without the probe index, and bpftool's program type."""
+
+    name: str
+    kind: str
+
+
 @dataclass(slots=True)
 class _Held:
     """Records of a pid the tracer has not seen start, until it execs, exits, or a second passes."""
@@ -463,12 +478,13 @@ class Tracer:
         self.located = 0
         self.unlocated = 0
         self.pmu: dict[str, JsonValue] | None = None
-        # Whether this kernel can preempt a probe midway, and its preemption mode if it says.
+        # Whether this kernel can preempt a probe midway or other kernel code. Its preemption mode
+        # too, if it says.
         self.preemption: dict[str, JsonValue] | None = None
         self._bpftrace: int | None = None
         self._skip_reader: asyncio.Task[None] | None = None
         self._host: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        self._probes: dict[int, str] = {}
+        self._probes: dict[int, Probe] = {}
         # Each program's skip count so far, and the boot clock of the reading it came from.
         self._skips: dict[int, int] = {}
         self._skips_ts: int | None = None
@@ -629,9 +645,9 @@ class Tracer:
             if new <= 0:
                 continue
             self.skipped += new
-            name = self._probes.get(prog, f"program {prog}")
-            reason = f"kernel skipped tracer probe {name}: a run of it was in progress on that cpu"
-            self._share(Lost(new, reason, (), start, ts, "tracer"))
+            self._share(
+                Lost(new, skip_reason(prog, self._probes.get(prog)), (), start, ts, "tracer")
+            )
         if ts is not None and (self._skips_ts is None or ts > self._skips_ts):
             self._skips_ts = ts
 
@@ -1358,17 +1374,27 @@ def parse_pmu(text: str) -> dict[str, JsonValue]:
 
 
 def parse_preemption(line: str) -> dict[str, JsonValue]:
-    """`H <1 with preemptible RCU> <sched/preempt>`; that file marks the mode in brackets and
-    exists only on kernels that choose it at boot."""
+    """`H <1 with preemptible RCU> <1 with preempt_schedule> <sched/preempt>`; that file marks
+    the mode in brackets and exists only on kernels that choose it at boot.
+
+    A probe run is preempted midway only with preemptible RCU. Other kernel code, a BPF map call
+    for one, is preempted on any kernel built to preempt unless its mode turns that off.
+    """
     parts = line.split()
     rcu = len(parts) > 1 and parts[1] == "1"
-    mode = next((m[1:-1] for m in parts[2:] if m.startswith("(") and m.endswith(")")), None)
-    preemptible = rcu and mode not in ("none", "voluntary")
-    return {"preemptible_rcu": rcu, "mode": mode, "preemptible": preemptible}
+    built = len(parts) > 2 and parts[2] == "1"
+    mode = next((m[1:-1] for m in parts[3:] if m.startswith("(") and m.endswith(")")), None)
+    off = mode in ("none", "voluntary")
+    return {
+        "preemptible_rcu": rcu,
+        "mode": mode,
+        "preemptible": rcu and not off,
+        "kernel_preempts": built and not off,
+    }
 
 
-def parse_probes(text: str) -> dict[int, str]:
-    """Program names by id from `bpftool -j prog show`, without bpftrace's probe index."""
+def parse_probes(text: str) -> dict[int, Probe]:
+    """Programs by id from `bpftool -j prog show`, named without bpftrace's probe index."""
     try:
         progs = json.loads(text)
     except ValueError:
@@ -1376,10 +1402,20 @@ def parse_probes(text: str) -> dict[int, str]:
     if not isinstance(progs, list):
         return {}
     return {
-        p["id"]: PROBE_INDEX.sub("", p["name"])
+        p["id"]: Probe(PROBE_INDEX.sub("", p["name"]), str(p.get("type", "")))
         for p in progs
         if isinstance(p, dict) and isinstance(p.get("id"), int) and isinstance(p.get("name"), str)
     }
+
+
+def skip_reason(prog: int, probe: Probe | None) -> str:
+    """Why the kernel skipped runs of a probe, by its program type."""
+    if probe is not None and probe.kind in SHARED_GUARD:
+        cause = "a BPF map call or BPF program was running on that cpu"
+    else:
+        cause = "a run of it was in progress on that cpu"
+    name = probe.name if probe is not None else f"program {prog}"
+    return f"kernel skipped tracer probe {name}: {cause}"
 
 
 def parse_counts(line: str) -> tuple[int, dict[tuple[int, int], int]] | None:

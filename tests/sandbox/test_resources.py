@@ -392,6 +392,7 @@ async def test_tracer_counts_the_runs_every_probe_skips(
     preemption = tracer.preemption
     assert preemption is not None
     assert isinstance(preemption["preemptible"], bool)
+    assert isinstance(preemption["kernel_preempts"], bool)
     run_id = await store.create_run(RunStarted(scenario="t", oversight="observe"))
     sb = await AuditedSandbox.start(
         backend, SandboxSpec(image=IMAGE), store, run_id=run_id, agent_id="a1"
@@ -406,15 +407,21 @@ async def test_tracer_counts_the_runs_every_probe_skips(
     assert isinstance(config, dict)
     assert config["preemption"] == preemption
     # The close read every program's count, and each has its probe's name.
-    names = {tracer._probes.get(prog, f"program {prog}") for prog in tracer._skips}
+    names = {p.name for prog in tracer._skips if (p := tracer._probes.get(prog))}
     assert {
         "fentry_vmlinux_security_file_open",
         "tracepoint_sched_sched_process_exec",
         "profile_s_1",
     } <= names
     if not preemption["preemptible"]:
+        # A fentry, fexit or raw tracepoint probe has a guard of its own, which only a run
+        # preempted midway trips, and that takes preemptible RCU. A tracepoint shares one guard
+        # per cpu with every BPF map call, so it can skip on any kernel that preempts.
+        own = tuple(
+            f"kernel skipped tracer probe {p}_" for p in ("fentry", "fexit", "rawtracepoint")
+        )
         lost = await store.events(run_id, types=["audit.lost"])
-        assert not [e for e in lost if "skipped" in str(e.data.get("reason"))]
+        assert not [e for e in lost if str(e.data.get("reason")).startswith(own)]
     # The counts are also read once a second, between closes.
     read = tracer._skips_ts
     assert read is not None

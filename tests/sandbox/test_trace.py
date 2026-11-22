@@ -95,12 +95,14 @@ from aims.sandbox.tracer import (
     TRACERS_PER_HOST,
     UNHANDLED,
     UNKNOWN,
+    Probe,
     Tracer,
     crowd,
     parse_counts,
     parse_preemption,
     parse_probes,
     parse_skips,
+    skip_reason,
 )
 
 MOUNTINFO = """\
@@ -1910,6 +1912,9 @@ T 1687.99
 /proc/6331/fdinfo/16:prog_id:\t3183
 """
 SKIP_REASON = "kernel skipped tracer probe {}: a run of it was in progress on that cpu"
+SHARED_REASON = (
+    "kernel skipped tracer probe {}: a BPF map call or BPF program was running on that cpu"
+)
 
 
 def test_parse_skips_reads_program_fds_only() -> None:
@@ -1923,22 +1928,57 @@ def test_parse_probes_drops_the_probe_index() -> None:
             {"id": 3136, "type": "tracing", "name": "fentry_vmlinux_security_file_open_9"},
             {"id": 3104, "type": "cgroup_device"},
             {"id": 3173, "type": "perf_event", "name": "interval_s_5_45"},
+            {"id": 3180, "name": "tracepoint_raw_syscalls_sys_exit_50"},
         ]
     )
-    assert parse_probes(text) == {3136: "fentry_vmlinux_security_file_open", 3173: "interval_s_5"}
+    assert parse_probes(text) == {
+        3136: Probe("fentry_vmlinux_security_file_open", "tracing"),
+        3173: Probe("interval_s_5", "perf_event"),
+        3180: Probe("tracepoint_raw_syscalls_sys_exit", ""),
+    }
     assert parse_probes("") == {}
     assert parse_probes("{}") == {}
 
 
+def test_a_skip_reason_names_the_cause_by_program_type() -> None:
+    """A tracepoint or kprobe program shares one guard per cpu with every BPF map call and every
+    tracepoint, kprobe or perf event program; a fentry, fexit or raw tracepoint program has a
+    guard of its own."""
+    for kind in ("tracepoint", "kprobe"):
+        probe = Probe("tracepoint_raw_syscalls_sys_exit", kind)
+        assert skip_reason(1, probe) == SHARED_REASON.format("tracepoint_raw_syscalls_sys_exit")
+    for kind in ("tracing", "raw_tracepoint", "perf_event", ""):
+        probe = Probe("fentry_vmlinux_security_file_open", kind)
+        assert skip_reason(1, probe) == SKIP_REASON.format("fentry_vmlinux_security_file_open")
+    assert skip_reason(7, None) == SKIP_REASON.format("program 7")
+
+
 def test_parse_preemption() -> None:
-    plain = {"preemptible_rcu": False, "mode": None, "preemptible": False}
-    assert parse_preemption("H 0 ") == plain
+    plain = {"preemptible_rcu": False, "mode": None, "preemptible": False, "kernel_preempts": False}
+    assert parse_preemption("H 0 0 ") == plain
     assert parse_preemption("H") == plain
-    assert parse_preemption("H 0 none voluntary (full) lazy")["preemptible"] is False
-    assert parse_preemption("H 1 ") == {"preemptible_rcu": True, "mode": None, "preemptible": True}
-    lazy = parse_preemption("H 1 none voluntary full (lazy)")
-    assert lazy == {"preemptible_rcu": True, "mode": "lazy", "preemptible": True}
-    assert parse_preemption("H 1 none (voluntary) full lazy")["preemptible"] is False
+    assert parse_preemption("H 0 1 none voluntary (full) lazy")["preemptible"] is False
+    # 7.0.0-1019-azure (GitHub's ubuntu-26.04 runner) and 7.0.14-linuxkit: built with lazy
+    # preemption, without preemptible RCU or a mode to choose at boot.
+    static_lazy = parse_preemption("H 0 1 ")
+    assert static_lazy == {
+        "preemptible_rcu": False,
+        "mode": None,
+        "preemptible": False,
+        "kernel_preempts": True,
+    }
+    full = {"preemptible_rcu": True, "mode": None, "preemptible": True, "kernel_preempts": True}
+    assert parse_preemption("H 1 1 ") == full
+    lazy = parse_preemption("H 1 1 full (lazy)")
+    assert lazy == {
+        "preemptible_rcu": True,
+        "mode": "lazy",
+        "preemptible": True,
+        "kernel_preempts": True,
+    }
+    voluntary = parse_preemption("H 1 1 none (voluntary) full lazy")
+    assert voluntary["preemptible"] is False
+    assert voluntary["kernel_preempts"] is False
 
 
 @pytest.mark.anyio
@@ -1947,7 +1987,10 @@ async def test_skipped_probe_runs_are_lost_in_every_sandbox() -> None:
     one = tracer.register(99, Mounts.parse(MOUNTINFO), SYSCALLS["aarch64"])
     two = tracer.register(77, Mounts.parse(MOUNTINFO), SYSCALLS["aarch64"])
     tracer.clock = (1_000_000, 0)
-    tracer._probes = {3183: "fentry_vmlinux_strncpy_from_kernel_nofault"}
+    tracer._probes = {
+        3183: Probe("fentry_vmlinux_strncpy_from_kernel_nofault", "tracing"),
+        3185: Probe("tracepoint_raw_syscalls_sys_exit", "tracepoint"),
+    }
     tracer._skipped(*parse_skips(SKIP_READING.splitlines()))
     reason = SKIP_REASON.format("fentry_vmlinux_strncpy_from_kernel_nofault")
     first = [Lost(1002, reason, (), 1_000_000, 1_687_990_000, "tracer")]
@@ -1960,7 +2003,7 @@ async def test_skipped_probe_runs_are_lost_in_every_sandbox() -> None:
     window = (1_687_990_000, 1_688_990_000)
     assert drain(one) == [
         Lost(8, reason, (), *window, "tracer"),
-        Lost(2, SKIP_REASON.format("program 3185"), (), *window, "tracer"),
+        Lost(2, SHARED_REASON.format("tracepoint_raw_syscalls_sys_exit"), (), *window, "tracer"),
     ]
     assert tracer.skipped == 1012
     assert tracer._skips == {3183: 1010, 3185: 2}
