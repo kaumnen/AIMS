@@ -13,7 +13,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import IO, Annotated, Literal, Self, cast, get_args
+from typing import IO, Annotated, Literal, NoReturn, Self, cast, get_args
 
 from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
@@ -143,6 +143,20 @@ MAX_EXECS = 100
 IMPORT_LIMIT = 4 * 1024**3
 # The most bytes of log lines one ingest of an import takes
 IMPORT_BATCH = 4 * 1024 * 1024
+# The most bytes of a pax or GNU long name header in an import, which tarfile reads whole, and
+# of all its global pax headers, which it keeps
+MAX_TAR_HEADER = 1024 * 1024
+# The most extended headers before one member, which tarfile reads by recursion
+MAX_TAR_CHAIN = 8
+_LONG_HEADERS = frozenset(
+    {
+        tarfile.XHDTYPE,
+        tarfile.XGLTYPE,
+        tarfile.SOLARIS_XHDTYPE,
+        tarfile.GNUTYPE_LONGNAME,
+        tarfile.GNUTYPE_LONGLINK,
+    }
+)
 
 # Integers the index binds: a seq, a page cursor (-1 is before the first) and a time on the
 # kernel boot clock in µs.
@@ -1905,11 +1919,58 @@ async def _drop_import(state: ServerState, run_id: str) -> None:
         state.note_deleted(run_id, info.kind)
 
 
+class _ImportTar(tarfile.TarFile):
+    """An imported tar, with counts of what its extended headers hold."""
+
+    in_a_row = 0
+    global_bytes = 0
+
+
+class _ImportMember(tarfile.TarInfo):
+    """A member of an imported tar. tarfile reads a pax or GNU long name header whole, keeps
+    global pax headers, reads headers before a member by recursion and reads a sparse map
+    entry by entry. So a small compressed tar could fill memory or the stack."""
+
+    def _proc_member(self, tar: tarfile.TarFile) -> tarfile.TarInfo:
+        held = cast(_ImportTar, tar)
+        if self.type == tarfile.GNUTYPE_SPARSE:
+            _no_sparse()
+        if self.type not in _LONG_HEADERS:
+            held.in_a_row = 0
+        elif self.size > MAX_TAR_HEADER:
+            _refuse(f"a tar header is longer than {MAX_TAR_HEADER} bytes")
+        else:
+            held.in_a_row += 1
+            if held.in_a_row > MAX_TAR_CHAIN:
+                _refuse(f"a tar member has more than {MAX_TAR_CHAIN} extended headers")
+            if self.type == tarfile.XGLTYPE:
+                held.global_bytes += self.size
+                if held.global_bytes > MAX_TAR_HEADER:
+                    _refuse(f"the global tar headers hold more than {MAX_TAR_HEADER} bytes")
+        return super()._proc_member(tar)  # ty: ignore[missing-attribute]
+
+    def _proc_gnusparse_00(self, *_: object) -> None:
+        _no_sparse()
+
+    _proc_gnusparse_01 = _proc_gnusparse_10 = _proc_gnusparse_00
+
+
+def _refuse(detail: str) -> NoReturn:
+    raise ProblemException(422, "Invalid request", detail)
+
+
+def _no_sparse() -> NoReturn:
+    _refuse("the tar holds a sparse file")
+
+
 def _tar_log(file: IO[bytes], out: IO[bytes]) -> None:
     """Copy the first `events.jsonl` in the tar to `out`, decoded. The tar may be compressed,
     so the log is held to IMPORT_LIMIT as it decodes."""
     file.seek(0)
-    with tarfile.open(fileobj=file, mode="r:*") as tar:
+    # stream=True keeps no member once read. The stubs lack it.
+    with _ImportTar.open(  # ty: ignore[no-matching-overload]
+        fileobj=file, mode="r:*", tarinfo=_ImportMember, stream=True
+    ) as tar:
         for member in tar:
             f = tar.extractfile(member) if member.isfile() else None
             if f is None or Path(member.name).name != "events.jsonl":
@@ -1951,7 +2012,10 @@ def _log_scan(log: IO[bytes]) -> tuple[str, set[str]]:
 def _tar_blobs(file: IO[bytes], blobs: BlobStore, wanted: set[str]) -> None:
     """Copy the blobs the log names from the tar into the store, checked as they stream."""
     file.seek(0)
-    with tarfile.open(fileobj=file, mode="r:*") as tar:
+    # stream=True keeps no member once read. The stubs lack it.
+    with _ImportTar.open(  # ty: ignore[no-matching-overload]
+        fileobj=file, mode="r:*", tarinfo=_ImportMember, stream=True
+    ) as tar:
         for member in tar:
             parts = Path(member.name).parts
             sha = parts[-1] if parts else ""

@@ -23,7 +23,7 @@ from collections.abc import AsyncGenerator, AsyncIterator, Generator, Sequence
 from compression import zstd
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Literal, cast
+from typing import IO, Any, Literal, cast
 from unittest.mock import patch
 
 import httpx2
@@ -3007,6 +3007,103 @@ async def test_an_import_refuses_a_line_longer_than_a_log_line(
         f"a line is longer than {MAX_LINE} bytes",
     ), r.text
     assert not (cp.state.store.root / run_id).exists()
+
+
+def odd_member(kind: str) -> tuple[tarfile.TarInfo, bytes]:
+    """A tar member that makes tarfile read a header past the cap or a sparse map."""
+    if kind in ("pax", "gnu"):
+        return tarfile.TarInfo("n" * (api.MAX_TAR_HEADER + 1)), b""
+    info = tarfile.TarInfo("s")
+    if kind == "sparse":
+        info.type = tarfile.GNUTYPE_SPARSE
+        return info, b""
+    data = b"1\n0\n0\n"
+    info.size = len(data)
+    info.pax_headers = {
+        "GNU.sparse.major": "1",
+        "GNU.sparse.minor": "0",
+        "GNU.sparse.name": "s",
+        "GNU.sparse.realsize": "0",
+    }
+    return info, data
+
+
+@pytest.mark.parametrize(
+    ("kind", "detail"),
+    [
+        ("pax", f"a tar header is longer than {api.MAX_TAR_HEADER} bytes"),
+        ("gnu", f"a tar header is longer than {api.MAX_TAR_HEADER} bytes"),
+        ("sparse", "the tar holds a sparse file"),
+        ("pax-sparse", "the tar holds a sparse file"),
+    ],
+)
+@pytest.mark.parametrize("last", [False, True])
+async def test_an_import_refuses_a_long_tar_header_or_a_sparse_file(
+    cp: CP, local: LocalEventStore, kind: str, detail: str, last: bool
+) -> None:
+    run_id = await local.create_run(STARTED)
+    tar = io.BytesIO()
+    fmt = tarfile.GNU_FORMAT if kind in ("gnu", "sparse") else tarfile.PAX_FORMAT
+    with (
+        tarfile.open(fileobj=io.BytesIO(run_tar(local.root / run_id))) as src,
+        tarfile.open(fileobj=tar, mode="w", format=fmt) as dst,
+    ):
+        members = [(m, cast(IO[bytes], src.extractfile(m)).read()) for m in src]
+        members.insert(len(members) if last else 0, odd_member(kind))
+        for info, data in members:
+            dst.addfile(info, io.BytesIO(data))
+    r = await post_tar(cp, tar.getvalue())
+    assert (r.status_code, r.json()["detail"]) == (422, detail), r.text
+    assert not (cp.state.store.root / run_id).exists()
+
+
+def pax_header(kind: bytes, values: dict[str, str]) -> bytes:
+    return tarfile.TarInfo._create_pax_generic_header(values, kind, "utf-8")  # ty: ignore[missing-attribute]
+
+
+@pytest.mark.parametrize(
+    ("headers", "detail"),
+    [
+        ([pax_header(tarfile.XHDTYPE, {"comment": "c"})] * api.MAX_TAR_CHAIN, None),
+        (
+            [pax_header(tarfile.XHDTYPE, {"comment": "c"})] * (api.MAX_TAR_CHAIN + 1),
+            f"a tar member has more than {api.MAX_TAR_CHAIN} extended headers",
+        ),
+        (
+            [pax_header(tarfile.XGLTYPE, {f"k{i}": "a" * 600_000}) for i in range(2)],
+            f"the global tar headers hold more than {api.MAX_TAR_HEADER} bytes",
+        ),
+    ],
+)
+async def test_an_import_bounds_the_headers_before_a_member(
+    cp: CP, local: LocalEventStore, headers: list[bytes], detail: str | None
+) -> None:
+    run_id = await local.create_run(STARTED)
+    r = await post_tar(cp, b"".join(headers) + run_tar(local.root / run_id))
+    if detail is None:
+        assert r.status_code == 201, r.text
+    else:
+        assert (r.status_code, r.json()["detail"]) == (422, detail), r.text
+        assert not (cp.state.store.root / run_id).exists()
+
+
+async def test_an_import_keeps_no_tar_member_it_has_read(
+    cp: CP, local: LocalEventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id, _ = await with_blob(local)
+    tar = run_tar(local.root / run_id)
+    opened: list[tarfile.TarFile] = []
+    real = api._ImportTar.__init__
+
+    def track(self: tarfile.TarFile, *args: Any, **kwargs: Any) -> None:
+        real(self, *args, **kwargs)
+        opened.append(self)
+
+    monkeypatch.setattr(api._ImportTar, "__init__", track)
+    r = await post_tar(cp, tar)
+    assert r.status_code == 201, r.text
+    assert len(opened) == 2
+    assert [t.members for t in opened] == [[], []]  # ty: ignore[missing-attribute]
 
 
 @pytest.mark.parametrize("batch", [1, 600])
